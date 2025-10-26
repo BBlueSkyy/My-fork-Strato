@@ -11,8 +11,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.preference.*
 import org.stratoemu.strato.BuildConfig
 import org.stratoemu.strato.R
-import org.stratoemu.strato.data.AppItem
+import org.stratoemu.strato.data.BaseAppItem
 import org.stratoemu.strato.data.AppItemTag
+import org.stratoemu.strato.preference.GameContentPreference
 import org.stratoemu.strato.preference.GpuDriverPreference
 import org.stratoemu.strato.utils.GpuDriverHelper
 import org.stratoemu.strato.utils.WindowInsetsHelper
@@ -22,7 +23,7 @@ import org.stratoemu.strato.utils.serializable
  * This fragment is used to display custom game preferences
  */
 class GameSettingsFragment : PreferenceFragmentCompat() {
-    private val item by lazy { requireArguments().serializable<AppItem>(AppItemTag)!! }
+    private val item by lazy { requireArguments().serializable<BaseAppItem>(AppItemTag)!! }
 
     override fun onViewCreated(view : View, savedInstanceState : Bundle?) {
         super.onViewCreated(view, savedInstanceState)
@@ -71,6 +72,13 @@ class GameSettingsFragment : PreferenceFragmentCompat() {
         }
 
         findPreference<GpuDriverPreference>("gpu_driver")?.item = item
+        
+        // Initialize GameContentPreference with the base game's title ID
+        val gameContentPref = findPreference<GameContentPreference>("game_content")
+        
+        item.titleId?.let { titleId ->
+            gameContentPref?.setBaseTitleId(titleId)
+        }
 
         // Hide settings that don't support per-game configuration
         var prefToRemove = findPreference<Preference>("profile_picture_value")

@@ -17,8 +17,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:nextFocusRight="@id/game_play"
-        android:paddingHorizontal="16dp"
-        android:paddingBottom="8dp">
+        android:paddingHorizontal="16dp">
 
         <com.google.android.material.imageview.ShapeableImageView
             android:id="@+id/game_icon"
@@ -92,8 +91,7 @@
             app:flexWrap="nowrap"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@id/game_icon"
-            app:layout_constraintVertical_bias="1">
+            app:layout_constraintTop_toBottomOf="@id/game_icon">
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/game_play"
@@ -148,11 +146,9 @@
             android:layout_marginTop="8dp"
             app:alignItems="center"
             app:flexWrap="nowrap"
-            app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@+id/save_management"
-            app:layout_constraintVertical_bias="1">
+            app:layout_constraintTop_toBottomOf="@+id/save_management">
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/import_save"
@@ -185,5 +181,47 @@
                 app:iconGravity="textStart" />
 
         </com.google.android.flexbox.FlexboxLayout>
+
+        <TextView
+            android:id="@+id/manage_content"
+            style="?attr/textAppearanceLabelLarge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/manage_game_content"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@+id/flexboxSaves" />
+
+        <com.google.android.flexbox.FlexboxLayout
+            android:id="@+id/flexboxGameContent"
+            style="@style/ThemeOverlay.Material3.Button.IconButton.Filled.Tonal"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            app:alignItems="center"
+            app:flexWrap="nowrap"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@+id/manage_content">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/add_update"
+                style="@style/Widget.Material3.Button.TonalButton.Icon"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:contentDescription="@string/add_update_dlc"
+                android:text="@string/add_update_dlc"
+                app:icon="@drawable/ic_add_content" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/manage_titles"
+                style="@style/Widget.Material3.Button.TonalButton.Icon"
+                android:layout_width="48dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                app:icon="@drawable/ic_settings" />
+
+        </com.google.android.flexbox.FlexboxLayout>
+
     </androidx.constraintlayout.widget.ConstraintLayout>
 </LinearLayout>

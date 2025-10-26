@@ -11,6 +11,7 @@ import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
 import android.graphics.drawable.Icon
 import android.os.Bundle
+import android.util.Log
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
@@ -20,11 +21,14 @@ import androidx.appcompat.app.AlertDialog
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.google.android.material.snackbar.Snackbar
-import org.stratoemu.strato.data.AppItem
+import org.stratoemu.strato.data.BaseAppItem
 import org.stratoemu.strato.data.AppItemTag
 import org.stratoemu.strato.databinding.AppDialogBinding
+import org.stratoemu.strato.utils.NspFilePicker
 import org.stratoemu.strato.loader.LoaderResult
 import org.stratoemu.strato.settings.SettingsActivity
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 import org.stratoemu.strato.utils.SaveManagementUtils
 import org.stratoemu.strato.utils.serializable
 
@@ -34,9 +38,9 @@ import org.stratoemu.strato.utils.serializable
 class AppDialog : BottomSheetDialogFragment() {
     companion object {
         /**
-         * @param item This is used to hold the [AppItem] between instances
+         * @param item This is used to hold the [BaseAppItem] between instances
          */
-        fun newInstance(item : AppItem) : AppDialog {
+        fun newInstance(item : BaseAppItem) : AppDialog {
             val args = Bundle()
             args.putSerializable(AppItemTag, item)
 
@@ -46,23 +50,28 @@ class AppDialog : BottomSheetDialogFragment() {
         }
     }
 
-    private lateinit var binding : AppDialogBinding
+    private lateinit var binding: AppDialogBinding
 
-    private val item by lazy { requireArguments().serializable<AppItem>(AppItemTag)!! }
+    private val item by lazy { requireArguments().serializable<BaseAppItem>(AppItemTag)!! }
 
     /**
      * Used to manage save files
      */
-    private lateinit var documentPicker : ActivityResultLauncher<Array<String>>
-    private lateinit var startForResultExportSave : ActivityResultLauncher<Intent>
+    private lateinit var documentPicker: ActivityResultLauncher<Array<String>>
+    private lateinit var startForResultExportSave: ActivityResultLauncher<Intent>
+    private lateinit var nspFilePicker: NspFilePicker
 
-    override fun onCreate(savedInstanceState : Bundle?) {
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Register document picker for save management
         documentPicker = SaveManagementUtils.registerDocumentPicker(requireActivity()) {
             val isSaveFileOfThisGame = SaveManagementUtils.saveFolderGameExists(item.titleId)
             binding.deleteSave.isEnabled = isSaveFileOfThisGame
             binding.exportSave.isEnabled = isSaveFileOfThisGame
         }
+        
+        // Register result launcher for export save
         startForResultExportSave = SaveManagementUtils.registerStartForResultExportSave(requireActivity())
     }
 
@@ -74,6 +83,92 @@ class AppDialog : BottomSheetDialogFragment() {
     override fun onViewCreated(view : View, savedInstanceState : Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
+        // Initialize NSP file picker now that the view is created
+        nspFilePicker = NspFilePicker.with(
+            this,  // Fragment
+            binding.root,  // Root view from the dialog's layout
+            { uri, fileName ->
+                
+                // Parse NSP metadata to determine type
+                val metadata = org.stratoemu.strato.loader.NspParser.parseNspMetadata(requireContext(), uri)
+                
+                if (metadata != null) {
+                    when {
+                        metadata.isUpdate -> {
+                            // Take persistent URI permissions first
+                            try {
+                                requireContext().contentResolver.takePersistableUriPermission(uri, 
+                                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            } catch (e: Exception) {
+                            }
+                            
+                            // Save update to both ContentManager and preferences
+                            item.titleId?.let { titleId ->
+                                // Add to ContentManager (new system)
+                                ContentManager.addUpdate(titleId, uri, metadata.name, metadata.version)
+                                ContentManager.setUpdateEnabled(titleId, uri, true)
+                                
+                                // Also save to GameContentPreference for compatibility
+                                val gameContentPreference = org.stratoemu.strato.preference.GameContentPreference(requireContext())
+                                gameContentPreference.setBaseTitleId(titleId)
+                                gameContentPreference.saveSelectedUpdate(uri, metadata.version)
+                            }
+                            
+                            // Handle update
+                            Snackbar.make(
+                                requireView(),
+                                "Update selected: ${metadata.name} v${metadata.version}",
+                                Snackbar.LENGTH_LONG
+                            ).show()
+                        }
+                        metadata.isDlc -> {
+                            // Save DLC to both ContentManager and preferences
+                            item.titleId?.let { titleId ->
+                                // Add to ContentManager (new system)
+                                ContentManager.addDlc(titleId, uri, metadata.name)
+                                ContentManager.setDlcEnabled(titleId, uri, true)
+                                
+                                // Also save to GameContentPreference for compatibility
+                                val gameContentPreference = org.stratoemu.strato.preference.GameContentPreference(requireContext())
+                                gameContentPreference.setBaseTitleId(titleId)
+                                gameContentPreference.addDlc(uri, metadata.name)
+                            }
+                            
+                            // Handle DLC
+                            Snackbar.make(
+                                requireView(),
+                                "DLC selected: ${metadata.name}",
+                                Snackbar.LENGTH_LONG
+                            ).show()
+                        }
+                        else -> {
+                            Snackbar.make(
+                                requireView(),
+                                "Unknown content type in NSP: $fileName",
+                                Snackbar.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                } else {
+                    Snackbar.make(
+                        requireView(),
+                        "Failed to parse NSP: $fileName",
+                        Snackbar.LENGTH_LONG
+                    ).show()
+                }
+            }
+        )
+        
+        // Add cleanup when the view is destroyed
+        viewLifecycleOwner.lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onDestroy(owner: LifecycleOwner) {
+                super.onDestroy(owner)
+                if (::nspFilePicker.isInitialized) {
+                    nspFilePicker.cleanup()
+                }
+            }
+        })
+
         // Set the peek height after the root view has been laid out
         view.apply {
             post {
@@ -84,7 +179,7 @@ class AppDialog : BottomSheetDialogFragment() {
 
         binding.gameIcon.setImageBitmap(item.bitmapIcon)
         binding.gameTitle.text = item.title
-        binding.gameVersion.text = item.version ?: item.loaderResultString(requireContext())
+        binding.gameVersion.text = item.getDisplayVersion(requireContext())
         binding.gameTitleId.text = item.titleId
         binding.gameAuthor.text = item.author
 
@@ -107,7 +202,7 @@ class AppDialog : BottomSheetDialogFragment() {
 
         binding.gamePin.setOnClickListener {
             val info = ShortcutInfo.Builder(context, item.title)
-            info.setShortLabel(item.title)
+            item.title?.let { title -> info.setShortLabel(title) }
             info.setActivity(ComponentName(requireContext(), EmulationActivity::class.java))
             info.setIcon(Icon.createWithAdaptiveBitmap(item.bitmapIcon))
 
@@ -151,6 +246,18 @@ class AppDialog : BottomSheetDialogFragment() {
             true
         }
 
+// NSP file picker is now initialized in onCreate
+
+        binding.addUpdate.setOnClickListener {
+            nspFilePicker.openNspFilePicker()
+        }
+
+        binding.manageTitles.setOnClickListener {
+            val intent = Intent(requireContext(), ManageContentActivity::class.java)
+            intent.putExtra(AppItemTag, item)
+            startActivity(intent)
+        }
+
         dialog?.setOnKeyListener { _, keyCode, event ->
             if (keyCode == KeyEvent.KEYCODE_BUTTON_B && event.action == KeyEvent.ACTION_UP) {
                 dialog?.onBackPressed()
@@ -158,6 +265,14 @@ class AppDialog : BottomSheetDialogFragment() {
             } else {
                 false
             }
+        }
+    }
+    
+    override fun onResume() {
+        super.onResume()
+        // Refresh version display in case updates were added/removed in ManageContentActivity
+        if (::binding.isInitialized) {
+            binding.gameVersion.text = item.getDisplayVersion(requireContext())
         }
     }
 }
