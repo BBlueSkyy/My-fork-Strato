@@ -16,11 +16,23 @@ namespace skyline::service::nim {
 
         Result CreateServerInterface(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result RefreshDebugAvailability(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result ClearDebugResponse(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result RegisterDebugResponse(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         Result IsLargeResourceAvailable(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result CreateServerInterface2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         SERVICE_DECL(
             SFUNC(0x0, IShopServiceAccessServerInterface, CreateServerInterface),
-            SFUNC(0x4, IShopServiceAccessServerInterface, IsLargeResourceAvailable)
+            SFUNC(0x1, IShopServiceAccessServerInterface, RefreshDebugAvailability),
+            SFUNC(0x2, IShopServiceAccessServerInterface, ClearDebugResponse),
+            SFUNC(0x3, IShopServiceAccessServerInterface, RegisterDebugResponse),
+            SFUNC(0x4, IShopServiceAccessServerInterface, IsLargeResourceAvailable),
+            SFUNC(0x5, IShopServiceAccessServerInterface, CreateServerInterface2)
         )
     };
 }
