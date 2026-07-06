@@ -30,13 +30,14 @@ namespace skyline::soc::host1x::nvdec {
 
         /**
          * @brief Submits a composed bitstream packet to the decoder
+         * @param surfaceKey An opaque key identifying the output surface of this operation, carried onto the resulting frame's PTS across any decoder reordering
          * @return If the packet was accepted
          */
-        bool SendPacket(span<const u8> data);
+        bool SendPacket(span<const u8> data, u64 surfaceKey);
 
         /**
          * @brief Retrieves the next decoded frame from the decoder
-         * @return The decoded frame, or an empty pointer when no frame is available yet
+         * @return The decoded frame with its submission's surface key in the PTS, or an empty pointer when no frame is available yet
          */
         AVFramePtr ReceiveFrame();
     };

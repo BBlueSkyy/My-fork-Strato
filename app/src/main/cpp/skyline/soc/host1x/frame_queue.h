@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <condition_variable>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -20,6 +21,7 @@ namespace skyline::soc::host1x {
     class FrameQueue {
       private:
         std::mutex mutex; //!< Synchronises access to the frame list across channel threads
+        std::condition_variable frameCondition; //!< Signalled whenever a frame is pushed, waking consumers waiting on a specific surface
         std::deque<std::pair<u64, AVFramePtr>> frames; //!< Decoded frames in decode order alongside the SMMU IOVA of the output luma plane NVDEC was programmed with
         constexpr static size_t MaxQueueSize{32}; //!< Cap on retained frames so frames that are never consumed don't accumulate unboundedly
 
@@ -31,8 +33,8 @@ namespace skyline::soc::host1x {
         void PushFrame(u64 lumaIova, AVFramePtr frame);
 
         /**
-         * @brief Removes and returns the frame stored under the supplied luma IOVA
-         * @return The stored frame, the oldest frame as a fallback when no key matches, or an empty pointer when the queue is empty
+         * @brief Removes and returns the frame stored under the supplied luma IOVA, briefly waiting for it if a reordering decoder hasn't emitted it yet
+         * @return The stored frame, the oldest frame as a fallback when no key matches within the wait, or an empty pointer when the queue is empty
          */
         AVFramePtr PopFrame(u64 lumaIova);
     };
