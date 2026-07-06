@@ -4,6 +4,7 @@
 #pragma once
 
 #include "host1x/syncpoint.h"
+#include "host1x/frame_queue.h"
 #include "host1x/command_fifo.h"
 
 namespace skyline::soc::host1x {
@@ -16,8 +17,9 @@ namespace skyline::soc::host1x {
     class Host1x {
       public:
         SyncpointSet syncpoints;
+        FrameQueue frameQueue; //!< Holds decoded frames in-flight between the NVDEC and VIC channels
         std::array<ChannelCommandFifo, ChannelCount> channels;
 
-        Host1x(const DeviceState &state) : channels{util::MakeFilledArray<ChannelCommandFifo, ChannelCount>(state, syncpoints)} {}
+        Host1x(const DeviceState &state) : channels{util::MakeFilledArray<ChannelCommandFifo, ChannelCount>(state, syncpoints, frameQueue)} {}
     };
 }

@@ -41,8 +41,9 @@ namespace skyline::soc::host1x {
         }
 
       public:
-        TegraHostInterface(SyncpointSet &syncpoints)
-            : deviceClass([&] { SubmitPendingIncrs(); }),
+        template<typename... Args>
+        TegraHostInterface(SyncpointSet &syncpoints, Args &&... args)
+            : deviceClass(std::forward<Args>(args)..., [this] { SubmitPendingIncrs(); }),
               syncpoints(syncpoints) {}
 
         void CallMethod(u32 method, u32 argument)  {
@@ -61,7 +62,10 @@ namespace skyline::soc::host1x {
                         case IncrementSyncpointMethod::Condition::OpDone:
                             LOGD("Queue syncpoint for OpDone: {}", incrSyncpoint.index);
                             AddIncr(incrSyncpoint.index);
-                            SubmitPendingIncrs(); // FIXME: immediately submit the incrs as classes are not yet implemented
+                            // Submitting immediately is correct as class operations execute synchronously within the FIFO thread,
+                            // by the time this method is processed any prior operation has already completed; the opDoneCallback
+                            // exists for a future asynchronous execution model
+                            SubmitPendingIncrs();
                             break;
                         default:
                             LOGW("Unimplemented syncpoint condition: {}", static_cast<u8>(incrSyncpoint.condition));

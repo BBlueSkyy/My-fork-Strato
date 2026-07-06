@@ -45,7 +45,7 @@ namespace skyline::soc::host1x {
     };
     static_assert(sizeof(ChannelCommandFifoMethodHeader) == sizeof(u32));
 
-    ChannelCommandFifo::ChannelCommandFifo(const DeviceState &state, SyncpointSet &syncpoints) : state(state), gatherQueue(GatherQueueSize), host1XClass(syncpoints), nvDecClass(syncpoints), vicClass(syncpoints) {}
+    ChannelCommandFifo::ChannelCommandFifo(const DeviceState &state, SyncpointSet &syncpoints, FrameQueue &frameQueue) : state(state), gatherQueue(GatherQueueSize), host1XClass(syncpoints), nvDecClass(syncpoints, state, frameQueue), vicClass(syncpoints, state, frameQueue) {}
 
     void ChannelCommandFifo::Send(ClassId targetClass, u32 method, u32 argument) {
         LOGV("Calling method in class: 0x{:X}, method: 0x{:X}, argument: 0x{:X}", targetClass, method, argument);
@@ -101,7 +101,9 @@ namespace skyline::soc::host1x {
                     Send(targetClass, methodHeader.methodAddress, methodHeader.immdData);
                     break;
                 default:
-                    throw exception("Unimplemented Host1x command FIFO opcode: 0x{:X}", static_cast<u8>(methodHeader.opcode));
+                    // Unknown opcodes are logged and skipped as an unexpected pushbuffer must not take down the FIFO thread
+                    LOGE("Unimplemented Host1x command FIFO opcode: 0x{:X}", static_cast<u8>(methodHeader.opcode));
+                    break;
             }
         }
     }

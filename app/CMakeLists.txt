@@ -101,6 +101,59 @@ include_directories("libraries/renderdoc")
 # Thread Pool
 include_directories("libraries/thread-pool")
 
+# FFmpeg (decoder-only build of the submodule, used for NVDEC video decoding)
+include(ExternalProject)
+# FFmpeg only supports in-tree builds when driven through a Windows shell, the source tree doubles as the build tree
+set(FFMPEG_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libraries/ffmpeg")
+set(FFMPEG_BUILD_DIR "${FFMPEG_SOURCE_DIR}")
+get_filename_component(FFMPEG_TOOLCHAIN_BIN "${CMAKE_C_COMPILER}" DIRECTORY)
+if (CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+    set(FFMPEG_HOST_TAG "windows-x86_64")
+    set(FFMPEG_EXE ".exe")
+elseif (CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+    set(FFMPEG_HOST_TAG "darwin-x86_64")
+    set(FFMPEG_EXE "")
+else ()
+    set(FFMPEG_HOST_TAG "linux-x86_64")
+    set(FFMPEG_EXE "")
+endif ()
+find_program(FFMPEG_SHELL NAMES bash sh REQUIRED)
+set(FFMPEG_MAKE "${CMAKE_ANDROID_NDK}/prebuilt/${FFMPEG_HOST_TAG}/bin/make${FFMPEG_EXE}")
+set(FFMPEG_TARGET_FLAGS "--target=aarch64-linux-android${ANDROID_PLATFORM_LEVEL} --sysroot=${CMAKE_SYSROOT}")
+ExternalProject_Add(ffmpeg
+        SOURCE_DIR "${FFMPEG_SOURCE_DIR}"
+        BUILD_IN_SOURCE 1
+        CONFIGURE_COMMAND "${CMAKE_COMMAND}" -E env TMPDIR=/tmp "${FFMPEG_SHELL}" "${FFMPEG_SOURCE_DIR}/configure"
+            --target-os=android --arch=aarch64 --cpu=armv8-a --enable-cross-compile
+            --cc=${CMAKE_C_COMPILER} --cxx=${CMAKE_CXX_COMPILER}
+            --ar=${FFMPEG_TOOLCHAIN_BIN}/llvm-ar${FFMPEG_EXE} --nm=${FFMPEG_TOOLCHAIN_BIN}/llvm-nm${FFMPEG_EXE}
+            --ranlib=${FFMPEG_TOOLCHAIN_BIN}/llvm-ranlib${FFMPEG_EXE} --strip=${FFMPEG_TOOLCHAIN_BIN}/llvm-strip${FFMPEG_EXE}
+            --host-cc=${CMAKE_C_COMPILER} "--host-cflags=${FFMPEG_TARGET_FLAGS}"
+            "--extra-cflags=${FFMPEG_TARGET_FLAGS} -O2 -fPIC" "--extra-ldflags=${FFMPEG_TARGET_FLAGS}"
+            --enable-static --disable-shared --enable-pic --enable-asm --enable-neon
+            --disable-everything --disable-programs --disable-doc --disable-debug
+            --disable-avdevice --disable-avformat --disable-avfilter --disable-swresample
+            --disable-network --disable-protocols --disable-encoders --disable-muxers
+            --disable-demuxers --disable-bsfs --disable-devices --disable-hwaccels --disable-postproc
+            --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=vp8 --enable-decoder=vp9
+            --enable-parser=h264 --enable-parser=hevc --enable-parser=vp8 --enable-parser=vp9
+        BUILD_COMMAND "${FFMPEG_MAKE}" -j4
+        INSTALL_COMMAND ""
+        BUILD_BYPRODUCTS "${FFMPEG_BUILD_DIR}/libavcodec/libavcodec.a" "${FFMPEG_BUILD_DIR}/libavutil/libavutil.a" "${FFMPEG_BUILD_DIR}/libswscale/libswscale.a")
+
+add_library(ffmpeg-avutil STATIC IMPORTED)
+set_target_properties(ffmpeg-avutil PROPERTIES
+        IMPORTED_LOCATION "${FFMPEG_BUILD_DIR}/libavutil/libavutil.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_SOURCE_DIR};${FFMPEG_BUILD_DIR}")
+add_library(ffmpeg-avcodec STATIC IMPORTED)
+set_target_properties(ffmpeg-avcodec PROPERTIES
+        IMPORTED_LOCATION "${FFMPEG_BUILD_DIR}/libavcodec/libavcodec.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_SOURCE_DIR};${FFMPEG_BUILD_DIR}")
+add_library(ffmpeg-swscale STATIC IMPORTED)
+set_target_properties(ffmpeg-swscale PROPERTIES
+        IMPORTED_LOCATION "${FFMPEG_BUILD_DIR}/libswscale/libswscale.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_SOURCE_DIR};${FFMPEG_BUILD_DIR}")
+
 # Build Skyline with full debugging data and -Og for debug builds
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g3 -glldb -gdwarf-5 -fno-omit-frame-pointer")
 # Build Skyline with full debugging data and some optimizations for reldebug builds, build speed is prioritised
@@ -203,10 +256,17 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/gpu/shaders/helper_shaders.cpp
         ${source_DIR}/skyline/soc/smmu.cpp
         ${source_DIR}/skyline/soc/host1x/syncpoint.cpp
+        ${source_DIR}/skyline/soc/host1x/frame_queue.cpp
         ${source_DIR}/skyline/soc/host1x/command_fifo.cpp
         ${source_DIR}/skyline/soc/host1x/classes/host1x.cpp
         ${source_DIR}/skyline/soc/host1x/classes/vic.cpp
+        ${source_DIR}/skyline/soc/host1x/classes/vic/surface_writer.cpp
         ${source_DIR}/skyline/soc/host1x/classes/nvdec.cpp
+        ${source_DIR}/skyline/soc/host1x/classes/nvdec/ffmpeg_decoder.cpp
+        ${source_DIR}/skyline/soc/host1x/classes/nvdec/codecs/codec.cpp
+        ${source_DIR}/skyline/soc/host1x/classes/nvdec/codecs/h264.cpp
+        ${source_DIR}/skyline/soc/host1x/classes/nvdec/codecs/vp8.cpp
+        ${source_DIR}/skyline/soc/host1x/classes/nvdec/codecs/vp9.cpp
         ${source_DIR}/skyline/soc/gm20b/channel.cpp
         ${source_DIR}/skyline/soc/gm20b/gpfifo.cpp
         ${source_DIR}/skyline/soc/gm20b/gmmu.cpp
@@ -397,5 +457,6 @@ target_include_directories(skyline PRIVATE ${source_DIR}/skyline)
 # target_precompile_headers(skyline PRIVATE ${source_DIR}/skyline/common.h) # PCH will currently break Intellisense
 target_compile_options(skyline PRIVATE -Wall -Wno-unknown-attributes -Wno-c++20-extensions -Wno-c++17-extensions -Wno-c99-designator -Wno-reorder -Wno-missing-braces -Wno-unused-variable -Wno-unused-private-field -Wno-dangling-else -Wconversion -fsigned-bitfields)
 
+add_dependencies(skyline ffmpeg)
 target_link_libraries(skyline PRIVATE shader_recompiler audio_core)
-target_link_libraries_system(skyline android perfetto fmt lz4_static tzcode vkma mbedcrypto opus Boost::intrusive Boost::container Boost::preprocessor Boost::regex range-v3 adrenotools tsl::robin_map)
+target_link_libraries_system(skyline android perfetto fmt lz4_static tzcode vkma mbedcrypto opus Boost::intrusive Boost::container Boost::preprocessor Boost::regex range-v3 adrenotools tsl::robin_map ffmpeg-avcodec ffmpeg-swscale ffmpeg-avutil)
