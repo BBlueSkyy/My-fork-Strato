@@ -24,6 +24,14 @@ namespace skyline::vfs {
             throw exception("This filesystem does not support deleting directories");
         }
 
+        virtual void RenameFileImpl(const std::string &oldPath, const std::string &newPath) {
+            throw exception("This filesystem does not support renaming files");
+        }
+
+        virtual void RenameDirectoryImpl(const std::string &oldPath, const std::string &newPath) {
+            throw exception("This filesystem does not support renaming directories");
+        }
+        
         virtual bool CreateDirectoryImpl(const std::string &path, bool parents) {
             throw exception("This filesystem does not support creating directories");
         };
@@ -64,7 +72,15 @@ namespace skyline::vfs {
             DeleteDirectoryImpl(path);
         }
 
-        /**
+        void RenameFile(const std::string &oldPath, const std::string &newPath) {
+            RenameFileImpl(oldPath, newPath);
+        }
+
+        void RenameDirectory(const std::string &oldPath, const std::string &newPath) {
+            RenameDirectoryImpl(oldPath, newPath);
+        }
+       
+         /**
          * @brief Creates a directory in the filesystem
          * @param path The path to where the directory should be created
          * @param parents Whether all parent directories in the given path should be created
