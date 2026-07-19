@@ -49,7 +49,23 @@ namespace skyline::vfs {
         auto fullPath{basePath + path};
         std::filesystem::remove_all(fullPath.c_str());
     }
+   
+    void OsFileSystem::RenameFileImpl(const std::string &oldPath, const std::string &newPath) {
+    auto fullOldPath{basePath + oldPath};
+    auto fullNewPath{basePath + newPath};
 
+    if (rename(fullOldPath.c_str(), fullNewPath.c_str()) != 0)
+        throw exception("Failed to rename file from '{}' to '{}': {}", oldPath, newPath, strerror(errno));
+    }
+
+    void OsFileSystem::RenameDirectoryImpl(const std::string &oldPath, const std::string &newPath) {
+    auto fullOldPath{basePath + oldPath};
+    auto fullNewPath{basePath + newPath};
+
+    if (rename(fullOldPath.c_str(), fullNewPath.c_str()) != 0)
+        throw exception("Failed to rename directory from '{}' to '{}': {}", oldPath, newPath, strerror(errno));
+    }
+   
     bool OsFileSystem::CreateDirectoryImpl(const std::string &path, bool parents) {
         auto fullPath{basePath + path + "/"};
 
