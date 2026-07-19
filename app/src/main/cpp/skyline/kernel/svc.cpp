@@ -106,15 +106,22 @@ namespace skyline::kernel::svc {
         }
        
         constexpr u8 UnimplementedAttributeBit{0x10};
-        memory::MemoryAttribute mask{static_cast<u8>(ctx.w2 & ~UnimplementedAttributeBit)};
-        memory::MemoryAttribute value{static_cast<u8>(ctx.w3 & ~UnimplementedAttributeBit)};
+        u8 rawMask{static_cast<u8>(ctx.w2 & ~UnimplementedAttributeBit)};
+        u8 rawValue{static_cast<u8>(ctx.w3 & ~UnimplementedAttributeBit)};
+
+        // If, after removing the unimplemented bit, there is nothing left to change,
+        // treat it as a successful no-op instead of an error.
+        if (rawMask == 0) [[unlikely]] {
+            LOGD("SetMemoryAttribute: only unimplemented attribute bit(s) requested (0x{:X}), treating as no-op", static_cast<u8>(ctx.w2));
+            ctx.w0 = Result{};
+            return;
+        }
+
+        memory::MemoryAttribute mask{rawMask};
+        memory::MemoryAttribute value{rawValue};
 
         auto maskedValue{mask.value | value.value};
         if (maskedValue != mask.value || !mask.isUncached || mask.isDeviceShared || mask.isBorrowed || mask.isIpcLocked) [[unlikely]] {
-            ctx.w0 = result::InvalidCombination;
-            LOGW("'mask' invalid: 0x{:X}, 0x{:X}", mask.value, value.value);
-            return;
-        }
 
         auto chunk{state.process->memory.GetChunk(address).value()};
 
