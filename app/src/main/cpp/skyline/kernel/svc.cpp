@@ -959,6 +959,8 @@ namespace skyline::kernel::svc {
             // 6.0.0+
             TotalMemoryAvailableWithoutSystemResource = 21,
             TotalMemoryUsageWithoutSystemResource = 22,
+            // 18.0.0+
+            AliasRegionExtraSize = 28,
         };
 
         InfoState info{static_cast<u32>(ctx.w1)};
@@ -984,11 +986,15 @@ namespace skyline::kernel::svc {
             case InfoState::AliasRegionBaseAddr:
                 out = reinterpret_cast<u64>(state.process->memory.alias.guest.data());
                 break;
-
+             
             case InfoState::AliasRegionSize:
                 out = state.process->memory.alias.size();
                 break;
-
+        
+            case InfoState::AliasRegionExtraSize:
+                out = 0; // No extra space reserved in the Alias ​​region
+                break;
+           
             case InfoState::HeapRegionBaseAddr:
                 out = reinterpret_cast<u64>(state.process->memory.heap.guest.data());
                 break;
