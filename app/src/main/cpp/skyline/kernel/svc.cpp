@@ -104,7 +104,8 @@ namespace skyline::kernel::svc {
             LOGW("Invalid address and size combination: 'address': {}, 'size': 0x{:X} ", fmt::ptr(address), size);
             return;
         }
-
+       
+        constexpr u8 UnimplementedAttributeBit{0x10};
         memory::MemoryAttribute mask{static_cast<u8>(ctx.w2 & ~UnimplementedAttributeBit)};
         memory::MemoryAttribute value{static_cast<u8>(ctx.w3 & ~UnimplementedAttributeBit)};
 
