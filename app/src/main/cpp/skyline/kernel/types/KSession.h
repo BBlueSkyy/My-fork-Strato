@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "KSyncObject.h"
 
 namespace skyline::service {
@@ -18,7 +20,7 @@ namespace skyline::kernel::type {
         std::shared_ptr<service::BaseService> serviceObject;
         std::vector<std::shared_ptr<service::BaseService>> domains; //!< A vector of services that correspond to virtual handles
         KHandle handleIndex{}; //!< The currently allocated handle index
-        bool isOpen{true}; //!< If the session is open or not
+        std::atomic<u32> handleRefCount{1}; //!< Number of live handles referencing this session
         bool isDomain{}; //!< If this is a domain session or not
 
         /**
@@ -35,6 +37,14 @@ namespace skyline::kernel::type {
             isDomain = true;
             domains.push_back(serviceObject);
             return handleIndex++;
+        }
+
+        /**
+         * @brief Checks if this session still has at least one live handle referencing it
+         * @return Whether the session is open or not
+         */
+        bool IsOpen() const {
+            return handleRefCount.load(std::memory_order_relaxed) > 0;
         }
     };
 }
