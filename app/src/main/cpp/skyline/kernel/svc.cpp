@@ -122,7 +122,11 @@ namespace skyline::kernel::svc {
 
         auto maskedValue{mask.value | value.value};
         if (maskedValue != mask.value || !mask.isUncached || mask.isDeviceShared || mask.isBorrowed || mask.isIpcLocked) [[unlikely]] {
-
+           ctx.w0 = result::InvalidCombination;
+            LOGW("'mask' invalid: 0x{:X}, 0x{:X}", mask.value, value.value);
+           return;
+        }
+       
         auto chunk{state.process->memory.GetChunk(address).value()};
 
         // We only check the first found chunk for whatever reason.
