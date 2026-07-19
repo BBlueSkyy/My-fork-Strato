@@ -105,8 +105,8 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        memory::MemoryAttribute mask{static_cast<u8>(ctx.w2)};
-        memory::MemoryAttribute value{static_cast<u8>(ctx.w3)};
+        memory::MemoryAttribute mask{static_cast<u8>(ctx.w2 & ~UnimplementedAttributeBit)};
+        memory::MemoryAttribute value{static_cast<u8>(ctx.w3 & ~UnimplementedAttributeBit)};
 
         auto maskedValue{mask.value | value.value};
         if (maskedValue != mask.value || !mask.isUncached || mask.isDeviceShared || mask.isBorrowed || mask.isIpcLocked) [[unlikely]] {
