@@ -975,6 +975,14 @@ namespace skyline::kernel::svc {
             FreeThreadCount = 24,
             // 18.0.0+
             AliasRegionExtraSize = 28,
+            // 19.0.0+
+            // NOTE: ID0 is provisional. The upstream Strato commit (25168404) used 28, but that
+            // collides with AliasRegionExtraSize above. 29 is the next free slot per libnx's
+            // known numbering (28 = AliasRegionExtraSize, 34 = TransferMemoryHint on 19.0.0+),
+            // but it has NOT been confirmed against real hardware/firmware. Verify by checking
+            // the "Unimplemented case ID0: X" LOGW output from the affected game and adjust
+            // this value if it doesn't match.
+            IsVammEnabled = 29,
         };
 
         InfoState info{static_cast<u32>(ctx.w1)};
@@ -1008,7 +1016,16 @@ namespace skyline::kernel::svc {
             case InfoState::AliasRegionExtraSize:
                 out = 0; // No extra space reserved in the Alias ​​region
                 break;
-           
+            
+            case InfoState::IsVammEnabled:
+                // Virtual Address Memory Manager (nn::os::detail::VammManager) — introduced in
+                // HOS 19.0.0 / SDK 19.x. Returning 0 (disabled) is correct for Strato since we
+                // don't implement VAMM. VammManager::InitializeIfEnabled() will skip init when
+                // this returns 0, allowing games built with SDK 19.x (e.g. Unity 6) to start
+                // normally.
+                out = 0;
+                break;
+            
             case InfoState::HeapRegionBaseAddr:
                 out = reinterpret_cast<u64>(state.process->memory.heap.guest.data());
                 break;
