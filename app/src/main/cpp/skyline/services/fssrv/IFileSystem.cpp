@@ -146,5 +146,16 @@ namespace skyline::service::fssrv {
         };
         response.Push(fileTimeStampRaw);
         return {};
-    }
-}
+      }
+  
+     Result IFileSystem::GetFileSystemAttribute(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+          // Stub: retorna uma estrutura zerada indicando nenhum recurso avançado
+          // (ex: renomear em lote, hashes de nível, etc.) suportado por este FS.
+       struct FileSystemAttribute {
+        u8 _unk_[0x38]{};
+     };
+
+        response.Push(FileSystemAttribute{});
+        return {};
+      }
+   } 
