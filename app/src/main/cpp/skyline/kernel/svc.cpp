@@ -971,6 +971,8 @@ namespace skyline::kernel::svc {
             // 6.0.0+
             TotalMemoryAvailableWithoutSystemResource = 21,
             TotalMemoryUsageWithoutSystemResource = 22,
+            // 11.0.0+
+            FreeThreadCount = 24,
             // 18.0.0+
             AliasRegionExtraSize = 28,
         };
@@ -1026,7 +1028,10 @@ namespace skyline::kernel::svc {
             case InfoState::IdleTickCount:
                 out = 0; // Stubbed
                 break;
-
+           
+            case InfoState::FreeThreadCount:
+                out = 64; // Stubbed: reports a generous number of free threads.
+           
             case InfoState::RandomEntropy:
                 out = util::GetTimeTicks();
                 break;
