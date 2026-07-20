@@ -92,8 +92,10 @@ namespace skyline::service::fssrv {
          * @url https://switchbrew.org/wiki/Filesystem_services#GetFileTimeStampRaw
          */
         Result GetFileTimeStampRaw(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        SERVICE_DECL(
+        
+        Result GetFileSystemAttribute(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        
+            SERVICE_DECL(
             SFUNC(0x0, IFileSystem, CreateFile),
             SFUNC(0x1, IFileSystem, DeleteFile),
             SFUNC(0x2, IFileSystem, CreateDirectory),
@@ -108,7 +110,8 @@ namespace skyline::service::fssrv {
             SFUNC(0xB, IFileSystem, GetFreeSpaceSize),
             SFUNC(0xC, IFileSystem, GetTotalSpaceSize),
             SFUNC(0xD, IFileSystem, CleanDirectoryRecursively),
-            SFUNC(0xE, IFileSystem, GetFileTimeStampRaw)
+            SFUNC(0xE, IFileSystem, GetFileTimeStampRaw),
+            SFUNC(0x10, IFileSystem, GetFileSystemAttribute)
         )
     };
 }
