@@ -975,8 +975,8 @@ namespace skyline::kernel::svc {
             FreeThreadCount = 24,
             // 18.0.0+
             AliasRegionExtraSize = 28,
-            // 19.0.0+
-            // NOTE: ID0 is provisional. The upstream Strato commit (25168404) used 28, but that
+            // // 19.0.0+
+            // // NOTE: ID0 is provisional. The upstream Strato commit (25168404) used 28, but that
             // collides with AliasRegionExtraSize above. 29 is the next free slot per libnx's
             // known numbering (28 = AliasRegionExtraSize, 34 = TransferMemoryHint on 19.0.0+),
             // but it has NOT been confirmed against real hardware/firmware. Verify by checking
@@ -1023,8 +1023,8 @@ namespace skyline::kernel::svc {
                 // don't implement VAMM. VammManager::InitializeIfEnabled() will skip init when
                 // this returns 0, allowing games built with SDK 19.x (e.g. Unity 6) to start
                 // normally.
-                out = 0;
-                break;
+                // out = 0;
+                // break;
             
             case InfoState::HeapRegionBaseAddr:
                 out = reinterpret_cast<u64>(state.process->memory.heap.guest.data());
