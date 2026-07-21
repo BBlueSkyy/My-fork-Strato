@@ -183,7 +183,7 @@ namespace skyline::gpu::interconnect {
                     .mipLodBias = texSampler.MipLodBias(),
                     .anisotropyEnable = ctx.gpu.traits.supportsAnisotropicFiltering && maxAnisotropy > 1.0f,
                     .maxAnisotropy = maxAnisotropy,
-                    .compareEnable = texSampler.depthCompareEnable,
+                    .compareEnable = !ctx.gpu.traits.quirks.brokenTextureShadowCompare && texSampler.depthCompareEnable,
                     .compareOp = ConvertSamplerCompareOp(texSampler.depthCompareOp),
                     .minLod = texSampler.mipFilter == TextureSamplerControl::MipFilter::None ? 0.0f : texSampler.MinLodClamp(),
                     .maxLod = texSampler.mipFilter == TextureSamplerControl::MipFilter::None ? 0.25f : texSampler.MaxLodClamp(),
