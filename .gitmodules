@@ -58,3 +58,5 @@
 [submodule "app/libraries/audio-core"]
 	path = app/libraries/audio-core
 	url = https://github.com/skyline-emu/audio-core
+[submodule "app/libraries/shader-compiler"]
+	url = https://github.com/BBlueSkyy/shader-compiler.git
