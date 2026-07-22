@@ -132,7 +132,7 @@ namespace skyline::kernel::svc {
         // We only check the first found chunk for whatever reason.
         if (!chunk.second.state.attributeChangeAllowed) [[unlikely]] {
            ctx.w0 = result::InvalidState;
-            LOGW("Attribute change not allowed for chunk: {}", fmt::ptr(chunk.first));
+            LOGW("Attribute change not allowed for chunk: {} (base: {}, size: 0x{:X}, state: 0x{:X}, type: {})", fmt::ptr(address), fmt::ptr(chunk.first), chunk.second.size, chunk.second.state.value, static_cast<u8>(chunk.second.state.type));
            return;
         }
 
