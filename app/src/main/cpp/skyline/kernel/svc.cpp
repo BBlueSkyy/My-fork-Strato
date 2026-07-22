@@ -130,9 +130,10 @@ namespace skyline::kernel::svc {
         auto chunk{state.process->memory.GetChunk(address).value()};
 
         // We only check the first found chunk for whatever reason.
-        if (!chunk.second.state.attributeChangeAllowed) [[unlikely]] {
-            ctx.w0 = result::InvalidState;
-            LOGW("Attribute change not allowed for chunk: {}", fmt::ptr(chunk.first));
+        if (!chunk.second.state.attributeChangeAllowed) {
+             LOGW("Ignoring SetMemoryAttribute on chunk: {}", fmt::ptr(chunk.first));
+
+            ctx.w0 = Result{};
             return;
         }
 
