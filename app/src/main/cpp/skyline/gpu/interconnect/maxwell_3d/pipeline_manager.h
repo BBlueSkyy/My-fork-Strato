@@ -184,9 +184,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
                     boost::container::small_vector<Usage, 2> uniformBuffers;
                     boost::container::small_vector<Usage, 2> storageBuffers;
+                    boost::container::small_vector<Usage, 2> textureBuffers;
                     boost::container::small_vector<Usage, 2> combinedImageSamplers;
                     u16 totalBufferDescCount;
                     u16 totalImageDescCount;
+                    u16 totalTexelBufferDescCount;
                     u16 writeDescCount;
 
                     bool operator==(const ConstantBufferDescriptorUsages&) const = default;
@@ -202,7 +204,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             u16 totalStorageBufferCount;
             u16 totalCombinedImageSamplerCount;
-
+            u16 totalUniformTexelBufferCount;
             u16 totalWriteDescCount;
             u16 totalBufferDescCount;
             u16 totalTexelBufferDescCount;
@@ -215,6 +217,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
       private:
         std::vector<CachedMappedBufferView> storageBufferViews;
+        std::vector<CachedMappedBufferView> texelBufferViews;
         ContextTag lastExecutionTag{}; //!< The last execution tag this pipeline was used at
         DescriptorInfo descriptorInfo; //!< Info about all descriptors used in each stage of the pipeline
         u8 transitionCacheNextIdx{}; //!< The next index to insert into the transition cache
