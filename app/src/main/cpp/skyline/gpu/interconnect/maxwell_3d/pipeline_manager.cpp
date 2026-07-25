@@ -757,7 +757,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto imageDescs{ctx.executor.allocator->AllocateUntracked<vk::DescriptorImageInfo>(descriptorInfo.totalImageDescCount)};
         u32 texelBufferIdx{};
         auto texelBufferDescs{ctx.executor.allocator->AllocateUntracked<vk::BufferView>(descriptorInfo.totalUniformTexelBufferCount)};
-        u32 texelBufferIdx{};
         
         u32 storageBufferIdx{}; // Need to keep track of this to index into the cached view array
         u32 combinedImageSamplerIdx{}; // Need to keep track of this to index into the sampled image array
