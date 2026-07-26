@@ -125,18 +125,14 @@ namespace skyline::gpu {
                 if (vkFormat == vk::Format::eD32Sfloat && other.vkFormat == vk::Format::eR32Sfloat)
                     return true;
 
-                // Formatos comprimidos (BCn, etc.) têm tamanho de bloco diferente entre si mesmo quando
-                // reportam a mesma contagem/largura de componentes na forma decodificada (ex: BC1 vs BC3) —
-                // então nunca são compatíveis a menos que o bloco seja idêntico (ex: variante sRGB do mesmo BCn).
-                if (IsCompressed() || other.IsCompressed())
-                    return IsCompressed() && other.IsCompressed() &&
-                        bpb == other.bpb && blockWidth == other.blockWidth && blockHeight == other.blockHeight;
-
-                return componentCount(vkFormat) == componentCount(other.vkFormat) &&
-                    ranges::all_of(ranges::views::iota(u8{0}, componentCount(vkFormat)), [this, other](auto i) {
-                        return componentBits(vkFormat, i) == componentBits(other.vkFormat, i);
-                    }) && (vkAspect & other.vkAspect) != vk::ImageAspectFlags{};
-}
+                constexpr bool IsCompatible(const FormatBase &other) const {
+                return vkFormat == other.vkFormat
+                    || (vkFormat == vk::Format::eD32Sfloat && other.vkFormat == vk::Format::eR32Sfloat)
+                    || (componentCount(vkFormat) == componentCount(other.vkFormat) &&
+                        ranges::all_of(ranges::views::iota(u8{0}, componentCount(vkFormat)), [this, other](auto i) {
+                            return componentBits(vkFormat, i) == componentBits(other.vkFormat, i);
+                        }) && (vkAspect & other.vkAspect) != vk::ImageAspectFlags{});
+                }
             /**
              * @brief Determines the image aspect to use based off of the format and the first swizzle component
              */
