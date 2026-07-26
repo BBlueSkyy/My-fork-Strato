@@ -125,14 +125,15 @@ namespace skyline::gpu {
                 if (vkFormat == vk::Format::eD32Sfloat && other.vkFormat == vk::Format::eR32Sfloat)
                     return true;
 
-                constexpr bool IsCompatible(const FormatBase &other) const {
+            constexpr bool IsCompatible(const FormatBase &other) const {
                 return vkFormat == other.vkFormat
-                    || (vkFormat == vk::Format::eD32Sfloat && other.vkFormat == vk::Format::eR32Sfloat)
-                    || (componentCount(vkFormat) == componentCount(other.vkFormat) &&
-                        ranges::all_of(ranges::views::iota(u8{0}, componentCount(vkFormat)), [this, other](auto i) {
-                            return componentBits(vkFormat, i) == componentBits(other.vkFormat, i);
-                        }) && (vkAspect & other.vkAspect) != vk::ImageAspectFlags{});
-                }
+        || (vkFormat == vk::Format::eD32Sfloat && other.vkFormat == vk::Format::eR32Sfloat)
+        || (componentCount(vkFormat) == componentCount(other.vkFormat) &&
+            ranges::all_of(ranges::views::iota(u8{0}, componentCount(vkFormat)), [this, other](auto i) {
+                return componentBits(vkFormat, i) == componentBits(other.vkFormat, i);
+            }) &&
+            (vkAspect & other.vkAspect) != vk::ImageAspectFlags{});
+            }
             /**
              * @brief Determines the image aspect to use based off of the format and the first swizzle component
              */
