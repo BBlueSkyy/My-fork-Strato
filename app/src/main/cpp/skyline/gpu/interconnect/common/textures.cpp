@@ -421,6 +421,8 @@ namespace skyline::gpu::interconnect {
 
     static std::optional<std::pair<vk::Format, u8>> ConvertShaderImageFormat(Shader::ImageFormat format) {
         switch (format) {
+            case Shader::ImageFormat::Typeless:
+                return std::pair{vk::Format::eR32Uint, u8{4}};
             case Shader::ImageFormat::R8_UINT:
                 return std::pair{vk::Format::eR8Uint, u8{1}};
             case Shader::ImageFormat::R8_SINT:
