@@ -23,9 +23,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
     VertexBufferState::VertexBufferState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine, u32 index) : engine{manager, dirtyHandle, engine}, index{index} {}
 
     void VertexBufferState::Flush(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        size_t size{engine->vertexStreamLimit - engine->vertexStream.location + 1};
-
-        if (engine->vertexStream.format.enable && engine->vertexStream.location != 0 && size) {
+        if (engine->vertexStream.format.enable && engine->vertexStream.location != 0 &&
+            engine->vertexStreamLimit >= engine->vertexStream.location) {
+            size_t size{engine->vertexStreamLimit - engine->vertexStream.location + 1};
             view.Update(ctx, engine->vertexStream.location, size);
             if (*view) {
                 ctx.executor.AttachBuffer(*view);
