@@ -12,6 +12,18 @@ namespace skyline::gpu::texture {
      * @return If a particular format is compatible to alias views of without VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT on Adreno GPUs
      */
     bool IsAdrenoAliasCompatible(vk::Format lhs, vk::Format rhs) {
+        // BCn: as variantes sRGB e Unorm do mesmo bloco compartilham o mesmo layout de bits,
+        // só muda a curva de cor na amostragem — então aliasing entre elas é seguro mesmo sendo comprimidas.
+        // Verificado apenas para BC1 (RGBA) e BC3 (visto em Dragon Ball FighterZ); expandir a lista
+        // só depois de confirmar outros pares com os devs da Strato.
+        static constexpr std::pair<vk::Format, vk::Format> compatibleBcPairs[]{
+            {vk::Format::eBc1RgbaSrgbBlock, vk::Format::eBc1RgbaUnormBlock},
+            {vk::Format::eBc3SrgbBlock, vk::Format::eBc3UnormBlock},
+        };
+        for (auto &[srgbFmt, unormFmt] : compatibleBcPairs)
+            if ((lhs == srgbFmt && rhs == unormFmt) || (lhs == unormFmt && rhs == srgbFmt))
+                return true;
+     
         if (lhs <= vk::Format::eUndefined || lhs >= vk::Format::eB10G11R11UfloatPack32 ||
             rhs <= vk::Format::eUndefined || rhs >= vk::Format::eB10G11R11UfloatPack32)
             return false; // Any complex (compressed/multi-planar/etc) formats cannot be properly aliased
