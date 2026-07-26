@@ -185,6 +185,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     boost::container::small_vector<Usage, 2> uniformBuffers;
                     boost::container::small_vector<Usage, 2> storageBuffers;
                     boost::container::small_vector<Usage, 2> textureBuffers;
+                    boost::container::small_vector<Usage, 2> imageBuffers;
                     boost::container::small_vector<Usage, 2> combinedImageSamplers;
                     u16 totalBufferDescCount;
                     u16 totalImageDescCount;
