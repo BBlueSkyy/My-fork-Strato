@@ -39,8 +39,10 @@ namespace skyline::gpu::interconnect {
         tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
 
          tsl::robin_map<TextureImageControl, std::unique_ptr<vk::raii::BufferView>, util::ObjectHash<TextureImageControl>> textureBufferViewStore;
-       
-       struct CacheEntry {
+
+         tsl::robin_map<TextureImageControl, std::unique_ptr<vk::raii::BufferView>, util::ObjectHash<TextureImageControl>> imageBufferViewStore;
+    
+        struct CacheEntry {
             TextureImageControl tic;
             TextureView *view;
             u64 sequenceNumber;
@@ -57,5 +59,7 @@ namespace skyline::gpu::interconnect {
         Shader::TextureType GetTextureType(InterconnectContext &ctx, u32 index);
        
         vk::raii::BufferView *GetTextureBufferView(InterconnectContext &ctx, u32 index, CachedMappedBufferView &cachedView);
-   };
+
+        vk::raii::BufferView *GetImageBufferView(InterconnectContext &ctx, u32 index, Shader::ImageFormat format, CachedMappedBufferView &cachedView);
+     };
 }
