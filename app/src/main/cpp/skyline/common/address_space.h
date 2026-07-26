@@ -249,14 +249,14 @@ namespace skyline {
 
         void Map(VaType virt, u8 *phys, VaType size, MemoryManagerBlockInfo extraInfo = {}) {
             std::scoped_lock lock(this->blockMutex);
-            blockSegmentTable.Set(virt, virt + size, {virt, phys, size, extraInfo});
             this->MapLocked(virt, phys, size, extraInfo);
+            blockSegmentTable.Set(virt, virt + size, {virt, phys, size, extraInfo});
         }
 
         void Unmap(VaType virt, VaType size) {
             std::scoped_lock lock(this->blockMutex);
-            blockSegmentTable.Set(virt, virt + size, {});
             this->UnmapLocked(virt, size);
+            blockSegmentTable.Set(virt, virt + size, {});
         }
     };
 
