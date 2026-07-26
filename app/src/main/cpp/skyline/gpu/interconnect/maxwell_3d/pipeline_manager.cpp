@@ -354,9 +354,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
             });
             pushBindings(vk::DescriptorType::eStorageTexelBuffer, stage.info.image_buffer_descriptors,
                          stageDescInfo.storageTexelBufferDescTotalCount, stageDescInfo.storageTexelBufferDescs,
-                         [](const auto &, u32) {
-                LOGW("Image buffer descriptors are not supported");
-            });
+                         [&](const Shader::ImageBufferDescriptor &desc, u16 descIdx) {
+                auto &usage{stageDescInfo.cbufUsages[desc.cbuf_index]};
+                usage.imageBuffers.push_back({bindingIndex, descIdx, descriptorInfo.totalUniformTexelBufferCount});
+                usage.totalTexelBufferDescCount += desc.count;
+                usage.writeDescCount++;
+
+                descriptorInfo.totalUniformTexelBufferCount += desc.count;
+            }); 
             descriptorInfo.totalTexelBufferDescCount += stageDescInfo.uniformTexelBufferDescTotalCount + stageDescInfo.storageTexelBufferDescTotalCount;
 
             pushBindings(vk::DescriptorType::eCombinedImageSampler, stage.info.texture_descriptors,
@@ -684,7 +689,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 stageMask |= 1 << i;
 
         storageBufferViews.resize(descriptorInfo.totalStorageBufferCount);
-        texelBufferViews.resize(descriptorInfo.totalUniformTexelBufferCount);
+        texelBufferViews.resize(descriptorInfo.totalTexelBufferDescCount);
             accessor.MarkComplete();
     }
 
@@ -756,7 +761,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         u32 imageIdx{};
         auto imageDescs{ctx.executor.allocator->AllocateUntracked<vk::DescriptorImageInfo>(descriptorInfo.totalImageDescCount)};
         u32 texelBufferIdx{};
-        auto texelBufferDescs{ctx.executor.allocator->AllocateUntracked<vk::BufferView>(descriptorInfo.totalUniformTexelBufferCount)};
+        auto texelBufferDescs{ctx.executor.allocator->AllocateUntracked<vk::BufferView>(descriptorInfo.totalTexelBufferDescCount)}; 
         
         u32 storageBufferIdx{}; // Need to keep track of this to index into the cached view array
         u32 combinedImageSamplerIdx{}; // Need to keep track of this to index into the sampled image array
@@ -862,7 +867,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                      stage.stage, srcStageMask, dstStageMask);
                              });
         
-            bindingIdx += stage.storageTexelBufferDescs.size();
+            writeTexelBufferDescs(vk::DescriptorType::eStorageTexelBuffer, stage.storageTexelBufferDescs, stage.storageTexelBufferDescTotalCount,
+                             [&](const DescriptorInfo::StageDescriptorInfo::StorageTexelBufferDesc &desc, size_t arrayIdx) {
+                                BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers[i], desc, arrayIdx)};
+                                return GetImageBufferBinding(ctx, textures, handle, desc.format, desc.is_written,
+                                                                     texelBufferViews[texelBufferCacheIdx++],
+                                                                     stage.stage, srcStageMask, dstStageMask);
+                             });
 
             writeImageDescs(vk::DescriptorType::eCombinedImageSampler, stage.combinedImageSamplerDescs, stage.combinedImageSamplerDescTotalCount,
                             [&](const DescriptorInfo::StageDescriptorInfo::CombinedImageSamplerDesc &desc, size_t arrayIdx) {

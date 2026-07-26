@@ -418,4 +418,61 @@ namespace skyline::gpu::interconnect {
 
         return bufferView.get();
    }
+
+    static std::optional<std::pair<vk::Format, u8>> ConvertShaderImageFormat(Shader::ImageFormat format) {
+        switch (format) {
+            case Shader::ImageFormat::R8_UINT:
+                return std::pair{vk::Format::eR8Uint, u8{1}};
+            case Shader::ImageFormat::R8_SINT:
+                return std::pair{vk::Format::eR8Sint, u8{1}};
+            case Shader::ImageFormat::R16_UINT:
+                return std::pair{vk::Format::eR16Uint, u8{2}};
+            case Shader::ImageFormat::R16_SINT:
+                return std::pair{vk::Format::eR16Sint, u8{2}};
+            case Shader::ImageFormat::R32_UINT:
+                return std::pair{vk::Format::eR32Uint, u8{4}};
+            case Shader::ImageFormat::R32G32_UINT:
+                return std::pair{vk::Format::eR32G32Uint, u8{8}};
+            case Shader::ImageFormat::R32G32B32A32_UINT:
+                return std::pair{vk::Format::eR32G32B32A32Uint, u8{16}};
+            default:
+                return std::nullopt;
+        }
+    }
+
+    vk::raii::BufferView *Textures::GetImageBufferView(InterconnectContext &ctx, u32 index, Shader::ImageFormat shaderFormat, CachedMappedBufferView &cachedView) {
+        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        if (index >= textureHeaders.size())
+            return nullptr;
+
+        TextureImageControl &textureHeader{textureHeaders[index]};
+
+        auto format{ConvertShaderImageFormat(shaderFormat)};
+        if (!format) {
+            LOGW("Image buffer: unsupported shader format {}", static_cast<u32>(shaderFormat));
+            return nullptr;
+        }
+
+        size_t elementCount{textureHeader.widthMinusOne + 1u};
+        size_t sizeBytes{elementCount * format->second};
+
+        cachedView.Update(ctx, textureHeader.Iova(), sizeBytes);
+        if (!cachedView.view) {
+            LOGW("Unmapped image buffer in pool: 0x{:X}", textureHeader.Iova());
+            return nullptr;
+        }
+
+        auto &bufferView{imageBufferViewStore[textureHeader]};
+        if (!bufferView) {
+            auto binding{cachedView.view.GetBinding(ctx.gpu)};
+            bufferView = std::make_unique<vk::raii::BufferView>(ctx.gpu.vkDevice, vk::BufferViewCreateInfo{
+                .buffer = binding.buffer,
+                .format = format->first,
+                .offset = binding.offset,
+                .range = binding.size
+            });
+        }
+
+        return bufferView.get();
+    }
 }

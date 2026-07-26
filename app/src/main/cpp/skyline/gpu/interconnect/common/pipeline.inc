@@ -90,6 +90,32 @@ namespace skyline::gpu::interconnect {
 
         return **bufferView;
     }
+    static vk::BufferView GetImageBufferBinding(InterconnectContext &ctx,
+                                                 Textures &textures, BindlessHandle handle,
+                                                 Shader::ImageFormat format, bool isWritten,
+                                                 CachedMappedBufferView &cachedView,
+                                                 vk::PipelineStageFlagBits dstStage,
+                                                 vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+        auto *bufferView{textures.GetImageBufferView(ctx, handle.textureIndex, format, cachedView)};
+        if (!bufferView)
+            return {};
+
+        auto view{cachedView.view};
+        ctx.executor.AttachBuffer(view);
+        view.GetBuffer()->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
+
+        if (isWritten) {
+            if (view.GetBuffer()->SequencedCpuBackingWritesBlocked()) {
+                srcStageMask |= vk::PipelineStageFlagBits::eAllCommands;
+                dstStageMask |= dstStage;
+            }
+            view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
+        }
+
+        view.GetBuffer()->BlockSequencedCpuBackingWrites();
+
+        return **bufferView;
+    }
     static BindlessHandle ReadBindlessHandle(InterconnectContext &ctx, auto &constantBuffers, const auto &desc, size_t arrayIdx) {
         ConstantBuffer &primaryCbuf{constantBuffers[desc.cbuf_index]};
         if (!primaryCbuf.view)
