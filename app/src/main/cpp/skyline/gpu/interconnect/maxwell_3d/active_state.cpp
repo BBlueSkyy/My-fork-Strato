@@ -130,7 +130,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         size_t size{[&] () {
             if (estimateSize)
-                return engine->indexBuffer.address - engine->indexBuffer.limit + 1;
+                return engine->indexBuffer.limit - engine->indexBuffer.address + 1;
             else
                 return GetIndexBufferSize(engine->indexBuffer.indexSize, firstIndex + elementCount);
         }()};
