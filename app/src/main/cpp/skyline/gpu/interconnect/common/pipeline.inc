@@ -74,6 +74,7 @@ namespace skyline::gpu::interconnect {
 
         return view;
     }
+
     static vk::BufferView GetTextureBufferBinding(InterconnectContext &ctx,
                                                    Textures &textures, BindlessHandle handle,
                                                    CachedMappedBufferView &cachedView,
@@ -90,6 +91,7 @@ namespace skyline::gpu::interconnect {
 
         return **bufferView;
     }
+
     static vk::BufferView GetImageBufferBinding(InterconnectContext &ctx,
                                                  Textures &textures, BindlessHandle handle,
                                                  Shader::ImageFormat format, bool isWritten,
@@ -116,6 +118,7 @@ namespace skyline::gpu::interconnect {
 
         return **bufferView;
     }
+
     static BindlessHandle ReadBindlessHandle(InterconnectContext &ctx, auto &constantBuffers, const auto &desc, size_t arrayIdx) {
         ConstantBuffer &primaryCbuf{constantBuffers[desc.cbuf_index]};
         if (!primaryCbuf.view)
@@ -144,25 +147,51 @@ namespace skyline::gpu::interconnect {
                                                                                vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         auto sampler{samplers.GetSampler(ctx, handle.samplerIndex, handle.textureIndex)};
         auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type)};
+
+        // SAFETY CHECK: Prevents null pointer dereference (PC: 0x0 Crash)
+        if (!texture || !texture->texture) {
+            return {
+                vk::DescriptorImageInfo{
+                    .sampler = (sampler && *sampler) ? **sampler : VK_NULL_HANDLE,
+                    .imageView = ctx.gpu.dummyTextureView ? ctx.gpu.dummyTextureView->GetView() : VK_NULL_HANDLE,
+                    .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
+                },
+                nullptr
+            };
+        }
+
         ctx.executor.AttachTexture(texture);
         auto view{texture->GetView()};
         texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
         return {
             vk::DescriptorImageInfo{
-                .sampler = **sampler,
+                .sampler = (sampler && *sampler) ? **sampler : VK_NULL_HANDLE,
                 .imageView = view,
                 .imageLayout = texture->texture->layout
             },
             texture
         };
     }
+
     static std::pair<vk::DescriptorImageInfo, TextureView *> GetImageBinding(InterconnectContext &ctx, const auto &desc,
                                                                               Textures &textures,
                                                                               BindlessHandle handle,
                                                                               vk::PipelineStageFlagBits dstStage,
                                                                               vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type)};
+
+        // SAFETY CHECK: Prevents null pointer dereference (PC: 0x0 Crash)
+        if (!texture || !texture->texture) {
+            return {
+                vk::DescriptorImageInfo{
+                    .imageView = ctx.gpu.dummyTextureView ? ctx.gpu.dummyTextureView->GetView() : VK_NULL_HANDLE,
+                    .imageLayout = vk::ImageLayout::eGeneral
+                },
+                nullptr
+            };
+        }
+
         ctx.executor.AttachTexture(texture);
         texture->texture->TransitionLayout(vk::ImageLayout::eGeneral);
         texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
