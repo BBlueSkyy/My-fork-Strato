@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MPL-2.0
+ // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #pragma once
@@ -22,17 +22,13 @@ namespace skyline::gpu::interconnect {
                                                          BufferView view, size_t idx,
                                                          vk::PipelineStageFlagBits dstStage,
                                                          vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        // SANITY CHECK: Return a dummy buffer if the view is invalid, empty, or size is 0
-        if (!view || view.size == 0 || cbufSizes[idx] == 0)
+        if (!view) // Return a dummy buffer if the constant buffer isn't bound
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         ctx.executor.AttachBuffer(view);
         view.GetBuffer()->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
         size_t sizeOverride{std::min<size_t>(cbufSizes[idx], view.size)};
-        if (sizeOverride == 0)
-            return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
-
         if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag, sizeOverride)}) {
             return megaBufferBinding;
         } else {
@@ -50,10 +46,7 @@ namespace skyline::gpu::interconnect {
             u32 size;
         };
         auto ssbo{cbuf.Read<SsboDescriptor>(ctx.executor, desc.cbuf_offset)};
-
-        // SANITY CHECK: Prevent invalid GPU addresses, zero size, or excessive allocation size (> 128MB)
-        constexpr u64 MaxSsboSize{128 * 1024 * 1024};
-        if (ssbo.address == 0 || ssbo.size == 0 || ssbo.size > MaxSsboSize)
+        if (ssbo.size == 0)
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         size_t padding{ssbo.address & (ctx.gpu.traits.minimumStorageBufferAlignment - 1)};
@@ -155,27 +148,29 @@ namespace skyline::gpu::interconnect {
         auto sampler{samplers.GetSampler(ctx, handle.samplerIndex, handle.textureIndex)};
         auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type)};
 
-        // SAFETY CHECK: Prevents null pointer dereference (PC: 0x0 Crash)
-        if (!texture || !texture->texture) {
+        if (!texture) {
             return {
-                vk::DescriptorImageInfo{
-                    .sampler = sampler ? **sampler : VK_NULL_HANDLE,
-                    .imageView = VK_NULL_HANDLE,
-                    .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
-                },
+                vk::DescriptorImageInfo{},
                 nullptr
             };
         }
 
         ctx.executor.AttachTexture(texture);
         auto view{texture->GetView()};
-        texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
+
+        // SAFETY CHECK: Prevents crash if the inner texture object is null
+        if (texture->texture) {
+            texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
+        }
+
+        vk::Sampler vkSampler = sampler ? **sampler : VK_NULL_HANDLE;
+        vk::ImageLayout layout = texture->texture ? texture->texture->layout : vk::ImageLayout::eShaderReadOnlyOptimal;
 
         return {
             vk::DescriptorImageInfo{
-                .sampler = sampler ? **sampler : VK_NULL_HANDLE,
+                .sampler = vkSampler,
                 .imageView = view,
-                .imageLayout = texture->texture->layout
+                .imageLayout = layout
             },
             texture
         };
@@ -188,27 +183,28 @@ namespace skyline::gpu::interconnect {
                                                                               vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type)};
 
-        // SAFETY CHECK: Prevents null pointer dereference (PC: 0x0 Crash)
-        if (!texture || !texture->texture) {
+        if (!texture) {
             return {
-                vk::DescriptorImageInfo{
-                    .imageView = VK_NULL_HANDLE,
-                    .imageLayout = vk::ImageLayout::eGeneral
-                },
+                vk::DescriptorImageInfo{},
                 nullptr
             };
         }
 
         ctx.executor.AttachTexture(texture);
-        texture->texture->TransitionLayout(vk::ImageLayout::eGeneral);
-        texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
+        auto view{texture->GetView()};
 
-        if (desc.is_written)
-            texture->texture->MarkGpuDirty(ctx.executor.usageTracker);
+        // SAFETY CHECK: Prevents crash if the inner texture object is null
+        if (texture->texture) {
+            texture->texture->TransitionLayout(vk::ImageLayout::eGeneral);
+            texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
+
+            if (desc.is_written)
+                texture->texture->MarkGpuDirty(ctx.executor.usageTracker);
+        }
 
         return {
             vk::DescriptorImageInfo{
-                .imageView = texture->GetView(),
+                .imageView = view,
                 .imageLayout = vk::ImageLayout::eGeneral
             },
             texture
