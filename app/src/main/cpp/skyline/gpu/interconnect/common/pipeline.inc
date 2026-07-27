@@ -152,8 +152,8 @@ namespace skyline::gpu::interconnect {
         if (!texture || !texture->texture) {
             return {
                 vk::DescriptorImageInfo{
-                    .sampler = (sampler && *sampler) ? **sampler : VK_NULL_HANDLE,
-                    .imageView = ctx.gpu.dummyTextureView ? ctx.gpu.dummyTextureView->GetView() : VK_NULL_HANDLE,
+                    .sampler = sampler ? **sampler : VK_NULL_HANDLE,
+                    .imageView = VK_NULL_HANDLE,
                     .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal
                 },
                 nullptr
@@ -166,7 +166,7 @@ namespace skyline::gpu::interconnect {
 
         return {
             vk::DescriptorImageInfo{
-                .sampler = (sampler && *sampler) ? **sampler : VK_NULL_HANDLE,
+                .sampler = sampler ? **sampler : VK_NULL_HANDLE,
                 .imageView = view,
                 .imageLayout = texture->texture->layout
             },
@@ -185,7 +185,7 @@ namespace skyline::gpu::interconnect {
         if (!texture || !texture->texture) {
             return {
                 vk::DescriptorImageInfo{
-                    .imageView = ctx.gpu.dummyTextureView ? ctx.gpu.dummyTextureView->GetView() : VK_NULL_HANDLE,
+                    .imageView = VK_NULL_HANDLE,
                     .imageLayout = vk::ImageLayout::eGeneral
                 },
                 nullptr
