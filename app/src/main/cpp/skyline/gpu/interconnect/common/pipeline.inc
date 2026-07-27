@@ -37,7 +37,7 @@ namespace skyline::gpu::interconnect {
         }
     }
 
-    static DynamicBufferBinding GetStorageBufferBinding(InterconnectContext &ctx, const auto &desc,
+     static DynamicBufferBinding GetStorageBufferBinding(InterconnectContext &ctx, const auto &desc,
                                                         ConstantBuffer &cbuf, CachedMappedBufferView &cachedView,
                                                         vk::PipelineStageFlagBits dstStage,
                                                         vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
@@ -59,6 +59,10 @@ namespace skyline::gpu::interconnect {
         view.GetBuffer()->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
         if (desc.is_written) {
+            // FORCE BARRIER: Fixes vertex explosions by forcing Vulkan to wait for skinning/bone computation
+            srcStageMask |= vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexShader;
+            dstStageMask |= dstStage | vk::PipelineStageFlagBits::eVertexInput;
+
             if (view.GetBuffer()->SequencedCpuBackingWritesBlocked()) {
                 srcStageMask |= vk::PipelineStageFlagBits::eAllCommands;
                 dstStageMask |= dstStage;
@@ -74,6 +78,7 @@ namespace skyline::gpu::interconnect {
 
         return view;
     }
+
 
     static vk::BufferView GetTextureBufferBinding(InterconnectContext &ctx,
                                                    Textures &textures, BindlessHandle handle,
