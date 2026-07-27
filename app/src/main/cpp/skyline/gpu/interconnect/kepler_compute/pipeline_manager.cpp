@@ -56,8 +56,6 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         pushBindings(vk::DescriptorType::eCombinedImageSampler, stage.info.texture_descriptors, descriptorInfo.totalImageDescCount);
         pushBindings(vk::DescriptorType::eStorageImage, stage.info.image_descriptors, descriptorInfo.totalImageDescCount);
-        if (stage.info.image_descriptors.size() > 0)
-            LOGW("Image descriptors are not supported");
 
         return descriptorInfo;
     }
@@ -198,6 +196,15 @@ namespace skyline::gpu::interconnect::kepler_compute {
                                                            srcStageMask, dstStageMask)};
                             return binding.first;
                         });
+         
+        writeImageDescs(vk::DescriptorType::eStorageImage, shaderStage.info.image_descriptors,
+                         [&](const Shader::ImageDescriptor &desc, size_t arrayIdx) {
+                             BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
+                             auto binding{GetImageBinding(ctx, desc, textures, handle,
+                                                          vk::PipelineStageFlagBits::eComputeShader,
+                                                          srcStageMask, dstStageMask)};
+                            return binding.first;
+                        });             
 
         // Since we don't implement all descriptor types the number of writes might not match what's expected
         if (!writeIdx)
