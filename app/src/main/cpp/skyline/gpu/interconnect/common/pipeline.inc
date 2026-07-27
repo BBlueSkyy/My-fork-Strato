@@ -22,13 +22,17 @@ namespace skyline::gpu::interconnect {
                                                          BufferView view, size_t idx,
                                                          vk::PipelineStageFlagBits dstStage,
                                                          vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        if (!view) // Return a dummy buffer if the constant buffer isn't bound
+        // SANITY CHECK: Return a dummy buffer if the view is invalid, empty, or size is 0
+        if (!view || view.size == 0 || cbufSizes[idx] == 0)
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         ctx.executor.AttachBuffer(view);
         view.GetBuffer()->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
         size_t sizeOverride{std::min<size_t>(cbufSizes[idx], view.size)};
+        if (sizeOverride == 0)
+            return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
+
         if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag, sizeOverride)}) {
             return megaBufferBinding;
         } else {
@@ -46,7 +50,10 @@ namespace skyline::gpu::interconnect {
             u32 size;
         };
         auto ssbo{cbuf.Read<SsboDescriptor>(ctx.executor, desc.cbuf_offset)};
-        if (ssbo.size == 0)
+
+        // SANITY CHECK: Prevent invalid GPU addresses, zero size, or excessive allocation size (> 128MB)
+        constexpr u64 MaxSsboSize{128 * 1024 * 1024};
+        if (ssbo.address == 0 || ssbo.size == 0 || ssbo.size > MaxSsboSize)
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         size_t padding{ssbo.address & (ctx.gpu.traits.minimumStorageBufferAlignment - 1)};
