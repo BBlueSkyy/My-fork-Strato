@@ -887,7 +887,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             writeImageDescs(vk::DescriptorType::eStorageImage, stage.storageImageDescs, stage.storageImageDescTotalCount,
                             [&](const DescriptorInfo::StageDescriptorInfo::StorageImageDesc &desc, size_t arrayIdx) {               
                                 BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers[i], desc, arrayIdx)};
-                                LOGD("StorageImage: idx={} format={}", handle.textureIndex, static_cast<u32>(desc.format));
+                                LOGD("StorageImage: idx={} format={}", static_cast<u32>(handle.textureIndex), static_cast<u32>(desc.format));
                                 return GetImageBinding(ctx, desc, textures, handle, stage.stage, srcStageMask, dstStageMask).first;
                             }, ctx.gpu.traits.quirks.needsIndividualTextureBindingWrites);
         }
