@@ -117,8 +117,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return {quadConversionAllocation.buffer, quadConversionAllocation.offset, indexBufferSize};
     }
 
-        /* Index Buffer */
-        void IndexBufferState::Flush(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, bool quadConversion, bool estimateSize, u32 firstIndex, u32 elementCount) {
+            /* Index Buffer */
+    void IndexBufferState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
+        manager.Bind(handle, indexBuffer.indexSize, indexBuffer.address, indexBuffer.limit);
+    }
+
+    IndexBufferState::IndexBufferState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine) : engine{manager, dirtyHandle, engine} {}
+
+    void IndexBufferState::Flush(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, bool quadConversion, bool estimateSize, u32 firstIndex, u32 elementCount) {
         didEstimateSize = estimateSize;
         usedElementCount = elementCount;
         usedFirstIndex = firstIndex;
