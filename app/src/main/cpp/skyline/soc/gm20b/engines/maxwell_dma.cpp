@@ -104,7 +104,7 @@ namespace skyline::soc::gm20b::engine {
             size_t offset{isSrcSplit ? srcSize : 0};
 
             if (copyCache.size() < (dstSize + offset))
-                copyCache.resize(dstSize);
+            copyCache.resize(dstSize + offset);
 
             dst = copyCache.data() + offset;
 
