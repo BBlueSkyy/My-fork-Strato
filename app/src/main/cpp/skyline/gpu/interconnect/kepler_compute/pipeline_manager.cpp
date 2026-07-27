@@ -200,7 +200,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         writeImageDescs(vk::DescriptorType::eStorageImage, shaderStage.info.image_descriptors,
                          [&](const Shader::ImageDescriptor &desc, size_t arrayIdx) {
                              BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
-                             LOGD("StorageImage: idx={} format={}", handle.textureIndex, static_cast<u32>(desc.format));
+                             LOGD("StorageImage: idx={} format={}", static_cast<u32>(handle.textureIndex), static_cast<u32>(desc.format));
                              auto binding{GetImageBinding(ctx, desc, textures, handle,
                                                           vk::PipelineStageFlagBits::eComputeShader,
                                                           srcStageMask, dstStageMask)};
