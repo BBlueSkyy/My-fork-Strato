@@ -22,6 +22,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     VertexBufferState::VertexBufferState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine, u32 index) : engine{manager, dirtyHandle, engine}, index{index} {}
 
+        /* Vertex Buffer */
     void VertexBufferState::Flush(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         if (engine->vertexStream.format.enable && engine->vertexStream.location != 0 &&
             engine->vertexStreamLimit >= engine->vertexStream.location) {
@@ -39,9 +40,19 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
                 return;
             } else {
-                LOGW("Unmapped vertex buffer: 0x{:X}", engine->vertexStream.location);
+                LOGD("Unmapped vertex buffer: 0x{:X}", engine->vertexStream.location);
             }
         }
+
+        megaBufferBinding = {};
+        if (ctx.gpu.traits.supportsNullDescriptor) {
+            builder.SetVertexBuffer(index, BufferBinding{}, ctx.gpu.traits.supportsExtendedDynamicState, engine->vertexStream.format.stride);
+        } else {
+            // Use a static dummy binding to avoid allocating continuously on megaBufferAllocator
+            static const BufferBinding dummyBinding{};
+            builder.SetVertexBuffer(index, dummyBinding, ctx.gpu.traits.supportsExtendedDynamicState, engine->vertexStream.format.stride);
+        }
+    }
 
         megaBufferBinding = {};
         if (ctx.gpu.traits.supportsNullDescriptor)
@@ -115,13 +126,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return {quadConversionAllocation.buffer, quadConversionAllocation.offset, indexBufferSize};
     }
 
-    /* Index Buffer */
-    void IndexBufferState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
-        manager.Bind(handle, indexBuffer.indexSize, indexBuffer.address, indexBuffer.limit);
-    }
-
-    IndexBufferState::IndexBufferState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine) : engine{manager, dirtyHandle, engine} {}
-
+        /* Index Buffer */
     void IndexBufferState::Flush(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, bool quadConversion, bool estimateSize, u32 firstIndex, u32 elementCount) {
         didEstimateSize = estimateSize;
         usedElementCount = elementCount;
@@ -130,14 +135,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         size_t size{[&] () {
             if (estimateSize)
-                return engine->indexBuffer.limit - engine->indexBuffer.address + 1;
+                return engine->indexBuffer.address - engine->indexBuffer.limit + 1;
             else
                 return GetIndexBufferSize(engine->indexBuffer.indexSize, firstIndex + elementCount);
         }()};
 
         view.Update(ctx, engine->indexBuffer.address, size, !estimateSize);
         if (!*view) {
-            LOGW("Unmapped index buffer: 0x{:X}", engine->indexBuffer.address);
+            LOGD("Unmapped index buffer: 0x{:X}", engine->indexBuffer.address);
+            // Reset megaBufferBinding to prevent stale references in Refresh()
+            megaBufferBinding = {};
             return;
         }
 
