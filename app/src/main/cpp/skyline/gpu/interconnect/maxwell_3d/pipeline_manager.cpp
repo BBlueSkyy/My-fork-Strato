@@ -381,10 +381,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 descriptorInfo.totalCombinedImageSamplerCount += desc.count;
             }, needsIndividualTextureBindingWrites);
             pushBindings(vk::DescriptorType::eStorageImage, stage.info.image_descriptors,
-                         stageDescInfo.storageImageDescTotalCount, stageDescInfo.storageImageDescs,
-                         [](const auto &, u16) {
-                LOGW("Image descriptors are not supported");
-            });
+             stageDescInfo.storageImageDescTotalCount, stageDescInfo.storageImageDescs,
+             [](const auto &, u16) {}, needsIndividualTextureBindingWrites);
             descriptorInfo.totalImageDescCount += stageDescInfo.combinedImageSamplerDescTotalCount + stageDescInfo.storageImageDescTotalCount;
         }
         return descriptorInfo;
