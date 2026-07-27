@@ -22,7 +22,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     VertexBufferState::VertexBufferState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine, u32 index) : engine{manager, dirtyHandle, engine}, index{index} {}
 
-        /* Vertex Buffer */
     void VertexBufferState::Flush(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         if (engine->vertexStream.format.enable && engine->vertexStream.location != 0 &&
             engine->vertexStreamLimit >= engine->vertexStream.location) {
@@ -48,17 +47,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (ctx.gpu.traits.supportsNullDescriptor) {
             builder.SetVertexBuffer(index, BufferBinding{}, ctx.gpu.traits.supportsExtendedDynamicState, engine->vertexStream.format.stride);
         } else {
-            // Use a static dummy binding to avoid allocating continuously on megaBufferAllocator
             static const BufferBinding dummyBinding{};
             builder.SetVertexBuffer(index, dummyBinding, ctx.gpu.traits.supportsExtendedDynamicState, engine->vertexStream.format.stride);
         }
-    }
-
-        megaBufferBinding = {};
-        if (ctx.gpu.traits.supportsNullDescriptor)
-            builder.SetVertexBuffer(index, BufferBinding{}, ctx.gpu.traits.supportsExtendedDynamicState, engine->vertexStream.format.stride);
-        else
-            builder.SetVertexBuffer(index, {ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, 0).buffer}, ctx.gpu.traits.supportsExtendedDynamicState, engine->vertexStream.format.stride);
     }
 
     bool VertexBufferState::Refresh(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
@@ -127,7 +118,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
         /* Index Buffer */
-    void IndexBufferState::Flush(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, bool quadConversion, bool estimateSize, u32 firstIndex, u32 elementCount) {
+        void IndexBufferState::Flush(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, bool quadConversion, bool estimateSize, u32 firstIndex, u32 elementCount) {
         didEstimateSize = estimateSize;
         usedElementCount = elementCount;
         usedFirstIndex = firstIndex;
@@ -143,7 +134,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
         view.Update(ctx, engine->indexBuffer.address, size, !estimateSize);
         if (!*view) {
             LOGD("Unmapped index buffer: 0x{:X}", engine->indexBuffer.address);
-            // Reset megaBufferBinding to prevent stale references in Refresh()
             megaBufferBinding = {};
             return;
         }
