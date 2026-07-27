@@ -37,7 +37,7 @@ namespace skyline::gpu::interconnect {
         }
     }
 
-     static DynamicBufferBinding GetStorageBufferBinding(InterconnectContext &ctx, const auto &desc,
+         static DynamicBufferBinding GetStorageBufferBinding(InterconnectContext &ctx, const auto &desc,
                                                         ConstantBuffer &cbuf, CachedMappedBufferView &cachedView,
                                                         vk::PipelineStageFlagBits dstStage,
                                                         vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
@@ -51,34 +51,33 @@ namespace skyline::gpu::interconnect {
 
         size_t padding{ssbo.address & (ctx.gpu.traits.minimumStorageBufferAlignment - 1)};
         cachedView.Update(ctx, ssbo.address - padding, util::AlignUp(ssbo.size + padding, ctx.gpu.traits.minimumStorageBufferAlignment));
-        if (!cachedView.view) // Return a dummy buffer if the SSBO isn't bound
+        if (!cachedView.view)
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         auto view{cachedView.view};
         ctx.executor.AttachBuffer(view);
+        
+        // Força a sincronização completa de leitura/escrita na GPU
         view.GetBuffer()->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
         if (desc.is_written) {
-            // FORCE BARRIER: Fixes vertex explosions by forcing Vulkan to wait for skinning/bone computation
-            srcStageMask |= vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexShader;
-            dstStageMask |= dstStage | vk::PipelineStageFlagBits::eVertexInput;
-
-            if (view.GetBuffer()->SequencedCpuBackingWritesBlocked()) {
-                srcStageMask |= vk::PipelineStageFlagBits::eAllCommands;
-                dstStageMask |= dstStage;
-            }
+            // Força a espera das etapas de Compute Shader e Vertex Shader
+            srcStageMask |= vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eTransfer;
+            dstStageMask |= dstStage | vk::PipelineStageFlagBits::eVertexInput | vk::PipelineStageFlagBits::eVertexShader;
 
             view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
         } else {
-            if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag)})
-                return megaBufferBinding;
+            // Se o buffer foi marcado como modificado pela GPU, NÃO usa o MegaBuffer para evitar ler dados antigos
+            if (!view.GetBuffer()->IsGpuDirty()) {
+                if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag)})
+                    return megaBufferBinding;
+            }
         }
 
         view.GetBuffer()->BlockSequencedCpuBackingWrites();
 
         return view;
     }
-
 
     static vk::BufferView GetTextureBufferBinding(InterconnectContext &ctx,
                                                    Textures &textures, BindlessHandle handle,
