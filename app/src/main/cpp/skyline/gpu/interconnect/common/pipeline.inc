@@ -1,4 +1,4 @@
- // SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #pragma once
@@ -22,7 +22,7 @@ namespace skyline::gpu::interconnect {
                                                          BufferView view, size_t idx,
                                                          vk::PipelineStageFlagBits dstStage,
                                                          vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        if (!view) // Return a dummy buffer if the constant buffer isn't bound
+        if (!view) // Retorna um buffer dummy se o constant buffer não estiver vinculado
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         ctx.executor.AttachBuffer(view);
@@ -37,7 +37,7 @@ namespace skyline::gpu::interconnect {
         }
     }
 
-         static DynamicBufferBinding GetStorageBufferBinding(InterconnectContext &ctx, const auto &desc,
+    static DynamicBufferBinding GetStorageBufferBinding(InterconnectContext &ctx, const auto &desc,
                                                         ConstantBuffer &cbuf, CachedMappedBufferView &cachedView,
                                                         vk::PipelineStageFlagBits dstStage,
                                                         vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
@@ -51,27 +51,27 @@ namespace skyline::gpu::interconnect {
 
         size_t padding{ssbo.address & (ctx.gpu.traits.minimumStorageBufferAlignment - 1)};
         cachedView.Update(ctx, ssbo.address - padding, util::AlignUp(ssbo.size + padding, ctx.gpu.traits.minimumStorageBufferAlignment));
-        if (!cachedView.view)
+        if (!cachedView.view) // Retorna um buffer dummy se o SSBO não estiver vinculado
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         auto view{cachedView.view};
         ctx.executor.AttachBuffer(view);
-        
-        // Força a sincronização completa de leitura/escrita na GPU
         view.GetBuffer()->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
         if (desc.is_written) {
-            // Força a espera das etapas de Compute Shader e Vertex Shader
+            // Barreiras de memória para escritas em SSBO (sincronização de etapas de Vertex/Compute Shader)
             srcStageMask |= vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eTransfer;
             dstStageMask |= dstStage | vk::PipelineStageFlagBits::eVertexInput | vk::PipelineStageFlagBits::eVertexShader;
 
+            if (view.GetBuffer()->SequencedCpuBackingWritesBlocked()) {
+                srcStageMask |= vk::PipelineStageFlagBits::eAllCommands;
+                dstStageMask |= dstStage;
+            }
+
             view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
         } else {
-            // Se o buffer foi marcado como modificado pela GPU, NÃO usa o MegaBuffer para evitar ler dados antigos
-            if (!view.GetBuffer()->IsGpuDirty()) {
-                if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag)})
-                    return megaBufferBinding;
-            }
+            if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag)})
+                return megaBufferBinding;
         }
 
         view.GetBuffer()->BlockSequencedCpuBackingWrites();
@@ -162,7 +162,6 @@ namespace skyline::gpu::interconnect {
         ctx.executor.AttachTexture(texture);
         auto view{texture->GetView()};
 
-        // SAFETY CHECK: Prevents crash if the inner texture object is null
         if (texture->texture) {
             texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
         }
@@ -197,7 +196,6 @@ namespace skyline::gpu::interconnect {
         ctx.executor.AttachTexture(texture);
         auto view{texture->GetView()};
 
-        // SAFETY CHECK: Prevents crash if the inner texture object is null
         if (texture->texture) {
             texture->texture->TransitionLayout(vk::ImageLayout::eGeneral);
             texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
