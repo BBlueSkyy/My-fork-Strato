@@ -80,6 +80,7 @@ namespace skyline::gpu {
             bool brokenSubgroupShuffle{}; //!< [Qualcomm Proprietary] A bug that causes shaders using OpSubgroupShuffle to do all sorts of weird things
             bool brokenSpirvVectorAccessChain{}; //!< [Qualcomm Proprietary] A bug that causes SPIR-V OpAccessChains to work incorrectly when used to index vector arrays
             bool brokenTextureShadowCompare{}; //!< [Adreno Proprietary/Turnip] A bug that causes native depth-compare (shadow) sampling to return incorrect or missing results
+            bool brokenFp16FloatControls{}; //!< [Adreno Proprietary] A bug where the driver reports support for SignedZeroInfNanPreserve on 16-bit floats but doesn't properly honor it, causing NaN propagation in fp16 shader code (e.g. skeletal animation math)
             bool brokenDynamicStateVertexBindings{};  //!< [ARM Proprietary] A bug that causes VK_EXT_dynamic_state vertex bindings not to work correctly
 
             u32 maxSubpassCount{std::numeric_limits<u32>::max()}; //!< The maximum amount of subpasses within a renderpass, this is limited to 64 on older Adreno proprietary drivers
