@@ -105,7 +105,28 @@ namespace skyline::gpu::interconnect {
         }
     }
 
-    static vk::SamplerReductionMode ConvertSamplerReductionFilter(TextureSamplerControl::SamplerReduction reduction) {
+    static Shader::CompareFunction ConvertSamplerCompareFunc(TextureSamplerControl::CompareOp compareOp) {
+        switch (compareOp) {
+            case TextureSamplerControl::CompareOp::Never:
+                return Shader::CompareFunction::Never;
+            case TextureSamplerControl::CompareOp::Less:
+                return Shader::CompareFunction::Less;
+            case TextureSamplerControl::CompareOp::Equal:
+                return Shader::CompareFunction::Equal;
+            case TextureSamplerControl::CompareOp::LessOrEqual:
+                return Shader::CompareFunction::LessThanEqual;
+            case TextureSamplerControl::CompareOp::Greater:
+                return Shader::CompareFunction::Greater;
+            case TextureSamplerControl::CompareOp::NotEqual:
+                return Shader::CompareFunction::NotEqual;
+            case TextureSamplerControl::CompareOp::GreaterOrEqual:
+                return Shader::CompareFunction::GreaterThanEqual;
+            case TextureSamplerControl::CompareOp::Always:
+                return Shader::CompareFunction::Always;
+         }
+     }
+   
+     static vk::SamplerReductionMode ConvertSamplerReductionFilter(TextureSamplerControl::SamplerReduction reduction) {
         switch (reduction) {
             case TextureSamplerControl::SamplerReduction::WeightedAverage:
                 return vk::SamplerReductionMode::eWeightedAverage;
@@ -213,7 +234,12 @@ namespace skyline::gpu::interconnect {
         }
 
         texSamplerCache[index] = sampler.get();
-        return sampler.get();
-    }
-
+            return sampler.get();
+             }   
+        Shader::CompareFunction Samplers::GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex) {
+            const auto &samplerPoolObj{samplerPool.Get()};
+        u32 index{samplerPoolObj.didUseTexHeaderBinding ? textureIndex : samplerIndex};
+        TextureSamplerControl &texSampler{samplerPoolObj.texSamplers[index]};
+        return ConvertSamplerCompareFunc(texSampler.depthCompareOp);
+     }
 }
