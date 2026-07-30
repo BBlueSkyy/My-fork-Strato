@@ -227,6 +227,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     return accessor.GetConstantBufferValue(shaderStage, index, offset);
                 }, [&](u32 index) {
                     return accessor.GetTextureType(BindlessHandle{ .raw = index }.textureIndex);
+                }, [&](u32 index) {
+                    return accessor.GetTextureCompareFunc(index);
                 })};
             if (i == stageIdx(PipelineStage::Vertex) && packedState.shaderHashes[stageIdx(PipelineStage::VertexCullBeforeFetch)]) {
                 ignoreVertexCullBeforeFetch = true;
@@ -1055,14 +1057,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
         jvm.HidePipelineLoadingScreen();
     }
 
-    Pipeline *PipelineManager::FindOrCreate(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const std::array<ShaderBinary, engine::PipelineCount> &shaderBinaries) {
+    Pipeline *PipelineManager::FindOrCreate(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const std::array<ShaderBinary, engine::PipelineCount> &shaderBinaries) {
         auto it{map.find(packedState)};
         if (it != map.end())
             return it->second.get();
 
         auto bundle{std::make_unique<PipelineStateBundle>()};
         bundle->Reset(packedState);
-        auto accessor{RuntimeGraphicsPipelineStateAccessor{std::move(bundle), ctx, textures, constantBuffers, shaderBinaries}};
+        auto accessor{RuntimeGraphicsPipelineStateAccessor{std::move(bundle), ctx, textures, samplers, constantBuffers, shaderBinaries}};
         auto *pipeline{map.emplace(packedState, std::make_unique<Pipeline>(ctx.gpu, accessor, packedState)).first->second.get()};
 
         #ifdef PIPELINE_STATS
