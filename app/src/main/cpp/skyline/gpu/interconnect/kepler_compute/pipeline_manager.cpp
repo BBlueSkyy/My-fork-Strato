@@ -9,7 +9,7 @@
 #include "pipeline_manager.h"
 
 namespace skyline::gpu::interconnect::kepler_compute {
-    static Pipeline::ShaderStage MakePipelineShader(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary) {
+    static Pipeline::ShaderStage MakePipelineShader(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary) {
         ctx.gpu.shader->ResetPools();
 
         auto program{ctx.gpu.shader->ParseComputeShader(
@@ -21,6 +21,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
                 return constantBuffers[index].Read<int>(ctx.executor, offset);
             }, [&](u32 index) {
                 return textures.GetTextureType(ctx, BindlessHandle{ .raw = index }.textureIndex);
+            }, [&](u32 index) {
+                BindlessHandle handle{ .raw = index };
+                return samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex);
             })};
 
         Shader::Backend::Bindings bindings{};
@@ -99,8 +102,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
         };
     }
 
-    Pipeline::Pipeline(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary)
-        : shaderStage{MakePipelineShader(ctx, textures, constantBuffers, packedState, shaderBinary)},
+    Pipeline::Pipeline(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary)
+        : shaderStage{MakePipelineShader(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)},
           descriptorInfo{MakePipelineDescriptorInfo(shaderStage)},
           compiledPipeline{MakeCompiledPipeline(ctx, packedState, shaderStage, descriptorInfo.descriptorSetLayoutBindings)},
           sourcePackedState{packedState} {
