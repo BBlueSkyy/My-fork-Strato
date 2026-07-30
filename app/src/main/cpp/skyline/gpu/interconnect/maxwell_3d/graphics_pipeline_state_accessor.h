@@ -6,6 +6,7 @@
 #include <gpu/interconnect/common/pipeline_state_accessor.h>
 #include <gpu/interconnect/common/pipeline_state_bundle.h>
 #include <gpu/interconnect/common/textures.h>
+#include <gpu/interconnect/common/samplers.h>
 #include "constant_buffers.h"
 
 
@@ -18,16 +19,19 @@ namespace skyline::gpu::interconnect::maxwell3d {
         std::unique_ptr<PipelineStateBundle> bundle;
         InterconnectContext &ctx;
         Textures &textures;
+        Samplers &samplers;
         ConstantBufferSet &constantBuffers;
         std::array<ShaderBinary, engine::PipelineCount> shaderBinaries;
 
       public:
         RuntimeGraphicsPipelineStateAccessor(std::unique_ptr<PipelineStateBundle> bundle,
                                              InterconnectContext &ctx,
-                                             Textures &textures, ConstantBufferSet &constantBuffers,
+                                             Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers,
                                              const std::array<ShaderBinary, engine::PipelineCount> &shaderBinaries);
 
         Shader::TextureType GetTextureType(u32 index) const override;
+
+        Shader::CompareFunction GetTextureCompareFunc(u32 index) const override;
 
         u32 GetConstantBufferValue(u32 shaderStage, u32 index, u32 offset) const override;
 
