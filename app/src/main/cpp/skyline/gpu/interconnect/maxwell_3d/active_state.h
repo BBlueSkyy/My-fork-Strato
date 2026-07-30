@@ -262,7 +262,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
          * @brief Updates the active state for a given draw operation, removing the dirtiness of all member states
          * @note If `extimateIndexBufferSize` is false and `indexed` is true the `drawFirstIndex` and `drawElementCount` arguments must be populated
          */
-        void Update(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers, StateUpdateBuilder &builder,
+        void Update(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, StateUpdateBuilder &builder,
                     bool indexed, engine::DrawTopology topology, bool estimateIndexBufferSize, u32 drawFirstIndex, u32 drawElementCount,
                     vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask);
 
