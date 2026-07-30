@@ -48,5 +48,7 @@ namespace skyline::gpu::interconnect {
         void MarkAllDirty();
 
         vk::raii::Sampler *GetSampler(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
+
+        Shader::CompareFunction GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
     };
 }
