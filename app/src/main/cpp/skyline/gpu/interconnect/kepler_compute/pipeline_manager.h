@@ -50,7 +50,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         PackedPipelineState sourcePackedState;
 
-        Pipeline(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary);
+        Pipeline(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary);
 
         /**
          * @brief Creates a descriptor set update from the current GPU state
@@ -63,12 +63,12 @@ namespace skyline::gpu::interconnect::kepler_compute {
         tsl::robin_map<PackedPipelineState, std::unique_ptr<Pipeline>, util::ObjectHash<PackedPipelineState>> map;
 
       public:
-        Pipeline *FindOrCreate(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary) {
+        Pipeline *FindOrCreate(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary) {
             auto it{map.find(packedState)};
             if (it != map.end())
                 return it->second.get();
 
-            return map.emplace(packedState, std::make_unique<Pipeline>(ctx, textures, constantBuffers, packedState, shaderBinary)).first->second.get();
+            return map.emplace(packedState, std::make_unique<Pipeline>(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)).first->second.get();
         }
     };
 }
