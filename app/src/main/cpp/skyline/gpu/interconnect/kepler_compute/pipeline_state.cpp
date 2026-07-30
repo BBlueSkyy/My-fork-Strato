@@ -38,7 +38,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         packedState.sharedMemorySize = qmd.sharedMemorySize;
         packedState.bindlessTextureConstantBufferSlotSelect = bindlessTexture.constantBufferSlotSelect;
 
-        return ctx.gpu.computePipelineManager.FindOrCreate(ctx, textures, constantBuffers, packedState, stage.binary);
+        return ctx.gpu.computePipelineManager.FindOrCreate(ctx, textures, samplers, constantBuffers, packedState, stage.binary);
     }
 
     void PipelineState::PurgeCaches() {
