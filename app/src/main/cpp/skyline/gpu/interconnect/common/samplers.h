@@ -6,6 +6,7 @@
 #include <tsl/robin_map.h>
 #include "common.h"
 #include "tsc.h"
+#include <shader_compiler/runtime_info.h>
 
 namespace skyline::gpu::interconnect {
     class SamplerPoolState : dirty::CachedManualDirty, dirty::RefreshableManualDirty {
