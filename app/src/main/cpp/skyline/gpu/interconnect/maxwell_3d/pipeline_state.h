@@ -327,8 +327,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         PipelineState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine);
 
-        void Flush(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers, StateUpdateBuilder &builder);
-
+        void Flush(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, StateUpdateBuilder &builder);
+        
         void PurgeCaches();
 
         std::shared_ptr<TextureView> GetColorRenderTargetForClear(InterconnectContext &ctx, size_t index);
