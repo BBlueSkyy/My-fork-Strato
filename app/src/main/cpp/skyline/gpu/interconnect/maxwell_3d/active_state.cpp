@@ -435,7 +435,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         dirtyFunc(stencilValues);
     }
 
-    void ActiveState::Update(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers, StateUpdateBuilder &builder,
+    void ActiveState::Update(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, StateUpdateBuilder &builder,
                              bool indexed, engine::DrawTopology topology, bool estimateIndexBufferSize, u32 drawFirstIndex, u32 drawElementCount,
                              vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         TRACE_EVENT("gpu", "ActiveState::Update");
@@ -447,7 +447,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto updateFunc{[&](auto &stateElem, auto &&... args) { stateElem.Update(ctx, builder, args...); }};
         auto updateFuncBuffer{[&](auto &stateElem, auto &&... args) { stateElem.Update(ctx, builder, srcStageMask, dstStageMask, args...); }};
 
-        pipeline.Update(ctx, textures, constantBuffers, builder);
+        pipeline.Update(ctx, textures, samplers, constantBuffers, builder);
         ranges::for_each(vertexBuffers, updateFuncBuffer);
         if (indexed)
             updateFuncBuffer(indexBuffer, directState.inputAssembly.NeedsQuadConversion(), estimateIndexBufferSize, drawFirstIndex, drawElementCount);
