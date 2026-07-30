@@ -4,19 +4,25 @@
 #include <gpu.h>
 #include <gpu/pipeline_cache_manager.h>
 #include "graphics_pipeline_state_accessor.h"
+#include "pipeline.inc"
 
 namespace skyline::gpu::interconnect::maxwell3d {
     RuntimeGraphicsPipelineStateAccessor::RuntimeGraphicsPipelineStateAccessor(std::unique_ptr<PipelineStateBundle> bundle,
                                                                                InterconnectContext &ctx,
-                                                                               Textures &textures, ConstantBufferSet &constantBuffers,
+                                                                               Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers,
                                                                                const std::array<ShaderBinary, engine::PipelineCount> &shaderBinaries)
-        : bundle{std::move(bundle)}, ctx{ctx}, textures{textures}, constantBuffers{constantBuffers}, shaderBinaries{shaderBinaries} {}
+        : bundle{std::move(bundle)}, ctx{ctx}, textures{textures}, samplers{samplers}, constantBuffers{constantBuffers}, shaderBinaries{shaderBinaries} {}
 
 
     Shader::TextureType RuntimeGraphicsPipelineStateAccessor::GetTextureType(u32 index) const {
         Shader::TextureType type{textures.GetTextureType(ctx, index)};
         bundle->AddTextureType(index, type);
         return type;
+    }
+
+    Shader::CompareFunction RuntimeGraphicsPipelineStateAccessor::GetTextureCompareFunc(u32 index) const {
+        BindlessHandle handle{.raw = index};
+        return samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex);
     }
 
     u32 RuntimeGraphicsPipelineStateAccessor::GetConstantBufferValue(u32 shaderStage, u32 index, u32 offset) const {
