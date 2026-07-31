@@ -362,6 +362,10 @@ namespace skyline::gpu {
             throw exception("Not implemented");
         }
 
+        [[nodiscard]] Shader::CompareFunction ReadTextureCompareFunc(u32 handle) final {
+            throw exception("Not implemented");
+        }
+
         [[nodiscard]] u32 ReadViewportTransformState() final {
             throw exception("Not implemented");
         }
