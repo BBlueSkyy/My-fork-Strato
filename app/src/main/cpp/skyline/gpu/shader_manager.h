@@ -49,13 +49,14 @@ namespace skyline::gpu {
       public:
         using ConstantBufferRead = std::function<u32(u32 index, u32 offset)>; //!< A function which reads a constant buffer at the specified offset and returns the value
         using GetTextureType = std::function<Shader::TextureType(u32 handle)>; //!< A function which determines the type of a texture from its handle by checking the corresponding TIC
-
+        using GetTextureCompareFunc = std::function<Shader::CompareFunction(u32 handle)>; //!< A function which determines the shadow compare function of a texture from its handle by checking the corresponding TSC
+        
         ShaderManager(const DeviceState &state, GPU &gpu, std::string_view replacementDir, std::string_view dumpDir);
 
         /**
          * @return A shader program that corresponds to all the supplied state including the current state of the constant buffers
          */
-        Shader::IR::Program ParseGraphicsShader(const std::array<u32, 8> &postVtgShaderAttributeSkipMask, Shader::Stage stage, u64 hash, span<u8> binary, u32 baseOffset, u32 textureConstantBufferIndex, bool viewportTransformEnabled, const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType);
+        Shader::IR::Program ParseGraphicsShader(const std::array<u32, 8> &postVtgShaderAttributeSkipMask, Shader::Stage stage, u64 hash, span<u8> binary, u32 baseOffset, u32 textureConstantBufferIndex, bool viewportTransformEnabled, const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const GetTextureCompareFunc &getTextureCompareFunc);
 
         /**
          * @brief Combines the VertexA and VertexB shader programs into a single program
@@ -68,7 +69,7 @@ namespace skyline::gpu {
          */
         Shader::IR::Program GenerateGeometryPassthroughShader(Shader::IR::Program &layerSource, Shader::OutputTopology topology);
 
-        Shader::IR::Program ParseComputeShader(u64 hash, span<u8> binary, u32 baseOffset, u32 textureConstantBufferIndex, u32 localMemorySize, u32 sharedMemorySize, std::array<u32, 3> workgroupDimensions, const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType);
+        Shader::IR::Program ParseComputeShader(u64 hash, span<u8> binary, u32 baseOffset, u32 textureConstantBufferIndex, u32 localMemorySize, u32 sharedMemorySize, std::array<u32, 3> workgroupDimensions, const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const GetTextureCompareFunc &getTextureCompareFunc);
 
         vk::ShaderModule CompileShader(const Shader::RuntimeInfo &runtimeInfo, Shader::IR::Program &program, Shader::Backend::Bindings &bindings, u64 hash = 0);
 

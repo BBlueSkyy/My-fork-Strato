@@ -6,6 +6,7 @@
 #include <tsl/robin_map.h>
 #include "common.h"
 #include "tsc.h"
+#include <shader_compiler/runtime_info.h>
 
 namespace skyline::gpu::interconnect {
     class SamplerPoolState : dirty::CachedManualDirty, dirty::RefreshableManualDirty {
@@ -48,5 +49,7 @@ namespace skyline::gpu::interconnect {
         void MarkAllDirty();
 
         vk::raii::Sampler *GetSampler(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
+
+        Shader::CompareFunction GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
     };
 }
