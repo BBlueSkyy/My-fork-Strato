@@ -4,7 +4,9 @@
 #include <gpu.h>
 #include <gpu/pipeline_cache_manager.h>
 #include "graphics_pipeline_state_accessor.h"
-#include "pipeline.inc"
+#include "../common/pipeline.inc"
+
+
 
 namespace skyline::gpu::interconnect::maxwell3d {
     RuntimeGraphicsPipelineStateAccessor::RuntimeGraphicsPipelineStateAccessor(std::unique_ptr<PipelineStateBundle> bundle,
