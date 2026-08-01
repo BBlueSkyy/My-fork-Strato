@@ -2,6 +2,9 @@
 #include <memory>
 #include <new>
 #include <utility>
+#include <concepts>
+#include <iterator>
+#include <compare>
 
 #if defined(__ANDROID__) && !defined(__cpp_lib_constexpr_dynamic_alloc)
 namespace std {
