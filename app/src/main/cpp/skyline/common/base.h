@@ -31,6 +31,10 @@ namespace skyline {
         constexpr size_t PageSize{0x1000}; //!< The size of a host page
         constexpr size_t PageSizeBits{12}; //!< log2(PageSize)
 
+        #ifndef PAGE_SIZE
+        #define PAGE_SIZE 4096
+        #endif
+
         static_assert(PageSize == PAGE_SIZE);
     }
 
