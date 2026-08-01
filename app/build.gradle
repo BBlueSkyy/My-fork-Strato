@@ -28,6 +28,11 @@ android {
         ndk {
             //noinspection ChromeOsAbiSupport
             abiFilters "arm64-v8a"
+        }   
+            externalNativeBuild {
+            cmake {
+                cppFlags "-DPAGE_SIZE=4096"
+            }
         }
 
         // Disable the use of a separate process for emulation by default
