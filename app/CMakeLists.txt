@@ -9,12 +9,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(source_DIR ${CMAKE_SOURCE_DIR}/src/main/cpp)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-strict-aliasing -Wno-unused-command-line-argument -fwrapv -include ${source_DIR}/skyline/construct_at_compat.h")
-set(CMAKE_CXX_FLAGS_RELEASE "-Ofast -flto=full -fno-stack-protector -DNDEBUG")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-strict-aliasing -Wno-unused-command-line-argument -fwrapv -DFMT_CONSTEVAL= -DPAGE_SIZE=4096")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -ffast-math -flto=full -fno-stack-protector -DNDEBUG")
 
-# Build all libraries with -Ofast but with default debug data (-g) for debug and reldebug builds
-set(CMAKE_CXX_FLAGS_DEBUG "-Ofast")
-set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-Ofast")
+# Build all libraries with -O3 -ffast-math but with default debug data (-g) for debug and reldebug builds
+set(CMAKE_CXX_FLAGS_DEBUG "-O3 -ffast-math")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -ffast-math")
 
 # Skyline's Boost fork
 set(Boost_USE_STATIC_LIBS ON)
