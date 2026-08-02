@@ -33,6 +33,13 @@ namespace skyline::soc::gm20b::engine {
 
         macroInvocation.arguments.emplace_back(argument);
 
+        // Flush macro after all of the data in the method call has been sent
+        if (lastCall && macroInvocation.Valid()) {
+            macroState.Execute(macroInvocation.index, macroInvocation.arguments, this, flushCallback);
+            macroInvocation.Reset();
+            return false;
+        }
+
         return true;
     };
    
