@@ -80,7 +80,8 @@ namespace skyline::vfs {
             tableBacking->Read(span(table.data(), table.size()), 0);
 
             const u8 *ptr{table.data()};
-            if (ReadLe<u32>(ptr + 0x0) != 0x52445442) { // "BKTR"
+            // 'BKTR' as little-endian u32 => 0x52544B42
+            if (ReadLe<u32>(ptr + 0x0) != 0x52544B42) {
                 throw exception("Invalid BKTR relocation table magic");
             }
 
@@ -95,11 +96,22 @@ namespace skyline::vfs {
             for (u32 i = 0; i < relocation.numBuckets; ++i) {
                 size_t bucketBase{BktrHeaderSize + static_cast<size_t>(i) * BktrBucketSize};
                 auto &bucket{relocation.buckets[i]};
+
+                // Basic bounds checks to avoid OOB reads on truncated/corrupt tables
+                if (bucketBase + 0x10 > table.size())
+                    throw exception("BKTR relocation table truncated (bucket header out of range)");
+
                 bucket.numEntries = ReadLe<u32>(ptr + bucketBase + 0x4);
                 bucket.endOffset = ReadLe<u64>(ptr + bucketBase + 0x8);
-                bucket.entries.resize(static_cast<size_t>(bucket.numEntries) + 1);
 
-                for (size_t e = 0; e <= bucket.numEntries; ++e) {
+                size_t entriesCountOnDisk = static_cast<size_t>(bucket.numEntries) + 1; // on-disk stores numEntries+1
+                size_t entriesBytes = entriesCountOnDisk * sizeof(RelocEntry);
+                if (bucketBase + 0x10 + entriesBytes > table.size())
+                    throw exception("BKTR relocation table truncated (entries out of range)");
+
+                bucket.entries.resize(entriesCountOnDisk);
+
+                for (size_t e = 0; e < entriesCountOnDisk; ++e) {
                     size_t entryBase{bucketBase + 0x10 + e * sizeof(RelocEntry)};
                     bucket.entries[e].virtOffset = ReadLe<u64>(ptr + entryBase + 0x0);
                     bucket.entries[e].physOffset = ReadLe<u64>(ptr + entryBase + 0x8);
@@ -119,7 +131,8 @@ namespace skyline::vfs {
             tableBacking->Read(span(table.data(), table.size()), 0);
 
             const u8 *ptr{table.data()};
-            if (ReadLe<u32>(ptr + 0x0) != 0x52445442) { // "BKTR"
+            // 'BKTR' as little-endian u32 => 0x52544B42
+            if (ReadLe<u32>(ptr + 0x0) != 0x52544B42) {
                 throw exception("Invalid BKTR subsection table magic");
             }
 
@@ -134,11 +147,21 @@ namespace skyline::vfs {
             for (u32 i = 0; i < subsections.numBuckets; ++i) {
                 size_t bucketBase{BktrHeaderSize + static_cast<size_t>(i) * BktrBucketSize};
                 auto &bucket{subsections.buckets[i]};
+
+                if (bucketBase + 0x10 > table.size())
+                    throw exception("BKTR subsection table truncated (bucket header out of range)");
+
                 bucket.numEntries = ReadLe<u32>(ptr + bucketBase + 0x4);
                 bucket.endOffset = ReadLe<u64>(ptr + bucketBase + 0x8);
-                bucket.entries.resize(static_cast<size_t>(bucket.numEntries) + 1);
 
-                for (size_t e = 0; e <= bucket.numEntries; ++e) {
+                size_t entriesCountOnDisk = static_cast<size_t>(bucket.numEntries) + 1;
+                size_t entriesBytes = entriesCountOnDisk * sizeof(SubsecEntry);
+                if (bucketBase + 0x10 + entriesBytes > table.size())
+                    throw exception("BKTR subsection table truncated (entries out of range)");
+
+                bucket.entries.resize(entriesCountOnDisk);
+
+                for (size_t e = 0; e < entriesCountOnDisk; ++e) {
                     size_t entryBase{bucketBase + 0x10 + e * sizeof(SubsecEntry)};
                     bucket.entries[e].offset = ReadLe<u64>(ptr + entryBase + 0x0);
                     bucket.entries[e]._pad_ = ReadLe<u32>(ptr + entryBase + 0x8);
@@ -282,4 +305,4 @@ namespace skyline::vfs {
 
         return ReadPatched(output, offset);
     }
-}
+}],
