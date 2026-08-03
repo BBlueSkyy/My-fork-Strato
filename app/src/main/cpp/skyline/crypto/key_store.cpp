@@ -60,6 +60,8 @@ namespace skyline::crypto {
             // writing out of bounds (std::array::operator[] does not bounds-check).
             if (index >= it->second.size())
                 return;
-            it->second[index] = util::HexStringToArray<16>(value);
+                it->second[index] = util::HexStringToArray<16>(value);
+            }
         }
-    } 
+    }                            
+}              
