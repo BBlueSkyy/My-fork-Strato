@@ -1,226 +1,166 @@
 // SPDX-License-Identifier: MIT OR MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
-#include <common/address_space.inc>
 #include <soc.h>
-#include "nvmap.h"
+#include <services/nvdrv/devices/deserialisation/deserialisation.h>
+#include "host1x_channel.h"
 
-namespace skyline {
-    template class FlatAddressSpaceMap<u32, 0, bool, false, false, 32>;
-    template class FlatAllocator<u32, 0, 32>;
-}
+namespace skyline::service::nvdrv::device::nvhost {
+    Host1xChannel::Host1xChannel(const DeviceState &state,
+                                 Driver &driver,
+                                 Core &core,
+                                 const SessionContext &ctx,
+                                 core::ChannelType channelType)
+        : NvDevice(state, driver, core, ctx),
+          channelType(channelType) {
+        state.soc->host1x.channels[static_cast<size_t>(channelType)].Start();
+    }
 
-namespace skyline::service::nvdrv::core {
-    NvMap::Handle::Handle(u64 size, Id id) : size(size), alignedSize(size), origSize(size), id(id) {}
+    PosixResult Host1xChannel::SetNvmapFd(In<FileDescriptor> fd) {
+        LOGD("fd: {}", fd);
+        return PosixResult::Success;
+    }
 
-    PosixResult NvMap::Handle::Alloc(Flags pFlags, u32 pAlign, u8 pKind, u64 pAddress) {
-        std::scoped_lock lock(mutex);
+    PosixResult Host1xChannel::Submit(span<SubmitCmdBuf> cmdBufs,
+                                      span<SubmitReloc> relocs, span<u32> relocShifts,
+                                      span<SubmitSyncpointIncr> syncpointIncrs, span<u32> fenceThresholds) {
+        LOGD("numCmdBufs: {}, numRelocs: {}, numSyncpointIncrs: {}, numFenceThresholds: {}",
+                            cmdBufs.size(), relocs.size(), syncpointIncrs.size(), fenceThresholds.size());
 
-        // Handles cannot be allocated twice
-        if (allocated) [[unlikely]]
-            return PosixResult::NotPermitted;
+        if (fenceThresholds.size() > syncpointIncrs.size())
+            return PosixResult::InvalidArgument;
 
-        flags = pFlags;
-        kind = pKind;
-        align = pAlign < constant::PageSize ? constant::PageSize : pAlign;
+        if (relocs.size() != relocShifts.size())
+            return PosixResult::InvalidArgument;
 
-        // This flag is only applicable for handles with an address passed
-        if (pAddress)
-            flags.keepUncachedAfterFree = false;
-        else
-            throw exception("Mapping nvmap handles without a CPU side address is unimplemented!");
+        std::scoped_lock lock(channelMutex);
 
-        size = util::AlignUp(size, constant::PageSize);
-        alignedSize = util::AlignUp(size, align);
-        address = pAddress;
+        // Apply relocations: each one patches the pinned SMMU address (IOVA) of `pinMem` (offset by `pinOffset`
+        // and shifted by the corresponding entry in `relocShifts`) into `patchMem` at `patchOffset`, so the
+        // command buffer contains a valid hardware-visible address before being submitted
+        for (size_t i{}; i < relocs.size(); i++) {
+            const auto &reloc{relocs[i]};
 
-        allocated = true;
+            auto patchHandle{core.nvMap.GetHandle(reloc.patchMem)};
+            if (!patchHandle)
+                throw exception("Invalid patch handle passed for a relocation!");
+
+            auto pinHandle{core.nvMap.GetHandle(reloc.pinMem)};
+            if (!pinHandle)
+                throw exception("Invalid pin handle passed for a relocation!");
+
+            u32 pinAddress{pinHandle->pinVirtAddress};
+            if (!pinAddress)
+                throw exception("Relocation target handle has not been pinned!");
+
+            u32 word{static_cast<u32>((pinAddress + reloc.pinOffset) >> relocShifts[i])};
+
+            u64 patchAddress{patchHandle->address + reloc.patchOffset};
+            *reinterpret_cast<u32 *>(patchAddress) = word;
+        }
+
+        for (size_t i{}; i < syncpointIncrs.size(); i++) {
+            const auto &incr{syncpointIncrs[i]};
+
+            u32 max{core.syncpointManager.IncrementSyncpointMaxExt(incr.syncpointId, incr.numIncrs)};
+
+            // Increment syncpoints on the CPU to avoid needing to pass through the emulated nvdec code which currently does nothing
+            for (size_t j{}; j < incr.numIncrs; j++)
+                state.soc->host1x.syncpoints[incr.syncpointId].Increment();
+
+            if (i < fenceThresholds.size())
+                fenceThresholds[i] = max;
+        }
+
+        for (const auto &cmdBuf : cmdBufs) {
+            auto handleDesc{core.nvMap.GetHandle(cmdBuf.mem)};
+            if (!handleDesc)
+                throw exception("Invalid handle passed for a command buffer!");
+
+            u64 gatherAddress{handleDesc->address + cmdBuf.offset};
+            LOGD("Submit gather, CPU address: 0x{:X}, words: 0x{:X}", gatherAddress, cmdBuf.words);
+
+            span gather(reinterpret_cast<u32 *>(gatherAddress), cmdBuf.words);
+            // Skip submitting the cmdbufs as no functionality is implemented
+            // state.soc->host1x.channels[static_cast<size_t>(channelType)].Push(gather);
+        }
 
         return PosixResult::Success;
     }
 
-    PosixResult NvMap::Handle::Duplicate(bool internalSession) {
-        std::scoped_lock lock(mutex);
+    PosixResult Host1xChannel::GetSyncpoint(In<u32> channelSyncpointIdx, Out<u32> syncpointId) {
+        LOGD("channelSyncpointIdx: {}", channelSyncpointIdx);
 
-        // Unallocated handles cannot be duplicated as duplication requires memory accounting (in HOS)
-        if (!allocated) [[unlikely]]
-            return PosixResult::InvalidArgument;
+        if (channelSyncpointIdx > 0)
+            throw exception("Multiple channel syncpoints are unimplemented!");
 
-        // If we internally use FromId the duplication tracking of handles won't work accurately due to us not implementing
-        // per-process handle refs.
-        if (internalSession)
-            internalDupes++;
-        else
-            dupes++;
+        u32 id{core::SyncpointManager::ChannelSyncpoints[static_cast<u32>(channelType)]};
+        if (!id)
+            throw exception("Requested syncpoint for a channel with none specified!");
+
+        LOGD("syncpointId: {}", id);
+        syncpointId = id;
+        return PosixResult::Success;
+    }
+
+    PosixResult Host1xChannel::GetWaitBase(In<core::ChannelType> pChannelType, Out<u32> waitBase) {
+        LOGD("channelType: {}", static_cast<u32>(pChannelType));
+        waitBase = 0;
+        return PosixResult::Success;
+    }
+
+    PosixResult Host1xChannel::SetSubmitTimeout(In<u32> timeout) {
+        LOGD("timeout: {}", timeout);
+        return PosixResult::Success;
+    }
+
+    PosixResult Host1xChannel::MapBuffer(u8 compressed, span<BufferHandle> handles) {
+        LOGD("compressed: {}", compressed);
+
+        for (auto &bufferHandle : handles) {
+            bufferHandle.address = core.nvMap.PinHandle(bufferHandle.handle);
+            LOGD("handle: {}, address: 0x{:X}", bufferHandle.handle, bufferHandle.address);
+        }
 
         return PosixResult::Success;
     }
 
-    NvMap::NvMap(const DeviceState &state) : state(state), smmuAllocator(soc::SmmuPageSize) {}
+    PosixResult Host1xChannel::UnmapBuffer(u8 compressed, span<BufferHandle> handles) {
+        LOGD("compressed: {}", compressed);
 
-    void NvMap::AddHandle(std::shared_ptr<Handle> handleDesc) {
-        std::scoped_lock lock(handlesLock);
-
-        handles.emplace(handleDesc->id, std::move(handleDesc));
-    }
-
-    void NvMap::UnmapHandle(Handle &handleDesc) {
-        // Remove pending unmap queue entry if needed
-        if (handleDesc.unmapQueueEntry) {
-            unmapQueue.erase(*handleDesc.unmapQueueEntry);
-            handleDesc.unmapQueueEntry.reset();
+        for (auto &bufferHandle : handles) {
+            core.nvMap.UnpinHandle(bufferHandle.handle);
+            LOGD("handle: {}", bufferHandle.handle);
         }
 
-        // Free and unmap the handle from the SMMU
-        state.soc->smmu.Unmap(handleDesc.pinVirtAddress, static_cast<u32>(handleDesc.alignedSize));
-        smmuAllocator.Free(handleDesc.pinVirtAddress, static_cast<u32>(handleDesc.alignedSize));
-        handleDesc.pinVirtAddress = 0;
+        return PosixResult::Success;
     }
 
+// @fmt:off
+#include <services/nvdrv/devices/deserialisation/macro_def.inc>
+    static constexpr u32 Host1xChannelMagic{0x00};
+    static constexpr u32 GpuChannelMagic{0x48}; //!< Used for SetNvmapFd which is needed in both GPU and host1x channels
 
-    bool NvMap::TryRemoveHandle(const Handle &handleDesc) {
-        // No dupes left, we can remove from handle map
-        if (handleDesc.dupes == 0 && handleDesc.internalDupes == 0) {
-            std::scoped_lock lock(handlesLock);
-
-            auto it{handles.find(handleDesc.id)};
-            if (it != handles.end())
-                handles.erase(it);
-
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    PosixResultValue<std::shared_ptr<NvMap::Handle>> NvMap::CreateHandle(u64 size) {
-        if (!size) [[unlikely]]
-            return PosixResult::InvalidArgument;
-
-        u32 id{nextHandleId.fetch_add(HandleIdIncrement, std::memory_order_relaxed)};
-        auto handleDesc{std::make_shared<Handle>(size, id)};
-        AddHandle(handleDesc);
-
-        return handleDesc;
-    }
-
-    std::shared_ptr<NvMap::Handle> NvMap::GetHandle(Handle::Id handle) {
-        std::scoped_lock lock(handlesLock);
-
-        try {
-            return handles.at(handle);
-        } catch (std::out_of_range &e) {
-            return nullptr;
-        }
-    }
-
-    u32 NvMap::PinHandle(NvMap::Handle::Id handle) {
-        auto handleDesc{GetHandle(handle)};
-        if (!handleDesc) [[unlikely]]
-            return 0;
-
-        std::scoped_lock lock(handleDesc->mutex);
-        if (!handleDesc->pins) {
-            // If we're in the unmap queue we can just remove ourselves and return since we're already mapped
-            {
-                // Lock now to prevent our queue entry from being removed for allocation in-between the following check and erase
-                std::scoped_lock queueLock(unmapQueueLock);
-                if (handleDesc->unmapQueueEntry) {
-                    unmapQueue.erase(*handleDesc->unmapQueueEntry);
-                    handleDesc->unmapQueueEntry.reset();
-
-                    handleDesc->pins++;
-                    return handleDesc->pinVirtAddress;
-                }
-            }
-
-            // If not then allocate some space and map it
-            u32 address{};
-            while (!(address = smmuAllocator.Allocate(static_cast<u32>(handleDesc->alignedSize)))) {
-                // Free handles until the allocation succeeds
-                std::scoped_lock queueLock(unmapQueueLock);
-                if (auto freeHandleDesc{unmapQueue.front()}) {
-                    // Handles in the unmap queue are guaranteed not to be pinned so don't bother checking if they are before unmapping
-                    std::scoped_lock freeLock(freeHandleDesc->mutex);
-                    if (handleDesc->pinVirtAddress)
-                        UnmapHandle(*freeHandleDesc);
-                } else {
-                    throw exception("Ran out of SMMU address space!");
-                }
-            }
-
-            state.soc->smmu.Map(address, reinterpret_cast<u8 *>(handleDesc->address), static_cast<u32>(handleDesc->alignedSize));
-            handleDesc->pinVirtAddress = address;
-        }
-
-        handleDesc->pins++;
-        return handleDesc->pinVirtAddress;
-    }
-
-    void NvMap::UnpinHandle(Handle::Id handle) {
-        auto handleDesc{GetHandle(handle)};
-        if (!handleDesc)
-            return;
-
-        std::scoped_lock lock(handleDesc->mutex);
-        if (--handleDesc->pins < 0) {
-            LOGW("Pin count imbalance detected!");
-        } else if (!handleDesc->pins) {
-            std::scoped_lock queueLock(unmapQueueLock);
-
-            // Add to the unmap queue allowing this handle's memory to be freed if needed
-            unmapQueue.push_back(handleDesc);
-            handleDesc->unmapQueueEntry = std::prev(unmapQueue.end());
-        }
-    }
-
-    std::optional<NvMap::FreeInfo> NvMap::FreeHandle(Handle::Id handle, bool internalSession) {
-        std::weak_ptr<Handle> hWeak{GetHandle(handle)};
-        FreeInfo freeInfo;
-
-        // We use a weak ptr here so we can tell when the handle has been freed and report that back to guest
-        if (auto handleDesc = hWeak.lock()) {
-            std::scoped_lock lock(handleDesc->mutex);
-
-            if (internalSession) {
-                if (--handleDesc->internalDupes < 0)
-                    LOGW("Internal duplicate count imbalance detected!");
-            } else {
-                if (--handleDesc->dupes < 0) {
-                    LOGW("User duplicate count imbalance detected!");
-                } else if (handleDesc->dupes == 0) {
-                    // Force unmap the handle
-                    if (handleDesc->pinVirtAddress) {
-                        std::scoped_lock queueLock(unmapQueueLock);
-                        UnmapHandle(*handleDesc);
-                    }
-
-                    handleDesc->pins = 0;
-                }
-            }
-
-            // Try to remove the shared ptr to the handle from the map, if nothing else is using the handle
-            // then it will now be freed when `h` goes out of scope
-            if (TryRemoveHandle(*handleDesc))
-                LOGD("Removed nvmap handle: {}", handle);
-            else
-                LOGD("Tried to free nvmap handle: {} but didn't as it still has duplicates", handle);
-
-            freeInfo = {
-                .address = handleDesc->address,
-                .size = handleDesc->size,
-                .wasUncached = handleDesc->flags.mapUncached,
-            };
-        } else {
-            return std::nullopt;
-        }
-
-        // Handle hasn't been freed from memory, set address to 0 to mark that the handle wasn't freed
-        if (!hWeak.expired()) {
-            LOGD("nvmap handle: {} wasn't freed as it is still in use", handle);
-            freeInfo.address = 0;
-        }
-
-        return freeInfo;
-    }
+    VARIABLE_IOCTL_HANDLER_FUNC(Host1xChannel,
+        IOCTL_CASE_ARGS(IN,    SIZE(0x4), MAGIC(GpuChannelMagic),    FUNC(0x1),
+                        SetNvmapFd,       ARGS(In<FileDescriptor>))
+        IOCTL_CASE_ARGS(INOUT, SIZE(0x8), MAGIC(Host1xChannelMagic), FUNC(0x2),
+                        GetSyncpoint,     ARGS(In<u32>, Out<u32>))
+        IOCTL_CASE_ARGS(INOUT, SIZE(0x8), MAGIC(Host1xChannelMagic), FUNC(0x3),
+                        GetWaitBase,      ARGS(In<core::ChannelType>, Out<u32>))
+        IOCTL_CASE_ARGS(IN,    SIZE(0x4), MAGIC(Host1xChannelMagic), FUNC(0x7),
+                        SetSubmitTimeout, ARGS(In<u32>))
+    ,
+        VARIABLE_IOCTL_CASE_ARGS(INOUT, MAGIC(Host1xChannelMagic), FUNC(0x1),
+                                 Submit,      ARGS(Save<u32, 0>, Save<u32, 1>, Save<u32, 2>, Save<u32, 3>,
+                                                   SlotSizeSpan<SubmitCmdBuf, 0>,
+                                                   SlotSizeSpan<SubmitReloc, 1>, SlotSizeSpan<u32, 1>,
+                                                   SlotSizeSpan<SubmitSyncpointIncr, 2>, SlotSizeSpan<u32, 3>))
+        VARIABLE_IOCTL_CASE_ARGS(INOUT, MAGIC(Host1xChannelMagic), FUNC(0x9),
+                                 MapBuffer,   ARGS(Save<u32, 0>, Pad<u32>, In<u8>, Pad<u8, 3>, SlotSizeSpan<BufferHandle, 0>))
+        VARIABLE_IOCTL_CASE_ARGS(INOUT, MAGIC(Host1xChannelMagic), FUNC(0xA),
+                                 UnmapBuffer, ARGS(Save<u32, 0>, Pad<u32>, In<u8>, Pad<u8, 3>, SlotSizeSpan<BufferHandle, 0>))
+    )
+#include <services/nvdrv/devices/deserialisation/macro_undef.inc>
+// @fmt:on
 }
