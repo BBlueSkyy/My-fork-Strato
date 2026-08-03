@@ -16,7 +16,13 @@ namespace skyline::crypto {
 
         using Key128 = std::array<u8, 16>;
         using Key256 = std::array<u8, 32>;
-        using IndexedKeys128 = std::array<std::optional<Key128>, 20>;
+
+        /**
+        * @note Sized to comfortably exceed the current highest master key revision (0x15, used
+        * as of firmware 22.x) so newer prod.keys files continue to work without another bump
+        * for a while. Nintendo has historically added ~1-2 revisions per year.
+        */
+        using IndexedKeys128 = std::array<std::optional<Key128>, 32>;
 
         std::optional<Key256> headerKey;
 
