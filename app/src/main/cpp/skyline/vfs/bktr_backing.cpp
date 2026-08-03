@@ -150,31 +150,32 @@ namespace skyline::vfs {
         }
     }
 
-    BktrBacking::RelocEntry &BktrBacking::GetRelocation(size_t offset) {
+    u32 BktrBacking::FindBucketIndex(const std::vector<u64> &bucketOffsets, size_t target) {
+        // bucketOffsets is the sorted L1 index (bucketOffsets[0] == 0); find the last entry <= target
+        auto it{std::upper_bound(bucketOffsets.begin(), bucketOffsets.end(), target)};
+        return static_cast<u32>(std::distance(bucketOffsets.begin(), it) - 1);
+    }
+
+    BktrBacking::RelocLookup BktrBacking::FindRelocation(size_t offset) {
         if (!hasRelocation)
             throw exception("BKTR relocation table not loaded");
-
-        if (offset > relocation.totalSize)
+        if (offset >= relocation.totalSize)
             throw exception("BKTR relocation offset out of range");
 
-        u32 bucketNum{0};
-        for (u32 i = 1; i < relocation.numBuckets; ++i) {
-            if (relocation.bucketVirtualOffsets[i] <= offset)
-                ++bucketNum;
-        }
+        auto &bucket{relocation.buckets.at(FindBucketIndex(relocation.bucketVirtualOffsets, offset))};
 
-        auto &bucket{relocation.buckets.at(bucketNum)};
-        if (bucket.numEntries == 1)
-            return bucket.entries[0];
-
-        u32 low{0}, high{bucket.numEntries - 1};
+        // Every bucket stores numEntries+1 real entries on disk, so entries[mid + 1] is always
+        // a valid boundary marker - no special-casing needed for the last entry in a bucket.
+        int64_t low{0}, high{static_cast<int64_t>(bucket.numEntries) - 1};
         while (low <= high) {
-            u32 mid{(low + high) / 2};
-            if (bucket.entries[mid].virtOffset > offset) {
+            int64_t mid{low + (high - low) / 2};
+            auto &entry{bucket.entries[static_cast<size_t>(mid)]};
+            if (entry.virtOffset > offset) {
                 high = mid - 1;
             } else {
-                if (mid == bucket.numEntries - 1 || bucket.entries[mid + 1].virtOffset > offset)
-                    return bucket.entries[mid];
+                auto &next{bucket.entries[static_cast<size_t>(mid) + 1]};
+                if (next.virtOffset > offset)
+                    return {entry, next.virtOffset};
                 low = mid + 1;
             }
         }
@@ -182,32 +183,24 @@ namespace skyline::vfs {
         throw exception("Failed to resolve BKTR relocation entry");
     }
 
-    BktrBacking::SubsecEntry &BktrBacking::GetSubsection(size_t offset) {
+    BktrBacking::SubsecLookup BktrBacking::FindSubsection(size_t offset) {
         if (!hasSubsections)
             throw exception("BKTR subsection table not loaded");
+        if (offset >= subsections.totalSize)
+            throw exception("BKTR subsection offset out of range");
 
-        auto &lastBucket{subsections.buckets.back()};
-        if (offset >= lastBucket.entries[lastBucket.numEntries].offset)
-            return lastBucket.entries[lastBucket.numEntries];
+        auto &bucket{subsections.buckets.at(FindBucketIndex(subsections.bucketPhysicalOffsets, offset))};
 
-        u32 bucketNum{0};
-        for (u32 i = 1; i < subsections.numBuckets; ++i) {
-            if (subsections.bucketPhysicalOffsets[i] <= offset)
-                ++bucketNum;
-        }
-
-        auto &bucket{subsections.buckets.at(bucketNum)};
-        if (bucket.numEntries == 1)
-            return bucket.entries[0];
-
-        u32 low{0}, high{bucket.numEntries - 1};
+        int64_t low{0}, high{static_cast<int64_t>(bucket.numEntries) - 1};
         while (low <= high) {
-            u32 mid{(low + high) / 2};
-            if (bucket.entries[mid].offset > offset) {
+            int64_t mid{low + (high - low) / 2};
+            auto &entry{bucket.entries[static_cast<size_t>(mid)]};
+            if (entry.offset > offset) {
                 high = mid - 1;
             } else {
-                if (mid == bucket.numEntries - 1 || bucket.entries[mid + 1].offset > offset)
-                    return bucket.entries[mid];
+                auto &next{bucket.entries[static_cast<size_t>(mid) + 1]};
+                if (next.offset > offset)
+                    return {entry, next.offset};
                 low = mid + 1;
             }
         }
@@ -228,104 +221,38 @@ namespace skyline::vfs {
         size_t totalRead{0};
 
         while (totalRead < output.size()) {
-            auto &reloc{GetRelocation(offset + totalRead)};
             size_t virtOffset{offset + totalRead};
-            size_t virtBoundary{reloc.virtOffset + 0xFFFFFFFFFFFFFFFFULL};
+            auto reloc{FindRelocation(virtOffset)};
 
-            if (reloc.isPatch == 0) {
+            // Never read past the end of this relocation entry's own region - the next entry
+            // (whether unpatched or patched) may need completely different handling.
+            size_t chunk{std::min(output.size() - totalRead, reloc.regionEnd - virtOffset)};
+
+            if (reloc.entry.isPatch == 0) {
+                // Unpatched region: the data is unchanged from the base title's RomFs
                 if (!baseBacking) {
-                    size_t chunk{std::min(output.size() - totalRead, subsections.totalSize > virtOffset ? subsections.totalSize - virtOffset : size_t{0})};
-                    if (chunk == 0)
-                        break;
                     std::memset(output.data() + totalRead, 0, chunk);
                     totalRead += chunk;
                     continue;
                 }
 
-                size_t mappedOffset{virtOffset - reloc.virtOffset + reloc.physOffset};
-                size_t nextVirt{relocation.totalSize};
+                size_t mappedOffset{virtOffset - reloc.entry.virtOffset + reloc.entry.physOffset};
+                if (baseBacking->size <= mappedOffset)
+                    break; // Base title doesn't have data here, nothing more we can provide
 
-                if (reloc.virtOffset < relocation.totalSize) {
-                    auto &bucket{GetRelocation(virtOffset)};
-                    (void)bucket;
-                }
-
-                size_t chunk{output.size() - totalRead};
-                if (baseBacking->size < mappedOffset)
-                    chunk = 0;
-                else
-                    chunk = std::min(chunk, baseBacking->size - mappedOffset);
-
-                if (chunk == 0)
-                    break;
-
+                chunk = std::min(chunk, baseBacking->size - mappedOffset);
                 baseBacking->ReadUnchecked(output.subspan(totalRead, chunk), mappedOffset);
                 totalRead += chunk;
                 continue;
             }
 
-            size_t physOffset{virtOffset - reloc.virtOffset + reloc.physOffset};
-            auto &subsec{GetSubsection(physOffset)};
-            size_t nextBoundary{subsections.totalSize};
+            // Patched region: the data lives in this NCA's own encrypted content. It may still
+            // span multiple subsections (each with its own AES-CTR value), so clamp further.
+            size_t physOffset{virtOffset - reloc.entry.virtOffset + reloc.entry.physOffset};
+            auto subsec{FindSubsection(physOffset)};
+            chunk = std::min(chunk, subsec.regionEnd - physOffset);
 
-            auto &bucket{subsections.buckets.back()};
-            if (subsec.offset != bucket.entries[bucket.numEntries].offset) {
-                if (&subsec != &bucket.entries[bucket.numEntries]) {
-                    auto &bucketRef{GetSubsection(physOffset)};
-                    (void)bucketRef;
-                }
-            }
-
-            size_t chunk{output.size() - totalRead};
-            if (physOffset < subsections.totalSize)
-                chunk = std::min(chunk, subsections.totalSize - physOffset);
-
-            if (&subsec != &bucket.entries[bucket.numEntries]) {
-                size_t end{subsec.offset};
-                auto &curBucket{GetSubsection(physOffset)};
-                (void)curBucket;
-            }
-
-            if (chunk == 0)
-                break;
-
-            size_t subsecBoundary{subsections.totalSize};
-            {
-                auto &lastBucket{subsections.buckets.back()};
-                if (physOffset >= lastBucket.entries[lastBucket.numEntries].offset) {
-                    subsecBoundary = subsections.totalSize;
-                } else {
-                    auto &entry{GetSubsection(physOffset)};
-                    auto &bucketForOffset{entry};
-                    (void)bucketForOffset;
-                }
-            }
-
-            auto &entry{GetSubsection(physOffset)};
-            size_t nextPhysBoundary{subsections.totalSize};
-
-            {
-                u32 bucketNum{0};
-                for (u32 i = 1; i < subsections.numBuckets; ++i) {
-                    if (subsections.bucketPhysicalOffsets[i] <= physOffset)
-                        ++bucketNum;
-                }
-                auto &bucket{subsections.buckets.at(bucketNum)};
-                if (&entry != &bucket.entries[bucket.numEntries]) {
-                    for (u32 e = 0; e < bucket.numEntries; ++e) {
-                        if (bucket.entries[e].offset == entry.offset) {
-                            nextPhysBoundary = bucket.entries[e + 1].offset;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            chunk = std::min(chunk, nextPhysBoundary > physOffset ? nextPhysBoundary - physOffset : size_t{0});
-            if (chunk == 0)
-                break;
-
-            ReadPhysical(output.subspan(totalRead, chunk), physOffset, entry.ctrVal, true);
+            ReadPhysical(output.subspan(totalRead, chunk), physOffset, subsec.entry.ctrVal, true);
             totalRead += chunk;
         }
 
@@ -339,8 +266,18 @@ namespace skyline::vfs {
         }
 
         if (!baseBacking) {
-            auto &subsec{GetSubsection(offset)};
-            return ReadPhysical(output, offset, subsec.ctrVal, true);
+            // Direct physical read (no virtual->physical indirection): still need to switch
+            // AES-CTR value whenever we cross into the next subsection.
+            size_t totalRead{0};
+            while (totalRead < output.size()) {
+                size_t physOffset{offset + totalRead};
+                auto subsec{FindSubsection(physOffset)};
+                size_t chunk{std::min(output.size() - totalRead, subsec.regionEnd - physOffset)};
+
+                ReadPhysical(output.subspan(totalRead, chunk), physOffset, subsec.entry.ctrVal, true);
+                totalRead += chunk;
+            }
+            return totalRead;
         }
 
         return ReadPatched(output, offset);
