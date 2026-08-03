@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
+#include <cstring>
+
 #include <crypto/aes_cipher.h>
 #include <loader/loader.h>
 
+#include "bktr_backing.h"
 #include "ctr_encrypted_backing.h"
 #include "region_backing.h"
 #include "partition_filesystem.h"
@@ -76,8 +80,8 @@ namespace skyline::vfs {
         switch (sectionHeader.encryptionType) {
             case NcaSectionEncryptionType::None:
                 return rawBacking;
-            case NcaSectionEncryptionType::CTR:
-            case NcaSectionEncryptionType::BKTR: {
+
+            case NcaSectionEncryptionType::CTR: {
                 auto key{!(rightsIdEmpty || useKeyArea) ? GetTitleKey() : GetKeyAreaKey(sectionHeader.encryptionType)};
 
                 std::array<u8, 0x10> ctr{};
@@ -88,6 +92,23 @@ namespace skyline::vfs {
 
                 return std::make_shared<CtrEncryptedBacking>(ctr, key, std::move(rawBacking), offset);
             }
+
+            case NcaSectionEncryptionType::BKTR: {
+                auto key{!(rightsIdEmpty || useKeyArea) ? GetTitleKey() : GetKeyAreaKey(sectionHeader.encryptionType)};
+
+                return std::make_shared<BktrBacking>(
+                    key,
+                    sectionHeader.secureValue,
+                    sectionHeader.generation,
+                    std::move(rawBacking),
+                    offset,
+                    sectionHeader.patchInfo.indirectOffset,
+                    sectionHeader.patchInfo.indirectSize,
+                    sectionHeader.patchInfo.aesCtrExOffset,
+                    sectionHeader.patchInfo.aesCtrExSize
+                );
+            }
+
             default:
                 return nullptr;
         }
