@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <common/address_space.inc>
 #include <soc.h>
-#include <services/nvdrv/devices/deserialisation/deserialisation.h>
-#include "host1x_channel.h"
+#include "nvmap.h"
 
 namespace skyline::service::nvdrv::device::nvhost {
     Host1xChannel::Host1xChannel(const DeviceState &state,
