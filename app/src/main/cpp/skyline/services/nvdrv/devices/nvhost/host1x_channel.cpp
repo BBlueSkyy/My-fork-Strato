@@ -30,10 +30,34 @@ namespace skyline::service::nvdrv::device::nvhost {
         if (fenceThresholds.size() > syncpointIncrs.size())
             return PosixResult::InvalidArgument;
 
-        if (!relocs.empty())
-            throw exception("Relocations are unimplemented!");
+        if (relocs.size() != relocShifts.size())
+            return PosixResult::InvalidArgument;
 
         std::scoped_lock lock(channelMutex);
+
+        // Apply relocations: each one patches the pinned SMMU address (IOVA) of `pinMem` (offset by `pinOffset`
+        // and shifted by the corresponding entry in `relocShifts`) into `patchMem` at `patchOffset`, so the
+        // command buffer contains a valid hardware-visible address before being submitted
+        for (size_t i{}; i < relocs.size(); i++) {
+            const auto &reloc{relocs[i]};
+
+            auto patchHandle{core.nvMap.GetHandle(reloc.patchMem)};
+            if (!patchHandle)
+                throw exception("Invalid patch handle passed for a relocation!");
+
+            auto pinHandle{core.nvMap.GetHandle(reloc.pinMem)};
+            if (!pinHandle)
+                throw exception("Invalid pin handle passed for a relocation!");
+
+            u32 pinAddress{pinHandle->pinVirtAddress};
+            if (!pinAddress)
+                throw exception("Relocation target handle has not been pinned!");
+
+            u32 word{static_cast<u32>((pinAddress + reloc.pinOffset) >> relocShifts[i])};
+
+            u64 patchAddress{patchHandle->address + reloc.patchOffset};
+            *reinterpret_cast<u32 *>(patchAddress) = word;
+        }
 
         for (size_t i{}; i < syncpointIncrs.size(); i++) {
             const auto &incr{syncpointIncrs[i]};
