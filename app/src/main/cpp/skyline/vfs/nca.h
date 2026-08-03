@@ -85,16 +85,16 @@ namespace skyline {
             static_assert(sizeof(HierarchicalIntegrityLevel) == 0x18);
 
             struct HierarchicalIntegrityHashInfo {
-                u32 magic;           // "IVFC"
-                u32 magicNumber;     // versão, ex: 0x00020000
+                u32 magic; //!< "IVFC"
+                u32 magicNumber;
                 u32 masterHashSize;
                 u32 numLevels;
                 std::array<HierarchicalIntegrityLevel, 6> levels;
                 std::array<u8, 0x20> signatureSalt;
                 std::array<u8, 0x20> masterHash;
                 u8 _pad_[0x18];
-           };
-           static_assert(sizeof(HierarchicalIntegrityHashInfo) == 0xF8);
+            };
+            static_assert(sizeof(HierarchicalIntegrityHashInfo) == 0xF8);
 
             struct HierarchicalSha256HashInfo {
                 std::array<u8, 0x20> hashTableHash;
