@@ -192,10 +192,6 @@ namespace skyline::gpu {
         [[nodiscard]] Shader::TexturePixelFormat ReadTexturePixelFormat(u32 handle) final {
             throw exception("ReadTexturePixelFormat not implemented");
         }
-     
-        [[nodiscard]] Shader::CompareFunction ReadTextureCompareFunc(u32 handle) final {
-            throw exception("ReadTextureCompareFunc not implemented");
-        }
     
         [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) final {
             return getTextureType(handle);
@@ -299,11 +295,7 @@ namespace skyline::gpu {
         [[nodiscard]] Shader::TexturePixelFormat ReadTexturePixelFormat(u32 handle) final {
             throw exception("ReadTexturePixelFormat not implemented");
         }
-       
-        [[nodiscard]] Shader::CompareFunction ReadTextureCompareFunc(u32 handle) final {
-            throw exception("ReadTextureCompareFunc not implemented");
-        }
-    
+   
         [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) final {
             return getTextureType(handle);
         }
