@@ -58,6 +58,18 @@ namespace skyline::vfs {
             std::vector<SubsecBucket> buckets;
         };
 
+        //!< Result of a relocation lookup: the entry itself plus the offset where its region ends
+        struct RelocLookup {
+            RelocEntry entry;
+            size_t regionEnd; //!< Virtual offset at which the next entry's region begins
+        };
+
+        //!< Result of a subsection lookup: the entry itself plus the offset where its region ends
+        struct SubsecLookup {
+            SubsecEntry entry;
+            size_t regionEnd; //!< Physical offset at which the next entry's region begins
+        };
+
         std::shared_ptr<Backing> rawBacking;
         std::shared_ptr<Backing> baseBacking;
         crypto::KeyStore::Key128 key{};
@@ -80,8 +92,12 @@ namespace skyline::vfs {
         }
 
         void LoadTables(size_t relocationOffset, size_t relocationSize, size_t subsectionOffset, size_t subsectionSize);
-        RelocEntry &GetRelocation(size_t offset);
-        SubsecEntry &GetSubsection(size_t offset);
+
+        //!< Finds the index of the last bucket whose start offset is <= target, via binary search over the sorted L1 index
+        static u32 FindBucketIndex(const std::vector<u64> &bucketOffsets, size_t target);
+
+        RelocLookup FindRelocation(size_t offset);
+        SubsecLookup FindSubsection(size_t offset);
         size_t ReadPhysical(span<u8> output, size_t physicalOffset, u32 ctrVal, bool useBktrCtr);
         size_t ReadPatched(span<u8> output, size_t offset);
 
@@ -100,4 +116,4 @@ namespace skyline::vfs {
                     size_t subsectionSize,
                     std::shared_ptr<Backing> baseBacking = nullptr);
     };
-          }
+}
