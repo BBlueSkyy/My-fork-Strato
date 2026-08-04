@@ -11,6 +11,7 @@
 #include "rom_filesystem.h"
 #include "bktr.h"
 #include "directory.h"
+#include "sparse_backing.h"
 
 namespace skyline::vfs {
     using namespace loader;
@@ -112,7 +113,15 @@ namespace skyline::vfs {
         const std::size_t romFsOffset{baseOffset + ivfcOffset};
         const std::size_t romFsSize{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].size};
         auto decryptedBacking{CreateBacking(sectionHeader, std::make_shared<RegionBacking>(backing, romFsOffset, romFsSize), romFsOffset)};
-
+      
+        if (sectionHeader.raw.sparseInfo.bucket.tableOffset != 0 && sectionHeader.raw.sparseInfo.bucket.tableSize != 0) {
+            u64 tableOffset = sectionHeader.raw.sparseInfo.bucket.tableOffset;
+            u64 tableSize = sectionHeader.raw.sparseInfo.bucket.tableSize;
+            u64 physicalOffset = sectionHeader.raw.sparseInfo.physicalOffset;
+            
+            decryptedBacking = std::make_shared<SparseBacking>(decryptedBacking, tableOffset, tableSize, physicalOffset);
+        }
+     
         if (sectionHeader.raw.header.encryptionType == NcaSectionEncryptionType::BKTR && bktrBaseRomfs && romFs) {
             const u64 size{constant::MediaUnitSize * (entry.mediaEndOffset - entry.mediaOffset)};
             const u64 offset{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].offset};
@@ -242,6 +251,8 @@ namespace skyline::vfs {
     }
 
     void NCA::ValidateNCA(const NCASectionHeader &sectionHeader) {
+          // Commented to prevent crashes in sparse games
+          /*[span_6](start_span)[span_6](end_span)
         if (sectionHeader.raw.sparseInfo.bucket.tableOffset != 0 &&
             sectionHeader.raw.sparseInfo.bucket.tableSize != 0)
             throw loader_exception(LoaderResult::ErrorSparseNCA);
