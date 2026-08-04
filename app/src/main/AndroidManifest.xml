@@ -69,6 +69,12 @@
         </activity>
 
         <activity
+            android:name=".ManageContentActivity"
+            android:exported="true"
+            android:parentActivityName=".MainActivity">
+        </activity>
+
+        <activity
             android:name=".EmulationActivity"
             android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
