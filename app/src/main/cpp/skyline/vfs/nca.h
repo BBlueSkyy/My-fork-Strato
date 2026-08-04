@@ -6,7 +6,6 @@
 #include <crypto/key_store.h>
 #include <crypto/aes_cipher.h>
 #include "filesystem.h"
-#include "sparse_storage.h"
 
 namespace skyline {
     namespace constant {
