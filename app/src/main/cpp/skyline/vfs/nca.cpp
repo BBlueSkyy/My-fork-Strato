@@ -11,7 +11,6 @@
 #include "rom_filesystem.h"
 #include "bktr.h"
 #include "directory.h"
-#include "sparse_backing.h"
 
 namespace skyline::vfs {
     using namespace loader;
@@ -94,7 +93,9 @@ namespace skyline::vfs {
         size_t offset{static_cast<size_t>(entry.mediaOffset) * constant::MediaUnitSize + section.pfs0.pfs0HeaderOffset};
         size_t size{constant::MediaUnitSize * static_cast<size_t>(entry.mediaEndOffset - entry.mediaOffset)};
 
-        auto pfs{std::make_shared<PartitionFileSystem>(CreateBacking(section, std::make_shared<RegionBacking>(backing, offset, size), offset))};
+        auto sectionBacking{CreateBacking(section, std::make_shared<RegionBacking>(backing, offset, size), offset)};
+        sectionBacking = CreateSparseBacking(section, sectionBacking, size);
+        auto pfs{std::make_shared<PartitionFileSystem>(sectionBacking)};
 
         if (contentType == NCAContentType::Program) {
             // An ExeFS must always contain an NPDM and a main NSO, whereas the logo section will always contain a logo and a startup movie
@@ -113,15 +114,8 @@ namespace skyline::vfs {
         const std::size_t romFsOffset{baseOffset + ivfcOffset};
         const std::size_t romFsSize{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].size};
         auto decryptedBacking{CreateBacking(sectionHeader, std::make_shared<RegionBacking>(backing, romFsOffset, romFsSize), romFsOffset)};
-      
-        if (sectionHeader.raw.sparseInfo.bucket.tableOffset != 0 && sectionHeader.raw.sparseInfo.bucket.tableSize != 0) {
-            u64 tableOffset = sectionHeader.raw.sparseInfo.bucket.tableOffset;
-            u64 tableSize = sectionHeader.raw.sparseInfo.bucket.tableSize;
-            u64 physicalOffset = sectionHeader.raw.sparseInfo.physicalOffset;
-            
-            decryptedBacking = std::make_shared<SparseBacking>(decryptedBacking, tableOffset, tableSize, physicalOffset);
-        }
-     
+        decryptedBacking = CreateSparseBacking(sectionHeader, decryptedBacking, romFsSize);
+
         if (sectionHeader.raw.header.encryptionType == NcaSectionEncryptionType::BKTR && bktrBaseRomfs && romFs) {
             const u64 size{constant::MediaUnitSize * (entry.mediaEndOffset - entry.mediaOffset)};
             const u64 offset{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].offset};
@@ -189,6 +183,25 @@ namespace skyline::vfs {
         }
     }
 
+    std::shared_ptr<Backing> NCA::CreateSparseBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t virtualSize) {
+        const auto &sparseInfo{sectionHeader.raw.sparseInfo};
+        if (sparseInfo.bucket.tableOffset == 0 || sparseInfo.bucket.tableSize == 0)
+            return decryptedBacking;
+
+        RelocationBlock sparseBlock{decryptedBacking->Read<RelocationBlock>(sparseInfo.bucket.tableOffset)};
+
+        std::vector<RelocationBucketRaw> sparseBucketsRaw((sparseInfo.bucket.tableSize - sizeof(RelocationBlock)) / sizeof(RelocationBucketRaw));
+        auto regionBackingSparse{std::make_shared<RegionBacking>(decryptedBacking, sparseInfo.bucket.tableOffset + sizeof(RelocationBlock), sparseInfo.bucket.tableSize - sizeof(RelocationBlock))};
+        regionBackingSparse->Read<RelocationBucketRaw>(sparseBucketsRaw);
+
+        std::vector<RelocationBucket> sparseBuckets;
+        sparseBuckets.reserve(sparseBucketsRaw.size());
+        for (const auto &rawBucket : sparseBucketsRaw)
+            sparseBuckets.push_back(ConvertRelocationBucketRaw(rawBucket));
+
+        return std::make_shared<SparseStorage>(decryptedBacking, sparseBlock, std::move(sparseBuckets), virtualSize);
+    }
+
     u8 NCA::GetKeyGeneration() {
         u8 legacyGen{static_cast<u8>(header.cryptoType)};
         u8 gen{static_cast<u8>(header.cryptoType2)};
@@ -251,15 +264,8 @@ namespace skyline::vfs {
     }
 
     void NCA::ValidateNCA(const NCASectionHeader &sectionHeader) {
-        // Commented to prevent crashes in sparse games
-        /*
-        if (sectionHeader.raw.sparseInfo.bucket.tableOffset != 0 &&
-            sectionHeader.raw.sparseInfo.bucket.tableSize != 0)
-            throw loader_exception(LoaderResult::ErrorSparseNCA);
-
         if (sectionHeader.raw.compressionInfo.bucket.tableOffset != 0 &&
             sectionHeader.raw.compressionInfo.bucket.tableSize != 0)
             throw loader_exception(LoaderResult::ErrorCompressedNCA);
-        */
     }
 }
