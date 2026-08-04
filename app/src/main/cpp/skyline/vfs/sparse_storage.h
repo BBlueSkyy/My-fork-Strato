@@ -5,7 +5,6 @@
 
 #include "backing.h"
 #include "nca.h"
-#include "bktr.h"
 
 namespace skyline::vfs {
     /**
