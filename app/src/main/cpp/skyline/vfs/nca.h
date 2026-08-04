@@ -229,6 +229,38 @@ namespace skyline {
         };
         #pragma pack(pop)
         static_assert(sizeof(RelocationEntry) == 0x14);
+                #pragma pack(push, 1)
+
+        struct BucketTreeHeader {
+            u32 magic;       
+            u32 version;     
+            u32 entryCount;  
+            u32 reserved;
+        };
+        static_assert(sizeof(BucketTreeHeader) == 0x10, "BucketTreeHeader size is wrong");
+
+        struct BucketHeader {
+            u32 reserved;
+            u32 entryCount;  
+            u64 endOffset;   
+        };
+        static_assert(sizeof(BucketHeader) == 0x10, "BucketHeader size is wrong");
+
+        struct SparseEntry {
+            u64 virtualOffset;  
+            u64 physicalOffset; 
+        };
+        static_assert(sizeof(SparseEntry) == 0x10, "SparseEntry size is wrong");
+
+        struct CompressionEntry {
+            u64 virtualOffset;   
+            u64 physicalOffset;  
+            u32 compressedSize;  
+            u32 compressionType; 
+        };
+        static_assert(sizeof(CompressionEntry) == 0x18, "CompressionEntry size is wrong");
+
+        #pragma pack(pop)
 
         struct SubsectionBlock {
             u8 _pad0_[0x4];
