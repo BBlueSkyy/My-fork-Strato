@@ -8,6 +8,14 @@
 
 namespace skyline::vfs {
 
+    template<typename T>
+    static T ReadLe(const u8 *ptr) {
+        T value{};
+        for (size_t i = 0; i < sizeof(T); ++i)
+            value |= static_cast<T>(ptr[i]) << (8 * i);
+        return value;
+    }
+
     static constexpr size_t BktrBucketSize{0x4000};
     static constexpr size_t BktrHeaderSize{0x4000};
 
