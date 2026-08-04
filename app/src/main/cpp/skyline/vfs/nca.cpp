@@ -11,6 +11,7 @@
 #include "rom_filesystem.h"
 #include "bktr.h"
 #include "directory.h"
+#include "sparse_storage.h"
 
 namespace skyline::vfs {
     using namespace loader;
