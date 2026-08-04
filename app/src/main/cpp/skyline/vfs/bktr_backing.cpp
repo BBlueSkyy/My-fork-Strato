@@ -306,5 +306,4 @@ namespace skyline::vfs {
         return ReadPatched(output, offset);
     }
 
--}],
-+}
+}
