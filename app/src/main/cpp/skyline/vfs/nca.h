@@ -6,6 +6,7 @@
 #include <crypto/key_store.h>
 #include <crypto/aes_cipher.h>
 #include "filesystem.h"
+#include "sparse_storage.h"
 
 namespace skyline {
     namespace constant {
@@ -356,7 +357,9 @@ namespace skyline {
             void ReadRomFs(const NCASectionHeader &sectionHeader, const NCASectionTableEntry &entry);
 
             std::shared_ptr<Backing> CreateBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> rawBacking, size_t offset);
-
+          
+            std::shared_ptr<Backing> CreateSparseBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t baseOffset);
+          
             u8 GetKeyGeneration();
 
             crypto::KeyStore::Key128 GetTitleKey();
