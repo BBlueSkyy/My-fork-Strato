@@ -24,6 +24,9 @@
         <org.stratoemu.strato.preference.FirmwareImportPreference
             app:key="firmware"
             app:title="@string/firmware" />
+        <org.stratoemu.strato.preference.GameContentPreference
+            app:key="game_content"
+            app:title="@string/manage_game_content" />
     </PreferenceCategory>
     <PreferenceCategory
         android:key="category_appearance"
@@ -64,7 +67,7 @@
             app:key="select_action"
             app:title="@string/select_action" />
         <org.stratoemu.strato.preference.RefreshSwitchPreferenceCompat
-            android:defaultValue="false"
+            android:defaultValue="true"
             android:summaryOff="@string/filter_invalid_files_desc_off"
             android:summaryOn="@string/filter_invalid_files_desc_on"
             app:key="filter_invalid_files"

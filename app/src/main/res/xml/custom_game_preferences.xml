@@ -21,5 +21,8 @@
             android:summary="@string/copy_global_settings_desc"
             app:key="copy_global_settings"
             app:title="@string/copy_global_settings" />
+        <org.stratoemu.strato.preference.GameContentPreference
+            app:key="game_content"
+            app:title="@string/manage_game_content" />
     </PreferenceCategory>
 </androidx.preference.PreferenceScreen>

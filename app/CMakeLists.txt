@@ -135,6 +135,7 @@ add_library(skyline SHARED
         ${source_DIR}/driver_jni.cpp
         ${source_DIR}/emu_jni.cpp
         ${source_DIR}/loader_jni.cpp
+        ${source_DIR}/nsp_jni.cpp
         ${source_DIR}/skyline/common.cpp
         ${source_DIR}/skyline/common/exception.cpp
         ${source_DIR}/skyline/common/signal.cpp
@@ -244,6 +245,9 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/vfs/npdm.cpp
         ${source_DIR}/skyline/vfs/nca.cpp
         ${source_DIR}/skyline/vfs/ticket.cpp
+        ${source_DIR}/skyline/vfs/cnmt.cpp
+        ${source_DIR}/skyline/vfs/bktr.cpp
+        ${source_DIR}/skyline/vfs/patch_manager.cpp
         ${source_DIR}/skyline/services/serviceman.cpp
         ${source_DIR}/skyline/services/base_service.cpp
         ${source_DIR}/skyline/services/sm/IUserInterface.cpp
