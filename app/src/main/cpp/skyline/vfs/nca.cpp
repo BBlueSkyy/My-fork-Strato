@@ -251,8 +251,8 @@ namespace skyline::vfs {
     }
 
     void NCA::ValidateNCA(const NCASectionHeader &sectionHeader) {
-          // Commented to prevent crashes in sparse games
-          /*[span_6](start_span)[span_6](end_span)
+        // Commented to prevent crashes in sparse games
+        /*
         if (sectionHeader.raw.sparseInfo.bucket.tableOffset != 0 &&
             sectionHeader.raw.sparseInfo.bucket.tableSize != 0)
             throw loader_exception(LoaderResult::ErrorSparseNCA);
@@ -260,5 +260,6 @@ namespace skyline::vfs {
         if (sectionHeader.raw.compressionInfo.bucket.tableOffset != 0 &&
             sectionHeader.raw.compressionInfo.bucket.tableSize != 0)
             throw loader_exception(LoaderResult::ErrorCompressedNCA);
+        */
     }
 }
