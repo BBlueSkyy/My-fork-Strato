@@ -8,6 +8,7 @@
 #include <crypto/aes_cipher.h>
 #include <loader/loader.h>
 
+#include "nca.h"
 #include "bktr_backing.h"
 #include "ctr_encrypted_backing.h"
 #include "region_backing.h"
