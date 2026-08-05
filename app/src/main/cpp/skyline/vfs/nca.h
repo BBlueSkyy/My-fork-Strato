@@ -144,6 +144,26 @@ namespace skyline {
             u8 _pad0_[0x6];
         };
         static_assert(sizeof(NCASparseInfo) == 0x30);
+     
+        enum class NCACompressionType : u8 {
+            None = 0,      //!< No compression
+            Lz4 = 1,       //!< LZ4 compressed block
+            Zeroed = 2     //!< Zero-filled block with no physical data
+        };
+
+        struct CompressedEntry {
+            u64 virtualOffset;                  //!< Virtual offset in decompressed data
+            u64 physicalOffset;                 //!< Physical offset in compressed data
+            NCACompressionType compressionType; //!< Compression method used
+            u32 physicalSize;                   //!< Size of compressed data
+            std::array<u8, 4> reserved;         //!< Reserved field (Safe array, no heap allocation)
+            u32 padding;                        //!< Padding
+        };
+
+        struct CompressedBucket {
+            u32 numberEntries;
+            std::vector<CompressedEntry> entries;
+        };
 
         struct NCACompressionInfo {
             NCABucketInfo bucket;
