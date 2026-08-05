@@ -115,10 +115,12 @@ namespace skyline::vfs {
         const std::size_t baseOffset{entry.mediaOffset * constant::MediaUnitSize};
         ivfcOffset = sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].offset;
         const std::size_t romFsOffset{baseOffset + ivfcOffset};
+        const std::size_t romFsSize{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].size};
         const std::size_t physicalRomFsSize{constant::MediaUnitSize * (entry.mediaEndOffset - entry.mediaOffset) - ivfcOffset};
-          auto decryptedBacking{CreateBacking(sectionHeader, std::make_shared<RegionBacking>(backing, romFsOffset, physicalRomFsSize), romFsOffset)};
-          decryptedBacking = CreateSparseBacking(sectionHeader, decryptedBacking, romFsSize);
-          decryptedBacking = CreateCompressedBacking(sectionHeader, decryptedBacking, romFsSize);
+
+        auto decryptedBacking{CreateBacking(sectionHeader, std::make_shared<RegionBacking>(backing, romFsOffset, physicalRomFsSize), romFsOffset)};
+        decryptedBacking = CreateSparseBacking(sectionHeader, decryptedBacking, romFsSize);
+        decryptedBacking = CreateCompressedBacking(sectionHeader, decryptedBacking, romFsSize);
 
         if (sectionHeader.raw.header.encryptionType == NcaSectionEncryptionType::BKTR && bktrBaseRomfs && romFs) {
             const u64 size{constant::MediaUnitSize * (entry.mediaEndOffset - entry.mediaOffset)};
@@ -192,10 +194,6 @@ namespace skyline::vfs {
         if (sparseInfo.bucket.tableOffset == 0 || sparseInfo.bucket.tableSize == 0)
             return decryptedBacking;
 
-        // Unlike the legacy BKTR PatchInfo relocation table (where BKTRHeader.offset points directly at
-        // the node data), the generic Bucket Tree used by SparseInfo/CompressionInfo starts with its own
-        // 0x10-byte BucketTreeHeader (magic "BKTR", version, entryCount, reserved) before the node storage.
-        // Skipping this shifts every subsequent read by 0x10 bytes and corrupts the whole tree.
         struct BucketTreeHeader {
             u32 magic;
             u32 version;
@@ -231,7 +229,6 @@ namespace skyline::vfs {
         if (compressionInfo.bucket.tableOffset == 0 || compressionInfo.bucket.tableSize == 0)
             return decryptedBacking;
 
-        // Same generic Bucket Tree format as Sparse - 0x10-byte BucketTreeHeader before the node storage
         struct BucketTreeHeader {
             u32 magic;
             u32 version;
@@ -324,8 +321,6 @@ namespace skyline::vfs {
     }
 
     void NCA::ValidateNCA(const NCASectionHeader &sectionHeader) {
-        // Both Sparse and Compressed sections are now handled properly via CreateSparseBacking/
-        // CreateCompressedBacking, which fall back to throwing ErrorSparseNCA/ErrorCompressedNCA
-        // themselves if the bucket tree's magic doesn't validate - nothing left to check upfront here
+        (void)sectionHeader;
     }
 }
