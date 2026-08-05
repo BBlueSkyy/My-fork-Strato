@@ -18,29 +18,24 @@ namespace skyline::vfs {
      * @url https://switchbrew.org/wiki/NCA#Sparse_Storage
      */
     class SparseStorage : public Backing {
-      private:
-        std::shared_ptr<Backing> backing; //!< The CTR-decrypted backing that physical offsets are read from, addressed relative to the section's start
-        RelocationBlock block; //!< The L1 offset node of the sparse bucket tree
-        std::vector<RelocationBucket> buckets; //!< The L2 entry nodes of the sparse bucket tree
-        u64 physicalBaseOffset; //!< NCASparseInfo::physicalOffset - the base that every entry's physical offset is relative to, since sparse-compacted data doesn't start at offset 0 of the backing
+  private:
+    std::shared_ptr<Backing> rawBacking; //!< The raw top-level NCA backing - data blocks are decrypted on demand, not upfront, since each needs a counter based on its *virtual* position
+    crypto::KeyStore::Key128 key;
+    std::array<u8, 0x10> ctr; //!< The section's standard (non-generation) upper IV
+    size_t sectionPhysicalStart;
+    RelocationBlock block;
+    std::vector<RelocationBucket> buckets;
+    u64 physicalBaseOffset;
 
-        std::pair<u64, u64> GetEntryIndex(u64 offset);
+    std::pair<u64, u64> GetEntryIndex(u64 offset);
+    RelocationEntry GetEntry(u64 offset);
+    RelocationEntry GetNextEntry(u64 offset);
 
-        RelocationEntry GetEntry(u64 offset);
+  protected:
+    size_t ReadImpl(span<u8> output, size_t offset) override;
 
-        RelocationEntry GetNextEntry(u64 offset);
-
-      protected:
-        size_t ReadImpl(span<u8> output, size_t offset) override;
-
-      public:
-        /**
-         * @param backing A backing covering the section's full physical (on-disk) range, already CTR-decrypted, addressed relative to the section's start
-         * @param block The parsed L1 offset node of the sparse bucket tree
-         * @param buckets The parsed L2 entry nodes of the sparse bucket tree
-         * @param virtualSize The full virtual (uncompacted) size of the section, this becomes the exposed `Backing::size`
-         * @param physicalBaseOffset NCASparseInfo::physicalOffset, added to every entry's physical offset before reading from `backing`
-         */
-        SparseStorage(std::shared_ptr<Backing> backing, RelocationBlock block, std::vector<RelocationBucket> buckets, u64 virtualSize, u64 physicalBaseOffset);
-    };
+  public:
+    SparseStorage(std::shared_ptr<Backing> rawBacking, crypto::KeyStore::Key128 key, std::array<u8, 0x10> ctr, size_t sectionPhysicalStart,
+                  RelocationBlock block, std::vector<RelocationBucket> buckets, u64 virtualSize, u64 physicalBaseOffset);
+   };
 }
