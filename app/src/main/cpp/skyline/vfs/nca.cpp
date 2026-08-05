@@ -101,6 +101,7 @@ namespace skyline::vfs {
         auto pfs{std::make_shared<PartitionFileSystem>(sectionBacking)};
 
         if (contentType == NCAContentType::Program) {
+            // An ExeFS must always contain an NPDM and a main NSO, whereas the logo section will always contain a logo and a startup movie
             if (pfs->FileExists("main") && pfs->FileExists("main.npdm"))
                 exeFs = std::move(pfs);
             else if (pfs->FileExists("NintendoLogo.png") && pfs->FileExists("StartupMovie.gif"))
@@ -115,7 +116,16 @@ namespace skyline::vfs {
         ivfcOffset = sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].offset;
         const std::size_t romFsOffset{baseOffset + ivfcOffset};
         const std::size_t romFsSize{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].size};
-        const std::size_t physicalRomFsSize{constant::MediaUnitSize * (entry.mediaEndOffset - entry.mediaOffset) - ivfcOffset};
+
+        // romFsSize is the *virtual* (fully decompressed) RomFs size taken from the IVFC header - it's
+        // only correct as the raw on-disk window's length when the section is stored 1:1 (no Sparse/
+        // Compressed Storage). For a Sparse or Compressed section, the physical footprint on disk is
+        // smaller than romFsSize, so we derive the real physical window from the section table entry
+        // instead (same calculation ReadPfs0 already uses for its own section), and reserve romFsSize
+        // for the virtualSize passed to CreateSparseBacking/CreateCompressedBacking below, which is what
+        // those wrappers should expose to RomFs parsing code afterwards.
+        const std::size_t physicalSectionSize{constant::MediaUnitSize * static_cast<size_t>(entry.mediaEndOffset - entry.mediaOffset)};
+        const std::size_t physicalRomFsSize{physicalSectionSize > ivfcOffset ? physicalSectionSize - ivfcOffset : 0};
 
         auto decryptedBacking{CreateBacking(sectionHeader, std::make_shared<RegionBacking>(backing, romFsOffset, physicalRomFsSize), romFsOffset)};
         decryptedBacking = CreateSparseBacking(sectionHeader, decryptedBacking, romFsSize);
@@ -193,6 +203,10 @@ namespace skyline::vfs {
         if (sparseInfo.bucket.tableOffset == 0 || sparseInfo.bucket.tableSize == 0)
             return decryptedBacking;
 
+        // Unlike the legacy BKTR PatchInfo relocation table (where BKTRHeader.offset points directly at
+        // the node data), the generic Bucket Tree used by SparseInfo/CompressionInfo starts with its own
+        // 0x10-byte BucketTreeHeader (magic "BKTR", version, entryCount, reserved) before the node storage.
+        // Skipping this shifts every subsequent read by 0x10 bytes and corrupts the whole tree.
         struct BucketTreeHeader {
             u32 magic;
             u32 version;
@@ -228,6 +242,7 @@ namespace skyline::vfs {
         if (compressionInfo.bucket.tableOffset == 0 || compressionInfo.bucket.tableSize == 0)
             return decryptedBacking;
 
+        // Same generic Bucket Tree format as Sparse - 0x10-byte BucketTreeHeader before the node storage
         struct BucketTreeHeader {
             u32 magic;
             u32 version;
