@@ -12,6 +12,7 @@
 #include "bktr.h"
 #include "directory.h"
 #include "sparse_storage.h"
+#include "compressed_storage.h"
 
 namespace skyline::vfs {
     using namespace loader;
@@ -96,6 +97,7 @@ namespace skyline::vfs {
 
         auto sectionBacking{CreateBacking(section, std::make_shared<RegionBacking>(backing, offset, size), offset)};
         sectionBacking = CreateSparseBacking(section, sectionBacking, size);
+        sectionBacking = CreateCompressedBacking(section, sectionBacking, size);
         auto pfs{std::make_shared<PartitionFileSystem>(sectionBacking)};
 
         if (contentType == NCAContentType::Program) {
@@ -116,6 +118,7 @@ namespace skyline::vfs {
         const std::size_t romFsSize{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].size};
         auto decryptedBacking{CreateBacking(sectionHeader, std::make_shared<RegionBacking>(backing, romFsOffset, romFsSize), romFsOffset)};
         decryptedBacking = CreateSparseBacking(sectionHeader, decryptedBacking, romFsSize);
+        decryptedBacking = CreateCompressedBacking(sectionHeader, decryptedBacking, romFsSize);
 
         if (sectionHeader.raw.header.encryptionType == NcaSectionEncryptionType::BKTR && bktrBaseRomfs && romFs) {
             const u64 size{constant::MediaUnitSize * (entry.mediaEndOffset - entry.mediaOffset)};
@@ -223,6 +226,42 @@ namespace skyline::vfs {
         return std::make_shared<SparseStorage>(decryptedBacking, sparseBlock, std::move(sparseBuckets), virtualSize, sparseInfo.physicalOffset);
     }
 
+    std::shared_ptr<Backing> NCA::CreateCompressedBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t virtualSize) {
+        const auto &compressionInfo{sectionHeader.raw.compressionInfo};
+        if (compressionInfo.bucket.tableOffset == 0 || compressionInfo.bucket.tableSize == 0)
+            return decryptedBacking;
+
+        // Same generic Bucket Tree format as Sparse - 0x10-byte BucketTreeHeader before the node storage
+        struct BucketTreeHeader {
+            u32 magic;
+            u32 version;
+            u32 entryCount;
+            u32 _pad_;
+        };
+        static_assert(sizeof(BucketTreeHeader) == 0x10);
+
+        BucketTreeHeader treeHeader{decryptedBacking->Read<BucketTreeHeader>(compressionInfo.bucket.tableOffset)};
+        if (treeHeader.magic != util::MakeMagic<u32>("BKTR"))
+            throw loader_exception(LoaderResult::ErrorCompressedNCA);
+
+        const size_t nodeStorageOffset{compressionInfo.bucket.tableOffset + sizeof(BucketTreeHeader)};
+        RelocationBlock compressedBlock{decryptedBacking->Read<RelocationBlock>(nodeStorageOffset)};
+
+        const size_t entryStorageOffset{nodeStorageOffset + sizeof(RelocationBlock)};
+        const size_t entryStorageSize{compressionInfo.bucket.tableSize - sizeof(BucketTreeHeader) - sizeof(RelocationBlock)};
+
+        std::vector<CompressedBucketRaw> compressedBucketsRaw(entryStorageSize / sizeof(CompressedBucketRaw));
+        auto regionBackingCompressed{std::make_shared<RegionBacking>(decryptedBacking, entryStorageOffset, entryStorageSize)};
+        regionBackingCompressed->Read<CompressedBucketRaw>(compressedBucketsRaw);
+
+        std::vector<CompressedBucket> compressedBuckets;
+        compressedBuckets.reserve(compressedBucketsRaw.size());
+        for (const auto &rawBucket : compressedBucketsRaw)
+            compressedBuckets.push_back(ConvertCompressedBucketRaw(rawBucket));
+
+        return std::make_shared<CompressedStorage>(decryptedBacking, compressedBlock, std::move(compressedBuckets), virtualSize);
+    }
+
     u8 NCA::GetKeyGeneration() {
         u8 legacyGen{static_cast<u8>(header.cryptoType)};
         u8 gen{static_cast<u8>(header.cryptoType2)};
@@ -285,8 +324,8 @@ namespace skyline::vfs {
     }
 
     void NCA::ValidateNCA(const NCASectionHeader &sectionHeader) {
-        if (sectionHeader.raw.compressionInfo.bucket.tableOffset != 0 &&
-            sectionHeader.raw.compressionInfo.bucket.tableSize != 0)
-            throw loader_exception(LoaderResult::ErrorCompressedNCA);
+        // Both Sparse and Compressed sections are now handled properly via CreateSparseBacking/
+        // CreateCompressedBacking, which fall back to throwing ErrorSparseNCA/ErrorCompressedNCA
+        // themselves if the bucket tree's magic doesn't validate - nothing left to check upfront here
     }
 }
