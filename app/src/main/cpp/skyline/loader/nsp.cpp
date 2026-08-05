@@ -45,6 +45,7 @@ namespace skyline::loader {
             } catch (const loader_exception &e) {
                 throw loader_exception(e.error);
             } catch (const std::exception &e) {
+                LOGE("NCA parsing failed for '{}': {}", entry.name, e.what());
                 continue;
             }
         }
