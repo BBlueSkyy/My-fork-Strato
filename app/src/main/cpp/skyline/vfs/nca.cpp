@@ -96,7 +96,7 @@ namespace skyline::vfs {
         size_t size{constant::MediaUnitSize * static_cast<size_t>(entry.mediaEndOffset - entry.mediaOffset)};
 
         auto sectionBacking{CreateBacking(section, std::make_shared<RegionBacking>(backing, offset, size), offset)};
-        sectionBacking = CreateSparseBacking(section, sectionBacking, size);
+        sectionBacking = CreateSparseBacking(section, sectionBacking, offset);
         sectionBacking = CreateCompressedBacking(section, sectionBacking, size);
         auto pfs{std::make_shared<PartitionFileSystem>(sectionBacking)};
 
@@ -128,7 +128,7 @@ namespace skyline::vfs {
         const std::size_t physicalRomFsSize{physicalSectionSize > ivfcOffset ? physicalSectionSize - ivfcOffset : 0};
 
         auto decryptedBacking{CreateBacking(sectionHeader, std::make_shared<RegionBacking>(backing, romFsOffset, physicalRomFsSize), romFsOffset)};
-        decryptedBacking = CreateSparseBacking(sectionHeader, decryptedBacking, romFsSize);
+        decryptedBacking = CreateSparseBacking(sectionHeader, decryptedBacking, romFsOffset);
         decryptedBacking = CreateCompressedBacking(sectionHeader, decryptedBacking, romFsSize);
 
         if (sectionHeader.raw.header.encryptionType == NcaSectionEncryptionType::BKTR && bktrBaseRomfs && romFs) {
@@ -198,79 +198,66 @@ namespace skyline::vfs {
         }
     }
 
-    std::shared_ptr<Backing> NCA::CreateSparseBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t virtualSize) {
-        const auto &sparseInfo{sectionHeader.raw.sparseInfo};
-        if (sparseInfo.bucket.tableOffset == 0 || sparseInfo.bucket.tableSize == 0)
-            return decryptedBacking;
+    std::shared_ptr<Backing> NCA::CreateSparseBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t sectionPhysicalStart) {
+    const auto &sparseInfo{sectionHeader.raw.sparseInfo};
+    if (sparseInfo.bucket.tableOffset == 0 || sparseInfo.bucket.tableSize == 0)
+        return decryptedBacking;
 
-        // Unlike the legacy BKTR PatchInfo relocation table (where BKTRHeader.offset points directly at
-        // the node data), the generic Bucket Tree used by SparseInfo/CompressionInfo starts with its own
-        // 0x10-byte BucketTreeHeader (magic "BKTR", version, entryCount, reserved) before the node storage.
-        // Skipping this shifts every subsequent read by 0x10 bytes and corrupts the whole tree.
-        struct BucketTreeHeader {
-            u32 magic;
-            u32 version;
-            u32 entryCount;
-            u32 _pad_;
-        };
-        static_assert(sizeof(BucketTreeHeader) == 0x10);
+    struct BucketTreeHeader {
+        u32 magic;
+        u32 version;
+        u32 entryCount;
+        u32 _pad_;
+    };
+    static_assert(sizeof(BucketTreeHeader) == 0x10);
 
-        BucketTreeHeader treeHeader{decryptedBacking->Read<BucketTreeHeader>(sparseInfo.bucket.tableOffset)};
-        if (treeHeader.magic != util::MakeMagic<u32>("BKTR"))
-            throw loader_exception(LoaderResult::ErrorSparseNCA);
+    auto key{!(rightsIdEmpty || useKeyArea) ? GetTitleKey() : GetKeyAreaKey(sectionHeader.raw.header.encryptionType)};
 
-        const size_t nodeStorageOffset{sparseInfo.bucket.tableOffset + sizeof(BucketTreeHeader)};
-        RelocationBlock sparseBlock{decryptedBacking->Read<RelocationBlock>(nodeStorageOffset)};
+    // The table (node+entry storage) uses a *different* upper IV whenever sparseInfo.generation != 0:
+    // Generation gets replaced by (generation << 16), SecureValue stays the same - confirmed against
+    // NcaSparseInfo.MakeAesCtrUpperIv/NcaAesCtrUpperIv in LibHac. No-op when generation == 0.
+    std::array<u8, 0x10> tableCtr{};
+    for (std::size_t i{}; i < 4; ++i)
+        tableCtr[i] = sectionHeader.raw.sectionCtr[7 - i]; // SecureValue, unchanged, big-endian
 
-        const size_t entryStorageOffset{nodeStorageOffset + sizeof(RelocationBlock)};
-        const size_t entryStorageSize{sparseInfo.bucket.tableSize - sizeof(BucketTreeHeader) - sizeof(RelocationBlock)};
+    const u32 sparseGen{static_cast<u32>(sparseInfo.generation) << 16};
+    tableCtr[4] = static_cast<u8>((sparseGen >> 24) & 0xFF);
+    tableCtr[5] = static_cast<u8>((sparseGen >> 16) & 0xFF);
+    tableCtr[6] = 0;
+    tableCtr[7] = 0;
 
-        std::vector<RelocationBucketRaw> sparseBucketsRaw(entryStorageSize / sizeof(RelocationBucketRaw));
-        auto regionBackingSparse{std::make_shared<RegionBacking>(decryptedBacking, entryStorageOffset, entryStorageSize)};
-        regionBackingSparse->Read<RelocationBucketRaw>(sparseBucketsRaw);
+    // The table sits at a fixed physical position and isn't remapped - its counter is just that physical
+    // position (sectionPhysicalStart + local offset), with the substituted Generation above.
+    auto tableRegion{std::make_shared<RegionBacking>(backing, sectionPhysicalStart, sparseInfo.bucket.tableOffset + sparseInfo.bucket.tableSize)};
+    CtrEncryptedBacking tableBacking{tableCtr, key, tableRegion, sectionPhysicalStart};
 
-        std::vector<RelocationBucket> sparseBuckets;
-        sparseBuckets.reserve(sparseBucketsRaw.size());
-        for (const auto &rawBucket : sparseBucketsRaw)
-            sparseBuckets.push_back(ConvertRelocationBucketRaw(rawBucket));
+    BucketTreeHeader treeHeader{};
+    tableBacking.Read(span(reinterpret_cast<u8 *>(&treeHeader), sizeof(treeHeader)), sparseInfo.bucket.tableOffset);
+    if (treeHeader.magic != util::MakeMagic<u32>("BKTR"))
+        throw loader_exception(LoaderResult::ErrorSparseNCA);
 
-        return std::make_shared<SparseStorage>(decryptedBacking, sparseBlock, std::move(sparseBuckets), virtualSize, sparseInfo.physicalOffset);
-    }
+    const size_t nodeStorageOffset{sparseInfo.bucket.tableOffset + sizeof(BucketTreeHeader)};
+    RelocationBlock sparseBlock{};
+    tableBacking.Read(span(reinterpret_cast<u8 *>(&sparseBlock), sizeof(sparseBlock)), nodeStorageOffset);
 
-    std::shared_ptr<Backing> NCA::CreateCompressedBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t virtualSize) {
-        const auto &compressionInfo{sectionHeader.raw.compressionInfo};
-        if (compressionInfo.bucket.tableOffset == 0 || compressionInfo.bucket.tableSize == 0)
-            return decryptedBacking;
+    const size_t entryStorageOffset{nodeStorageOffset + sizeof(RelocationBlock)};
+    const size_t entryStorageSize{sparseInfo.bucket.tableSize - sizeof(BucketTreeHeader) - sizeof(RelocationBlock)};
 
-        // Same generic Bucket Tree format as Sparse - 0x10-byte BucketTreeHeader before the node storage
-        struct BucketTreeHeader {
-            u32 magic;
-            u32 version;
-            u32 entryCount;
-            u32 _pad_;
-        };
-        static_assert(sizeof(BucketTreeHeader) == 0x10);
+    std::vector<RelocationBucketRaw> sparseBucketsRaw(entryStorageSize / sizeof(RelocationBucketRaw));
+    for (std::size_t i{}; i < sparseBucketsRaw.size(); ++i)
+        tableBacking.Read(span(reinterpret_cast<u8 *>(&sparseBucketsRaw[i]), sizeof(RelocationBucketRaw)), entryStorageOffset + i * sizeof(RelocationBucketRaw));
 
-        BucketTreeHeader treeHeader{decryptedBacking->Read<BucketTreeHeader>(compressionInfo.bucket.tableOffset)};
-        if (treeHeader.magic != util::MakeMagic<u32>("BKTR"))
-            throw loader_exception(LoaderResult::ErrorCompressedNCA);
+    std::vector<RelocationBucket> sparseBuckets;
+    sparseBuckets.reserve(sparseBucketsRaw.size());
+    for (const auto &rawBucket : sparseBucketsRaw)
+        sparseBuckets.push_back(ConvertRelocationBucketRaw(rawBucket));
 
-        const size_t nodeStorageOffset{compressionInfo.bucket.tableOffset + sizeof(BucketTreeHeader)};
-        RelocationBlock compressedBlock{decryptedBacking->Read<RelocationBlock>(nodeStorageOffset)};
+    // Standard ctr for the actual data blocks - normal Generation field, unlike the table above
+    std::array<u8, 0x10> dataCtr{};
+    for (std::size_t i{}; i < 8; ++i)
+        dataCtr[i] = sectionHeader.raw.sectionCtr[8 - i - 1];
 
-        const size_t entryStorageOffset{nodeStorageOffset + sizeof(RelocationBlock)};
-        const size_t entryStorageSize{compressionInfo.bucket.tableSize - sizeof(BucketTreeHeader) - sizeof(RelocationBlock)};
-
-        std::vector<CompressedBucketRaw> compressedBucketsRaw(entryStorageSize / sizeof(CompressedBucketRaw));
-        auto regionBackingCompressed{std::make_shared<RegionBacking>(decryptedBacking, entryStorageOffset, entryStorageSize)};
-        regionBackingCompressed->Read<CompressedBucketRaw>(compressedBucketsRaw);
-
-        std::vector<CompressedBucket> compressedBuckets;
-        compressedBuckets.reserve(compressedBucketsRaw.size());
-        for (const auto &rawBucket : compressedBucketsRaw)
-            compressedBuckets.push_back(ConvertCompressedBucketRaw(rawBucket));
-
-        return std::make_shared<CompressedStorage>(decryptedBacking, compressedBlock, std::move(compressedBuckets), virtualSize);
+        return std::make_shared<SparseStorage>(backing, key, dataCtr, sectionPhysicalStart, sparseBlock, std::move(sparseBuckets), sparseBlock.size, sparseInfo.physicalOffset);
     }
 
     u8 NCA::GetKeyGeneration() {
