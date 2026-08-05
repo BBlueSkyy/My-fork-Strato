@@ -6,6 +6,7 @@
 #include <crypto/key_store.h>
 #include <crypto/aes_cipher.h>
 #include "filesystem.h"
+#include <cstdint>
 
 namespace skyline {
     namespace constant {
@@ -322,7 +323,7 @@ namespace skyline {
             u64 virtualOffset;
             u64 physicalOffset;
             NCACompressionType compressionType;
-            s8 compressionLevel;
+            i8 compressionLevel;
             u8 _pad0_[0x2]; //!< Padding to align physicalSize to a 4-byte boundary, per the C# struct's default layout
             u32 physicalSize; //!< The size of this block's data as stored on-disk (only meaningful for Lz4 blocks, which store fewer bytes than they decompress to)
         };
