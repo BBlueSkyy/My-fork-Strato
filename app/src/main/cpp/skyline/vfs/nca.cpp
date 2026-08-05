@@ -101,7 +101,6 @@ namespace skyline::vfs {
         auto pfs{std::make_shared<PartitionFileSystem>(sectionBacking)};
 
         if (contentType == NCAContentType::Program) {
-            // An ExeFS must always contain an NPDM and a main NSO, whereas the logo section will always contain a logo and a startup movie
             if (pfs->FileExists("main") && pfs->FileExists("main.npdm"))
                 exeFs = std::move(pfs);
             else if (pfs->FileExists("NintendoLogo.png") && pfs->FileExists("StartupMovie.gif"))
@@ -321,6 +320,8 @@ namespace skyline::vfs {
     }
 
     void NCA::ValidateNCA(const NCASectionHeader &sectionHeader) {
-        (void)sectionHeader;
+        // Both Sparse and Compressed sections are now handled properly via CreateSparseBacking/
+        // CreateCompressedBacking, which fall back to throwing ErrorSparseNCA/ErrorCompressedNCA
+        // themselves if the bucket tree's magic doesn't validate - nothing left to check upfront here
     }
 }
