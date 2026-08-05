@@ -22,6 +22,7 @@ namespace skyline::vfs {
         std::shared_ptr<Backing> backing; //!< The CTR-decrypted backing that physical offsets are read from, addressed relative to the section's start
         RelocationBlock block; //!< The L1 offset node of the sparse bucket tree
         std::vector<RelocationBucket> buckets; //!< The L2 entry nodes of the sparse bucket tree
+        u64 physicalBaseOffset; //!< NCASparseInfo::physicalOffset - the base that every entry's physical offset is relative to, since sparse-compacted data doesn't start at offset 0 of the backing
 
         std::pair<u64, u64> GetEntryIndex(u64 offset);
 
@@ -38,7 +39,8 @@ namespace skyline::vfs {
          * @param block The parsed L1 offset node of the sparse bucket tree
          * @param buckets The parsed L2 entry nodes of the sparse bucket tree
          * @param virtualSize The full virtual (uncompacted) size of the section, this becomes the exposed `Backing::size`
+         * @param physicalBaseOffset NCASparseInfo::physicalOffset, added to every entry's physical offset before reading from `backing`
          */
-        SparseStorage(std::shared_ptr<Backing> backing, RelocationBlock block, std::vector<RelocationBucket> buckets, u64 virtualSize);
+        SparseStorage(std::shared_ptr<Backing> backing, RelocationBlock block, std::vector<RelocationBucket> buckets, u64 virtualSize, u64 physicalBaseOffset);
     };
 }
