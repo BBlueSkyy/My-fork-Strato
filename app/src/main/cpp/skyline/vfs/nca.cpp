@@ -115,10 +115,10 @@ namespace skyline::vfs {
         const std::size_t baseOffset{entry.mediaOffset * constant::MediaUnitSize};
         ivfcOffset = sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].offset;
         const std::size_t romFsOffset{baseOffset + ivfcOffset};
-        const std::size_t romFsSize{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].size};
-        auto decryptedBacking{CreateBacking(sectionHeader, std::make_shared<RegionBacking>(backing, romFsOffset, romFsSize), romFsOffset)};
-        decryptedBacking = CreateSparseBacking(sectionHeader, decryptedBacking, romFsSize);
-        decryptedBacking = CreateCompressedBacking(sectionHeader, decryptedBacking, romFsSize);
+        const std::size_t physicalRomFsSize{constant::MediaUnitSize * (entry.mediaEndOffset - entry.mediaOffset) - ivfcOffset};
+          auto decryptedBacking{CreateBacking(sectionHeader, std::make_shared<RegionBacking>(backing, romFsOffset, physicalRomFsSize), romFsOffset)};
+          decryptedBacking = CreateSparseBacking(sectionHeader, decryptedBacking, romFsSize);
+          decryptedBacking = CreateCompressedBacking(sectionHeader, decryptedBacking, romFsSize);
 
         if (sectionHeader.raw.header.encryptionType == NcaSectionEncryptionType::BKTR && bktrBaseRomfs && romFs) {
             const u64 size{constant::MediaUnitSize * (entry.mediaEndOffset - entry.mediaOffset)};
