@@ -42,18 +42,20 @@ namespace skyline::vfs {
         }))};
 
         sections.resize(numberSections);
+        const auto lengthSections{constant::SectionHeaderSize * numberSections};
 
-           if (encrypted) {
-             std::vector<u8> raw(lengthSections);
-          backing->Read(raw, constant::SectionHeaderOffset);
+        if (encrypted) {
+            std::vector<u8> raw(lengthSections);
 
-          crypto::AesCipher cipher(*keyStore->headerKey, MBEDTLS_CIPHER_AES_128_XTS);
-          cipher.XtsDecrypt(reinterpret_cast<u8 *>(sections.data()), reinterpret_cast<u8 *>(raw.data()), lengthSections, 2, constant::SectionHeaderSize);
-          } else {
-        for (size_t i = 0; i < numberSections; ++i)
-        sections[i] = backing->Read<NCASectionHeader>();
-    }
-            
+            backing->Read(raw, constant::SectionHeaderOffset);
+
+            crypto::AesCipher cipher(*keyStore->headerKey, MBEDTLS_CIPHER_AES_128_XTS);
+            cipher.XtsDecrypt(reinterpret_cast<u8 *>(sections.data()), reinterpret_cast<u8 *>(raw.data()), lengthSections, 2, constant::SectionHeaderSize);
+        } else {
+            for (size_t i{}; i < lengthSections; i++)
+                sections.push_back(backing->Read<NCASectionHeader>());
+        }
+
         for (std::size_t i = 0; i < sections.size(); ++i) {
             const auto &section = sections[i];
 
@@ -72,6 +74,7 @@ namespace skyline::vfs {
         : romFs(updateNca->romFs), header(updateNca->header), sections(std::move(updateNca->sections)), encrypted(updateNca->encrypted), backing(std::move(updateNca->backing)),
         keyStore(std::move(pKeyStore)), bktrBaseRomfs(std::move(bktrBaseRomfs)), bktrBaseIvfcOffset(bktrBaseIvfcOffset), useKeyArea(pUseKeyArea) {
 
+        useKeyArea = false;
         contentType = header.contentType;
         rightsIdEmpty = header.rightsId == crypto::KeyStore::Key128{};
 
