@@ -29,8 +29,8 @@ namespace skyline::vfs {
         return {0, 0};
     }
 
-    SparseStorage::SparseStorage(std::shared_ptr<Backing> pBacking, RelocationBlock pBlock, std::vector<RelocationBucket> pBuckets, u64 virtualSize)
-        : Backing({true, false, false}, virtualSize), backing(std::move(pBacking)), block(pBlock), buckets(std::move(pBuckets)) {
+    SparseStorage::SparseStorage(std::shared_ptr<Backing> pBacking, RelocationBlock pBlock, std::vector<RelocationBucket> pBuckets, u64 virtualSize, u64 pPhysicalBaseOffset)
+        : Backing({true, false, false}, virtualSize), backing(std::move(pBacking)), block(pBlock), buckets(std::move(pBuckets)), physicalBaseOffset(pPhysicalBaseOffset) {
         // Cap every bucket with a sentinel entry pointing at the start of the next bucket, exactly like
         // BKTR's constructor does, so GetNextEntry() always has a following entry to bound a read against
         for (std::size_t i{}; i < block.numberBuckets - 1; ++i)
@@ -71,16 +71,17 @@ namespace skyline::vfs {
             return ReadImpl(output.subspan(0, partition), offset) + ReadImpl(tail, offset + partition);
         }
 
-        // TODO: VERIFY before relying on this - fromPatch == 0 is assumed to mean "unallocated, read as
-        // zero", which is the documented convention for Nintendo's SparseStorage/IndirectStorage pairing.
-        // Confirm against a known-sparse NCA (e.g. log entry.fromPatch/addressSource around the offsets
-        // your crash hits, or diff against a real dump) before trusting this in a release build.
-        if (!entry.fromPatch) {
+        // Confirmed against LibHac's SparseStorage: storage index/fromPatch 0 is the real data storage,
+        // 1 is the always-zero storage (SetZeroStorage always assigns index 1) - so a *nonzero* fromPatch
+        // means "never physically stored, read as zero", not the other way around.
+        if (entry.fromPatch) {
             std::fill(output.begin(), output.end(), 0);
             return output.size();
         }
 
-        const u64 physicalOffset{entry.addressSource + (offset - entry.addressPatch)};
+        // Entry physical offsets are relative to NCASparseInfo::physicalOffset, not to the start of
+        // the backing - the compacted real data doesn't necessarily begin at offset 0.
+        const u64 physicalOffset{physicalBaseOffset + entry.addressSource + (offset - entry.addressPatch)};
         return backing->Read(output, physicalOffset);
     }
 }
