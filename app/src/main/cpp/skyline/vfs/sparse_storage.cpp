@@ -2,6 +2,8 @@
 // Copyright © 2023 Strato Team and Contributors (https://github.com/strato-emu/)
 
 #include "sparse_storage.h"
+#include "region_backing.h"
+#include "ctr_encrypted_backing.h"
 
 namespace skyline::vfs {
     // Mirrors BKTR's SearchBucketEntry (bktr.cpp) minus the subsection-specific last-bucket shortcut,
