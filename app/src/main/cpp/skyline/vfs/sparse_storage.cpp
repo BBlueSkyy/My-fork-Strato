@@ -29,59 +29,46 @@ namespace skyline::vfs {
         return {0, 0};
     }
 
-    SparseStorage::SparseStorage(std::shared_ptr<Backing> pBacking, RelocationBlock pBlock, std::vector<RelocationBucket> pBuckets, u64 virtualSize, u64 pPhysicalBaseOffset)
-        : Backing({true, false, false}, virtualSize), backing(std::move(pBacking)), block(pBlock), buckets(std::move(pBuckets)), physicalBaseOffset(pPhysicalBaseOffset) {
-        // Cap every bucket with a sentinel entry pointing at the start of the next bucket, exactly like
-        // BKTR's constructor does, so GetNextEntry() always has a following entry to bound a read against
-        for (std::size_t i{}; i < block.numberBuckets - 1; ++i)
-            buckets[i].entries.push_back({block.baseOffsets[i + 1], 0, 0});
-
+    SparseStorage::SparseStorage(std::shared_ptr<Backing> pRawBacking, crypto::KeyStore::Key128 pKey, std::array<u8, 0x10> pCtr, size_t pSectionPhysicalStart,
+                              RelocationBlock pBlock, std::vector<RelocationBucket> pBuckets, u64 virtualSize, u64 pPhysicalBaseOffset)
+    : Backing({true, false, false}, virtualSize), rawBacking(std::move(pRawBacking)), key(pKey), ctr(pCtr), sectionPhysicalStart(pSectionPhysicalStart),
+    block(pBlock), buckets(std::move(pBuckets)), physicalBaseOffset(pPhysicalBaseOffset) {
+    for (std::size_t i{}; i < block.numberBuckets - 1; ++i)
+        buckets[i].entries.push_back({block.baseOffsets[i + 1], 0, 0});
         buckets.back().entries.push_back({block.size, 0, 0});
     }
 
-    std::pair<u64, u64> SparseStorage::GetEntryIndex(u64 offset) {
-        return SearchBucketEntry(offset, block, buckets);
+      // GetEntryIndex / GetEntry / GetNextEntry ficam exatamente como estão hoje
+
+      size_t SparseStorage::ReadImpl(span<u8> output, size_t offset) {
+      if (offset >= block.size)
+        return 0;
+
+    const auto entry{GetEntry(offset)};
+    const auto next{GetNextEntry(offset)};
+
+    if (offset + output.size() > next.addressPatch) {
+        const u64 partition{next.addressPatch - offset};
+        span<u8> tail(output.data() + partition, output.size() - partition);
+        return ReadImpl(output.subspan(0, partition), offset) + ReadImpl(tail, offset + partition);
     }
 
-    RelocationEntry SparseStorage::GetEntry(u64 offset) {
-        const auto index{GetEntryIndex(offset)};
-        return buckets[index.first].entries[index.second];
+    if (entry.fromPatch) {
+        std::fill(output.begin(), output.end(), 0);
+        return output.size();
     }
 
-    RelocationEntry SparseStorage::GetNextEntry(u64 offset) {
-        const auto index{GetEntryIndex(offset)};
-        const auto &bucket{buckets[index.first]};
-        if (index.second + 1 < bucket.entries.size())
-            return bucket.entries[index.second + 1];
-        return buckets[index.first + 1].entries[0];
-    }
+      // This block was encrypted as if it sat at its *virtual* offset, not wherever it was physically
+      // compacted to. RegionBacking absorbs the constant physical-minus-virtual delta for this entry as its
+      // base, so CtrEncryptedBacking's own offset - which is what its counter is derived from - can stay the
+      // true virtual `offset`. `regionBase` intentionally wraps as an unsigned value when physical < virtual;
+      // adding back `offset` (always >= entry.addressPatch here) correctly unwraps it - standard, safe
+      // modular arithmetic, not a bug.
+      const u64 physicalOffset{physicalBaseOffset + entry.addressSource + (offset - entry.addressPatch)};
+      const u64 regionBase{sectionPhysicalStart + physicalOffset - offset};
 
-    size_t SparseStorage::ReadImpl(span<u8> output, size_t offset) {
-        if (offset >= block.size)
-            return 0;
-
-        const auto entry{GetEntry(offset)};
-        const auto next{GetNextEntry(offset)};
-
-        // Split the read at the entry boundary, the same strategy BKTR uses, so a single request never
-        // straddles two entries that could resolve to different physical regions (or zero vs. real data)
-        if (offset + output.size() > next.addressPatch) {
-            const u64 partition{next.addressPatch - offset};
-            span<u8> tail(output.data() + partition, output.size() - partition);
-            return ReadImpl(output.subspan(0, partition), offset) + ReadImpl(tail, offset + partition);
-        }
-
-        // Confirmed against LibHac's SparseStorage: storage index/fromPatch 0 is the real data storage,
-        // 1 is the always-zero storage (SetZeroStorage always assigns index 1) - so a *nonzero* fromPatch
-        // means "never physically stored, read as zero", not the other way around.
-        if (entry.fromPatch) {
-            std::fill(output.begin(), output.end(), 0);
-            return output.size();
-        }
-
-        // Entry physical offsets are relative to NCASparseInfo::physicalOffset, not to the start of
-        // the backing - the compacted real data doesn't necessarily begin at offset 0.
-        const u64 physicalOffset{physicalBaseOffset + entry.addressSource + (offset - entry.addressPatch)};
-        return backing->Read(output, physicalOffset);
+       auto region{std::make_shared<RegionBacking>(rawBacking, regionBase, rawBacking->size)};
+        CtrEncryptedBacking decryptor{ctr, key, region, sectionPhysicalStart};
+        return decryptor.ReadUnchecked(output, offset);
     }
 }
