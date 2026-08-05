@@ -189,10 +189,30 @@ namespace skyline::vfs {
         if (sparseInfo.bucket.tableOffset == 0 || sparseInfo.bucket.tableSize == 0)
             return decryptedBacking;
 
-        RelocationBlock sparseBlock{decryptedBacking->Read<RelocationBlock>(sparseInfo.bucket.tableOffset)};
+        // Unlike the legacy BKTR PatchInfo relocation table (where BKTRHeader.offset points directly at
+        // the node data), the generic Bucket Tree used by SparseInfo/CompressionInfo starts with its own
+        // 0x10-byte BucketTreeHeader (magic "BKTR", version, entryCount, reserved) before the node storage.
+        // Skipping this shifts every subsequent read by 0x10 bytes and corrupts the whole tree.
+        struct BucketTreeHeader {
+            u32 magic;
+            u32 version;
+            u32 entryCount;
+            u32 _pad_;
+        };
+        static_assert(sizeof(BucketTreeHeader) == 0x10);
 
-        std::vector<RelocationBucketRaw> sparseBucketsRaw((sparseInfo.bucket.tableSize - sizeof(RelocationBlock)) / sizeof(RelocationBucketRaw));
-        auto regionBackingSparse{std::make_shared<RegionBacking>(decryptedBacking, sparseInfo.bucket.tableOffset + sizeof(RelocationBlock), sparseInfo.bucket.tableSize - sizeof(RelocationBlock))};
+        BucketTreeHeader treeHeader{decryptedBacking->Read<BucketTreeHeader>(sparseInfo.bucket.tableOffset)};
+        if (treeHeader.magic != util::MakeMagic<u32>("BKTR"))
+            throw loader_exception(LoaderResult::ErrorSparseNCA);
+
+        const size_t nodeStorageOffset{sparseInfo.bucket.tableOffset + sizeof(BucketTreeHeader)};
+        RelocationBlock sparseBlock{decryptedBacking->Read<RelocationBlock>(nodeStorageOffset)};
+
+        const size_t entryStorageOffset{nodeStorageOffset + sizeof(RelocationBlock)};
+        const size_t entryStorageSize{sparseInfo.bucket.tableSize - sizeof(BucketTreeHeader) - sizeof(RelocationBlock)};
+
+        std::vector<RelocationBucketRaw> sparseBucketsRaw(entryStorageSize / sizeof(RelocationBucketRaw));
+        auto regionBackingSparse{std::make_shared<RegionBacking>(decryptedBacking, entryStorageOffset, entryStorageSize)};
         regionBackingSparse->Read<RelocationBucketRaw>(sparseBucketsRaw);
 
         std::vector<RelocationBucket> sparseBuckets;
@@ -200,7 +220,7 @@ namespace skyline::vfs {
         for (const auto &rawBucket : sparseBucketsRaw)
             sparseBuckets.push_back(ConvertRelocationBucketRaw(rawBucket));
 
-        return std::make_shared<SparseStorage>(decryptedBacking, sparseBlock, std::move(sparseBuckets), virtualSize);
+        return std::make_shared<SparseStorage>(decryptedBacking, sparseBlock, std::move(sparseBuckets), virtualSize, sparseInfo.physicalOffset);
     }
 
     u8 NCA::GetKeyGeneration() {
