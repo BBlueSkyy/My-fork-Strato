@@ -78,6 +78,10 @@ open class BaseAppItem(private val meta : AppEntry, val enabled: Boolean = false
             LoaderResult.MissingHeaderKey,
             LoaderResult.MissingTitleKek,
             LoaderResult.MissingKeyArea -> R.string.incomplete_prod_keys
+
+            LoaderResult.ErrorSparseNCA -> R.string.sparse_nca_error
+
+            LoaderResult.ErrorCompressedNCA -> R.string.compressed_nca_error
         }
     )
 
