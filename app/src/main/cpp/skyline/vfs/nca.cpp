@@ -278,8 +278,8 @@ namespace skyline::vfs {
         static_assert(sizeof(BucketTreeHeader) == 0x10);
 
         BucketTreeHeader treeHeader{decryptedBacking->Read<BucketTreeHeader>(compressionInfo.bucket.tableOffset)};
-        if (treeHeader.magic != util::MakeMagic<u32>("BKTR"))
-            throw loader_exception(LoaderResult::ErrorCompressedNCA);
+            if (treeHeader.magic != util::MakeMagic<u32>("BKTR"))
+                throw loader_exception(LoaderResult::ErrorCompressedNCA, fmt::format("magic=0x{:X} tableOffset=0x{:X} tableSize=0x{:X}", treeHeader.magic, compressionInfo.bucket.tableOffset, compressionInfo.bucket.tableSize));
 
         const size_t nodeStorageOffset{compressionInfo.bucket.tableOffset + sizeof(BucketTreeHeader)};
         RelocationBlock compressedBlock{decryptedBacking->Read<RelocationBlock>(nodeStorageOffset)};
