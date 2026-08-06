@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <fstream>
 #include <kernel/types/KProcess.h>
 #include <vfs/ticket.h>
 #include "nca.h"
@@ -23,7 +24,7 @@ namespace skyline::loader {
         }
     }
 
-    NspLoader::NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore) : nsp(std::make_shared<vfs::PartitionFileSystem>(backing)) {
+    NspLoader::NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore, const std::string &diagnosticsPath) : nsp(std::make_shared<vfs::PartitionFileSystem>(backing)) {
         ExtractTickets(nsp, keyStore);
 
         auto root{nsp->OpenDirectory("", {false, true})};
@@ -43,6 +44,11 @@ namespace skyline::loader {
                 else if (nca.contentType == vfs::NCAContentType::PublicData)
                     publicNca = std::move(nca);
             } catch (const loader_exception &e) {
+                if (!diagnosticsPath.empty()) {
+                    std::ofstream diag(diagnosticsPath, std::ios::app);
+                    if (diag)
+                        diag << "NCA '" << entry.name << "' failed, LoaderResult=" << static_cast<int>(e.error) << "\n";
+                }
                 throw loader_exception(e.error);
             } catch (const std::exception &e) {
                 LOGE("NCA parsing failed for '{}': {}", entry.name, e.what());
