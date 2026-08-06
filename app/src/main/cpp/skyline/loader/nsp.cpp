@@ -47,7 +47,7 @@ namespace skyline::loader {
                 if (!diagnosticsPath.empty()) {
                     std::ofstream diag(diagnosticsPath, std::ios::app);
                     if (diag)
-                        diag << "NCA '" << entry.name << "' failed, LoaderResult=" << static_cast<int>(e.error) << "\n";
+                        diag << "NCA '" << entry.name << "' failed, LoaderResult=" << static_cast<int>(e.error) << ", " << e.what() << "\n";
                 }
                 throw loader_exception(e.error);
             } catch (const std::exception &e) {
