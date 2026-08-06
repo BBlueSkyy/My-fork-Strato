@@ -370,6 +370,11 @@ namespace skyline {
 
             std::shared_ptr<Backing> CreateBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> rawBacking, size_t offset);
 
+            /**
+             * @param sectionHeader The section's parsed header
+             * @param decryptedBacking The section's standard-IV, CTR-decrypted backing - only used as the passthrough return value when the section has no Sparse layer
+             * @param sectionPhysicalStart The physical file offset of the section's start (i.e. the same offset passed to CreateBacking for this section)
+             */
             std::shared_ptr<Backing> CreateSparseBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t sectionPhysicalStart);
 
             std::shared_ptr<Backing> CreateCompressedBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t virtualSize);
