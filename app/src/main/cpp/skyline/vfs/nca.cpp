@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <cstring> // Adicionado para garantir o uso de std::memcpy
 #include <crypto/aes_cipher.h>
 #include <loader/loader.h>
 
@@ -229,15 +230,19 @@ namespace skyline::vfs {
         auto tableRegion{std::make_shared<RegionBacking>(backing, sectionPhysicalStart, sparseInfo.bucket.tableOffset + sparseInfo.bucket.tableSize)};
         CtrEncryptedBacking tableBacking{tableCtr, key, tableRegion, sectionPhysicalStart};
 
-        BucketTreeHeader treeHeader{tableBacking.Read<BucketTreeHeader>(sparseInfo.bucket.tableOffset)};
+        // CORREÇÃO AQUI: Leia o header diretamente da memória (campo tableHeader), não do backing
+        BucketTreeHeader treeHeader{};
+        std::memcpy(&treeHeader, sparseInfo.bucket.tableHeader.data(), sizeof(BucketTreeHeader));
         if (treeHeader.magic != util::MakeMagic<u32>("BKTR"))
             throw loader_exception(LoaderResult::ErrorSparseNCA);
 
-        const size_t nodeStorageOffset{sparseInfo.bucket.tableOffset + sizeof(BucketTreeHeader)};
+        // CORREÇÃO AQUI: Remova o + sizeof(BucketTreeHeader), pois tableOffset já aponta direto para o RelocationBlock
+        const size_t nodeStorageOffset{sparseInfo.bucket.tableOffset};
         RelocationBlock sparseBlock{tableBacking.Read<RelocationBlock>(nodeStorageOffset)};
 
+        // CORREÇÃO AQUI: O cálculo do tamanho também não deve incluir o BucketTreeHeader
         const size_t entryStorageOffset{nodeStorageOffset + sizeof(RelocationBlock)};
-        const size_t entryStorageSize{sparseInfo.bucket.tableSize - sizeof(BucketTreeHeader) - sizeof(RelocationBlock)};
+        const size_t entryStorageSize{sparseInfo.bucket.tableSize - sizeof(RelocationBlock)};
 
         std::vector<RelocationBucketRaw> sparseBucketsRaw(entryStorageSize / sizeof(RelocationBucketRaw));
         for (std::size_t i{}; i < sparseBucketsRaw.size(); ++i)
@@ -263,11 +268,6 @@ namespace skyline::vfs {
         if (compressionInfo.bucket.tableOffset == 0 || compressionInfo.bucket.tableSize == 0)
             return decryptedBacking;
 
-        // TEMP DIAGNOSTIC: confirm whether this section also has a Sparse table, which would mean
-        // decryptedBacking here is actually a SparseStorage (virtual-addressed), not the physically-
-        // addressed backing this function assumes - remove once confirmed either way
-        LOGE("CreateCompressedBacking: compressionInfo.bucket.tableOffset=0x{:X} sparseInfo.bucket.tableOffset=0x{:X}", compressionInfo.bucket.tableOffset, sectionHeader.raw.sparseInfo.bucket.tableOffset);
-
         // Same generic Bucket Tree format as Sparse - 0x10-byte BucketTreeHeader before the node storage
         struct BucketTreeHeader {
             u32 magic;
@@ -277,15 +277,19 @@ namespace skyline::vfs {
         };
         static_assert(sizeof(BucketTreeHeader) == 0x10);
 
-        BucketTreeHeader treeHeader{decryptedBacking->Read<BucketTreeHeader>(compressionInfo.bucket.tableOffset)};
-    if (treeHeader.magic != util::MakeMagic<u32>("BKTR"))
-        throw loader_exception(LoaderResult::ErrorCompressedNCA, fmt::format("magic=0x{:X} tableOffset=0x{:X} tableSize=0x{:X} sparseTableOffset=0x{:X} sparseTableSize=0x{:X}", treeHeader.magic, compressionInfo.bucket.tableOffset, compressionInfo.bucket.tableSize, sectionHeader.raw.sparseInfo.bucket.tableOffset, sectionHeader.raw.sparseInfo.bucket.tableSize));
+        // CORREÇÃO AQUI: Leia o header diretamente da memória (campo tableHeader), não do backing
+        BucketTreeHeader treeHeader{};
+        std::memcpy(&treeHeader, compressionInfo.bucket.tableHeader.data(), sizeof(BucketTreeHeader));
+        if (treeHeader.magic != util::MakeMagic<u32>("BKTR"))
+            throw loader_exception(LoaderResult::ErrorCompressedNCA, fmt::format("magic=0x{:X} tableOffset=0x{:X} tableSize=0x{:X} sparseTableOffset=0x{:X} sparseTableSize=0x{:X}", treeHeader.magic, compressionInfo.bucket.tableOffset, compressionInfo.bucket.tableSize, sectionHeader.raw.sparseInfo.bucket.tableOffset, sectionHeader.raw.sparseInfo.bucket.tableSize));
 
-        const size_t nodeStorageOffset{compressionInfo.bucket.tableOffset + sizeof(BucketTreeHeader)};
+        // CORREÇÃO AQUI: Remova o + sizeof(BucketTreeHeader), pois tableOffset já aponta direto para o RelocationBlock
+        const size_t nodeStorageOffset{compressionInfo.bucket.tableOffset};
         RelocationBlock compressedBlock{decryptedBacking->Read<RelocationBlock>(nodeStorageOffset)};
 
+        // CORREÇÃO AQUI: O cálculo do tamanho também não deve incluir o BucketTreeHeader
         const size_t entryStorageOffset{nodeStorageOffset + sizeof(RelocationBlock)};
-        const size_t entryStorageSize{compressionInfo.bucket.tableSize - sizeof(BucketTreeHeader) - sizeof(RelocationBlock)};
+        const size_t entryStorageSize{compressionInfo.bucket.tableSize - sizeof(RelocationBlock)};
 
         std::vector<CompressedBucketRaw> compressedBucketsRaw(entryStorageSize / sizeof(CompressedBucketRaw));
         auto regionBackingCompressed{std::make_shared<RegionBacking>(decryptedBacking, entryStorageOffset, entryStorageSize)};
