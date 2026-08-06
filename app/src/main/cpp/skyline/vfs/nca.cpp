@@ -263,6 +263,11 @@ namespace skyline::vfs {
         if (compressionInfo.bucket.tableOffset == 0 || compressionInfo.bucket.tableSize == 0)
             return decryptedBacking;
 
+        // TEMP DIAGNOSTIC: confirm whether this section also has a Sparse table, which would mean
+        // decryptedBacking here is actually a SparseStorage (virtual-addressed), not the physically-
+        // addressed backing this function assumes - remove once confirmed either way
+        LOGE("CreateCompressedBacking: compressionInfo.bucket.tableOffset=0x{:X} sparseInfo.bucket.tableOffset=0x{:X}", compressionInfo.bucket.tableOffset, sectionHeader.raw.sparseInfo.bucket.tableOffset);
+
         // Same generic Bucket Tree format as Sparse - 0x10-byte BucketTreeHeader before the node storage
         struct BucketTreeHeader {
             u32 magic;
