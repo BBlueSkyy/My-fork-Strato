@@ -50,6 +50,8 @@
     <string name="invalid_file">Invalid file</string>
     <string name="missing_title_key">Missing title key</string>
     <string name="incomplete_prod_keys">Incomplete production keys</string>
+    <string name="sparse_nca_error">This title uses Sparse NCA sections, which failed to load</string>
+    <string name="compressed_nca_error">This title uses Compressed NCA sections, which failed to load</string>
     <!-- Picture-In-Picture -->
     <string name="pause">Pause</string>
     <string name="mute">Mute</string>
