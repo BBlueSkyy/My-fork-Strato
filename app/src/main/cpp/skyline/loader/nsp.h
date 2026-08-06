@@ -21,7 +21,7 @@ namespace skyline::loader {
         std::optional<vfs::NCA> metaNca; //!< The main meta NCA within the NSP
 
       public:
-        NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore);
+       NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore, const std::string &diagnosticsPath = {}); 
 
         std::vector<u8> GetIcon(language::ApplicationLanguage language) override;
 
