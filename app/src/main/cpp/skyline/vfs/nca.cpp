@@ -95,9 +95,9 @@ namespace skyline::vfs {
         size_t offset{static_cast<size_t>(entry.mediaOffset) * constant::MediaUnitSize + section.pfs0.pfs0HeaderOffset};
         size_t size{constant::MediaUnitSize * static_cast<size_t>(entry.mediaEndOffset - entry.mediaOffset)};
 
-        auto physicalBacking{CreateBacking(section, std::make_shared<RegionBacking>(backing, offset, size), offset)};
-        auto sparseBacking{CreateSparseBacking(section, physicalBacking, offset)};
-        auto sectionBacking{CreateCompressedBacking(section, sparseBacking, physicalBacking, size)};
+        auto sectionBacking{CreateBacking(section, std::make_shared<RegionBacking>(backing, offset, size), offset)};
+        sectionBacking = CreateSparseBacking(section, sectionBacking, offset);
+        sectionBacking = CreateCompressedBacking(section, sectionBacking, size);
         auto pfs{std::make_shared<PartitionFileSystem>(sectionBacking)};
 
         if (contentType == NCAContentType::Program) {
@@ -116,9 +116,9 @@ namespace skyline::vfs {
         ivfcOffset = sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].offset;
         const std::size_t romFsOffset{baseOffset + ivfcOffset};
         const std::size_t romFsSize{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].size};
-        auto physicalBacking{CreateBacking(sectionHeader, std::make_shared<RegionBacking>(backing, romFsOffset, romFsSize), romFsOffset)};
-        auto sparseBacking{CreateSparseBacking(sectionHeader, physicalBacking, romFsOffset)};
-        auto decryptedBacking{CreateCompressedBacking(sectionHeader, sparseBacking, physicalBacking, romFsSize)};
+        auto decryptedBacking{CreateBacking(sectionHeader, std::make_shared<RegionBacking>(backing, romFsOffset, romFsSize), romFsOffset)};
+        decryptedBacking = CreateSparseBacking(sectionHeader, decryptedBacking, romFsOffset);
+        decryptedBacking = CreateCompressedBacking(sectionHeader, decryptedBacking, romFsSize);
 
         if (sectionHeader.raw.header.encryptionType == NcaSectionEncryptionType::BKTR && bktrBaseRomfs && romFs) {
             const u64 size{constant::MediaUnitSize * (entry.mediaEndOffset - entry.mediaOffset)};
@@ -258,10 +258,15 @@ namespace skyline::vfs {
         return std::make_shared<SparseStorage>(backing, key, dataCtr, sectionPhysicalStart, sparseBlock, std::move(sparseBuckets), sparseBlock.size, sparseInfo.physicalOffset);
     }
 
-    std::shared_ptr<Backing> NCA::CreateCompressedBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, std::shared_ptr<Backing> tableBacking, size_t virtualSize) {
+    std::shared_ptr<Backing> NCA::CreateCompressedBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t virtualSize) {
         const auto &compressionInfo{sectionHeader.raw.compressionInfo};
         if (compressionInfo.bucket.tableOffset == 0 || compressionInfo.bucket.tableSize == 0)
             return decryptedBacking;
+
+        // TEMP DIAGNOSTIC: confirm whether this section also has a Sparse table, which would mean
+        // decryptedBacking here is actually a SparseStorage (virtual-addressed), not the physically-
+        // addressed backing this function assumes - remove once confirmed either way
+        LOGE("CreateCompressedBacking: compressionInfo.bucket.tableOffset=0x{:X} sparseInfo.bucket.tableOffset=0x{:X}", compressionInfo.bucket.tableOffset, sectionHeader.raw.sparseInfo.bucket.tableOffset);
 
         // Same generic Bucket Tree format as Sparse - 0x10-byte BucketTreeHeader before the node storage
         struct BucketTreeHeader {
@@ -272,18 +277,18 @@ namespace skyline::vfs {
         };
         static_assert(sizeof(BucketTreeHeader) == 0x10);
 
-        BucketTreeHeader treeHeader{tableBacking->Read<BucketTreeHeader>(compressionInfo.bucket.tableOffset)};
-        if (treeHeader.magic != util::MakeMagic<u32>("BKTR"))
-            throw loader_exception(LoaderResult::ErrorCompressedNCA, fmt::format("magic=0x{:X} tableOffset=0x{:X} tableSize=0x{:X} sparseTableOffset=0x{:X} sparseTableSize=0x{:X}", treeHeader.magic, compressionInfo.bucket.tableOffset, compressionInfo.bucket.tableSize, sectionHeader.raw.sparseInfo.bucket.tableOffset, sectionHeader.raw.sparseInfo.bucket.tableSize));
+        BucketTreeHeader treeHeader{decryptedBacking->Read<BucketTreeHeader>(compressionInfo.bucket.tableOffset)};
+    if (treeHeader.magic != util::MakeMagic<u32>("BKTR"))
+        throw loader_exception(LoaderResult::ErrorCompressedNCA, fmt::format("magic=0x{:X} tableOffset=0x{:X} tableSize=0x{:X} sparseTableOffset=0x{:X} sparseTableSize=0x{:X}", treeHeader.magic, compressionInfo.bucket.tableOffset, compressionInfo.bucket.tableSize, sectionHeader.raw.sparseInfo.bucket.tableOffset, sectionHeader.raw.sparseInfo.bucket.tableSize));
 
         const size_t nodeStorageOffset{compressionInfo.bucket.tableOffset + sizeof(BucketTreeHeader)};
-        RelocationBlock compressedBlock{tableBacking->Read<RelocationBlock>(nodeStorageOffset)};
+        RelocationBlock compressedBlock{decryptedBacking->Read<RelocationBlock>(nodeStorageOffset)};
 
         const size_t entryStorageOffset{nodeStorageOffset + sizeof(RelocationBlock)};
         const size_t entryStorageSize{compressionInfo.bucket.tableSize - sizeof(BucketTreeHeader) - sizeof(RelocationBlock)};
 
         std::vector<CompressedBucketRaw> compressedBucketsRaw(entryStorageSize / sizeof(CompressedBucketRaw));
-        auto regionBackingCompressed{std::make_shared<RegionBacking>(tableBacking, entryStorageOffset, entryStorageSize)};
+        auto regionBackingCompressed{std::make_shared<RegionBacking>(decryptedBacking, entryStorageOffset, entryStorageSize)};
         regionBackingCompressed->Read<CompressedBucketRaw>(compressedBucketsRaw);
 
         std::vector<CompressedBucket> compressedBuckets;
