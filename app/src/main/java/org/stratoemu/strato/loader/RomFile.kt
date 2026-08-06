@@ -202,7 +202,8 @@ internal class RomFile(context : Context, format : RomFormat, uri : Uri, systemL
 
     init {
         context.contentResolver.openFileDescriptor(uri, "r")!!.use {
-            result = LoaderResult.get(populate(format.ordinal, it.fd, "${context.filesDir.canonicalPath}/keys/", systemLanguage))
+    val diagnosticsPath = "${context.getExternalFilesDir(null)?.canonicalPath ?: context.filesDir.canonicalPath}/nca_diag.txt"
+        result = LoaderResult.get(populate(format.ordinal, it.fd, "${context.filesDir.canonicalPath}/keys/", systemLanguage, diagnosticsPath))
         }
 
        appEntry = AppEntry(
@@ -227,5 +228,5 @@ internal class RomFile(context : Context, format : RomFormat, uri : Uri, systemL
      * @param appFilesPath Path to internal app data storage, needed to read imported keys
      * @return A pointer to the newly allocated object, or 0 if the ROM is invalid
      */
-    private external fun populate(format : Int, romFd : Int, appFilesPath : String, systemLanguage : Int) : Int
+    private external fun populate(format : Int, romFd : Int, appFilesPath : String, systemLanguage : Int, diagnosticsPath : String) : Int
 }
