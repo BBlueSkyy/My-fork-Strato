@@ -95,7 +95,7 @@ open class BaseAppItem(private val meta : AppEntry, val enabled: Boolean = false
                 return "${enabledUpdate.version}"
             }
         }
-        return version ?: loaderResultString(context)
+        return if (loaderResult != LoaderResult.Success) loaderResultString(context) else version ?: ""
     }
 
     /**
