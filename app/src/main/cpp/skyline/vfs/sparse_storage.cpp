@@ -61,6 +61,8 @@ namespace skyline::vfs {
     }
 
     size_t SparseStorage::ReadImpl(span<u8> output, size_t offset) {
+        LOGD("SparseStorage::ReadImpl ENTER: offset=0x{:X} size=0x{:X}", offset, output.size());
+
         if (offset >= block.size)
             return 0;
 
@@ -105,6 +107,7 @@ namespace skyline::vfs {
         // ReadUnchecked, not Read: `offset` here is the true virtual position (potentially far larger
         // than any reasonable Backing::size we could give these throwaway wrapper objects), not a small
         // local index - the bounds check Read() would do doesn't apply to it.
+        LOGD("SparseStorage: about to call decryptor.ReadUnchecked, physicalOffset=0x{:X} regionBase=0x{:X}", physicalOffset, regionBase);
         return decryptor.ReadUnchecked(output, offset);
     }
 }
