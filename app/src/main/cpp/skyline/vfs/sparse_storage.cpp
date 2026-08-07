@@ -71,6 +71,8 @@ namespace skyline::vfs {
         // straddles two entries that could resolve to different physical regions (or zero vs. real data)
         if (offset + output.size() > next.addressPatch) {
             const u64 partition{next.addressPatch - offset};
+            if (partition == 0)
+                throw exception("SparseStorage: Bucket tree returned a non-advancing entry at offset 0x{:X} (entry.addressPatch=0x{:X}, next.addressPatch=0x{:X}) - would recurse forever", offset, entry.addressPatch, next.addressPatch);
             span<u8> tail(output.data() + partition, output.size() - partition);
             return ReadImpl(output.subspan(0, partition), offset) + ReadImpl(tail, offset + partition);
         }
