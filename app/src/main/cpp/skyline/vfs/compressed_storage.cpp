@@ -70,6 +70,8 @@ namespace skyline::vfs {
         // two blocks that could have different compression types
         if (offset + output.size() > next.virtualOffset) {
             const u64 partition{next.virtualOffset - offset};
+            if (partition == 0)
+                throw exception("CompressedStorage: Bucket tree returned a non-advancing entry at offset 0x{:X} (entry.virtualOffset=0x{:X}, next.virtualOffset=0x{:X}) - would recurse forever", offset, entry.virtualOffset, next.virtualOffset);
             span<u8> tail(output.data() + partition, output.size() - partition);
             return ReadImpl(output.subspan(0, partition), offset) + ReadImpl(tail, offset + partition);
         }
