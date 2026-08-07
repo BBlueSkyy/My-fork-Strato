@@ -79,6 +79,8 @@ namespace skyline::vfs {
         const u64 offsetInBlock{offset - entry.virtualOffset};
         const u64 decompressedBlockSize{next.virtualOffset - entry.virtualOffset};
 
+        LOGE("CompressedStorage::ReadImpl: offset=0x{:X} outputSize=0x{:X} type={} entry.virtualOffset=0x{:X} entry.physicalOffset=0x{:X} entry.physicalSize=0x{:X} decompressedBlockSize=0x{:X}", offset, output.size(), static_cast<u32>(entry.compressionType), entry.virtualOffset, entry.physicalOffset, entry.physicalSize, decompressedBlockSize);
+
         switch (entry.compressionType) {
             case NCACompressionType::Zeroed:
                 std::fill(output.begin(), output.end(), 0);
