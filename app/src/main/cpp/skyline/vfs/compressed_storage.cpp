@@ -79,8 +79,6 @@ namespace skyline::vfs {
         const u64 offsetInBlock{offset - entry.virtualOffset};
         const u64 decompressedBlockSize{next.virtualOffset - entry.virtualOffset};
 
-        LOGE("CompressedStorage::ReadImpl: offset=0x{:X} outputSize=0x{:X} type={} entry.virtualOffset=0x{:X} entry.physicalOffset=0x{:X} entry.physicalSize=0x{:X} decompressedBlockSize=0x{:X}", offset, output.size(), static_cast<u32>(entry.compressionType), entry.virtualOffset, entry.physicalOffset, entry.physicalSize, decompressedBlockSize);
-
         switch (entry.compressionType) {
             case NCACompressionType::Zeroed:
                 std::fill(output.begin(), output.end(), 0);
@@ -91,23 +89,26 @@ namespace skyline::vfs {
 
             case NCACompressionType::Lz4: {
                 // The reference implementation always decompresses the entire block even for a partial
-                // read - matched here for correctness first; per-block caching can be added later if the
-                // repeated decompression shows up as a real performance problem
-                std::vector<u8> compressed(entry.physicalSize);
-                LOGE("CompressedStorage: before physical read, physicalOffset=0x{:X} physicalSize=0x{:X}", entry.physicalOffset, entry.physicalSize);
-                size_t physRead{backing->Read(compressed, entry.physicalOffset)};
-                LOGE("CompressedStorage: after physical read, got 0x{:X} bytes", physRead);
+                // read, so a run of small sequential reads landing in the same block (routine while
+                // parsing RomFS/IVFC metadata) would otherwise redo a full 64KB decompression per read -
+                // cache the last block by its entry.virtualOffset and only redecompress on a miss
+                if (!cachedBlockVirtualOffset || *cachedBlockVirtualOffset != entry.virtualOffset) {
+                    std::vector<u8> compressed(entry.physicalSize);
+                    backing->Read(compressed, entry.physicalOffset);
 
-                std::vector<u8> decompressed(decompressedBlockSize);
-                LOGE("CompressedStorage: before LZ4_decompress_safe, compressedSize=0x{:X} decompressedSize=0x{:X}", compressed.size(), decompressed.size());
-                int result{LZ4_decompress_safe(reinterpret_cast<const char *>(compressed.data()), reinterpret_cast<char *>(decompressed.data()),
-                                                static_cast<int>(compressed.size()), static_cast<int>(decompressed.size()))};
-                LOGE("CompressedStorage: after LZ4_decompress_safe, result={}", result);
+                    cachedBlock.resize(decompressedBlockSize);
+                    int result{LZ4_decompress_safe(reinterpret_cast<const char *>(compressed.data()), reinterpret_cast<char *>(cachedBlock.data()),
+                                                    static_cast<int>(compressed.size()), static_cast<int>(cachedBlock.size()))};
 
-                if (result < 0 || static_cast<size_t>(result) != decompressed.size())
-                    throw exception("CompressedStorage: LZ4 decompression failed for block at virtual offset 0x{:X}", entry.virtualOffset);
+                    if (result < 0 || static_cast<size_t>(result) != cachedBlock.size()) {
+                        cachedBlockVirtualOffset.reset();
+                        throw exception("CompressedStorage: LZ4 decompression failed for block at virtual offset 0x{:X}", entry.virtualOffset);
+                    }
 
-                std::copy(decompressed.begin() + static_cast<ssize_t>(offsetInBlock), decompressed.begin() + static_cast<ssize_t>(offsetInBlock + output.size()), output.begin());
+                    cachedBlockVirtualOffset = entry.virtualOffset;
+                }
+
+                std::copy(cachedBlock.begin() + static_cast<ssize_t>(offsetInBlock), cachedBlock.begin() + static_cast<ssize_t>(offsetInBlock + output.size()), output.begin());
                 return output.size();
             }
 
