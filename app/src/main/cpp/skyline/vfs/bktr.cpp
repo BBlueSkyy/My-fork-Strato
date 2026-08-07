@@ -65,6 +65,8 @@ namespace skyline::vfs {
 
        if (offset + output.size() > nextRelocation.addressPatch) {
            const u64 partition{nextRelocation.addressPatch - offset};
+           if (partition == 0)
+               throw exception("BKTR::ReadImpl: relocation bucket tree returned a non-advancing entry at offset 0x{:X} (addressPatch=0x{:X}, next.addressPatch=0x{:X})", offset, relocationEntry.addressPatch, nextRelocation.addressPatch);
            span<u8> data(output.data() + partition, output.size() - partition);
            return ReadWithPartition(data, output.size() - partition, offset + partition) + ReadWithPartition(output, partition, offset);
        }
@@ -86,6 +88,8 @@ namespace skyline::vfs {
 
         if (sectionOffset + output.size() > nextSubsection.addressPatch) {
             const u64 partition{nextSubsection.addressPatch - sectionOffset};
+            if (partition == 0)
+                throw exception("BKTR::ReadImpl: subsection bucket tree returned a non-advancing entry at sectionOffset 0x{:X} (next.addressPatch=0x{:X})", sectionOffset, nextSubsection.addressPatch);
             span<u8> data(output.data() + partition, output.size() - partition);
             return ReadWithPartition(data, output.size() - partition, offset + partition) +
                 ReadWithPartition(output, partition, offset);
@@ -126,6 +130,8 @@ namespace skyline::vfs {
 
         if (offset + length > nextRelocation.addressPatch) {
             const u64 partition{nextRelocation.addressPatch - offset};
+            if (partition == 0)
+                throw exception("BKTR::ReadWithPartition: relocation bucket tree returned a non-advancing entry at offset 0x{:X} (addressPatch=0x{:X}, next.addressPatch=0x{:X})", offset, relocationEntry.addressPatch, nextRelocation.addressPatch);
             span<u8> data(output.data() + partition, length - partition);
             return ReadWithPartition(data, length - partition, offset + partition) + ReadWithPartition(output, partition, offset);
         }
@@ -148,6 +154,8 @@ namespace skyline::vfs {
 
         if (sectionOffset + length > nextSubsection.addressPatch) {
             const u64 partition{nextSubsection.addressPatch - sectionOffset};
+            if (partition == 0)
+                throw exception("BKTR::ReadWithPartition: subsection bucket tree returned a non-advancing entry at sectionOffset 0x{:X} (next.addressPatch=0x{:X})", sectionOffset, nextSubsection.addressPatch);
             span<u8> data(output.data() + partition, length - partition);
             return ReadWithPartition(data, length - partition, offset + partition) +
                 ReadWithPartition(output, partition, offset);
