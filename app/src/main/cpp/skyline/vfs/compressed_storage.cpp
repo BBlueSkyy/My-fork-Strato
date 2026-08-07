@@ -60,6 +60,8 @@ namespace skyline::vfs {
     }
 
     size_t CompressedStorage::ReadImpl(span<u8> output, size_t offset) {
+        LOGD("CompressedStorage::ReadImpl ENTER: offset=0x{:X} size=0x{:X}", offset, output.size());
+
         if (offset >= block.size)
             return 0;
 
@@ -94,7 +96,9 @@ namespace skyline::vfs {
                 // cache the last block by its entry.virtualOffset and only redecompress on a miss
                 if (!cachedBlockVirtualOffset || *cachedBlockVirtualOffset != entry.virtualOffset) {
                     std::vector<u8> compressed(entry.physicalSize);
+                    LOGD("CompressedStorage: calling backing->Read for physical bytes, physicalOffset=0x{:X} physicalSize=0x{:X}", entry.physicalOffset, entry.physicalSize);
                     backing->Read(compressed, entry.physicalOffset);
+                    LOGD("CompressedStorage: backing->Read returned");
 
                     cachedBlock.resize(decompressedBlockSize);
                     int result{LZ4_decompress_safe(reinterpret_cast<const char *>(compressed.data()), reinterpret_cast<char *>(cachedBlock.data()),
