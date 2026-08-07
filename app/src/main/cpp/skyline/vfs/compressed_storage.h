@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include "backing.h"
 #include "nca.h"
 
@@ -22,6 +24,9 @@ namespace skyline::vfs {
         std::shared_ptr<Backing> backing; //!< The CTR-decrypted backing that PhysicalOffset is read from directly - unlike Sparse, CompressionInfo has no separate physicalOffset base to add
         RelocationBlock block; //!< The L1 offset node of the bucket tree - entry-size independent, so the same struct as Sparse/BKTR's node storage is reused here
         std::vector<CompressedBucket> buckets; //!< The L2 entry nodes of the bucket tree
+
+        std::optional<u64> cachedBlockVirtualOffset; //!< entry.virtualOffset of whichever Lz4 block is currently held in cachedBlock, if any
+        std::vector<u8> cachedBlock; //!< The fully-decompressed bytes of the last Lz4 block read - callers routinely issue several small sequential reads against the same 64KB block (e.g. RomFS metadata parsing), so caching this avoids redoing a full block decompression for every one of them
 
         std::pair<u64, u64> GetEntryIndex(u64 offset);
 
