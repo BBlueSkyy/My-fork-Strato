@@ -94,11 +94,15 @@ namespace skyline::vfs {
                 // read - matched here for correctness first; per-block caching can be added later if the
                 // repeated decompression shows up as a real performance problem
                 std::vector<u8> compressed(entry.physicalSize);
-                backing->Read(compressed, entry.physicalOffset);
+                LOGE("CompressedStorage: before physical read, physicalOffset=0x{:X} physicalSize=0x{:X}", entry.physicalOffset, entry.physicalSize);
+                size_t physRead{backing->Read(compressed, entry.physicalOffset)};
+                LOGE("CompressedStorage: after physical read, got 0x{:X} bytes", physRead);
 
                 std::vector<u8> decompressed(decompressedBlockSize);
+                LOGE("CompressedStorage: before LZ4_decompress_safe, compressedSize=0x{:X} decompressedSize=0x{:X}", compressed.size(), decompressed.size());
                 int result{LZ4_decompress_safe(reinterpret_cast<const char *>(compressed.data()), reinterpret_cast<char *>(decompressed.data()),
                                                 static_cast<int>(compressed.size()), static_cast<int>(decompressed.size()))};
+                LOGE("CompressedStorage: after LZ4_decompress_safe, result={}", result);
 
                 if (result < 0 || static_cast<size_t>(result) != decompressed.size())
                     throw exception("CompressedStorage: LZ4 decompression failed for block at virtual offset 0x{:X}", entry.virtualOffset);
