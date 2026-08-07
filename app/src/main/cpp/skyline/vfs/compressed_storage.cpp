@@ -81,13 +81,19 @@ namespace skyline::vfs {
         const u64 offsetInBlock{offset - entry.virtualOffset};
         const u64 decompressedBlockSize{next.virtualOffset - entry.virtualOffset};
 
+        LOGD("CompressedStorage: entry resolved, type={} entry.virtualOffset=0x{:X} entry.physicalOffset=0x{:X} entry.physicalSize=0x{:X} decompressedBlockSize=0x{:X}", static_cast<u32>(entry.compressionType), entry.virtualOffset, entry.physicalOffset, entry.physicalSize, decompressedBlockSize);
+
         switch (entry.compressionType) {
             case NCACompressionType::Zeroed:
                 std::fill(output.begin(), output.end(), 0);
                 return output.size();
 
-            case NCACompressionType::None:
-                return backing->Read(output, entry.physicalOffset + offsetInBlock);
+            case NCACompressionType::None: {
+                LOGD("CompressedStorage: None branch, calling backing->Read at physicalOffset=0x{:X} size=0x{:X}", entry.physicalOffset + offsetInBlock, output.size());
+                size_t result{backing->Read(output, entry.physicalOffset + offsetInBlock)};
+                LOGD("CompressedStorage: None branch, backing->Read returned 0x{:X}", result);
+                return result;
+            }
 
             case NCACompressionType::Lz4: {
                 // The reference implementation always decompresses the entire block even for a partial
