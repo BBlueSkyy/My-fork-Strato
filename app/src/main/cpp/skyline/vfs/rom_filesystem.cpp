@@ -3,66 +3,10 @@
 
 #include "region_backing.h"
 #include "rom_filesystem.h"
-#include "compressed_storage.h"   // required for CompressedStorage, CompressedBucketRaw, ConvertCompressedBucketRaw
 
 namespace skyline::vfs {
-    /**
-     * @brief Extended RomFS header present when encodingType == 3 (advanced layers)
-     */
-    struct RomFsExtendedHeader {
-        u32 encodingType;            // 3 = compression and/or sparse
-        u32 reserved;
-        u64 compressionBucketOffset; // offset to the compression bucket tree
-        u64 compressionBucketSize;   // total size of the compression bucket tree
-        u64 padding[2];              // other fields (sparse etc.), ignored for now
-    };
-    static_assert(sizeof(RomFsExtendedHeader) >= 0x28);
-
     RomFileSystem::RomFileSystem(std::shared_ptr<Backing> pBacking) : FileSystem(), backing(std::move(pBacking)) {
-        // 1. Read the basic header (0x50 bytes)
         header = backing->Read<RomFsHeader>();
-
-        // 2. Read the extended header from offset 0x50
-        RomFsExtendedHeader extHeader = backing->Read<RomFsExtendedHeader>(0x50);
-
-        // 3. If encodingType == 3 and compression table is valid, apply decompression layer
-        if (extHeader.encodingType == 3 &&
-            extHeader.compressionBucketOffset != 0 &&
-            extHeader.compressionBucketSize != 0) {
-
-            // 3.1 Read the BucketTree header (RelocationBlock) at the start of the table
-            RelocationBlock relocBlock = backing->Read<RelocationBlock>(extHeader.compressionBucketOffset);
-
-            // 3.2 Calculate the location of the bucket entries
-            size_t entryOffset = extHeader.compressionBucketOffset + sizeof(RelocationBlock);
-            size_t entrySize   = extHeader.compressionBucketSize - sizeof(RelocationBlock);
-
-            // 3.3 Read raw buckets (on-disk big-endian format)
-            std::vector<CompressedBucketRaw> rawBuckets(entrySize / sizeof(CompressedBucketRaw));
-            backing->Read(span(rawBuckets), entryOffset);
-
-            // 3.4 Convert buckets to host-endian format
-            std::vector<CompressedBucket> buckets;
-            buckets.reserve(rawBuckets.size());
-            for (auto &raw : rawBuckets)
-                buckets.push_back(ConvertCompressedBucketRaw(raw));
-
-            // 3.5 Create a compressed backing using the virtual size from the bucket tree
-            auto compressedBacking = std::make_shared<CompressedStorage>(
-                backing,
-                relocBlock,
-                std::move(buckets),
-                relocBlock.size   // virtual (decompressed) size of the section
-            );
-
-            // 3.6 Replace the original backing with the compressed one
-            backing = compressedBacking;
-
-            // 3.7 Reload the basic header (now reads are transparently decompressed)
-            header = backing->Read<RomFsHeader>();
-        }
-
-        // 4. Traverse directory and file structures
         TraverseDirectory(0, "");
     }
 
