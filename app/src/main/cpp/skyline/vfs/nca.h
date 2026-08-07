@@ -31,11 +31,17 @@ namespace skyline {
             GameCard = 0x1, //!< This NCA was distributed on a GameCard
         };
 
+        /**
+         * @brief The key generation version in NCAs before HOS 3.0.1
+         */
         enum class NcaLegacyKeyGenerationType : u8 {
             Fw100 = 0x0, //!< 1.0.0
             Fw300 = 0x2, //!< 3.0.0
         };
 
+        /**
+         * @brief The key generation version in NCAs after HOS 3.0.0, this is changed by Nintendo frequently
+         */
         enum class NcaKeyGenerationType : u8 {
             Fw301 = 0x3, //!< 3.0.1
             Fw400 = 0x4, //!< 4.0.0
@@ -78,6 +84,9 @@ namespace skyline {
             BKTR = 0x4, //!< This NCA uses BKTR together AES-CTR encryption
         };
 
+        /**
+         * @brief The data for a single level of the hierarchical integrity scheme
+         */
         struct HierarchicalIntegrityLevel {
             u64 offset; //!< The offset of the level data
             u64 size; //!< The size of the level data
@@ -107,6 +116,9 @@ namespace skyline {
         };
         static_assert(sizeof(PFS0Superblock) == 0x200);
 
+        /**
+         * @brief The hash info header of the SHA256 hashing scheme for PFS0
+         */
         struct HierarchicalSha256HashInfo {
             std::array<u8, 0x20> hashTableHash; //!< A SHA256 hash over the hash table
             u32 blockSize; //!< The block size of the filesystem
@@ -292,6 +304,10 @@ namespace skyline {
         };
         static_assert(sizeof(SubsectionBucketRaw) == 0x4000);
 
+        /**
+         * @brief Confirmed against LibHac.FsSystem.CompressionType: a 1-byte enum, values None=0,
+         *        Zeroed=1, Lz4=3 (not 2 - there's a gap), Unknown=4
+         */
         enum class NCACompressionType : u8 {
             None = 0,
             Zeroed = 1,
@@ -299,6 +315,10 @@ namespace skyline {
             Unknown = 4,
         };
 
+        /**
+         * @brief A single entry in a Compressed NCA's bucket tree, confirmed against
+         *        LibHac.Tools.FsSystem.CompressedStorage.Entry
+         */
         struct CompressedEntry {
             u64 virtualOffset;
             u64 physicalOffset;
@@ -309,8 +329,13 @@ namespace skyline {
         };
         static_assert(sizeof(CompressedEntry) == 0x18);
 
-        // CORRECTED: Removed the `_pad0_[0x4]` byte padding which incorrectly shifted data reads by 4 bytes.
+        /**
+         * @brief An entry-storage node for a Compressed NCA's bucket tree - same node header layout as
+         *        RelocationBucketRaw, just sized for the larger 0x18-byte CompressedEntry (682 fit exactly
+         *        in the 0x3FF0 bytes of entry space in a 0x4000 node, with no leftover padding needed)
+         */
         struct CompressedBucketRaw {
+            u8 _pad0_[0x4];
             u32 numberEntries;
             u64 endOffset;
             std::array<CompressedEntry, 682> entries;
@@ -323,6 +348,10 @@ namespace skyline {
             std::vector<CompressedEntry> entries;
         };
 
+        /**
+         * @brief The NCA class provides an easy way to access the contents of an Nintendo Content Archive
+         * @url https://switchbrew.org/wiki/NCA_Format
+         */
         class NCA {
           private:
             std::shared_ptr<Backing> backing;
@@ -341,6 +370,11 @@ namespace skyline {
 
             std::shared_ptr<Backing> CreateBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> rawBacking, size_t offset);
 
+            /**
+             * @param sectionHeader The section's parsed header
+             * @param decryptedBacking The section's standard-IV, CTR-decrypted backing - only used as the passthrough return value when the section has no Sparse layer
+             * @param sectionPhysicalStart The physical file offset of the section's start (i.e. the same offset passed to CreateBacking for this section)
+             */
             std::shared_ptr<Backing> CreateSparseBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t sectionPhysicalStart);
 
             std::shared_ptr<Backing> CreateCompressedBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t virtualSize);
