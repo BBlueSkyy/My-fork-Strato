@@ -975,13 +975,15 @@ namespace skyline::kernel::svc {
             FreeThreadCount = 24,
             // 18.0.0+
             AliasRegionExtraSize = 28,
-            // // 19.0.0+
-            // // NOTE: ID0 is provisional. The upstream Strato commit (25168404) used 28, but that
-            // collides with AliasRegionExtraSize above. 29 is the next free slot per libnx's
-            // known numbering (28 = AliasRegionExtraSize, 34 = TransferMemoryHint on 19.0.0+),
-            // but it has NOT been confirmed against real hardware/firmware. Verify by checking
-            // the "Unimplemented case ID0: X" LOGW output from the affected game and adjust
-            // this value if it doesn't match.
+            // 19.0.0+
+            // NOTE: Corroborated against the official 19.0.0 changelog (switchbrew.org/wiki/19.0.0):
+            // "InfoType values 0x1D-0x21 are presumably ifdef'd out on NX", with 0x22 confirmed as
+            // the next real InfoType (TransferMemoryHint = 34). 29 (0x1D) is the first ID in that
+            // reserved range and lines up with when VammManager (nn::os::detail::VammManager) shows
+            // up around 18.0.0-19.0.0, so it's our best-supported guess -- but no public source names
+            // it "IsVammEnabled" specifically, since it could be any of the five ifdef'd-out slots
+            // (29-33). If a game logs "Unimplemented case ID0: X" for X in that range, adjust this
+            // value to match.
             IsVammEnabled = 29,
         };
 
@@ -1018,13 +1020,17 @@ namespace skyline::kernel::svc {
                 break;
             
             case InfoState::IsVammEnabled:
-                // Virtual Address Memory Manager (nn::os::detail::VammManager) — introduced in
-                // HOS 19.0.0 / SDK 19.x. Returning 0 (disabled) is correct for Strato since we
-                // don't implement VAMM. VammManager::InitializeIfEnabled() will skip init when
-                // this returns 0, allowing games built with SDK 19.x (e.g. Unity 6) to start
-                // normally.
-                 out = 0;
-                 break;
+                // Virtual Address Memory Manager (nn::os::detail::VammManager), tied to the
+                // reserved-region-extra-size feature added in 18.0.0. Real NX hardware disables
+                // this whole InfoType range (see NOTE above), so returning 0 ("disabled") instead
+                // of InvalidEnumValue is a deliberate compatibility choice, not a claim that this
+                // is what real hardware returns: VammManager::InitializeIfEnabled() in SDK 19.x
+                // titles (e.g. Unity 6) checks this result and skips VAMM init when it comes back
+                // disabled, letting those titles boot instead of hitting a hard "unimplemented"
+                // error. If VAMM emulation is ever implemented, this should return 1 and be backed
+                // by real allocation logic instead of just satisfying the check.
+                out = 0;
+                break;
             
             case InfoState::HeapRegionBaseAddr:
                 out = reinterpret_cast<u64>(state.process->memory.heap.guest.data());
@@ -1048,7 +1054,8 @@ namespace skyline::kernel::svc {
            
             case InfoState::FreeThreadCount:
                 out = 64; // Stubbed: reports a generous number of free threads.
-           
+                break;
+
             case InfoState::RandomEntropy:
                 out = util::GetTimeTicks();
                 break;
