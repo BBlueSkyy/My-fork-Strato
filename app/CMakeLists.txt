@@ -244,6 +244,8 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/vfs/nacp.cpp
         ${source_DIR}/skyline/vfs/npdm.cpp
         ${source_DIR}/skyline/vfs/nca.cpp
+        ${source_DIR}/skyline/vfs/sparse_storage.cpp
+        ${source_DIR}/skyline/vfs/compressed_storage.cpp
         ${source_DIR}/skyline/vfs/ticket.cpp
         ${source_DIR}/skyline/vfs/cnmt.cpp
         ${source_DIR}/skyline/vfs/bktr.cpp

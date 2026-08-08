@@ -39,6 +39,7 @@ namespace skyline::vfs {
 
                 throw exception("Failed to read from fd: {}", strerror(errno));
             } else if (ret == 0) {
+                LOGE("OsBacking: short read - offset=0x{:X} requested=0x{:X} got=0x{:X} fileSize=0x{:X}", offset, output.size(), bytesRead, size);
                 return bytesRead;
             } else {
                 bytesRead += static_cast<size_t>(ret);

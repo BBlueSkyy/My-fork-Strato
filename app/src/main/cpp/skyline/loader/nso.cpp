@@ -72,11 +72,18 @@ namespace skyline::loader {
     void NsoLoader::PrintRoContentsInfo(const std::vector<u8> &contents) {
         const boost::regex moduleRegex(R"([a-z]:[\\/][ -~]{5,}\.nss)", boost::regex::icase);
         const boost::regex fsSdkRegex("sdk_version: ([0-9.]*)");
-        const boost::regex sdkMwRegex("SDK MW[ -~]*");
+        const boost::regex sdkMwRegex("SDK MW[ -~]{0,256}");
 
-        std::string contentsRaw(contents.begin(), contents.end());
+        // Module path, SDK version, and SDK library markers all live near the start of .rodata in every
+        // known NSO layout - scanning the full segment (which can be several MB) with unbounded regex
+        // quantifiers against it is needlessly expensive and was observed to hang on real-world .rodata
+        // sizes, so this is capped to a generous prefix that still comfortably covers those markers
+        constexpr size_t MaxScanSize{0x40000}; // 256 KiB
+        const size_t scanSize{std::min(contents.size(), MaxScanSize)};
+
+        std::string contentsRaw(contents.begin(), contents.begin() + static_cast<ssize_t>(scanSize));
         std::string modulePath;
-        if (memcmp(&contents[0], "\x00\x00\x00\x00", 4) == 0) {
+        if (contents.size() >= 4 && memcmp(&contents[0], "\x00\x00\x00\x00", 4) == 0) {
             i32 length;
             std::memcpy(&length, &contents[4], sizeof(i32));
 

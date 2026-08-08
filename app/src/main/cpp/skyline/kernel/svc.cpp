@@ -1020,6 +1020,11 @@ namespace skyline::kernel::svc {
                 break;
             
             case InfoState::IsVammEnabled:
+                // Virtual Address Memory Manager (nn::os::detail::VammManager) — introduced in
+                // HOS 19.0.0 / SDK 19.x. Returning 0 (disabled) is correct for Strato since we
+                // don't implement VAMM. VammManager::InitializeIfEnabled() will skip init when
+                // this returns 0, allowing games built with SDK 19.x (e.g. Unity 6) to start
+                // normally.
                 // Virtual Address Memory Manager (nn::os::detail::VammManager), tied to the
                 // reserved-region-extra-size feature added in 18.0.0. Real NX hardware disables
                 // this whole InfoType range (see NOTE above), so returning 0 ("disabled") instead

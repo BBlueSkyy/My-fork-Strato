@@ -13,12 +13,13 @@
 #include "skyline/loader/nsp.h"
 #include "skyline/jvm.h"
 
-extern "C" JNIEXPORT jint JNICALL Java_org_stratoemu_strato_loader_RomFile_populate(JNIEnv *env, jobject thiz, jint jformat, jint fd, jstring appFilesPathJstring, jint systemLanguage) {
+extern "C" JNIEXPORT jint JNICALL Java_org_stratoemu_strato_loader_RomFile_populate(JNIEnv *env, jobject thiz, jint jformat, jint fd, jstring appFilesPathJstring, jint systemLanguage, jstring diagnosticsPathJstring) {
     skyline::signal::ScopedStackBlocker stackBlocker;
 
     skyline::loader::RomFormat format{static_cast<skyline::loader::RomFormat>(jformat)};
 
     auto keyStore{std::make_shared<skyline::crypto::KeyStore>(skyline::JniString(env, appFilesPathJstring))};
+    std::string diagnosticsPath{skyline::JniString(env, diagnosticsPathJstring)};
     std::unique_ptr<skyline::loader::Loader> loader;
     try {
         auto backing{std::make_shared<skyline::vfs::OsBacking>(fd)};
@@ -37,7 +38,7 @@ extern "C" JNIEXPORT jint JNICALL Java_org_stratoemu_strato_loader_RomFile_popul
                 loader = std::make_unique<skyline::loader::XciLoader>(backing, keyStore);
                 break;
             case skyline::loader::RomFormat::NSP:
-                loader = std::make_unique<skyline::loader::NspLoader>(backing, keyStore);
+                loader = std::make_unique<skyline::loader::NspLoader>(backing, keyStore, diagnosticsPath);
                 break;
             default:
                 return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);

@@ -6,6 +6,7 @@
 #include <crypto/key_store.h>
 #include <crypto/aes_cipher.h>
 #include "filesystem.h"
+#include <cstdint>
 
 namespace skyline {
     namespace constant {
@@ -304,6 +305,50 @@ namespace skyline {
         static_assert(sizeof(SubsectionBucketRaw) == 0x4000);
 
         /**
+         * @brief Confirmed against LibHac.FsSystem.CompressionType: a 1-byte enum, values None=0,
+         *        Zeroed=1, Lz4=3 (not 2 - there's a gap), Unknown=4
+         */
+        enum class NCACompressionType : u8 {
+            None = 0,
+            Zeroed = 1,
+            Lz4 = 3,
+            Unknown = 4,
+        };
+
+        /**
+         * @brief A single entry in a Compressed NCA's bucket tree, confirmed against
+         *        LibHac.Tools.FsSystem.CompressedStorage.Entry
+         */
+        struct CompressedEntry {
+            u64 virtualOffset;
+            u64 physicalOffset;
+            NCACompressionType compressionType;
+            i8 compressionLevel;
+            u8 _pad0_[0x2]; //!< Padding to align physicalSize to a 4-byte boundary, per the C# struct's default layout
+            u32 physicalSize; //!< The size of this block's data as stored on-disk (only meaningful for Lz4 blocks, which store fewer bytes than they decompress to)
+        };
+        static_assert(sizeof(CompressedEntry) == 0x18);
+
+        /**
+         * @brief An entry-storage node for a Compressed NCA's bucket tree - same node header layout as
+         *        RelocationBucketRaw, just sized for the larger 0x18-byte CompressedEntry (682 fit exactly
+         *        in the 0x3FF0 bytes of entry space in a 0x4000 node, with no leftover padding needed)
+         */
+        struct CompressedBucketRaw {
+            u8 _pad0_[0x4];
+            u32 numberEntries;
+            u64 endOffset;
+            std::array<CompressedEntry, 682> entries;
+        };
+        static_assert(sizeof(CompressedBucketRaw) == 0x4000);
+
+        struct CompressedBucket {
+            u32 numberEntries;
+            u64 endOffset;
+            std::vector<CompressedEntry> entries;
+        };
+
+        /**
          * @brief The NCA class provides an easy way to access the contents of an Nintendo Content Archive
          * @url https://switchbrew.org/wiki/NCA_Format
          */
@@ -325,6 +370,15 @@ namespace skyline {
 
             std::shared_ptr<Backing> CreateBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> rawBacking, size_t offset);
 
+            /**
+             * @param sectionHeader The section's parsed header
+             * @param decryptedBacking The section's standard-IV, CTR-decrypted backing - only used as the passthrough return value when the section has no Sparse layer
+             * @param sectionPhysicalStart The physical file offset of the section's start (i.e. the same offset passed to CreateBacking for this section)
+             */
+            std::shared_ptr<Backing> CreateSparseBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t sectionPhysicalStart);
+
+            std::shared_ptr<Backing> CreateCompressedBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t virtualSize);
+
             u8 GetKeyGeneration();
 
             crypto::KeyStore::Key128 GetTitleKey();
@@ -339,6 +393,10 @@ namespace skyline {
 
             static SubsectionBucket ConvertSubsectionBucketRaw(SubsectionBucketRaw raw) {
                 return {raw.numberEntries, raw.endOffset, {raw.subsectionEntries.begin(), raw.subsectionEntries.begin() + raw.numberEntries}};
+            }
+
+            static CompressedBucket ConvertCompressedBucketRaw(CompressedBucketRaw raw) {
+                return {raw.numberEntries, raw.endOffset, {raw.entries.begin(), raw.entries.begin() + raw.numberEntries}};
             }
 
           public:
