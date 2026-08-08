@@ -237,15 +237,21 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      */
     private fun executeApplication(intent : Intent) {
         if (emulationThread?.isAlive == true) {
+            // Reentrada com emulação ainda ativa (ex: onNewIntent sem sair do app).
+            // Não tentamos reaproveitar o processo: mesmo que a Thread Kotlin
+            // retorne rápido, isso só confirma que a chamada JNI de
+            // executeApplication voltou, não que o destrutor nativo da KProcess
+            // (que mata as threads guest e desinstala a static instance) já
+            // terminou de verdade do lado C++. Reaproveitar o processo nesse
+            // caso cria uma corrida entre a KProcess antiga sendo destruída e
+            // a nova sendo construída. Forçar sempre o reinício completo do
+            // processo elimina essa classe de bug.
             shouldFinish = false
-            if (stopEmulation(false))
-                emulationThread!!.join(250)
-
-            if (emulationThread!!.isAlive) {
-                finishAffinity()
-                startActivity(intent)
-                Runtime.getRuntime().exit(0)
-            }
+            stopEmulation(false) // apenas sinaliza a thread nativa a parar (assíncrono)
+            finishAffinity()
+            startActivity(intent)
+            Runtime.getRuntime().exit(0)
+            return
         }
 
         shouldFinish = true
