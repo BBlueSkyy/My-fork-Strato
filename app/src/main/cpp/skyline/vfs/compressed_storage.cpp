@@ -9,17 +9,11 @@ namespace skyline::vfs {
     // Same bucket search strategy as SparseStorage - the L1 node format (RelocationBlock) doesn't depend
     // on the leaf entry size, so this is identical apart from the entry type and comparison field name
     static std::pair<u64, u64> SearchBucketEntry(u64 offset, const RelocationBlock &block, const std::vector<CompressedBucket> &buckets) {
-        LOGD("CompressedStorage::SearchBucketEntry: offset=0x{:X} block.numberBuckets=0x{:X} buckets.size()=0x{:X}", offset, block.numberBuckets, buckets.size());
-
         u64 bucketId{static_cast<u64>(std::distance(block.baseOffsets.begin(),
                                                     std::upper_bound(block.baseOffsets.begin() + 1,
                                                                      block.baseOffsets.begin() + block.numberBuckets, offset)) - 1)};
 
-        LOGD("CompressedStorage::SearchBucketEntry: bucketId=0x{:X}", bucketId);
-
         const auto &bucket{buckets[bucketId]};
-
-        LOGD("CompressedStorage::SearchBucketEntry: bucket.numberEntries=0x{:X} bucket.entries.size()=0x{:X}", bucket.numberEntries, bucket.entries.size());
 
         if (bucket.numberEntries == 1)
             return {bucketId, 0};
@@ -27,8 +21,6 @@ namespace skyline::vfs {
         auto entryIt{std::upper_bound(bucket.entries.begin(), bucket.entries.begin() + bucket.numberEntries, offset, [](u64 offset, const auto &entry) {
             return offset < entry.virtualOffset;
         })};
-
-        LOGD("CompressedStorage::SearchBucketEntry: upper_bound done");
 
         if (entryIt != bucket.entries.begin()) {
             u64 entryIndex{static_cast<u64>(std::distance(bucket.entries.begin(), entryIt) - 1)};
@@ -68,8 +60,6 @@ namespace skyline::vfs {
     }
 
     size_t CompressedStorage::ReadImpl(span<u8> output, size_t offset) {
-        LOGD("CompressedStorage::ReadImpl ENTER: offset=0x{:X} size=0x{:X}", offset, output.size());
-
         if (offset >= block.size)
             return 0;
 
@@ -89,19 +79,13 @@ namespace skyline::vfs {
         const u64 offsetInBlock{offset - entry.virtualOffset};
         const u64 decompressedBlockSize{next.virtualOffset - entry.virtualOffset};
 
-        LOGD("CompressedStorage: entry resolved, type={} entry.virtualOffset=0x{:X} entry.physicalOffset=0x{:X} entry.physicalSize=0x{:X} decompressedBlockSize=0x{:X}", static_cast<u32>(entry.compressionType), entry.virtualOffset, entry.physicalOffset, entry.physicalSize, decompressedBlockSize);
-
         switch (entry.compressionType) {
             case NCACompressionType::Zeroed:
                 std::fill(output.begin(), output.end(), 0);
                 return output.size();
 
-            case NCACompressionType::None: {
-                LOGD("CompressedStorage: None branch, calling backing->Read at physicalOffset=0x{:X} size=0x{:X}", entry.physicalOffset + offsetInBlock, output.size());
-                size_t result{backing->Read(output, entry.physicalOffset + offsetInBlock)};
-                LOGD("CompressedStorage: None branch, backing->Read returned 0x{:X}", result);
-                return result;
-            }
+            case NCACompressionType::None:
+                return backing->Read(output, entry.physicalOffset + offsetInBlock);
 
             case NCACompressionType::Lz4: {
                 // The reference implementation always decompresses the entire block even for a partial
@@ -110,9 +94,7 @@ namespace skyline::vfs {
                 // cache the last block by its entry.virtualOffset and only redecompress on a miss
                 if (!cachedBlockVirtualOffset || *cachedBlockVirtualOffset != entry.virtualOffset) {
                     std::vector<u8> compressed(entry.physicalSize);
-                    LOGD("CompressedStorage: calling backing->Read for physical bytes, physicalOffset=0x{:X} physicalSize=0x{:X}", entry.physicalOffset, entry.physicalSize);
                     backing->Read(compressed, entry.physicalOffset);
-                    LOGD("CompressedStorage: backing->Read returned");
 
                     cachedBlock.resize(decompressedBlockSize);
                     int result{LZ4_decompress_safe(reinterpret_cast<const char *>(compressed.data()), reinterpret_cast<char *>(cachedBlock.data()),
