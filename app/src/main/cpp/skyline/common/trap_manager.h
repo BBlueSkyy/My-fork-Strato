@@ -82,6 +82,13 @@ namespace skyline {
         void InstallStaticInstance();
 
         /**
+         * @brief Uninstalls this instance as the static instance, if it is the one currently installed
+         * @note Must be called before the TrapManager is destroyed to avoid leaving a dangling pointer
+         *       in the static instance used by the signal handler
+         */
+        void UninstallStaticInstance();
+
+        /**
          * @brief The trap manager handler function
          */
         static bool TrapHandler(u8 *address, bool write);
