@@ -83,18 +83,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
     }
 
-    void ConstantBuffers::Bind(InterconnectContext &ctx, engine::ShaderStage stage, size_t index) {
-        auto &view{*selectorState.UpdateGet(ctx).view};
-        if (!view)
-            throw exception("Constant buffer selector is not mapped");
+   void ConstantBuffers::Bind(InterconnectContext &ctx, engine::ShaderStage stage, size_t index) {
+      auto &view{*selectorState.UpdateGet(ctx).view};
+      if (!view)
+        throw exception("Constant buffer selector is not mapped");
 
         boundConstantBuffers[static_cast<size_t>(stage)][index] = {view};
 
-        if (quickBindEnabled && quickBind)
-            DisableQuickBind(); // We can only quick bind one buffer per draw
-        else if (quickBindEnabled)
-            quickBind = QuickBind{index, stage};
-    }
+        // Forçando o caminho lento para testar os vértices do DBFZ
+        DisableQuickBind(); 
+            }
 
     void ConstantBuffers::Unbind(engine::ShaderStage stage, size_t index) {
         boundConstantBuffers[static_cast<size_t>(stage)][index] = {};

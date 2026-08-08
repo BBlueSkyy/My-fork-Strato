@@ -43,6 +43,10 @@ namespace skyline::service::fssrv {
          */
         Result DeleteDirectoryRecursively(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result RenameFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result RenameDirectory(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         /**
          * @brief Queries the DirectoryEntryType of the given path
          * @url https://switchbrew.org/wiki/Filesystem_services#GetEntryType
@@ -88,13 +92,17 @@ namespace skyline::service::fssrv {
          * @url https://switchbrew.org/wiki/Filesystem_services#GetFileTimeStampRaw
          */
         Result GetFileTimeStampRaw(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        SERVICE_DECL(
+        
+        Result GetFileSystemAttribute(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        
+            SERVICE_DECL(
             SFUNC(0x0, IFileSystem, CreateFile),
             SFUNC(0x1, IFileSystem, DeleteFile),
             SFUNC(0x2, IFileSystem, CreateDirectory),
-            SFUNC(0x3, IFileSystem, DeleteDirectory),
+            SFUNC(0x3, IFileSystem, DeleteDirectory), 
             SFUNC(0x4, IFileSystem, DeleteDirectoryRecursively),
+            SFUNC(0x5, IFileSystem, RenameFile),
+            SFUNC(0x6, IFileSystem, RenameDirectory),
             SFUNC(0x7, IFileSystem, GetEntryType),
             SFUNC(0x8, IFileSystem, OpenFile),
             SFUNC(0x9, IFileSystem, OpenDirectory),
@@ -102,7 +110,8 @@ namespace skyline::service::fssrv {
             SFUNC(0xB, IFileSystem, GetFreeSpaceSize),
             SFUNC(0xC, IFileSystem, GetTotalSpaceSize),
             SFUNC(0xD, IFileSystem, CleanDirectoryRecursively),
-            SFUNC(0xE, IFileSystem, GetFileTimeStampRaw)
+            SFUNC(0xE, IFileSystem, GetFileTimeStampRaw),
+            SFUNC(0x10, IFileSystem, GetFileSystemAttribute)
         )
     };
 }

@@ -12,8 +12,25 @@ namespace skyline::service::nim {
         return {};
     }
 
+    Result IShopServiceAccessServerInterface::RefreshDebugAvailability(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
+
+    Result IShopServiceAccessServerInterface::ClearDebugResponse(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
+
+    Result IShopServiceAccessServerInterface::RegisterDebugResponse(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
+
     Result IShopServiceAccessServerInterface::IsLargeResourceAvailable(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         response.Push<u8>(false);
+        return {};
+    }
+
+    Result IShopServiceAccessServerInterface::CreateServerInterface2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        manager.RegisterService(SRVREG(IShopServiceAccessServer), session, response);
         return {};
     }
 }

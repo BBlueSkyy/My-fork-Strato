@@ -9,7 +9,7 @@
 #include "pipeline_manager.h"
 
 namespace skyline::gpu::interconnect::kepler_compute {
-    static Pipeline::ShaderStage MakePipelineShader(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary) {
+    static Pipeline::ShaderStage MakePipelineShader(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary) {
         ctx.gpu.shader->ResetPools();
 
         auto program{ctx.gpu.shader->ParseComputeShader(
@@ -21,6 +21,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
                 return constantBuffers[index].Read<int>(ctx.executor, offset);
             }, [&](u32 index) {
                 return textures.GetTextureType(ctx, BindlessHandle{ .raw = index }.textureIndex);
+            }, [&](u32 index) {
+                BindlessHandle handle{ .raw = index };
+                return samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex);
             })};
 
         Shader::Backend::Bindings bindings{};
@@ -53,13 +56,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         pushBindings(vk::DescriptorType::eUniformTexelBuffer, stage.info.texture_buffer_descriptors, descriptorInfo.totalTexelBufferDescCount);
         pushBindings(vk::DescriptorType::eStorageTexelBuffer, stage.info.image_buffer_descriptors, descriptorInfo.totalTexelBufferDescCount);
-        if (descriptorInfo.totalTexelBufferDescCount > 0)
-            LOGW("Image buffer descriptors are not supported");
 
         pushBindings(vk::DescriptorType::eCombinedImageSampler, stage.info.texture_descriptors, descriptorInfo.totalImageDescCount);
         pushBindings(vk::DescriptorType::eStorageImage, stage.info.image_descriptors, descriptorInfo.totalImageDescCount);
-        if (stage.info.image_descriptors.size() > 0)
-            LOGW("Image descriptors are not supported");
 
         return descriptorInfo;
     }
@@ -103,8 +102,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
         };
     }
 
-    Pipeline::Pipeline(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary)
-        : shaderStage{MakePipelineShader(ctx, textures, constantBuffers, packedState, shaderBinary)},
+    Pipeline::Pipeline(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary)
+        : shaderStage{MakePipelineShader(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)},
           descriptorInfo{MakePipelineDescriptorInfo(shaderStage)},
           compiledPipeline{MakeCompiledPipeline(ctx, packedState, shaderStage, descriptorInfo.descriptorSetLayoutBindings)},
           sourcePackedState{packedState} {
@@ -200,6 +199,16 @@ namespace skyline::gpu::interconnect::kepler_compute {
                                                            srcStageMask, dstStageMask)};
                             return binding.first;
                         });
+         
+        writeImageDescs(vk::DescriptorType::eStorageImage, shaderStage.info.image_descriptors,
+                         [&](const Shader::ImageDescriptor &desc, size_t arrayIdx) {
+                             BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
+                             LOGD("StorageImage: idx={} format={}", static_cast<u32>(handle.textureIndex), static_cast<u32>(desc.format));
+                             auto binding{GetImageBinding(ctx, desc, textures, handle,
+                                                          vk::PipelineStageFlagBits::eComputeShader,
+                                                          srcStageMask, dstStageMask)};
+                            return binding.first;
+                        });             
 
         // Since we don't implement all descriptor types the number of writes might not match what's expected
         if (!writeIdx)

@@ -21,6 +21,7 @@ import android.graphics.PointF
 import android.graphics.drawable.Icon
 import android.hardware.display.DisplayManager
 import android.net.DhcpInfo
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.*
 import android.util.Log
@@ -41,6 +42,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
+import androidx.preference.PreferenceManager
 import androidx.window.layout.WindowLayoutInfo
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dagger.hilt.android.AndroidEntryPoint
@@ -49,12 +51,14 @@ import kotlinx.coroutines.launch
 import org.stratoemu.strato.applet.swkbd.SoftwareKeyboardConfig
 import org.stratoemu.strato.applet.swkbd.SoftwareKeyboardDialog
 import org.stratoemu.strato.data.AppItem
+import org.stratoemu.strato.data.BaseAppItem
 import org.stratoemu.strato.data.AppItemTag
 import org.stratoemu.strato.databinding.EmuActivityBinding
 import org.stratoemu.strato.emulation.PipelineLoadingFragment
 import org.stratoemu.strato.input.*
 import org.stratoemu.strato.loader.RomFile
 import org.stratoemu.strato.loader.getRomFormat
+import org.stratoemu.strato.preference.GameContentPreference
 import org.stratoemu.strato.settings.AppSettings
 import org.stratoemu.strato.settings.EmulationSettings
 import org.stratoemu.strato.settings.NativeSettings
@@ -89,9 +93,13 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private val binding by lazy { EmuActivityBinding.inflate(layoutInflater) }
 
     /**
-     * The [AppItem] of the app that is being emulated
+     * The [BaseAppItem] of the app that is being emulated
      */
     lateinit var item : AppItem
+
+    lateinit var dlcUris : ArrayList<Uri>
+
+    lateinit var updateUri : Uri
 
     /**
      * The built-in [Vibrator] of the device
@@ -147,7 +155,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * @param nativeLibraryPath The full path to the app native library directory
      * @param assetManager The asset manager used for accessing app assets
      */
-    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager)
+    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, dlcFds : IntArray?, updateFd : Int, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager)
 
     /**
      * @param join If the function should only return after all the threads join or immediately
@@ -229,15 +237,21 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      */
     private fun executeApplication(intent : Intent) {
         if (emulationThread?.isAlive == true) {
+            // Reentrada com emulação ainda ativa (ex: onNewIntent sem sair do app).
+            // Não tentamos reaproveitar o processo: mesmo que a Thread Kotlin
+            // retorne rápido, isso só confirma que a chamada JNI de
+            // executeApplication voltou, não que o destrutor nativo da KProcess
+            // (que mata as threads guest e desinstala a static instance) já
+            // terminou de verdade do lado C++. Reaproveitar o processo nesse
+            // caso cria uma corrida entre a KProcess antiga sendo destruída e
+            // a nova sendo construída. Forçar sempre o reinício completo do
+            // processo elimina essa classe de bug.
             shouldFinish = false
-            if (stopEmulation(false))
-                emulationThread!!.join(250)
-
-            if (emulationThread!!.isAlive) {
-                finishAffinity()
-                startActivity(intent)
-                Runtime.getRuntime().exit(0)
-            }
+            stopEmulation(false) // apenas sinaliza a thread nativa a parar (assíncrono)
+            finishAffinity()
+            startActivity(intent)
+            Runtime.getRuntime().exit(0)
+            return
         }
 
         shouldFinish = true
@@ -249,9 +263,63 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         @SuppressLint("Recycle")
         val romFd = contentResolver.openFileDescriptor(rom, "r")!!
 
+        var dlcFds : IntArray? = null
+        if (dlcUris.isNotEmpty()) {
+            val validDlcs = dlcUris.mapNotNull { uri ->
+                try {
+                    contentResolver.openFileDescriptor(uri, "r")?.detachFd()
+                } catch (e: Exception) {
+                    Log.w(Tag, "Failed to access DLC file: $uri", e)
+                    // Clear invalid DLC from preferences
+                    item.titleId?.let { titleId ->
+                        val gameContentPreference = GameContentPreference(this)
+                        gameContentPreference.setBaseTitleId(titleId)
+                        // Remove this specific DLC from preferences
+                        // This will be handled by the preference cleanup
+                    }
+                    null
+                }
+            }
+            if (validDlcs.isNotEmpty()) {
+                dlcFds = validDlcs.toIntArray()
+            }
+        }
+
+        var updateFd : Int = -1
+        if (updateUri != Uri.EMPTY) {
+            try {
+                @SuppressLint("Recycle")
+                updateFd = contentResolver.openFileDescriptor(updateUri, "r")!!.detachFd()
+            } catch (e: Exception) {
+                Log.w(Tag, "Failed to access update file: $updateUri", e)
+                // Clear invalid update from preferences
+                item.titleId?.let { titleId ->
+                    val gameContentPreference = GameContentPreference(this)
+                    gameContentPreference.setBaseTitleId(titleId)
+                    // Clear the invalid update
+                    val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+                    prefs.edit()
+                        .remove("selected_update_$titleId")
+                        .remove("update_version_$titleId")
+                        .apply()
+                }
+                updateFd = -1
+            }
+        }
+
         GpuDriverHelper.ensureFileRedirectDir(this)
+        
+        // Log what content is being loaded
+        Log.d(Tag, "Starting emulation with:")
+        Log.d(Tag, "  - ROM: $rom")
+        Log.d(Tag, "  - DLC count: ${dlcFds?.size ?: 0}")
+        Log.d(Tag, "  - Update FD: $updateFd (${if (updateFd != -1) "valid" else "none"})")
+        if (updateFd != -1) {
+            Log.d(Tag, "  - Update URI: $updateUri")
+        }
+        
         emulationThread = Thread {
-            executeApplication(rom.toString(), romType, romFd.detachFd(), NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
+            executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
             returnFromEmulation()
         }
 
@@ -265,6 +333,32 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         val intentItem = intent.serializable(AppItemTag) as AppItem?
         if (intentItem != null) {
             item = intentItem
+
+            // Use GameContentPreference instead of AppItem methods for selected content
+            Log.d(Tag, "Item titleId: '${item.titleId}' (is null: ${item.titleId == null})")
+            Log.d(Tag, "Item title: '${item.title}', author: '${item.author}'")
+            item.titleId?.let { titleId ->
+                Log.d(Tag, "Loading content for titleId: $titleId")
+                val gameContentPreference = GameContentPreference(this)
+                gameContentPreference.setBaseTitleId(titleId)
+                
+                // Get selected content from preferences
+                Log.d(Tag, "Getting update URI from GameContentPreference...")
+                updateUri = gameContentPreference.getSelectedUpdateUri() ?: Uri.EMPTY
+                Log.d(Tag, "Update URI retrieved: $updateUri")
+                
+                // Also check ContentManager directly for debugging
+                val directFromContentManager = ContentManager.getEnabledUpdate(titleId)
+                Log.d(Tag, "Direct from ContentManager - enabled update: ${directFromContentManager?.uri}, name: ${directFromContentManager?.name}")
+                
+                dlcUris = gameContentPreference.getSelectedDlcUris().toCollection(ArrayList())
+                
+                Log.d(Tag, "Retrieved from preferences - updateUri: $updateUri, dlcUris count: ${dlcUris.size}")
+            } ?: run {
+                // Fallback to old behavior if titleId is not available
+                dlcUris = item.getEnabledDlcs().map { it.uri }.toCollection(ArrayList())
+                updateUri = item.getEnabledUpdate()?.uri ?: Uri.EMPTY
+            }
             return
         }
 
@@ -273,7 +367,11 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         val romFormat = getRomFormat(uri, contentResolver)
         val romFile = RomFile(this, romFormat, uri, EmulationSettings.global.systemLanguage)
 
-        item = AppItem(romFile.takeIf { it.valid }!!.appEntry)
+        item = AppItem(romFile.takeIf { it.valid }!!.appEntry, emptyList(), emptyList())
+        
+        // Initialize empty lists for direct ROM launch
+        dlcUris = ArrayList()
+        updateUri = Uri.EMPTY
     }
 
     @SuppressLint("SetTextI18n", "ClickableViewAccessibility")

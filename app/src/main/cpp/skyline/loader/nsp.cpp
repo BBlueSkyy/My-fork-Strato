@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <fstream>
 #include <kernel/types/KProcess.h>
 #include <vfs/ticket.h>
 #include "nca.h"
 #include "nsp.h"
+#include "vfs/patch_manager.h"
 
 namespace skyline::loader {
     static void ExtractTickets(const std::shared_ptr<vfs::PartitionFileSystem>& dir, const std::shared_ptr<crypto::KeyStore> &keyStore) {
@@ -22,7 +24,7 @@ namespace skyline::loader {
         }
     }
 
-    NspLoader::NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore) : nsp(std::make_shared<vfs::PartitionFileSystem>(backing)) {
+    NspLoader::NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore, const std::string &diagnosticsPath) : nsp(std::make_shared<vfs::PartitionFileSystem>(backing)) {
         ExtractTickets(nsp, keyStore);
 
         auto root{nsp->OpenDirectory("", {false, true})};
@@ -33,26 +35,45 @@ namespace skyline::loader {
             try {
                 auto nca{vfs::NCA(nsp->OpenFile(entry.name), keyStore)};
 
-                if (nca.contentType == vfs::NcaContentType::Program && nca.romFs != nullptr && nca.exeFs != nullptr)
+                if (nca.contentType == vfs::NCAContentType::Program && nca.romFs != nullptr && nca.exeFs != nullptr)
                     programNca = std::move(nca);
-                else if (nca.contentType == vfs::NcaContentType::Control && nca.romFs != nullptr)
+                else if (nca.contentType == vfs::NCAContentType::Control && nca.romFs != nullptr)
                     controlNca = std::move(nca);
+                else if (nca.contentType == vfs::NCAContentType::Meta)
+                    metaNca = std::move(nca);
+                else if (nca.contentType == vfs::NCAContentType::PublicData)
+                    publicNca = std::move(nca);
             } catch (const loader_exception &e) {
+                if (!diagnosticsPath.empty()) {
+                    std::ofstream diag(diagnosticsPath, std::ios::app);
+                    if (diag)
+                        diag << "NCA '" << entry.name << "' failed, LoaderResult=" << static_cast<int>(e.error) << ", " << e.what() << "\n";
+                }
                 throw loader_exception(e.error);
             } catch (const std::exception &e) {
+                LOGE("NCA parsing failed for '{}': {}", entry.name, e.what());
                 continue;
             }
         }
 
-        if (!programNca || !controlNca)
-            throw exception("Incomplete NSP file");
+        if (programNca)
+            romFs = programNca->romFs;
 
-        romFs = programNca->romFs;
-        controlRomFs = std::make_shared<vfs::RomFileSystem>(controlNca->romFs);
-        nacp.emplace(controlRomFs->OpenFile("control.nacp"));
+        if (controlNca) {
+            controlRomFs = std::make_shared<vfs::RomFileSystem>(controlNca->romFs);
+            nacp.emplace(controlRomFs->OpenFile("control.nacp"));
+        }
+
+        if (metaNca)
+            cnmt = vfs::CNMT(metaNca->cnmt);
     }
 
     void *NspLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
+        if (state.updateLoader) {
+            auto patchManager{std::make_shared<vfs::PatchManager>()};
+            programNca->exeFs = patchManager->PatchExeFS(state, programNca->exeFs);
+        }
+
         process->npdm = vfs::NPDM(programNca->exeFs->OpenFile("main.npdm"));
         return NcaLoader::LoadExeFs(this, programNca->exeFs, process, state);
     }

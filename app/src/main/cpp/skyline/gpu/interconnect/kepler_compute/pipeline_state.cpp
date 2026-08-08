@@ -30,7 +30,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         : pipelineStage{manager, engine.pipelineStageRegisters},
           bindlessTexture{engine.bindlessTexture} {}
 
-    Pipeline *PipelineState::Update(InterconnectContext &ctx, StateUpdateBuilder &builder, Textures &textures, ConstantBufferSet &constantBuffers, const QMD &qmd) {
+    Pipeline *PipelineState::Update(InterconnectContext &ctx, StateUpdateBuilder &builder, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const QMD &qmd) {
         const auto &stage{pipelineStage.UpdateGet(ctx, qmd.programOffset)};
         packedState.shaderHash = stage.hash;
         packedState.dimensions = {qmd.ctaThreadDimension0, qmd.ctaThreadDimension1, qmd.ctaThreadDimension2};
@@ -38,7 +38,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         packedState.sharedMemorySize = qmd.sharedMemorySize;
         packedState.bindlessTextureConstantBufferSlotSelect = bindlessTexture.constantBufferSlotSelect;
 
-        return ctx.gpu.computePipelineManager.FindOrCreate(ctx, textures, constantBuffers, packedState, stage.binary);
+        return ctx.gpu.computePipelineManager.FindOrCreate(ctx, textures, samplers, constantBuffers, packedState, stage.binary);
     }
 
     void PipelineState::PurgeCaches() {

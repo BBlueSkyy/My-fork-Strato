@@ -6,15 +6,15 @@ set(BUILD_TESTING OFF CACHE BOOL "Build Testing" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build Shared Libraries" FORCE)
 
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(source_DIR ${CMAKE_SOURCE_DIR}/src/main/cpp)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-strict-aliasing -Wno-unused-command-line-argument -fwrapv")
-set(CMAKE_CXX_FLAGS_RELEASE "-Ofast -flto=full -fno-stack-protector -DNDEBUG")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-strict-aliasing -Wno-unused-command-line-argument -fwrapv -DFMT_CONSTEVAL= -DPAGE_SIZE=4096")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -flto=full -fno-stack-protector -DNDEBUG")
 
-# Build all libraries with -Ofast but with default debug data (-g) for debug and reldebug builds
-set(CMAKE_CXX_FLAGS_DEBUG "-Ofast")
-set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-Ofast")
+# Build all libraries with -O3 but with default debug data (-g) for debug and reldebug builds
+set(CMAKE_CXX_FLAGS_DEBUG "-O3")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3")
 
 # Skyline's Boost fork
 set(Boost_USE_STATIC_LIBS ON)
@@ -188,6 +188,7 @@ add_library(skyline SHARED
         ${source_DIR}/driver_jni.cpp
         ${source_DIR}/emu_jni.cpp
         ${source_DIR}/loader_jni.cpp
+        ${source_DIR}/nsp_jni.cpp
         ${source_DIR}/skyline/common.cpp
         ${source_DIR}/skyline/common/exception.cpp
         ${source_DIR}/skyline/common/signal.cpp
@@ -303,7 +304,12 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/vfs/nacp.cpp
         ${source_DIR}/skyline/vfs/npdm.cpp
         ${source_DIR}/skyline/vfs/nca.cpp
+        ${source_DIR}/skyline/vfs/sparse_storage.cpp
+        ${source_DIR}/skyline/vfs/compressed_storage.cpp
         ${source_DIR}/skyline/vfs/ticket.cpp
+        ${source_DIR}/skyline/vfs/cnmt.cpp
+        ${source_DIR}/skyline/vfs/bktr.cpp
+        ${source_DIR}/skyline/vfs/patch_manager.cpp
         ${source_DIR}/skyline/services/serviceman.cpp
         ${source_DIR}/skyline/services/base_service.cpp
         ${source_DIR}/skyline/services/sm/IUserInterface.cpp

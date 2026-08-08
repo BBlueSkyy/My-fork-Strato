@@ -384,7 +384,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
           globalShaderConfig{engine.globalShaderConfigRegisters},
           ctSelect{engine.ctSelect} {}
 
-    void PipelineState::Flush(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers, StateUpdateBuilder &builder) {
+    void PipelineState::Flush(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, StateUpdateBuilder &builder) {
         TRACE_EVENT("gpu", "PipelineState::Flush");
 
         packedState.dynamicStateActive = ctx.gpu.traits.supportsExtendedDynamicState;
@@ -434,7 +434,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
         }
 
-        auto newPipeline{ctx.gpu.graphicsPipelineManager->FindOrCreate(ctx, textures, constantBuffers, packedState, shaderBinaries)};
+        auto newPipeline{ctx.gpu.graphicsPipelineManager->FindOrCreate(ctx, textures, samplers, constantBuffers, packedState, shaderBinaries)};
         if (pipeline)
             pipeline->AddTransition(newPipeline);
         pipeline = newPipeline;

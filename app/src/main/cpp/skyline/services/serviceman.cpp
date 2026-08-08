@@ -66,10 +66,10 @@
 
 #define SERVICE_CASE(class, name, ...) \
     case util::MakeMagic<ServiceName>(name): { \
-            std::shared_ptr<BaseService> serviceObject{std::make_shared<class>(state, *this, ##__VA_ARGS__)}; \
-            serviceMap[util::MakeMagic<ServiceName>(name)] = serviceObject; \
-            return serviceObject; \
-        }
+        std::shared_ptr<BaseService> serviceObject{std::make_shared<class>(state, *this, ##__VA_ARGS__)}; \
+        serviceMap[util::MakeMagic<ServiceName>(name)] = serviceObject; \
+        return serviceObject; \
+    }
 
 namespace skyline::service {
     struct GlobalServiceState {
@@ -101,7 +101,7 @@ namespace skyline::service {
             SERVICE_CASE(codec::IHardwareOpusDecoderManager, "hwopus")
             SERVICE_CASE(hid::IHidServer, "hid")
             SERVICE_CASE(irs::IIrSensorServer, "irs", globalServiceState->sharedIirCore)
-            SERVICE_CASE(timesrv::IStaticService, "time:s", globalServiceState->timesrv, timesrv::constant::StaticServiceSystemPermissions) // Both of these would be registered after TimeServiceManager::Setup normally but we call that in the GlobalServiceState constructor so can just list them here directly
+            SERVICE_CASE(timesrv::IStaticService, "time:s", globalServiceState->timesrv, timesrv::constant::StaticServiceSystemPermissions)
             SERVICE_CASE(timesrv::IStaticService, "time:su", globalServiceState->timesrv, timesrv::constant::StaticServiceSystemUpdatePermissions)
             SERVICE_CASE(glue::IStaticService, "time:a", globalServiceState->timesrv.managerServer.GetStaticServiceAsAdmin(state, *this), globalServiceState->timesrv, timesrv::constant::StaticServiceAdminPermissions)
             SERVICE_CASE(glue::IStaticService, "time:r", globalServiceState->timesrv.managerServer.GetStaticServiceAsRepair(state, *this), globalServiceState->timesrv, timesrv::constant::StaticServiceRepairPermissions)
@@ -134,8 +134,9 @@ namespace skyline::service {
             SERVICE_CASE(socket::IManager, "nsd:u")
             SERVICE_CASE(socket::IManager, "nsd:a")
             SERVICE_CASE(socket::IResolver, "sfdnsres")
-            SERVICE_CASE(spl::IRandomInterface, "csrng")
             SERVICE_CASE(ssl::ISslService, "ssl")
+            SERVICE_CASE(spl::IRandomInterface, "csrng")
+            SERVICE_CASE(ssl::ISslService, "ssl:s")
             SERVICE_CASE(prepo::IPrepoService, "prepo:u")
             SERVICE_CASE(prepo::IPrepoService, "prepo:a")
             SERVICE_CASE(mmnv::IRequest, "mm:u")
@@ -180,7 +181,6 @@ namespace skyline::service {
     void ServiceManager::RegisterService(std::shared_ptr<BaseService> serviceObject, type::KSession &session, ipc::IpcResponse &response) { // NOLINT(performance-unnecessary-value-param)
         std::scoped_lock serviceGuard{mutex};
         KHandle handle{};
-
         if (session.isDomain) {
             session.domains.push_back(serviceObject);
             response.domainObjects.push_back(session.handleIndex);
@@ -189,14 +189,13 @@ namespace skyline::service {
             handle = state.process->NewHandle<type::KSession>(serviceObject).handle;
             response.moveHandles.push_back(handle);
         }
-
         LOGD("Service has been registered: \"{}\" (0x{:X})", serviceObject->GetName(), handle);
     }
 
     void ServiceManager::CloseSession(KHandle handle) {
         std::scoped_lock serviceGuard{mutex};
         auto session{state.process->GetHandle<type::KSession>(handle)};
-        if (session->isOpen) {
+        if (session->IsOpen() && session->handleRefCount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             if (session->isDomain) {
                 for (const auto &domainService : session->domains)
                     std::erase_if(serviceMap, [domainService](const auto &entry) {
@@ -207,17 +206,17 @@ namespace skyline::service {
                     return entry.second == session->serviceObject;
                 });
             }
-            session->isOpen = false;
         }
     }
 
     void ServiceManager::SyncRequestHandler(KHandle handle) {
         TRACE_EVENT("kernel", "ServiceManager::SyncRequestHandler");
         auto session{state.process->GetHandle<type::KSession>(handle)};
+
         LOGV("----IPC Start----");
         LOGV("Handle is 0x{:X}", handle);
 
-        if (session->isOpen) {
+        if (session->IsOpen()) {
             ipc::IpcRequest request(session->isDomain, state);
             ipc::IpcResponse response(state);
 
@@ -229,6 +228,7 @@ namespace skyline::service {
                             auto service{session->domains.at(request.domain->objectId)};
                             if (service == nullptr)
                                 throw exception("Domain request used an expired handle");
+
                             switch (request.domain->command) {
                                 case ipc::DomainCommand::SendMessage:
                                     response.errorCode = service->HandleRequest(*session, request, response);
@@ -260,6 +260,7 @@ namespace skyline::service {
 
                         case ipc::ControlCommand::CloneCurrentObject:
                         case ipc::ControlCommand::CloneCurrentObjectEx:
+                            session->handleRefCount.fetch_add(1, std::memory_order_relaxed);
                             response.moveHandles.push_back(state.process->InsertItem(session));
                             break;
 
@@ -278,6 +279,7 @@ namespace skyline::service {
                     LOGD("Closing Session");
                     CloseSession(handle);
                     break;
+
                 default:
                     // TIPC command ID is encoded in the request type
                     if (request.isTipc) {
@@ -290,6 +292,7 @@ namespace skyline::service {
         } else {
             LOGW("svcSendSyncRequest called on closed handle: 0x{:X}", handle);
         }
+
         LOGV("====IPC End====");
     }
 }

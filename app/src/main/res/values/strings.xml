@@ -13,6 +13,28 @@
     <!-- Toolbar - Share Logs -->
     <string name="log_share_prompt">Share log file</string>
     <string name="logs_not_found">No logs were created during the last run</string>
+    <!-- NSP File Selection -->
+    <string name="no_nsp_selected">No NSP file selected</string>
+    <string name="unknown_nsp_file">Unknown NSP file</string>
+    <string name="processing_nsp">Processing NSP file…</string>
+    <string name="error_processing_nsp">Error processing NSP file</string>
+    <string name="error_opening_file">Error opening file</string>
+    <string name="error_opening_file_picker">Could not open file picker</string>
+    <string name="error_processing_file">Error processing file</string>
+    <string name="error_not_an_nsp_file">Please select a valid NSP file</string>
+    <string name="nsp_file_selected">NSP file selected: %1$s</string>
+    <string name="invalid_file_type">Please select a valid NSP file</string>
+    <!-- Game Content Management -->
+    <string name="no_content_selected">No updates or DLC selected</string>
+    <string name="update_selected">Update v%1$s</string>
+    <string name="dlc_count_selected">%1$d DLC selected</string>
+    <string name="update_selected_success">Update v%1$s selected successfully</string>
+    <string name="dlc_selected_success">DLC \"%1$s\" selected successfully</string>
+    <string name="error_no_base_game">No base game selected</string>
+    <string name="error_parsing_nsp">Error parsing NSP file</string>
+    <string name="error_invalid_update">This update is not compatible with the selected game</string>
+    <string name="error_invalid_dlc">This DLC is not compatible with the selected game</string>
+    <string name="error_unsupported_content_type">Unsupported content type. Please select an update or DLC file.</string>
     <!-- Main -->
     <string name="all">All</string>
     <string name="metadata_missing">Metadata Missing</string>
@@ -28,6 +50,8 @@
     <string name="invalid_file">Invalid file</string>
     <string name="missing_title_key">Missing title key</string>
     <string name="incomplete_prod_keys">Incomplete production keys</string>
+    <string name="sparse_nca_error">This title uses Sparse NCA sections, which failed to load</string>
+    <string name="compressed_nca_error">This title uses Compressed NCA sections, which failed to load</string>
     <!-- Picture-In-Picture -->
     <string name="pause">Pause</string>
     <string name="mute">Mute</string>
@@ -37,6 +61,10 @@
     <string name="open_data_directory_summary">Opens Skyline\'s internal directory in a file manager</string>
     <string name="open_data_directory_failed">Cannot find an external file manager to open Skyline\'s internal directory</string>
     <string name="search_location">Search Location</string>
+    <string name="manage_game_content">Manage game content</string>
+    <string name="manage_game_content_summary">Manage updates and DLCs</string>
+    <string name="add_update_dlc">Add Update or DLC</string>
+    <string name="no_content_available">No content available</string>
     <!-- Settings - Keys -->
     <string name="keys">Keys</string>
     <string name="prod_keys">Production Keys</string>
@@ -313,4 +341,36 @@
     <string name="global_save_data_zip_name">Strato save data</string>
     <string name="game_crash">The game has crashed</string>
     <string name="game_crash_message">A fatal error occurred. Check the log for details.</string>
+    <string name="unknown_game">Unknown Game</string>
+    <string name="unknown_id">Unknown</string>
+    <string name="title_id_format">Title ID: %s</string>
+    
+    <!-- Manage Content Activity -->
+    <string name="updates">Updates</string>
+    <string name="select_updates">Select one or more updates to apply</string>
+    <string name="no_updates_found">No updates found for this game</string>
+    <string name="add_update">Add Update</string>
+    <string name="dlcs">Downloadable Content</string>
+    <string name="select_multiple_dlcs">Select one or more DLCs to enable</string>
+    <string name="no_dlcs_found">No DLCs found for this game</string>
+    <string name="add_dlc">Add DLC</string>
+    
+    <string name="apply_changes">Apply Changes</string>
+    <string name="update_applied">Update applied successfully</string>
+    <string name="dlc_applied">DLCs applied successfully</string>
+    <string name="error_processing_update">Error processing update</string>
+    <string name="error_processing_dlc">Error processing DLC</string>
+    <string name="update_version">Version: %1$s</string>
+    <string name="dlc_title">%1$s</string>
+    <string name="dlc_size">Size: %1$s</string>
+    <string name="current_selection">Current selection</string>
+    
+    <!-- Toast Messages -->
+    <string name="update_added_successfully">Update added successfully</string>
+    <string name="dlc_added_successfully">DLC added successfully</string>
+    <string name="tap_to_add_updates_or_dlc">Tap + to add updates or DLC</string>
+    <string name="no_content_added">No content added</string>
+    <string name="add_content">Add content</string>
+    <string name="content_type_icon">Content type icon</string>
+    <string name="delete_content">Delete content</string>
 </resources>

@@ -23,9 +23,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
     VertexBufferState::VertexBufferState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine, u32 index) : engine{manager, dirtyHandle, engine}, index{index} {}
 
     void VertexBufferState::Flush(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        size_t size{engine->vertexStreamLimit - engine->vertexStream.location + 1};
-
-        if (engine->vertexStream.format.enable && engine->vertexStream.location != 0 && size) {
+        if (engine->vertexStream.format.enable && engine->vertexStream.location != 0 &&
+            engine->vertexStreamLimit >= engine->vertexStream.location) {
+            size_t size{engine->vertexStreamLimit - engine->vertexStream.location + 1};
             view.Update(ctx, engine->vertexStream.location, size);
             if (*view) {
                 ctx.executor.AttachBuffer(*view);
@@ -39,15 +39,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
                 return;
             } else {
-                LOGW("Unmapped vertex buffer: 0x{:X}", engine->vertexStream.location);
+                LOGD("Unmapped vertex buffer: 0x{:X}", engine->vertexStream.location);
             }
         }
 
         megaBufferBinding = {};
-        if (ctx.gpu.traits.supportsNullDescriptor)
+        if (ctx.gpu.traits.supportsNullDescriptor) {
             builder.SetVertexBuffer(index, BufferBinding{}, ctx.gpu.traits.supportsExtendedDynamicState, engine->vertexStream.format.stride);
-        else
-            builder.SetVertexBuffer(index, {ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, 0).buffer}, ctx.gpu.traits.supportsExtendedDynamicState, engine->vertexStream.format.stride);
+        } else {
+            static const BufferBinding dummyBinding{};
+            builder.SetVertexBuffer(index, dummyBinding, ctx.gpu.traits.supportsExtendedDynamicState, engine->vertexStream.format.stride);
+        }
     }
 
     bool VertexBufferState::Refresh(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
@@ -115,7 +117,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return {quadConversionAllocation.buffer, quadConversionAllocation.offset, indexBufferSize};
     }
 
-    /* Index Buffer */
+            /* Index Buffer */
     void IndexBufferState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
         manager.Bind(handle, indexBuffer.indexSize, indexBuffer.address, indexBuffer.limit);
     }
@@ -137,7 +139,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         view.Update(ctx, engine->indexBuffer.address, size, !estimateSize);
         if (!*view) {
-            LOGW("Unmapped index buffer: 0x{:X}", engine->indexBuffer.address);
+            LOGD("Unmapped index buffer: 0x{:X}", engine->indexBuffer.address);
+            megaBufferBinding = {};
             return;
         }
 
@@ -432,7 +435,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         dirtyFunc(stencilValues);
     }
 
-    void ActiveState::Update(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers, StateUpdateBuilder &builder,
+    void ActiveState::Update(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, StateUpdateBuilder &builder,
                              bool indexed, engine::DrawTopology topology, bool estimateIndexBufferSize, u32 drawFirstIndex, u32 drawElementCount,
                              vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         TRACE_EVENT("gpu", "ActiveState::Update");
@@ -444,7 +447,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto updateFunc{[&](auto &stateElem, auto &&... args) { stateElem.Update(ctx, builder, args...); }};
         auto updateFuncBuffer{[&](auto &stateElem, auto &&... args) { stateElem.Update(ctx, builder, srcStageMask, dstStageMask, args...); }};
 
-        pipeline.Update(ctx, textures, constantBuffers, builder);
+        pipeline.Update(ctx, textures, samplers, constantBuffers, builder);
         ranges::for_each(vertexBuffers, updateFuncBuffer);
         if (indexed)
             updateFuncBuffer(indexBuffer, directState.inputAssembly.NeedsQuadConversion(), estimateIndexBufferSize, drawFirstIndex, drawElementCount);

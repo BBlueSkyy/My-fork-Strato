@@ -2,6 +2,7 @@
 // Copyright © 2024 Strato Team and Contributors (https://github.com/strato-emu/)
 
 #include <sys/mman.h>
+#include <atomic>
 #include "trace.h"
 #include "trap_manager.h"
 
@@ -96,15 +97,24 @@ namespace skyline {
         }
     }
 
-    static TrapManager *staticTrap{nullptr};
+    static std::atomic<TrapManager *> staticTrap{nullptr};
 
     void TrapManager::InstallStaticInstance() {
-        staticTrap = this;
+        staticTrap.store(this, std::memory_order_seq_cst);
+    }
+
+    void TrapManager::UninstallStaticInstance() {
+        // Only clear it if it's still our instance - avoids clobbering a newer instance that
+        // may have already been installed by another KProcess in the meantime
+        TrapManager *expected{this};
+        staticTrap.compare_exchange_strong(expected, nullptr, std::memory_order_seq_cst);
     }
 
     bool TrapManager::TrapHandler(u8 *address, bool write) {
-        assert(staticTrap != nullptr);
-        return staticTrap->HandleTrap(address, write);
+        auto *trap{staticTrap.load(std::memory_order_seq_cst)};
+        if (trap == nullptr) [[unlikely]]
+            return false; // No instance is currently installed, let the fault propagate normally rather than dereferencing a stale/null pointer
+        return trap->HandleTrap(address, write);
     }
 
     bool TrapManager::HandleTrap(u8 *address, bool write) {

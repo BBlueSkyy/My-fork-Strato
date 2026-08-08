@@ -17,7 +17,7 @@ import android.widget.RelativeLayout
 import android.widget.TextView
 import androidx.viewbinding.ViewBinding
 import org.stratoemu.strato.R
-import org.stratoemu.strato.data.AppItem
+import org.stratoemu.strato.data.BaseAppItem
 import org.stratoemu.strato.databinding.AppItemGridBinding
 import org.stratoemu.strato.databinding.AppItemGridCompactBinding
 import org.stratoemu.strato.databinding.AppItemLinearBinding
@@ -86,15 +86,15 @@ class GridCompatBinding(parent : ViewGroup) : LayoutBinding<AppItemGridCompactBi
     override val icon = binding.icon
 }
 
-private typealias InteractionFunction = (appItem : AppItem) -> Unit
+private typealias InteractionFunction = (appItem : BaseAppItem) -> Unit
 
-class AppViewItem(var layoutType : LayoutType, private val item : AppItem, private val onClick : InteractionFunction, private val onLongClick : InteractionFunction) : GenericListItem<LayoutBinding<*>>() {
+class AppViewItem(var layoutType : LayoutType, private val item : BaseAppItem, private val onClick : InteractionFunction, private val onLongClick : InteractionFunction) : GenericListItem<LayoutBinding<*>>() {
     override fun getViewBindingFactory() = LayoutBindingFactory(layoutType)
 
     override fun bind(holder : GenericViewHolder<LayoutBinding<*>>, position : Int) {
         val binding = holder.binding
         binding.textTitle.text = item.title
-        binding.textVersion.text = item.version ?: item.loaderResultString(binding.root.context)
+        binding.textVersion.text = item.getDisplayVersion(binding.root.context)
         binding.textAuthor.text = item.author
         // Make text views selected for marquee to work
         binding.textTitle.isSelected = true
@@ -116,7 +116,7 @@ class AppViewItem(var layoutType : LayoutType, private val item : AppItem, priva
         binding.root.findViewById<View>(R.id.item_card)?.let { handleClicks(it) }
     }
 
-    private fun showIconDialog(context : Context, appItem : AppItem) {
+    private fun showIconDialog(context : Context, appItem : BaseAppItem) {
         val builder = Dialog(context)
         builder.requestWindowFeature(Window.FEATURE_NO_TITLE)
         builder.window!!.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))

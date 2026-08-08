@@ -27,6 +27,14 @@ namespace skyline::service::codec {
             throw OpusException(result);
     }
 
+    Result IHardwareOpusDecoder::SetContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
+
+    Result IHardwareOpusDecoder::SetContextForMultiStream(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
+
     Result IHardwareOpusDecoder::DecodeInterleavedOld(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         return DecodeInterleavedImpl(request, response);
     }

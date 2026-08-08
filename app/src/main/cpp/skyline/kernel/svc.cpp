@@ -104,24 +104,36 @@ namespace skyline::kernel::svc {
             LOGW("Invalid address and size combination: 'address': {}, 'size': 0x{:X} ", fmt::ptr(address), size);
             return;
         }
+       
+        constexpr u8 UnimplementedAttributeBit{0x10};
+        u8 rawMask{static_cast<u8>(ctx.w2 & ~UnimplementedAttributeBit)};
+        u8 rawValue{static_cast<u8>(ctx.w3 & ~UnimplementedAttributeBit)};
 
-        memory::MemoryAttribute mask{static_cast<u8>(ctx.w2)};
-        memory::MemoryAttribute value{static_cast<u8>(ctx.w3)};
-
-        auto maskedValue{mask.value | value.value};
-        if (maskedValue != mask.value || !mask.isUncached || mask.isDeviceShared || mask.isBorrowed || mask.isIpcLocked) [[unlikely]] {
-            ctx.w0 = result::InvalidCombination;
-            LOGW("'mask' invalid: 0x{:X}, 0x{:X}", mask.value, value.value);
+        // If, after removing the unimplemented bit, there is nothing left to change,
+        // treat it as a successful no-op instead of an error.
+        if (rawMask == 0) [[unlikely]] {
+            LOGD("SetMemoryAttribute: only unimplemented attribute bit(s) requested (0x{:X}), treating as no-op", static_cast<u8>(ctx.w2));
+            ctx.w0 = Result{};
             return;
         }
 
+        memory::MemoryAttribute mask{rawMask};
+        memory::MemoryAttribute value{rawValue};
+
+        auto maskedValue{mask.value | value.value};
+        if (maskedValue != mask.value || !mask.isUncached || mask.isDeviceShared || mask.isBorrowed || mask.isIpcLocked) [[unlikely]] {
+           ctx.w0 = result::InvalidCombination;
+            LOGW("'mask' invalid: 0x{:X}, 0x{:X}", mask.value, value.value);
+           return;
+        }
+       
         auto chunk{state.process->memory.GetChunk(address).value()};
 
         // We only check the first found chunk for whatever reason.
         if (!chunk.second.state.attributeChangeAllowed) [[unlikely]] {
-            ctx.w0 = result::InvalidState;
-            LOGW("Attribute change not allowed for chunk: {}", fmt::ptr(chunk.first));
-            return;
+           ctx.w0 = result::InvalidState;
+            LOGW("Attribute change not allowed for chunk: {} (base: {}, size: 0x{:X}, state: 0x{:X}, type: {})", fmt::ptr(address), fmt::ptr(chunk.first), chunk.second.size, chunk.second.state.value, static_cast<u8>(chunk.second.state.type));
+           return;
         }
 
         state.process->memory.SetRegionCpuCaching(span<u8>{address, size}, value.isUncached);
@@ -959,6 +971,20 @@ namespace skyline::kernel::svc {
             // 6.0.0+
             TotalMemoryAvailableWithoutSystemResource = 21,
             TotalMemoryUsageWithoutSystemResource = 22,
+            // 11.0.0+
+            FreeThreadCount = 24,
+            // 18.0.0+
+            AliasRegionExtraSize = 28,
+            // 19.0.0+
+            // NOTE: Corroborated against the official 19.0.0 changelog (switchbrew.org/wiki/19.0.0):
+            // "InfoType values 0x1D-0x21 are presumably ifdef'd out on NX", with 0x22 confirmed as
+            // the next real InfoType (TransferMemoryHint = 34). 29 (0x1D) is the first ID in that
+            // reserved range and lines up with when VammManager (nn::os::detail::VammManager) shows
+            // up around 18.0.0-19.0.0, so it's our best-supported guess -- but no public source names
+            // it "IsVammEnabled" specifically, since it could be any of the five ifdef'd-out slots
+            // (29-33). If a game logs "Unimplemented case ID0: X" for X in that range, adjust this
+            // value to match.
+            IsVammEnabled = 29,
         };
 
         InfoState info{static_cast<u32>(ctx.w1)};
@@ -984,11 +1010,33 @@ namespace skyline::kernel::svc {
             case InfoState::AliasRegionBaseAddr:
                 out = reinterpret_cast<u64>(state.process->memory.alias.guest.data());
                 break;
-
+             
             case InfoState::AliasRegionSize:
                 out = state.process->memory.alias.size();
                 break;
-
+        
+            case InfoState::AliasRegionExtraSize:
+                out = 0; // No extra space reserved in the Alias ​​region
+                break;
+            
+            case InfoState::IsVammEnabled:
+                // Virtual Address Memory Manager (nn::os::detail::VammManager) — introduced in
+                // HOS 19.0.0 / SDK 19.x. Returning 0 (disabled) is correct for Strato since we
+                // don't implement VAMM. VammManager::InitializeIfEnabled() will skip init when
+                // this returns 0, allowing games built with SDK 19.x (e.g. Unity 6) to start
+                // normally.
+                // Virtual Address Memory Manager (nn::os::detail::VammManager), tied to the
+                // reserved-region-extra-size feature added in 18.0.0. Real NX hardware disables
+                // this whole InfoType range (see NOTE above), so returning 0 ("disabled") instead
+                // of InvalidEnumValue is a deliberate compatibility choice, not a claim that this
+                // is what real hardware returns: VammManager::InitializeIfEnabled() in SDK 19.x
+                // titles (e.g. Unity 6) checks this result and skips VAMM init when it comes back
+                // disabled, letting those titles boot instead of hitting a hard "unimplemented"
+                // error. If VAMM emulation is ever implemented, this should return 1 and be backed
+                // by real allocation logic instead of just satisfying the check.
+                out = 0;
+                break;
+            
             case InfoState::HeapRegionBaseAddr:
                 out = reinterpret_cast<u64>(state.process->memory.heap.guest.data());
                 break;
@@ -1007,6 +1055,10 @@ namespace skyline::kernel::svc {
 
             case InfoState::IdleTickCount:
                 out = 0; // Stubbed
+                break;
+           
+            case InfoState::FreeThreadCount:
+                out = 64; // Stubbed: reports a generous number of free threads.
                 break;
 
             case InfoState::RandomEntropy:

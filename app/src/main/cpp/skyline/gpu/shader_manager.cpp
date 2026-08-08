@@ -124,10 +124,12 @@ namespace skyline::gpu {
             .lower_left_origin_mode = false,
             .need_declared_frag_colors = false,
             .has_broken_spirv_position_input = traits.quirks.brokenSpirvPositionInput,
+            .has_broken_fp16_float_controls = traits.quirks.brokenFp16FloatControls,
             .has_broken_spirv_subgroup_mask_vector_extract_dynamic = traits.quirks.brokenSubgroupMaskExtractDynamic,
             .has_broken_spirv_subgroup_shuffle = traits.quirks.brokenSubgroupShuffle,
             .max_subgroup_size = traits.subgroupSize,
             .has_broken_spirv_vector_access_chain = traits.quirks.brokenSpirvVectorAccessChain,
+            .has_broken_texture_shadow_compare = traits.quirks.brokenTextureShadowCompare,
             .disable_subgroup_shuffle = *state.settings->disableSubgroupShuffle,
         };
 
@@ -156,18 +158,19 @@ namespace skyline::gpu {
         bool viewportTransformEnabled;
         ShaderManager::ConstantBufferRead constantBufferRead;
         ShaderManager::GetTextureType getTextureType;
-
+        ShaderManager::GetTextureCompareFunc getTextureCompareFunc;
+      
       public:
         GraphicsEnvironment(const std::array<u32, 8> &postVtgShaderAttributeSkipMask,
                             Shader::Stage pStage,
                             span<u8> pBinary, u32 baseOffset,
                             u32 textureBufferIndex,
                             bool viewportTransformEnabled,
-                            ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType)
+                            ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType, ShaderManager::GetTextureCompareFunc getTextureCompareFunc)
             : binary{pBinary}, baseOffset{baseOffset},
               textureBufferIndex{textureBufferIndex},
               viewportTransformEnabled{viewportTransformEnabled},
-              constantBufferRead{std::move(constantBufferRead)}, getTextureType{std::move(getTextureType)} {
+              constantBufferRead{std::move(constantBufferRead)}, getTextureType{std::move(getTextureType)}, getTextureCompareFunc{std::move(getTextureCompareFunc)} {
             gp_passthrough_mask = postVtgShaderAttributeSkipMask;
             stage = pStage;
             sph = *reinterpret_cast<Shader::ProgramHeader *>(binary.data());
@@ -193,7 +196,11 @@ namespace skyline::gpu {
         [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) final {
             return getTextureType(handle);
         }
-
+       
+        [[nodiscard]] Shader::CompareFunction ReadTextureCompareFunc(u32 handle) final {
+            return getTextureCompareFunc(handle);
+        }
+        
         [[nodiscard]] u32 ReadViewportTransformState() final {
             return viewportTransformEnabled ? 1 : 0; // Only relevant for graphics shaders
         }
@@ -251,14 +258,15 @@ namespace skyline::gpu {
         std::array<u32, 3> workgroupDimensions;
         ShaderManager::ConstantBufferRead constantBufferRead;
         ShaderManager::GetTextureType getTextureType;
-
+        ShaderManager::GetTextureCompareFunc getTextureCompareFunc;
+    
       public:
         ComputeEnvironment(span<u8> pBinary,
                            u32 baseOffset,
                            u32 textureBufferIndex,
                            u32 localMemorySize, u32 sharedMemorySize,
                            std::array<u32, 3> workgroupDimensions,
-                           ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType)
+                           ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType, ShaderManager::GetTextureCompareFunc getTextureCompareFunc)
             : binary{pBinary},
               baseOffset{baseOffset},
               textureBufferIndex{textureBufferIndex},
@@ -266,7 +274,8 @@ namespace skyline::gpu {
               sharedMemorySize{sharedMemorySize},
               workgroupDimensions{workgroupDimensions},
               constantBufferRead{std::move(constantBufferRead)},
-              getTextureType{std::move(getTextureType)} {
+              getTextureType{std::move(getTextureType)},
+              getTextureCompareFunc{std::move(getTextureCompareFunc)} {
             stage = Shader::Stage::Compute;
             start_address = baseOffset;
             is_propietary_driver = textureBufferIndex == 2;
@@ -290,7 +299,11 @@ namespace skyline::gpu {
         [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) final {
             return getTextureType(handle);
         }
-
+        
+        [[nodiscard]] Shader::CompareFunction ReadTextureCompareFunc(u32 handle) final {
+            return getTextureCompareFunc(handle);
+        }
+        
         [[nodiscard]] u32 ReadViewportTransformState() final {
             return 0; // Only relevant for graphics shaders
         }
@@ -349,6 +362,10 @@ namespace skyline::gpu {
             throw exception("Not implemented");
         }
 
+        [[nodiscard]] Shader::CompareFunction ReadTextureCompareFunc(u32 handle) final {
+            throw exception("Not implemented");
+        }
+
         [[nodiscard]] u32 ReadViewportTransformState() final {
             throw exception("Not implemented");
         }
@@ -385,12 +402,12 @@ namespace skyline::gpu {
                                                            u64 hash, span<u8> binary, u32 baseOffset,
                                                            u32 textureConstantBufferIndex,
                                                            bool viewportTransformEnabled,
-                                                           const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType) {
+                                                           const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const GetTextureCompareFunc &getTextureCompareFunc) {
         binary = ProcessShaderBinary(false, hash, binary);
 
         std::scoped_lock lock{poolMutex};
 
-        GraphicsEnvironment environment{postVtgShaderAttributeSkipMask, stage, binary, baseOffset, textureConstantBufferIndex, viewportTransformEnabled, constantBufferRead, getTextureType};
+        GraphicsEnvironment environment{postVtgShaderAttributeSkipMask, stage, binary, baseOffset, textureConstantBufferIndex, viewportTransformEnabled, constantBufferRead, getTextureType, getTextureCompareFunc};
         Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset + sizeof(Shader::ProgramHeader))}};
         return  Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
     }
@@ -412,12 +429,12 @@ namespace skyline::gpu {
                                                           u32 textureConstantBufferIndex,
                                                           u32 localMemorySize, u32 sharedMemorySize,
                                                           std::array<u32, 3> workgroupDimensions,
-                                                          const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType) {
+                                                          const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const GetTextureCompareFunc &getTextureCompareFunc) {
         binary = ProcessShaderBinary(false, hash, binary);
 
         std::scoped_lock lock{poolMutex};
 
-        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType};
+        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, getTextureCompareFunc};
         Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset)}};
         return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
     }

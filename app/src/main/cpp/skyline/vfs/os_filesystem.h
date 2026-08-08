@@ -20,6 +20,10 @@ namespace skyline::vfs {
 
         void DeleteDirectoryImpl(const std::string &path) override;
 
+        void RenameFileImpl(const std::string &oldPath, const std::string &newPath) override;
+
+        void RenameDirectoryImpl(const std::string &oldPath, const std::string &newPath) override;
+
         bool CreateDirectoryImpl(const std::string &path, bool parents) override;
 
         std::shared_ptr<Backing> OpenFileImpl(const std::string &path, Backing::Mode mode) override;

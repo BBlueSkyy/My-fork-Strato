@@ -137,7 +137,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                  vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
          Pipeline *oldPipeline{activeState.GetPipeline()};
          samplers.Update(ctx, samplerBinding.value == engine::SamplerBinding::Value::ViaHeaderBinding);
-         activeState.Update(ctx, textures, constantBuffers.boundConstantBuffers,
+         activeState.Update(ctx, textures, samplers, constantBuffers.boundConstantBuffers,
                             builder,
                             indexed, topology, estimateIndexBufferSize, firstIndex, count,
                             srcStageMask, dstStageMask);

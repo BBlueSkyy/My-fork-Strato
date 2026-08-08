@@ -74,6 +74,14 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
          * @param points An array of skyline::input::TouchScreenPoint in C++ represented as integers
          */
         external fun setTouchState(points : IntArray)
+
+        /**
+         * Minimum dead zone floor applied to analog axes, used as a fallback when the host
+         * driver reports an unreliable (e.g. zero) `flat` value, or reports no [InputDevice.MotionRange]
+         * at all for a given axis/source combination. Without this floor, idle stick noise on
+         * affected devices can be read as a constant, unfiltered analog input.
+         */
+        private const val MIN_AXIS_DEAD_ZONE = 0.15f
     }
 
     @Suppress("ArrayInDataClass")
@@ -249,13 +257,16 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
                 val range : InputDevice.MotionRange? = event.device.getMotionRange(axis, event.source)
                 var value = event.getAxisValue(axis)
                 range?.let {
-                    value = if (abs(value) > it.flat)
+                    val flat = maxOf(it.flat, MIN_AXIS_DEAD_ZONE)
+                    value = if (abs(value) > flat)
                         if (value > 0)
-                            (value - it.flat) / (it.max - it.flat)
+                            (value - flat) / (it.max - flat)
                         else
-                            -((abs(value) - it.flat) / (abs(it.min) - it.flat))
+                            -((abs(value) - flat) / (abs(it.min) - flat))
                     else
                         0f
+                } ?: run {
+                    value = if (abs(value) > MIN_AXIS_DEAD_ZONE) value else 0f
                 }
 
                 if ((event.historySize != 0 && value != event.getHistoricalAxisValue(axis, 0)) || axesHistory[axisItem.index] != value) {

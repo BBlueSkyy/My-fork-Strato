@@ -66,6 +66,10 @@ namespace skyline::service::codec {
          */
         Result DecodeInterleavedOld(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result SetContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetContextForMultiStream(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         /**
          * @brief Decodes the Opus source data, returns decoded data size, decoded sample count and decode time in microseconds
          * @url https://switchbrew.org/wiki/Audio_services#DecodeInterleavedWithPerfOld
@@ -81,9 +85,15 @@ namespace skyline::service::codec {
 
         SERVICE_DECL(
             SFUNC(0x0, IHardwareOpusDecoder, DecodeInterleavedOld),
+            SFUNC(0x1, IHardwareOpusDecoder, SetContext),
+            SFUNC(0x2, IHardwareOpusDecoder, DecodeInterleavedOld),
+            SFUNC(0x3, IHardwareOpusDecoder, SetContextForMultiStream),
             SFUNC(0x4, IHardwareOpusDecoder, DecodeInterleavedWithPerfOld),
-            SFUNC(0x6, IHardwareOpusDecoder, DecodeInterleaved), // DecodeInterleavedWithPerfAndResetOld is effectively the same as DecodeInterleaved
+            SFUNC(0x5, IHardwareOpusDecoder, DecodeInterleavedWithPerfOld),
+            SFUNC(0x6, IHardwareOpusDecoder, DecodeInterleaved),
+            SFUNC(0x7, IHardwareOpusDecoder, DecodeInterleaved),
             SFUNC(0x8, IHardwareOpusDecoder, DecodeInterleaved),
+            SFUNC(0x9, IHardwareOpusDecoder, DecodeInterleaved),
         )
     };
 

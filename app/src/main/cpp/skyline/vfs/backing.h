@@ -74,10 +74,11 @@ namespace skyline::vfs {
             if ((size - offset) < output.size())
                 throw exception("Trying to read past the end of a backing: 0x{:X}/0x{:X} (Offset: 0x{:X})", output.size(), size, offset);
 
-            if (ReadUnchecked(output, offset) != output.size())
+            size_t read{ReadUnchecked(output, offset)};
+            if (read != output.size())
                 LOGW("Failed to read the requested size from backing");
 
-            return size;
+            return read;
         };
 
         /**

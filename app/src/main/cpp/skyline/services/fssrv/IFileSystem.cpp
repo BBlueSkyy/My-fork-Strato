@@ -68,13 +68,29 @@ namespace skyline::service::fssrv {
         backing->DeleteDirectory(path);
         return {};
     }
-
+     
     Result IFileSystem::DeleteDirectoryRecursively(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         std::string path{request.inputBuf.at(0).as_string(true)};
         std::filesystem::remove_all(path);
         return {};
     }
+    
+    Result IFileSystem::RenameFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    std::string oldPath{request.inputBuf.at(0).as_string(true)};
+    std::string newPath{request.inputBuf.at(1).as_string(true)};
 
+        backing->RenameFile(oldPath, newPath);
+        return {};
+    }
+
+    Result IFileSystem::RenameDirectory(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    std::string oldPath{request.inputBuf.at(0).as_string(true)};
+    std::string newPath{request.inputBuf.at(1).as_string(true)};
+
+         backing->RenameDirectory(oldPath, newPath);
+         return {};
+    }
+   
     Result IFileSystem::OpenDirectory(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         std::string path(request.inputBuf.at(0).as_string(true));
 
@@ -130,5 +146,16 @@ namespace skyline::service::fssrv {
         };
         response.Push(fileTimeStampRaw);
         return {};
-    }
-}
+      }
+  
+     Result IFileSystem::GetFileSystemAttribute(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+          // Stub: retorna uma estrutura zerada indicando nenhum recurso avançado
+          // (ex: renomear em lote, hashes de nível, etc.) suportado por este FS.
+       struct FileSystemAttribute {
+        u8 _unk_[0x38]{};
+     };
+
+        response.Push(FileSystemAttribute{});
+        return {};
+      }
+   } 

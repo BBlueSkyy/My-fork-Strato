@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import org.stratoemu.strato.loader.AppEntry
+import org.stratoemu.strato.loader.RomType
 import org.stratoemu.strato.utils.fromFile
 import org.stratoemu.strato.utils.toFile
 import kotlinx.coroutines.Dispatchers
@@ -30,9 +31,9 @@ class MainViewModel @Inject constructor(@ApplicationContext context : Context, p
         private val TAG = MainViewModel::class.java.simpleName
     }
 
-    private var state
+    private var state: MainState?
         get() = _stateData.value
-        set(value) = _stateData.postValue(value)
+        set(value) = _stateData.postValue(value!!)
     private val _stateData = MutableLiveData<MainState>()
     val stateData : LiveData<MainState> = _stateData
 
@@ -65,6 +66,24 @@ class MainViewModel @Inject constructor(@ApplicationContext context : Context, p
                 try {
                     KeyReader.importFromLocation(context, searchLocation)
                     val romElements = romProvider.loadRoms(searchLocation, systemLanguage)
+                    
+                    // Clean up non-existent content for each game
+                    val gameTitleIds = romElements
+                        .filter { it.romType == RomType.Base || it.romType == RomType.Unknown }
+                        .mapNotNull { it.titleId }
+                        .toSet()
+                    
+                    gameTitleIds.forEach { titleId ->
+                        try {
+                            val (removedUpdates, removedDlcs) = ContentManager.cleanupNonExistentContent(context, titleId)
+                            if (removedUpdates > 0 || removedDlcs > 0) {
+                                Log.d(TAG, "Cleaned up content for game $titleId: $removedUpdates updates and $removedDlcs DLCs removed")
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error cleaning up content for game $titleId", e)
+                        }
+                    }
+                    
                     romElements.toFile(romsFile)
                     MainState.Loaded(romElements)
                 } catch (e : Exception) {
@@ -96,9 +115,12 @@ class MainViewModel @Inject constructor(@ApplicationContext context : Context, p
             }
             val romElements = romProvider.loadRoms(searchLocation, systemLanguage)
             val newHash = romElements.hashCode()
-            if (newHash != currentHash)
+            
+            // Only update state if the ROM list has changed
+            if (newHash != currentHash) {
                 state = MainState.Loaded(romElements)
-
+            }
+            
             isAutoRefreshingRoms = false
         }
     }
