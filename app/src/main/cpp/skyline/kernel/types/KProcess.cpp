@@ -26,6 +26,10 @@ namespace skyline::kernel::type {
         disableThreadCreation = true;
         for (const auto &thread : threads)
             thread->Kill(true);
+
+        // Must happen after all threads have been killed/joined so no host thread can fault into
+        // this process' trap map while (or after) it's being torn down
+        trap.UninstallStaticInstance();
     }
 
     void KProcess::Kill(bool join, bool all, bool disableCreation) {
