@@ -40,7 +40,7 @@ namespace skyline::vfs {
         for (std::size_t i{}; i < block.numberBuckets - 1; ++i)
             buckets[i].entries.push_back({block.baseOffsets[i + 1], 0, 0});
 
-        buckets.back().entries.push_back({block.size, 0, 0});
+        buckets[block.numberBuckets - 1].entries.push_back({block.size, 0, 0});
     }
 
     std::pair<u64, u64> SparseStorage::GetEntryIndex(u64 offset) {
