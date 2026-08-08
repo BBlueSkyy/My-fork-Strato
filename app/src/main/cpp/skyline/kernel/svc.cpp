@@ -1023,8 +1023,8 @@ namespace skyline::kernel::svc {
                 // don't implement VAMM. VammManager::InitializeIfEnabled() will skip init when
                 // this returns 0, allowing games built with SDK 19.x (e.g. Unity 6) to start
                 // normally.
-                // out = 0;
-                // break;
+                 out = 0;
+                 break;
             
             case InfoState::HeapRegionBaseAddr:
                 out = reinterpret_cast<u64>(state.process->memory.heap.guest.data());
