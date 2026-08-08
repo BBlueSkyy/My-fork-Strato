@@ -15,7 +15,8 @@ namespace skyline::service::am {
         : BaseService(state, manager),
           gpuErrorEvent(std::make_shared<type::KEvent>(state, false)),
           friendInvitationStorageChannelEvent(std::make_shared<type::KEvent>(state, false)),
-          notificationStorageChannelEvent(std::make_shared<type::KEvent>(state, false)) {}
+          notificationStorageChannelEvent(std::make_shared<type::KEvent>(state, false)),
+          unknownEvent210(std::make_shared<type::KEvent>(state, false)) {}
 
     Result IApplicationFunctions::PopLaunchParameter(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         constexpr u32 LaunchParameterMagic{0xC79497CA}; //!< The magic of the application launch parameters
@@ -203,6 +204,18 @@ namespace skyline::service::am {
     Result IApplicationFunctions::GetNotificationStorageChannelEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto handle{state.process->InsertItem(notificationStorageChannelEvent)};
         LOGW("Notification Storage Channel Event Handle: 0x{:X}", handle);
+        response.copyHandles.push_back(handle);
+        return {};
+    }
+
+    Result IApplicationFunctions::Cmd210(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // Undocumented cmd added in FW 20.0.0, no input/output bytes, just an output handle.
+        // We stub it out the same way as the other unimplemented system events: hand back a
+        // valid handle to an event that is never signalled, so games that query it don't crash
+        // on the missing HIPC function while waiting on an event that (as far as we know) is
+        // tied to some system-level condition we don't emulate.
+        auto handle{state.process->InsertItem(unknownEvent210)};
+        LOGW("Stubbed cmd 210 (unknown system event) Handle: 0x{:X}", handle);
         response.copyHandles.push_back(handle);
         return {};
     }
