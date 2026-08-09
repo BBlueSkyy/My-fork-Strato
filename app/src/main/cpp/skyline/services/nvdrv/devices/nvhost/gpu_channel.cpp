@@ -205,7 +205,7 @@ namespace skyline::service::nvdrv::device::nvhost {
             LOGE("Failed to allocate channel pushbuffer! (requested {} bytes)", pushBufferSize);
             channelCtx.reset();
             pushBufferMemory.clear();
-            return PosixResult::InsufficientMemory;
+            return PosixResult::InvalidArgument; // PosixResult has no dedicated "out of memory" value
         }
 
         // Map onto the GPU
