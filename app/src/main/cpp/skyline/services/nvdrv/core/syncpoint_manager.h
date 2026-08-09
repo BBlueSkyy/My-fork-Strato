@@ -77,6 +77,12 @@ namespace skyline::service::nvdrv::core {
         u32 AllocateSyncpoint(bool clientManaged);
 
         /**
+         * @brief Returns a previously allocated syncpoint back to the free pool
+         * @note Must be called when a channel that owns a dynamically allocated syncpoint (e.g. via `AllocateSyncpoint`) is destroyed, otherwise the syncpoint is leaked permanently
+         */
+        void ReleaseSyncpoint(u32 id);
+
+        /**
          * @url https://github.com/Jetson-TX1-AndroidTV/android_kernel_jetson_tx1_hdmi_primary/blob/8f74a72394efb871cb3f886a3de2998cd7ff2990/drivers/gpu/host1x/syncpt.c#L259
          */
         bool HasSyncpointExpired(u32 id, u32 threshold);
