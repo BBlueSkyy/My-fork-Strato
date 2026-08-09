@@ -92,11 +92,14 @@ namespace skyline::vfs {
     }
 
     void NCA::ReadPfs0(const NCASectionHeader &section, const NCASectionTableEntry &entry) {
-        size_t offset{static_cast<size_t>(entry.mediaOffset) * constant::MediaUnitSize + section.pfs0.pfs0HeaderOffset};
+        size_t sectionStart{static_cast<size_t>(entry.mediaOffset) * constant::MediaUnitSize};
+        size_t offset{sectionStart + section.pfs0.pfs0HeaderOffset};
         size_t size{constant::MediaUnitSize * static_cast<size_t>(entry.mediaEndOffset - entry.mediaOffset)};
 
         auto sectionBacking{CreateBacking(section, std::make_shared<RegionBacking>(backing, offset, size), offset)};
-        sectionBacking = CreateSparseBacking(section, sectionBacking, offset);
+        // Same fix as ReadRomFs above: the sparse table offset is relative to the section's physical
+        // start, not to where the PFS0 header sits within the section - pass sectionStart, not offset.
+        sectionBacking = CreateSparseBacking(section, sectionBacking, sectionStart);
         sectionBacking = CreateCompressedBacking(section, sectionBacking, size);
         auto pfs{std::make_shared<PartitionFileSystem>(sectionBacking)};
 
@@ -117,7 +120,13 @@ namespace skyline::vfs {
         const std::size_t romFsOffset{baseOffset + ivfcOffset};
         const std::size_t romFsSize{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].size};
         auto decryptedBacking{CreateBacking(sectionHeader, std::make_shared<RegionBacking>(backing, romFsOffset, romFsSize), romFsOffset)};
-        decryptedBacking = CreateSparseBacking(sectionHeader, decryptedBacking, romFsOffset);
+        // sparseInfo.bucket.tableOffset is relative to the section's physical start (baseOffset), not to
+        // where the RomFs level-3 data begins within the section (romFsOffset = baseOffset + ivfcOffset).
+        // Passing romFsOffset here made CreateSparseBacking read the sparse table ivfcOffset bytes too far
+        // into the file, producing a garbage tableSize/RelocationBlock.size that later blew up a
+        // std::vector allocation (surfaced as NspLoader's "NCA parsing failed: vector") when parsing an
+        // update NCA with Sparse info on its RomFs section.
+        decryptedBacking = CreateSparseBacking(sectionHeader, decryptedBacking, baseOffset);
         decryptedBacking = CreateCompressedBacking(sectionHeader, decryptedBacking, romFsSize);
 
         if (sectionHeader.raw.header.encryptionType == NcaSectionEncryptionType::BKTR && bktrBaseRomfs && romFs) {
