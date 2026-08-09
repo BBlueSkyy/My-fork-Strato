@@ -64,7 +64,13 @@ namespace skyline::service::nvdrv::device::nvhost {
         if (eventSlot < SyncpointEventCount)
             return eventSlot;
 
-        throw exception("Failed to find a free nvhost event!");
+        // All slots are actively in use (waiting/cancelling/signalling) - this can happen
+        // when the host GPU driver submits more concurrent fence waits than we have slots
+        // for (e.g. a driver exposing extra queues). Fail gracefully instead of crashing
+        // the emulator process; the caller already checks for `slot >= SyncpointEventCount`
+        // and will turn this into a PosixResult::InvalidArgument response to the guest.
+        LOGE("Failed to find a free nvhost event, all {} slots are in use!", SyncpointEventCount);
+        return SyncpointEventCount;
     }
 
     PosixResult Ctrl::SyncpointWaitEventImpl(In<Fence> fence, In<i32> timeout, InOut<SyncpointEventValue> value, bool allocate) {
