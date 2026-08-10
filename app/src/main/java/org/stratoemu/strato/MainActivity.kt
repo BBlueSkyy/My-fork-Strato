@@ -51,6 +51,13 @@ class MainActivity : AppCompatActivity() {
    
     external fun nativeInit(path: String)
  
+    companion object {
+        init {
+
+            System.loadLibrary("strato")
+        }
+    }
+  
     private val binding by lazy { MainActivityBinding.inflate(layoutInflater) }
 
     @Inject
