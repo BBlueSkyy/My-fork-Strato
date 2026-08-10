@@ -133,9 +133,11 @@ namespace skyline::vfs {
             const u64 size{constant::MediaUnitSize * (entry.mediaEndOffset - entry.mediaOffset)};
             const u64 offset{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].offset};
             
-            LOGE("ReadRomFs BKTR merge: baseOffset=0x{:X} ivfcOffset(offset)=0x{:X} romFsOffset=0x{:X} bktr.relocation.offset=0x{:X} bktr.relocation.offset-romFsOffset=0x{:X} bktr.subsection.offset=0x{:X} bktr.subsection.offset-romFsOffset=0x{:X} romFsSize=0x{:X}",
-                 baseOffset, offset, romFsOffset, sectionHeader.bktr.relocation.offset, sectionHeader.bktr.relocation.offset - romFsOffset,
-                 sectionHeader.bktr.subsection.offset, sectionHeader.bktr.subsection.offset - romFsOffset, romFsSize);
+            LOGE("ReadRomFs BKTR merge: baseOffset=0x{:X} ivfcOffset=0x{:X} romFsOffset=0x{:X} raw.relocation.offset=0x{:X} raw.relocation.size=0x{:X} raw.subsection.offset=0x{:X} raw.subsection.size=0x{:X} romFsSize=0x{:X}",
+                 baseOffset, offset, romFsOffset,
+                 sectionHeader.bktr.relocation.offset, sectionHeader.bktr.relocation.size,
+                 sectionHeader.bktr.subsection.offset, sectionHeader.bktr.subsection.size,
+                 romFsSize);
          
             RelocationBlock relocationBlock{romFs->Read<RelocationBlock>(sectionHeader.bktr.relocation.offset - romFsOffset)};
             SubsectionBlock subsectionBlock{romFs->Read<SubsectionBlock>(sectionHeader.bktr.subsection.offset - romFsOffset)};
