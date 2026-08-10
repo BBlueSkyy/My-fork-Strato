@@ -6,6 +6,7 @@
 #include <common.h>
 #include <common/circular_queue.h>
 #include "syncpoint.h"
+#include "frame_queue.h"
 #include "classes/class.h"
 #include "classes/host1x.h"
 #include "classes/nvdec.h"
@@ -46,7 +47,7 @@ namespace skyline::soc::host1x {
         void Run();
 
       public:
-        ChannelCommandFifo(const DeviceState &state, SyncpointSet &syncpoints);
+        ChannelCommandFifo(const DeviceState &state, SyncpointSet &syncpoints, FrameQueue &frameQueue);
 
         ~ChannelCommandFifo();
 

@@ -6,6 +6,13 @@
 #include "host1x_channel.h"
 
 namespace skyline::service::nvdrv::device::nvhost {
+    /**
+     * @return If the Host1x engine classes for this channel are implemented, gating whether submits are pushed to the emulated engines or faked on the CPU
+     */
+    static constexpr bool IsChannelImplemented(core::ChannelType channelType) {
+        return channelType == core::ChannelType::NvDec || channelType == core::ChannelType::VIC;
+    }
+
     Host1xChannel::Host1xChannel(const DeviceState &state,
                                  Driver &driver,
                                  Core &core,
@@ -59,14 +66,18 @@ namespace skyline::service::nvdrv::device::nvhost {
             *reinterpret_cast<u32 *>(patchAddress) = word;
         }
 
+        bool channelImplemented{IsChannelImplemented(channelType)};
+
         for (size_t i{}; i < syncpointIncrs.size(); i++) {
             const auto &incr{syncpointIncrs[i]};
 
             u32 max{core.syncpointManager.IncrementSyncpointMaxExt(incr.syncpointId, incr.numIncrs)};
 
-            // Increment syncpoints on the CPU to avoid needing to pass through the emulated nvdec code which currently does nothing
-            for (size_t j{}; j < incr.numIncrs; j++)
-                state.soc->host1x.syncpoints[incr.syncpointId].Increment();
+            if (!channelImplemented) {
+                // Increment syncpoints on the CPU for channels whose engines aren't implemented, the fence would never signal otherwise
+                for (size_t j{}; j < incr.numIncrs; j++)
+                    state.soc->host1x.syncpoints[incr.syncpointId].Increment();
+            }
 
             if (i < fenceThresholds.size())
                 fenceThresholds[i] = max;
@@ -81,8 +92,9 @@ namespace skyline::service::nvdrv::device::nvhost {
             LOGD("Submit gather, CPU address: 0x{:X}, words: 0x{:X}", gatherAddress, cmdBuf.words);
 
             span gather(reinterpret_cast<u32 *>(gatherAddress), cmdBuf.words);
-            // Skip submitting the cmdbufs as no functionality is implemented
-            // state.soc->host1x.channels[static_cast<size_t>(channelType)].Push(gather);
+            // Note: The gather aliases guest memory rather than copying it, correctly synchronised guests won't reuse the cmdbuf before its fence signals
+            if (channelImplemented)
+                state.soc->host1x.channels[static_cast<size_t>(channelType)].Push(gather);
         }
 
         return PosixResult::Success;
