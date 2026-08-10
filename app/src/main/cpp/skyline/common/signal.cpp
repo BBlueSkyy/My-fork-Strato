@@ -38,6 +38,12 @@ namespace skyline::signal {
     void TerminateHandler() {
         auto exception{std::current_exception()};
         if (exception && exception == SignalExceptionPtr) {
+            try {
+                std::rethrow_exception(exception);
+            } catch (const SignalException &e) {
+                LOGE("Terminating due to sinal sem catch handler na pilha: {}", e.what());
+            }
+
             StackFrame *frame;
             asm("MOV %0, FP" : "=r"(frame));
             frame = SafeFrameRecurse(2, frame); // We unroll past 'std::terminate'
@@ -78,6 +84,17 @@ namespace skyline::signal {
 
             __builtin_unreachable();
         } else {
+            if (exception) {
+                try {
+                    std::rethrow_exception(exception);
+                } catch (const std::exception &e) {
+                    LOGE("Terminating devido a exceção não capturada: {}", e.what());
+                } catch (...) {
+                    LOGE("Terminating devido a exceção não capturada de tipo desconhecido");
+                }
+            } else {
+                LOGE("std::terminate chamado sem exceção ativa");
+            }
             SleepTillExit(); // We don't want to delegate to the older terminate handler as it might cause an exit
         }
     }

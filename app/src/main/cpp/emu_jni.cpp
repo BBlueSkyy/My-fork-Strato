@@ -104,6 +104,7 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
 
         // Host signal handlers need to be set before NCE is initialized, this is the only place where we can do that
         skyline::signal::SetHostSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, skyline::signal::ExceptionalSignalHandler);
+        std::set_terminate(skyline::signal::TerminateHandler); // Instala desde o início, não só após o primeiro sinal
         auto os{std::make_shared<skyline::kernel::OS>(
             jvmManager,
             settings,
