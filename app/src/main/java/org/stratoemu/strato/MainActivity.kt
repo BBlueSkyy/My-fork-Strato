@@ -107,8 +107,6 @@ class MainActivity : AppCompatActivity() {
         )
         super.onCreate(savedInstanceState)
        
-     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
         nativeInit(getExternalFilesDir(null)!!.absolutePath)
      
         setContentView(binding.root)
