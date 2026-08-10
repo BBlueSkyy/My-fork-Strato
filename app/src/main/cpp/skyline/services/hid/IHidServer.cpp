@@ -312,5 +312,17 @@ namespace skyline::service::hid {
 
     Result IHidServer::SetPalmaBoostMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         return {};
+    } 
+  
+    Result IHidServer::SetTouchScreenResolution(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto width{request.Pop<u32>()};
+        auto height{request.Pop<u32>()};
+        request.Skip<u64>(); // appletResourceUserId
+
+        state.input->touch.SetResolution(width, height);
+
+        LOGD("Touch Screen Resolution: {}x{}", width, height);
+
+        return {};  
     }
 }
