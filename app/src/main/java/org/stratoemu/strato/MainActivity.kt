@@ -48,7 +48,9 @@ import com.google.android.material.R as MaterialR
 
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
-
+   
+    external fun nativeInit(path: String)
+ 
     private val binding by lazy { MainActivityBinding.inflate(layoutInflater) }
 
     @Inject
@@ -104,7 +106,11 @@ class MainActivity : AppCompatActivity() {
             }
         )
         super.onCreate(savedInstanceState)
-
+       
+     override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        nativeInit(getExternalFilesDir(null)!!.absolutePath)
+     
         setContentView(binding.root)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsHelper.applyToActivity(binding.root, binding.appList)
