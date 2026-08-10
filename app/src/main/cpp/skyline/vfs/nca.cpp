@@ -132,7 +132,11 @@ namespace skyline::vfs {
         if (sectionHeader.raw.header.encryptionType == NcaSectionEncryptionType::BKTR && bktrBaseRomfs && romFs) {
             const u64 size{constant::MediaUnitSize * (entry.mediaEndOffset - entry.mediaOffset)};
             const u64 offset{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].offset};
-
+            
+            LOGE("ReadRomFs BKTR merge: baseOffset=0x{:X} ivfcOffset(offset)=0x{:X} bktr.relocation.offset=0x{:X} bktr.relocation.offset-offset=0x{:X} bktr.subsection.offset=0x{:X} bktr.subsection.offset-offset=0x{:X} romFsSize=0x{:X}",
+                 baseOffset, offset, sectionHeader.bktr.relocation.offset, sectionHeader.bktr.relocation.offset - offset,
+                 sectionHeader.bktr.subsection.offset, sectionHeader.bktr.subsection.offset - offset, romFsSize);
+         
             RelocationBlock relocationBlock{romFs->Read<RelocationBlock>(sectionHeader.bktr.relocation.offset - offset)};
             SubsectionBlock subsectionBlock{romFs->Read<SubsectionBlock>(sectionHeader.bktr.subsection.offset - offset)};
 
