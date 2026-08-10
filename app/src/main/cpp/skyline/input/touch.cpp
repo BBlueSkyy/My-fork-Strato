@@ -15,7 +15,13 @@ namespace skyline::input {
             SetState({});
         }
     }
-
+    
+    void TouchManager::SetResolution(uint32_t width, uint32_t height) {
+        std::scoped_lock lock{mutex};
+        touchScreenWidth = width;
+        touchScreenHeight = height;
+    }
+   
     void TouchManager::SetState(span<TouchScreenPoint> touchPoints) {
         std::scoped_lock lock{mutex};
 
