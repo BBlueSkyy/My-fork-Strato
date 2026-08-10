@@ -225,6 +225,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/gpu/buffer.cpp
         ${source_DIR}/skyline/gpu/megabuffer.cpp
         ${source_DIR}/skyline/gpu/presentation_engine.cpp
+        ${source_DIR}/skyline/crash/crash_handler.cpp
         ${source_DIR}/skyline/gpu/shader_manager.cpp
         ${source_DIR}/skyline/gpu/pipeline_cache_manager.cpp
         ${source_DIR}/skyline/gpu/graphics_pipeline_assembler.cpp
