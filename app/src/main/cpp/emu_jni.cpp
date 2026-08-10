@@ -19,6 +19,7 @@
 #include "skyline/input.h"
 #include "skyline/kernel/types/KProcess.h"
 #include "skyline/logger/logger.h"
+#include "skyline/gpu/crash_handler.h"
 
 jint Fps; //!< An approximation of the amount of frames being submitted every second
 jfloat AverageFrametimeMs; //!< The average time it takes for a frame to be rendered and presented in milliseconds
@@ -69,6 +70,8 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
     jstring nativeLibraryPathJstring,
     jobject assetManager
 ) {
+    skyline::crash::Install(env->GetStringUTFChars(publicAppFilesPathJstring, nullptr));
+
     skyline::signal::ScopedStackBlocker stackBlocker; // We do not want anything to unwind past JNI code as there are invalid stack frames which can lead to a segmentation fault
     Fps = 0;
     AverageFrametimeMs = AverageFrametimeDeviationMs = 0.0f;
