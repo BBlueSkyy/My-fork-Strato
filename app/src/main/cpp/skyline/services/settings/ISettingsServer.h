@@ -49,6 +49,13 @@ namespace skyline::service::settings {
          * @brief Returns the number of available language codes that an application can use (post 4.0.0)
          */
         Result GetAvailableLanguageCodeCount2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+    
+        /**
+         * @brief Returns the KeyCodeMap for the USB HID keyboard connected to the given port
+         * @url https://switchbrew.org/wiki/Settings_services#set (cmd 12, [18.0.0+])
+         * @note Input/output format inferred from GetKeyCodeMap (cmd 7); not officially documented
+         */
+        Result GetKeyCodeMapByPort(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         SERVICE_DECL(
             SFUNC(0x0, ISettingsServer, GetLanguageCode),
@@ -57,7 +64,8 @@ namespace skyline::service::settings {
             SFUNC(0x3, ISettingsServer, GetAvailableLanguageCodeCount),
             SFUNC(0x4, ISettingsServer, GetRegionCode),
             SFUNC(0x5, ISettingsServer, GetAvailableLanguageCodes2),
-            SFUNC(0x6, ISettingsServer, GetAvailableLanguageCodeCount2)
+            SFUNC(0x6, ISettingsServer, GetAvailableLanguageCodeCount2),
+            SFUNC(0xC, ISettingsServer, GetKeyCodeMapByPort)
         )
     };
 }
