@@ -50,5 +50,22 @@ namespace skyline::service::settings {
 
         response.Push(regionCode);
         return {};
+
+    Result ISettingsServer::GetKeyCodeMapByPort(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto port{request.Pop<i32>()};
+
+        struct KeyCodeMapHeader {
+            u32 magic{0x01000001};
+            u32 entryCountPerKey{3};
+            u32 mapCount{0};
+            u32 layoutId{0};
+            u8 reserved[0x10]{};
+        };
+        static_assert(sizeof(KeyCodeMapHeader) == 0x20);
+
+        KeyCodeMapHeader header{};
+        request.outputBuf.at(0).copy_from(span(reinterpret_cast<u8 *>(&header), sizeof(header)));
+
+        return {};
     }
 }
