@@ -50,7 +50,8 @@ namespace skyline::service::settings {
 
         response.Push(regionCode);
         return {};
-
+    }
+   
     Result ISettingsServer::GetKeyCodeMapByPort(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto port{request.Pop<i32>()};
 
