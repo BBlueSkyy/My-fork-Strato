@@ -37,7 +37,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         constantBuffers.Update(ctx, qmd);
         samplers.Update(ctx, qmd.samplerIndex == soc::gm20b::engine::kepler_compute::QMD::SamplerIndex::ViaHeaderIndex);
-        auto *pipeline{pipelineState.Update(ctx, builder, textures, samplers, constantBuffers.boundConstantBuffers, qmd)};
+        auto *pipeline{pipelineState.Update(ctx, builder, textures, constantBuffers.boundConstantBuffers, qmd)};
 
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
         auto *descUpdateInfo{pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures, srcStageMask, dstStageMask)};
