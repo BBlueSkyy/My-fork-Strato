@@ -18,11 +18,11 @@ namespace skyline {
 
     namespace vfs {
         enum class NCAContentType : u8 {
-            Program = 0x0,    //!< Program NCA
-            Meta = 0x1,       //!< Metadata NCA
-            Control = 0x2,    //!< Control NCA
-            Manual = 0x3,     //!< Manual NCA
-            Data = 0x4,       //!< Data NCA
+            Program = 0x0, //!< Program NCA
+            Meta = 0x1, //!< Metadata NCA
+            Control = 0x2, //!< Control NCA
+            Manual = 0x3, //!< Manual NCA
+            Data = 0x4, //!< Data NCA
             PublicData = 0x5, //!< Public data NCA
         };
 
@@ -131,10 +131,22 @@ namespace skyline {
         };
         static_assert(sizeof(HierarchicalSha256HashInfo) == 0xF8);
 
+        /**
+         * @brief The header of a bucket tree's table data, embedded at the start of the table for both
+         * Sparse and Compressed NCAs (i.e. offset 0 of the data pointed to by NCABucketInfo::tableOffset)
+         */
+        struct BucketTreeHeader {
+            u32 magic; //!< 'BKTR'
+            u32 version;
+            u32 entryCount;
+            u32 _pad_;
+        };
+        static_assert(sizeof(BucketTreeHeader) == 0x10);
+
         struct NCABucketInfo {
             u64 tableOffset;
             u64 tableSize;
-            std::array<u8, 0x10> tableHeader;
+            BucketTreeHeader tableHeader;
         };
         static_assert(sizeof(NCABucketInfo) == 0x20);
 
@@ -306,7 +318,7 @@ namespace skyline {
 
         /**
          * @brief Confirmed against LibHac.FsSystem.CompressionType: a 1-byte enum, values None=0,
-         *        Zeroed=1, Lz4=3 (not 2 - there's a gap), Unknown=4
+         * Zeroed=1, Lz4=3 (not 2 - there's a gap), Unknown=4
          */
         enum class NCACompressionType : u8 {
             None = 0,
@@ -317,7 +329,7 @@ namespace skyline {
 
         /**
          * @brief A single entry in a Compressed NCA's bucket tree, confirmed against
-         *        LibHac.Tools.FsSystem.CompressedStorage.Entry
+         * LibHac.Tools.FsSystem.CompressedStorage.Entry
          */
         struct CompressedEntry {
             u64 virtualOffset;
@@ -331,8 +343,8 @@ namespace skyline {
 
         /**
          * @brief An entry-storage node for a Compressed NCA's bucket tree - same node header layout as
-         *        RelocationBucketRaw, just sized for the larger 0x18-byte CompressedEntry (682 fit exactly
-         *        in the 0x3FF0 bytes of entry space in a 0x4000 node, with no leftover padding needed)
+         * RelocationBucketRaw, just sized for the larger 0x18-byte CompressedEntry (682 fit exactly
+         * in the 0x3FF0 bytes of entry space in a 0x4000 node, with no leftover padding needed)
          */
         struct CompressedBucketRaw {
             u8 _pad0_[0x4];
@@ -411,7 +423,7 @@ namespace skyline {
             NCA(std::shared_ptr<vfs::Backing> backing, std::shared_ptr<crypto::KeyStore> keyStore, bool useKeyArea = false);
 
             NCA(std::optional<vfs::NCA> updateNca, std::shared_ptr<crypto::KeyStore> pKeyStore, std::shared_ptr<vfs::Backing> bktrBaseRomfs,
-                     u64 bktrBaseIvfcOffset, bool useKeyArea = false);
+                u64 bktrBaseIvfcOffset, bool useKeyArea = false);
         };
     }
 }
