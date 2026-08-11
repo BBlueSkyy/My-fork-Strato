@@ -124,10 +124,5 @@ namespace skyline::soc::gm20b::engine {
          * @return If flushes should be skipped for subsequent GPFIFO argument fetches
          */
         bool HandleMacroCall(u32 macroMethodOffset, GpfifoArgument argument, bool lastCall, const std::function<void(void)> &flushCallback);
-        /**
-         * @brief Forcibly executes and resets any macro invocation that still has pending arguments
-         * @note Should be called once a GpEntry has been fully consumed, since no more data for that invocation can arrive until the next one
-         */
-        void FlushMacroState(const std::function<void(void)> &flushCallback);
     };
 }
