@@ -124,7 +124,6 @@ namespace skyline::gpu {
             .lower_left_origin_mode = false,
             .need_declared_frag_colors = false,
             .has_broken_spirv_position_input = traits.quirks.brokenSpirvPositionInput,
-            .has_broken_fp16_float_controls = traits.quirks.brokenFp16FloatControls,
             .has_broken_spirv_subgroup_mask_vector_extract_dynamic = traits.quirks.brokenSubgroupMaskExtractDynamic,
             .has_broken_spirv_subgroup_shuffle = traits.quirks.brokenSubgroupShuffle,
             .max_subgroup_size = traits.subgroupSize,
