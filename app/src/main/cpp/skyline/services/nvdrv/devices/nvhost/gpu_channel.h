@@ -55,6 +55,11 @@ namespace skyline::service::nvdrv::device::nvhost {
         GpuChannel(const DeviceState &state, Driver &driver, Core &core, const SessionContext &ctx);
 
         /**
+         * @brief Releases the syncpoint allocated to this channel back to the shared pool
+         */
+        ~GpuChannel();
+
+        /**
          * @brief Sets the nvmap handle id to be used for channel submits (does nothing for GPU channels)
          * @url https://switchbrew.org/wiki/NV_services#NVGPU_IOCTL_CHANNEL_SET_NVMAP_FD
          */

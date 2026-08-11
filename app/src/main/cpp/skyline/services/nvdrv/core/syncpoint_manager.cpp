@@ -44,6 +44,19 @@ namespace skyline::service::nvdrv::core {
         return ReserveSyncpoint(FindFreeSyncpoint(), clientManaged);
     }
 
+    void SyncpointManager::ReleaseSyncpoint(u32 id) {
+        std::scoped_lock lock{reservationLock};
+
+        // Return the syncpoint to the free pool so it can be reused by future
+        // channels. Without this, every opened GpuChannel permanently consumes
+        // one of the fixed SyncpointCount slots and repeated channel open/close
+        // cycles (e.g. from a flaky host GPU driver retrying init) will
+        // eventually exhaust the pool and crash on FindFreeSyncpoint().
+        syncpoints.at(id).reserved = false;
+        syncpoints.at(id).counterMin = 0;
+        syncpoints.at(id).counterMax = 0;
+    }
+
     bool SyncpointManager::IsSyncpointAllocated(u32 id) {
         return (id <= soc::host1x::SyncpointCount) && syncpoints[id].reserved;
     }
