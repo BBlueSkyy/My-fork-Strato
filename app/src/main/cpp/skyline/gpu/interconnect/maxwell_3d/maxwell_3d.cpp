@@ -70,6 +70,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         const auto &clearSurfaceControl{clearEngineRegisters.clearSurfaceControl};
 
         const auto &surfaceClip{clearEngineRegisters.surfaceClip};
+        LOGD("surfaceClip: x={} y={} w={} h={}", surfaceClip.horizontal.x, surfaceClip.vertical.y, surfaceClip.horizontal.width, surfaceClip.vertical.height);
         vk::Rect2D scissor{
             {surfaceClip.horizontal.x, surfaceClip.vertical.y},
             {surfaceClip.horizontal.width, surfaceClip.vertical.height}
@@ -116,6 +117,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     vk::Rect2D Maxwell3D::GetDrawScissor() {
         const auto &surfaceClip{clearEngineRegisters.surfaceClip};
+        LOGD("surfaceClip: x={} y={} w={} h={}", surfaceClip.horizontal.x, surfaceClip.vertical.y, surfaceClip.horizontal.width, surfaceClip.vertical.height);
         vk::Rect2D scissor{{surfaceClip.horizontal.x, surfaceClip.vertical.y},
                            {surfaceClip.horizontal.width, surfaceClip.vertical.height}};
 
@@ -219,6 +221,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         // Always use surfaceClip for render area since it's more likely to match the renderArea of draws and avoid an RP break
         const auto &surfaceClip{clearEngineRegisters.surfaceClip};
+        LOGD("surfaceClip: x={} y={} w={} h={}", surfaceClip.horizontal.x, surfaceClip.vertical.y, surfaceClip.horizontal.width, surfaceClip.vertical.height);
         vk::Rect2D renderArea{{surfaceClip.horizontal.x, surfaceClip.vertical.y}, {surfaceClip.horizontal.width, surfaceClip.vertical.height}};
 
         auto clearRects{util::MakeFilledArray<vk::ClearRect, 2>(vk::ClearRect{.rect = scissor, .baseArrayLayer = clearSurface.rtArrayIndex, .layerCount = 1})};
