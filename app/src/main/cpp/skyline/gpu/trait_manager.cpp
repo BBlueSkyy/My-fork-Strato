@@ -251,7 +251,6 @@ namespace skyline::gpu {
                 brokenSubgroupShuffle = true;
                 brokenSpirvVectorAccessChain = true;
                 brokenTextureShadowCompare = true;
-                brokenFp16FloatControls = true;
                 maxGlobalPriority = vk::QueueGlobalPriorityEXT::eHigh;
                 break;
             }
@@ -260,7 +259,6 @@ namespace skyline::gpu {
                 vkImageMutableFormatCostly = true; // Disables UBWC and forces linear tiling
                 adrenoRelaxedFormatAliasing = true;
                 brokenTextureShadowCompare = true;  
-                brokenFp16FloatControls = true;
                 break;
             }
 
