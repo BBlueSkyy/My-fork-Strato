@@ -34,8 +34,10 @@ namespace skyline::input {
         std::recursive_mutex mutex;
         TouchScreenState screenState{}; //!< The current state of the touch screen
         std::array<uint8_t, 16> pointTimeout; //!< A frame timeout counter for each point which has ended (according to it's attribute), when it reaches 0 the point is removed from the screen
-
-      public:
+        uint32_t touchScreenWidth{1280};  //!< Resolution reported by the guest via SetTouchScreenResolution
+        uint32_t touchScreenHeight{720}; 
+      
+     public:
         /**
          * @param hid A pointer to HID Shared Memory on the host
          */
@@ -44,7 +46,10 @@ namespace skyline::input {
         void Activate();
 
         void SetState(span<TouchScreenPoint> touchPoints);
-
+        /**
+         * @brief Stores the touch screen resolution as reported by the guest
+         */
+        void SetResolution(uint32_t width, uint32_t height);
         /**
          * @brief Writes the current state of the touch screen to HID shared memory
          */

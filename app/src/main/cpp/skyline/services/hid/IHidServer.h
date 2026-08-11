@@ -231,7 +231,13 @@ namespace skyline::service::hid {
          * @url https://switchbrew.org/wiki/HID_services#SetPalmaBoostMode
          */
         Result SetPalmaBoostMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
+     
+        /**
+         * @brief Sets the resolution used for touch screen coordinate reporting
+         * @url https://switchbrew.org/wiki/17.0.0
+         */
+        Result SetTouchScreenResolution(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response); 
+      
         SERVICE_DECL(
             SFUNC(0x0, IHidServer, CreateAppletResource),
             SFUNC(0x1, IHidServer, ActivateDebugPad),
@@ -270,7 +276,8 @@ namespace skyline::service::hid {
             SFUNC(0x12C, IHidServer, ActivateConsoleSixAxisSensor),
             SFUNC(0x132, IHidServer, InitializeSevenSixAxisSensor),
             SFUNC(0x136, IHidServer, ResetSevenSixAxisSensorTimestamp),
-            SFUNC(0x20D, IHidServer, SetPalmaBoostMode)
+            SFUNC(0x20D, IHidServer, SetPalmaBoostMode),
+            SFUNC(0x3EC, IHidServer, SetTouchScreenResolution) 
         )
     };
 }
