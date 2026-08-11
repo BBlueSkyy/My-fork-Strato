@@ -68,6 +68,12 @@ namespace skyline::service::hid {
         return {};
     }
 
+    Result IHidServer::ActivateGesture(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto unknown{request.Pop<u32>()};
+        auto appletResourceUserId{request.Pop<u64>()};
+        return {};
+    }
+
     Result IHidServer::SetSupportedNpadStyleSet(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto styleSet{request.Pop<NpadStyleSet>()};
         std::scoped_lock lock{state.input->npad.mutex};
