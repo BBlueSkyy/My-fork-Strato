@@ -365,15 +365,6 @@ namespace skyline::soc::gm20b {
             if (hitEnd)
                 break;
         }
-
-        // No more data can arrive for a pending macro invocation until the next GpEntry, so flush now —
-        // but only if we're not in the middle of a method split across GpEntries, since that could still
-        // be carrying more argument words for this same invocation
-        if (!resumeState.remaining) {
-            auto flushCallback{[&executor = channelCtx.executor] { executor.Submit({}, true); }};
-            channelCtx.maxwell3D.FlushMacroState(flushCallback);
-            channelCtx.fermi2D.FlushMacroState(flushCallback);
-        }
     }
 
     void ChannelGpfifo::Run() {
