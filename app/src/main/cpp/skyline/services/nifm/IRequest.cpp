@@ -13,13 +13,11 @@ namespace skyline::service::nifm {
     IRequest::IRequest(const DeviceState &state, ServiceManager &manager)
         : event0(std::make_shared<type::KEvent>(state, false)),
           event1(std::make_shared<type::KEvent>(state, false)),
+          requestState(RequestState::Free),
           BaseService(state, manager) {}
 
     Result IRequest::GetRequestState(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        if (*state.settings->isInternetEnabled)
-            response.Push(RequestState::Accepted);
-        else
-            response.Push(RequestState::Invalid);
+        response.Push(requestState);
         return {};
     }
 
@@ -40,10 +38,24 @@ namespace skyline::service::nifm {
     }
 
     Result IRequest::Cancel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // Cancelar volta pro estado de "nenhum request ativo" (Free), não Invalid
+        // (Invalid é reservado pra quando um Submit é rejeitado por falta de rede).
+        // Também acordamos quem estiver esperando em WaitSynchronization no handle 0
+        // (ver GetSystemEventReadableHandles), senão o jogo trava esperando pra sempre.
+        requestState = RequestState::Free;
+        event0->Signal();
         return {};
     }
 
     Result IRequest::Submit(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // No hardware real isso dispara um processo assíncrono de conexão; aqui resolvemos
+        // na hora já que não emulamos handshake de rede de verdade.
+        requestState = *state.settings->isInternetEnabled ? RequestState::Accepted : RequestState::Invalid;
+
+        // Sinaliza o handle 0 retornado por GetSystemEventReadableHandles, pra qualquer
+        // WaitSynchronization pendente acordar em vez de travar esperando pra sempre.
+        event0->Signal();
+
         return {};
     }
 
