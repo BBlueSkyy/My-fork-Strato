@@ -54,7 +54,6 @@ namespace skyline::gpu::interconnect::kepler_compute {
         PipelineState(DirtyManager &manager, const EngineRegisters &engine);
 
         Pipeline *Update(InterconnectContext &ctx, StateUpdateBuilder &builder, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const QMD &qmd);
-
         void PurgeCaches();
     };
 }
