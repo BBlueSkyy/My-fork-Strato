@@ -47,14 +47,26 @@ namespace skyline::service::nvdrv::core {
     void SyncpointManager::ReleaseSyncpoint(u32 id) {
         std::scoped_lock lock{reservationLock};
 
-        // Return the syncpoint to the free pool so it can be reused by future
-        // channels. Without this, every opened GpuChannel permanently consumes
-        // one of the fixed SyncpointCount slots and repeated channel open/close
-        // cycles (e.g. from a flaky host GPU driver retrying init) will
-        // eventually exhaust the pool and crash on FindFreeSyncpoint().
-        syncpoints.at(id).reserved = false;
-        syncpoints.at(id).counterMin = 0;
-        syncpoints.at(id).counterMax = 0;
+        auto &syncpoint{syncpoints.at(id)};
+        u32 hwValue{state.soc->host1x.syncpoints.at(id).host.Load()};
+
+        // If the max we were tracking is ahead of what the hardware has
+        // actually reached, there's still submitted work whose fences are
+        // waiting on this ID. We only warn here since blocking the release
+        // would need visibility into the caller (channel destruction).
+        if (static_cast<i32>(syncpoint.counterMax - hwValue) > 0)
+            LOGW("Releasing syncpoint {} while {} increment(s) are still outstanding", id, syncpoint.counterMax - hwValue);
+
+        // Return the syncpoint to the free pool, resyncing with the real
+        // hardware counter rather than zeroing it. The host1x syncpoint
+        // counter is a shared HW resource that keeps incrementing regardless
+        // of which software channel currently owns this ID, so resetting it
+        // to 0 here desyncs counterMax/counterMin from the real value - once
+        // reallocated to a new channel, fences on this ID can end up waiting
+        // forever, which manifests as a freeze shortly after boot.
+        syncpoint.counterMin = hwValue;
+        syncpoint.counterMax = hwValue;
+        syncpoint.reserved = false;
     }
 
     bool SyncpointManager::IsSyncpointAllocated(u32 id) {
