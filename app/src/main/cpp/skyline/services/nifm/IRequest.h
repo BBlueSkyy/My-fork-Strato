@@ -26,6 +26,7 @@ namespace skyline::service::nifm {
       private:
         std::shared_ptr<type::KEvent> event0; //!< The KEvent that is signalled on request state changes
         std::shared_ptr<type::KEvent> event1; //!< The KEvent that is signalled on request changes
+        RequestState requestState; //!< The current state of this request, returned by GetRequestState
 
       public:
         IRequest(const DeviceState &state, ServiceManager &manager);
