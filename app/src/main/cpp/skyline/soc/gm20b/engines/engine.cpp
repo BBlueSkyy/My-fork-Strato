@@ -42,11 +42,5 @@ namespace skyline::soc::gm20b::engine {
 
         return true;
     };
-   
-    void MacroEngineBase::FlushMacroState(const std::function<void(void)> &flushCallback) {
-        if (macroInvocation.Valid()) {
-            macroState.Execute(macroInvocation.index, macroInvocation.arguments, this, flushCallback);
-            macroInvocation.Reset();
-        }
-    }
+
 }

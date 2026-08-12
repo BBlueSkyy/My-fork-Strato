@@ -14,6 +14,13 @@ namespace skyline::service::nvdrv::device::nvhost {
         channelSyncpoint = core.syncpointManager.AllocateSyncpoint(false);
     }
 
+    GpuChannel::~GpuChannel() {
+        // Return the syncpoint allocated in the constructor back to the shared pool,
+        // otherwise every channel open permanently consumes one of the fixed slots
+        // until the process eventually crashes on FindFreeSyncpoint() exhaustion.
+        core.syncpointManager.ReleaseSyncpoint(channelSyncpoint);
+    }
+
     static constexpr size_t SyncpointWaitCmdLen{4};
     static void AddSyncpointWaitCmd(span<u32> mem, Fence fence) {
         size_t offset{};
@@ -91,8 +98,13 @@ namespace skyline::service::nvdrv::device::nvhost {
                             +flags.fenceWait, +flags.fenceIncrement, +flags.hwFormat, +flags.suppressWfi, +flags.incrementWithValue,
                             fence.id, fence.threshold);
 
-        if (numEntries > gpEntries.size())
-            throw exception("GpEntry size mismatch!");
+        if (numEntries > gpEntries.size()) {
+            // Reject the malformed submission instead of crashing the emulator process -
+            // a buggy/newer host GPU driver or a bad guest submission can trigger this,
+            // and it's recoverable at the IOCTL level.
+            LOGE("GpEntry size mismatch! numEntries: {}, available: {}", numEntries, gpEntries.size());
+            return PosixResult::InvalidArgument;
+        }
 
         std::scoped_lock lock(channelMutex);
 
@@ -187,8 +199,14 @@ namespace skyline::service::nvdrv::device::nvhost {
 
         // Allocate pages in the GPU AS
         pushBufferAddr = static_cast<u64>(asAllocator->Allocate((static_cast<u32>(pushBufferSize) >> AsGpu::VM::PageSizeBits) + 1)) << AsGpu::VM::PageSizeBits;
-        if (!pushBufferAddr)
-            throw exception("Failed to allocate channel pushbuffer!");
+        if (!pushBufferAddr) {
+            // Out of GPU address space - undo the partial channel setup and report a
+            // recoverable error instead of aborting the whole process.
+            LOGE("Failed to allocate channel pushbuffer! (requested {} bytes)", pushBufferSize);
+            channelCtx.reset();
+            pushBufferMemory.clear();
+            return PosixResult::InvalidArgument; // PosixResult has no dedicated "out of memory" value
+        }
 
         // Map onto the GPU
         asCtx->gmmu.Map(pushBufferAddr, reinterpret_cast<u8 *>(pushBufferMemory.data()), pushBufferSize);

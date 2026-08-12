@@ -74,6 +74,13 @@ namespace skyline::service::hid {
         return {};
     }
 
+   
+    Result IHidServer::SetGestureOutputRanges(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // Stub — cmd 92, [18.0.0+], undocumented on switchbrew.
+        // Same stub used by Ryujinx, which unblocks DKCR HD.
+        return {};
+    }
+   
     Result IHidServer::SetSupportedNpadStyleSet(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto styleSet{request.Pop<NpadStyleSet>()};
         std::scoped_lock lock{state.input->npad.mutex};

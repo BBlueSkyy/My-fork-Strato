@@ -79,7 +79,12 @@ namespace skyline::service::hid {
          * @url https://switchbrew.org/wiki/HID_services#IsSixAxisSensorAtRest
          */
         Result IsSixAxisSensorAtRest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
+      
+        /**
+         * @brief Sets the coordinate ranges used for touch gesture reporting (stub)
+         * @url https://switchbrew.org/wiki/HID_services#hid (cmd 92, [18.0.0+], sem doc oficial)
+         */
+        Result SetGestureOutputRanges(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         /**
          * @brief Activates the gesture input feature
          * @url https://switchbrew.org/wiki/HID_services#ActivateGesture
@@ -257,6 +262,7 @@ namespace skyline::service::hid {
             SFUNC(0x51, IHidServer, ResetGyroscopeZeroDriftMode),
             SFUNC(0x52, IHidServer, IsSixAxisSensorAtRest),
             SFUNC(0x5B, IHidServer, ActivateGesture),
+            SFUNC(0x5C, IHidServer, SetGestureOutputRanges),
             SFUNC(0x64, IHidServer, SetSupportedNpadStyleSet),
             SFUNC(0x65, IHidServer, GetSupportedNpadStyleSet),
             SFUNC(0x66, IHidServer, SetSupportedNpadIdType),
