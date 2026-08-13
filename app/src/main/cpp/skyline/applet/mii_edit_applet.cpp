@@ -49,7 +49,7 @@ Result MiiEditApplet::Start() {
             AppletOutputForCharInfoEditing output{};
             output.result = 0; // Success
             output.charInfo = MakeDefaultMii();
-            PushNormalDataAndSignal(std::make_shared<service::am::ObjIStorage<AppletOutputForCharInfoEditing>>(state, manager, output));
+            PushNormalDataAndSignal(std::make_shared<service::am::ObjIStorage<AppletOutputForCharInfoEditing>>(state, manager, std::move(output)));     
             break;
         }
 
@@ -57,7 +57,7 @@ Result MiiEditApplet::Start() {
             AppletOutput output{};
             output.result = 0; // Success
             output.index = 0;
-            PushNormalDataAndSignal(std::make_shared<service::am::ObjIStorage<AppletOutput>>(state, manager, output));
+            PushNormalDataAndSignal(std::make_shared<service::am::ObjIStorage<AppletOutput>>(state, manager, std::move(output)));
             break;
         }
     }
@@ -71,7 +71,9 @@ Result MiiEditApplet::GetResult() {
     return {};
 }
 
-void MiiEditApplet::PushNormalDataToApplet(std::shared_ptr<service::am::IStorage> data) {}
+void MiiEditApplet::PushNormalDataToApplet(std::shared_ptr<service::am::IStorage> data) {
+    PushNormalInput(std::move(data));
+}
 
 void MiiEditApplet::PushInteractiveDataToApplet(std::shared_ptr<service::am::IStorage> data) {}
 
