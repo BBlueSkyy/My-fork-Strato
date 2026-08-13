@@ -12,7 +12,7 @@ namespace skyline::applet {
  * implementation which immediately returns a fixed default Mii without showing any UI
  * @url https://switchbrew.org/wiki/MiiEdit_Applet
  */
-class MiiEditApplet : public service::am::IApplet {
+class MiiEditApplet : public service::am::IApplet, public service::am::EnableNormalQueue {
   private:
 #pragma pack(push, 1)
 
