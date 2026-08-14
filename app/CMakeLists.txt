@@ -458,6 +458,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/ts/IMeasurementServer.cpp
         ${source_DIR}/skyline/services/ts/ISession.cpp
         ${source_DIR}/skyline/services/ntc/IEnsureNetworkClockAvailabilityService.cpp
+        ${source_DIR}/skyline/services/ngc/INgcServiceForApplication.cpp
         )
 target_include_directories(skyline PRIVATE ${source_DIR}/skyline)
 # target_precompile_headers(skyline PRIVATE ${source_DIR}/skyline/common.h) # PCH will currently break Intellisense
