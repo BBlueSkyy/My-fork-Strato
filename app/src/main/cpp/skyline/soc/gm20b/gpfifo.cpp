@@ -133,6 +133,7 @@ namespace skyline::soc::gm20b {
                 break;
             case SubchannelId::Copy:
                 channelCtx.maxwellDma.CallMethod(method, argument);
+                break;
             case SubchannelId::TwoD:
                 channelCtx.fermi2D.CallMethod(method, argument);
                 break;
