@@ -123,8 +123,24 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
         }
     }
 
+    __attribute__((always_inline)) void Maxwell3D::FlushInlineIndexDraw() {
+       if (batchEnableState.inlineIndexActive) {
+           batchEnableState.inlineIndexActive = false;
+           if (!batchInlineIndex.indices.empty()) {
+               if (batchInlineIndex.indices.size() > batchInlineIndex.totalCount)
+                   batchInlineIndex.indices.resize(batchInlineIndex.totalCount);
+               if (CheckRenderEnable())
+                   interconnect.DrawWithInlineIndex(ApplyTopologyOverride(registers.begin->op), *registers.streamOutputEnable,
+                                                     span(batchInlineIndex.indices).cast<u8>(),
+                                                     type::IndexBuffer::IndexSize::TwoBytes,
+                                                     static_cast<u32>(batchInlineIndex.indices.size()), 1);
+           }
+           batchInlineIndex.Reset();
+        }
+    }
+   
     __attribute__((always_inline)) void Maxwell3D::HandleMethod(u32 method, u32 argument) {
-        if (method == ENGINE_STRUCT_OFFSET(mme, shadowRamControl)) [[unlikely]] {
+         if (method == ENGINE_STRUCT_OFFSET(mme, shadowRamControl)) [[unlikely]] {
             shadowRegisters.raw[method] = registers.raw[method] = argument;
             return;
         }
