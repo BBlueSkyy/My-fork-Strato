@@ -53,6 +53,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         std::shared_ptr<memory::Buffer> quadConversionBuffer{};
         bool quadConversionBufferAttached{};
         BufferView indirectBufferView;
+        std::shared_ptr<memory::Buffer> inlineIndexBuffer{};
         Queries queries;
 
         static constexpr size_t DescriptorBatchSize{0x100};
@@ -109,6 +110,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         void Draw(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, u32 count, u32 first, u32 instanceCount, u32 vertexOffset, u32 firstInstance);
 
         void DrawIndirect(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, span<u8> indirectBuffer, u32 count, u32 stride);
+
+        void DrawWithInlineIndex(engine::DrawTopology topology, bool transformFeedbackEnable,
+                              span<u8> indexData, engine::IndexBuffer::IndexSize indexSize,
+                              u32 count, u32 instanceCount);
 
         void Query(soc::gm20b::IOVA address, engine::SemaphoreInfo::CounterType type, std::optional<u64> timestamp);
 
