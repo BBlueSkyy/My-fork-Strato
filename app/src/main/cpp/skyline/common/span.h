@@ -4,9 +4,58 @@
 #pragma once
 
 #include <span>
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <unwind.h>
+#include <dlfcn.h>
+#include <fmt/format.h>
 #include "utils.h"
 
 namespace skyline {
+    /**
+     * @brief Minimal on-device backtrace capture, used to diagnose throws that don't otherwise
+     *        carry enough context (e.g. span::cast<Out>() alignment failures) - resolves symbol
+     *        names via the dynamic symbol table with dladdr(), no debugger or addr2line needed
+     */
+    namespace debug {
+        struct BacktraceState {
+            void **current;
+            void **end;
+        };
+
+        inline _Unwind_Reason_Code UnwindCallback(struct _Unwind_Context *ctx, void *arg) {
+            auto *state{static_cast<BacktraceState *>(arg)};
+            uintptr_t pc{_Unwind_GetIP(ctx)};
+            if (pc) {
+                if (state->current == state->end)
+                    return _URC_END_OF_STACK;
+                *state->current++ = reinterpret_cast<void *>(pc);
+            }
+            return _URC_NO_REASON;
+        }
+
+        inline std::string CaptureBacktrace(size_t maxFrames = 24) {
+            std::vector<void *> buffer(maxFrames);
+            BacktraceState state{buffer.data(), buffer.data() + buffer.size()};
+            _Unwind_Backtrace(UnwindCallback, &state);
+            size_t count{static_cast<size_t>(state.current - buffer.data())};
+
+            std::string out;
+            for (size_t i{}; i < count; ++i) {
+                Dl_info info{};
+                if (dladdr(buffer[i], &info) && info.dli_sname) {
+                    out += fmt::format("  #{}: {} (+0x{:X}) [{}]\n", i, info.dli_sname,
+                                        reinterpret_cast<uintptr_t>(buffer[i]) - reinterpret_cast<uintptr_t>(info.dli_saddr),
+                                        info.dli_fname ? info.dli_fname : "?");
+                } else {
+                    out += fmt::format("  #{}: 0x{:X}\n", i, reinterpret_cast<uintptr_t>(buffer[i]));
+                }
+            }
+            return out;
+        }
+    }
+
     /**
      * @brief A custom wrapper over span that adds several useful methods to it
      * @note This class is completely transparent, it implicitly converts from and to span
@@ -56,7 +105,7 @@ namespace skyline {
         constexpr span<Out> cast() {
             if (SkipAlignmentCheck || util::IsAligned(span::size_bytes(), sizeof(Out)))
                 return span<Out, OutExtent>(reinterpret_cast<Out *>(span::data()), span::size_bytes() / sizeof(Out));
-            throw exception("Span size not aligned with Out type size (0x{:X}/0x{:X})", span::size_bytes(), sizeof(Out));
+            throw exception("Span size not aligned with Out type size (0x{:X}/0x{:X})\n{}", span::size_bytes(), sizeof(Out), debug::CaptureBacktrace());
         }
 
         /**
