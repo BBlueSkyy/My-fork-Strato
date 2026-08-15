@@ -65,8 +65,63 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         return offset;
     }
+    
+    static vk::IndexType ConvertInlineIndexSize(engine::IndexBuffer::IndexSize size) {
+    switch (size) {
+      case engine::IndexBuffer::IndexSize::OneByte:
+        return vk::IndexType::eUint8EXT;
+      case engine::IndexBuffer::IndexSize::TwoBytes:
+        return vk::IndexType::eUint16;
+      case engine::IndexBuffer::IndexSize::FourBytes:
+        return vk::IndexType::eUint32;
+    }
+    throw exception("Invalid inline index size: {}", static_cast<u32>(size));
+}
 
-    vk::Rect2D Maxwell3D::GetClearScissor() {
+     void Maxwell3D::DrawWithInlineIndex(engine::DrawTopology topology, bool transformFeedbackEnable,
+                                     span<u8> indexData, engine::IndexBuffer::IndexSize indexSize,
+                                     u32 count, u32 instanceCount) {
+     TRACE_EVENT("gpu", "DrawWithInlineIndex", "count", count, "instanceCount", instanceCount);
+
+       StateUpdateBuilder builder{*ctx.executor.allocator};
+       vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
+
+    PrepareDraw(builder, topology, true, false, 0, count, srcStageMask, dstStageMask);
+
+    inlineIndexBuffer = std::make_shared<memory::Buffer>(ctx.gpu.memory.AllocateBuffer(util::AlignUp(indexData.size_bytes(), PAGE_SIZE)));
+    std::memcpy(inlineIndexBuffer->cast<u8>().data(), indexData.data(), indexData.size_bytes());
+    ctx.executor.AttachDependency(inlineIndexBuffer);
+
+    builder.SetIndexBuffer(BufferBinding{inlineIndexBuffer->vkBuffer, 0}, ConvertInlineIndexSize(indexSize));
+
+    auto stateUpdater{builder.Build()};
+
+    struct DrawParams {
+        StateUpdater stateUpdater;
+        u32 count;
+        u32 instanceCount;
+        bool transformFeedbackEnable;
+    };
+    auto *drawParams{ctx.executor.allocator->EmplaceUntracked<DrawParams>(DrawParams{stateUpdater,
+        count, instanceCount, ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
+
+    vk::Rect2D scissor{GetDrawScissor()};
+    constantBuffers.ResetQuickBind();
+
+    ctx.executor.AddCheckpoint("Before inline index draw");
+    ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
+        drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
+        if (drawParams->transformFeedbackEnable)
+            commandBuffer.beginTransformFeedbackEXT(0, {}, {});
+        commandBuffer.drawIndexed(drawParams->count, drawParams->instanceCount, 0, 0, 0);
+        if (drawParams->transformFeedbackEnable)
+            commandBuffer.endTransformFeedbackEXT(0, {}, {});
+    }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
+         !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+          ctx.executor.AddCheckpoint("After inline index draw");
+     }    
+   
+     vk::Rect2D Maxwell3D::GetClearScissor() {
         const auto &clearSurfaceControl{clearEngineRegisters.clearSurfaceControl};
 
         const auto &surfaceClip{clearEngineRegisters.surfaceClip};
