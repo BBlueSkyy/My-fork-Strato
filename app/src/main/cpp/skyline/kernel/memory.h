@@ -226,9 +226,10 @@ namespace skyline {
             memory::MemoryAttribute attributes;
             memory::MemoryState state;
             size_t size;
+            u16 ipcLockCount{}; //!< The number of in-flight IPC transfers using this chunk as a buffer; attributes.isIpcLocked mirrors (ipcLockCount != 0)
 
             constexpr bool IsCompatible(const ChunkDescriptor &chunk) const noexcept {
-                return chunk.permission == permission && chunk.state.value == state.value && chunk.attributes.value == attributes.value && !isSrcMergeDisallowed;
+                return chunk.permission == permission && chunk.state.value == state.value && chunk.attributes.value == attributes.value && chunk.ipcLockCount == ipcLockCount && !isSrcMergeDisallowed;
             }
         };
 
@@ -319,10 +320,38 @@ namespace skyline {
             void SetRegionCpuCaching(span<u8> memory, bool value);
 
             /**
+             * @brief Atomically validates and sets the isUncached attribute for chunks within a certain range
+             * @return False if any chunk within the range has `attributeChangeAllowed` set to false, in which
+             * case nothing in the range is modified; true if the attribute was applied to the entire range
+             * @note Unlike `SetRegionCpuCaching`, this performs the `attributeChangeAllowed` check and the write
+             * under the same lock acquisition, so no concurrent unmap/remap of the region can race the check
+             */
+            bool SetRegionCpuCachingIfAllowed(span<u8> memory, bool value);
+
+            /**
+             * @brief Increments the IPC lock count for chunks within a certain range, setting `attributes.isIpcLocked`
+             * @note Must be paired with a matching `UnlockRegionForIpc` call for the same range once the transfer completes
+             */
+            void LockRegionForIpc(span<u8> memory);
+
+            /**
+             * @brief Decrements the IPC lock count for chunks within a certain range, clearing `attributes.isIpcLocked` once the count for a chunk reaches zero
+             */
+            void UnlockRegionForIpc(span<u8> memory);
+
+            /**
              * @brief Sets the permissions for chunks within a certain range
              * @note The permissions set here are not accurate to the actual permissions set on the chunk and are only for the guest
              */
             void SetRegionPermission(span<u8> memory, memory::Permission permission);
+
+            /**
+             * @brief Atomically validates and sets the permissions for chunks within a certain range
+             * @return False if any chunk within the range has `permissionChangeAllowed` set to false or is
+             * currently IPC-locked (`ipcLockCount != 0`), in which case nothing in the range is modified;
+             * true if the new permission was applied to the entire range
+             */
+            bool SetRegionPermissionIfAllowed(span<u8> memory, memory::Permission permission);
 
             /**
              * @brief Gets the highest chunk's descriptor that contains this address
@@ -347,9 +376,11 @@ namespace skyline {
             void Reserve(span<u8> memory);
 
             /**
+             * @return False if any chunk within the range is currently IPC-locked (`ipcLockCount != 0`), in
+             * which case nothing is unmapped; true otherwise
              * @note `UnmapMemory` also calls `FreeMemory` on the unmapped memory range
              */
-            void UnmapMemory(span<u8> memory);
+            bool UnmapMemory(span<u8> memory);
 
             /**
              * Frees the underlying memory
@@ -365,9 +396,11 @@ namespace skyline {
 
             /**
              * Implements the memory manager side functionality of svcUnmapMemory
+             * @return False if the affected destination chunk is currently IPC-locked (`ipcLockCount != 0`),
+             * in which case nothing is modified; true otherwise
              * @note Argument validity must be checked by the caller
              */
-            void SvcUnmapMemory(span<u8> source, span<u8> destination);
+            bool SvcUnmapMemory(span<u8> source, span<u8> destination);
 
             /**
              * @brief Adds a reference to shared memory, extending its lifetime until `RemoveRef` is called
