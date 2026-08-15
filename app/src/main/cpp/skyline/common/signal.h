@@ -64,8 +64,8 @@ namespace skyline::signal {
     void ExceptionalSignalHandler(int signal, siginfo *, ucontext *context);
 
     /**
-     * @brief Handler de terminate customizado, instalado desde o início da execução
-     * pra evitar abort() silencioso em exceções não relacionadas a sinal
+     * @brief Custom termination handler, installed from the start of execution
+     *to avoid silent abort() in approaches unrelated to signals
      */
     void TerminateHandler();
 
