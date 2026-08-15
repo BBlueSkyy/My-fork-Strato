@@ -88,12 +88,12 @@ namespace skyline::signal {
                 try {
                     std::rethrow_exception(exception);
                 } catch (const std::exception &e) {
-                    LOGE("Terminating devido a exceção não capturada: {}", e.what());
+                    LOGE("Terminating due to uncaught exception: {}", e.what());
                 } catch (...) {
-                    LOGE("Terminating devido a exceção não capturada de tipo desconhecido");
+                    LOGE("Terminating due to uncaught exception of unknown type");
                 }
             } else {
-                LOGE("std::terminate chamado sem exceção ativa");
+                LOGE("std::terminate called without active exception");
             }
             SleepTillExit(); // We don't want to delegate to the older terminate handler as it might cause an exit
         }
