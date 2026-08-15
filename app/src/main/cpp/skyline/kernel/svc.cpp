@@ -114,26 +114,35 @@ namespace skyline::kernel::svc {
         // The only bit userspace can actually toggle via SetMemoryAttribute is 'Uncached'; 'IpcLocked' and
         // 'DeviceShared' are read-only, 'Borrowed' is fixed per chunk. Bit 0x10 isn't part of MemoryAttribute
         // at all here (no PermissionLocked support), so it's stripped before validating the rest of the mask.
+        // 'mask' only needs to be a SUBSET of {Uncached}: an empty mask (0) is a deliberate, valid no-op that
+        // real titles rely on (e.g. ANTONBLAST calls svcSetMemoryAttribute(addr, size, 0, 0)).
         constexpr u8 UnimplementedAttributeBit{0x10};
         memory::MemoryAttribute mask{static_cast<u8>(ctx.w2 & ~UnimplementedAttributeBit)};
         memory::MemoryAttribute value{static_cast<u8>(ctx.w3 & ~UnimplementedAttributeBit)};
 
         auto maskedValue{mask.value | value.value};
-        if (maskedValue != mask.value || !mask.isUncached || mask.isDeviceShared || mask.isBorrowed || mask.isIpcLocked) [[unlikely]] {
+        if (maskedValue != mask.value || mask.isDeviceShared || mask.isBorrowed || mask.isIpcLocked) [[unlikely]] {
             ctx.w0 = result::InvalidCombination;
             LOGW("'mask' invalid: 0x{:X}, 0x{:X}", mask.value, value.value);
             return;
         }
 
-        // Validates every chunk in the range and applies the new CPU caching state atomically under a
-        // single lock, so no other thread can unmap/remap the region between the check and the write.
-        if (!state.process->memory.SetRegionCpuCachingIfAllowed(span<u8>{address, size}, value.isUncached)) [[unlikely]] {
-            ctx.w0 = result::InvalidState;
-            LOGW("Attribute change not allowed for one or more chunks in range: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
-            return;
+        if (mask.isUncached) {
+            // Validates every chunk in the range and applies the new CPU caching state atomically under a
+            // single lock, so no other thread can unmap/remap the region between the check and the write.
+            if (!state.process->memory.SetRegionCpuCachingIfAllowed(span<u8>{address, size}, value.isUncached)) [[unlikely]] {
+                ctx.w0 = result::InvalidState;
+                LOGW("Attribute change not allowed for one or more chunks in range: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
+                return;
+            }
+
+            LOGD("Set CPU caching to {} at {} - {} (0x{:X} bytes)", static_cast<bool>(value.isUncached), fmt::ptr(address), fmt::ptr(address + size), size);
+        } else {
+            // Empty mask: nothing was requested to change, so this is a no-op by definition - don't touch
+            // the chunk's attributes or even require attributeChangeAllowed, matching real hardware behavior
+            LOGD("SetMemoryAttribute: empty mask, no-op at {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
         }
 
-        LOGD("Set CPU caching to {} at {} - {} (0x{:X} bytes)", static_cast<bool>(value.isUncached), fmt::ptr(address), fmt::ptr(address + size), size);
         ctx.w0 = Result{};
     }
 
