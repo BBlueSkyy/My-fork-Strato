@@ -21,6 +21,7 @@ namespace skyline {
         std::condition_variable_any consumeCondition;
         SpinLock productionMutex;
         std::condition_variable_any produceCondition;
+        std::atomic_bool stopped{false}; //!< Set via Close() to cooperatively wake up a blocked Process() and let it return, without needing to interrupt it via a signal
 
       public:
         /**
@@ -56,12 +57,27 @@ namespace skyline {
         }
 
         /**
+         * @brief Cooperatively wakes up a call to Process() that's currently blocked waiting for more items and
+         * lets it return once any items still queued have been processed
+         * @note This exists so callers don't need to interrupt the waiting thread via a signal to stop it, which
+         * is unreliable when the wait happens inside library code that doesn't preserve frame pointers
+         */
+        void Close() {
+            {
+                std::scoped_lock lock{productionMutex};
+                stopped.store(true, std::memory_order_release);
+            }
+            produceCondition.notify_all();
+        }
+
+        /**
          * @brief A blocking for-each that runs on every item and waits till new items to run on them as well
          * @param function A function that is called for each item (with the only parameter as a reference to that item)
          * @param preWait An optional function that's called prior to waiting on more items to be queued
+         * @note Returns once Close() has been called and there are no items left to process
          */
         template<typename F1, typename F2>
-        [[noreturn]] void Process(F1 function, F2 preWait) {
+        void Process(F1 function, F2 preWait) {
             TRACE_EVENT_BEGIN("containers", "CircularQueue::Process");
 
             while (true) {
@@ -69,8 +85,14 @@ namespace skyline {
                     std::unique_lock productionLock{productionMutex};
                     TRACE_EVENT_END("containers");
                     preWait();
-                    produceCondition.wait(productionLock, [this]() { return start != end; });
+                    produceCondition.wait(productionLock, [this]() { return start != end || stopped.load(std::memory_order_acquire); });
                     TRACE_EVENT_BEGIN("containers", "CircularQueue::Process");
+
+                    if (start == end) {
+                        // We were woken up by Close() and there's nothing left queued, time to stop
+                        TRACE_EVENT_END("containers");
+                        return;
+                    }
                 }
 
                 std::scoped_lock comsumptionLock{consumptionMutex};
