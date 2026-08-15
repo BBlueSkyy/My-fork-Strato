@@ -409,8 +409,9 @@ namespace skyline::soc::gm20b {
             signal::BlockSignal({SIGINT});
             state.process->Kill(false);
         }
+      running.store(false, std::memory_order_release);     
     }
-
+   
     void ChannelGpfifo::Push(span<GpEntry> entries) {
         gpEntries.Append(entries);
     }
@@ -421,7 +422,8 @@ namespace skyline::soc::gm20b {
 
     ChannelGpfifo::~ChannelGpfifo() {
         if (thread.joinable()) {
-            pthread_kill(thread.native_handle(), SIGINT);
+            if (running.load(std::memory_order_acquire))
+                pthread_kill(thread.native_handle(), SIGINT);
             thread.join();
         }
     }
