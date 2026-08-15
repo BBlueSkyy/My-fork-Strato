@@ -122,37 +122,25 @@ namespace skyline::kernel {
     }
 
     void MemoryManager::ForeachChunkInRange(span<u8> memory, auto editCallback) {
-        auto chunkBase{chunks.lower_bound(memory.data())};
-        if (memory.data() < chunkBase->first)
-            --chunkBase;
-
+        // editCallback typically calls MapInternal, which mutates `chunks` (insert/erase/merge). A std::map
+        // iterator can be invalidated by that mutation if its own node is erased/split, so we must never
+        // reuse an iterator across an editCallback call - instead, re-query `chunks` fresh on every step.
+        u8 *addr{memory.data()};
         size_t sizeLeft{memory.size()};
 
-        if (chunkBase->first < memory.data()) [[unlikely]] {
-            size_t chunkSize{std::min<size_t>(chunkBase->second.size - (static_cast<size_t>(memory.data() - chunkBase->first)), memory.size())};
+        while (sizeLeft) {
+            auto chunkBase{chunks.lower_bound(addr)};
+            if (addr < chunkBase->first)
+                --chunkBase;
 
-            std::pair<u8 *, ChunkDescriptor> temp{memory.data(), chunkBase->second};
+            size_t chunkSize{std::min<size_t>(chunkBase->second.size - static_cast<size_t>(addr - chunkBase->first), sizeLeft)};
+
+            std::pair<u8 *, ChunkDescriptor> temp{addr, chunkBase->second};
             temp.second.size = chunkSize;
             editCallback(temp);
 
-            ++chunkBase;
+            addr += chunkSize;
             sizeLeft -= chunkSize;
-        }
-
-        while (sizeLeft) {
-            if (sizeLeft < chunkBase->second.size) {
-                std::pair<u8 *, ChunkDescriptor> temp(*chunkBase);
-                temp.second.size = sizeLeft;
-                editCallback(temp);
-                break;
-            } else [[likely]] {
-                std::pair<u8 *, ChunkDescriptor> temp(*chunkBase);
-
-                editCallback(temp);
-
-                sizeLeft = sizeLeft - chunkBase->second.size;
-                ++chunkBase;
-            }
         }
     }
 
