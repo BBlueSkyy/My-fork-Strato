@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <common/circular_queue.h>
 #include <soc/gm20b/macro/macro_state.h>
 #include "engines/gpfifo.h"
@@ -130,6 +131,8 @@ namespace skyline::soc::gm20b {
         } resumeState{};
 
         std::thread thread; //!< The thread that manages processing of pushbuffers
+
+        std::atomic_bool running{true}; //!< If Run() is still executing (within the protected try/catch region). It is set to false at the end of Run(), on any exit path — the destructor uses this to avoid sending SIGINT to a thread that has already left the protected region.
 
         /**
          * @brief Sends a method call to the appropriate subchannel and handles macro and GPFIFO methods
