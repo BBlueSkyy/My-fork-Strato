@@ -238,23 +238,23 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                         registers.raw[method] = argument;
                         break;
                    }
-                } else if (batchEnableState.inlineIndexActive) {
-                    switch (method) {
+              } else if (batchEnableState.inlineIndexActive) {
+                switch (method) {
                     ENGINE_STRUCT_CASE(drawInlineIndex2X16, even, {
                         if (batchInlineIndex.firstWord && batchInlineIndex.skipFirstEven)
-                            batchInlineIndex.indices.push_back(static_cast<u16>(drawInlineIndex2X16.odd));
+                            batchInlineIndex.indices.push_back(static_cast<u16>(registers.drawInlineIndex2X16->odd));
                         else {
-                            batchInlineIndex.indices.push_back(static_cast<u16>(drawInlineIndex2X16.even));
-                            batchInlineIndex.indices.push_back(static_cast<u16>(drawInlineIndex2X16.odd));
+                            batchInlineIndex.indices.push_back(static_cast<u16>(registers.drawInlineIndex2X16->even));
+                            batchInlineIndex.indices.push_back(static_cast<u16>(registers.drawInlineIndex2X16->odd));
                         }
                         batchInlineIndex.firstWord = false;
                         return;
-                     })
-                     default:
-                         registers.raw[method] = origRegisterValue;
-                         FlushInlineIndexDraw();
-                         registers.raw[method] = argument;
-                         break;
+                    })
+                    default:
+                        registers.raw[method] = origRegisterValue;
+                        FlushInlineIndexDraw();
+                        registers.raw[method] = argument;
+                        break;
                    }
               }
          }
@@ -343,28 +343,27 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                 deferredDraw.instanceCount++;
                 batchEnableState.drawActive = true;
             })
-           
-            ENGINE_STRUCT_CASE(inlineIndex2X16Align, count, {
-                    batchInlineIndex.indices.clear();
-                    batchInlineIndex.totalCount = inlineIndex2X16Align.count;
-                    batchInlineIndex.skipFirstEven = inlineIndex2X16Align.startOdd;
-                    batchInlineIndex.firstWord = true;
-            })
           
+            ENGINE_CASE(inlineIndex2X16Align, {
+
+                                 batchInlineIndex.indices.clear();
+                                 batchInlineIndex.totalCount = registers.inlineIndex2X16Align->count;
+                                 batchInlineIndex.skipFirstEven = registers.inlineIndex2X16Align->startOdd;
+                                 batchInlineIndex.firstWord = true;
+            })
             ENGINE_STRUCT_CASE(drawInlineIndex4X8, index0, {
-                    throw exception("drawInlineIndex4X8 not implemented!");
+                   throw exception("drawInlineIndex4X8 not implemented!");
             })
-          
             ENGINE_STRUCT_CASE(drawInlineIndex2X16, even, {
                     if (batchInlineIndex.firstWord && batchInlineIndex.skipFirstEven)
-                        batchInlineIndex.indices.push_back(static_cast<u16>(drawInlineIndex2X16.odd));
+                        batchInlineIndex.indices.push_back(static_cast<u16>(registers.drawInlineIndex2X16->odd));
                     else {
-                        batchInlineIndex.indices.push_back(static_cast<u16>(drawInlineIndex2X16.even));
-                        batchInlineIndex.indices.push_back(static_cast<u16>(drawInlineIndex2X16.odd));
-                    }
-                    batchInlineIndex.firstWord = false;
-                    batchEnableState.inlineIndexActive = true;
-                })
+                        batchInlineIndex.indices.push_back(static_cast<u16>(registers.drawInlineIndex2X16->even));
+                        batchInlineIndex.indices.push_back(static_cast<u16>(registers.drawInlineIndex2X16->odd));
+                }
+                batchInlineIndex.firstWord = false;
+                batchEnableState.inlineIndexActive = true;
+            })
 
             ENGINE_STRUCT_CASE(drawZeroIndex, count, {
                 throw exception("drawZeroIndex not implemented!");
