@@ -11,7 +11,13 @@
 
 namespace skyline::kernel::svc {
     void SetHeapSize(const DeviceState &state, SvcContext &ctx) {
-        u32 size{ctx.w1};
+        // FIX: 'size' used to be read as `u32 size{ctx.w1}`, truncating to the low 32 bits of the
+        // register. On real hardware svcSetHeapSize takes a 64-bit size_t passed in the full X1
+        // register -- any request >= 4GB would have silently lost its high bits here, with no trace
+        // in the log of what the game actually asked for (the truncated value just looks like a
+        // normal, smaller request). Reading the full 64-bit register instead.
+        u64 size{ctx.x1};
+        LOGD("SetHeapSize: Raw requested size (before validation): 0x{:X}", size);
 
         if (!util::IsAligned(size, 0x200000)) [[unlikely]] {
             ctx.w0 = result::InvalidSize;
