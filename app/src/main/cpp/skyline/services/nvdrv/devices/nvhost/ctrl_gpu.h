@@ -124,6 +124,18 @@ namespace skyline::service::nvdrv::device::nvhost {
         PosixResult GetActiveSlotMask(Out<u32> slot, Out<u32> mask);
 
         /**
+         * @brief Returns the number of GPU SM units present
+         * @url https://switchbrew.org/wiki/NV_services#NVGPU_GPU_IOCTL_NUM_VSMS
+         */
+        PosixResult GetNumVsms(Out<u32> numVsms, Out<u32> reserved);
+
+        /**
+         * @brief Ioctl3 variant of VsmsMapping, returns the GPC/TPC index for each virtual SM
+         * @url https://switchbrew.org/wiki/NV_services#NVGPU_GPU_IOCTL_VSMS_MAPPING
+         */
+        PosixResult VsmsMapping3(span<u8> inlineBuffer, Out<u8> sm0GpcIndex, Out<u8> sm0TpcIndex, Out<u8> sm1GpcIndex, Out<u8> sm1TpcIndex);
+
+        /**
          * @url https://switchbrew.org/wiki/NV_services#NVGPU_GPU_IOCTL_GET_GPU_TIME
          */
         PosixResult GetGpuTime(Out<u64> time);
