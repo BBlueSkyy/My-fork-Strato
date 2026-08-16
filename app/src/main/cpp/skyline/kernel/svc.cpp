@@ -1046,7 +1046,14 @@ namespace skyline::kernel::svc {
                 break;
 
             case InfoState::TotalMemoryAvailable:
-                out = std::min(totalPhysicalMemory, state.process->memory.heap.size());
+                // FIX: this used to report min(totalPhysicalMemory, heap.size()), where heap.size()
+                // is the *entire reserved* Heap Region (fixed by address space type, e.g. 6GB on
+                // AS39Bit) rather than what's actually been committed via svcSetHeapSize. That let
+                // guest allocators (e.g. the NVN graphics pool allocator) believe they had far more
+                // usable heap than what Strato had actually mapped, causing them to place pool
+                // allocations past the committed range -- which then fail later with
+                // "SetMemoryAttribute: Attribute change not allowed" on genuinely unmapped memory.
+                out = std::min(totalPhysicalMemory, state.process->memory.processHeapSize);
                 break;
 
             case InfoState::TotalMemoryUsage:
@@ -1095,7 +1102,9 @@ namespace skyline::kernel::svc {
                 break;
 
             case InfoState::TotalMemoryAvailableWithoutSystemResource:
-                out = std::min(totalPhysicalMemory, state.process->memory.heap.size()) - state.process->npdm.meta.systemResourceSize;
+                // FIX: same reasoning as TotalMemoryAvailable above -- use the committed heap size
+                // (processHeapSize), not the full reserved Heap Region (heap.size()).
+                out = std::min(totalPhysicalMemory, state.process->memory.processHeapSize) - state.process->npdm.meta.systemResourceSize;
                 break;
 
             case InfoState::TotalMemoryUsageWithoutSystemResource:
