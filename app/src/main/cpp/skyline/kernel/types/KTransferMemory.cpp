@@ -9,38 +9,72 @@ namespace skyline::kernel::type {
         : KMemory{state, KType::KTransferMemory, size} {}
 
     u8 *KTransferMemory::Map(span<u8> map, memory::Permission permission) {
+        // FIX: validate the original chunk's state BEFORE doing anything destructive.
+        // Previously this check ran *after* KMemory::Map() had already remapped the
+        // guest's physical backing, so a failed check (!transferMemoryAllowed) still
+        // left the memory physically read/write-able while MapTransferMemory() (which
+        // updates the MemoryManager's chunk tracking) was skipped on the early return.
+        // That desync is exactly what produced "state 0x0 (type: 0x0)" rejections
+        // later on for memory that the guest could actually read/write fine.
+        auto oldChunk{state.process->memory.GetChunk(map.data()).value()};
+        originalMapping = oldChunk.second;
+
+        if (!originalMapping.state.transferMemoryAllowed) [[unlikely]] {
+            LOGW("Tried to map transfer memory with incompatible state at: {} (0x{:X} bytes, state: 0x{:X}, type: 0x{:X})", fmt::ptr(map.data()), map.size(), originalMapping.state.value, static_cast<u32>(originalMapping.state.type));
+            return nullptr; // Nothing has been touched yet, safe to bail out here
+        }
+
         // Get the host address of the guest memory
         auto hostMap{state.process->memory.GetHostSpan(map)};
         std::memcpy(host.data(), hostMap.data(), hostMap.size());
         u8 *result{KMemory::Map(map, permission)};
 
-        auto oldChunk{state.process->memory.GetChunk(map.data()).value()};
-
-        originalMapping = oldChunk.second;
-
-        if (!originalMapping.state.transferMemoryAllowed) [[unlikely]] {
-            LOGW("Tried to map transfer memory with incompatible state at: {} (0x{:X} bytes)", fmt::ptr(map.data()), map.size());
-            return nullptr;
-        } else {
-            state.process->memory.MapTransferMemory(guest, permission);
-            state.process->memory.SetRegionBorrowed(guest, true);
-            return result;
-        }
+        state.process->memory.MapTransferMemory(guest, permission);
+        state.process->memory.SetRegionBorrowed(guest, true);
+        return result;
     }
 
     void KTransferMemory::Unmap(span<u8> map) {
         KMemory::Unmap(map);
 
         guest = span<u8>{};
+        // FIX: restore *every* memory type the transfer memory could have been carved
+        // out of, not just CodeMutable/Heap. Previously anything else (Stack,
+        // SharedMemory, TransferMemory, ThreadLocal, Reserved, or Unmapped) fell into
+        // `default` and only logged a warning, leaving the MemoryManager's chunk
+        // tracking permanently out of sync with the physically-restored host memory.
         switch (originalMapping.state.type) {
+            case memory::MemoryType::Code:
+                state.process->memory.MapCodeMemory(map, originalMapping.permission);
+                break;
             case memory::MemoryType::CodeMutable:
                 state.process->memory.MapMutableCodeMemory(map);
+                break;
+            case memory::MemoryType::Stack:
+                state.process->memory.MapStackMemory(map);
                 break;
             case memory::MemoryType::Heap:
                 state.process->memory.MapHeapMemory(map);
                 break;
+            case memory::MemoryType::SharedMemory:
+                state.process->memory.MapSharedMemory(map, originalMapping.permission);
+                break;
+            case memory::MemoryType::TransferMemory:
+            case memory::MemoryType::TransferMemoryIsolated:
+                state.process->memory.MapTransferMemory(map, originalMapping.permission);
+                break;
+            case memory::MemoryType::ThreadLocal:
+                state.process->memory.MapThreadLocalMemory(map);
+                break;
+            case memory::MemoryType::Reserved:
+                state.process->memory.Reserve(map);
+                break;
+            case memory::MemoryType::Unmapped:
+                state.process->memory.UnmapMemory(map);
+                break;
             default:
                 LOGW("Unmapping KTransferMemory with incompatible state: (0x{:X})", originalMapping.state.value);
+                state.process->memory.UnmapMemory(map); // Fail safe rather than leaving stale tracking behind
         }
         map = state.process->memory.GetHostSpan(map);
         std::memcpy(map.data(), host.data(), map.size());
@@ -51,15 +85,39 @@ namespace skyline::kernel::type {
             if (mmap(guest.data(), guest.size(), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED | MAP_ANONYMOUS | MAP_POPULATE, -1, 0) == MAP_FAILED) [[unlikely]]
                 LOGW("An error occurred while unmapping transfer memory in guest: {}", strerror(errno));
 
+            // FIX: same exhaustive restore as Unmap() above, see comment there.
             switch (originalMapping.state.type) {
+                case memory::MemoryType::Code:
+                    state.process->memory.MapCodeMemory(guest, originalMapping.permission);
+                    break;
                 case memory::MemoryType::CodeMutable:
                     state.process->memory.MapMutableCodeMemory(guest);
+                    break;
+                case memory::MemoryType::Stack:
+                    state.process->memory.MapStackMemory(guest);
                     break;
                 case memory::MemoryType::Heap:
                     state.process->memory.MapHeapMemory(guest);
                     break;
+                case memory::MemoryType::SharedMemory:
+                    state.process->memory.MapSharedMemory(guest, originalMapping.permission);
+                    break;
+                case memory::MemoryType::TransferMemory:
+                case memory::MemoryType::TransferMemoryIsolated:
+                    state.process->memory.MapTransferMemory(guest, originalMapping.permission);
+                    break;
+                case memory::MemoryType::ThreadLocal:
+                    state.process->memory.MapThreadLocalMemory(guest);
+                    break;
+                case memory::MemoryType::Reserved:
+                    state.process->memory.Reserve(guest);
+                    break;
+                case memory::MemoryType::Unmapped:
+                    state.process->memory.UnmapMemory(guest);
+                    break;
                 default:
                     LOGW("Unmapping KTransferMemory with incompatible state: (0x{:X})", originalMapping.state.value);
+                    state.process->memory.UnmapMemory(guest); // Fail safe rather than leaving stale tracking behind
             }
             std::memcpy(guest.data(), host.data(), guest.size());
         }
