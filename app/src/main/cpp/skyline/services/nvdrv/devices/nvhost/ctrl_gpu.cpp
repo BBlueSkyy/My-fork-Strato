@@ -56,6 +56,22 @@ namespace skyline::service::nvdrv::device::nvhost {
         return PosixResult::Success;
     }
 
+    PosixResult CtrlGpu::GetNumVsms(Out<u32> numVsms, Out<u32> reserved) {
+        // GM20B (Tegra X1): 1 GPC with 2 TPCs, one SM per TPC
+        numVsms = 0x2;
+        reserved = 0x0;
+        return PosixResult::Success;
+    }
+
+    PosixResult CtrlGpu::VsmsMapping3(span<u8> inlineBuffer, Out<u8> sm0GpcIndex, Out<u8> sm0TpcIndex, Out<u8> sm1GpcIndex, Out<u8> sm1TpcIndex) {
+        // GM20B (Tegra X1): both virtual SMs live in GPC0, one per TPC (TPC0/TPC1)
+        sm0GpcIndex = inlineBuffer[0] = 0x0;
+        sm0TpcIndex = inlineBuffer[1] = 0x0;
+        sm1GpcIndex = inlineBuffer[2] = 0x0;
+        sm1TpcIndex = inlineBuffer[3] = 0x1;
+        return PosixResult::Success;
+    }
+
     PosixResult CtrlGpu::GetGpuTime(Out<u64> time) {
         time = static_cast<u64>(util::GetTimeNs());
         return PosixResult::Success;
@@ -91,6 +107,8 @@ namespace skyline::service::nvdrv::device::nvhost {
                         GetActiveSlotMask,  ARGS(Out<u32>, Out<u32>))
         IOCTL_CASE_ARGS(INOUT, SIZE(0x10), MAGIC(CtrlGpuMagic), FUNC(0x1C),
                         GetGpuTime,         ARGS(Out<u64>, Pad<u64>))
+        IOCTL_CASE_ARGS(OUT,   SIZE(0x8),  MAGIC(CtrlGpuMagic), FUNC(0x12),
+                        GetNumVsms,         ARGS(Out<u32>, Out<u32>))
     )
 
     INLINE_IOCTL_HANDLER_FUNC(Ioctl3, CtrlGpu,
@@ -98,6 +116,8 @@ namespace skyline::service::nvdrv::device::nvhost {
                                GetCharacteristics3, ARGS(InOut<u64>, In<u64>, Out<GpuCharacteristics>))
         INLINE_IOCTL_CASE_ARGS(INOUT, SIZE(0x18), MAGIC(CtrlGpuMagic), FUNC(0x6),
                                GetTpcMasks3,        ARGS(In<u32>, Pad<u32, 3>, Out<u32>))
+        INLINE_IOCTL_CASE_ARGS(INOUT, SIZE(0x8),  MAGIC(CtrlGpuMagic), FUNC(0x13),
+                               VsmsMapping3,        ARGS(Out<u8>, Out<u8>, Out<u8>, Out<u8>, Pad<u32>))
     )
 #include <services/nvdrv/devices/deserialisation/macro_undef.inc>
 // @fmt:on
