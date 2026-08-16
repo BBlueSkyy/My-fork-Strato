@@ -57,7 +57,7 @@
 	url = https://github.com/skyline-emu/cubeb
 [submodule "app/libraries/audio-core"]
 	path = app/libraries/audio-core
-	url = https://github.com/skyline-emu/audio-core
+	url = https://github.com/BBlueSkyy/audio-core.git
 [submodule "app/libraries/ffmpeg"]
 	path = app/libraries/ffmpeg
 	url = https://github.com/FFmpeg/FFmpeg.git
