@@ -414,8 +414,10 @@ namespace skyline::kernel {
         // Unmapped chunks whose attributeChangeAllowed is always false)
         bool allowed{true};
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
-            if (!desc.second.state.attributeChangeAllowed) [[unlikely]]
+            if (!desc.second.state.attributeChangeAllowed) [[unlikely]] {
                 allowed = false;
+                LOGW("SetRegionCpuCachingIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which doesn't allow attribute changes", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
+            }
         });
 
         if (!allowed) [[unlikely]]
