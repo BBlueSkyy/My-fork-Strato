@@ -109,24 +109,32 @@ namespace skyline::loader {
     template<ElfSymbol ElfSym>
     Loader::SymbolInfo Loader::ResolveSymbol(void *ptr) {
         auto executable{std::lower_bound(executables.begin(), executables.end(), ptr, [](const ExecutableSymbolicInfo &it, void *ptr) { return it.programEnd < ptr; })};
+
+        // FIX: this used to dereference `executable` (via `executable->symbols...`) *before* checking
+        // whether lower_bound actually found a match. If `ptr` doesn't fall inside any loaded executable
+        // (e.g. it's a raw fault PC pointing into NCE-generated/JIT code, or otherwise-unmapped memory
+        // during a crash), `executable == executables.end()` and dereferencing it is UB: it reads
+        // whatever garbage memory follows the vector as an ExecutableSymbolicInfo, then `.cast<ElfSym>()`
+        // on that garbage `symbols` span throws "Span size not aligned with Out type size" because the
+        // garbage size isn't a clean multiple of sizeof(ElfSym). Bail out here instead, before touching it.
+        if (executable == executables.end() || ptr < executable->patchStart || ptr > executable->programEnd)
+            return {};
+
         auto symbols{executable->symbols.template cast<ElfSym>()};
 
-        if (executable != executables.end() && ptr >= executable->patchStart && ptr <= executable->programEnd) {
-            if (ptr >= executable->programStart) {
-                auto offset{reinterpret_cast<u8 *>(ptr) - reinterpret_cast<u8 *>(executable->programStart)};
-                auto symbol{std::find_if(symbols.begin(), symbols.end(), [&offset](const ElfSym &sym) { return sym.st_value <= offset && sym.st_value + sym.st_size > offset; })};
-                if (symbol != symbols.end() && symbol->st_name && symbol->st_name < executable->symbolStrings.size()) {
-                    return {executable->symbolStrings.data() + symbol->st_name, executable->name};
-                } else {
-                    return {.executableName = executable->name};
-                }
-            } else if (ptr >= executable->hookStart) {
-                return {.executableName = executable->hookName};
+        if (ptr >= executable->programStart) {
+            auto offset{reinterpret_cast<u8 *>(ptr) - reinterpret_cast<u8 *>(executable->programStart)};
+            auto symbol{std::find_if(symbols.begin(), symbols.end(), [&offset](const ElfSym &sym) { return sym.st_value <= offset && sym.st_value + sym.st_size > offset; })};
+            if (symbol != symbols.end() && symbol->st_name && symbol->st_name < executable->symbolStrings.size()) {
+                return {executable->symbolStrings.data() + symbol->st_name, executable->name};
             } else {
-                return {.executableName = executable->patchName};
+                return {.executableName = executable->name};
             }
+        } else if (ptr >= executable->hookStart) {
+            return {.executableName = executable->hookName};
+        } else {
+            return {.executableName = executable->patchName};
         }
-        return {};
     }
 
     inline std::string GetFunctionStackTrace(Loader *loader, void *pointer) {
