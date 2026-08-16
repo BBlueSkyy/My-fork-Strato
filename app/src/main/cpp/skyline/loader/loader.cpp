@@ -109,9 +109,11 @@ namespace skyline::loader {
     template<ElfSymbol ElfSym>
     Loader::SymbolInfo Loader::ResolveSymbol(void *ptr) {
         auto executable{std::lower_bound(executables.begin(), executables.end(), ptr, [](const ExecutableSymbolicInfo &it, void *ptr) { return it.programEnd < ptr; })};
+        if (executable == executables.end())
+            return {};
         auto symbols{executable->symbols.template cast<ElfSym>()};
 
-        if (executable != executables.end() && ptr >= executable->patchStart && ptr <= executable->programEnd) {
+        if (ptr >= executable->patchStart && ptr <= executable->programEnd) {
             if (ptr >= executable->programStart) {
                 auto offset{reinterpret_cast<u8 *>(ptr) - reinterpret_cast<u8 *>(executable->programStart)};
                 auto symbol{std::find_if(symbols.begin(), symbols.end(), [&offset](const ElfSym &sym) { return sym.st_value <= offset && sym.st_value + sym.st_size > offset; })};
