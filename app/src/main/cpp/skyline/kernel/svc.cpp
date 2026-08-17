@@ -973,18 +973,18 @@ namespace skyline::kernel::svc {
             TotalMemoryUsageWithoutSystemResource = 22,
             // 11.0.0+
             FreeThreadCount = 24,
+            // 14.0.0+
+            IsSvcPermitted = 26,
+            // 16.0.0+
+            IoRegionHint = 27,
             // 18.0.0+
             AliasRegionExtraSize = 28,
-            // 19.0.0+
-            // NOTE: Corroborated against the official 19.0.0 changelog (switchbrew.org/wiki/19.0.0):
-            // "InfoType values 0x1D-0x21 are presumably ifdef'd out on NX", with 0x22 confirmed as
-            // the next real InfoType (TransferMemoryHint = 34). 29 (0x1D) is the first ID in that
-            // reserved range and lines up with when VammManager (nn::os::detail::VammManager) shows
-            // up around 18.0.0-19.0.0, so it's our best-supported guess -- but no public source names
-            // it "IsVammEnabled" specifically, since it could be any of the five ifdef'd-out slots
-            // (29-33). If a game logs "Unimplemented case ID0: X" for X in that range, adjust this
-            // value to match.
-            IsVammEnabled = 29,
+            // NOTE: id0=29/30 are officially documented as RemoteRegionAddress/RemoteRegionSize
+            // (tagged [S2], i.e. specific to the Switch successor console), NOT a NX-specific
+            // "IsVammEnabled" as previously guessed here -- that guess predates confirmation from
+            // the switchbrew SVC page and contradicts it, so it's been removed. Left unimplemented
+            // (falls through to default below) until a game log shows what id0 it actually expects
+            // around here.
         };
 
         InfoState info{static_cast<u32>(ctx.w1)};
@@ -1018,24 +1018,32 @@ namespace skyline::kernel::svc {
             case InfoState::AliasRegionExtraSize:
                 out = 0; // No extra space reserved in the Alias ​​region
                 break;
-            
-            case InfoState::IsVammEnabled:
-                // Virtual Address Memory Manager (nn::os::detail::VammManager) — introduced in
-                // HOS 19.0.0 / SDK 19.x. Returning 0 (disabled) is correct for Strato since we
-                // don't implement VAMM. VammManager::InitializeIfEnabled() will skip init when
-                // this returns 0, allowing games built with SDK 19.x (e.g. Unity 6) to start
-                // normally.
-                // Virtual Address Memory Manager (nn::os::detail::VammManager), tied to the
-                // reserved-region-extra-size feature added in 18.0.0. Real NX hardware disables
-                // this whole InfoType range (see NOTE above), so returning 0 ("disabled") instead
-                // of InvalidEnumValue is a deliberate compatibility choice, not a claim that this
-                // is what real hardware returns: VammManager::InitializeIfEnabled() in SDK 19.x
-                // titles (e.g. Unity 6) checks this result and skips VAMM init when it comes back
-                // disabled, letting those titles boot instead of hitting a hard "unimplemented"
-                // error. If VAMM emulation is ever implemented, this should return 1 and be backed
-                // by real allocation logic instead of just satisfying the check.
+
+            case InfoState::IsSvcPermitted: {
+                // Official behaviour (confirmed 14.0.0+): Nintendo's own userland returns
+                // InvalidCombination for any SVC ID other than SynchronizePreemptionState (0x36).
+                constexpr u32 SynchronizePreemptionStateSvcId{0x36};
+                if (id1 != SynchronizePreemptionStateSvcId) [[unlikely]] {
+                    LOGW("IsSvcPermitted queried for non-standard SVC ID: 0x{:X}", id1);
+                    ctx.w0 = result::InvalidCombination;
+                    return;
+                }
+
+                // SynchronizePreemptionState itself isn't implemented in this fork (SVC_NONE in
+                // SvcTable), so report it as not permitted rather than claiming access to an SVC
+                // that would fail if the game actually tried to call it.
                 out = 0;
                 break;
+            }
+
+            case InfoState::IoRegionHint:
+                // Requires a valid KIoRegion handle (created via svcCreateIoRegion, [13.0.0+]).
+                // CreateIoRegion/MapIoRegion/UnmapIoRegion are all unimplemented in this fork
+                // (SVC_NONE in SvcTable), so no such handle can ever legitimately exist here.
+                LOGW("IoRegionHint queried with handle: 0x{:X} (KIoRegion is unimplemented)", handle);
+                ctx.w0 = result::InvalidHandle;
+                return;
+
             
             case InfoState::HeapRegionBaseAddr:
                 out = reinterpret_cast<u64>(state.process->memory.heap.guest.data());
