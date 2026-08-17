@@ -30,10 +30,17 @@ namespace skyline::kernel::svc {
         size_t heapCurrSize{state.process->memory.processHeapSize};
         u8 *heapBaseAddr{state.process->memory.heap.guest.data()};
 
-        if (heapCurrSize < size)
+        if (heapCurrSize < size) {
             state.process->memory.MapHeapMemory(span<u8>{heapBaseAddr + heapCurrSize, size - heapCurrSize});
-        else if (size < heapCurrSize)
-            state.process->memory.UnmapMemory(span<u8>{heapBaseAddr + size, heapCurrSize - size});
+        } else if (size < heapCurrSize) {
+            if (!state.process->memory.UnmapMemory(span<u8>{heapBaseAddr + size, heapCurrSize - size})) [[unlikely]] {
+                ctx.w0 = result::InvalidState;
+                ctx.x1 = 0;
+
+                LOGW("Cannot shrink heap while part of it is IPC-locked: {} - {} (0x{:X} bytes)", fmt::ptr(heapBaseAddr + size), fmt::ptr(heapBaseAddr + heapCurrSize), heapCurrSize - size);
+                return;
+            }
+        }
 
         state.process->memory.processHeapSize = size;
 
@@ -71,14 +78,13 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        auto chunk{state.process->memory.GetChunk(address).value()};
-        if (!chunk.second.state.permissionChangeAllowed) [[unlikely]] {
+        // Validates every chunk in the range (not just the first) and applies the new permission atomically
+        // under a single lock; also rejects chunks currently IPC-locked so permissions can't change mid-transfer
+        if (!state.process->memory.SetRegionPermissionIfAllowed(span<u8>(address, size), newPermission)) [[unlikely]] {
             ctx.w0 = result::InvalidState;
-            LOGW("Permission change not allowed for chunk at: {}, state: 0x{:X}", chunk.first, chunk.second.state.value);
+            LOGW("Permission change not allowed for one or more chunks in range: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
             return;
         }
-
-        state.process->memory.SetRegionPermission(span<u8>(address, size), newPermission);
 
         LOGD("Set permission to {}{}{} at {} - {} (0x{:X} bytes)", newPermission.r ? 'R' : '-', newPermission.w ? 'W' : '-', newPermission.x ? 'X' : '-', fmt::ptr(address), fmt::ptr(address + size), size);
         ctx.w0 = Result{};
@@ -105,40 +111,59 @@ namespace skyline::kernel::svc {
             return;
         }
        
-        constexpr u8 UnimplementedAttributeBit{0x10};
-        u8 rawMask{static_cast<u8>(ctx.w2 & ~UnimplementedAttributeBit)};
-        u8 rawValue{static_cast<u8>(ctx.w3 & ~UnimplementedAttributeBit)};
+        // The only bits userspace can toggle via SetMemoryAttribute are 'Uncached' and 'PermissionLocked'
+        // (confirmed against Eden's real KMemoryAttribute::SetMask); 'IpcLocked' and 'DeviceShared' are
+        // read-only, 'Borrowed' is fixed per chunk. 'mask' only needs to be a SUBSET of {Uncached,
+        // PermissionLocked}: an empty mask (0) is a deliberate, valid no-op that real titles rely on
+        // (e.g. ANTONBLAST calls svcSetMemoryAttribute(addr, size, 0, 0)).
+        memory::MemoryAttribute mask{static_cast<u8>(ctx.w2)};
+        memory::MemoryAttribute value{static_cast<u8>(ctx.w3)};
 
-        // If, after removing the unimplemented bit, there is nothing left to change,
-        // treat it as a successful no-op instead of an error.
-        if (rawMask == 0) [[unlikely]] {
-            LOGD("SetMemoryAttribute: only unimplemented attribute bit(s) requested (0x{:X}), treating as no-op", static_cast<u8>(ctx.w2));
-            ctx.w0 = Result{};
+        auto maskedValue{mask.value | value.value};
+        if (maskedValue != mask.value || mask.isDeviceShared || mask.isBorrowed || mask.isIpcLocked) [[unlikely]] {
+            ctx.w0 = result::InvalidCombination;
+            LOGW("'mask' invalid: 0x{:X}, 0x{:X}", mask.value, value.value);
             return;
         }
 
-        memory::MemoryAttribute mask{rawMask};
-        memory::MemoryAttribute value{rawValue};
-
-        auto maskedValue{mask.value | value.value};
-        if (maskedValue != mask.value || !mask.isUncached || mask.isDeviceShared || mask.isBorrowed || mask.isIpcLocked) [[unlikely]] {
-           ctx.w0 = result::InvalidCombination;
-            LOGW("'mask' invalid: 0x{:X}, 0x{:X}", mask.value, value.value);
-           return;
-        }
-       
-        auto chunk{state.process->memory.GetChunk(address).value()};
-
-        // We only check the first found chunk for whatever reason.
-        if (!chunk.second.state.attributeChangeAllowed) [[unlikely]] {
-           ctx.w0 = result::InvalidState;
-            LOGW("Attribute change not allowed for chunk: {} (base: {}, size: 0x{:X}, state: 0x{:X}, type: {})", fmt::ptr(address), fmt::ptr(chunk.first), chunk.second.size, chunk.second.state.value, static_cast<u8>(chunk.second.state.type));
-           return;
+        // PermissionLocked is one-way: svcSetMemoryAttribute can only set it, never clear it. If it's in the
+        // mask, 'value' must also request it set - requesting it in the mask without setting it would mean
+        // "clear this", which isn't a valid operation (matches Eden's mask&PermissionLocked == attr&PermissionLocked check).
+        if (mask.isPermissionLocked && !value.isPermissionLocked) [[unlikely]] {
+            ctx.w0 = result::InvalidCombination;
+            LOGW("'mask' requests clearing PermissionLocked, which isn't allowed: 0x{:X}, 0x{:X}", mask.value, value.value);
+            return;
         }
 
-        state.process->memory.SetRegionCpuCaching(span<u8>{address, size}, value.isUncached);
+        if (mask.isUncached) {
+            // Validates every chunk in the range and applies the new CPU caching state atomically under a
+            // single lock, so no other thread can unmap/remap the region between the check and the write.
+            if (!state.process->memory.SetRegionCpuCachingIfAllowed(span<u8>{address, size}, value.isUncached)) [[unlikely]] {
+                ctx.w0 = result::InvalidState;
+                LOGW("Attribute change not allowed for one or more chunks in range: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
+                return;
+            }
 
-        LOGD("Set CPU caching to {} at {} - {} (0x{:X} bytes)", static_cast<bool>(value.isUncached), fmt::ptr(address), fmt::ptr(address + size), size);
+            LOGD("Set CPU caching to {} at {} - {} (0x{:X} bytes)", static_cast<bool>(value.isUncached), fmt::ptr(address), fmt::ptr(address + size), size);
+        }
+
+        if (mask.isPermissionLocked) {
+            // Only reached when value.isPermissionLocked is also true (enforced above), so this always locks.
+            if (!state.process->memory.SetRegionPermissionLockedIfAllowed(span<u8>{address, size})) [[unlikely]] {
+                ctx.w0 = result::InvalidState;
+                LOGW("Permission lock not allowed for one or more chunks in range: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
+                return;
+            }
+
+            LOGD("Locked permission at {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
+        }
+
+        if (!mask.isUncached && !mask.isPermissionLocked) {
+            // Empty mask: nothing was requested to change, so this is a no-op by definition - don't touch
+            // the chunk's attributes or even require attributeChangeAllowed, matching real hardware behavior.
+            LOGD("SetMemoryAttribute: empty mask, no-op at {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
+        }
+
         ctx.w0 = Result{};
     }
 
@@ -213,8 +238,17 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        state.process->memory.SvcUnmapMemory(span<u8>{source, size}, span<u8>{destination, size});
-        state.process->memory.UnmapMemory(span<u8>{destination, size});
+        if (!state.process->memory.SvcUnmapMemory(span<u8>{source, size}, span<u8>{destination, size})) [[unlikely]] {
+            ctx.w0 = result::InvalidState;
+            LOGW("Cannot unmap while destination range is IPC-locked: {} - {} (0x{:X} bytes)", fmt::ptr(destination), fmt::ptr(destination + size), size);
+            return;
+        }
+
+        if (!state.process->memory.UnmapMemory(span<u8>{destination, size})) [[unlikely]] {
+            ctx.w0 = result::InvalidState;
+            LOGW("Cannot finish unmap while destination range is IPC-locked: {} - {} (0x{:X} bytes)", fmt::ptr(destination), fmt::ptr(destination + size), size);
+            return;
+        }
 
         LOGD("Unmapped range {} - {} to {} - {} (Size: 0x{:X} bytes)", fmt::ptr(destination), fmt::ptr(destination + size), source, source + size, size);
         ctx.w0 = Result{};
@@ -1174,7 +1208,11 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        state.process->memory.UnmapMemory(span<u8>{address, size});
+        if (!state.process->memory.UnmapMemory(span<u8>{address, size})) [[unlikely]] {
+            ctx.w0 = result::InvalidState;
+            LOGW("Cannot unmap physical memory while it is IPC-locked: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
+            return;
+        }
 
         LOGD("Unmapped physical memory at {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
         ctx.w0 = Result{};
