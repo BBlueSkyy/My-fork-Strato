@@ -91,32 +91,50 @@ namespace skyline::soc::gm20b::engine {
     void MaxwellDma::HandleSplitCopy(TranslatedAddressRange srcMappings, TranslatedAddressRange dstMappings, size_t srcSize, size_t dstSize, auto copyCallback) {
         bool isSrcSplit{};
         u8 *src{srcMappings.front().data()}, *dst{dstMappings.front().data()};
+
         if (srcMappings.size() != 1) {
-            if (copyCache.size() < srcSize)
-                copyCache.resize(srcSize);
+            size_t mappedSize{};
+            for (const auto &mapping : srcMappings)
+                mappedSize += mapping.size();
 
-            src = copyCache.data();
-            channelCtx.asCtx->gmmu.Read(src, u64{*registers.offsetIn}, srcSize);
-
-            isSrcSplit = true;
+        if (mappedSize < srcSize) [[unlikely]] {
+            LOGW("MaxwellDma: Source range 0x{:X} (expected: 0x{:X} bytes) is only partially mapped (0x{:X} bytes available), aborting DMA copy to avoid an out-of-bounds read", u64{*registers.offsetIn}, srcSize, mappedSize);
+            return;
         }
-        if (dstMappings.size() != 1) {
-            size_t offset{isSrcSplit ? srcSize : 0};
 
-            if (copyCache.size() < (dstSize + offset))
+        if (copyCache.size() < srcSize)
+            copyCache.resize(srcSize);
+
+        src = copyCache.data();
+        channelCtx.asCtx->gmmu.Read(src, u64{*registers.offsetIn}, srcSize);
+
+        isSrcSplit = true;
+    }
+    if (dstMappings.size() != 1) {
+        size_t mappedSize{};
+        for (const auto &mapping : dstMappings)
+            mappedSize += mapping.size();
+
+        if (mappedSize < dstSize) [[unlikely]] {
+            LOGW("MaxwellDma: Destination range 0x{:X} (expected: 0x{:X} bytes) is only partially mapped (0x{:X} bytes available), aborting DMA copy to avoid an out-of-bounds write", u64{*registers.offsetOut}, dstSize, mappedSize);
+            return;
+        }
+
+        size_t offset{isSrcSplit ? srcSize : 0};
+
+        if (copyCache.size() < (dstSize + offset))
             copyCache.resize(dstSize + offset);
 
-            dst = copyCache.data() + offset;
+        dst = copyCache.data() + offset;
 
-            // If the destination is not entirely filled by the copy we copy it's current state in the cache to prevent clearing of other data.
-            if (registers.launchDma->dstMemoryLayout == Registers::LaunchDma::MemoryLayout::BlockLinear)
-                channelCtx.asCtx->gmmu.Read(dst, u64{*registers.offsetOut}, dstSize);
-        }
+        if (registers.launchDma->dstMemoryLayout == Registers::LaunchDma::MemoryLayout::BlockLinear)
+            channelCtx.asCtx->gmmu.Read(dst, u64{*registers.offsetOut}, dstSize);
+    }
 
-        copyCallback(src, dst);
+    copyCallback(src, dst);
 
-        if (dstMappings.size() != 1)
-            channelCtx.asCtx->gmmu.Write(u64{*registers.offsetOut}, dst, dstSize);
+    if (dstMappings.size() != 1)
+        channelCtx.asCtx->gmmu.Write(u64{*registers.offsetOut}, dst, dstSize);
     }
 
     void MaxwellDma::CopyPitchToPitch() {
