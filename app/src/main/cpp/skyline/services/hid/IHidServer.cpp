@@ -68,6 +68,12 @@ namespace skyline::service::hid {
         return {};
     }
    
+    Result IHidServer::ActivateGesture(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // Takes a PID-descriptor, a s32 (sdknso always passes 1), and an AppletResourceUserId. No output.
+        // Gesture recognition isn't implemented, so this is just acknowledged like ActivateMouse/ActivateKeyboard.
+        return {};
+    }
+
     Result IHidServer::SetGestureOutputRanges(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         // Stub — cmd 92, [18.0.0+], undocumented on switchbrew.
         // Same stub used by Ryujinx, which unblocks DKCR HD.
@@ -116,6 +122,12 @@ namespace skyline::service::hid {
 
         LOGD("Npad {} Style Set Update Event Handle: 0x{:X}", id, handle);
         response.copyHandles.push_back(handle);
+        return {};
+    }
+
+    Result IHidServer::DisconnectNpad(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto id{request.Pop<NpadId>()};
+        LOGD("Disconnecting Npad {}", id);
         return {};
     }
 
