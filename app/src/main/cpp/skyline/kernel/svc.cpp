@@ -11,7 +11,13 @@
 
 namespace skyline::kernel::svc {
     void SetHeapSize(const DeviceState &state, SvcContext &ctx) {
-        u32 size{ctx.w1};
+        // FIX: 'size' used to be read as `u32 size{ctx.w1}`, truncating to the low 32 bits of the
+        // register. On real hardware svcSetHeapSize takes a 64-bit size_t passed in the full X1
+        // register -- any request >= 4GB would have silently lost its high bits here, with no trace
+        // in the log of what the game actually asked for (the truncated value just looks like a
+        // normal, smaller request). Reading the full 64-bit register instead.
+        u64 size{ctx.x1};
+        LOGD("SetHeapSize: Raw requested size (before validation): 0x{:X}", size);
 
         if (!util::IsAligned(size, 0x200000)) [[unlikely]] {
             ctx.w0 = result::InvalidSize;
@@ -1046,6 +1052,17 @@ namespace skyline::kernel::svc {
                 break;
 
             case InfoState::TotalMemoryAvailable:
+                // REVERTED: an earlier attempt changed this to report
+                // min(totalPhysicalMemory, processHeapSize) -- i.e. only what's actually been
+                // committed via svcSetHeapSize so far -- instead of the full reserved Heap Region.
+                // That broke titles (e.g. ANTONBLAST) whose SDK queries TotalMemoryAvailable during
+                // its initial memory negotiation, *before* the first SetHeapSize call: processHeapSize
+                // starts at 0, so the game computed heapSize = TotalMemoryAvailable - systemReserve,
+                // i.e. 0 - reserve, which underflows to a huge/negative size_t and gets rejected by
+                // SetHeapSize's alignment/bounds check, causing the game to self-abort via
+                // SetTerminateResult. TotalMemoryAvailable represents the process's total memory
+                // *budget*, not how much of it has been requested so far, so heap.size() (the full
+                // reserved region) is the correct value here.
                 out = std::min(totalPhysicalMemory, state.process->memory.heap.size());
                 break;
 
@@ -1095,6 +1112,8 @@ namespace skyline::kernel::svc {
                 break;
 
             case InfoState::TotalMemoryAvailableWithoutSystemResource:
+                // REVERTED: same reasoning as TotalMemoryAvailable above -- use the full reserved
+                // Heap Region (heap.size()), not the committed-so-far processHeapSize.
                 out = std::min(totalPhysicalMemory, state.process->memory.heap.size()) - state.process->npdm.meta.systemResourceSize;
                 break;
 
