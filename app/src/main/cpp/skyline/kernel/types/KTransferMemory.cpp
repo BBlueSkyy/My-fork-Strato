@@ -70,11 +70,13 @@ namespace skyline::kernel::type {
                 state.process->memory.Reserve(map);
                 break;
             case memory::MemoryType::Unmapped:
-                state.process->memory.UnmapMemory(map);
+                if (!state.process->memory.UnmapMemory(map)) [[unlikely]]
+                    LOGW("KTransferMemory::Unmap: UnmapMemory rejected (IPC-locked?) restoring Unmapped state at: {} (0x{:X} bytes) - tracking may be desynced", fmt::ptr(map.data()), map.size());
                 break;
             default:
                 LOGW("Unmapping KTransferMemory with incompatible state: (0x{:X})", originalMapping.state.value);
-                state.process->memory.UnmapMemory(map); // Fail safe rather than leaving stale tracking behind
+                if (!state.process->memory.UnmapMemory(map)) [[unlikely]] // Fail safe rather than leaving stale tracking behind
+                    LOGW("KTransferMemory::Unmap: UnmapMemory rejected (IPC-locked?) in fail-safe path at: {} (0x{:X} bytes) - tracking may be desynced", fmt::ptr(map.data()), map.size());
         }
         map = state.process->memory.GetHostSpan(map);
         std::memcpy(map.data(), host.data(), map.size());
@@ -113,11 +115,13 @@ namespace skyline::kernel::type {
                     state.process->memory.Reserve(guest);
                     break;
                 case memory::MemoryType::Unmapped:
-                    state.process->memory.UnmapMemory(guest);
+                    if (!state.process->memory.UnmapMemory(guest)) [[unlikely]]
+                        LOGW("~KTransferMemory: UnmapMemory rejected (IPC-locked?) restoring Unmapped state at: {} (0x{:X} bytes) - tracking may be desynced", fmt::ptr(guest.data()), guest.size());
                     break;
                 default:
                     LOGW("Unmapping KTransferMemory with incompatible state: (0x{:X})", originalMapping.state.value);
-                    state.process->memory.UnmapMemory(guest); // Fail safe rather than leaving stale tracking behind
+                    if (!state.process->memory.UnmapMemory(guest)) [[unlikely]] // Fail safe rather than leaving stale tracking behind
+                        LOGW("~KTransferMemory: UnmapMemory rejected (IPC-locked?) in fail-safe path at: {} (0x{:X} bytes) - tracking may be desynced", fmt::ptr(guest.data()), guest.size());
             }
             std::memcpy(guest.data(), host.data(), guest.size());
         }
