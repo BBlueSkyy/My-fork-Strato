@@ -122,37 +122,25 @@ namespace skyline::kernel {
     }
 
     void MemoryManager::ForeachChunkInRange(span<u8> memory, auto editCallback) {
-        auto chunkBase{chunks.lower_bound(memory.data())};
-        if (memory.data() < chunkBase->first)
-            --chunkBase;
-
+        // editCallback typically calls MapInternal, which mutates `chunks` (insert/erase/merge). A std::map
+        // iterator can be invalidated by that mutation if its own node is erased/split, so we must never
+        // reuse an iterator across an editCallback call - instead, re-query `chunks` fresh on every step.
+        u8 *addr{memory.data()};
         size_t sizeLeft{memory.size()};
 
-        if (chunkBase->first < memory.data()) [[unlikely]] {
-            size_t chunkSize{std::min<size_t>(chunkBase->second.size - (static_cast<size_t>(memory.data() - chunkBase->first)), memory.size())};
+        while (sizeLeft) {
+            auto chunkBase{chunks.lower_bound(addr)};
+            if (addr < chunkBase->first)
+                --chunkBase;
 
-            std::pair<u8 *, ChunkDescriptor> temp{memory.data(), chunkBase->second};
+            size_t chunkSize{std::min<size_t>(chunkBase->second.size - static_cast<size_t>(addr - chunkBase->first), sizeLeft)};
+
+            std::pair<u8 *, ChunkDescriptor> temp{addr, chunkBase->second};
             temp.second.size = chunkSize;
             editCallback(temp);
 
-            ++chunkBase;
+            addr += chunkSize;
             sizeLeft -= chunkSize;
-        }
-
-        while (sizeLeft) {
-            if (sizeLeft < chunkBase->second.size) {
-                std::pair<u8 *, ChunkDescriptor> temp(*chunkBase);
-                temp.second.size = sizeLeft;
-                editCallback(temp);
-                break;
-            } else [[likely]] {
-                std::pair<u8 *, ChunkDescriptor> temp(*chunkBase);
-
-                editCallback(temp);
-
-                sizeLeft = sizeLeft - chunkBase->second.size;
-                ++chunkBase;
-            }
         }
     }
 
@@ -418,6 +406,78 @@ namespace skyline::kernel {
         });
     }
 
+    bool MemoryManager::SetRegionCpuCachingIfAllowed(span<u8> memory, bool value) {
+        std::unique_lock lock{mutex};
+
+        // First pass: read-only, bail out without modifying anything if any chunk in the range
+        // disallows attribute changes (this includes gaps, which are represented as explicit
+        // Unmapped chunks whose attributeChangeAllowed is always false)
+        bool allowed{true};
+        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+            if (!desc.second.state.attributeChangeAllowed) [[unlikely]] {
+                allowed = false;
+                LOGW("SetRegionCpuCachingIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which doesn't allow attribute changes", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
+            }
+        });
+
+        if (!allowed) [[unlikely]]
+            return false;
+
+        // Second pass: only reached if the entire range passed validation, still under the same lock
+        ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+            desc.second.attributes.isUncached = value;
+            MapInternal(desc);
+        });
+
+        return true;
+    }
+
+    bool MemoryManager::SetRegionPermissionLockedIfAllowed(span<u8> memory) {
+        std::unique_lock lock{mutex};
+
+        bool allowed{true};
+        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+            if (!desc.second.state.attributeChangeAllowed) [[unlikely]] {
+                allowed = false;
+                LOGW("SetRegionPermissionLockedIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which doesn't allow attribute changes", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
+            }
+        });
+
+        if (!allowed) [[unlikely]]
+            return false;
+
+        ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+            desc.second.attributes.isPermissionLocked = true;
+            MapInternal(desc);
+        });
+
+        return true;
+    }
+
+    void MemoryManager::LockRegionForIpc(span<u8> memory) {
+        std::unique_lock lock{mutex};
+
+        ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+            desc.second.ipcLockCount++;
+            desc.second.attributes.isIpcLocked = true;
+            MapInternal(desc);
+        });
+    }
+
+    void MemoryManager::UnlockRegionForIpc(span<u8> memory) {
+        std::unique_lock lock{mutex};
+
+        ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+            if (desc.second.ipcLockCount > 0) [[likely]]
+                desc.second.ipcLockCount--;
+            else
+                LOGW("UnlockRegionForIpc: ipcLockCount underflow at {} (0x{:X} bytes)", fmt::ptr(desc.first), desc.second.size);
+
+            desc.second.attributes.isIpcLocked = desc.second.ipcLockCount != 0;
+            MapInternal(desc);
+        });
+    }
+
     void MemoryManager::SetRegionPermission(span<u8> memory, memory::Permission permission) {
         std::unique_lock lock{mutex};
 
@@ -425,6 +485,29 @@ namespace skyline::kernel {
             desc.second.permission = permission;
             MapInternal(desc);
         });
+    }
+
+    bool MemoryManager::SetRegionPermissionIfAllowed(span<u8> memory, memory::Permission permission) {
+        std::unique_lock lock{mutex};
+
+        // Read-only pass: covers the entire range (fixing the previous single-chunk-only check) and also
+        // rejects chunks currently in use as an IPC buffer, so permissions can't change mid-transfer, and
+        // chunks that had their permission locked via svcSetMemoryAttribute's PermissionLocked bit
+        bool allowed{true};
+        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+            if (!desc.second.state.permissionChangeAllowed || desc.second.ipcLockCount != 0 || desc.second.attributes.isPermissionLocked) [[unlikely]]
+                allowed = false;
+        });
+
+        if (!allowed) [[unlikely]]
+            return false;
+
+        ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+            desc.second.permission = permission;
+            MapInternal(desc);
+        });
+
+        return true;
     }
 
     std::optional<std::pair<u8 *, ChunkDescriptor>> MemoryManager::GetChunk(u8 *addr) {
@@ -531,8 +614,17 @@ namespace skyline::kernel {
             }));
     }
 
-    __attribute__((always_inline)) void MemoryManager::UnmapMemory(span<u8> memory) {
+    __attribute__((always_inline)) bool MemoryManager::UnmapMemory(span<u8> memory) {
         std::unique_lock lock{mutex};
+
+        bool locked{};
+        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+            if (desc.second.ipcLockCount != 0) [[unlikely]]
+                locked = true;
+        });
+
+        if (locked) [[unlikely]]
+            return false;
 
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) {
             if (desc.second.state != memory::states::Unmapped)
@@ -545,6 +637,8 @@ namespace skyline::kernel {
                 .permission = {false, false, false},
                 .state = memory::states::Unmapped
             }));
+
+        return true;
     }
 
     __attribute__((always_inline)) void MemoryManager::FreeMemory(span<u8> memory) {
@@ -587,7 +681,7 @@ namespace skyline::kernel {
         });
     }
 
-    void MemoryManager::SvcUnmapMemory(span<u8> source, span<u8> destination) {
+    bool MemoryManager::SvcUnmapMemory(span<u8> source, span<u8> destination) {
         std::unique_lock lock{mutex};
 
         auto dstChunk = chunks.lower_bound(destination.data());
@@ -597,6 +691,9 @@ namespace skyline::kernel {
             ++dstChunk;
 
         if ((destination.data() + destination.size()) > dstChunk->first) [[likely]] {
+            if (dstChunk->second.ipcLockCount != 0) [[unlikely]]
+                return false;
+
             ForeachChunkInRange(span<u8>{source.data() + (dstChunk->first - destination.data()), dstChunk->second.size}, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
                 desc.second.permission = dstChunk->second.permission;
                 desc.second.attributes.isBorrowed = false;
@@ -608,6 +705,8 @@ namespace skyline::kernel {
             auto destinationOffset{dstChunk->first - destination.data()};
             std::memcpy(sourceHost.data() + destinationOffset, dstChunkHost.data(), dstChunkHost.size());
         }
+
+        return true;
     }
 
     void MemoryManager::AddRef(std::shared_ptr<type::KMemory> ptr) {

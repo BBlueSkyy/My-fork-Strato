@@ -209,6 +209,33 @@ namespace skyline::service {
         }
     }
 
+    namespace {
+        /**
+         * @brief Marks all of an IPC request's buffers as IPC-locked for the duration of the request via RAII,
+         * guaranteeing the lock is released even if a service handler throws
+         */
+        class IpcBufferLockGuard {
+          private:
+            kernel::MemoryManager &memory;
+            const ipc::IpcRequest &request;
+
+          public:
+            IpcBufferLockGuard(kernel::MemoryManager &memory, const ipc::IpcRequest &request) : memory(memory), request(request) {
+                for (const auto &buf : request.inputBuf)
+                    memory.LockRegionForIpc(buf);
+                for (const auto &buf : request.outputBuf)
+                    memory.LockRegionForIpc(buf);
+            }
+
+            ~IpcBufferLockGuard() {
+                for (const auto &buf : request.inputBuf)
+                    memory.UnlockRegionForIpc(buf);
+                for (const auto &buf : request.outputBuf)
+                    memory.UnlockRegionForIpc(buf);
+            }
+        };
+    }
+
     void ServiceManager::SyncRequestHandler(KHandle handle) {
         TRACE_EVENT("kernel", "ServiceManager::SyncRequestHandler");
         auto session{state.process->GetHandle<type::KSession>(handle)};
@@ -219,6 +246,10 @@ namespace skyline::service {
         if (session->IsOpen()) {
             ipc::IpcRequest request(session->isDomain, state);
             ipc::IpcResponse response(state);
+
+            // Marks every input/output buffer of this request as IPC-locked for the scope of the request,
+            // so a concurrent SetMemoryAttribute/UnmapMemory/etc. on another thread can't race the transfer
+            IpcBufferLockGuard bufferLock{state.process->memory, request};
 
             switch (request.header->type) {
                 case ipc::CommandType::Request:
