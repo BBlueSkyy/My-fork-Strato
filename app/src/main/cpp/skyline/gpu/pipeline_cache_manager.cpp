@@ -34,7 +34,10 @@ namespace skyline::gpu {
             if (writeQueue.empty())
                 stream.flush();
 
-            writeCondition.wait(lock, [this] { return !writeQueue.empty(); });
+            writeCondition.wait(lock, [this] { return !writeQueue.empty() || stop; });
+            if (writeQueue.empty() && stop)
+                break;
+
             auto bundle{std::move(writeQueue.front())};
             writeQueue.pop();
             lock.unlock();
@@ -107,6 +110,16 @@ namespace skyline::gpu {
         // Merge any staging changes into the main file before starting the writer thread
         MergeStaging();
         writerThread = std::thread(&PipelineCacheManager::Run, this);
+    }
+
+    PipelineCacheManager::~PipelineCacheManager() {
+        {
+            std::scoped_lock lock{writeMutex};
+            stop = true;
+        }
+        writeCondition.notify_one();
+        if (writerThread.joinable())
+            writerThread.join();
     }
 
     void PipelineCacheManager::QueueWrite(std::unique_ptr<interconnect::PipelineStateBundle> bundle) {
