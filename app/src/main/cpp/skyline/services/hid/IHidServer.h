@@ -92,6 +92,12 @@ namespace skyline::service::hid {
          */
         Result SetGestureOutputRanges(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         /**
+         * @brief Activates the gesture input feature
+         * @url https://switchbrew.org/wiki/HID_services#ActivateGesture
+         */
+        Result ActivateGesture(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Sets the style of controllers supported
          * @url https://switchbrew.org/wiki/HID_services#SetSupportedNpadStyleSet
          */
