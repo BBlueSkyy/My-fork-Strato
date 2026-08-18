@@ -7,6 +7,7 @@
 #include "player_select_applet.h"
 #include "web_applet.h"
 #include "swkbd/software_keyboard_applet.h"
+#include "mii_edit_applet.h"
 
 namespace skyline::applet {
     std::shared_ptr<service::am::IApplet> CreateApplet(
@@ -20,6 +21,8 @@ namespace skyline::applet {
                 return std::make_shared<ControllerApplet>(state, manager, std::move(onAppletStateChanged), std::move(onNormalDataPushFromApplet), std::move(onInteractiveDataPushFromApplet), appletMode);
             case AppletId::LibraryAppletPlayerSelect:
                 return std::make_shared<PlayerSelectApplet>(state, manager, std::move(onAppletStateChanged), std::move(onNormalDataPushFromApplet), std::move(onInteractiveDataPushFromApplet), appletMode);
+            case AppletId::LibraryAppletMiiEdit:
+                return std::make_shared<MiiEditApplet>(state, manager, std::move(onAppletStateChanged), std::move(onNormalDataPushFromApplet), std::move(onInteractiveDataPushFromApplet), appletMode); 
             case AppletId::LibraryAppletSwkbd:
                 return std::make_shared<swkbd::SoftwareKeyboardApplet>(state, manager, std::move(onAppletStateChanged), std::move(onNormalDataPushFromApplet), std::move(onInteractiveDataPushFromApplet), appletMode);
             case AppletId::LibraryAppletError:
