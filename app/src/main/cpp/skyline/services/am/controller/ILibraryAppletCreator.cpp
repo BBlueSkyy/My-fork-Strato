@@ -15,6 +15,9 @@ namespace skyline::service::am {
     Result ILibraryAppletCreator::CreateLibraryApplet(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto appletId{request.Pop<skyline::applet::AppletId>()};
         auto appletMode{request.Pop<applet::LibraryAppletMode>()};
+       
+        LOGD("CreateLibraryApplet: appletId = {} (0x{:X}), mode = 0x{:X}", ToString(appletId), static_cast<u32>(appletId), static_cast<u32>(appletMode));
+      
         manager.RegisterService(SRVREG(ILibraryAppletAccessor, appletId, appletMode), session, response);
         return {};
     }
