@@ -40,4 +40,10 @@ namespace skyline::service::account {
         openedUsers->push_back(constant::DefaultUserId);
         return {};
     }
-}
+    
+    Result IManagerForApplication::GetNintendoAccountUserResourceCacheForApplication(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u64>(0); // No Nintendo Account linked to this user.
+        return {};
+    }
+}       
+    
