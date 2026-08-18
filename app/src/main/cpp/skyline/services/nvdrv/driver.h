@@ -20,14 +20,20 @@ namespace skyline::service::nvdrv {
       private:
         const DeviceState &state;
 
+      public:
+        Core core; //!< The core global state object of nvdrv that is accessed by devices
+        //!< Must be declared before `deviceMutex`/`devices`: members are destroyed in reverse
+        //!< declaration order, and devices such as GpuChannel call back into `core` (e.g.
+        //!< SyncpointManager::ReleaseSyncpoint) from their own destructors. If `core` were
+        //!< destroyed first, that call would lock an already-destroyed mutex.
+
+      private:
         std::shared_mutex deviceMutex; //!< Protects access to `devices`
         std::unordered_map<FileDescriptor, std::unique_ptr<device::NvDevice>> devices;
 
         friend device::nvhost::AsGpu; // For channel address space binding
 
       public:
-        Core core; //!< The core global state object of nvdrv that is accessed by devices
-
         Driver(const DeviceState &state);
 
         /**
