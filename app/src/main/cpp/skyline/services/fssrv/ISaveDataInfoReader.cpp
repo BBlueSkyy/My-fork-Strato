@@ -11,7 +11,7 @@ namespace skyline::service::fssrv {
      */
     struct __attribute__((packed)) SaveDataInfo {
         u64 saveDataId; //!< The ID of the savedata
-        SaveDataSpaceId spaceId; //!< The storage location of the savedata
+        u8 spaceId; //!< The storage location of the savedata, matches SaveDataSpaceId but is only 1 byte on the wire (unlike Skyline's u64-backed enum)
         SaveDataType type; //!< The type of savedata
         u8 _pad0_[6];
         account::UserId userId; //!< The user ID the savedata belongs to
