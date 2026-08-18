@@ -91,11 +91,6 @@ namespace skyline::service::hid {
          * @url https://switchbrew.org/wiki/HID_services#hid (cmd 92, [18.0.0+], sem doc oficial)
          */
         Result SetGestureOutputRanges(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-        /**
-         * @brief Activates the gesture input feature
-         * @url https://switchbrew.org/wiki/HID_services#ActivateGesture
-         */
-        Result ActivateGesture(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
          * @brief Sets the style of controllers supported
