@@ -421,7 +421,7 @@ namespace skyline::soc::gm20b {
 
     ChannelGpfifo::~ChannelGpfifo() {
         if (thread.joinable()) {
-            pthread_kill(thread.native_handle(), SIGINT);
+            gpEntries.Close();
             thread.join();
         }
     }
