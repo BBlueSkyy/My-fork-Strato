@@ -3,6 +3,7 @@
 
 #include "applet_creator.h"
 #include "controller_applet.h"
+#include "data_erase_applet.h"
 #include "error_applet.h"
 #include "player_select_applet.h"
 #include "web_applet.h"
@@ -30,6 +31,8 @@ namespace skyline::applet {
             case AppletId::LibraryAppletOfflineWeb:
             case AppletId::LibraryAppletShop:
                 return std::make_shared<WebApplet>(state, manager, std::move(onAppletStateChanged), std::move(onNormalDataPushFromApplet), std::move(onInteractiveDataPushFromApplet), appletMode);
+            case AppletId::LibraryAppletDataErase:
+                return std::make_shared<DataEraseApplet>(state, manager, std::move(onAppletStateChanged), std::move(onNormalDataPushFromApplet), std::move(onInteractiveDataPushFromApplet), appletMode);
             default:
                 throw exception{"Unimplemented Applet: 0x{:X} ({})", static_cast<u32>(appletId), ToString(appletId)};
         }
