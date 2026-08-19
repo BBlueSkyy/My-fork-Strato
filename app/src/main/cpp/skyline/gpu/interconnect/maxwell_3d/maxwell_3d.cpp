@@ -408,6 +408,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         indirectBufferView.GetBuffer()->BlockSequencedCpuBackingWrites();
 
+        // FIX: register a read hazard for the indirect buffer, the same way vertex/index buffer
+        // reads already do inside PrepareDraw()/activeState.Update(). Without this, prior GPU
+        // writes to this buffer (e.g. a compute dispatch that generates draw commands for
+        // GPU-driven/indirect rendering) have no barrier guaranteeing visibility before
+        // drawIndexedIndirect()/drawIndirect() reads them below -- the GPU can read stale/
+        // partially-written indirect command data (garbage indexCount/firstIndex baked into the
+        // buffer), which manifests as VK_ERROR_DEVICE_LOST with no corresponding CPU-visible
+        // "implausible parameters" warning, since the corrupted values never pass through this
+        // function as arguments.
+        indirectBufferView.GetBuffer()->PopulateReadBarrier(vk::PipelineStageFlagBits::eDrawIndirect, srcStageMask, dstStageMask);
+
         auto stateUpdater{builder.Build()};
 
         /**
