@@ -1,12 +1,13 @@
-name: Build LLDB
+# A workflow to verify the build on every push to the master branch
+name: Build
 
 on:
-  workflow_dispatch:
+  push: 
+    branches: [ master ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Git Checkout
         uses: actions/checkout@v4
@@ -31,34 +32,23 @@ jobs:
       - name: Install Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: 'temurin' # Temurin should come pre-installed on GitHub-hosted runners
           java-version: '17'
 
       - name: Install Ninja Build
         run: |
-          sudo apt-get update
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
-      - name: Build DevReldDebug
+      - name: Android Assemble
         env:
-          CMAKE_C_COMPILER_LAUNCHER: ccache
-          CMAKE_CXX_COMPILER_LAUNCHER: ccache
-          CCACHE_COMPILERCHECK: string:${{ env.NDK_VERSION }}
-        run: ./gradlew --no-daemon --stacktrace --build-cache --parallel --configure-on-demand assembleDevReldDebug
-
+          CMAKE_C_COMPILER_LAUNCHER: "ccache"
+          CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
+          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
+        run: ./gradlew --no-daemon --stacktrace --build-cache --parallel --configure-on-demand assembleMainlineRelease
+           
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Strato-DevReldDebug-APK
-          path: app/build/outputs/apk/dev/reldebug/*.apk
-
-      - name: Upload native build files
-        uses: actions/upload-artifact@v4
-        with:
-          name: Strato-DevReldDebug-Native
-          path: |
-            app/build/intermediates/cxx/**
-            app/build/intermediates/merged_native_libs/**
-            app/build/intermediates/stripped_native_libs/**
-          if-no-files-found: warn
+          name: Strato-APK
+          path: app/build/outputs/apk/mainline/release/*.apk
