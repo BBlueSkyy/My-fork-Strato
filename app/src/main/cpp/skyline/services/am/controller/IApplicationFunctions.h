@@ -65,6 +65,15 @@ namespace skyline::service::am {
         Result GetSaveDataSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @brief Ensures cache storage exists for the requesting application
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#IApplicationFunctions
+         * @note Real hardware allocates disk space and reports back the target media (NAND/SD) and
+         * required size; since we don't track real storage quotas, this stubs success and echoes
+         * back the requested sizes, following the same pattern already used by EnsureSaveData
+         */
+        Result CreateCacheStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @url https://switchbrew.org/wiki/Applet_Manager_services#GetSaveDataSizeMax
          */
         Result GetSaveDataSizeMax(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
@@ -164,6 +173,7 @@ namespace skyline::service::am {
             SFUNC(0x16, IApplicationFunctions, SetTerminateResult),
             SFUNC(0x17, IApplicationFunctions, GetDisplayVersion),
             SFUNC(0x1A, IApplicationFunctions, GetSaveDataSize),
+            SFUNC(0x1B, IApplicationFunctions, CreateCacheStorage),
             SFUNC(0x1C, IApplicationFunctions, GetSaveDataSizeMax),
             SFUNC(0x28, IApplicationFunctions, NotifyRunning),
             SFUNC(0x32, IApplicationFunctions, GetPseudoDeviceId),
