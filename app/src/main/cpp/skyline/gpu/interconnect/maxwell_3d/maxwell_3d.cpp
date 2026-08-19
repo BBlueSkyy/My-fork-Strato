@@ -297,6 +297,20 @@ namespace skyline::gpu::interconnect::maxwell3d {
     void Maxwell3D::Draw(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, u32 count, u32 first, u32 instanceCount, u32 vertexOffset, u32 firstInstance) {
         TRACE_EVENT("gpu", "Draw", "indexed", indexed, "count", count, "instanceCount", instanceCount);
 
+        // Sanity check against wildly corrupted parameters (e.g. an unsigned underflow upstream
+        // producing a count near UINT32_MAX, as observed with values around 4.28-4.29 billion).
+        // This is a coarse canary, not a precise bounds check -- it can't validate `count`
+        // against the *actual* bound index buffer size from here (that state lives in
+        // `directState`/`activeState`, whose interface isn't visible in this file). It only
+        // catches grossly implausible values before they reach drawIndexed()/draw() and take
+        // down the GPU. A tighter check comparing against the real bound index buffer size
+        // should replace/augment this once that accessor is available here.
+        constexpr u32 MaxSaneDrawCount{10'000'000};
+        if (count > MaxSaneDrawCount || first > MaxSaneDrawCount) [[unlikely]] {
+            LOGW("Maxwell3D::Draw: Discarding draw with implausible parameters (count: {}, first: {}) - likely corrupted upstream", count, first);
+            return;
+        }
+
         StateUpdateBuilder builder{*ctx.executor.allocator};
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
@@ -306,12 +320,28 @@ namespace skyline::gpu::interconnect::maxwell3d {
             count = conversion::quads::GetIndexCount(count);
             first = 0;
 
-            if (!indexed) {
-                // Use an index buffer to emulate quad lists with a triangle list input topology
-                vk::DeviceSize offset{UpdateQuadConversionBuffer(count, first)};
-                builder.SetIndexBuffer(BufferBinding{quadConversionBuffer->vkBuffer, offset}, vk::IndexType::eUint32);
-                indexed = true;
-            }
+            // Always (re)bind an index buffer sized for the *converted* triangle-list index
+            // count, regardless of whether the draw was already indexed.
+            //
+            // This used to be gated behind `if (!indexed)`. If the game had already bound its
+            // own index buffer for a quad-list draw, that buffer is sized for the original
+            // (smaller) quad index count -- not the expanded triangle count computed above. With
+            // `indexed` left `true` and the original buffer still bound, the drawIndexed() call
+            // below would read `count` indices past the end of a too-small buffer, corrupting
+            // whatever memory follows it and eventually taking down the GPU
+            // (VK_ERROR_DEVICE_LOST) on drivers/hardware that don't validate index buffer bounds.
+            //
+            // NOTE: UpdateQuadConversionBuffer()/GenerateQuadListConversionBuffer() build a
+            // *sequential* conversion pattern (0,1,2, 0,2,3, 4,5,6, 4,6,7, ...); they don't read
+            // back the game's original index buffer contents. That's correct for the `!indexed`
+            // case (vertices were already implicitly sequential). If `indexed` was `true` on
+            // entry, this fixes the out-of-bounds read/crash, but the original index *values*
+            // from the game's buffer are not preserved -- proper support for indexed quad lists
+            // would need to expand the *existing* index buffer contents instead of regenerating
+            // a sequential one. Flagging as a follow-up rather than silently accepting it.
+            vk::DeviceSize offset{UpdateQuadConversionBuffer(count, first)};
+            builder.SetIndexBuffer(BufferBinding{quadConversionBuffer->vkBuffer, offset}, vk::IndexType::eUint32);
+            indexed = true;
         }
 
         auto stateUpdater{builder.Build()};
