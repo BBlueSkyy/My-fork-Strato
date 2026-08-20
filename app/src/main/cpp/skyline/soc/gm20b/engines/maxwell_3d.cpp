@@ -123,8 +123,24 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
         }
     }
 
+    __attribute__((always_inline)) void Maxwell3D::FlushInlineIndexDraw() {
+       if (batchEnableState.inlineIndexActive) {
+           batchEnableState.inlineIndexActive = false;
+           if (!batchInlineIndex.indices.empty()) {
+               if (batchInlineIndex.indices.size() > batchInlineIndex.totalCount)
+                   batchInlineIndex.indices.resize(batchInlineIndex.totalCount);
+               if (CheckRenderEnable())
+                   interconnect.DrawWithInlineIndex(ApplyTopologyOverride(registers.begin->op), *registers.streamOutputEnable,
+                                                     span(batchInlineIndex.indices).cast<u8>(),
+                                                     type::IndexBuffer::IndexSize::TwoBytes,
+                                                     static_cast<u32>(batchInlineIndex.indices.size()), 1);
+           }
+           batchInlineIndex.Reset();
+        }
+    }
+   
     __attribute__((always_inline)) void Maxwell3D::HandleMethod(u32 method, u32 argument) {
-        if (method == ENGINE_STRUCT_OFFSET(mme, shadowRamControl)) [[unlikely]] {
+         if (method == ENGINE_STRUCT_OFFSET(mme, shadowRamControl)) [[unlikely]] {
             shadowRegisters.raw[method] = registers.raw[method] = argument;
             return;
         }
@@ -221,9 +237,27 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                         FlushDeferredDraw();
                         registers.raw[method] = argument;
                         break;
-                }
-            }
-        }
+                   }
+              } else if (batchEnableState.inlineIndexActive) {
+                switch (method) {
+                    ENGINE_STRUCT_CASE(drawInlineIndex2X16, even, {
+                        if (batchInlineIndex.firstWord && batchInlineIndex.skipFirstEven)
+                            batchInlineIndex.indices.push_back(static_cast<u16>(registers.drawInlineIndex2X16->odd));
+                        else {
+                            batchInlineIndex.indices.push_back(static_cast<u16>(registers.drawInlineIndex2X16->even));
+                            batchInlineIndex.indices.push_back(static_cast<u16>(registers.drawInlineIndex2X16->odd));
+                        }
+                        batchInlineIndex.firstWord = false;
+                        return;
+                    })
+                    default:
+                        registers.raw[method] = origRegisterValue;
+                        FlushInlineIndexDraw();
+                        registers.raw[method] = argument;
+                        break;
+                   }
+              }
+         }
 
         if (!redundant)
             dirtyManager.MarkDirty(method);
@@ -309,13 +343,26 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                 deferredDraw.instanceCount++;
                 batchEnableState.drawActive = true;
             })
+          
+            ENGINE_CASE(inlineIndex2X16Align, {
 
-            ENGINE_STRUCT_CASE(drawInlineIndex4X8, index0, {
-                throw exception("drawInlineIndex4X8 not implemented!");
+                                 batchInlineIndex.indices.clear();
+                                 batchInlineIndex.totalCount = registers.inlineIndex2X16Align->count;
+                                 batchInlineIndex.skipFirstEven = registers.inlineIndex2X16Align->startOdd;
+                                 batchInlineIndex.firstWord = true;
             })
-
+            ENGINE_STRUCT_CASE(drawInlineIndex4X8, index0, {
+                   throw exception("drawInlineIndex4X8 not implemented!");
+            })
             ENGINE_STRUCT_CASE(drawInlineIndex2X16, even, {
-                throw exception("drawInlineIndex2X16 not implemented!");
+                    if (batchInlineIndex.firstWord && batchInlineIndex.skipFirstEven)
+                        batchInlineIndex.indices.push_back(static_cast<u16>(registers.drawInlineIndex2X16->odd));
+                    else {
+                        batchInlineIndex.indices.push_back(static_cast<u16>(registers.drawInlineIndex2X16->even));
+                        batchInlineIndex.indices.push_back(static_cast<u16>(registers.drawInlineIndex2X16->odd));
+                }
+                batchInlineIndex.firstWord = false;
+                batchEnableState.inlineIndexActive = true;
             })
 
             ENGINE_STRUCT_CASE(drawZeroIndex, count, {
@@ -489,8 +536,9 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
 
     void Maxwell3D::FlushEngineState() {
         FlushDeferredDraw();
-
-        if (batchEnableState.constantBufferActive) {
+        FlushInlineIndexDraw();
+   
+            if (batchEnableState.constantBufferActive) {
             interconnect.LoadConstantBuffer(batchLoadConstantBuffer.buffer, batchLoadConstantBuffer.startOffset);
             batchEnableState.constantBufferActive = false;
             batchLoadConstantBuffer.Reset();

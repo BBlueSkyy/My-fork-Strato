@@ -26,16 +26,27 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
         gpu::interconnect::DirtyManager dirtyManager;
         gpu::interconnect::maxwell3d::Maxwell3D interconnect;
 
-        union BatchEnableState {
+     union BatchEnableState {
             u8 raw{};
-
             struct {
                 bool constantBufferActive : 1;
                 bool drawActive : 1;
-            };
-        } batchEnableState{};
+                bool inlineIndexActive : 1;
+            };     
+       } batchEnableState{};
+     
+       struct BatchInlineIndexState {
+          std::vector<u16> indices;
+          u32 totalCount{};    //!< Vem de inlineIndex2X16Align.count
+          bool skipFirstEven{}; //!< Vem de inlineIndex2X16Align.startOdd
+          bool firstWord{true};
+          void Reset() {
+              indices.clear();
+              firstWord = true;
+          }
+      } batchInlineIndex;
 
-        struct BatchLoadConstantBufferState {
+      struct BatchLoadConstantBufferState {
             std::vector<u32> buffer;
             u32 startOffset{};
 
@@ -74,6 +85,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
         type::DrawTopology ApplyTopologyOverride(type::DrawTopology beginMethodTopology);
 
         void FlushDeferredDraw();
+        void FlushInlineIndexDraw();
 
         /**
          * @brief Calls the appropriate function corresponding to a certain method with the supplied argument
