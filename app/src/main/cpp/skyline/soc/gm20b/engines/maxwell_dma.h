@@ -37,6 +37,16 @@ namespace skyline::soc::gm20b::engine {
 
         void CopyPitchToBlockLinear();
 
+        void CopyRemap1D();
+
+        void CopyRemapMultiLine();
+
+        void PerformRemap(u8 *dst, const u8 *src, size_t elementCount);
+
+        bool RemapNeedsSource();
+
+        bool RemapNeedsDestinationPreserve();
+
         void LaunchDma();
 
         void ReleaseSemaphore();
