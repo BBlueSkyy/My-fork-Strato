@@ -39,7 +39,17 @@ namespace skyline::soc::gm20b::engine {
     void MaxwellDma::DmaCopy() {
         if (registers.launchDma->multiLineEnable) {
             if (registers.launchDma->remapEnable) [[unlikely]] {
-                LOGW("Remapped DMA copies are unimplemented!");
+                // Remap is handled entirely through the GMMU read/write path (see CopyRemapMultiLine),
+                // it never touches the Vulkan-backed interconnect buffers, so we don't need to Submit() here
+                if (registers.launchDma->srcMemoryLayout == Registers::LaunchDma::MemoryLayout::Pitch &&
+                    registers.launchDma->dstMemoryLayout == Registers::LaunchDma::MemoryLayout::Pitch) {
+                    CopyRemapMultiLine();
+                } else {
+                    // TODO: BlockLinear surfaces with remap enabled (e.g. compressed texture uploads with
+                    // component padding) aren't handled yet, materialize into a linear scratch buffer via
+                    // PerformRemap() and feed it through CopyBlockLinearToPitch/CopyPitchToBlockLinear
+                    LOGW("Remapped DMA copies involving BlockLinear surfaces are unimplemented!");
+                }
                 return;
             }
 
@@ -62,29 +72,175 @@ namespace skyline::soc::gm20b::engine {
             // TODO: implement swizzled 1D copies based on VMM 'kind'
             LOGD("src: 0x{:X} dst: 0x{:X} size: 0x{:X}", u64{*registers.offsetIn}, u64{*registers.offsetOut}, *registers.lineLengthIn);
 
-            size_t dstBpp{registers.launchDma->remapEnable ? static_cast<size_t>(registers.remapComponents->NumDstComponents() * registers.remapComponents->ComponentSize()) : 1};
-
-            auto srcMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, *registers.lineLengthIn)};
-            auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, *registers.lineLengthIn * dstBpp)};
-
             if (registers.launchDma->remapEnable) [[unlikely]] {
-                // Remapped buffer clears
-                if ((registers.remapComponents->dstX == Registers::RemapComponents::Swizzle::ConstA) &&
-                    (registers.remapComponents->dstY == Registers::RemapComponents::Swizzle::ConstA) &&
-                    (registers.remapComponents->dstZ == Registers::RemapComponents::Swizzle::ConstA) &&
-                    (registers.remapComponents->dstW == Registers::RemapComponents::Swizzle::ConstA) &&
-                    (registers.remapComponents->ComponentSize() == 4)) {
+                // Fast path: a pure broadcast fill of a single 4-byte constant across the whole
+                // destination can still go through the Vulkan-backed Clear(), it's both correct
+                // and much faster than the generic GMMU-based path below for the common case of
+                // clearing a buffer/render target region.
+                auto &remap{*registers.remapComponents};
+                if ((remap.dstX == Registers::RemapComponents::Swizzle::ConstA) &&
+                    (remap.dstY == Registers::RemapComponents::Swizzle::ConstA) &&
+                    (remap.dstZ == Registers::RemapComponents::Swizzle::ConstA) &&
+                    (remap.dstW == Registers::RemapComponents::Swizzle::ConstA) &&
+                    (remap.ComponentSize() == 4)) {
+                    size_t dstSize{*registers.lineLengthIn * remap.NumDstComponents() * remap.ComponentSize()};
+                    auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, dstSize)};
                     for (auto mapping : dstMappings)
                         interconnect.Clear(mapping, *registers.remapConstA);
                 } else {
-                    LOGW("Remapped DMA copies are unimplemented!");
+                    // General case: constant fills with other components/sizes, source component
+                    // swizzles (e.g. RGB8 -> RGBA8 upload), or a mix of both
+                    CopyRemap1D();
                 }
             } else {
+                auto srcMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, *registers.lineLengthIn)};
+                auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, *registers.lineLengthIn)};
+
                 if (srcMappings.size() != 1 || dstMappings.size() != 1) [[unlikely]]
                     channelCtx.asCtx->gmmu.Copy(u64{*registers.offsetOut}, u64{*registers.offsetIn}, *registers.lineLengthIn);
                 else
                     interconnect.Copy(dstMappings.front(), srcMappings.front());
             }
+        }
+    }
+
+    bool MaxwellDma::RemapNeedsSource() {
+        auto &remap{*registers.remapComponents};
+        auto isSrc{[](Registers::RemapComponents::Swizzle swizzle) {
+            return swizzle == Registers::RemapComponents::Swizzle::SrcX ||
+                   swizzle == Registers::RemapComponents::Swizzle::SrcY ||
+                   swizzle == Registers::RemapComponents::Swizzle::SrcZ ||
+                   swizzle == Registers::RemapComponents::Swizzle::SrcW;
+        }};
+        return isSrc(remap.dstX) || isSrc(remap.dstY) || isSrc(remap.dstZ) || isSrc(remap.dstW);
+    }
+
+    bool MaxwellDma::RemapNeedsDestinationPreserve() {
+        auto &remap{*registers.remapComponents};
+        return remap.dstX == Registers::RemapComponents::Swizzle::NoWrite ||
+               remap.dstY == Registers::RemapComponents::Swizzle::NoWrite ||
+               remap.dstZ == Registers::RemapComponents::Swizzle::NoWrite ||
+               remap.dstW == Registers::RemapComponents::Swizzle::NoWrite;
+    }
+
+    /**
+     * @brief Applies the LAUNCH_DMA remap swizzle to `elementCount` elements, reading from `src`
+     * (may be `nullptr` if the swizzle table doesn't reference any source component, e.g. a pure
+     * constant fill) and writing fully swizzled elements into `dst`.
+     * @note `dst` must already contain the current destination contents if any component is NoWrite,
+     * see RemapNeedsDestinationPreserve()
+     */
+    void MaxwellDma::PerformRemap(u8 *dst, const u8 *src, size_t elementCount) {
+        auto &remap{*registers.remapComponents};
+        u8 componentSize{remap.ComponentSize()};
+        u8 numSrcComponents{remap.NumSrcComponents()};
+        u8 numDstComponents{remap.NumDstComponents()};
+
+        std::array<Registers::RemapComponents::Swizzle, 4> dstSwizzle{remap.dstX, remap.dstY, remap.dstZ, remap.dstW};
+
+        u32 constA{*registers.remapConstA};
+        u32 constB{*registers.remapConstB};
+
+        size_t srcStride{static_cast<size_t>(numSrcComponents) * componentSize};
+        size_t dstStride{static_cast<size_t>(numDstComponents) * componentSize};
+
+        for (size_t element{}; element < elementCount; element++) {
+            const u8 *srcElem{src ? src + element * srcStride : nullptr};
+            u8 *dstElem{dst + element * dstStride};
+
+            for (u8 component{}; component < numDstComponents; component++) {
+                u8 *dstComponent{dstElem + component * componentSize};
+
+                switch (dstSwizzle[component]) {
+                    case Registers::RemapComponents::Swizzle::SrcX:
+                    case Registers::RemapComponents::Swizzle::SrcY:
+                    case Registers::RemapComponents::Swizzle::SrcZ:
+                    case Registers::RemapComponents::Swizzle::SrcW: {
+                        auto srcIndex{static_cast<u8>(dstSwizzle[component])};
+                        if (srcElem && srcIndex < numSrcComponents)
+                            std::memcpy(dstComponent, srcElem + srcIndex * componentSize, componentSize);
+                        else
+                            // Reading a source component that wasn't supplied reads back as 0
+                            std::memset(dstComponent, 0, componentSize);
+                        break;
+                    }
+
+                    case Registers::RemapComponents::Swizzle::ConstA:
+                        std::memcpy(dstComponent, &constA, componentSize);
+                        break;
+
+                    case Registers::RemapComponents::Swizzle::ConstB:
+                        std::memcpy(dstComponent, &constB, componentSize);
+                        break;
+
+                    case Registers::RemapComponents::Swizzle::NoWrite:
+                        // Destination bytes are left as-is, `dst` must have been pre-populated by the caller
+                        break;
+                }
+            }
+        }
+    }
+
+    void MaxwellDma::CopyRemap1D() {
+        auto &remap{*registers.remapComponents};
+        size_t elementCount{*registers.lineLengthIn};
+        size_t dstBpp{static_cast<size_t>(remap.NumDstComponents()) * remap.ComponentSize()};
+        size_t srcBpp{static_cast<size_t>(remap.NumSrcComponents()) * remap.ComponentSize()};
+        size_t dstSize{elementCount * dstBpp};
+
+        if (copyCache.size() < dstSize)
+            copyCache.resize(dstSize);
+        u8 *dstScratch{copyCache.data()};
+
+        if (RemapNeedsDestinationPreserve())
+            channelCtx.asCtx->gmmu.Read(dstScratch, u64{*registers.offsetOut}, dstSize);
+
+        if (RemapNeedsSource()) {
+            std::vector<u8> srcScratch(elementCount * srcBpp);
+            channelCtx.asCtx->gmmu.Read(srcScratch.data(), u64{*registers.offsetIn}, srcScratch.size());
+            PerformRemap(dstScratch, srcScratch.data(), elementCount);
+        } else {
+            PerformRemap(dstScratch, nullptr, elementCount);
+        }
+
+        channelCtx.asCtx->gmmu.Write(u64{*registers.offsetOut}, dstScratch, dstSize);
+    }
+
+    void MaxwellDma::CopyRemapMultiLine() {
+        auto &remap{*registers.remapComponents};
+        size_t elementsPerLine{*registers.lineLengthIn};
+        size_t lines{*registers.lineCount};
+        size_t dstBpp{static_cast<size_t>(remap.NumDstComponents()) * remap.ComponentSize()};
+        size_t srcBpp{static_cast<size_t>(remap.NumSrcComponents()) * remap.ComponentSize()};
+        size_t dstLineSize{elementsPerLine * dstBpp};
+        size_t srcLineSize{elementsPerLine * srcBpp};
+
+        bool needsSource{RemapNeedsSource()};
+        bool needsDestinationPreserve{RemapNeedsDestinationPreserve()};
+
+        if (copyCache.size() < dstLineSize)
+            copyCache.resize(dstLineSize);
+        u8 *dstScratch{copyCache.data()};
+
+        std::vector<u8> srcScratch;
+        if (needsSource)
+            srcScratch.resize(srcLineSize);
+
+        for (size_t line{}; line < lines; line++) {
+            u64 srcLineOffset{u64{*registers.offsetIn} + line * *registers.pitchIn};
+            u64 dstLineOffset{u64{*registers.offsetOut} + line * *registers.pitchOut};
+
+            if (needsDestinationPreserve)
+                channelCtx.asCtx->gmmu.Read(dstScratch, dstLineOffset, dstLineSize);
+
+            if (needsSource) {
+                channelCtx.asCtx->gmmu.Read(srcScratch.data(), srcLineOffset, srcLineSize);
+                PerformRemap(dstScratch, srcScratch.data(), elementsPerLine);
+            } else {
+                PerformRemap(dstScratch, nullptr, elementsPerLine);
+            }
+
+            channelCtx.asCtx->gmmu.Write(dstLineOffset, dstScratch, dstLineSize);
         }
     }
 
