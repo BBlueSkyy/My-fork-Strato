@@ -246,6 +246,14 @@ namespace skyline::gpu {
         if (guest->dimensions != dimensions)
             throw exception("Guest and host dimensions being different is not supported currently");
 
+        if (!guest->MappingsValid()) {
+            // The guest mappings backing this texture may have been unmapped/invalidated between when the CPU dirty
+            // state was set and when this (potentially deferred, e.g. via SynchronizeHostInline) sync actually runs.
+            // Reading through `mirror` in that case would segfault, so bail out safely instead.
+            Logger::Warn("Skipping host sync for texture with invalid/unmapped guest mappings");
+            return nullptr;
+        }
+
         auto pointer{mirror.data()};
 
         WaitOnBacking();
