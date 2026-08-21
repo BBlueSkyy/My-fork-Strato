@@ -246,6 +246,14 @@ namespace skyline::gpu {
         if (guest->dimensions != dimensions)
             throw exception("Guest and host dimensions being different is not supported currently");
 
+        if (!guest->MappingsValid()) {
+            // The guest mappings backing this texture may have been unmapped/invalidated between when the CPU dirty
+            // state was set and when this (potentially deferred, e.g. via SynchronizeHostInline) sync actually runs.
+            // Reading through `mirror` in that case would segfault, so bail out safely instead.
+            LOGW("Skipping host sync for texture with invalid/unmapped guest mappings");
+            return nullptr;
+        }
+
         auto pointer{mirror.data()};
 
         WaitOnBacking();
@@ -282,12 +290,24 @@ namespace skyline::gpu {
         if (levelCount == 1) {
             auto outputLayer{deswizzleOutput};
             for (size_t layer{}; layer < layerCount; layer++) {
+                size_t readOffset{static_cast<size_t>(pointer - mirror.data())};
+                size_t readSize{guest->tileConfig.mode == texture::TileMode::Linear ? deswizzledLayerStride : guestLayerStride};
+
+                if (readOffset + readSize > mirror.size()) {
+                    LOGE("SynchronizeHostImpl: read would overrun guest mirror! layer={}/{} readOffset={:#x} readSize={:#x} mirrorSize={:#x} overrunBy={:#x} guestLayerStride={:#x} deswizzledLayerStride={:#x} surfaceSize={:#x} levelCount={} tileMode={} dims={}x{}x{} format={}",
+                         layer, layerCount, readOffset, readSize, mirror.size(),
+                         (readOffset + readSize) - mirror.size(), guestLayerStride, deswizzledLayerStride,
+                         surfaceSize, levelCount, static_cast<int>(guest->tileConfig.mode),
+                         dimensions.width, dimensions.height, dimensions.depth, vk::to_string(guest->format->vkFormat));
+                    return nullptr;
+                }
+
                 if (guest->tileConfig.mode == texture::TileMode::Block)
                     texture::CopyBlockLinearToLinear(*guest, pointer, outputLayer);
                 else if (guest->tileConfig.mode == texture::TileMode::Pitch)
                     texture::CopyPitchLinearToLinear(*guest, pointer, outputLayer);
                 else if (guest->tileConfig.mode == texture::TileMode::Linear)
-                    std::memcpy(outputLayer, pointer, surfaceSize);
+                    std::memcpy(outputLayer, pointer, deswizzledLayerStride);
                 pointer += guestLayerStride;
                 outputLayer += deswizzledLayerStride;
             }
