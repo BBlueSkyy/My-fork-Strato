@@ -783,6 +783,14 @@ namespace skyline::gpu {
             return;
 
         TRACE_EVENT("gpu", "Texture::SynchronizeHostInline");
+
+        // Defensive validation BEFORE penalizing dirty state/traps: if you address this here, // the state remains exactly as it was (CpuDirty), without phantom transition.
+        auto *srcPointer{mirror.data()};
+        if (memoryFreed || srcPointer == nullptr || surfaceSize == 0 || surfaceSize > mirror.size()) [[unlikely]] {
+            LOGD("SynchronizeHostInline: invalid mirror for texture (memoryFreed={}, ptr={}, mirrorSize={}, surfaceSize={}), aborting sync", memoryFreed, static_cast<void *>(srcPointer), mirror.size(), surfaceSize);
+             return;
+        }
+
         // FIXME (TEXMAN): This should really be tracked on the texture usage side
         if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsRt)
             gpuDirty = false;
