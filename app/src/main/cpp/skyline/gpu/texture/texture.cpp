@@ -250,7 +250,7 @@ namespace skyline::gpu {
             // The guest mappings backing this texture may have been unmapped/invalidated between when the CPU dirty
             // state was set and when this (potentially deferred, e.g. via SynchronizeHostInline) sync actually runs.
             // Reading through `mirror` in that case would segfault, so bail out safely instead.
-            Logger::Warn("Skipping host sync for texture with invalid/unmapped guest mappings");
+            LOGW("Skipping host sync for texture with invalid/unmapped guest mappings");
             return nullptr;
         }
 
