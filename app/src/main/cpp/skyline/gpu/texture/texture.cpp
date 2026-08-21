@@ -122,8 +122,11 @@ namespace skyline::gpu {
         return texture.TryLock();
     }
 
-    void Texture::SetupGuestMappings() {
+    // Helper method that recreates the mirror of the guest memory mappings.
+    // Must be declared in the Texture class (texture.h).
+    void Texture::CreateGuestMirror() {
         auto &mappings{guest->mappings};
+
         if (mappings.size() == 1) {
             auto mapping{mappings.front()};
             u8 *alignedData{util::AlignDown(mapping.data(), constant::PageSize)};
@@ -153,9 +156,15 @@ namespace skyline::gpu {
             mirror = alignedMirror.subspan(static_cast<size_t>(frontMapping.data() - alignedData), totalSize);
         }
 
+        memoryFreed = false;
+    }
+
+    void Texture::SetupGuestMappings() {
+        CreateGuestMirror();
+
         // We can't just capture `this` in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Texture> weakThis{weak_from_this()};
-        trapHandle = gpu.state.process->trap.CreateTrap(mappings, [weakThis] {
+        trapHandle = gpu.state.process->trap.CreateTrap(guest->mappings, [weakThis] {
             auto texture{weakThis.lock()};
             if (!texture)
                 return;
@@ -287,7 +296,10 @@ namespace skyline::gpu {
                 else if (guest->tileConfig.mode == texture::TileMode::Pitch)
                     texture::CopyPitchLinearToLinear(*guest, pointer, outputLayer);
                 else if (guest->tileConfig.mode == texture::TileMode::Linear)
-                    std::memcpy(outputLayer, pointer, surfaceSize);
+                    // FIX: use the size of a single layer, not the total of all layers.
+                    // For different formats, direct memcpy is not safe; in that case conversion
+                    // must be handled by the decompression functions after the loop.
+                    std::memcpy(outputLayer, pointer, deswizzledLayerStride);
                 pointer += guestLayerStride;
                 outputLayer += deswizzledLayerStride;
             }
@@ -495,8 +507,8 @@ namespace skyline::gpu {
     }
 
     void Texture::FreeGuest() {
-        // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
-        if (*gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
+        // Avoid double-free and only free if the memory is still mapped.
+        if (!memoryFreed && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
             gpu.state.process->memory.FreeMemory(mirror);
             memoryFreed = true;
         }
@@ -836,7 +848,11 @@ namespace skyline::gpu {
             }
 
             dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
-            memoryFreed = false;
+            // If the guest memory was freed, we need to recreate the mirror.
+            if (memoryFreed)
+                CreateGuestMirror();
+            else
+                memoryFreed = false;
         }
 
         if (layout == vk::ImageLayout::eUndefined || format != guest->format)
