@@ -127,7 +127,7 @@ namespace skyline::gpu::interconnect {
         ConstantBuffer &primaryCbuf{constantBuffers[desc.cbuf_index]};
         if (!primaryCbuf.view)
             return { .raw = 0 };
-        
+
         size_t elemOffset{arrayIdx << desc.size_shift};
         size_t primaryCbufOffset{desc.cbuf_offset + elemOffset};
         u32 primaryVal{primaryCbuf.Read<u32>(ctx.executor, primaryCbufOffset)};
@@ -135,9 +135,6 @@ namespace skyline::gpu::interconnect {
         if constexpr (requires { desc.has_secondary; }) {
             if (desc.has_secondary) {
                 ConstantBuffer &secondaryCbuf{constantBuffers[desc.secondary_cbuf_index]};
-                if (!secondaryCbuf.view)
-                    return { .raw = 0 };
-
                 size_t secondaryCbufOffset{desc.secondary_cbuf_offset + elemOffset};
                 u32 secondaryVal{secondaryCbuf.Read<u32>(ctx.executor, secondaryCbufOffset)};
                 return {.raw = (primaryVal << desc.shift_left) | (secondaryVal << desc.secondary_shift_left)};
