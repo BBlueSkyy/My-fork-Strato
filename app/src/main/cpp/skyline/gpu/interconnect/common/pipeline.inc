@@ -126,10 +126,8 @@ namespace skyline::gpu::interconnect {
     static BindlessHandle ReadBindlessHandle(InterconnectContext &ctx, auto &constantBuffers, const auto &desc, size_t arrayIdx) {
         ConstantBuffer &primaryCbuf{constantBuffers[desc.cbuf_index]};
         if (!primaryCbuf.view)
-            LOGE("ReadBindlessHandle: secondary cbuf idx={} NOT bound (primary idx={})", desc.secondary_cbuf_index, desc.cbuf_index); 
             return { .raw = 0 };
-        }
-       
+        
         size_t elemOffset{arrayIdx << desc.size_shift};
         size_t primaryCbufOffset{desc.cbuf_offset + elemOffset};
         u32 primaryVal{primaryCbuf.Read<u32>(ctx.executor, primaryCbufOffset)};
@@ -138,6 +136,7 @@ namespace skyline::gpu::interconnect {
             if (desc.has_secondary) {
                 ConstantBuffer &secondaryCbuf{constantBuffers[desc.secondary_cbuf_index]};
                 if (!secondaryCbuf.view)
+                    LOGE("ReadBindlessHandle: secondary cbuf idx={} NOT bound (primary idx={})", desc.secondary_cbuf_index, desc.cbuf_index);
                     return { .raw = 0 };
 
                 size_t secondaryCbufOffset{desc.secondary_cbuf_offset + elemOffset};
