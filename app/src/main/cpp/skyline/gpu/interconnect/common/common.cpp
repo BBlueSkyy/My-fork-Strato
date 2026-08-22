@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <cstring>
 #include <gpu/buffer_manager.h>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
@@ -53,6 +54,10 @@ namespace skyline::gpu::interconnect {
     }
 
     void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset) {
+        if (!view) {
+            std::memset(dstBuffer.data(), 0, dstBuffer.size());
+            return;
+        }
         ContextLock lock{executor.tag, view};
         view.Read(lock.IsFirstUsage(), FlushHostCallback, dstBuffer, srcOffset);
     }
