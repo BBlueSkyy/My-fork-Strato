@@ -43,15 +43,20 @@ namespace skyline::gpu::interconnect {
                                                         vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         struct SsboDescriptor {
             u64 address;
-            u32 size;
+            u64 secondary;
         };
+
         auto ssbo{cbuf.Read<SsboDescriptor>(ctx.executor, desc.cbuf_offset)};
-        if (ssbo.size == 0)
+
+        bool looksLikeSize{(ssbo.secondary >> 32) == 0};
+        u32 size{looksLikeSize ? static_cast<u32>(ssbo.secondary) : 0};
+
+        if (size == 0)
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         size_t padding{ssbo.address & (ctx.gpu.traits.minimumStorageBufferAlignment - 1)};
-        cachedView.Update(ctx, ssbo.address - padding, util::AlignUp(ssbo.size + padding, ctx.gpu.traits.minimumStorageBufferAlignment));
-        if (!cachedView.view) // Retorna um buffer dummy se o SSBO não estiver vinculado
+        cachedView.Update(ctx, ssbo.address - padding, util::AlignUp(size + padding, ctx.gpu.traits.minimumStorageBufferAlignment));
+        if (!cachedView.view) // Returns a dummy buffer if SSBO is not bound
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         auto view{cachedView.view};
