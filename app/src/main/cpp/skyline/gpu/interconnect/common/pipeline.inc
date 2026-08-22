@@ -136,7 +136,6 @@ namespace skyline::gpu::interconnect {
             if (desc.has_secondary) {
                 ConstantBuffer &secondaryCbuf{constantBuffers[desc.secondary_cbuf_index]};
                 if (!secondaryCbuf.view)
-                    LOGE("ReadBindlessHandle: secondary cbuf idx={} NOT bound (primary idx={})", desc.secondary_cbuf_index, desc.cbuf_index);
                     return { .raw = 0 };
 
                 size_t secondaryCbufOffset{desc.secondary_cbuf_offset + elemOffset};
