@@ -1199,25 +1199,7 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        // FIX: real hardware only allows svcMapPhysicalMemory to target memory that's currently
-        // Unmapped (Free) -- mapping over a chunk that's already mapped must be rejected, the same
-        // way MapMemory rejects an invalid source chunk via GetChunk()->state above. Without this
-        // check we silently accepted a second MapPhysicalMemory over an already-mapped range instead
-        // of failing it, letting the guest's own physical memory pool bookkeeping (used by titles
-        // that recycle alias-region chunks for asset streaming, e.g. DKCR HD) silently desync from
-        // our actual chunk state until its internal accounting underflows and it self-aborts.
-        // NOTE: like MapMemory's existing check, this only inspects the chunk at the start address,
-        // not every chunk across the full range -- a full range validation (mirroring what
-        // SetRegionPermissionIfAllowed/SetRegionCpuCachingIfAllowed do for SetMemoryPermission/
-        // SetMemoryAttribute) would be stronger if such a helper exists in memory.h.
-        auto chunk{state.process->memory.GetChunk(address)};
-        if (!chunk || chunk->second.state.type != memory::MemoryType::Unmapped) [[unlikely]] {
-            ctx.w0 = result::InvalidState;
-            LOGW("Cannot map physical memory over a chunk that isn't Unmapped: {} - {} (0x{:X} bytes), current type: 0x{:X}", fmt::ptr(address), fmt::ptr(address + size), size, chunk ? static_cast<u32>(chunk->second.state.type) : ~0u);
-            return;
-        }
-
-        state.process->memory.MapHeapMemory(span<u8>{address, size});
+        state.process->memory.MapPhysicalMemory(span<u8>{address, size});
 
         LOGD("Mapped physical memory at {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
         ctx.w0 = Result{};
