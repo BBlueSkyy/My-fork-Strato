@@ -25,6 +25,17 @@ namespace skyline::nce {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
+      
+        if (svcId == 0x2C) {
+        LOGW("SVC 0x2C MapPhysicalMemory: X0=0x{:016X} X1=0x{:016X} X2=0x{:016X} X3=0x{:016X} X4=0x{:016X} X5=0x{:016X}",
+             ctx->gpr.x0,
+             ctx->gpr.x1,
+             ctx->gpr.x2,
+             ctx->gpr.x3,
+             ctx->gpr.x4,
+             ctx->gpr.x5);
+        }
+      
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
