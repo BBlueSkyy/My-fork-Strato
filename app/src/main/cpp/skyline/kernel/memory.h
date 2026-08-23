@@ -378,6 +378,14 @@ namespace skyline {
 
             void MapHeapMemory(span<u8> memory);
 
+            /**
+             * @brief Maps physical (heap-backed) memory into the given range, but only for the
+             * sub-ranges that are currently Unmapped - mirrors real hardware's incremental/growable
+             * pool semantics for svcMapPhysicalMemory. Already-mapped sub-ranges within the range
+             * are left untouched instead of the whole call being rejected.
+             */
+            void MapPhysicalMemory(span<u8> memory);
+
             void MapSharedMemory(span<u8> memory, memory::Permission permission);
 
             void MapTransferMemory(span<u8> memory, memory::Permission permission);
