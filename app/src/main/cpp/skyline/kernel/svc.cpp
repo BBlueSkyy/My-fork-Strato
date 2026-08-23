@@ -1199,7 +1199,7 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        state.process->memory.MapHeapMemory(span<u8>{address, size});
+        state.process->memory.MapPhysicalMemory(span<u8>{address, size});
 
         LOGD("Mapped physical memory at {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
         ctx.w0 = Result{};
