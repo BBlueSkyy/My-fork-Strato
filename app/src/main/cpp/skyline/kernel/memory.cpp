@@ -568,6 +568,22 @@ namespace skyline::kernel {
             }));
     }
 
+    __attribute__((always_inline)) void MemoryManager::MapPhysicalMemory(span<u8> memory) {
+        std::unique_lock lock{mutex};
+
+        // Hardware real permite crescer um pool de memória física via chamadas sobrepostas:
+        // só as páginas ainda Unmapped dentro do range são comitadas como Heap, as que já
+        // estão mapeadas ficam intocadas em vez da chamada inteira ser rejeitada.
+        ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+            if (desc.second.state != memory::states::Unmapped)
+                return;
+
+            desc.second.permission = {true, true, false};
+            desc.second.state = memory::states::Heap;
+            MapInternal(desc);
+        });
+    }
+
     __attribute__((always_inline)) void MemoryManager::MapSharedMemory(span<u8> memory, memory::Permission permission) {
         std::unique_lock lock{mutex};
 
