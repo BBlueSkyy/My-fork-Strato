@@ -1199,7 +1199,28 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        state.process->memory.MapPhysicalMemory(span<u8>{address, size});
+        auto chunk{state.process->memory.GetChunk(address)};
+
+        if (chunk) {
+              LOGW(
+        "MapPhysicalMemory BEFORE: addr={} size=0x{:X} chunkAddr={} chunkSize=0x{:X} state=0x{:08X} attrs=0x{:02X} ipcLockCount={}",
+             fmt::ptr(address),
+             size,
+             fmt::ptr(chunk->first),
+             chunk->second.size,
+             chunk->second.state.value,
+             chunk->second.attributes.value,
+             chunk->second.ipcLockCount
+         );
+ } else {
+    LOGW(
+        "MapPhysicalMemory BEFORE: no chunk found: addr={} size=0x{:X}",
+        fmt::ptr(address),
+        size
+    );
+}
+
+state.process->memory.MapHeapMemory(span<u8>{address, size});
 
         LOGD("Mapped physical memory at {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
         ctx.w0 = Result{};
