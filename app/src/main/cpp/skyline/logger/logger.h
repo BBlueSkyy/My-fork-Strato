@@ -87,23 +87,44 @@ namespace skyline {
             skyline::AsyncLogger::LogAsync(level, std::move(_str), nullptr);                \
         } while (0)
 
+// As duas macros abaixo escrevem de forma SÍNCRONA (bypassa a fila do logger assíncrono).
+// Usadas por LOGE/LOGW para garantir que a mensagem chegue no arquivo/logcat antes de
+// qualquer coisa continuar - crítico porque um crash logo em seguida (SIGSEGV) pode matar
+// o processo antes da thread do logger assíncrono conseguir tirar a mensagem da fila e
+// escrevê-la, fazendo o log parecer "limpo" mesmo quando o crash de fato aconteceu.
+#define LOG_WRITE_SYNC(level, ...)                                                          \
+        do {                                                                                \
+            if (!skyline::AsyncLogger::CheckLogLevel(level))                                \
+                break;                                                                      \
+            std::string _str = fmt::format(__VA_ARGS__);                                    \
+            skyline::AsyncLogger::LogSync(level, std::move(_str), __builtin_FUNCTION());    \
+        } while (0)
+
+#define LOGNF_WRITE_SYNC(level, ...)                                                        \
+        do {                                                                                \
+            if (!skyline::AsyncLogger::CheckLogLevel(level))                                \
+                break;                                                                      \
+            std::string _str = fmt::format(__VA_ARGS__);                                    \
+            skyline::AsyncLogger::LogSync(level, std::move(_str), nullptr);                 \
+        } while (0)
+
 /**
  * @brief Logs an Error message, formatted using fmt::format
  */
-#define LOGE(...) LOG_WRITE(skyline::AsyncLogger::LogLevel::Error, __VA_ARGS__)
+#define LOGE(...) LOG_WRITE_SYNC(skyline::AsyncLogger::LogLevel::Error, __VA_ARGS__)
 /**
  * @brief Logs an Error message without the calling function name, formatted using fmt::format
  */
-#define LOGENF(...) LOGNF_WRITE(skyline::AsyncLogger::LogLevel::Error, __VA_ARGS__)
+#define LOGENF(...) LOGNF_WRITE_SYNC(skyline::AsyncLogger::LogLevel::Error, __VA_ARGS__)
 
 /**
  * @brief Logs a Warning message, formatted using fmt::format
  */
-#define LOGW(...) LOG_WRITE(skyline::AsyncLogger::LogLevel::Warning, __VA_ARGS__)
+#define LOGW(...) LOG_WRITE_SYNC(skyline::AsyncLogger::LogLevel::Warning, __VA_ARGS__)
 /**
  * @brief Logs a Warning message without the calling function name, formatted using fmt::format
  */
-#define LOGWNF(...) LOGNF_WRITE(skyline::AsyncLogger::LogLevel::Warning, __VA_ARGS__)
+#define LOGWNF(...) LOGNF_WRITE_SYNC(skyline::AsyncLogger::LogLevel::Warning, __VA_ARGS__)
 
 /**
  * @brief Logs an Info message, formatted using fmt::format
