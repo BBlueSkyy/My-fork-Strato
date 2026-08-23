@@ -369,6 +369,19 @@ namespace skyline {
              */
             std::optional<std::pair<u8 *, ChunkDescriptor>> GetChunk(u8 *addr);
 
+            /**
+             * @brief Atomically validates that the entire range is currently Unmapped (Free) and, if so,
+             * maps it as Heap-backed physical memory (mirrors MapHeapMemory's ChunkDescriptor)
+             * @return False if any chunk within the range - including gaps, which are surfaced as explicit
+             * Unmapped chunks - is not currently Unmapped, in which case nothing in the range is modified;
+             * true if the entire range was mapped
+             * @note Mirrors the check/write pattern of SetRegionPermissionIfAllowed: the read-only validation
+             * pass and the write pass happen under the same lock acquisition, so no concurrent Map/Unmap on
+             * another thread can race the check (unlike a GetChunk() check followed by a separate MapHeapMemory()
+             * call, which releases the lock in between)
+             */
+            bool MapPhysicalMemoryIfAllowed(span<u8> memory);
+
             // Various mapping functions for use by the guest, argument validity must be checked by the caller
             void MapCodeMemory(span<u8> memory, memory::Permission permission);
 
