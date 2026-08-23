@@ -12,6 +12,7 @@
 #include "loader/nsp.h"
 #include "loader/xci.h"
 #include "os.h"
+#include <logger/logger.h>
 
 namespace skyline::kernel {
     OS::OS(
@@ -80,6 +81,7 @@ namespace skyline::kernel {
             LOGI("Starting main HOS thread");
             thread->Start(true);
             process->Kill(true, true, true);
+            skyline::AsyncLogger::Finalize(true);
         }
     }
 
