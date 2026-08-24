@@ -524,38 +524,40 @@ namespace skyline::kernel {
     }
 
     bool MemoryManager::MapPhysicalMemoryIfAllowed(span<u8> memory) {
-        std::unique_lock lock{mutex};
+    std::unique_lock lock{mutex};
 
-        // Read-only pass: real hardware only allows svcMapPhysicalMemory to target memory that's
-        // currently Unmapped (Free). This covers every sub-chunk across the whole range - including
-        // gaps, which ForeachChunkInRange surfaces as explicit Unmapped chunks - unlike a single
-        // GetChunk() check at the start address, which would miss a second chunk further into the range.
-        bool allowed{true};
-        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
-            if (desc.second.state != memory::states::Unmapped) [[unlikely]] {
-                allowed = false;
-                LOGW("MapPhysicalMemoryIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which isn't Unmapped", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
-            }
-        });
+    // Passo de leitura: só rejeita se algum sub-trecho não for Unmapped nem Heap.
+    // Heap já mapeado é um "completar" legítimo (idempotente) - hardware real
+    // aceita chamadas sobrepostas de MapPhysicalMemory em vez de falhar tudo.
+    bool allowed{true};
+    std::vector<std::pair<u8 *, size_t>> toMap;
+    ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+        if (desc.second.state == memory::states::Unmapped) {
+            toMap.emplace_back(desc.first, desc.second.size);
+        } else if (desc.second.state != memory::states::Heap) [[unlikely]] {
+            allowed = false;
+            LOGW("MapPhysicalMemoryIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which is neither Unmapped nor Heap", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
+        }
+    });
 
-        if (!allowed) [[unlikely]]
-            return false;
+    if (!allowed) [[unlikely]]
+        return false;
 
-        // Write pass: only reached if the entire range passed validation, still under the same lock.
-        // A single MapInternal call over the whole span is correct here (rather than looping per
-        // sub-chunk like SetRegionPermissionIfAllowed) since we're replacing the state uniformly
-        // across the range rather than tweaking one field of each existing chunk - this mirrors
-        // MapHeapMemory's own ChunkDescriptor exactly, since physical memory is Heap-backed.
+    // Passo de escrita: mapeia só os sub-trechos que estavam Unmapped de fato.
+    // Coletados antes (não mapeados dentro do ForeachChunkInRange) pra não mexer
+    // no mapa de chunks enquanto ainda estamos iterando ele.
+    for (const auto &[chunkAddr, chunkSize] : toMap) {
         MapInternal(std::pair<u8 *, ChunkDescriptor>(
-            memory.data(), {
-                .size = memory.size(),
+            chunkAddr, {
+                .size = chunkSize,
                 .permission = {true, true, false},
                 .state = memory::states::Heap
             }));
+    }
 
         return true;
     }
-
+  
     __attribute__((always_inline)) void MemoryManager::MapCodeMemory(span<u8> memory, memory::Permission permission) {
         std::unique_lock lock{mutex};
 
