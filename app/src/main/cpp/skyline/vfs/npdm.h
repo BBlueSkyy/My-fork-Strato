@@ -37,9 +37,12 @@ namespace skyline {
                 u32 _unk0_;
                 union {
                     struct {
-                        bool is64Bit : 1;
-                        memory::AddressSpaceType type : 2;
-                        bool optimizeMemoryAllocation : 1;
+                        bool is64Bit : 1; //!< Bit 0: Is64BitInstruction
+                        memory::AddressSpaceType type : 3; //!< Bits 1-3: ProcessAddressSpace (only values 0-3 are currently in use)
+                        bool optimizeMemoryAllocation : 1; //!< Bit 4: [7.0.0+] OptimizeMemoryAllocation
+                        bool disableDeviceAddressSpaceMerge : 1; //!< Bit 5: [11.0.0+] DisableDeviceAddressSpaceMerge
+                        bool enableAliasRegionExtraSize : 1; //!< Bit 6: [18.0.0+] EnableAliasRegionExtraSize
+                        bool preventCodeReads : 1; //!< Bit 7: [19.0.0-19.0.1] PreventCodeReads
                     };
                     u8 raw{};
                 } flags;
