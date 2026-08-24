@@ -80,6 +80,6 @@ namespace skyline::vfs {
         LOGINF("NPDM Metadata:\nTitle: ID: {:X}, Version: {}\nMain Thread: Priority: {}, Stack Size: 0x{:X}\nScheduler: Ideal Core: {}, Core Mask: {}, Priority: {} - {}\nKernel Version: v{}.{}", aci0.programId, meta.version, meta.mainThreadPriority, meta.mainThreadStackSize, meta.idealCore, threadInfo.coreMask, threadInfo.priority.min, threadInfo.priority.max, kernelVersion.majorVersion, kernelVersion.minorVersion);
 
         LOGINF("NPDM Flags: is64Bit: {}, AddressSpace: {}, EnableAliasRegionExtraSize: {}",
-               meta.flags.is64Bit, static_cast<u32>(meta.flags.type), meta.flags.enableAliasRegionExtraSize);
+               static_cast<bool>(meta.flags.is64Bit), static_cast<u32>(meta.flags.type), static_cast<bool>(meta.flags.enableAliasRegionExtraSize));
     }
 }
