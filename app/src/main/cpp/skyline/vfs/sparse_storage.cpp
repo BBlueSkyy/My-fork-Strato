@@ -1,19 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright © 2023 Strato Team and Contributors (https://github.com/strato-emu/)
 
+#include <limits>
+
 #include "sparse_storage.h"
-#include "region_backing.h"
-#include "ctr_encrypted_backing.h"
 
 namespace skyline::vfs {
-    // Mirrors BKTR's SearchBucketEntry (bktr.cpp) minus the subsection-specific last-bucket shortcut,
-    // which doesn't apply here since Sparse only ever deals with one kind of bucket tree.
     static std::pair<u64, u64> SearchBucketEntry(u64 offset, const RelocationBlock &block, const std::vector<RelocationBucket> &buckets) {
-        u64 bucketId{static_cast<u64>(std::distance(block.baseOffsets.begin(),
-                                                    std::upper_bound(block.baseOffsets.begin() + 1,
-                                                                     block.baseOffsets.begin() + block.numberBuckets, offset)) - 1)};
+        if (block.numberBuckets == 0 || block.numberBuckets > block.baseOffsets.size() || block.numberBuckets > buckets.size())
+            throw exception("SparseStorage: invalid bucket count {}", block.numberBuckets);
+
+        auto bucketIt{std::upper_bound(block.baseOffsets.begin(), block.baseOffsets.begin() + block.numberBuckets, offset)};
+        if (bucketIt == block.baseOffsets.begin())
+            throw exception("SparseStorage: offset 0x{:X} is before the first bucket", offset);
+
+        const u64 bucketId{static_cast<u64>(std::distance(block.baseOffsets.begin(), bucketIt) - 1)};
 
         const auto &bucket{buckets[bucketId]};
+        if (bucket.numberEntries == 0 || bucket.numberEntries > bucket.entries.size())
+            throw exception("SparseStorage: invalid entry count {} in bucket {}", bucket.numberEntries, bucketId);
 
         if (bucket.numberEntries == 1)
             return {bucketId, 0};
@@ -27,16 +32,23 @@ namespace skyline::vfs {
             return {bucketId, entryIndex};
         }
 
-        LOGE("SparseStorage: Offset 0x{:X} could not be resolved in the bucket tree", offset);
-        return {0, 0};
+        throw exception("SparseStorage: offset 0x{:X} could not be resolved in the bucket tree", offset);
     }
 
-    SparseStorage::SparseStorage(std::shared_ptr<Backing> pRawBacking, crypto::KeyStore::Key128 pKey, std::array<u8, 0x10> pCtr, size_t pSectionPhysicalStart,
-                                  RelocationBlock pBlock, std::vector<RelocationBucket> pBuckets, u64 virtualSize, u64 pPhysicalBaseOffset)
-        : Backing({true, false, false}, virtualSize), rawBacking(std::move(pRawBacking)), key(pKey), ctr(pCtr), sectionPhysicalStart(pSectionPhysicalStart),
-          block(pBlock), buckets(std::move(pBuckets)), physicalBaseOffset(pPhysicalBaseOffset) {
-        // Cap every bucket with a sentinel entry pointing at the start of the next bucket, exactly like
-        // BKTR's constructor does, so GetNextEntry() always has a following entry to bound a read against
+    SparseStorage::SparseStorage(u64 virtualSize)
+        : Backing({true, false, false}, virtualSize), block{}, physicalBaseOffset{} {
+        block.size = virtualSize;
+    }
+
+    SparseStorage::SparseStorage(std::shared_ptr<Backing> pRawBacking, RelocationBlock pBlock, std::vector<RelocationBucket> pBuckets,
+                                  u64 virtualSize, u64 pPhysicalBaseOffset)
+        : Backing({true, false, false}, virtualSize), rawBacking(std::move(pRawBacking)), block(pBlock),
+          buckets(std::move(pBuckets)), physicalBaseOffset(pPhysicalBaseOffset) {
+        if (!rawBacking)
+            throw exception("SparseStorage: null raw backing");
+        if (block.index != 0 || block.numberBuckets == 0 || block.numberBuckets > block.baseOffsets.size() || block.numberBuckets != buckets.size())
+            throw exception("SparseStorage: invalid root node (index={}, buckets={})", block.index, block.numberBuckets);
+
         for (std::size_t i{}; i < block.numberBuckets - 1; ++i)
             buckets[i].entries.push_back({block.baseOffsets[i + 1], 0, 0});
 
@@ -57,57 +69,55 @@ namespace skyline::vfs {
         const auto &bucket{buckets[index.first]};
         if (index.second + 1 < bucket.entries.size())
             return bucket.entries[index.second + 1];
-        return buckets[index.first + 1].entries[0];
+        if (index.first + 1 >= buckets.size() || buckets[index.first + 1].entries.empty())
+            throw exception("SparseStorage: missing next entry for bucket {}", index.first);
+        return buckets[index.first + 1].entries.front();
     }
 
     size_t SparseStorage::ReadImpl(span<u8> output, size_t offset) {
-        LOGD("SparseStorage::ReadImpl ENTER: offset=0x{:X} size=0x{:X}", offset, output.size());
+        if (output.empty())
+            return 0;
 
         if (offset >= block.size)
             return 0;
+
+        if (buckets.empty()) {
+            std::fill(output.begin(), output.end(), 0);
+            return output.size();
+        }
 
         const auto entry{GetEntry(offset)};
         const auto next{GetNextEntry(offset)};
 
         // Split the read at the entry boundary, the same strategy BKTR uses, so a single request never
         // straddles two entries that could resolve to different physical regions (or zero vs. real data)
-        if (offset + output.size() > next.addressPatch) {
+        if (next.addressPatch <= offset)
+            throw exception("SparseStorage: non-advancing entry boundary at offset 0x{:X}", offset);
+
+        if (output.size() > next.addressPatch - offset) {
             const u64 partition{next.addressPatch - offset};
-            if (partition == 0)
-                throw exception("SparseStorage: Bucket tree returned a non-advancing entry at offset 0x{:X} (entry.addressPatch=0x{:X}, next.addressPatch=0x{:X}) - would recurse forever", offset, entry.addressPatch, next.addressPatch);
             span<u8> tail(output.data() + partition, output.size() - partition);
             return ReadImpl(output.subspan(0, partition), offset) + ReadImpl(tail, offset + partition);
         }
 
-        // Confirmed against LibHac's SparseStorage: storage index/fromPatch 0 is the real data storage,
-        // 1 is the always-zero storage (SetZeroStorage always assigns index 1) - so a *nonzero* fromPatch
-        // means "never physically stored, read as zero", not the other way around.
+        if (entry.addressPatch > offset)
+            throw exception("SparseStorage: entry starts after requested offset 0x{:X}", offset);
+
         if (entry.fromPatch) {
             std::fill(output.begin(), output.end(), 0);
             return output.size();
         }
 
-        // This block was originally encrypted as if it sat at its *virtual* offset (`offset`, the
-        // position this read is actually happening at) - not wherever it was later physically compacted
-        // to. A RegionBacking absorbs the constant physical-minus-virtual delta for this entry as its own
-        // base offset, so CtrEncryptedBacking's own local offset parameter - which is what its counter is
-        // derived from - can stay the true virtual `offset`, while the bytes it actually fetches (via the
-        // wrapped RegionBacking underneath) still come from the correct physical position.
-        //
-        // `regionBase` intentionally wraps (as an unsigned value) whenever the physical position is
-        // smaller than the virtual one, which is the common case. Adding `offset` back on read (always
-        // >= entry.addressPatch here) correctly unwraps it via standard, well-defined unsigned modular
-        // arithmetic - this is not a bug, just how the constant per-entry delta is carried around.
-        const u64 physicalOffset{physicalBaseOffset + entry.addressSource + (offset - entry.addressPatch)};
-        const u64 regionBase{sectionPhysicalStart + physicalOffset - offset};
+        const u64 entryDelta{offset - entry.addressPatch};
+        if (entry.addressSource > std::numeric_limits<u64>::max() - entryDelta ||
+            physicalBaseOffset > std::numeric_limits<u64>::max() - entry.addressSource - entryDelta)
+            throw exception("SparseStorage: physical offset overflow at virtual offset 0x{:X}", offset);
 
-        auto region{std::make_shared<RegionBacking>(rawBacking, regionBase, rawBacking->size)};
-        CtrEncryptedBacking decryptor{ctr, key, region, sectionPhysicalStart};
+        const u64 physicalFileOffset{physicalBaseOffset + entry.addressSource + entryDelta};
+        if (physicalFileOffset > rawBacking->size || output.size() > rawBacking->size - physicalFileOffset)
+            throw exception("SparseStorage: physical read out of range (offset=0x{:X}, size=0x{:X}, backing=0x{:X})",
+                            physicalFileOffset, output.size(), rawBacking->size);
 
-        // ReadUnchecked, not Read: `offset` here is the true virtual position (potentially far larger
-        // than any reasonable Backing::size we could give these throwaway wrapper objects), not a small
-        // local index - the bounds check Read() would do doesn't apply to it.
-        LOGD("SparseStorage: about to call decryptor.ReadUnchecked, physicalOffset=0x{:X} regionBase=0x{:X}", physicalOffset, regionBase);
-        return decryptor.ReadUnchecked(output, offset);
+        return rawBacking->Read(output, physicalFileOffset);
     }
 }
