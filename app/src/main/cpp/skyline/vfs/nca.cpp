@@ -267,6 +267,14 @@ namespace skyline::vfs {
         const size_t nodeStorageOffset{compressionInfo.bucket.tableOffset};
         RelocationBlock compressedBlock{decryptedBacking->Read<RelocationBlock>(nodeStorageOffset)};
 
+        // A present-but-empty bucket tree (numberBuckets == 0) previously reached CompressedStorage's
+        // constructor unchecked, where `numberBuckets - 1` underflows (unsigned) and indexes an empty
+        // buckets vector - a null dereference that crashed the whole process instead of failing this
+        // NCA cleanly. Surface it here as the same kind of loader_exception the other malformed-tree
+        // cases below already throw, so nsp.cpp's existing catch handles it gracefully.
+        if (compressedBlock.numberBuckets == 0)
+            throw loader_exception(LoaderResult::ErrorCompressedNCA, fmt::format("numberBuckets is 0 (empty bucket tree), tableOffset=0x{:X} tableSize=0x{:X}", compressionInfo.bucket.tableOffset, compressionInfo.bucket.tableSize));
+
         const size_t entryStorageOffset{nodeStorageOffset + sizeof(RelocationBlock)};
         const size_t entryStorageSize{compressionInfo.bucket.tableSize - sizeof(RelocationBlock)};
 
