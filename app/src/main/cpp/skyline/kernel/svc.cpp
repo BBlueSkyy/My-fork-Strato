@@ -1056,7 +1056,7 @@ namespace skyline::kernel::svc {
                 break;
         
             case InfoState::AliasRegionExtraSize:
-                out = 0; // No extra space reserved in the Alias ​​region
+                out = state.process->memory.aliasRegionExtraSize; // NPDM META flags bit6, 18.0.0+
                 break;
             
             case InfoState::IsVammEnabled:

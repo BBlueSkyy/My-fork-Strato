@@ -204,7 +204,7 @@ namespace skyline::kernel {
         }
     }
 
-    void MemoryManager::InitializeVmm(memory::AddressSpaceType type) {
+    void MemoryManager::InitializeVmm(memory::AddressSpaceType type, bool enableAliasRegionExtraSize) {
         addressSpaceType = type;
 
         LOGD("Initializing VMM for {}", to_string(addressSpaceType));
@@ -224,7 +224,14 @@ namespace skyline::kernel {
 
             case memory::AddressSpaceType::AddressSpace39Bit: {
                 addressSpace = span<u8>{reinterpret_cast<u8 *>(0), 1ULL << 39};
-                baseSize = AS39bit::TotalSize;
+
+                // [18.0.0+] NPDM META flags bit6 (EnableAliasRegionExtraSize): reserves an
+                // extra addressSpaceSize/8 on top of the normal Alias region, used by titles
+                // that do heavy physical-memory streaming (SetHeapSize/MapPhysicalMemory).
+                if (enableAliasRegionExtraSize)
+                    aliasRegionExtraSize = addressSpace.size() >> 3;
+
+                baseSize = AS39bit::TotalSize + aliasRegionExtraSize;
                 maxAddress = addressSpace.size();
                 break;
             }
@@ -294,7 +301,7 @@ namespace skyline::kernel {
 
             case memory::AddressSpaceType::AddressSpace39Bit: {
                 code = span<u8>{base.data(), util::AlignUp(codeRegion.size(), RegionAlignment)};
-                alias = span<u8>{code.host.end().base(), AS39bit::AliasRegionSize};
+                alias = span<u8>{code.host.end().base(), AS39bit::AliasRegionSize + aliasRegionExtraSize};
                 heap = span<u8>{alias.host.end().base(), AS39bit::HeapRegionSize};
                 stack = span<u8>{heap.host.end().base(), AS39bit::StackRegionSize};
                 tlsIo = span<u8>{stack.host.end().base(), AS39bit::TlsIoRegionSize};
