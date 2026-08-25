@@ -10,6 +10,11 @@
 #include "loader.h"
 
 namespace skyline::loader {
+    enum class NspLoadMode {
+        Full,
+        MetadataOnly,
+    };
+
     /**
      * @brief The NspLoader class consolidates all the data in an NSP providing a simple way to load an application and access its metadata
      * @url https://switchbrew.org/wiki/NCA_Format#PFS0
@@ -21,7 +26,8 @@ namespace skyline::loader {
         std::optional<vfs::NCA> metaNca; //!< The main meta NCA within the NSP
 
       public:
-       NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore, const std::string &diagnosticsPath = {}); 
+        NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore,
+                  const std::string &diagnosticsPath = {}, NspLoadMode loadMode = NspLoadMode::Full);
 
         std::vector<u8> GetIcon(language::ApplicationLanguage language) override;
 
