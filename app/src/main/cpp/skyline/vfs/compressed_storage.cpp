@@ -33,6 +33,13 @@ namespace skyline::vfs {
 
     CompressedStorage::CompressedStorage(std::shared_ptr<Backing> pBacking, RelocationBlock pBlock, std::vector<CompressedBucket> pBuckets, u64 virtualSize)
         : Backing({true, false, false}, virtualSize), backing(std::move(pBacking)), block(pBlock), buckets(std::move(pBuckets)) {
+        // Guard against an empty bucket tree: with numberBuckets == 0, `numberBuckets - 1` below would
+        // underflow (numberBuckets is unsigned), turning the loop bound into a huge value and indexing
+        // buckets[0] on an empty vector - a null dereference. Nothing to seal if there are no buckets,
+        // and ReadImpl() bails out immediately anyway since block.size is 0 in that case.
+        if (block.numberBuckets == 0)
+            return;
+
         // Cap every bucket with a sentinel entry pointing at the start of the next bucket, so
         // GetNextEntry() always has a following entry to bound a read/block against. The sentinel's own
         // fields are never dereferenced for data, only its virtualOffset is read as a boundary.
