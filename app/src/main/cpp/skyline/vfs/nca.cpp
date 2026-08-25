@@ -124,6 +124,10 @@ namespace skyline::vfs {
             const u64 size{constant::MediaUnitSize * (entry.mediaEndOffset - entry.mediaOffset)};
             const u64 offset{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].offset};
 
+            LOGD("BKTR debug: baseOffset=0x{:X} ivfcOffset=0x{:X} romFsOffset=0x{:X} relocOffset=0x{:X} relocSize=0x{:X} subsecOffset=0x{:X} subsecSize=0x{:X} size=0x{:X}",
+                 baseOffset, offset, romFsOffset, sectionHeader.bktr.relocation.offset, sectionHeader.bktr.relocation.size,
+                 sectionHeader.bktr.subsection.offset, sectionHeader.bktr.subsection.size, size);
+
             RelocationBlock relocationBlock{romFs->Read<RelocationBlock>(sectionHeader.bktr.relocation.offset - offset)};
             SubsectionBlock subsectionBlock{romFs->Read<SubsectionBlock>(sectionHeader.bktr.subsection.offset - offset)};
 
