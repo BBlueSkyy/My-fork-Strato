@@ -278,12 +278,26 @@ namespace skyline {
             MemoryRegion stack{};
             MemoryRegion tlsIo{}; //!< TLS/IO
             size_t aliasRegionExtraSize{}; //!< [18.0.0+] Extra size added to the Alias region, from NPDM META flags bit6 (EnableAliasRegionExtraSize)
-
+           
             size_t guestOffset{0}; //!< The offset between the guest address space and its host mapping, 0 when running in NCE mode
 
             size_t processHeapSize; //!< For use by svcSetHeapSize
 
             std::shared_mutex mutex; //!< Synchronizes any operations done on the VMM, it's locked in shared mode by readers and exclusive mode by writers
+
+            size_t mappedPhysicalMemorySize{}; //!< Running total of bytes currently reserved via MapPhysicalMemory, only mutated under `mutex` by MapPhysicalMemoryIfAllowed/UnmapPhysicalMemoryIfAllowed
+
+            /**
+             * @brief Best-effort approximation of HOS's per-process physical memory pool budget
+             * (~3.125GiB, the commonly-cited baseline "Application" memory arrangement size).
+             * PLACEHOLDER: not verified against real hardware or Atmosphere's kernel source, and this
+             * fork doesn't parse a per-title pool-partition/memory-arrangement value from NPDM the way
+             * real HOS does (some titles opt into a larger pool). Exists to keep titles that stream
+             * large physical memory pools (e.g. DKCR HD) from ballooning host RSS until the *device*
+             * OOMs -- on real hardware, hitting this budget is what forces a title's own pool manager
+             * to evict/recycle instead. Tune here if you find more accurate figures.
+             */
+            static constexpr size_t PhysicalMemoryLimit{0xC8000000}; // 3.125 GiB
 
             MemoryManager(const DeviceState &state) noexcept;
 
@@ -366,22 +380,42 @@ namespace skyline {
             bool SetRegionPermissionIfAllowed(span<u8> memory, memory::Permission permission);
 
             /**
+             * @brief Outcome of MapPhysicalMemoryIfAllowed, distinguishing the two independent ways it
+             * can fail so the caller (svcMapPhysicalMemory) can report the correct Result to the guest
+             */
+            enum class MapPhysicalMemoryResult {
+                Success,       //!< The whole range was mapped (or already was, as a no-op top-up)
+                NotUnmapped,   //!< A sub-chunk in range is neither Unmapped nor already Heap-mapped
+                LimitExceeded  //!< Mapping the not-yet-mapped delta would exceed PhysicalMemoryLimit
+            };
+
+            /**
+             * @brief Atomically validates that the entire range is either already Heap-mapped (a
+             * legitimate idempotent "top-up", matching real hardware's svcMapPhysicalMemory semantics)
+             * or Unmapped, then maps only the not-yet-mapped sub-chunks -- subject to PhysicalMemoryLimit
+             * above, checked against just that not-yet-mapped delta so a pure top-up never costs budget
+             * @note Mirrors the check/write pattern of SetRegionPermissionIfAllowed: the read-only
+             * validation pass and the write pass happen under the same lock acquisition, so no
+             * concurrent Map/Unmap on another thread can race the check
+             */
+            MapPhysicalMemoryResult MapPhysicalMemoryIfAllowed(span<u8> memory);
+
+            /**
+             * @brief Counterpart to MapPhysicalMemoryIfAllowed: unmaps physical memory and returns
+             * mappedPhysicalMemorySize by however much was actually freed (sub-chunks already Unmapped
+             * within the range don't count, matching UnmapMemory's existing behavior)
+             * @return False if any sub-chunk in the range is IPC-locked (nothing is modified in that
+             * case); true otherwise
+             * @note Deliberately kept separate from the generic UnmapMemory (used by SetHeapSize's
+             * shrink path and the plain UnmapMemory SVC) so those unrelated unmap paths never touch
+             * the physical memory budget tracked here
+             */
+            bool UnmapPhysicalMemoryIfAllowed(span<u8> memory);
+
+            /**
              * @brief Gets the highest chunk's descriptor that contains this address
              */
             std::optional<std::pair<u8 *, ChunkDescriptor>> GetChunk(u8 *addr);
-
-            /**
-             * @brief Atomically validates that the entire range is currently Unmapped (Free) and, if so,
-             * maps it as Heap-backed physical memory (mirrors MapHeapMemory's ChunkDescriptor)
-             * @return False if any chunk within the range - including gaps, which are surfaced as explicit
-             * Unmapped chunks - is not currently Unmapped, in which case nothing in the range is modified;
-             * true if the entire range was mapped
-             * @note Mirrors the check/write pattern of SetRegionPermissionIfAllowed: the read-only validation
-             * pass and the write pass happen under the same lock acquisition, so no concurrent Map/Unmap on
-             * another thread can race the check (unlike a GetChunk() check followed by a separate MapHeapMemory()
-             * call, which releases the lock in between)
-             */
-            bool MapPhysicalMemoryIfAllowed(span<u8> memory);
 
             // Various mapping functions for use by the guest, argument validity must be checked by the caller
             void MapCodeMemory(span<u8> memory, memory::Permission permission);
