@@ -132,8 +132,9 @@ namespace skyline {
         static_assert(sizeof(HierarchicalSha256HashInfo) == 0xF8);
 
         /**
-         * @brief The header of a bucket tree's table data, embedded at the start of the table for both
-         * Sparse and Compressed NCAs (i.e. offset 0 of the data pointed to by NCABucketInfo::tableOffset)
+         * @brief A bucket tree header embedded in the NCA FS header
+         * @note NCABucketInfo::tableOffset points at the bucket tree node storage. This header is not
+         *       repeated at tableOffset.
          */
         struct BucketTreeHeader {
             u32 magic; //!< 'BKTR'
@@ -202,9 +203,9 @@ namespace skyline {
             u64 offset;
             u64 size;
             u32 magic;
-            u8 _pad0_[0x4];
+            u32 version;
             u32 numberEntries;
-            u8 _pad1_[0x4];
+            u32 reserved;
         };
         static_assert(sizeof(BKTRHeader) == 0x20);
 
@@ -227,7 +228,7 @@ namespace skyline {
         static_assert(sizeof(NCASectionHeader) == 0x200);
 
         struct RelocationBlock {
-            u8 _pad0_[0x4];
+            u32 index;
             u32 numberBuckets;
             u64 size;
             std::array<u64, 0x7FE> baseOffsets;
@@ -244,7 +245,7 @@ namespace skyline {
         static_assert(sizeof(RelocationEntry) == 0x14);
 
         struct SubsectionBlock {
-            u8 _pad0_[0x4];
+            u32 index;
             u32 numberBuckets;
             u64 size;
             std::array<u64, 0x7FE> baseOffsets;
@@ -288,7 +289,7 @@ namespace skyline {
         static_assert(sizeof(NCAHeader) == 0x400);
 
         struct RelocationBucketRaw {
-            u8 _pad0_[0x4];
+            u32 index;
             u32 numberEntries;
             u64 endOffset;
             std::array<RelocationEntry, 0x332> relocationEntries;
@@ -309,7 +310,7 @@ namespace skyline {
         };
 
         struct SubsectionBucketRaw {
-            u8 _pad0_[0x4];
+            u32 index;
             u32 numberEntries;
             u64 endOffset;
             std::array<SubsectionEntry, 0x3FF> subsectionEntries;
@@ -347,7 +348,7 @@ namespace skyline {
          * in the 0x3FF0 bytes of entry space in a 0x4000 node, with no leftover padding needed)
          */
         struct CompressedBucketRaw {
-            u8 _pad0_[0x4];
+            u32 index;
             u32 numberEntries;
             u64 endOffset;
             std::array<CompressedEntry, 682> entries;
@@ -358,6 +359,11 @@ namespace skyline {
             u32 numberEntries;
             u64 endOffset;
             std::vector<CompressedEntry> entries;
+        };
+
+        enum class NCAParseMode {
+            Full,
+            MetadataOnly,
         };
 
         /**
@@ -384,10 +390,10 @@ namespace skyline {
 
             /**
              * @param sectionHeader The section's parsed header
-             * @param decryptedBacking The section's standard-IV, CTR-decrypted backing - only used as the passthrough return value when the section has no Sparse layer
-             * @param sectionPhysicalStart The physical file offset of the section's start (i.e. the same offset passed to CreateBacking for this section)
+             * @param encryptedBacking The raw section backing. Sparse remapping must happen before
+             *        the normal AES-CTR layer so its counter remains based on logical offsets.
              */
-            std::shared_ptr<Backing> CreateSparseBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t sectionPhysicalStart);
+            std::shared_ptr<Backing> CreateSparseBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> encryptedBacking);
 
             std::shared_ptr<Backing> CreateCompressedBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> decryptedBacking, size_t virtualSize);
 
@@ -399,15 +405,21 @@ namespace skyline {
 
             void ValidateNCA(const NCASectionHeader &sectionHeader);
 
-            static RelocationBucket ConvertRelocationBucketRaw(RelocationBucketRaw raw) {
+            static RelocationBucket ConvertRelocationBucketRaw(const RelocationBucketRaw &raw) {
+                if (raw.numberEntries == 0 || raw.numberEntries > raw.relocationEntries.size())
+                    throw exception("Invalid relocation bucket entry count: {}", raw.numberEntries);
                 return {raw.numberEntries, raw.endOffset, {raw.relocationEntries.begin(), raw.relocationEntries.begin() + raw.numberEntries}};
             }
 
-            static SubsectionBucket ConvertSubsectionBucketRaw(SubsectionBucketRaw raw) {
+            static SubsectionBucket ConvertSubsectionBucketRaw(const SubsectionBucketRaw &raw) {
+                if (raw.numberEntries == 0 || raw.numberEntries > raw.subsectionEntries.size())
+                    throw exception("Invalid subsection bucket entry count: {}", raw.numberEntries);
                 return {raw.numberEntries, raw.endOffset, {raw.subsectionEntries.begin(), raw.subsectionEntries.begin() + raw.numberEntries}};
             }
 
-            static CompressedBucket ConvertCompressedBucketRaw(CompressedBucketRaw raw) {
+            static CompressedBucket ConvertCompressedBucketRaw(const CompressedBucketRaw &raw) {
+                if (raw.numberEntries == 0 || raw.numberEntries > raw.entries.size())
+                    throw exception("Invalid compressed bucket entry count: {}", raw.numberEntries);
                 return {raw.numberEntries, raw.endOffset, {raw.entries.begin(), raw.entries.begin() + raw.numberEntries}};
             }
 
@@ -416,11 +428,13 @@ namespace skyline {
             std::shared_ptr<FileSystem> logo; //!< The PFS0 filesystem for this NCA's logo section
             std::shared_ptr<FileSystem> cnmt; //!< The PFS0 filesystem for this NCA's CNMT section
             std::shared_ptr<Backing> romFs; //!< The backing for this NCA's RomFS section
+            std::shared_ptr<Backing> rawRomFs; //!< The final IVFC data layer before NCA compression; updates must patch this layer before decompression
             NCAHeader header; //!< The header of the NCA
             NCAContentType contentType; //!< The content type of the NCA
             u64 ivfcOffset{0};
 
-            NCA(std::shared_ptr<vfs::Backing> backing, std::shared_ptr<crypto::KeyStore> keyStore, bool useKeyArea = false);
+            NCA(std::shared_ptr<vfs::Backing> backing, std::shared_ptr<crypto::KeyStore> keyStore, bool useKeyArea = false,
+                NCAParseMode parseMode = NCAParseMode::Full);
 
             NCA(std::optional<vfs::NCA> updateNca, std::shared_ptr<crypto::KeyStore> pKeyStore, std::shared_ptr<vfs::Backing> bktrBaseRomfs,
                 u64 bktrBaseIvfcOffset, bool useKeyArea = false);
