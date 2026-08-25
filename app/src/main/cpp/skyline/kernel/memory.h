@@ -277,7 +277,8 @@ namespace skyline {
             MemoryRegion heap{};
             MemoryRegion stack{};
             MemoryRegion tlsIo{}; //!< TLS/IO
-
+            size_t aliasRegionExtraSize{}; //!< [18.0.0+] Extra size added to the Alias region, from NPDM META flags bit6 (EnableAliasRegionExtraSize)
+           
             size_t guestOffset{0}; //!< The offset between the guest address space and its host mapping, 0 when running in NCE mode
 
             size_t processHeapSize; //!< For use by svcSetHeapSize
@@ -305,7 +306,7 @@ namespace skyline {
             /**
              * @note This should be called before any mappings in the VMM or calls to InitalizeRegions are done
              */
-            void InitializeVmm(memory::AddressSpaceType type);
+            void InitializeVmm(memory::AddressSpaceType type, bool enableAliasRegionExtraSize = false);
 
             void InitializeRegions(span<u8> codeRegion);
 
