@@ -24,7 +24,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     Shader::CompareFunction RuntimeGraphicsPipelineStateAccessor::GetTextureCompareFunc(u32 index) const {
         BindlessHandle handle{.raw = index};
-        return samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex);
+        auto function{samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex)};
+        bundle->AddTextureCompareFunction(index, function);
+        return function;
     }
 
     u32 RuntimeGraphicsPipelineStateAccessor::GetConstantBufferValue(u32 shaderStage, u32 index, u32 offset) const {
