@@ -364,7 +364,6 @@ namespace skyline::kernel::svc {
 
         i64 in{static_cast<i64>(ctx.x0)};
         if (in > 0) {
-            LOGD("Sleeping for {}ns", in);
             TRACE_EVENT("kernel", "SleepThread", "duration", in);
 
             struct timespec spec{
@@ -377,7 +376,6 @@ namespace skyline::kernel::svc {
         } else {
             switch (in) {
                 case yieldWithCoreMigration: {
-                    LOGD("Waking any appropriate parked threads and yielding");
                     TRACE_EVENT("kernel", "YieldWithCoreMigration");
                     state.scheduler->WakeParkedThread();
                     state.scheduler->Rotate();
@@ -386,7 +384,6 @@ namespace skyline::kernel::svc {
                 }
 
                 case yieldWithoutCoreMigration: {
-                    LOGD("Cooperative yield");
                     TRACE_EVENT("kernel", "YieldWithoutCoreMigration");
                     state.scheduler->Rotate();
                     state.scheduler->WaitSchedule();
@@ -394,7 +391,6 @@ namespace skyline::kernel::svc {
                 }
 
                 case yieldToAnyThread: {
-                    LOGD("Parking current thread");
                     TRACE_EVENT("kernel", "YieldToAnyThread");
                     state.scheduler->ParkThread();
                     state.scheduler->WaitSchedule(false);
