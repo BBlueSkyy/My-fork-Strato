@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
+#include <limits>
 #include <gpu.h>
-#include <soc/gm20b/engines/maxwell/types.h>
 #include "descriptor_allocator.h"
 
 namespace skyline::gpu {
@@ -12,53 +13,128 @@ namespace skyline::gpu {
         other.descriptorSet = nullptr;
     }
 
-    DescriptorAllocator::DescriptorPool::DescriptorPool(const vk::raii::Device &device, const vk::DescriptorPoolCreateInfo &createInfo) : vk::raii::DescriptorPool{device, createInfo}, freeSetCount{createInfo.maxSets} {}
+    DescriptorAllocator::DescriptorPool::DescriptorPool(const vk::raii::Device &device, const vk::DescriptorPoolCreateInfo &createInfo, DescriptorCounts pDescriptorCounts)
+        : vk::raii::DescriptorPool{device, createInfo},
+          freeSetCount{createInfo.maxSets},
+          remainingDescriptorCounts{pDescriptorCounts} {}
 
     void DescriptorAllocator::AllocateDescriptorPool() {
-        namespace maxwell3d = soc::gm20b::engine::maxwell3d::type; // We use Maxwell3D as reference for base descriptor counts
         using DescriptorSizes = std::array<vk::DescriptorPoolSize, 6>;
 
-        constexpr DescriptorSizes BaseDescriptorSizes{
+        DescriptorSizes descriptorSizes{
             vk::DescriptorPoolSize{
-                .descriptorCount = 512,
+                .descriptorCount = descriptorCounts[0],
                 .type = vk::DescriptorType::eUniformBuffer,
             },
             vk::DescriptorPoolSize{
-                .descriptorCount = 64,
+                .descriptorCount = descriptorCounts[1],
                 .type = vk::DescriptorType::eStorageBuffer,
             },
             vk::DescriptorPoolSize{
-                .descriptorCount = 256,
+                .descriptorCount = descriptorCounts[2],
                 .type = vk::DescriptorType::eCombinedImageSampler,
             },
             vk::DescriptorPoolSize{
-                .descriptorCount = 16,
+                .descriptorCount = descriptorCounts[3],
                 .type = vk::DescriptorType::eStorageImage,
             },
             vk::DescriptorPoolSize{
-                .descriptorCount = 4,
+                .descriptorCount = descriptorCounts[4],
                 .type = vk::DescriptorType::eUniformTexelBuffer,
             },
             vk::DescriptorPoolSize{
-                .descriptorCount = 4,
+                .descriptorCount = descriptorCounts[5],
                 .type = vk::DescriptorType::eStorageTexelBuffer,
-            } //!< Approximated descriptor counts based off empirical testing, the total amount will grow in these ratios
+            }
         };
-
-        DescriptorSizes descriptorSizes{BaseDescriptorSizes};
-        for (auto &descriptorSize : descriptorSizes)
-            descriptorSize.descriptorCount *= descriptorMultiplier;
 
         pool = std::make_shared<DescriptorPool>(gpu.vkDevice, vk::DescriptorPoolCreateInfo{
             .maxSets = descriptorSetCount,
             .pPoolSizes = descriptorSizes.data(),
             .poolSizeCount = descriptorSizes.size(),
-        });
+        }, descriptorCounts);
 
-        pool->freeSetCount = descriptorSetCount;
+        LOGI("Created descriptor pool: sets={}, UBO={}, SSBO={}, sampled={}, storageImage={}, uniformTexel={}, storageTexel={}",
+             descriptorSetCount, descriptorCounts[0], descriptorCounts[1], descriptorCounts[2], descriptorCounts[3], descriptorCounts[4], descriptorCounts[5]);
     }
 
-    vk::ResultValue<vk::DescriptorSet> DescriptorAllocator::AllocateVkDescriptorSet(vk::DescriptorSetLayout layout) {
+    DescriptorAllocator::DescriptorCounts DescriptorAllocator::GetDescriptorCounts(span<const vk::DescriptorSetLayoutBinding> layoutBindings) {
+        DescriptorCounts requirements{};
+
+        for (const auto &binding : layoutBindings) {
+            size_t index;
+            switch (binding.descriptorType) {
+                case vk::DescriptorType::eUniformBuffer:
+                    index = 0;
+                    break;
+                case vk::DescriptorType::eStorageBuffer:
+                    index = 1;
+                    break;
+                case vk::DescriptorType::eCombinedImageSampler:
+                    index = 2;
+                    break;
+                case vk::DescriptorType::eStorageImage:
+                    index = 3;
+                    break;
+                case vk::DescriptorType::eUniformTexelBuffer:
+                    index = 4;
+                    break;
+                case vk::DescriptorType::eStorageTexelBuffer:
+                    index = 5;
+                    break;
+                default:
+                    throw exception("Unsupported descriptor type in descriptor allocator: {}", static_cast<u32>(binding.descriptorType));
+            }
+
+            if (binding.descriptorCount > std::numeric_limits<u32>::max() - requirements[index])
+                throw exception("Descriptor count overflow for type: {}", static_cast<u32>(binding.descriptorType));
+
+            requirements[index] += binding.descriptorCount;
+        }
+
+        return requirements;
+    }
+
+    bool DescriptorAllocator::UpdateDescriptorCounts(const DescriptorCounts &requirements) {
+        bool changed{};
+
+        for (size_t i{}; i < descriptorCounts.size(); i++) {
+            maxDescriptorCountsPerSet[i] = std::max(maxDescriptorCountsPerSet[i], requirements[i]);
+
+            u64 requiredCount{static_cast<u64>(maxDescriptorCountsPerSet[i]) * descriptorSetCount};
+            if (requiredCount > std::numeric_limits<u32>::max())
+                throw exception("Descriptor pool size overflow for descriptor type index: {}", i);
+
+            u32 targetCount{std::max(BaseDescriptorCounts[i], static_cast<u32>(requiredCount))};
+            if (descriptorCounts[i] < targetCount) {
+                u32 grownCount{descriptorCounts[i]};
+                while (grownCount < targetCount) {
+                    if (grownCount > std::numeric_limits<u32>::max() / 2) {
+                        grownCount = targetCount;
+                        break;
+                    }
+
+                    grownCount *= 2;
+                }
+
+                descriptorCounts[i] = grownCount;
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
+    void DescriptorAllocator::GrowDescriptorCounts() {
+        for (auto &count : descriptorCounts) {
+            if (count > std::numeric_limits<u32>::max() / 2)
+                throw exception("Descriptor pool size overflow while growing pool");
+
+            count *= 2;
+        }
+    }
+
+    vk::ResultValue<vk::DescriptorSet> DescriptorAllocator::AllocateVkDescriptorSet(vk::DescriptorSetLayout layout, const DescriptorCounts &requirements) {
         vk::DescriptorSetAllocateInfo allocateInfo{
             .descriptorPool = **pool,
             .pSetLayouts = &layout,
@@ -67,8 +143,12 @@ namespace skyline::gpu {
         vk::DescriptorSet descriptorSet{};
 
         auto result{(*gpu.vkDevice).allocateDescriptorSets(&allocateInfo, &descriptorSet, *gpu.vkDevice.getDispatcher())};
-        if (result == vk::Result::eSuccess && pool->freeSetCount > 0)
+        if (result == vk::Result::eSuccess) {
             pool->freeSetCount--;
+
+            for (size_t i{}; i < requirements.size(); i++)
+                pool->remainingDescriptorCounts[i] -= requirements[i];
+        }
 
         return vk::createResultValue(result, descriptorSet, __builtin_FUNCTION(), {
             vk::Result::eSuccess,
@@ -93,13 +173,12 @@ namespace skyline::gpu {
         AllocateDescriptorPool();
     }
 
-    DescriptorAllocator::ActiveDescriptorSet DescriptorAllocator::AllocateSet(vk::DescriptorSetLayout layout) {
+    DescriptorAllocator::ActiveDescriptorSet DescriptorAllocator::AllocateSet(vk::DescriptorSetLayout layout, span<const vk::DescriptorSetLayoutBinding> layoutBindings) {
         std::scoped_lock allocatorLock{mutex};
 
+        DescriptorCounts requirements{GetDescriptorCounts(layoutBindings)};
         auto it{pool->layoutSlots.find(layout)};
-        vk::Result lastResult{};
         if (it != pool->layoutSlots.end()) {
-            auto &slots{it->second};
             for (auto slotIt{it->second.begin()} ; slotIt != it->second.end() ; slotIt++) {
                 if (!slotIt->active.test_and_set(std::memory_order_acq_rel)) {
                     // Move active slots to end of list to reduce search time
@@ -107,52 +186,47 @@ namespace skyline::gpu {
                     return ActiveDescriptorSet{pool, &*slotIt};
                 }
             }
+        }
 
-            // If we couldn't find an available slot, we need to allocate a new one
-            auto set{AllocateVkDescriptorSet(layout)};
-            if (set.result == vk::Result::eSuccess) {
-                auto &slot{slots.emplace_back(set.value)};
-                slot.active.test_and_set(std::memory_order_release);
-                return ActiveDescriptorSet{pool, &slot};
-            } else {
-                lastResult = set.result;
-            }
-        } else {
-            // If we couldn't find a layout, we need to allocate a new one
-            auto set{AllocateVkDescriptorSet(layout)};
-            if (set.result == vk::Result::eSuccess) {
-                auto &layoutSlots{pool->layoutSlots.try_emplace(layout).first->second};
-                auto &slot{layoutSlots.emplace_back(set.value)};
-                slot.active.test_and_set(std::memory_order_release);
-                return ActiveDescriptorSet{pool, &slot};
-            } else {
-                lastResult = set.result;
+        // Size the pool for a full batch of the most demanding layout observed before asking the driver to allocate.
+        if (UpdateDescriptorCounts(requirements))
+            AllocateDescriptorPool();
+
+        // Maxwell3D may keep a complete descriptor batch alive. Grow proactively instead of using a Vulkan error as flow control.
+        if (pool->freeSetCount == 0) {
+            if (descriptorSetCount > std::numeric_limits<u32>::max() / 2)
+                throw exception("Descriptor set count overflow while growing pool");
+
+            descriptorSetCount *= 2;
+            UpdateDescriptorCounts(requirements);
+            AllocateDescriptorPool();
+        }
+
+        for (size_t i{}; i < requirements.size(); i++) {
+            if (requirements[i] > pool->remainingDescriptorCounts[i]) {
+                // This should only be reachable with unusual driver accounting or a mixed-layout corner case.
+                AllocateDescriptorPool();
+                break;
             }
         }
 
         while (true) {
-            // We attempt to modify the pool based on the last result
-            if (lastResult == vk::Result::eErrorOutOfPoolMemory) {
-                if (pool->freeSetCount == 0)
-                    // The amount of maximum descriptor sets is insufficient
-                    descriptorSetCount += DescriptorSetCountIncrement;
-                else
-                    // The amount of maximum descriptors is insufficient
-                    descriptorMultiplier++;
-                AllocateDescriptorPool();
-            } else if (lastResult == vk::Result::eErrorFragmentedPool) {
-                AllocateDescriptorPool(); // If the pool is fragmented, we reallocate without increasing the size
-            }
-
-            // Try to allocate a new layout
-            auto set{AllocateVkDescriptorSet(layout)};
+            auto set{AllocateVkDescriptorSet(layout, requirements)};
             if (set.result == vk::Result::eSuccess) {
                 auto &layoutSlots{pool->layoutSlots.try_emplace(layout).first->second};
                 auto &slot{layoutSlots.emplace_back(set.value)};
                 slot.active.test_and_set(std::memory_order_release);
                 return ActiveDescriptorSet{pool, &slot};
+            }
+
+            if (set.result == vk::Result::eErrorOutOfPoolMemory) {
+                // Some drivers may account for descriptors more strictly than advertised. Keep a defensive exponential fallback.
+                GrowDescriptorCounts();
+                AllocateDescriptorPool();
+            } else if (set.result == vk::Result::eErrorFragmentedPool) {
+                AllocateDescriptorPool();
             } else {
-                lastResult = set.result;
+                throw exception("Unexpected descriptor set allocation result: {}", static_cast<i32>(set.result));
             }
         }
     }
