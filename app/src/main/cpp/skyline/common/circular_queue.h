@@ -180,6 +180,20 @@ namespace skyline {
             }
         }
 
+        bool TryPush(Type &&item) {
+            std::scoped_lock lock{productionMutex};
+
+            auto next{end + 1};
+            next = (next == reinterpret_cast<Type *>(vector.end().base())) ? reinterpret_cast<Type *>(vector.begin().base()) : next;
+            if (next == start)
+                return false;
+
+            *next = std::move(item);
+            end = next;
+            produceCondition.notify_one();
+            return true;
+        }
+
         template<typename... Args>
         void Emplace(Args &&... args) {
             Type *waitNext{};
