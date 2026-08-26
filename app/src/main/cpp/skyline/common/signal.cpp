@@ -84,17 +84,24 @@ namespace skyline::signal {
 
             __builtin_unreachable();
         } else {
+            std::string message;
             if (exception) {
                 try {
                     std::rethrow_exception(exception);
                 } catch (const std::exception &e) {
-                    LOGE("Terminating due to uncaught exception: {}", e.what());
+                    message = fmt::format("Terminating due to uncaught exception: {}", e.what());
                 } catch (...) {
-                    LOGE("Terminating due to uncaught exception of unknown type");
+                    message = "Terminating due to uncaught exception of unknown type";
                 }
             } else {
-                LOGE("std::terminate called without active exception");
+                message = "std::terminate called without active exception";
             }
+
+            AsyncLogger::LogSync(
+                AsyncLogger::LogLevel::Error,
+                fmt::format("{}\nNative stack:\n{}", message, debug::CaptureBacktrace()),
+                __builtin_FUNCTION()
+            );
             SleepTillExit(); // We don't want to delegate to the older terminate handler as it might cause an exit
         }
     }
