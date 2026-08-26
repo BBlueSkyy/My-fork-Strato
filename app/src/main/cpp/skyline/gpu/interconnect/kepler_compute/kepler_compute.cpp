@@ -46,7 +46,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         if (ctx.gpu.traits.supportsPushDescriptors) {
             builder.SetDescriptorSetWithPush(descUpdateInfo);
         } else {
-            auto set{std::make_shared<DescriptorAllocator::ActiveDescriptorSet>(ctx.gpu.descriptor.AllocateSet(descUpdateInfo->descriptorSetLayout))};
+            auto set{std::make_shared<DescriptorAllocator::ActiveDescriptorSet>(ctx.gpu.descriptor.AllocateSet(descUpdateInfo->descriptorSetLayout, descUpdateInfo->descriptorSetLayoutBindings))};
 
             builder.SetDescriptorSetWithUpdate(descUpdateInfo, set.get(), nullptr);
             ctx.executor.AttachDependency(set);
