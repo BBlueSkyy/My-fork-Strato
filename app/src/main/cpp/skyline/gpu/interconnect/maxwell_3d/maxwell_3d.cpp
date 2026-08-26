@@ -200,9 +200,23 @@ namespace skyline::gpu::interconnect::maxwell3d {
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
 
 
-         auto *descUpdateInfo{pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
-                                                        activeDescriptorSetSampledImages,
-                                                        srcStageMask, dstStageMask)};
+         auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
+             if (((oldPipeline == pipeline) || (oldPipeline && oldPipeline->CheckBindingMatch(pipeline))) && constantBuffers.quickBindEnabled) {
+                 // If bindings between the old and new pipelines are the same we can reuse the descriptor sets given that quick bind is enabled (meaning that no buffer updates or calls to non-graphics engines have occurred that could invalidate them)
+                 if (constantBuffers.quickBind)
+                     // If only a single constant buffer has been rebound between draws we can perform a partial descriptor update
+                     return pipeline->SyncDescriptorsQuickBind(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
+                                                               *constantBuffers.quickBind, activeDescriptorSetSampledImages,
+                                                               srcStageMask, dstStageMask);
+                 else
+                     return nullptr;
+             } else {
+                 // If bindings have changed or quick bind is disabled, perform a full descriptor update
+                 return pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
+                                                  activeDescriptorSetSampledImages,
+                                                  srcStageMask, dstStageMask);
+             }
+         }()};
 
          if (oldPipeline != pipeline)
              // If the pipeline has changed, we need to update the pipeline state
