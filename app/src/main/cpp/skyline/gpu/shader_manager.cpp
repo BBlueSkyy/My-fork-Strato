@@ -88,7 +88,8 @@ namespace skyline::gpu {
             .support_snorm_render_buffer = true,
             .support_viewport_index_layer = gpu.traits.supportsShaderViewportIndexLayer,
             .min_ssbo_alignment = traits.minimumStorageBufferAlignment,
-            .support_geometry_shader_passthrough = false
+            .support_geometry_shader_passthrough = false,
+            .has_broken_texture_shadow_compare = traits.quirks.brokenTextureShadowCompare,
         };
 
         constexpr u32 TegraX1WarpSize{32}; //!< The amount of threads in a warp on the Tegra X1
