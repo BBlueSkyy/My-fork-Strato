@@ -22,7 +22,7 @@ namespace skyline::gpu::interconnect {
                                                          BufferView view, size_t idx,
                                                          vk::PipelineStageFlagBits dstStage,
                                                          vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        if (!view) // Returns a dummy buffer if the constant buffer is not specified.
+        if (!view) // Retorna um buffer dummy se o constant buffer não estiver vinculado
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         ctx.executor.AttachBuffer(view);
