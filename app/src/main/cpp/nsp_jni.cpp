@@ -28,7 +28,7 @@ Java_org_stratoemu_strato_loader_NspParser_parseNspMetadata(JNIEnv *env, jclass,
         auto file = std::make_shared<vfs::OsBacking>(fd);
         auto keyStore = std::make_shared<crypto::KeyStore>(keyStorePath);
         LOGI("NSP JNI: Created backing and keystore");
-        auto nspLoader = std::make_shared<loader::NspLoader>(file, keyStore);
+        auto nspLoader = std::make_shared<loader::NspLoader>(file, keyStore, std::string{}, loader::NspLoadMode::MetadataOnly);
         LOGI("NSP JNI: Created NSP loader");
 
         // Create result object
@@ -132,7 +132,7 @@ Java_org_stratoemu_strato_loader_NspParser_isValidUpdate(JNIEnv *env, jclass, ji
     try {
         auto file = std::make_shared<vfs::OsBacking>(updateFd);
         auto keyStore = std::make_shared<crypto::KeyStore>(keyStorePath);
-        auto nspLoader = std::make_shared<loader::NspLoader>(file, keyStore);
+        auto nspLoader = std::make_shared<loader::NspLoader>(file, keyStore, std::string{}, loader::NspLoadMode::MetadataOnly);
 
         if (!nspLoader->cnmt) {
             return JNI_FALSE;
@@ -168,7 +168,7 @@ Java_org_stratoemu_strato_loader_NspParser_isValidDlc(JNIEnv *env, jclass, jint 
     try {
         auto file = std::make_shared<vfs::OsBacking>(dlcFd);
         auto keyStore = std::make_shared<crypto::KeyStore>(keyStorePath);
-        auto nspLoader = std::make_shared<loader::NspLoader>(file, keyStore);
+        auto nspLoader = std::make_shared<loader::NspLoader>(file, keyStore, std::string{}, loader::NspLoadMode::MetadataOnly);
 
         if (!nspLoader->cnmt) {
             return JNI_FALSE;
@@ -199,7 +199,7 @@ Java_org_stratoemu_strato_loader_NspParser_getDlcName(JNIEnv *env, jclass, jint 
     try {
         auto file = std::make_shared<vfs::OsBacking>(dlcFd);
         auto keyStore = std::make_shared<crypto::KeyStore>(keyStorePath);
-        auto nspLoader = std::make_shared<loader::NspLoader>(file, keyStore);
+        auto nspLoader = std::make_shared<loader::NspLoader>(file, keyStore, std::string{}, loader::NspLoadMode::MetadataOnly);
 
         if (nspLoader->nacp) {
             std::string name = nspLoader->nacp->GetApplicationName(language::ApplicationLanguage::AmericanEnglish);
@@ -233,7 +233,7 @@ Java_org_stratoemu_strato_loader_NspParser_getUpdateVersion(JNIEnv *env, jclass,
     try {
         auto file = std::make_shared<vfs::OsBacking>(updateFd);
         auto keyStore = std::make_shared<crypto::KeyStore>(keyStorePath);
-        auto nspLoader = std::make_shared<loader::NspLoader>(file, keyStore);
+        auto nspLoader = std::make_shared<loader::NspLoader>(file, keyStore, std::string{}, loader::NspLoadMode::MetadataOnly);
 
         if (nspLoader->nacp) {
             std::string version = nspLoader->nacp->GetApplicationVersion();

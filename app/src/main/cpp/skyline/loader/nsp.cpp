@@ -24,8 +24,12 @@ namespace skyline::loader {
         }
     }
 
-    NspLoader::NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore, const std::string &diagnosticsPath) : nsp(std::make_shared<vfs::PartitionFileSystem>(backing)) {
+    NspLoader::NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore,
+                         const std::string &diagnosticsPath, NspLoadMode loadMode)
+        : nsp(std::make_shared<vfs::PartitionFileSystem>(backing)) {
         ExtractTickets(nsp, keyStore);
+
+        const auto ncaParseMode{loadMode == NspLoadMode::MetadataOnly ? vfs::NCAParseMode::MetadataOnly : vfs::NCAParseMode::Full};
 
         auto root{nsp->OpenDirectory("", {false, true})};
         for (const auto &entry : root->Read()) {
@@ -33,7 +37,7 @@ namespace skyline::loader {
                 continue;
 
             try {
-                auto nca{vfs::NCA(nsp->OpenFile(entry.name), keyStore)};
+                auto nca{vfs::NCA(nsp->OpenFile(entry.name), keyStore, false, ncaParseMode)};
 
                 if (nca.contentType == vfs::NCAContentType::Program && nca.romFs != nullptr && nca.exeFs != nullptr)
                     programNca = std::move(nca);
@@ -49,7 +53,9 @@ namespace skyline::loader {
                     if (diag)
                         diag << "NCA '" << entry.name << "' failed, LoaderResult=" << static_cast<int>(e.error) << ", " << e.what() << "\n";
                 }
-                throw loader_exception(e.error);
+                if (loadMode == NspLoadMode::Full)
+                    throw loader_exception(e.error, e.what());
+                LOGW("Skipping NCA '{}' while reading NSP metadata: {}", entry.name, e.what());
             } catch (const std::exception &e) {
                 LOGE("NCA parsing failed for '{}': {}", entry.name, e.what());
                 continue;

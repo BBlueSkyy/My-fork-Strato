@@ -7,18 +7,26 @@
 namespace skyline::vfs {
     template <typename BlockType, typename BucketType>
     std::pair<u64, u64> SearchBucketEntry(u64 offset, const BlockType &block, const BucketType &buckets, bool isSubsection) {
+        if (block.numberBuckets == 0 || block.numberBuckets > block.baseOffsets.size() || block.numberBuckets > buckets.size())
+            throw exception("BKTR: invalid bucket count {}", block.numberBuckets);
+
         if (isSubsection) {
             const auto &lastBucket{buckets[block.numberBuckets - 1]};
+            if (lastBucket.numberEntries >= lastBucket.entries.size())
+                throw exception("BKTR: subsection bucket is missing its boundary entry");
             if (offset >= lastBucket.entries[lastBucket.numberEntries].addressPatch) {
                 return {block.numberBuckets - 1, lastBucket.numberEntries};
             }
         }
 
-        u64 bucketId{static_cast<u64>(std::distance(block.baseOffsets.begin(),
-                                                    std::upper_bound(block.baseOffsets.begin() + 1,
-                                                                     block.baseOffsets.begin() + block.numberBuckets, offset)) - 1)};
+        auto bucketIt{std::upper_bound(block.baseOffsets.begin(), block.baseOffsets.begin() + block.numberBuckets, offset)};
+        if (bucketIt == block.baseOffsets.begin())
+            throw exception("BKTR: offset 0x{:X} is before the first bucket", offset);
+        const u64 bucketId{static_cast<u64>(std::distance(block.baseOffsets.begin(), bucketIt) - 1)};
 
         const auto &bucket{buckets[bucketId]};
+        if (bucket.numberEntries == 0 || bucket.numberEntries > bucket.entries.size())
+            throw exception("BKTR: invalid entry count {} in bucket {}", bucket.numberEntries, bucketId);
 
         if (bucket.numberEntries == 1)
             return {bucketId, 0};
@@ -31,19 +39,34 @@ namespace skyline::vfs {
             u64 entryIndex{static_cast<u64>(std::distance(bucket.entries.begin(), entryIt) - 1)};
             return {bucketId, entryIndex};
         }
-        LOGE("Offset could not be found.");
-        return {0, 0};
+        throw exception("BKTR: offset 0x{:X} could not be found", offset);
     }
 
     BKTR::BKTR(std::shared_ptr<vfs::Backing> pBaseRomfs, std::shared_ptr<vfs::Backing> pBktrRomfs, RelocationBlock pRelocation,
                std::vector<RelocationBucket> pRelocationBuckets, SubsectionBlock pSubsection,
                std::vector<SubsectionBucket> pSubsectionBuckets, bool pIsEncrypted, std::array<u8, 16> pKey,
                u64 pBaseOffset, u64 pIvfcOffset, std::array<u8, 8> pSectionCtr)
-               : baseRomFs(std::move(pBaseRomfs)), bktrRomFs(std::move(pBktrRomfs)),
+               : Backing({true, false, false}, pRelocation.size), baseRomFs(std::move(pBaseRomfs)), bktrRomFs(std::move(pBktrRomfs)),
                  relocation(pRelocation), relocationBuckets(std::move(pRelocationBuckets)),
                  subsection(pSubsection), subsectionBuckets(std::move(pSubsectionBuckets)),
                  isEncrypted(pIsEncrypted), key(pKey), baseOffset(pBaseOffset), ivfcOffset(pIvfcOffset),
                  sectionCtr(pSectionCtr) {
+
+        if (!baseRomFs || !bktrRomFs)
+            throw exception("BKTR: missing base or patch backing");
+        if (relocation.index != 0 || subsection.index != 0 || relocation.numberBuckets == 0 || subsection.numberBuckets == 0 ||
+            relocation.numberBuckets != relocationBuckets.size() || subsection.numberBuckets != subsectionBuckets.size() ||
+            relocation.numberBuckets > relocation.baseOffsets.size() || subsection.numberBuckets > subsection.baseOffsets.size())
+            throw exception("BKTR: invalid root nodes");
+
+        for (size_t i{}; i < relocationBuckets.size(); ++i) {
+            if (relocationBuckets[i].numberEntries == 0 || relocationBuckets[i].numberEntries > relocationBuckets[i].entries.size())
+                throw exception("BKTR: invalid relocation bucket {}", i);
+        }
+        for (size_t i{}; i < subsectionBuckets.size(); ++i) {
+            if (subsectionBuckets[i].numberEntries == 0 || subsectionBuckets[i].numberEntries > subsectionBuckets[i].entries.size())
+                throw exception("BKTR: invalid subsection bucket {}", i);
+        }
 
         for (std::size_t i = 0; i < relocation.numberBuckets - 1; ++i)
             relocationBuckets[i].entries.push_back({relocation.baseOffsets[i + 1], 0, 0});
@@ -55,6 +78,9 @@ namespace skyline::vfs {
     }
 
     size_t BKTR::ReadImpl(span<u8> output, size_t offset) {
+        if (output.empty())
+            return 0;
+
         if (offset >= relocation.size)
             return 0;
 
@@ -63,18 +89,25 @@ namespace skyline::vfs {
 
         const auto nextRelocation{GetNextRelocationEntry(offset)};
 
-       if (offset + output.size() > nextRelocation.addressPatch) {
+       if (nextRelocation.addressPatch <= offset)
+           throw exception("BKTR::ReadImpl: non-advancing relocation boundary at offset 0x{:X}", offset);
+
+       if (output.size() > nextRelocation.addressPatch - offset) {
            const u64 partition{nextRelocation.addressPatch - offset};
-           if (partition == 0)
-               throw exception("BKTR::ReadImpl: relocation bucket tree returned a non-advancing entry at offset 0x{:X} (addressPatch=0x{:X}, next.addressPatch=0x{:X})", offset, relocationEntry.addressPatch, nextRelocation.addressPatch);
            span<u8> data(output.data() + partition, output.size() - partition);
            return ReadWithPartition(data, output.size() - partition, offset + partition) + ReadWithPartition(output, partition, offset);
        }
 
        if (!relocationEntry.fromPatch) {
+           if (sectionOffset < ivfcOffset || sectionOffset - ivfcOffset > baseRomFs->size ||
+               output.size() > baseRomFs->size - (sectionOffset - ivfcOffset))
+               throw exception("BKTR: base read is outside the base RomFS");
            auto regionBacking{std::make_shared<RegionBacking>(baseRomFs, sectionOffset - ivfcOffset, output.size())};
            return regionBacking->Read(output);
        }
+
+        if (sectionOffset > bktrRomFs->size || output.size() > bktrRomFs->size - sectionOffset)
+            throw exception("BKTR: patch read is outside the update section");
 
         if (!isEncrypted)
             return bktrRomFs->Read(output, sectionOffset);
@@ -86,10 +119,11 @@ namespace skyline::vfs {
 
         const auto nextSubsection{GetNextSubsectionEntry(sectionOffset)};
 
-        if (sectionOffset + output.size() > nextSubsection.addressPatch) {
+        if (nextSubsection.addressPatch <= sectionOffset)
+            throw exception("BKTR::ReadImpl: non-advancing subsection boundary at offset 0x{:X}", sectionOffset);
+
+        if (output.size() > nextSubsection.addressPatch - sectionOffset) {
             const u64 partition{nextSubsection.addressPatch - sectionOffset};
-            if (partition == 0)
-                throw exception("BKTR::ReadImpl: subsection bucket tree returned a non-advancing entry at sectionOffset 0x{:X} (next.addressPatch=0x{:X})", sectionOffset, nextSubsection.addressPatch);
             span<u8> data(output.data() + partition, output.size() - partition);
             return ReadWithPartition(data, output.size() - partition, offset + partition) +
                 ReadWithPartition(output, partition, offset);
@@ -120,6 +154,11 @@ namespace skyline::vfs {
     }
 
     size_t BKTR::ReadWithPartition(span<u8> output, size_t length, size_t offset) {
+        if (length == 0)
+            return 0;
+        if (length > output.size())
+            throw exception("BKTR::ReadWithPartition: length exceeds output span");
+
         if (offset >= relocation.size)
             return 0;
 
@@ -128,19 +167,26 @@ namespace skyline::vfs {
 
         const auto nextRelocation{GetNextRelocationEntry(offset)};
 
-        if (offset + length > nextRelocation.addressPatch) {
+        if (nextRelocation.addressPatch <= offset)
+            throw exception("BKTR::ReadWithPartition: non-advancing relocation boundary at offset 0x{:X}", offset);
+
+        if (length > nextRelocation.addressPatch - offset) {
             const u64 partition{nextRelocation.addressPatch - offset};
-            if (partition == 0)
-                throw exception("BKTR::ReadWithPartition: relocation bucket tree returned a non-advancing entry at offset 0x{:X} (addressPatch=0x{:X}, next.addressPatch=0x{:X})", offset, relocationEntry.addressPatch, nextRelocation.addressPatch);
             span<u8> data(output.data() + partition, length - partition);
             return ReadWithPartition(data, length - partition, offset + partition) + ReadWithPartition(output, partition, offset);
         }
 
        if (!relocationEntry.fromPatch) {
+           if (sectionOffset < ivfcOffset || sectionOffset - ivfcOffset > baseRomFs->size ||
+               length > baseRomFs->size - (sectionOffset - ivfcOffset))
+               throw exception("BKTR: base read is outside the base RomFS");
            span<u8> data(output.data(), length);
            auto regionBacking{std::make_shared<RegionBacking>(baseRomFs, sectionOffset - ivfcOffset, length)};
            return regionBacking->Read(data);
        }
+
+       if (sectionOffset > bktrRomFs->size || length > bktrRomFs->size - sectionOffset)
+           throw exception("BKTR: patch read is outside the update section");
 
        if (!isEncrypted)
            return bktrRomFs->Read(output, sectionOffset);
@@ -152,10 +198,11 @@ namespace skyline::vfs {
 
         const auto nextSubsection{GetNextSubsectionEntry(sectionOffset)};
 
-        if (sectionOffset + length > nextSubsection.addressPatch) {
+        if (nextSubsection.addressPatch <= sectionOffset)
+            throw exception("BKTR::ReadWithPartition: non-advancing subsection boundary at offset 0x{:X}", sectionOffset);
+
+        if (length > nextSubsection.addressPatch - sectionOffset) {
             const u64 partition{nextSubsection.addressPatch - sectionOffset};
-            if (partition == 0)
-                throw exception("BKTR::ReadWithPartition: subsection bucket tree returned a non-advancing entry at sectionOffset 0x{:X} (next.addressPatch=0x{:X})", sectionOffset, nextSubsection.addressPatch);
             span<u8> data(output.data() + partition, length - partition);
             return ReadWithPartition(data, length - partition, offset + partition) +
                 ReadWithPartition(output, partition, offset);
@@ -193,7 +240,9 @@ namespace skyline::vfs {
         const auto bucket{subsectionBuckets[entry.first]};
         if (entry.second + 1 < bucket.entries.size())
             return bucket.entries[entry.second + 1];
-        return subsectionBuckets[entry.first + 1].entries[0];
+        if (entry.first + 1 >= subsectionBuckets.size() || subsectionBuckets[entry.first + 1].entries.empty())
+            throw exception("BKTR: missing next subsection entry");
+        return subsectionBuckets[entry.first + 1].entries.front();
     }
 
     RelocationEntry BKTR::GetRelocationEntry(u64 offset) {
@@ -211,7 +260,9 @@ namespace skyline::vfs {
         const auto bucket{relocationBuckets[entry.first]};
         if (entry.second + 1 < bucket.entries.size())
             return bucket.entries[entry.second + 1];
-        return relocationBuckets[entry.first + 1].entries[0];
+        if (entry.first + 1 >= relocationBuckets.size() || relocationBuckets[entry.first + 1].entries.empty())
+            throw exception("BKTR: missing next relocation entry");
+        return relocationBuckets[entry.first + 1].entries.front();
     }
 
     std::array<u8, 16> BKTR::GetCipherIV(SubsectionEntry subsectionEntry, u64 sectionOffset) {
