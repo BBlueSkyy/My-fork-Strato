@@ -362,6 +362,11 @@ namespace skyline::gpu::interconnect {
 
     Shader::TextureType Textures::GetTextureType(InterconnectContext &ctx, u32 index) {
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        if (index >= textureHeaders.size()) {
+            LOGW("Texture type requested for out-of-range TIC index {}", index);
+            return Shader::TextureType::Color2D;
+        }
+
         switch (textureHeaders[index].textureType) {
             case TextureImageControl::TextureType::e1D:
                 return Shader::TextureType::Color1D;
@@ -381,9 +386,34 @@ namespace skyline::gpu::interconnect {
             case TextureImageControl::TextureType::eCubeArray:
                 return Shader::TextureType::ColorArrayCube;
             }
-         }
-      
-        vk::raii::BufferView *Textures::GetTextureBufferView(InterconnectContext &ctx, u32 index, CachedMappedBufferView &cachedView) {
+        }
+
+        throw exception("Invalid TIC texture type: {}", static_cast<u32>(textureHeaders[index].textureType));
+    }
+
+    vk::raii::BufferView *Textures::GetOrCreateTexelBufferView(
+        InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format) {
+        auto binding{cachedView.view.GetBinding(ctx.gpu)};
+        Textures::TexelBufferViewKey key{
+            .buffer = static_cast<VkBuffer>(binding.buffer),
+            .offset = binding.offset,
+            .range = binding.size,
+            .format = static_cast<VkFormat>(format),
+        };
+
+        auto &bufferView{texelBufferViewStore[key]};
+        if (!bufferView) {
+            bufferView = std::make_unique<vk::raii::BufferView>(ctx.gpu.vkDevice, vk::BufferViewCreateInfo{
+                .buffer = binding.buffer,
+                .format = format,
+                .offset = binding.offset,
+                .range = binding.size,
+            });
+        }
+        return bufferView.get();
+    }
+
+    vk::raii::BufferView *Textures::GetTextureBufferView(InterconnectContext &ctx, u32 index, CachedMappedBufferView &cachedView) {
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
         if (index >= textureHeaders.size())
             return nullptr;
@@ -405,19 +435,8 @@ namespace skyline::gpu::interconnect {
             return nullptr;
         }
 
-        auto &bufferView{textureBufferViewStore[textureHeader]};
-        if (!bufferView) {
-            auto binding{cachedView.view.GetBinding(ctx.gpu)};
-            bufferView = std::make_unique<vk::raii::BufferView>(ctx.gpu.vkDevice, vk::BufferViewCreateInfo{
-                .buffer = binding.buffer,
-                .format = format->vkFormat,
-                .offset = binding.offset,
-                .range = binding.size
-            });
-        }
-
-        return bufferView.get();
-   }
+        return GetOrCreateTexelBufferView(ctx, cachedView, format->vkFormat);
+    }
 
     static std::optional<std::pair<vk::Format, u8>> ConvertShaderImageFormat(Shader::ImageFormat format) {
         switch (format) {
@@ -464,17 +483,6 @@ namespace skyline::gpu::interconnect {
             return nullptr;
         }
 
-        auto &bufferView{imageBufferViewStore[textureHeader]};
-        if (!bufferView) {
-            auto binding{cachedView.view.GetBinding(ctx.gpu)};
-            bufferView = std::make_unique<vk::raii::BufferView>(ctx.gpu.vkDevice, vk::BufferViewCreateInfo{
-                .buffer = binding.buffer,
-                .format = format->first,
-                .offset = binding.offset,
-                .range = binding.size
-            });
-        }
-
-        return bufferView.get();
+        return GetOrCreateTexelBufferView(ctx, cachedView, format->first);
     }
 }
