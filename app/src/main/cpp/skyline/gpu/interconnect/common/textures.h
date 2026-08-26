@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <functional>
 #include <tsl/robin_map.h>
 #include <shader_compiler/shader_info.h>
 #include <gpu/texture/texture.h>
@@ -33,15 +34,33 @@ namespace skyline::gpu::interconnect {
 
     class Textures {
       private:
+        struct TexelBufferViewKey {
+            VkBuffer buffer;
+            VkDeviceSize offset;
+            VkDeviceSize range;
+            VkFormat format;
+
+            bool operator==(const TexelBufferViewKey &) const = default;
+        };
+
+        struct TexelBufferViewKeyHash {
+            size_t operator()(const TexelBufferViewKey &key) const {
+                size_t hash{std::hash<VkBuffer>{}(key.buffer)};
+                hash ^= std::hash<VkDeviceSize>{}(key.offset) + 0x9E3779B9 + (hash << 6) + (hash >> 2);
+                hash ^= std::hash<VkDeviceSize>{}(key.range) + 0x9E3779B9 + (hash << 6) + (hash >> 2);
+                hash ^= std::hash<VkFormat>{}(key.format) + 0x9E3779B9 + (hash << 6) + (hash >> 2);
+                return hash;
+            }
+        };
+
         std::shared_ptr<TextureView> nullTextureView{};
         dirty::ManualDirtyState<TexturePoolState> texturePool;
 
         tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
+        tsl::robin_map<TexelBufferViewKey, std::unique_ptr<vk::raii::BufferView>, TexelBufferViewKeyHash> texelBufferViewStore;
 
-         tsl::robin_map<TextureImageControl, std::unique_ptr<vk::raii::BufferView>, util::ObjectHash<TextureImageControl>> textureBufferViewStore;
+        vk::raii::BufferView *GetOrCreateTexelBufferView(InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format);
 
-         tsl::robin_map<TextureImageControl, std::unique_ptr<vk::raii::BufferView>, util::ObjectHash<TextureImageControl>> imageBufferViewStore;
-    
         struct CacheEntry {
             TextureImageControl tic;
             TextureView *view;
@@ -57,9 +76,9 @@ namespace skyline::gpu::interconnect {
         TextureView *GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType);
 
         Shader::TextureType GetTextureType(InterconnectContext &ctx, u32 index);
-       
+
         vk::raii::BufferView *GetTextureBufferView(InterconnectContext &ctx, u32 index, CachedMappedBufferView &cachedView);
 
         vk::raii::BufferView *GetImageBufferView(InterconnectContext &ctx, u32 index, Shader::ImageFormat format, CachedMappedBufferView &cachedView);
-     };
+    };
 }
