@@ -229,7 +229,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                  if (!attachedDescriptorSets)
                      attachedDescriptorSets = std::make_shared<boost::container::static_vector<DescriptorAllocator::ActiveDescriptorSet, DescriptorBatchSize>>();
 
-                 auto newSet{&attachedDescriptorSets->emplace_back(ctx.gpu.descriptor.AllocateSet(descUpdateInfo->descriptorSetLayout))};
+                 auto newSet{&attachedDescriptorSets->emplace_back(ctx.gpu.descriptor.AllocateSet(descUpdateInfo->descriptorSetLayout, descUpdateInfo->descriptorSetLayoutBindings))};
                  auto *oldSet{activeDescriptorSet};
                  activeDescriptorSet = newSet;
 
