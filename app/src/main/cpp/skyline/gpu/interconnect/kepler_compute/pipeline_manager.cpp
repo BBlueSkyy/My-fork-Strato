@@ -108,11 +108,14 @@ namespace skyline::gpu::interconnect::kepler_compute {
           compiledPipeline{MakeCompiledPipeline(ctx, packedState, shaderStage, descriptorInfo.descriptorSetLayoutBindings)},
           sourcePackedState{packedState} {
         storageBufferViews.resize(shaderStage.info.storage_buffers_descriptors.size());
+        texelBufferViews.resize(descriptorInfo.totalTexelBufferDescCount);
     }
 
     void Pipeline::SyncCachedStorageBufferViews(ContextTag executionTag) {
         if (lastExecutionTag != executionTag) {
             for (auto &view : storageBufferViews)
+                view.PurgeCaches();
+            for (auto &view : texelBufferViews)
                 view.PurgeCaches();
 
             lastExecutionTag = executionTag;
@@ -130,8 +133,11 @@ namespace skyline::gpu::interconnect::kepler_compute {
         auto bufferDescDynamicBindings{ctx.executor.allocator->AllocateUntracked<DynamicBufferBinding>(descriptorInfo.totalBufferDescCount)};
         u32 imageIdx{};
         auto imageDescs{ctx.executor.allocator->AllocateUntracked<vk::DescriptorImageInfo>(descriptorInfo.totalImageDescCount)};
+        u32 texelBufferIdx{};
+        auto texelBufferDescs{ctx.executor.allocator->AllocateUntracked<vk::BufferView>(descriptorInfo.totalTexelBufferDescCount)};
 
         u32 storageBufferIdx{};
+        u32 texelBufferCacheIdx{};
         u32 bindingIdx{};
 
         /**
@@ -171,6 +177,20 @@ namespace skyline::gpu::interconnect::kepler_compute {
             }
         }};
 
+        auto writeTexelBufferDescs{[&](vk::DescriptorType type, const auto &descs, auto getBufferViewCb) {
+            for (const auto &desc : descs) {
+                writes[writeIdx++] = {
+                    .dstBinding = bindingIdx++,
+                    .descriptorCount = desc.count,
+                    .descriptorType = type,
+                    .pTexelBufferView = &texelBufferDescs[texelBufferIdx],
+                };
+
+                for (u32 arrayIdx{}; arrayIdx < desc.count; arrayIdx++)
+                    texelBufferDescs[texelBufferIdx++] = getBufferViewCb(desc, arrayIdx);
+            }
+        }};
+
         writeBufferDescs(vk::DescriptorType::eUniformBuffer, shaderStage.info.constant_buffer_descriptors,
                          [&](const Shader::ConstantBufferDescriptor &desc, size_t arrayIdx) {
                              size_t cbufIdx{desc.index + arrayIdx};
@@ -190,6 +210,24 @@ namespace skyline::gpu::interconnect::kepler_compute {
                              return binding;
                          });
 
+        writeTexelBufferDescs(vk::DescriptorType::eUniformTexelBuffer, shaderStage.info.texture_buffer_descriptors,
+                              [&](const Shader::TextureBufferDescriptor &desc, size_t arrayIdx) {
+                                  BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
+                                  return GetTextureBufferBinding(ctx, textures, handle,
+                                                                 texelBufferViews[texelBufferCacheIdx++],
+                                                                 vk::PipelineStageFlagBits::eComputeShader,
+                                                                 srcStageMask, dstStageMask);
+                              });
+
+        writeTexelBufferDescs(vk::DescriptorType::eStorageTexelBuffer, shaderStage.info.image_buffer_descriptors,
+                              [&](const Shader::ImageBufferDescriptor &desc, size_t arrayIdx) {
+                                  BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
+                                  return GetImageBufferBinding(ctx, textures, handle, desc.format, desc.is_written,
+                                                               texelBufferViews[texelBufferCacheIdx++],
+                                                               vk::PipelineStageFlagBits::eComputeShader,
+                                                               srcStageMask, dstStageMask);
+                              });
+
         writeImageDescs(vk::DescriptorType::eCombinedImageSampler, shaderStage.info.texture_descriptors,
                         [&](const Shader::TextureDescriptor &desc, size_t arrayIdx) {
                             BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
@@ -208,9 +246,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
                                                           vk::PipelineStageFlagBits::eComputeShader,
                                                           srcStageMask, dstStageMask)};
                             return binding.first;
-                        });             
+                        });
 
-        // Since we don't implement all descriptor types the number of writes might not match what's expected
         if (!writeIdx)
             return nullptr;
 
@@ -218,6 +255,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             .writes = writes.first(writeIdx),
             .bufferDescs = bufferDescs.first(bufferIdx),
             .bufferDescDynamicBindings = bufferDescDynamicBindings.first(bufferIdx),
+            .descriptorSetLayoutBindings = descriptorInfo.descriptorSetLayoutBindings,
             .pipelineLayout = *compiledPipeline.pipelineLayout,
             .descriptorSetLayout = *compiledPipeline.descriptorSetLayout,
             .bindPoint = vk::PipelineBindPoint::eCompute,
@@ -225,4 +263,3 @@ namespace skyline::gpu::interconnect::kepler_compute {
         });
     }
 }
-
