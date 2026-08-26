@@ -140,6 +140,11 @@ namespace skyline {
          * @brief Pushes a log message into the queue
          */
         void Push(LogMessage &&message) {
+            if (message.level <= LogLevel::Debug) {
+                messageQueue.TryPush(std::move(message));
+                return;
+            }
+
             messageQueue.Push(std::move(message));
         }
 
