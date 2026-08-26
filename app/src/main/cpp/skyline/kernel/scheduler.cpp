@@ -8,6 +8,10 @@
 #include "scheduler.h"
 
 namespace skyline::kernel {
+    namespace {
+        constexpr u32 SchedulerDiagnosticMaxSamples{8};
+    }
+
     Scheduler::CoreContext::CoreContext(u8 id, i8 preemptionPriority) : id(id), preemptionPriority(preemptionPriority) {}
 
     Scheduler::Scheduler(const DeviceState &state) : state(state) {
@@ -21,6 +25,29 @@ namespace skyline::kernel {
         {
             TRACE_EVENT_FMT("scheduler", "{} Signal", signal == PreemptionSignal ? "Preemption" : "Yield");
             const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
+
+            if (state.thread->schedulerDiagnosticPending.exchange(false, std::memory_order_acq_rel)) {
+                auto sample{state.thread->schedulerDiagnosticSamples.fetch_add(1, std::memory_order_relaxed) + 1};
+                #if defined(__aarch64__)
+                LOGW("SchedulerDiagnostic: sample {} blocker T{} priority {} core C{} affinity {:04b} PC 0x{:X} LR 0x{:X} SP 0x{:X}",
+                     sample,
+                     state.thread->id,
+                     state.thread->priority.load(),
+                     state.thread->coreId,
+                     state.thread->affinityMask.to_ulong(),
+                     ctx->uc_mcontext.pc,
+                     ctx->uc_mcontext.regs[30],
+                     ctx->uc_mcontext.sp);
+                #else
+                LOGW("SchedulerDiagnostic: sample {} blocker T{} priority {} core C{} affinity {:04b}; register capture requires AArch64",
+                     sample,
+                     state.thread->id,
+                     state.thread->priority.load(),
+                     state.thread->coreId,
+                     state.thread->affinityMask.to_ulong());
+                #endif
+            }
+
             if (signal == PreemptionSignal)
                 state.thread->isPreempted = false;
             state.scheduler->Rotate(false);
@@ -188,7 +215,34 @@ namespace skyline::kernel {
         if (loadBalance) {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
+                std::shared_ptr<type::KThread> diagnosticBlocker{};
+                if (thread->affinityMask.count() == 1 && !core->queue.empty() && core->queue.front() != thread) {
+                    auto blocker{core->queue.front()};
+                    LOGW("SchedulerStall: waiter T{} priority {} core C{} affinity {:04b} blocked for {}ms by T{} priority {} affinity {:04b}; queue size {}, blocker entry 0x{:X}, argument 0x{:X}",
+                         thread->id,
+                         thread->priority.load(),
+                         core->id,
+                         thread->affinityMask.to_ulong(),
+                         loadBalanceThreshold.count(),
+                         blocker->id,
+                         blocker->priority.load(),
+                         blocker->affinityMask.to_ulong(),
+                         core->queue.size(),
+                         reinterpret_cast<uintptr_t>(blocker->entry),
+                         blocker->entryArgument);
+
+                    if (blocker->schedulerDiagnosticSamples.load(std::memory_order_relaxed) < SchedulerDiagnosticMaxSamples) {
+                        bool expected{};
+                        if (blocker->schedulerDiagnosticPending.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+                            diagnosticBlocker = blocker;
+                    }
+                }
+
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
+
+                if (diagnosticBlocker)
+                    diagnosticBlocker->SendSignal(YieldSignal);
+
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 auto newCore{&GetOptimalCoreForThread(state.thread)};
                 lock.lock();
