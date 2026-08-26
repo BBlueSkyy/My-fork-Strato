@@ -386,7 +386,6 @@ namespace skyline::gpu::interconnect {
             case TextureImageControl::TextureType::eCubeArray:
                 return Shader::TextureType::ColorArrayCube;
             }
-        }
 
         throw exception("Invalid TIC texture type: {}", static_cast<u32>(textureHeaders[index].textureType));
     }
