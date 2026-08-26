@@ -194,7 +194,6 @@ namespace skyline {
                 message.threadContext->GetThreadName().data(),
                 message.str
             );
-            logFile.flush();
         }
     };
 
