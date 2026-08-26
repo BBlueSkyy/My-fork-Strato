@@ -93,6 +93,7 @@ namespace skyline::gpu::interconnect {
         span<vk::WriteDescriptorSet> writes;
         span<vk::DescriptorBufferInfo> bufferDescs;
         span<DynamicBufferBinding> bufferDescDynamicBindings;
+        span<const vk::DescriptorSetLayoutBinding> descriptorSetLayoutBindings;
         vk::PipelineLayout pipelineLayout;
         vk::DescriptorSetLayout descriptorSetLayout;
         vk::PipelineBindPoint bindPoint;
