@@ -62,6 +62,9 @@ namespace skyline {
             bool pendingYield{}; //!< If the thread has been yielded and hasn't been acted upon it yet
             bool forceYield{}; //!< If the thread has been forcefully yielded by another thread
 
+            std::atomic<bool> schedulerDiagnosticPending{}; //!< If the scheduler requested a guest PC sample for this thread
+            std::atomic<u32> schedulerDiagnosticSamples{}; //!< Number of guest PC samples captured for this thread
+
             RecursiveSpinLock waiterMutex; //!< Synchronizes operations on mutation of the waiter members
             u32 *waitMutex; //!< The key of the mutex which this thread is waiting on
             KHandle waitTag; //!< The handle of the thread which requested the mutex lock
