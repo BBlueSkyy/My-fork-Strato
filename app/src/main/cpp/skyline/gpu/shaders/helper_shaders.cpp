@@ -240,7 +240,7 @@ namespace skyline::gpu {
                       const GraphicsPipelineAssembler::CompiledPipeline &pipeline,
                       vk::Extent2D imageDimensions)
                 : vertexPushConstants{vertexPushConstants}, fragmentPushConstants{fragmentPushConstants},
-                  descriptorSet{gpu.descriptor.AllocateSet(*pipeline.descriptorSetLayout)},
+                  descriptorSet{gpu.descriptor.AllocateSet(*pipeline.descriptorSetLayout, span<const vk::DescriptorSetLayoutBinding>{&blit::SamplerLayoutBinding, 1})},
                   pipeline{pipeline},
                   imageDimensions{imageDimensions} {}
         };
