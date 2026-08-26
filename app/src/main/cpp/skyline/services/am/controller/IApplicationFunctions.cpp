@@ -55,7 +55,12 @@ namespace skyline::service::am {
     }
 
     Result IApplicationFunctions::EnsureSaveData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u8>(0);
+        auto userId{request.Pop<account::UserId>()};
+        LOGD("Ensuring save data for UserId: {:016X}{:016X}", userId.upper, userId.lower);
+
+        // The save-data directory is created lazily when OpenSaveDataFileSystem constructs its
+        // OsFileSystem backing. EnsureSaveData returns the additional required storage size.
+        response.Push<u64>(0);
         return {};
     }
 
