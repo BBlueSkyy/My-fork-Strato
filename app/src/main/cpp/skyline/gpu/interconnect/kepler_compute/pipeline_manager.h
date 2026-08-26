@@ -41,6 +41,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         ShaderStage shaderStage;
         DescriptorInfo descriptorInfo;
         std::vector<CachedMappedBufferView> storageBufferViews;
+        std::vector<CachedMappedBufferView> texelBufferViews;
         ContextTag lastExecutionTag{}; //!< The last execution tag this pipeline was used at
 
         void SyncCachedStorageBufferViews(ContextTag executionTag);
