@@ -22,7 +22,7 @@ namespace skyline::gpu::interconnect {
                                                          BufferView view, size_t idx,
                                                          vk::PipelineStageFlagBits dstStage,
                                                          vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        if (!view || idx >= cbufSizes.size() || cbufSizes[idx] == 0)
+        if (!view) // Returns a dummy buffer if the constant buffer is not specified.
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         ctx.executor.AttachBuffer(view);
@@ -45,13 +45,8 @@ namespace skyline::gpu::interconnect {
             u64 address;
             u32 size;
         };
-        if (!cbuf.view || desc.cbuf_offset > cbuf.view.size ||
-            cbuf.view.size - desc.cbuf_offset < sizeof(SsboDescriptor)) {
-            return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
-        }
-
         auto ssbo{cbuf.Read<SsboDescriptor>(ctx.executor, desc.cbuf_offset)};
-        if (ssbo.address == 0 || ssbo.size == 0)
+        if (ssbo.size == 0)
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         size_t padding{ssbo.address & (ctx.gpu.traits.minimumStorageBufferAlignment - 1)};
@@ -135,23 +130,12 @@ namespace skyline::gpu::interconnect {
 
         size_t elemOffset{arrayIdx << desc.size_shift};
         size_t primaryCbufOffset{desc.cbuf_offset + elemOffset};
-        if (primaryCbufOffset > primaryCbuf.view.size ||
-            primaryCbuf.view.size - primaryCbufOffset < sizeof(u32))
-            return {.raw = 0};
-
         u32 primaryVal{primaryCbuf.Read<u32>(ctx.executor, primaryCbufOffset)};
 
         if constexpr (requires { desc.has_secondary; }) {
             if (desc.has_secondary) {
                 ConstantBuffer &secondaryCbuf{constantBuffers[desc.secondary_cbuf_index]};
-                if (!secondaryCbuf.view)
-                    return {.raw = 0};
-
                 size_t secondaryCbufOffset{desc.secondary_cbuf_offset + elemOffset};
-                if (secondaryCbufOffset > secondaryCbuf.view.size ||
-                    secondaryCbuf.view.size - secondaryCbufOffset < sizeof(u32))
-                    return {.raw = 0};
-
                 u32 secondaryVal{secondaryCbuf.Read<u32>(ctx.executor, secondaryCbufOffset)};
                 return {.raw = (primaryVal << desc.shift_left) | (secondaryVal << desc.secondary_shift_left)};
             }
