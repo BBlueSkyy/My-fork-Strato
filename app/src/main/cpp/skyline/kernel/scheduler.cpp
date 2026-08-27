@@ -255,11 +255,23 @@ namespace skyline::kernel {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
                 std::shared_ptr<type::KThread> fairnessYieldTarget{};
+                std::shared_ptr<type::KThread> idleCoreMigrationCandidate{};
 
                 if (!core->queue.empty()) {
                     const auto &front{core->queue.front()};
-                    if (front != thread && front->priority.load() == thread->priority.load())
-                        fairnessYieldTarget = front;
+                    if (front != thread) {
+                        if (front->priority.load() == thread->priority.load()) {
+                            // Same-priority runnable threads need an explicit scheduling opportunity.
+                            fairnessYieldTarget = front;
+                        } else if (thread->affinityMask.count() == 1 &&
+                                   front->priority.load() < thread->priority.load() &&
+                                   front->affinityMask.count() > 1) {
+                            // A higher-priority front thread must keep its priority advantage, but if it
+                            // can run elsewhere while this waiter is pinned to this core, an idle-core
+                            // migration can free the only core available to the waiter.
+                            idleCoreMigrationCandidate = front;
+                        }
+                    }
                 }
 
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
@@ -267,8 +279,70 @@ namespace skyline::kernel {
                 // A runnable thread can otherwise starve indefinitely behind a same-priority thread.
                 // Yielding the current front lets Rotate() preserve priority ordering while giving the
                 // waiting peer a scheduling opportunity, without changing the special HOS preemption priorities.
-                if (fairnessYieldTarget)
+                if (fairnessYieldTarget) {
                     YieldThread(fairnessYieldTarget);
+                } else if (idleCoreMigrationCandidate) {
+                    std::scoped_lock blockerMigrationLock{idleCoreMigrationCandidate->coreMigrationMutex};
+                    CoreContext *blockerCore{&cores.at(idleCoreMigrationCandidate->coreId)};
+
+                    // Only migrate the thread if it is still blocking this waiter on the same core.
+                    if (blockerCore == core) {
+                        CoreContext *idleTarget{};
+
+                        // Look only for a genuinely idle application core allowed by the blocking
+                        // thread's affinity mask. Core 3 is reserved for the system.
+                        for (auto &candidateCore : cores) {
+                            if (&candidateCore == blockerCore ||
+                                candidateCore.id == constant::CoreCount - 1 ||
+                                !idleCoreMigrationCandidate->affinityMask.test(candidateCore.id))
+                                continue;
+
+                            std::unique_lock targetProbeLock{candidateCore.mutex, std::try_to_lock};
+                            if (targetProbeLock.owns_lock() && candidateCore.queue.empty()) {
+                                idleTarget = &candidateCore;
+                                break;
+                            }
+                        }
+
+                        if (idleTarget) {
+                            std::unique_lock blockerCoreLock{blockerCore->mutex};
+
+                            const bool blockerStillFront{
+                                !blockerCore->queue.empty() &&
+                                blockerCore->queue.front() == idleCoreMigrationCandidate
+                            };
+                            const bool waiterStillQueued{
+                                std::find(blockerCore->queue.begin(), blockerCore->queue.end(), thread) != blockerCore->queue.end()
+                            };
+
+                            bool targetStillIdle{};
+                            if (blockerStillFront &&
+                                waiterStillQueued &&
+                                thread->affinityMask.count() == 1 &&
+                                idleCoreMigrationCandidate->priority.load() < thread->priority.load() &&
+                                idleCoreMigrationCandidate->affinityMask.count() > 1 &&
+                                idleCoreMigrationCandidate->affinityMask.test(idleTarget->id)) {
+                                std::unique_lock targetProbeLock{idleTarget->mutex, std::try_to_lock};
+                                targetStillIdle = targetProbeLock.owns_lock() && idleTarget->queue.empty();
+                            }
+
+                            if (targetStillIdle) {
+                                const auto sourceCoreId{blockerCore->id};
+                                const auto targetCoreId{idleTarget->id};
+
+                                LOGD("Idle-core migration: T{} C{} -> C{} to unblock T{}",
+                                     idleCoreMigrationCandidate->id,
+                                     sourceCoreId,
+                                     targetCoreId,
+                                     thread->id);
+
+                                // Reuse the scheduler's existing migration path so removal, insertion
+                                // and wake-up behavior stay consistent with all other core migrations.
+                                MigrateToCore(idleCoreMigrationCandidate, blockerCore, idleTarget, blockerCoreLock);
+                            }
+                        }
+                    }
+                }
 
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 auto newCore{&GetOptimalCoreForThread(state.thread)};
