@@ -29,19 +29,19 @@ import com.google.android.material.snackbar.Snackbar
 import dagger.hilt.android.AndroidEntryPoint
 import org.stratoemu.strato.adapter.*
 import org.stratoemu.strato.data.AppItem
-import org.stratoemu.strato.data.BaseAppItem
 import org.stratoemu.strato.data.AppItemTag
+import org.stratoemu.strato.data.BaseAppItem
 import org.stratoemu.strato.databinding.MainActivityBinding
 import org.stratoemu.strato.loader.AppEntry
 import org.stratoemu.strato.loader.LoaderResult
 import org.stratoemu.strato.loader.RomType
+import org.stratoemu.strato.preference.FolderPickerPreference
 import org.stratoemu.strato.provider.DocumentsProvider
 import org.stratoemu.strato.settings.AppSettings
 import org.stratoemu.strato.settings.EmulationSettings
 import org.stratoemu.strato.settings.SettingsActivity
 import org.stratoemu.strato.utils.GpuDriverHelper
 import org.stratoemu.strato.utils.WindowInsetsHelper
-import java.util.Collections
 import javax.inject.Inject
 import kotlin.math.ceil
 import com.google.android.material.R as MaterialR
@@ -52,15 +52,16 @@ class MainActivity : AppCompatActivity() {
     private val binding by lazy { MainActivityBinding.inflate(layoutInflater) }
 
     @Inject
-    lateinit var appSettings : AppSettings
+    lateinit var appSettings: AppSettings
 
     private val adapter = GenericAdapter()
 
-    private val layoutType get() = LayoutType.values()[appSettings.layoutType]
+    private val layoutType
+        get() = LayoutType.values()[appSettings.layoutType]
 
     private val viewModel by viewModels<MainViewModel>()
 
-    private var appEntries : List<AppEntry>? = null
+    private var appEntries: List<AppEntry>? = null
 
     enum class SortingOrder {
         AlphabeticalAsc,
@@ -73,36 +74,56 @@ class MainActivity : AppCompatActivity() {
             binding.refreshIcon.apply {
                 if (visible != isVisible) {
                     binding.refreshIcon.alpha = if (visible) 0f else 1f
-                    animate().alpha(if (visible) 1f else 0f).withStartAction { isVisible = true }.withEndAction { isInvisible = !visible }.apply { duration = 500 }.start()
+                    animate()
+                        .alpha(if (visible) 1f else 0f)
+                        .withStartAction { isVisible = true }
+                        .withEndAction { isInvisible = !visible }
+                        .apply { duration = 500 }
+                        .start()
                 }
             }
         }
 
-    private val documentPicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) {
-        it?.let { uri ->
-            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            appSettings.searchLocation = uri.toString()
+    private val documentPicker =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            uri?.let {
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        it,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (_: SecurityException) {
+                }
 
-            loadRoms(false)
+                addSearchLocation(it)
+                loadRoms(false)
+            }
         }
-    }
 
-    private val settingsCallback = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        if (appSettings.refreshRequired) loadRoms(false)
-    }
+    private val settingsCallback =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            if (appSettings.refreshRequired)
+                loadRoms(false)
+        }
 
-    private fun BaseAppItem.toViewItem() = AppViewItem(layoutType, this, ::selectStartGame, ::selectShowGameDialog)
+    private fun BaseAppItem.toViewItem() =
+        AppViewItem(
+            layoutType,
+            this,
+            ::selectStartGame,
+            ::selectShowGameDialog
+        )
 
-    override fun onCreate(savedInstanceState : Bundle?) {
-        // Need to create new instance of settings, dependency injection happens
+    override fun onCreate(savedInstanceState: Bundle?) {
         AppCompatDelegate.setDefaultNightMode(
-            when ((AppSettings(this).appTheme)) {
+            when (AppSettings(this).appTheme) {
                 0 -> AppCompatDelegate.MODE_NIGHT_NO
                 1 -> AppCompatDelegate.MODE_NIGHT_YES
                 2 -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
                 else -> AppCompatDelegate.MODE_NIGHT_UNSPECIFIED
             }
         )
+
         super.onCreate(savedInstanceState)
 
         setContentView(binding.root)
@@ -113,9 +134,10 @@ class MainActivity : AppCompatActivity() {
         PreferenceManager.setDefaultValues(this, R.xml.emulation_preferences, false)
 
         binding.subText.text = BuildConfig.VERSION_NAME
-        // The first click event is consumed by the focus acquisition
-        // Subsequent clicks should be interpreted as a request to clear focus
-        binding.subText.setOnClickListener { if (it.isFocused) binding.subText.clearFocus() }
+        binding.subText.setOnClickListener {
+            if (it.isFocused)
+                binding.subText.clearFocus()
+        }
 
         binding.appList.setHasFixedSize(true)
 
@@ -123,10 +145,30 @@ class MainActivity : AppCompatActivity() {
 
         binding.swipeRefreshLayout.apply {
             setProgressBackgroundColorSchemeColor(
-                obtainStyledAttributes(intArrayOf(MaterialR.attr.colorSurfaceVariant)).use { it.getColor(0, Color.BLACK) })
-            setColorSchemeColors(obtainStyledAttributes(intArrayOf(MaterialR.attr.colorPrimary)).use { it.getColor(0, Color.WHITE) })
-            post { setDistanceToTriggerSync(binding.swipeRefreshLayout.height / 3) }
-            setOnRefreshListener { loadRoms(false) }
+                obtainStyledAttributes(
+                    intArrayOf(MaterialR.attr.colorSurfaceVariant)
+                ).use {
+                    it.getColor(0, Color.BLACK)
+                }
+            )
+
+            setColorSchemeColors(
+                obtainStyledAttributes(
+                    intArrayOf(MaterialR.attr.colorPrimary)
+                ).use {
+                    it.getColor(0, Color.WHITE)
+                }
+            )
+
+            post {
+                setDistanceToTriggerSync(
+                    binding.swipeRefreshLayout.height / 3
+                )
+            }
+
+            setOnRefreshListener {
+                loadRoms(false)
+            }
         }
 
         viewModel.stateData.observe(this, ::handleState)
@@ -134,57 +176,179 @@ class MainActivity : AppCompatActivity() {
 
         binding.searchBar.apply {
             binding.logIcon.setOnClickListener {
-                val file = DocumentFile.fromSingleUri(this@MainActivity, DocumentsContract.buildDocumentUri(DocumentsProvider.AUTHORITY, "${DocumentsProvider.ROOT_ID}/logs/emulation.log"))!!
+                val file = DocumentFile.fromSingleUri(
+                    this@MainActivity,
+                    DocumentsContract.buildDocumentUri(
+                        DocumentsProvider.AUTHORITY,
+                        "${DocumentsProvider.ROOT_ID}/logs/emulation.log"
+                    )
+                )!!
+
                 if (file.exists() && file.length() != 0L) {
                     val intent = Intent(Intent.ACTION_SEND)
                         .setDataAndType(file.uri, "text/plain")
                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         .putExtra(Intent.EXTRA_STREAM, file.uri)
-                    startActivity(Intent.createChooser(intent, getString(R.string.log_share_prompt)))
+
+                    startActivity(
+                        Intent.createChooser(
+                            intent,
+                            getString(R.string.log_share_prompt)
+                        )
+                    )
                 } else {
-                    Snackbar.make(this@MainActivity.findViewById(android.R.id.content), getString(R.string.logs_not_found), Snackbar.LENGTH_SHORT).show()
+                    Snackbar.make(
+                        this@MainActivity.findViewById(android.R.id.content),
+                        getString(R.string.logs_not_found),
+                        Snackbar.LENGTH_SHORT
+                    ).show()
                 }
             }
-            binding.settingsIcon.setOnClickListener { settingsCallback.launch(Intent(context, SettingsActivity::class.java)) }
-            binding.refreshIcon.setOnClickListener { loadRoms(false) }
+
+            binding.settingsIcon.setOnClickListener {
+                settingsCallback.launch(
+                    Intent(context, SettingsActivity::class.java)
+                )
+            }
+
+            binding.refreshIcon.setOnClickListener {
+                loadRoms(false)
+            }
+
             addTextChangedListener(afterTextChanged = { editable ->
-                editable?.let { text -> adapter.filter.filter(text.toString()) }
+                editable?.let { text ->
+                    adapter.filter.filter(text.toString())
+                }
             })
         }
 
-        window.decorView.findViewById<View>(android.R.id.content).viewTreeObserver.addOnTouchModeChangeListener { isInTouchMode ->
-            refreshIconVisible = !isInTouchMode
+        window.decorView
+            .findViewById<View>(android.R.id.content)
+            .viewTreeObserver
+            .addOnTouchModeChangeListener { isInTouchMode ->
+                refreshIconVisible = !isInTouchMode
+            }
+    }
+
+    private fun getSearchLocations(): List<Uri> {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+
+        val locations = prefs
+            .getStringSet(
+                FolderPickerPreference.SEARCH_LOCATIONS_KEY,
+                emptySet()
+            )
+            ?.filter { it.isNotBlank() }
+            ?.toMutableSet()
+            ?: mutableSetOf()
+
+        if (locations.isEmpty() && appSettings.searchLocation.isNotBlank()) {
+            locations.add(appSettings.searchLocation)
+
+            prefs.edit()
+                .putStringSet(
+                    FolderPickerPreference.SEARCH_LOCATIONS_KEY,
+                    locations
+                )
+                .apply()
         }
+
+        return locations
+            .sorted()
+            .map(Uri::parse)
+    }
+
+    private fun addSearchLocation(uri: Uri) {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+
+        val locations = getSearchLocations()
+            .map { it.toString() }
+            .toMutableSet()
+
+        locations.add(uri.toString())
+
+        prefs.edit()
+            .putStringSet(
+                FolderPickerPreference.SEARCH_LOCATIONS_KEY,
+                locations
+            )
+            .apply()
+
+        if (appSettings.searchLocation.isBlank()) {
+            appSettings.searchLocation = uri.toString()
+        }
+
+        appSettings.refreshRequired = true
     }
 
     private fun setAppListDecoration() {
         binding.appList.apply {
-            while (itemDecorationCount > 0) removeItemDecorationAt(0)
+            while (itemDecorationCount > 0)
+                removeItemDecorationAt(0)
+
             when (layoutType) {
                 LayoutType.List -> Unit
 
-                LayoutType.Grid, LayoutType.GridCompact -> addItemDecoration(GridSpacingItemDecoration(resources.getDimensionPixelSize(R.dimen.grid_padding)))
+                LayoutType.Grid,
+                LayoutType.GridCompact -> {
+                    addItemDecoration(
+                        GridSpacingItemDecoration(
+                            resources.getDimensionPixelSize(
+                                R.dimen.grid_padding
+                            )
+                        )
+                    )
+                }
             }
         }
     }
 
-    /**
-     * This layout manager handles situations where [onFocusSearchFailed] gets called, when possible we always want to focus on the item with the same span index
-     */
-    private inner class CustomLayoutManager(gridSpan : Int) : GridLayoutManager(this, gridSpan) {
+    private inner class CustomLayoutManager(
+        gridSpan: Int
+    ) : GridLayoutManager(this, gridSpan) {
+
         init {
             spanSizeLookup = object : SpanSizeLookup() {
-                override fun getSpanSize(position : Int) = if (layoutType == LayoutType.List || adapter.currentItems[position].fullSpan) gridSpan else 1
+                override fun getSpanSize(position: Int) =
+                    if (
+                        layoutType == LayoutType.List ||
+                        adapter.currentItems[position].fullSpan
+                    ) {
+                        gridSpan
+                    } else {
+                        1
+                    }
             }
         }
 
-        override fun onRequestChildFocus(parent : RecyclerView, state : RecyclerView.State, child : View, focused : View?) : Boolean {
+        override fun onRequestChildFocus(
+            parent: RecyclerView,
+            state: RecyclerView.State,
+            child: View,
+            focused: View?
+        ): Boolean {
             binding.appBarLayout.setExpanded(false)
-            return super.onRequestChildFocus(parent, state, child, focused)
+            return super.onRequestChildFocus(
+                parent,
+                state,
+                child,
+                focused
+            )
         }
 
-        override fun onFocusSearchFailed(focused : View, focusDirection : Int, recycler : RecyclerView.Recycler, state : RecyclerView.State) : View? {
-            val nextFocus = super.onFocusSearchFailed(focused, focusDirection, recycler, state)
+        override fun onFocusSearchFailed(
+            focused: View,
+            focusDirection: Int,
+            recycler: RecyclerView.Recycler,
+            state: RecyclerView.State
+        ): View? {
+            val nextFocus = super.onFocusSearchFailed(
+                focused,
+                focusDirection,
+                recycler,
+                state
+            )
+
             when (focusDirection) {
                 View.FOCUS_DOWN -> {
                     return null
@@ -199,6 +363,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+
             return nextFocus
         }
     }
@@ -208,136 +373,244 @@ class MainActivity : AppCompatActivity() {
 
         val itemWidth = 225
         val metrics = resources.displayMetrics
-        val gridSpan = ceil((metrics.widthPixels / metrics.density) / itemWidth).toInt()
+        val gridSpan =
+            ceil((metrics.widthPixels / metrics.density) / itemWidth)
+                .toInt()
 
-        binding.appList.layoutManager = CustomLayoutManager(gridSpan)
+        binding.appList.layoutManager =
+            CustomLayoutManager(gridSpan)
+
         setAppListDecoration()
 
-        if (appSettings.searchLocation.isEmpty()) documentPicker.launch(null)
-    }
-
-    private fun getAppItems() = mutableListOf<AppViewItem>().apply {
-        appEntries?.let { entries ->
-            sortGameList(entries.toList()).forEach { entry ->
-                val updates : List<BaseAppItem> = entries.filter { it.romType == RomType.Update && it.parentTitleId == entry.titleId }.map { BaseAppItem(it, true) }
-                val dlcs : List<BaseAppItem> = entries.filter { it.romType == RomType.DLC && it.parentTitleId == entry.titleId }.map { BaseAppItem(it, true) }
-                add(AppItem(entry, updates, dlcs).toViewItem())
-            }
+        if (getSearchLocations().isEmpty()) {
+            documentPicker.launch(null)
         }
     }
 
-    private fun sortGameList(gameList : List<AppEntry>) : List<AppEntry> {
-        val sortedApps : MutableList<AppEntry> = mutableListOf()
+    private fun getAppItems() =
+        mutableListOf<AppViewItem>().apply {
+            appEntries?.let { entries ->
+                sortGameList(entries.toList()).forEach { entry ->
+                    val updates: List<BaseAppItem> =
+                        entries
+                            .filter {
+                                it.romType == RomType.Update &&
+                                    it.parentTitleId == entry.titleId
+                            }
+                            .map {
+                                BaseAppItem(it, true)
+                            }
+
+                    val dlcs: List<BaseAppItem> =
+                        entries
+                            .filter {
+                                it.romType == RomType.DLC &&
+                                    it.parentTitleId == entry.titleId
+                            }
+                            .map {
+                                BaseAppItem(it, true)
+                            }
+
+                    add(
+                        AppItem(
+                            entry,
+                            updates,
+                            dlcs
+                        ).toViewItem()
+                    )
+                }
+            }
+        }
+
+    private fun sortGameList(
+        gameList: List<AppEntry>
+    ): List<AppEntry> {
+        val sortedApps: MutableList<AppEntry> =
+            mutableListOf()
+
         gameList.forEach { entry ->
             if (validateAppEntry(entry))
                 sortedApps.add(entry)
         }
+
         when (appSettings.sortAppsBy) {
-            SortingOrder.AlphabeticalAsc.ordinal -> sortedApps.sortBy { it.name }
-            SortingOrder.AlphabeticalDesc.ordinal -> sortedApps.sortByDescending { it.name }
+            SortingOrder.AlphabeticalAsc.ordinal ->
+                sortedApps.sortBy { it.name }
+
+            SortingOrder.AlphabeticalDesc.ordinal ->
+                sortedApps.sortByDescending { it.name }
         }
+
         return sortedApps
     }
 
-    private fun validateAppEntry(entry : AppEntry) : Boolean {
-        // Unknown ROMs are shown because NROs have this type
-        // Only show Base or Unknown ROMs, filter out Updates and DLCs (they're shown as part of their base game)
-        return !appSettings.filterInvalidFiles || 
-               (entry.loaderResult != LoaderResult.ParsingError && 
-                (entry.romType == RomType.Base || entry.romType == RomType.Unknown))
+    private fun validateAppEntry(entry: AppEntry): Boolean {
+        return !appSettings.filterInvalidFiles ||
+            (
+                entry.loaderResult != LoaderResult.ParsingError &&
+                    (
+                        entry.romType == RomType.Base ||
+                            entry.romType == RomType.Unknown
+                        )
+                )
     }
 
-    private fun handleState(state : MainState) = when (state) {
-        MainState.Loading -> {
-            binding.refreshIcon.apply { animate().rotation(rotation - 180f) }
-            binding.swipeRefreshLayout.isRefreshing = true
+    private fun handleState(state: MainState) =
+        when (state) {
+            MainState.Loading -> {
+                binding.refreshIcon.apply {
+                    animate().rotation(rotation - 180f)
+                }
+
+                binding.swipeRefreshLayout.isRefreshing = true
+            }
+
+            is MainState.Loaded -> {
+                binding.swipeRefreshLayout.isRefreshing = false
+
+                appEntries = state.items
+                populateAdapter()
+            }
+
+            is MainState.Error -> {
+                Snackbar.make(
+                    findViewById(android.R.id.content),
+                    getString(R.string.error) +
+                        ": ${state.ex.localizedMessage}",
+                    Snackbar.LENGTH_SHORT
+                ).show()
+            }
         }
 
-        is MainState.Loaded -> {
-            binding.swipeRefreshLayout.isRefreshing = false
-
-            appEntries = state.items
-            populateAdapter()
-        }
-
-        is MainState.Error -> Snackbar.make(findViewById(android.R.id.content), getString(R.string.error) + ": ${state.ex.localizedMessage}", Snackbar.LENGTH_SHORT).show()
-    }
-
-    private fun selectStartGame(appItem : BaseAppItem) {
-        if (binding.swipeRefreshLayout.isRefreshing) return
+    private fun selectStartGame(appItem: BaseAppItem) {
+        if (binding.swipeRefreshLayout.isRefreshing)
+            return
 
         if (appSettings.selectAction) {
-            AppDialog.newInstance(appItem).show(supportFragmentManager, "game")
+            AppDialog.newInstance(appItem)
+                .show(supportFragmentManager, "game")
         } else if (appItem.loaderResult == LoaderResult.Success) {
-            startActivity(Intent(this, EmulationActivity::class.java).apply {
-                putExtra(AppItemTag, appItem)
-                putExtra(EmulationActivity.ReturnToMainTag, true)
-            })
+            startActivity(
+                Intent(
+                    this,
+                    EmulationActivity::class.java
+                ).apply {
+                    putExtra(AppItemTag, appItem)
+                    putExtra(
+                        EmulationActivity.ReturnToMainTag,
+                        true
+                    )
+                }
+            )
         }
     }
 
-    private fun selectShowGameDialog(appItem : BaseAppItem) {
-        if (binding.swipeRefreshLayout.isRefreshing) return
+    private fun selectShowGameDialog(
+        appItem: BaseAppItem
+    ) {
+        if (binding.swipeRefreshLayout.isRefreshing)
+            return
 
-        AppDialog.newInstance(appItem).show(supportFragmentManager, "game")
+        AppDialog.newInstance(appItem)
+            .show(supportFragmentManager, "game")
     }
 
-    private fun loadRoms(loadFromFile : Boolean) {
+    private fun loadRoms(loadFromFile: Boolean) {
         if (!loadFromFile) {
             binding.romPlaceholder.isVisible = true
-            binding.romPlaceholder.text = getString(R.string.searching_roms)
+            binding.romPlaceholder.text =
+                getString(R.string.searching_roms)
         }
-        viewModel.loadRoms(this, loadFromFile, Uri.parse(appSettings.searchLocation), EmulationSettings.global.systemLanguage)
+
+        viewModel.loadRoms(
+            this,
+            loadFromFile,
+            getSearchLocations(),
+            EmulationSettings.global.systemLanguage
+        )
+
         appSettings.refreshRequired = false
     }
 
     private fun populateAdapter() {
         val items = getAppItems()
-        if (items.isEmpty())
-            binding.romPlaceholder.text = getString(R.string.no_rom)
-        else
+
+        if (items.isEmpty()) {
+            binding.romPlaceholder.text =
+                getString(R.string.no_rom)
+        } else {
             binding.romPlaceholder.isVisible = false
+        }
+
         adapter.setItems(items)
     }
 
-    private val onBackPressedCallback = object : OnBackPressedCallback(true) {
-        override fun handleOnBackPressed() {
-            binding.searchBar.apply {
-                val inputMethodManager = context.getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-                if (!inputMethodManager.hideSoftInputFromWindow(windowToken, 0)) {
-                    text = ""
-                    clearFocus()
+    private val onBackPressedCallback =
+        object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                binding.searchBar.apply {
+                    val inputMethodManager =
+                        context.getSystemService(
+                            INPUT_METHOD_SERVICE
+                        ) as InputMethodManager
+
+                    if (
+                        !inputMethodManager.hideSoftInputFromWindow(
+                            windowToken,
+                            0
+                        )
+                    ) {
+                        text = ""
+                        clearFocus()
+                    }
                 }
+
+                isEnabled =
+                    binding.searchBar.hasFocus() ||
+                        binding.searchBar.text.isNotEmpty()
             }
-            isEnabled = binding.searchBar.hasFocus() || binding.searchBar.text.isNotEmpty()
         }
-    }
 
     override fun onStart() {
         super.onStart()
 
         binding.searchBar.addTextChangedListener { text ->
-            if (!onBackPressedCallback.isEnabled && !text.isNullOrEmpty()) {
+            if (
+                !onBackPressedCallback.isEnabled &&
+                !text.isNullOrEmpty()
+            ) {
                 onBackPressedCallback.isEnabled = true
             }
         }
 
-        onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
-        onBackPressedCallback.isEnabled = binding.searchBar.hasFocus() || binding.searchBar.text.isNotEmpty()
+        onBackPressedDispatcher.addCallback(
+            this,
+            onBackPressedCallback
+        )
+
+        onBackPressedCallback.isEnabled =
+            binding.searchBar.hasFocus() ||
+                binding.searchBar.text.isNotEmpty()
     }
 
     override fun onResume() {
         super.onResume()
 
-        // Try to return to normal GPU clocks upon resuming back to main activity, to avoid GPU being stuck at max clocks after a crash
         GpuDriverHelper.forceMaxGpuClocks(false)
 
         loadRoms(false)
 
-        viewModel.checkRomHash(Uri.parse(appSettings.searchLocation), EmulationSettings.global.systemLanguage)
+        viewModel.checkRomHash(
+            getSearchLocations(),
+            EmulationSettings.global.systemLanguage
+        )
 
         var layoutTypeChanged = false
-        for (appViewItem in adapter.allItems.filterIsInstance(AppViewItem::class.java)) {
+
+        for (
+            appViewItem in adapter.allItems
+                .filterIsInstance(AppViewItem::class.java)
+        ) {
             if (layoutType != appViewItem.layoutType) {
                 appViewItem.layoutType = layoutType
                 layoutTypeChanged = true
@@ -348,9 +621,15 @@ class MainActivity : AppCompatActivity() {
 
         if (layoutTypeChanged) {
             setAppListDecoration()
-            adapter.notifyItemRangeChanged(0, adapter.currentItems.size)
+            adapter.notifyItemRangeChanged(
+                0,
+                adapter.currentItems.size
+            )
         }
 
-        viewModel.checkRomHash(Uri.parse(appSettings.searchLocation), EmulationSettings.global.systemLanguage)
+        viewModel.checkRomHash(
+            getSearchLocations(),
+            EmulationSettings.global.systemLanguage
+        )
     }
 }
