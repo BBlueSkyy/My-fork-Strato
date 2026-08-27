@@ -7,32 +7,90 @@ package org.stratoemu.strato.preference
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
+import android.content.SharedPreferences
 import android.util.AttributeSet
-import androidx.activity.ComponentActivity
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.preference.Preference
 import androidx.preference.Preference.SummaryProvider
 import androidx.preference.PreferenceManager
 import androidx.preference.R
-import org.stratoemu.strato.di.getSettings
+import org.stratoemu.strato.GameFoldersActivity
 
-class FolderPickerPreference @JvmOverloads constructor(context : Context, attrs : AttributeSet? = null, defStyleAttr : Int = R.attr.preferenceStyle) : Preference(context, attrs, defStyleAttr) {
-    private val documentPicker = (context as ComponentActivity).registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) {
-        it?.let { uri ->
-            context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+class FolderPickerPreference @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+    defStyleAttr: Int = R.attr.preferenceStyle
+) : Preference(context, attrs, defStyleAttr) {
 
-            context.getSettings().refreshRequired = true
-            PreferenceManager.getDefaultSharedPreferences(context).edit().putString(key, uri.toString()).apply()
-            notifyChanged()
-        }
+    companion object {
+        const val SEARCH_LOCATIONS_KEY = "search_locations"
     }
+
+    private val prefs
+        get() = PreferenceManager.getDefaultSharedPreferences(context)
+
+    private val preferenceChangeListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, changedKey ->
+            if (changedKey == SEARCH_LOCATIONS_KEY || changedKey == key) {
+                notifyChanged()
+            }
+        }
 
     init {
         summaryProvider = SummaryProvider<FolderPickerPreference> { preference ->
-            Uri.decode(preference.getPersistedString(""))
+            val count = preference.getSearchLocations().size
+
+            preference.context.resources.getQuantityString(
+                org.stratoemu.strato.R.plurals.game_folder_count,
+                count,
+                count
+            )
         }
     }
 
-    override fun onClick() = documentPicker.launch(null)
+    private fun getSearchLocations(): Set<String> {
+        val locations = prefs
+            .getStringSet(SEARCH_LOCATIONS_KEY, emptySet())
+            ?.filter { it.isNotBlank() }
+            ?.toMutableSet()
+            ?: mutableSetOf()
+
+        if (locations.isEmpty()) {
+            val legacyLocation = prefs.getString(key, "")
+            if (!legacyLocation.isNullOrBlank()) {
+                locations.add(legacyLocation)
+
+                prefs.edit()
+                    .putStringSet(
+                        SEARCH_LOCATIONS_KEY,
+                        HashSet(locations)
+                    )
+                    .apply()
+            }
+        }
+
+        return locations
+    }
+
+    override fun onAttached() {
+        super.onAttached()
+        prefs.registerOnSharedPreferenceChangeListener(
+            preferenceChangeListener
+        )
+    }
+
+    override fun onDetached() {
+        prefs.unregisterOnSharedPreferenceChangeListener(
+            preferenceChangeListener
+        )
+        super.onDetached()
+    }
+
+    override fun onClick() {
+        context.startActivity(
+            Intent(
+                context,
+                GameFoldersActivity::class.java
+            )
+        )
+    }
 }

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="game_folders">Game folders</string>
+    <string name="games">Games</string>
+    <string name="add_game_folder">Add game folder</string>
+    <string name="edit_game_folder">Edit game folder</string>
+    <string name="remove_game_folder">Remove game folder</string>
+    <string name="remove_game_folder_message">Remove %1$s from the game library?</string>
+    <string name="remove">Remove</string>
+    <string name="no_game_folders">No game folders added</string>
+    <string name="no_game_folders_summary">Tap + to add a folder from internal storage or an SD card.</string>
+
+    <plurals name="game_folder_count">
+        <item quantity="one">%d game folder</item>
+        <item quantity="other">%d game folders</item>
+    </plurals>
+</resources>
