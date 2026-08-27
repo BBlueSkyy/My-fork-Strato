@@ -49,6 +49,13 @@
         </activity>
 
         <activity
+            android:name=".GameFoldersActivity"
+            android:exported="false"
+            android:label="@string/game_folders"
+            android:parentActivityName=".settings.SettingsActivity">
+        </activity>
+
+        <activity
             android:name=".input.ControllerActivity"
             android:exported="true"
             android:parentActivityName=".settings.SettingsActivity">
@@ -91,7 +98,7 @@
 
                 <data
                     android:mimeType="application/nro"
-                    android:pathPattern=".*\\.nro"
+                    android:pathPattern=".*\.nro"
                     android:scheme="content"
                     tools:ignore="AppLinkUrlError" />
             </intent-filter>
@@ -101,12 +108,12 @@
 
                 <data
                     android:mimeType="text/plain"
-                    android:pathPattern=".*\\.nro"
+                    android:pathPattern=".*\.nro"
                     android:scheme="content"
                     tools:ignore="IntentFilterUniqueDataAttributes" />
                 <data
                     android:mimeType="application/octet-stream"
-                    android:pathPattern=".*\\.nro"
+                    android:pathPattern=".*\.nro"
                     android:scheme="content"
                     tools:ignore="IntentFilterUniqueDataAttributes" />
                 <data
