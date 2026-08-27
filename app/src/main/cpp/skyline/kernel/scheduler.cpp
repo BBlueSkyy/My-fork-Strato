@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <unistd.h>
+#include <atomic>
 #include <common/signal.h>
 #include <common/trace.h>
 #include "types/KThread.h"
@@ -11,6 +12,7 @@ namespace skyline::kernel {
     Scheduler::CoreContext::CoreContext(u8 id, i8 preemptionPriority) : id(id), preemptionPriority(preemptionPriority) {}
 
     Scheduler::Scheduler(const DeviceState &state) : state(state) {
+        LOGW("SCHEDDBG: FORCED-YIELD TEST BUILD ACTIVE");
         // Don't restart syscalls: we want futexes to fail and their predicates rechecked
         signal::SetGuestSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::GuestSignalHandler, false);
         signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::HostSignalHandler, false);
@@ -187,7 +189,11 @@ namespace skyline::kernel {
         TRACE_EVENT("scheduler", "WaitSchedule");
         if (loadBalance) {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
+            static std::atomic_bool forcedYieldDiagnosticDone{false};
+
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
+                std::shared_ptr<type::KThread> forcedYieldTarget{};
+
                 if (thread->id == 4) {
                     LOGW("SCHEDDBG: T{} still waiting on C{} | priority={} | queue size={}",
                          thread->id,
@@ -211,10 +217,21 @@ namespace skyline::kernel {
                         LOGW("SCHEDDBG: C{} queue is EMPTY while T{} is waiting",
                              core->id,
                              thread->id);
+                    } else if (core->queue.front()->id == 3 &&
+                               core->queue.front() != thread &&
+                               !forcedYieldDiagnosticDone.exchange(true)) {
+                        forcedYieldTarget = core->queue.front();
+                        LOGW("SCHEDDBG: forcing ONE diagnostic yield of T{} so T{} can be scheduled",
+                             forcedYieldTarget->id,
+                             thread->id);
                     }
                 }
 
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
+
+                if (forcedYieldTarget)
+                    YieldThread(forcedYieldTarget);
+
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 auto newCore{&GetOptimalCoreForThread(state.thread)};
                 lock.lock();
