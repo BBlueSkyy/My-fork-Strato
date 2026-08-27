@@ -254,6 +254,32 @@ namespace skyline::kernel {
         if (loadBalance) {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
+                if (thread->id == 4) {
+                    LOGW("SCHEDDBG: T{} still waiting on C{} | priority={} | queue size={}",
+                         thread->id,
+                         core->id,
+                         thread->priority.load(),
+                         core->queue.size());
+
+                    size_t position{};
+                    for (const auto &residentThread : core->queue) {
+                        LOGW("SCHEDDBG: C{} queue[{}] = T{} | priority={} | coreId={}{}",
+                             core->id,
+                             position,
+                             residentThread->id,
+                             residentThread->priority.load(),
+                             residentThread->coreId,
+                             position == 0 ? " [FRONT]" : "");
+                        ++position;
+                    }
+
+                    if (core->queue.empty()) {
+                        LOGW("SCHEDDBG: C{} queue is EMPTY while T{} is waiting",
+                             core->id,
+                             thread->id);
+                    }
+                }
+
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 auto newCore{&GetOptimalCoreForThread(state.thread)};
@@ -359,7 +385,7 @@ namespace skyline::kernel {
     void Scheduler::UpdatePriority(const std::shared_ptr<type::KThread> &thread) {
         std::scoped_lock migrationLock{thread->coreMigrationMutex};
         auto *core{&cores.at(thread->coreId)};
-        std::unique_lock coreLock(core->mutex);
+        std::unique_lock coreLock{core->mutex};
 
         auto currentIt{std::find(core->queue.begin(), core->queue.end(), thread)}, nextIt{std::next(currentIt)};
         if (currentIt == core->queue.end()) {
@@ -372,7 +398,7 @@ namespace skyline::kernel {
                 // If the thread needs to be preempted due to its new priority then arm its preemption timer
                 thread->ArmPreemptionTimer(PreemptiveTimeslice);
             } else if (thread->isPreempted && thread->priority != core->preemptionPriority) {
-                // If the thread no longer needs to be preempted due to its new priority then disarm its preemption timer
+                // If the thread no longer needs to be preempted due to its new priority then disarm the preemptive timer
                 thread->DisarmPreemptionTimer();
             }
         } else if (thread->priority < (*std::prev(currentIt))->priority || (nextIt != core->queue.end() && thread->priority > (*nextIt)->priority)) {
