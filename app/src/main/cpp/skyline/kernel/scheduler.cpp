@@ -2,7 +2,6 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <unistd.h>
-#include <atomic>
 #include <common/signal.h>
 #include <common/trace.h>
 #include "types/KThread.h"
@@ -12,7 +11,7 @@ namespace skyline::kernel {
     Scheduler::CoreContext::CoreContext(u8 id, i8 preemptionPriority) : id(id), preemptionPriority(preemptionPriority) {}
 
     Scheduler::Scheduler(const DeviceState &state) : state(state) {
-        LOGW("SCHEDDBG: FORCED-YIELD TEST BUILD ACTIVE");
+        LOGW("SCHEDDBG-CONSTANCE: T32/T33 queue instrumentation active");
         // Don't restart syscalls: we want futexes to fail and their predicates rechecked
         signal::SetGuestSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::GuestSignalHandler, false);
         signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::HostSignalHandler, false);
@@ -189,48 +188,69 @@ namespace skyline::kernel {
         TRACE_EVENT("scheduler", "WaitSchedule");
         if (loadBalance) {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
-            static std::atomic_bool forcedYieldDiagnosticDone{false};
-
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
-                std::shared_ptr<type::KThread> forcedYieldTarget{};
+                std::shared_ptr<type::KThread> fairnessYieldTarget{};
 
-                if (thread->id == 4) {
-                    LOGW("SCHEDDBG: T{} still waiting on C{} | priority={} | queue size={}",
+                if (thread->id == 32 || thread->id == 33) {
+                    LOGW("SCHEDDBG-CONSTANCE: T{} wait timeout | C{} | priority={} | preemptionPriority={} | queueSize={} | affinity={} | idealCore={} | pendingYield={} | forceYield={} | isPreempted={} | timesliceStart={} | averageTimeslice={}",
                          thread->id,
                          core->id,
                          thread->priority.load(),
-                         core->queue.size());
+                         core->preemptionPriority,
+                         core->queue.size(),
+                         thread->affinityMask.to_string(),
+                         thread->idealCore,
+                         thread->pendingYield,
+                         thread->forceYield,
+                         thread->isPreempted,
+                         thread->timesliceStart,
+                         thread->averageTimeslice);
 
+                    bool waitingThreadPresent{};
                     size_t position{};
                     for (const auto &residentThread : core->queue) {
-                        LOGW("SCHEDDBG: C{} queue[{}] = T{} | priority={} | coreId={}{}",
+                        const bool isWaitingThread{residentThread == thread};
+                        if (isWaitingThread)
+                            waitingThreadPresent = true;
+
+                        LOGW("SCHEDDBG-CONSTANCE: C{} queue[{}] = T{} | priority={} | coreId={} | affinity={} | idealCore={} | pendingYield={} | forceYield={} | isPreempted={} | timesliceStart={} | averageTimeslice={}{}{}",
                              core->id,
                              position,
                              residentThread->id,
                              residentThread->priority.load(),
                              residentThread->coreId,
-                             position == 0 ? " [FRONT]" : "");
+                             residentThread->affinityMask.to_string(),
+                             residentThread->idealCore,
+                             residentThread->pendingYield,
+                             residentThread->forceYield,
+                             residentThread->isPreempted,
+                             residentThread->timesliceStart,
+                             residentThread->averageTimeslice,
+                             position == 0 ? " [FRONT]" : "",
+                             isWaitingThread ? " [WAITER]" : "");
                         ++position;
                     }
 
                     if (core->queue.empty()) {
-                        LOGW("SCHEDDBG: C{} queue is EMPTY while T{} is waiting",
-                             core->id,
-                             thread->id);
-                    } else if (core->queue.front()->id == 3 &&
-                               core->queue.front() != thread &&
-                               !forcedYieldDiagnosticDone.exchange(true)) {
-                        forcedYieldTarget = core->queue.front();
-                        LOGW("SCHEDDBG: forcing ONE diagnostic yield of T{} so T{} can be scheduled",
-                             forcedYieldTarget->id,
-                             thread->id);
+                        LOGW("SCHEDDBG-CONSTANCE: C{} queue EMPTY while T{} is waiting", core->id, thread->id);
+                    } else if (!waitingThreadPresent) {
+                        LOGW("SCHEDDBG-CONSTANCE: T{} is NOT PRESENT in C{} queue while waiting", thread->id, core->id);
                     }
+                }
+
+                if (!core->queue.empty()) {
+                    const auto &front{core->queue.front()};
+                    if (front != thread && front->priority.load() == thread->priority.load())
+                        fairnessYieldTarget = front;
                 }
 
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
 
-                if (forcedYieldTarget)
-                    YieldThread(forcedYieldTarget);
+                // A runnable thread can otherwise starve indefinitely behind a same-priority thread.
+                // Yielding the current front lets Rotate() preserve priority ordering while giving the
+                // waiting peer a scheduling opportunity, without changing the special HOS preemption priorities.
+                if (fairnessYieldTarget)
+                    YieldThread(fairnessYieldTarget);
 
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 auto newCore{&GetOptimalCoreForThread(state.thread)};
