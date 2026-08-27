@@ -223,14 +223,14 @@ namespace skyline::input {
         auto &lastEntry{info.state.at(info.header.currentEntry)};
 
         info.header.timestamp = util::GetTimeTicks();
-        info.header.entryCount = std::min(static_cast<u8>(info.header.entryCount + 1), constant::HidEntryCount);
-        info.header.maxEntry = info.header.entryCount - 1;
-        info.header.currentEntry = (info.header.currentEntry < info.header.maxEntry) ? info.header.currentEntry + 1 : 0;
+        info.header.entryCount = constant::HidEntryCount;
+        info.header.maxEntry = std::min<u64>(info.header.maxEntry + 1, constant::HidEntryCount - 1);
+        info.header.currentEntry = (info.header.currentEntry + 1) % constant::HidEntryCount;
 
         auto &nextEntry{info.state.at(info.header.currentEntry)};
 
-        nextEntry.globalTimestamp = globalTimestamp;
         nextEntry.localTimestamp = lastEntry.localTimestamp + 1;
+        nextEntry.globalTimestamp = nextEntry.localTimestamp << 1;
         nextEntry.buttons = entry.buttons;
         nextEntry.leftX = entry.leftX;
         nextEntry.leftY = entry.leftY;
@@ -243,14 +243,14 @@ namespace skyline::input {
         auto &lastEntry{info.state.at(info.header.currentEntry)};
 
         info.header.timestamp = util::GetTimeTicks();
-        info.header.entryCount = std::min(static_cast<u8>(info.header.entryCount + 1), constant::HidEntryCount);
-        info.header.maxEntry = info.header.entryCount - 1;
-        info.header.currentEntry = (info.header.currentEntry < info.header.maxEntry) ? info.header.currentEntry + 1 : 0;
+        info.header.entryCount = constant::HidEntryCount;
+        info.header.maxEntry = std::min<u64>(info.header.maxEntry + 1, constant::HidEntryCount - 1);
+        info.header.currentEntry = (info.header.currentEntry + 1) % constant::HidEntryCount;
 
         auto &nextEntry{info.state.at(info.header.currentEntry)};
 
-        nextEntry.globalTimestamp = globalTimestamp;
         nextEntry.localTimestamp = lastEntry.localTimestamp + 1;
+        nextEntry.globalTimestamp = nextEntry.localTimestamp << 1;
         nextEntry.deltaTimestamp = entry.deltaTimestamp;
         nextEntry.accelerometer = entry.accelerometer;
         nextEntry.gyroscope = entry.gyroscope;
