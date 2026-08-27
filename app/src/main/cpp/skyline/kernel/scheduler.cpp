@@ -188,33 +188,22 @@ namespace skyline::kernel {
         if (loadBalance) {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
-                if (thread->id == 4) {
-                    LOGW("SCHEDDBG: T{} still waiting on C{} | priority={} | queue size={}",
-                         thread->id,
-                         core->id,
-                         thread->priority.load(),
-                         core->queue.size());
+                std::shared_ptr<type::KThread> fairnessYieldTarget{};
 
-                    size_t position{};
-                    for (const auto &residentThread : core->queue) {
-                        LOGW("SCHEDDBG: C{} queue[{}] = T{} | priority={} | coreId={}{}",
-                             core->id,
-                             position,
-                             residentThread->id,
-                             residentThread->priority.load(),
-                             residentThread->coreId,
-                             position == 0 ? " [FRONT]" : "");
-                        ++position;
-                    }
-
-                    if (core->queue.empty()) {
-                        LOGW("SCHEDDBG: C{} queue is EMPTY while T{} is waiting",
-                             core->id,
-                             thread->id);
-                    }
+                if (!core->queue.empty()) {
+                    const auto &front{core->queue.front()};
+                    if (front != thread && front->priority.load() == thread->priority.load())
+                        fairnessYieldTarget = front;
                 }
 
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
+
+                // A runnable thread can otherwise starve indefinitely behind a same-priority thread.
+                // Yielding the current front lets Rotate() preserve priority ordering while giving the
+                // waiting peer a scheduling opportunity, without changing the special HOS preemption priorities.
+                if (fairnessYieldTarget)
+                    YieldThread(fairnessYieldTarget);
+
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 auto newCore{&GetOptimalCoreForThread(state.thread)};
                 lock.lock();
