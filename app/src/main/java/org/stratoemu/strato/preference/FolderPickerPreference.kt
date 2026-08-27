@@ -17,21 +17,74 @@ import androidx.preference.PreferenceManager
 import androidx.preference.R
 import org.stratoemu.strato.di.getSettings
 
-class FolderPickerPreference @JvmOverloads constructor(context : Context, attrs : AttributeSet? = null, defStyleAttr : Int = R.attr.preferenceStyle) : Preference(context, attrs, defStyleAttr) {
-    private val documentPicker = (context as ComponentActivity).registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) {
-        it?.let { uri ->
-            context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+class FolderPickerPreference @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+    defStyleAttr: Int = R.attr.preferenceStyle
+) : Preference(context, attrs, defStyleAttr) {
 
-            context.getSettings().refreshRequired = true
-            PreferenceManager.getDefaultSharedPreferences(context).edit().putString(key, uri.toString()).apply()
-            notifyChanged()
-        }
+    companion object {
+        const val SEARCH_LOCATIONS_KEY = "search_locations"
     }
+
+    private val documentPicker =
+        (context as ComponentActivity).registerForActivityResult(
+            ActivityResultContracts.OpenDocumentTree()
+        ) { uri ->
+            uri?.let {
+                try {
+                    context.contentResolver.takePersistableUriPermission(
+                        it,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (_: SecurityException) {
+                }
+
+                val locations = getSearchLocations().toMutableSet()
+                locations.add(it.toString())
+
+                val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+                val editor = prefs.edit()
+                    .putStringSet(SEARCH_LOCATIONS_KEY, locations)
+
+                val legacyLocation = prefs.getString(key, "")
+                if (legacyLocation.isNullOrEmpty()) {
+                    editor.putString(key, it.toString())
+                }
+
+                editor.apply()
+
+                context.getSettings().refreshRequired = true
+                notifyChanged()
+            }
+        }
 
     init {
         summaryProvider = SummaryProvider<FolderPickerPreference> { preference ->
-            Uri.decode(preference.getPersistedString(""))
+            preference.getSearchLocations()
+                .sorted()
+                .joinToString("\n") { Uri.decode(it) }
         }
+    }
+
+    private fun getSearchLocations(): Set<String> {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+        val locations = prefs.getStringSet(SEARCH_LOCATIONS_KEY, emptySet())
+            ?.filter { it.isNotBlank() }
+            ?.toMutableSet()
+            ?: mutableSetOf()
+
+        if (locations.isEmpty()) {
+            val legacyLocation = prefs.getString(key, "")
+            if (!legacyLocation.isNullOrBlank()) {
+                locations.add(legacyLocation)
+                prefs.edit()
+                    .putStringSet(SEARCH_LOCATIONS_KEY, locations)
+                    .apply()
+            }
+        }
+
+        return locations
     }
 
     override fun onClick() = documentPicker.launch(null)
