@@ -9,7 +9,7 @@
 
 namespace skyline::kernel {
     namespace {
-        constexpr int ConstanceDiagnosticSignal{SIGRTMIN + 2};
+        const int ConstanceDiagnosticSignal{SIGRTMIN + 2};
 
         void ConstanceDiagnosticGuestSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
             const auto &deviceState{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
