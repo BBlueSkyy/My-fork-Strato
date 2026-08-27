@@ -8,13 +8,44 @@
 #include "scheduler.h"
 
 namespace skyline::kernel {
+    namespace {
+        constexpr int ConstanceDiagnosticSignal{SIGRTMIN + 2};
+
+        void ConstanceDiagnosticGuestSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
+            const auto &deviceState{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
+            const auto &thread{deviceState.thread};
+
+            LOGW("SCHEDDBG-CONSTANCE-PC: T{} signal sample in GUEST | PC=0x{:X} | SP=0x{:X} | LR=0x{:X} | coreId={} | priority={} | affinity={}",
+                 thread->id,
+                 ctx->uc_mcontext.pc,
+                 ctx->uc_mcontext.sp,
+                 ctx->uc_mcontext.regs[30],
+                 thread->coreId,
+                 thread->priority.load(),
+                 thread->affinityMask.to_string());
+        }
+
+        void ConstanceDiagnosticHostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+            LOGW("SCHEDDBG-CONSTANCE-PC: T28 diagnostic signal landed in HOST code | hostTid={} | PC=0x{:X} | SP=0x{:X} | LR=0x{:X}",
+                 gettid(),
+                 ctx->uc_mcontext.pc,
+                 ctx->uc_mcontext.sp,
+                 ctx->uc_mcontext.regs[30]);
+        }
+    }
+
     Scheduler::CoreContext::CoreContext(u8 id, i8 preemptionPriority) : id(id), preemptionPriority(preemptionPriority) {}
 
     Scheduler::Scheduler(const DeviceState &state) : state(state) {
-        LOGW("SCHEDDBG-CONSTANCE: T32/T33 queue instrumentation active");
+        LOGW("SCHEDDBG-CONSTANCE: C0/C1/C2 queue + T28 live-PC instrumentation active");
         // Don't restart syscalls: we want futexes to fail and their predicates rechecked
         signal::SetGuestSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::GuestSignalHandler, false);
         signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::HostSignalHandler, false);
+
+        // Diagnostic-only signal. It samples the interrupted PC and immediately returns;
+        // it does not call Rotate(), change queue order, or alter scheduler priorities.
+        signal::SetGuestSignalHandler({ConstanceDiagnosticSignal}, ConstanceDiagnosticGuestSignalHandler, true);
+        signal::SetHostSignalHandler({ConstanceDiagnosticSignal}, ConstanceDiagnosticHostSignalHandler, true);
     }
 
     void Scheduler::GuestSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
@@ -191,8 +222,9 @@ namespace skyline::kernel {
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
                 std::shared_ptr<type::KThread> fairnessYieldTarget{};
 
-                if (thread->id == 32 || thread->id == 33) {
-                    LOGW("SCHEDDBG-CONSTANCE: T{} wait timeout | C{} | priority={} | preemptionPriority={} | queueSize={} | affinity={} | idealCore={} | pendingYield={} | forceYield={} | isPreempted={} | timesliceStart={} | averageTimeslice={}",
+                const bool constanceWaiter{thread->id == 32 || thread->id == 33};
+                if (constanceWaiter) {
+                    LOGW("SCHEDDBG-CONSTANCE: T{} wait timeout | resident=C{} | priority={} | preemptionPriority={} | queueSize={} | affinity={} | idealCore={} | pendingYield={} | forceYield={} | isPreempted={} | timesliceStart={} | averageTimeslice={}",
                          thread->id,
                          core->id,
                          thread->priority.load(),
@@ -205,37 +237,6 @@ namespace skyline::kernel {
                          thread->isPreempted,
                          thread->timesliceStart,
                          thread->averageTimeslice);
-
-                    bool waitingThreadPresent{};
-                    size_t position{};
-                    for (const auto &residentThread : core->queue) {
-                        const bool isWaitingThread{residentThread == thread};
-                        if (isWaitingThread)
-                            waitingThreadPresent = true;
-
-                        LOGW("SCHEDDBG-CONSTANCE: C{} queue[{}] = T{} | priority={} | coreId={} | affinity={} | idealCore={} | pendingYield={} | forceYield={} | isPreempted={} | timesliceStart={} | averageTimeslice={}{}{}",
-                             core->id,
-                             position,
-                             residentThread->id,
-                             residentThread->priority.load(),
-                             residentThread->coreId,
-                             residentThread->affinityMask.to_string(),
-                             residentThread->idealCore,
-                             residentThread->pendingYield,
-                             residentThread->forceYield,
-                             residentThread->isPreempted,
-                             residentThread->timesliceStart,
-                             residentThread->averageTimeslice,
-                             position == 0 ? " [FRONT]" : "",
-                             isWaitingThread ? " [WAITER]" : "");
-                        ++position;
-                    }
-
-                    if (core->queue.empty()) {
-                        LOGW("SCHEDDBG-CONSTANCE: C{} queue EMPTY while T{} is waiting", core->id, thread->id);
-                    } else if (!waitingThreadPresent) {
-                        LOGW("SCHEDDBG-CONSTANCE: T{} is NOT PRESENT in C{} queue while waiting", thread->id, core->id);
-                    }
                 }
 
                 if (!core->queue.empty()) {
@@ -245,6 +246,66 @@ namespace skyline::kernel {
                 }
 
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
+
+                if (constanceWaiter) {
+                    std::shared_ptr<type::KThread> t28SampleTarget{};
+
+                    // Snapshot all application cores independently while holding no other core lock.
+                    // This is diagnostic-only and intentionally avoids changing queue state.
+                    for (size_t coreIndex{}; coreIndex < 3; ++coreIndex) {
+                        auto &diagnosticCore{cores.at(coreIndex)};
+                        std::unique_lock diagnosticLock{diagnosticCore.mutex};
+
+                        LOGW("SCHEDDBG-CONSTANCE-ALLCORES: C{} | preemptionPriority={} | queueSize={}",
+                             diagnosticCore.id,
+                             diagnosticCore.preemptionPriority,
+                             diagnosticCore.queue.size());
+
+                        size_t position{};
+                        for (const auto &residentThread : diagnosticCore.queue) {
+                            const bool isWaitingThread{residentThread == thread};
+                            const bool isT28{residentThread->id == 28};
+
+                            if (isT28)
+                                t28SampleTarget = residentThread;
+
+                            LOGW("SCHEDDBG-CONSTANCE-ALLCORES: C{} queue[{}] = T{} | priority={} | coreId={} | affinity={} | idealCore={} | pendingYield={} | forceYield={} | isPreempted={} | timesliceStart={} | averageTimeslice={}{}{}{}",
+                                 diagnosticCore.id,
+                                 position,
+                                 residentThread->id,
+                                 residentThread->priority.load(),
+                                 residentThread->coreId,
+                                 residentThread->affinityMask.to_string(),
+                                 residentThread->idealCore,
+                                 residentThread->pendingYield,
+                                 residentThread->forceYield,
+                                 residentThread->isPreempted,
+                                 residentThread->timesliceStart,
+                                 residentThread->averageTimeslice,
+                                 position == 0 ? " [FRONT]" : "",
+                                 isWaitingThread ? " [WAITER]" : "",
+                                 isT28 ? " [T28]" : "");
+                            ++position;
+                        }
+
+                        if (diagnosticCore.queue.empty())
+                            LOGW("SCHEDDBG-CONSTANCE-ALLCORES: C{} queue EMPTY", diagnosticCore.id);
+                    }
+
+                    // T32 is used as the single sampler so T32/T33 do not send duplicate signals
+                    // for the same scheduling state. The signal handler only records the live PC.
+                    if (thread->id == 32) {
+                        if (t28SampleTarget) {
+                            LOGW("SCHEDDBG-CONSTANCE-PC: requesting live PC sample from T28 | coreId={} | priority={} | affinity={}",
+                                 t28SampleTarget->coreId,
+                                 t28SampleTarget->priority.load(),
+                                 t28SampleTarget->affinityMask.to_string());
+                            t28SampleTarget->SendSignal(ConstanceDiagnosticSignal);
+                        } else {
+                            LOGW("SCHEDDBG-CONSTANCE-PC: T28 not found in C0/C1/C2 queues");
+                        }
+                    }
+                }
 
                 // A runnable thread can otherwise starve indefinitely behind a same-priority thread.
                 // Yielding the current front lets Rotate() preserve priority ordering while giving the
