@@ -84,4 +84,39 @@ namespace skyline::service::audio {
         buffer.copy_from(outputNames);
         return {};
     }
+
+    Result IAudioDevice::GetAudioSystemMasterVolumeSetting(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<float>(1.0f);
+        return {};
+    }
+
+    Result IAudioDevice::AcquireAudioInputDeviceNotification(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto handle{state.process->InsertItem(event)};
+        response.copyHandles.push_back(handle);
+        return {};
+    }
+
+    Result IAudioDevice::ReleaseAudioInputDeviceNotification(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
+
+    Result IAudioDevice::AcquireAudioOutputDeviceNotification(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto handle{state.process->InsertItem(event)};
+        response.copyHandles.push_back(handle);
+        return {};
+    }
+
+    Result IAudioDevice::ReleaseAudioOutputDeviceNotification(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return {};
+    }
+
+    Result IAudioDevice::SetAudioDeviceOutputVolumeAutoTuneEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        outputVolumeAutoTuneEnabled = request.Pop<u8>() != 0;
+        return {};
+    }
+
+    Result IAudioDevice::IsAudioDeviceOutputVolumeAutoTuneEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(outputVolumeAutoTuneEnabled ? 1 : 0);
+        return {};
+    }
 }
