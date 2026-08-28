@@ -3,6 +3,7 @@
 // Copyright © 2022 yuzu Emulator Project (https://github.com/yuzu-emu/)
 
 #include <audio_core/common/audio_renderer_parameter.h>
+#include <audio_core/common/feature_support.h>
 #include <audio_core/audio_render_manager.h>
 #include <common/utils.h>
 #include <audio.h>
@@ -38,6 +39,10 @@ namespace skyline::service::audio {
 
     Result IAudioRendererManager::GetWorkBufferSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto &params{request.Pop<AudioCore::AudioRendererParameterInternal>()};
+
+        LOGI("AudioRenderer revision: raw=0x{:08X}, revision={}",
+             params.revision,
+             AudioCore::GetRevisionNum(params.revision));
 
         u64 size{};
         auto err{state.audio->audioRendererManager->GetWorkBufferSize(params, size)};
