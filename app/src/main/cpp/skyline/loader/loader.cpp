@@ -106,6 +106,18 @@ namespace skyline::loader {
         return {guestBase, size, executableGuestBase + executable.text.offset};
     }
 
+    bool Loader::UnloadExecutable(void *base) {
+        auto executable{std::find_if(executables.begin(), executables.end(), [base](const ExecutableSymbolicInfo &info) {
+            return info.patchStart == base;
+        })};
+
+        if (executable == executables.end())
+            return false;
+
+        executables.erase(executable);
+        return true;
+    }
+
     template<ElfSymbol ElfSym>
     Loader::SymbolInfo Loader::ResolveSymbol(void *ptr) {
         auto executable{std::lower_bound(executables.begin(), executables.end(), ptr, [](const ExecutableSymbolicInfo &it, void *ptr) { return it.programEnd < ptr; })};

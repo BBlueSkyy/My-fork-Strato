@@ -3,16 +3,20 @@
 
 #pragma once
 
-#include <unordered_set>
+#include <array>
+#include <vector>
 #include <services/serviceman.h>
 
 namespace skyline::service::ro {
     namespace result {
+        constexpr Result OutOfAddressSpace{22, 2};
         constexpr Result AlreadyLoaded{22, 3};
         constexpr Result InvalidNro{22, 4};
         constexpr Result InvalidNrr{22, 6};
         constexpr Result InvalidAddress{22, 1025};
         constexpr Result InvalidSize{22, 1026};
+        constexpr Result InvalidCurrentMemory{22, 1027};
+        constexpr Result NotLoaded{22, 1028};
     }
 
     /**
@@ -26,7 +30,14 @@ namespace skyline::service::ro {
             JitPlugin = 1
         };
 
-        std::unordered_set<std::array<u8, 0x20>, util::ObjectHash<std::array<u8, 0x20>>> loadedNros{};
+        struct LoadedNro {
+            std::array<u8, 0x20> hash;
+            u8 *allocationBase;
+            size_t allocationSize;
+            u8 *mappedAddress;
+        };
+
+        std::vector<LoadedNro> loadedNros{};
 
         Result RegisterModuleInfoImpl(u64 nrrAddress, u64 nrrSize, NrrKind nrrKind);
 
