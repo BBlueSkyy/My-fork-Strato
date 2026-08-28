@@ -4,7 +4,7 @@ name: PR Build
 on:
   pull_request:
     types: [ opened, synchronize, reopened ]
-    branches: [ master ]
+    branches: [ master, UE4-fixes ]
 
 # Only allow the latest build to run for a given PR, and cancel any previous builds
 concurrency:
