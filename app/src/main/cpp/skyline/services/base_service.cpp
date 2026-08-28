@@ -44,7 +44,7 @@ namespace skyline::service {
             if (traceHid) {
                 LOGI("HidIpcTrace: exit service={} cmd=0x{:X} ({}) func={} result=0x{:X} module={} description={}",
                      serviceName, functionId, functionId, function.name,
-                     result.raw, result.module, result.id);
+                     result.raw, static_cast<u32>(result.module), static_cast<u32>(result.id));
             }
             return result;
         } catch (exception &e) {
