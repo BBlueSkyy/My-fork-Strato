@@ -29,7 +29,12 @@ namespace skyline::kernel::type {
         std::memcpy(host.data(), hostMap.data(), hostMap.size());
         u8 *result{KMemory::Map(map, permission)};
 
-        state.process->memory.MapTransferMemory(guest, permission);
+        // svcCreateTransferMemory locks the owner's existing region; it does not turn
+        // that owner-side mapping into MemoryType::TransferMemory/TransferMemoryIsolated.
+        // Preserve the original MemoryState and only apply the owner permission plus the
+        // Locked/Borrowed attribute. This matches Horizon's LockForTransferMemory semantics
+        // and keeps svcQueryMemory reporting the original type (normally Heap).
+        state.process->memory.SetRegionPermission(guest, permission);
         state.process->memory.SetRegionBorrowed(guest, true);
         return result;
     }
