@@ -4,6 +4,7 @@
 #pragma once
 
 #include <shader_compiler/shader_info.h>
+#include <shader_compiler/runtime_info.h>
 #include "common.h"
 
 namespace skyline::gpu::interconnect {
@@ -47,8 +48,19 @@ namespace skyline::gpu::interconnect {
         };
         static_assert(sizeof(TextureTypeEntry) == 0x8);
 
+        /**
+         * @brief Holds the comparison function of a TSC entry read at pipeline creation time
+         * @note This struct *MUST* not be modified without a pipeline cache version bump
+         */
+        struct TextureCompareFunctionEntry {
+            u32 index;
+            Shader::CompareFunction function;
+        };
+        static_assert(sizeof(TextureCompareFunctionEntry) == 0x8);
+
         boost::container::small_vector<ConstantBufferValue, 4> constantBufferValues;
         boost::container::small_vector<TextureTypeEntry, 4> textureTypes;
+        boost::container::small_vector<TextureCompareFunctionEntry, 4> textureCompareFunctions;
 
         std::vector<PipelineStage> pipelineStages{};
 
@@ -76,6 +88,11 @@ namespace skyline::gpu::interconnect {
         void AddTextureType(u32 index, Shader::TextureType type);
 
         /**
+         * @brief Adds a texture comparison function to the bundle
+         */
+        void AddTextureCompareFunction(u32 index, Shader::CompareFunction function);
+
+        /**
          * @brief Adds a constant buffer value for a given offset and shader stage to the bundle
          */
         void AddConstantBufferValue(u32 shaderStage, u32 index, u32 offset, u32 value);
@@ -99,6 +116,11 @@ namespace skyline::gpu::interconnect {
          * @brief Returns the texture type for a given offset
          */
         Shader::TextureType LookupTextureType(u32 index);
+
+        /**
+         * @brief Returns the texture comparison function for a given bindless handle
+         */
+        Shader::CompareFunction LookupTextureCompareFunction(u32 index);
 
         /**
          * @brief Returns the constant buffer value for a given offset and shader stage

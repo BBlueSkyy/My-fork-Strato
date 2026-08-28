@@ -173,6 +173,11 @@ namespace skyline::gpu::interconnect {
         const auto &samplerPoolObj{samplerPool.Get()};
         u32 index{samplerPoolObj.didUseTexHeaderBinding ? textureIndex : samplerIndex};
         auto texSamplers{samplerPoolObj.texSamplers};
+        if (index >= texSamplers.size()) {
+            LOGW("Sampler requested for out-of-range TSC index {}", index);
+            return nullptr;
+        }
+
         if (texSamplers.size() != texSamplerCache.size()) {
             texSamplerCache.resize(texSamplers.size());
             std::fill(texSamplerCache.begin(), texSamplerCache.end(), nullptr);
@@ -234,12 +239,18 @@ namespace skyline::gpu::interconnect {
         }
 
         texSamplerCache[index] = sampler.get();
-            return sampler.get();
-             }   
-        Shader::CompareFunction Samplers::GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex) {
-            const auto &samplerPoolObj{samplerPool.Get()};
+        return sampler.get();
+    }
+
+    Shader::CompareFunction Samplers::GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex) {
+        const auto &samplerPoolObj{samplerPool.Get()};
         u32 index{samplerPoolObj.didUseTexHeaderBinding ? textureIndex : samplerIndex};
-        TextureSamplerControl &texSampler{samplerPoolObj.texSamplers[index]};
+        if (index >= samplerPoolObj.texSamplers.size()) {
+            LOGW("Shadow comparison requested for out-of-range TSC index {}", index);
+            return Shader::CompareFunction::LessThanEqual;
+        }
+
+        const TextureSamplerControl &texSampler{samplerPoolObj.texSamplers[index]};
         return ConvertSamplerCompareFunc(texSampler.depthCompareOp);
-     }
+    }
 }

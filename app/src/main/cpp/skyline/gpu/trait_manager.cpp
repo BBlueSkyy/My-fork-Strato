@@ -259,6 +259,11 @@ namespace skyline::gpu {
             case vk::DriverId::eMesaTurnip: {
                 vkImageMutableFormatCostly = true; // Disables UBWC and forces linear tiling
                 adrenoRelaxedFormatAliasing = true;
+                // Recent Turnip builds can advertise VK_KHR_push_descriptor but hang when
+                // UE4 pipelines push larger/mixed descriptor sets (including texel buffers).
+                // Use regular descriptor sets until per-pipeline maxPushDescriptors checks
+                // are implemented.
+                brokenPushDescriptors = true;
                 brokenTextureShadowCompare = true;  
                 brokenFp16FloatControls = true;
                 break;

@@ -18,6 +18,7 @@ namespace skyline::gpu::interconnect {
         key.resize(newKey.size());
         span(key).copy_from(newKey);
         textureTypes.clear();
+        textureCompareFunctions.clear();
         constantBufferValues.clear();
     }
 
@@ -32,6 +33,10 @@ namespace skyline::gpu::interconnect {
 
     void PipelineStateBundle::AddTextureType(u32 index, Shader::TextureType type) {
         textureTypes.push_back({index, type});
+    }
+
+    void PipelineStateBundle::AddTextureCompareFunction(u32 index, Shader::CompareFunction function) {
+        textureCompareFunctions.push_back({index, function});
     }
 
     void PipelineStateBundle::AddConstantBufferValue(u32 shaderStage, u32 index, u32 offset, u32 value) {
@@ -55,6 +60,14 @@ namespace skyline::gpu::interconnect {
         return it->type;
     }
 
+    Shader::CompareFunction PipelineStateBundle::LookupTextureCompareFunction(u32 index) {
+        auto it{ranges::find_if(textureCompareFunctions, [index](const auto &entry) { return entry.index == index; })};
+        if (it == textureCompareFunctions.end())
+            throw exception("Failed to find texture comparison function for index: 0x{:X}", index);
+
+        return it->function;
+    }
+
     u32 PipelineStateBundle::LookupConstantBufferValue(u32 shaderStage, u32 index, u32 offset) {
         auto it{ranges::find_if(constantBufferValues, [index, offset, shaderStage](const auto &val) { return  val.index == index && val.offset == offset && val.shaderStage == shaderStage; })};
         if (it == constantBufferValues.end())
@@ -71,6 +84,7 @@ namespace skyline::gpu::interconnect {
         u32 keySize;
         u32 constantBufferValueCount
         u32 textureTypeCount
+        u32 textureCompareFunctionCount
         u32 pipelineStageCount
         u8 key[keySize];
 
@@ -86,6 +100,11 @@ namespace skyline::gpu::interconnect {
             u32 (Shader::TextureType) type;
         } textureType[textureTypeCount];
 
+        struct TextureCompareFunction {
+            u32 index;
+            u32 (Shader::CompareFunction) function;
+        } textureCompareFunctions[textureCompareFunctionCount];
+
         struct PipelineStage {
             u32 binaryBaseOffset
             u32 binarySize
@@ -97,6 +116,7 @@ namespace skyline::gpu::interconnect {
         u32 keySize;
         u32 constantBufferValueCount;
         u32 textureTypeCount;
+        u32 textureCompareFunctionCount;
         u32 pipelineStageCount;
     };
 
@@ -131,7 +151,7 @@ namespace skyline::gpu::interconnect {
         offset += header.keySize;
 
         auto readConstantBufferValues{data.subspan(offset, header.constantBufferValueCount * sizeof(ConstantBufferValue)).cast<ConstantBufferValue>()};
-        textureTypes.reserve(header.textureTypeCount);
+        constantBufferValues.reserve(header.constantBufferValueCount);
         constantBufferValues.insert(constantBufferValues.end(), readConstantBufferValues.begin(), readConstantBufferValues.end());
         offset += header.constantBufferValueCount * sizeof(ConstantBufferValue);
 
@@ -139,6 +159,11 @@ namespace skyline::gpu::interconnect {
         textureTypes.reserve(header.textureTypeCount);
         textureTypes.insert(textureTypes.end(), readTextureTypes.begin(), readTextureTypes.end());
         offset += header.textureTypeCount * sizeof(TextureTypeEntry);
+
+        auto readTextureCompareFunctions{data.subspan(offset, header.textureCompareFunctionCount * sizeof(TextureCompareFunctionEntry)).cast<TextureCompareFunctionEntry>()};
+        textureCompareFunctions.reserve(header.textureCompareFunctionCount);
+        textureCompareFunctions.insert(textureCompareFunctions.end(), readTextureCompareFunctions.begin(), readTextureCompareFunctions.end());
+        offset += header.textureCompareFunctionCount * sizeof(TextureCompareFunctionEntry);
 
         pipelineStages.resize(header.pipelineStageCount);
         for (u32 i{}; i < header.pipelineStageCount; i++) {
@@ -159,6 +184,7 @@ namespace skyline::gpu::interconnect {
                                         key.size() +
                                         constantBufferValues.size() * sizeof(ConstantBufferValue) +
                                         textureTypes.size() * sizeof(TextureTypeEntry) +
+                                        textureCompareFunctions.size() * sizeof(TextureCompareFunctionEntry) +
                                         std::accumulate(pipelineStages.begin(), pipelineStages.end(), 0UL, [](size_t acc, const auto &stage) {
                                             return acc + sizeof(PipelineBinaryDataHeader) + stage.binary.size();
                                         }))};
@@ -172,6 +198,7 @@ namespace skyline::gpu::interconnect {
         header.keySize = static_cast<u32>(key.size());
         header.constantBufferValueCount = static_cast<u32>(constantBufferValues.size());
         header.textureTypeCount = static_cast<u32>(textureTypes.size());
+        header.textureCompareFunctionCount = static_cast<u32>(textureCompareFunctions.size());
         header.pipelineStageCount = static_cast<u32>(pipelineStages.size());
 
         data.subspan(offset, header.keySize).copy_from(key);
@@ -182,6 +209,9 @@ namespace skyline::gpu::interconnect {
 
         data.subspan(offset, header.textureTypeCount * sizeof(TextureTypeEntry)).copy_from(textureTypes);
         offset += header.textureTypeCount * sizeof(TextureTypeEntry);
+
+        data.subspan(offset, header.textureCompareFunctionCount * sizeof(TextureCompareFunctionEntry)).copy_from(textureCompareFunctions);
+        offset += header.textureCompareFunctionCount * sizeof(TextureCompareFunctionEntry);
 
         for (const auto &stage : pipelineStages) {
             auto &pipelineHeader{data.subspan(offset).as<PipelineBinaryDataHeader>()};

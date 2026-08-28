@@ -11,7 +11,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     Shader::CompareFunction FilePipelineStateAccessor::GetTextureCompareFunc(u32 index) const {
-        throw exception("Not implemented");
+        return bundle.LookupTextureCompareFunction(index);
     }
 
     u32 FilePipelineStateAccessor::GetConstantBufferValue(u32 shaderStage, u32 index, u32 offset) const {
