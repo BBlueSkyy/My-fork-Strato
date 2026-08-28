@@ -26,7 +26,7 @@ namespace skyline::service::audio {
         impl.Finalize();
     }
 
-    Result IAudioRenderer::GetInitializationResult() const {
+    AudioCore::Result IAudioRenderer::GetInitializationResult() const {
         return initializationResult;
     }
 

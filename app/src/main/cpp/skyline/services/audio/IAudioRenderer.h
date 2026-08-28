@@ -20,7 +20,7 @@ namespace skyline::service::audio {
         KernelShim::KEvent renderedEventWrapper;
         KernelShim::KTransferMemory transferMemoryWrapper;
         AudioCore::AudioRenderer::Renderer impl;
-        Result initializationResult{};
+        AudioCore::Result initializationResult{};
 
       public:
         IAudioRenderer(const DeviceState &state, ServiceManager &manager,
@@ -30,7 +30,7 @@ namespace skyline::service::audio {
 
         ~IAudioRenderer();
 
-        Result GetInitializationResult() const;
+        AudioCore::Result GetInitializationResult() const;
 
         /**
          * @url https://switchbrew.org/wiki/Audio_services#GetSampleRate
