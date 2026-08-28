@@ -61,8 +61,31 @@ namespace skyline::service::audio {
              params.revision,
              AudioCore::GetRevisionNum(params.revision));
 
+        LOGI("AudioRenderer params: revision={}, mode={}, sampleRate={}, sampleCount={}, "
+             "voices={}, mixes={}, subMixes={}, sinks={}, effects={}, "
+             "splitterInfos={}, splitterDestinations={}, voiceDrop={}, "
+             "renderDevice={}, externalContext=0x{:X}",
+             AudioCore::GetRevisionNum(params.revision),
+             static_cast<u32>(params.execution_mode),
+             params.sample_rate,
+             params.sample_count,
+             params.voices,
+             params.mixes,
+             params.sub_mixes,
+             params.sinks,
+             params.effects,
+             params.splitter_infos,
+             params.splitter_destinations,
+             params.voice_drop_enabled,
+             params.rendering_device,
+             params.external_context_size);
+
         u64 size{};
         auto err{state.audio->audioRendererManager->GetWorkBufferSize(params, size)};
+
+        LOGI("GetWorkBufferSize result: size=0x{:X}, result=0x{:X}",
+             size, u32{err});
+
         if (err.IsError())
             LOGW("Failed to calculate work buffer size");
 
