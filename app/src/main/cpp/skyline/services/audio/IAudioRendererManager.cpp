@@ -23,6 +23,7 @@ namespace skyline::service::audio {
              request.moveHandles.size());
 
         const auto &params{request.Pop<AudioCore::AudioRendererParameterInternal>()};
+        request.Pop<u32>(); // 4-byte CMIF padding after the 0x34-byte parameter
         u64 transferMemorySize{request.Pop<u64>()};
         u64 appletResourceUserId{request.Pop<u64>()};
         auto transferMemoryHandle{request.copyHandles.at(0)};
