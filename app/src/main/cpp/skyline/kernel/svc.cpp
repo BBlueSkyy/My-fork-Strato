@@ -967,15 +967,43 @@ namespace skyline::kernel::svc {
     }
 
     void Break(const DeviceState &state, SvcContext &ctx) {
-        auto reason{ctx.x0};
+        const u64 reason{ctx.x0};
+        auto *argument{reinterpret_cast<u8 *>(ctx.x1)};
+        const size_t infoSize{static_cast<size_t>(ctx.x2)};
+
         if (reason & (1ULL << 31)) {
             LOGD("Debugger is being engaged ({})", reason);
-        } else {
-            LOGE("Exit Stack Trace ({}){}", reason, state.loader->GetStackTrace());
-            if (state.thread->id)
-                state.process->Kill(false);
-            std::longjmp(state.thread->originalCtx, true);
+            ctx.w0 = Result{};
+            return;
         }
+
+        // nnSdk/libnx panic paths use svcBreak(Panic, &result, sizeof(Result)).
+        // The old handler discarded X1/X2 and then did a host stack walk which could SIGSEGV.
+        if (argument && infoSize >= sizeof(u32)) {
+            span<u8> guestInfo{argument, sizeof(u32)};
+            if (state.process->memory.AddressSpaceContains(guestInfo)) {
+                auto hostInfo{state.process->memory.GetHostSpan(guestInfo)};
+                u32 rawResult{};
+                std::memcpy(&rawResult, hostInfo.data(), sizeof(rawResult));
+
+                const u32 module{rawResult & 0x1FFU};
+                const u32 description{(rawResult >> 9) & 0x1FFFU};
+
+                LOGE("Break panic Result: raw=0x{:X} ({}) module={} description={}",
+                     rawResult, rawResult, module, description);
+            } else {
+                LOGE("Break panic payload outside guest address space: address={}, size=0x{:X}",
+                     fmt::ptr(argument), infoSize);
+            }
+        } else {
+            LOGE("Break without Result payload: reason=0x{:X}, argument={}, size=0x{:X}",
+                 reason, fmt::ptr(argument), infoSize);
+        }
+
+        // Guest stack was captured safely in NCE::SvcHandler.
+        if (state.thread->id)
+            state.process->Kill(false);
+        std::longjmp(state.thread->originalCtx, true);
     }
 
     void OutputDebugString(const DeviceState &state, SvcContext &ctx) {

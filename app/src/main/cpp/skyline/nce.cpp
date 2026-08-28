@@ -21,7 +21,7 @@ namespace skyline::nce {
         return killAllThreads ? "ExitProcess" : "ExitThread";
     }
 
-    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx) {
+    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, u64 guestSp, u64 guestFp) {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
@@ -33,6 +33,57 @@ namespace skyline::nce {
             audioSvcTraceCountdown = 10;
 
         const bool traceAudioSvc{state.thread->id == 4 && audioSvcTraceCountdown > 0};
+
+        if (svcId == 0x26) {
+            std::vector<void *> guestFrames;
+
+            auto readGuestU64 = [&](u64 address, u64 &value) {
+                if (!address)
+                    return false;
+
+                auto *guestAddress{reinterpret_cast<u8 *>(address)};
+                span<u8> guestRange{guestAddress, sizeof(u64)};
+                if (!state.process->memory.AddressSpaceContains(guestRange))
+                    return false;
+
+                auto hostRange{state.process->memory.GetHostSpan(guestRange)};
+                std::memcpy(&value, hostRange.data(), sizeof(value));
+                return true;
+            };
+
+            // The per-SVC trampoline pushes the original guest LR at [guestSp].
+            u64 originalGuestLr{};
+            if (readGuestU64(guestSp, originalGuestLr) && originalGuestLr)
+                guestFrames.push_back(reinterpret_cast<void *>(originalGuestLr));
+
+            // Walk the AArch64 frame-pointer chain safely through MemoryManager.
+            u64 framePointer{guestFp};
+            for (u32 depth{}; depth < 32 && framePointer; depth++) {
+                auto *guestFrameAddress{reinterpret_cast<u8 *>(framePointer)};
+                span<u8> guestFrameRange{guestFrameAddress, sizeof(signal::StackFrame)};
+                if (!state.process->memory.AddressSpaceContains(guestFrameRange))
+                    break;
+
+                auto hostFrameRange{state.process->memory.GetHostSpan(guestFrameRange)};
+                signal::StackFrame frame{};
+                std::memcpy(&frame, hostFrameRange.data(), sizeof(frame));
+
+                if (frame.lr)
+                    guestFrames.push_back(frame.lr);
+
+                const u64 next{reinterpret_cast<u64>(frame.next)};
+                if (!next || next == framePointer)
+                    break;
+                framePointer = next;
+            }
+
+            if (!guestFrames.empty()) {
+                LOGE("Guest Break Stack:{}", state.loader->GetStackTrace(guestFrames));
+            } else {
+                LOGE("Guest Break Stack: unavailable (SP=0x{:X}, FP=0x{:X})",
+                     guestSp, guestFp);
+            }
+        }
 
         if (traceAudioSvc) {
             LOGI("AUDIO-SVC ENTER: id=0x{:X}, name={}, X0=0x{:X}, X1=0x{:X}, X2=0x{:X}, X3=0x{:X}",
@@ -255,7 +306,7 @@ namespace skyline::nce {
         signal::SetHostSignalHandler({SIGSEGV}, nce::NCE::HostSignalHandler);
     }
 
-    constexpr size_t TrampolineSize{18}; // Size of the main SVC trampoline function in u32 units
+    constexpr size_t TrampolineSize{19}; // Size of the main SVC trampoline function in u32 units
 
     /**
      * @brief Writes a trampoline to the given target address that saves the current context and calls the given function
@@ -271,21 +322,22 @@ namespace skyline::nce {
         *code++ = 0xD51BD042; // MSR TPIDR_EL0, X2
 
         /* Replace guest stack with host stack */
-        *code++ = 0x910003E2; // MOV X2, SP
+        *code++ = 0x910003E2; // MOV X2, SP -- third SvcHandler arg: guest SP
         *code++ = 0xF9415423; // LDR X3, [X1, #0x2A8] (ThreadContext::hostSp)
         *code++ = 0x9100007F; // MOV SP, X3
+        *code++ = instructions::Mov(registers::X3, registers::X29).raw; // fourth arg: guest FP
 
         /* Store Skyline TLS + guest SP on stack */
         *code++ = 0xA9BF0BE1; // STP X1, X2, [SP, #-16]!
 
-        /* Jump to SvcHandler */
-        for (const auto &mov : instructions::MoveRegister(registers::X2, target)) {
+        /* Jump to SvcHandler. X2/X3 remain the guest SP/FP arguments. */
+        for (const auto &mov : instructions::MoveRegister(registers::X4, target)) {
             if (mov)
                 *code++ = mov;
             else
                 *code++ = 0xD503201F; // NOP
         }
-        *code++ = 0xD63F0040; // BLR X2
+        *code++ = 0xD63F0080; // BLR X4
 
         /* Restore Skyline TLS + guest SP */
         *code++ = 0xA8C10BE1; // LDP X1, X2, [SP], #16
