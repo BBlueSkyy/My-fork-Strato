@@ -22,6 +22,11 @@ namespace skyline::input {
         for (auto &controller : controllers)
             controller.device = nullptr;
 
+        const bool handheldIdSupported{ranges::any_of(supportedIds, [](NpadId id) {
+            return id == NpadId::Handheld;
+        })};
+        const bool handheldSupported{handheldIdSupported && static_cast<bool>(styles.joyconHandheld)};
+
         for (auto &id : supportedIds) {
             if (id == NpadId::Unknown || !IsNpadIdValid(id))
                 continue;
@@ -33,23 +38,34 @@ namespace skyline::input {
                     continue;
 
                 NpadStyleSet style{};
+                NpadControllerType mappedType{controller.type};
+
                 if (id != NpadId::Handheld) {
-                    if (controller.type == NpadControllerType::ProController)
+                    if (controller.type == NpadControllerType::ProController) {
                         style.proController = true;
-                    else if (controller.type == NpadControllerType::JoyconLeft)
+                    } else if (controller.type == NpadControllerType::Handheld && !handheldSupported) {
+                        // The Android frontend's HandheldProController is represented as Handheld while
+                        // undocked. If a title does not expose a usable Handheld Npad, keep the built-in
+                        // controls connected by presenting them as a Pro Controller on a player Npad.
+                        style.proController = true;
+                        mappedType = NpadControllerType::ProController;
+                    } else if (controller.type == NpadControllerType::JoyconLeft) {
                         style.joyconLeft = true;
-                    else if (controller.type == NpadControllerType::JoyconRight)
+                    } else if (controller.type == NpadControllerType::JoyconRight) {
                         style.joyconRight = true;
+                    }
+
                     if (controller.type == NpadControllerType::JoyconDual || controller.partnerIndex != -1)
                         style.joyconDual = true;
                 } else if (controller.type == NpadControllerType::Handheld) {
                     style.joyconHandheld = true;
                 }
+
                 style = NpadStyleSet{.raw = style.raw & styles.raw};
 
                 if (style.raw) {
                     if (style.proController || style.joyconHandheld || style.joyconLeft || style.joyconRight) {
-                        device.Connect(controller.type);
+                        device.Connect(mappedType);
                         device.index = static_cast<i8>(&controller - controllers.data());
                         device.partnerIndex = -1;
                         controller.device = &device;
