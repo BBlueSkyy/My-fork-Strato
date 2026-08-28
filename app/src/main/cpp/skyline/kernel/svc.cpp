@@ -630,6 +630,9 @@ namespace skyline::kernel::svc {
 
     void CreateTransferMemory(const DeviceState &state, SvcContext &ctx) {
         u8 *address{reinterpret_cast<u8 *>(ctx.x1)};
+
+        LOGI("CreateTransferMemory: address={}, size=0x{:X}, permission=0x{:X}",
+             fmt::ptr(address), ctx.x2, ctx.w3);
         if (!util::IsPageAligned(address)) [[unlikely]] {
             ctx.w0 = result::InvalidAddress;
             LOGW("'address' not page aligned: {}", fmt::ptr(address));
@@ -658,9 +661,14 @@ namespace skyline::kernel::svc {
 
         auto tmem{state.process->NewHandle<kernel::type::KTransferMemory>(size)};
         if (!tmem.item->Map(span<u8>{address, size}, permission)) [[unlikely]] {
+            LOGW("CreateTransferMemory: Map failed for address={}, size=0x{:X}",
+                 fmt::ptr(address), size);
             ctx.w0 = result::InvalidState;
             return;
         }
+
+        LOGI("CreateTransferMemory: success handle=0x{:X}, address={}, size=0x{:X}",
+             tmem.handle, fmt::ptr(address), size);
 
         LOGD("Creating transfer memory (0x{:X}) at {} - {} (0x{:X} bytes) ({}{}{})", tmem.handle, fmt::ptr(address), fmt::ptr(address + size), size, permission.r ? 'R' : '-', permission.w ? 'W' : '-', permission.x ? 'X' : '-');
 

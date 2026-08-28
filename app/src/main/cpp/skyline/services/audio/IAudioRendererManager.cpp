@@ -16,6 +16,12 @@ namespace skyline::service::audio {
         : BaseService(state, manager) {}
 
     Result IAudioRendererManager::OpenAudioRenderer(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        LOGI("OpenAudioRenderer: entered cmdArgSz=0x{:X}, paramSize=0x{:X}, copyHandles={}, moveHandles={}",
+             request.cmdArgSz,
+             sizeof(AudioCore::AudioRendererParameterInternal),
+             request.copyHandles.size(),
+             request.moveHandles.size());
+
         const auto &params{request.Pop<AudioCore::AudioRendererParameterInternal>()};
         u64 transferMemorySize{request.Pop<u64>()};
         u64 appletResourceUserId{request.Pop<u64>()};
@@ -60,6 +66,10 @@ namespace skyline::service::audio {
         LOGI("AudioRenderer revision: raw=0x{:08X}, revision={}",
              params.revision,
              AudioCore::GetRevisionNum(params.revision));
+
+        LOGI("GetWorkBufferSize IPC: cmdArgSz=0x{:X}, paramSize=0x{:X}",
+             request.cmdArgSz,
+             sizeof(AudioCore::AudioRendererParameterInternal));
 
         LOGI("AudioRenderer params: revision={}, mode={}, sampleRate={}, sampleCount={}, "
              "voices={}, mixes={}, subMixes={}, sinks={}, effects={}, "
