@@ -212,7 +212,10 @@ namespace skyline::gpu {
                 hostVisibleCoherentCachedMemoryType = i;
 
 
-        minimumStorageBufferAlignment = static_cast<u32>(deviceProperties2.get().properties.limits.minStorageBufferOffsetAlignment);
+        const auto &limits{deviceProperties2.get().properties.limits};
+        minimumStorageBufferAlignment = static_cast<u32>(limits.minStorageBufferOffsetAlignment);
+        minimumTexelBufferOffsetAlignment = limits.minTexelBufferOffsetAlignment;
+        maximumTexelBufferElements = limits.maxTexelBufferElements;
 
         vendorId = deviceProperties2.get().properties.vendorID;
         deviceId = deviceProperties2.get().properties.deviceID;

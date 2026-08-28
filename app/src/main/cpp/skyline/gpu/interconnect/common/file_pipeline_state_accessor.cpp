@@ -14,6 +14,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return bundle.LookupTextureCompareFunction(index);
     }
 
+    Shader::TextureSwizzleMapping FilePipelineStateAccessor::GetTextureSwizzle(u32 index) const {
+        return bundle.LookupTextureSwizzle(index);
+    }
+
     u32 FilePipelineStateAccessor::GetConstantBufferValue(u32 shaderStage, u32 index, u32 offset) const {
         return bundle.LookupConstantBufferValue(shaderStage, index, offset);
     }

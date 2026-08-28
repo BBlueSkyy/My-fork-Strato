@@ -33,6 +33,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         Shader::CompareFunction GetTextureCompareFunc(u32 index) const override;
 
+        Shader::TextureSwizzleMapping GetTextureSwizzle(u32 index) const override;
+
         u32 GetConstantBufferValue(u32 shaderStage, u32 index, u32 offset) const override;
 
         ShaderBinary GetShaderBinary(u32 pipelineStage) const override;

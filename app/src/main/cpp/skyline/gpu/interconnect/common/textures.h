@@ -59,7 +59,9 @@ namespace skyline::gpu::interconnect {
         tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
         tsl::robin_map<TexelBufferViewKey, std::unique_ptr<vk::raii::BufferView>, TexelBufferViewKeyHash> texelBufferViewStore;
 
-        vk::raii::BufferView *GetOrCreateTexelBufferView(InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format);
+        vk::raii::BufferView *GetOrCreateTexelBufferView(InterconnectContext &ctx, CachedMappedBufferView &cachedView,
+                                                         vk::Format format, size_t bytesPerElement,
+                                                         vk::FormatFeatureFlagBits requiredFeature);
 
         struct CacheEntry {
             TextureImageControl tic;
@@ -76,6 +78,8 @@ namespace skyline::gpu::interconnect {
         TextureView *GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType);
 
         Shader::TextureType GetTextureType(InterconnectContext &ctx, u32 index);
+
+        Shader::TextureSwizzleMapping GetTextureBufferSwizzle(InterconnectContext &ctx, u32 index);
 
         vk::raii::BufferView *GetTextureBufferView(InterconnectContext &ctx, u32 index, CachedMappedBufferView &cachedView);
 

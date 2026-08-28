@@ -160,6 +160,7 @@ namespace skyline::gpu {
         ShaderManager::ConstantBufferRead constantBufferRead;
         ShaderManager::GetTextureType getTextureType;
         ShaderManager::GetTextureCompareFunc getTextureCompareFunc;
+        ShaderManager::GetTextureSwizzle getTextureSwizzle;
       
       public:
         GraphicsEnvironment(const std::array<u32, 8> &postVtgShaderAttributeSkipMask,
@@ -167,11 +168,11 @@ namespace skyline::gpu {
                             span<u8> pBinary, u32 baseOffset,
                             u32 textureBufferIndex,
                             bool viewportTransformEnabled,
-                            ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType, ShaderManager::GetTextureCompareFunc getTextureCompareFunc)
+                            ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType, ShaderManager::GetTextureCompareFunc getTextureCompareFunc, ShaderManager::GetTextureSwizzle getTextureSwizzle)
             : binary{pBinary}, baseOffset{baseOffset},
               textureBufferIndex{textureBufferIndex},
               viewportTransformEnabled{viewportTransformEnabled},
-              constantBufferRead{std::move(constantBufferRead)}, getTextureType{std::move(getTextureType)}, getTextureCompareFunc{std::move(getTextureCompareFunc)} {
+              constantBufferRead{std::move(constantBufferRead)}, getTextureType{std::move(getTextureType)}, getTextureCompareFunc{std::move(getTextureCompareFunc)}, getTextureSwizzle{std::move(getTextureSwizzle)} {
             gp_passthrough_mask = postVtgShaderAttributeSkipMask;
             stage = pStage;
             sph = *reinterpret_cast<Shader::ProgramHeader *>(binary.data());
@@ -192,6 +193,10 @@ namespace skyline::gpu {
 
         [[nodiscard]] Shader::TexturePixelFormat ReadTexturePixelFormat(u32 handle) final {
             throw exception("ReadTexturePixelFormat not implemented");
+        }
+
+        [[nodiscard]] Shader::TextureSwizzleMapping ReadTextureSwizzle(u32 handle) final {
+            return getTextureSwizzle(handle);
         }
 
         [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) final {
@@ -260,6 +265,7 @@ namespace skyline::gpu {
         ShaderManager::ConstantBufferRead constantBufferRead;
         ShaderManager::GetTextureType getTextureType;
         ShaderManager::GetTextureCompareFunc getTextureCompareFunc;
+        ShaderManager::GetTextureSwizzle getTextureSwizzle;
     
       public:
         ComputeEnvironment(span<u8> pBinary,
@@ -267,7 +273,7 @@ namespace skyline::gpu {
                            u32 textureBufferIndex,
                            u32 localMemorySize, u32 sharedMemorySize,
                            std::array<u32, 3> workgroupDimensions,
-                           ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType, ShaderManager::GetTextureCompareFunc getTextureCompareFunc)
+                           ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType, ShaderManager::GetTextureCompareFunc getTextureCompareFunc, ShaderManager::GetTextureSwizzle getTextureSwizzle)
             : binary{pBinary},
               baseOffset{baseOffset},
               textureBufferIndex{textureBufferIndex},
@@ -276,7 +282,8 @@ namespace skyline::gpu {
               workgroupDimensions{workgroupDimensions},
               constantBufferRead{std::move(constantBufferRead)},
               getTextureType{std::move(getTextureType)},
-              getTextureCompareFunc{std::move(getTextureCompareFunc)} {
+              getTextureCompareFunc{std::move(getTextureCompareFunc)},
+              getTextureSwizzle{std::move(getTextureSwizzle)} {
             stage = Shader::Stage::Compute;
             start_address = baseOffset;
             is_propietary_driver = textureBufferIndex == 2;
@@ -295,6 +302,10 @@ namespace skyline::gpu {
 
         [[nodiscard]] Shader::TexturePixelFormat ReadTexturePixelFormat(u32 handle) final {
             throw exception("ReadTexturePixelFormat not implemented");
+        }
+
+        [[nodiscard]] Shader::TextureSwizzleMapping ReadTextureSwizzle(u32 handle) final {
+            return getTextureSwizzle(handle);
         }
 
         [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) final {
@@ -363,6 +374,10 @@ namespace skyline::gpu {
             throw exception("Not implemented");
         }
 
+        [[nodiscard]] Shader::TextureSwizzleMapping ReadTextureSwizzle(u32 handle) final {
+            throw exception("Not implemented");
+        }
+
         [[nodiscard]] Shader::CompareFunction ReadTextureCompareFunc(u32 handle) final {
             throw exception("Not implemented");
         }
@@ -403,12 +418,12 @@ namespace skyline::gpu {
                                                            u64 hash, span<u8> binary, u32 baseOffset,
                                                            u32 textureConstantBufferIndex,
                                                            bool viewportTransformEnabled,
-                                                           const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const GetTextureCompareFunc &getTextureCompareFunc) {
+                                                           const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const GetTextureCompareFunc &getTextureCompareFunc, const GetTextureSwizzle &getTextureSwizzle) {
         binary = ProcessShaderBinary(false, hash, binary);
 
         std::scoped_lock lock{poolMutex};
 
-        GraphicsEnvironment environment{postVtgShaderAttributeSkipMask, stage, binary, baseOffset, textureConstantBufferIndex, viewportTransformEnabled, constantBufferRead, getTextureType, getTextureCompareFunc};
+        GraphicsEnvironment environment{postVtgShaderAttributeSkipMask, stage, binary, baseOffset, textureConstantBufferIndex, viewportTransformEnabled, constantBufferRead, getTextureType, getTextureCompareFunc, getTextureSwizzle};
         Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset + sizeof(Shader::ProgramHeader))}};
         return  Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
     }
@@ -430,12 +445,12 @@ namespace skyline::gpu {
                                                           u32 textureConstantBufferIndex,
                                                           u32 localMemorySize, u32 sharedMemorySize,
                                                           std::array<u32, 3> workgroupDimensions,
-                                                          const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const GetTextureCompareFunc &getTextureCompareFunc) {
+                                                          const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const GetTextureCompareFunc &getTextureCompareFunc, const GetTextureSwizzle &getTextureSwizzle) {
         binary = ProcessShaderBinary(false, hash, binary);
 
         std::scoped_lock lock{poolMutex};
 
-        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, getTextureCompareFunc};
+        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, getTextureCompareFunc, getTextureSwizzle};
         Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset)}};
         return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
     }

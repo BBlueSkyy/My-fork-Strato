@@ -25,6 +25,11 @@ namespace skyline::gpu::interconnect {
         virtual Shader::CompareFunction GetTextureCompareFunc(u32 index) const = 0;
 
         /**
+         * @return The component swizzle for the TIC entry at the given index
+         */
+        virtual Shader::TextureSwizzleMapping GetTextureSwizzle(u32 index) const = 0;
+
+        /**
          * @return The value of the constant buffer at the given index, offset and stage
          */
         virtual u32 GetConstantBufferValue(u32 shaderStage, u32 index, u32 offset) const = 0;

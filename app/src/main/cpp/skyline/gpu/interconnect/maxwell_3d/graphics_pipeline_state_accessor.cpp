@@ -29,6 +29,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return function;
     }
 
+    Shader::TextureSwizzleMapping RuntimeGraphicsPipelineStateAccessor::GetTextureSwizzle(u32 index) const {
+        auto mapping{textures.GetTextureBufferSwizzle(ctx, index)};
+        bundle->AddTextureSwizzle(index, mapping);
+        return mapping;
+    }
+
     u32 RuntimeGraphicsPipelineStateAccessor::GetConstantBufferValue(u32 shaderStage, u32 index, u32 offset) const {
         u32 value{constantBuffers[shaderStage][index].Read<u32>(ctx.executor, offset)};
         bundle->AddConstantBufferValue(shaderStage, index, offset, value);

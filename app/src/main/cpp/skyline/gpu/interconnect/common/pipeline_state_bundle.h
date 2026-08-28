@@ -58,9 +58,20 @@ namespace skyline::gpu::interconnect {
         };
         static_assert(sizeof(TextureCompareFunctionEntry) == 0x8);
 
+        /**
+         * @brief Holds the component swizzle of a TIC entry read at pipeline creation time
+         * @note This struct *MUST* not be modified without a pipeline cache version bump
+         */
+        struct TextureSwizzleEntry {
+            u32 index;
+            Shader::TextureSwizzleMapping mapping;
+        };
+        static_assert(sizeof(TextureSwizzleEntry) == 0x14);
+
         boost::container::small_vector<ConstantBufferValue, 4> constantBufferValues;
         boost::container::small_vector<TextureTypeEntry, 4> textureTypes;
         boost::container::small_vector<TextureCompareFunctionEntry, 4> textureCompareFunctions;
+        boost::container::small_vector<TextureSwizzleEntry, 4> textureSwizzles;
 
         std::vector<PipelineStage> pipelineStages{};
 
@@ -93,6 +104,11 @@ namespace skyline::gpu::interconnect {
         void AddTextureCompareFunction(u32 index, Shader::CompareFunction function);
 
         /**
+         * @brief Adds a texture component swizzle to the bundle
+         */
+        void AddTextureSwizzle(u32 index, Shader::TextureSwizzleMapping mapping);
+
+        /**
          * @brief Adds a constant buffer value for a given offset and shader stage to the bundle
          */
         void AddConstantBufferValue(u32 shaderStage, u32 index, u32 offset, u32 value);
@@ -121,6 +137,11 @@ namespace skyline::gpu::interconnect {
          * @brief Returns the texture comparison function for a given bindless handle
          */
         Shader::CompareFunction LookupTextureCompareFunction(u32 index);
+
+        /**
+         * @brief Returns the texture component swizzle for a given TIC index
+         */
+        Shader::TextureSwizzleMapping LookupTextureSwizzle(u32 index);
 
         /**
          * @brief Returns the constant buffer value for a given offset and shader stage

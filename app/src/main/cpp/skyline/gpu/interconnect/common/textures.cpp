@@ -3,6 +3,7 @@
 
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
+#include <limits>
 #include <gpu/texture_manager.h>
 #include <gpu/texture/format.h>
 #include "textures.h"
@@ -390,13 +391,86 @@ namespace skyline::gpu::interconnect {
         throw exception("Invalid TIC texture type: {}", static_cast<u32>(textureHeaders[index].textureType));
     }
 
+    Shader::TextureSwizzleMapping Textures::GetTextureBufferSwizzle(InterconnectContext &ctx, u32 index) {
+        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        if (index >= textureHeaders.size()) {
+            LOGW("Texture swizzle requested for out-of-range TIC index {}", index);
+            return {};
+        }
+
+        const TextureImageControl &textureHeader{textureHeaders[index]};
+        auto format{ConvertTicFormat(textureHeader.formatWord, textureHeader.isSrgb)};
+        if (!format)
+            return {};
+
+        const auto mapping{ConvertTicSwizzleMapping(textureHeader.formatWord, format->swizzleMapping)};
+        const auto convert{[](vk::ComponentSwizzle component, Shader::TextureSwizzle identity) {
+            switch (component) {
+                case vk::ComponentSwizzle::eIdentity:
+                    return identity;
+                case vk::ComponentSwizzle::eZero:
+                    return Shader::TextureSwizzle::Zero;
+                case vk::ComponentSwizzle::eOne:
+                    return Shader::TextureSwizzle::One;
+                case vk::ComponentSwizzle::eR:
+                    return Shader::TextureSwizzle::R;
+                case vk::ComponentSwizzle::eG:
+                    return Shader::TextureSwizzle::G;
+                case vk::ComponentSwizzle::eB:
+                    return Shader::TextureSwizzle::B;
+                case vk::ComponentSwizzle::eA:
+                    return Shader::TextureSwizzle::A;
+                default:
+                    throw exception("Invalid Vulkan component swizzle: {}", static_cast<u32>(component));
+            }
+        }};
+
+        return {
+            .r = convert(mapping.r, Shader::TextureSwizzle::R),
+            .g = convert(mapping.g, Shader::TextureSwizzle::G),
+            .b = convert(mapping.b, Shader::TextureSwizzle::B),
+            .a = convert(mapping.a, Shader::TextureSwizzle::A),
+        };
+    }
+
+    static std::optional<size_t> GetTexelBufferSize(const TextureImageControl &textureHeader, size_t bytesPerElement) {
+        if (textureHeader.headerType != TextureImageControl::HeaderType::Buffer1D || !bytesPerElement)
+            return std::nullopt;
+
+        const u64 widthMinusOne{(static_cast<u64>(textureHeader.tileConfig.widthMinusOne_16_31) << 16) |
+                                textureHeader.widthMinusOne};
+        const u64 elementCount{widthMinusOne + 1};
+        if (elementCount > std::numeric_limits<size_t>::max() / bytesPerElement)
+            return std::nullopt;
+
+        return static_cast<size_t>(elementCount) * bytesPerElement;
+    }
+
     vk::raii::BufferView *Textures::GetOrCreateTexelBufferView(
-        InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format) {
+        InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format,
+        size_t bytesPerElement, vk::FormatFeatureFlagBits requiredFeature) {
         auto binding{cachedView.view.GetBinding(ctx.gpu)};
+        if (!binding || !bytesPerElement ||
+            binding.offset % ctx.gpu.traits.minimumTexelBufferOffsetAlignment)
+            return nullptr;
+
+        const auto formatProperties{ctx.gpu.vkPhysicalDevice.getFormatProperties(format)};
+        if (!(formatProperties.bufferFeatures & requiredFeature) &&
+            !ctx.gpu.traits.quirks.adrenoBrokenFormatReport)
+            return nullptr;
+
+        const vk::DeviceSize maximumRange{
+            static_cast<vk::DeviceSize>(ctx.gpu.traits.maximumTexelBufferElements) * bytesPerElement
+        };
+        vk::DeviceSize range{std::min(binding.size, maximumRange)};
+        range -= range % bytesPerElement;
+        if (!range)
+            return nullptr;
+
         Textures::TexelBufferViewKey key{
             .buffer = static_cast<VkBuffer>(binding.buffer),
             .offset = binding.offset,
-            .range = binding.size,
+            .range = range,
             .format = static_cast<VkFormat>(format),
         };
 
@@ -406,7 +480,7 @@ namespace skyline::gpu::interconnect {
                 .buffer = binding.buffer,
                 .format = format,
                 .offset = binding.offset,
-                .range = binding.size,
+                .range = range,
             });
         }
         return bufferView.get();
@@ -425,16 +499,20 @@ namespace skyline::gpu::interconnect {
             return nullptr;
         }
 
-        size_t elementCount{textureHeader.widthMinusOne + 1u};
-        size_t sizeBytes{elementCount * format->bpb};
+        auto sizeBytes{GetTexelBufferSize(textureHeader, format->bpb)};
+        if (!sizeBytes) {
+            LOGW("Texture buffer: invalid Buffer1D size for TIC index {}", index);
+            return nullptr;
+        }
 
-        cachedView.Update(ctx, textureHeader.Iova(), sizeBytes);
+        cachedView.Update(ctx, textureHeader.Iova(), *sizeBytes);
         if (!cachedView.view) {
             LOGW("Unmapped texture buffer in pool: 0x{:X}", textureHeader.Iova());
             return nullptr;
         }
 
-        return GetOrCreateTexelBufferView(ctx, cachedView, format->vkFormat);
+        return GetOrCreateTexelBufferView(ctx, cachedView, format->vkFormat, format->bpb,
+                                          vk::FormatFeatureFlagBits::eUniformTexelBuffer);
     }
 
     static std::optional<std::pair<vk::Format, u8>> ConvertShaderImageFormat(Shader::ImageFormat format) {
@@ -473,15 +551,19 @@ namespace skyline::gpu::interconnect {
             return nullptr;
         }
 
-        size_t elementCount{textureHeader.widthMinusOne + 1u};
-        size_t sizeBytes{elementCount * format->second};
+        auto sizeBytes{GetTexelBufferSize(textureHeader, format->second)};
+        if (!sizeBytes) {
+            LOGW("Image buffer: invalid Buffer1D size for TIC index {}", index);
+            return nullptr;
+        }
 
-        cachedView.Update(ctx, textureHeader.Iova(), sizeBytes);
+        cachedView.Update(ctx, textureHeader.Iova(), *sizeBytes);
         if (!cachedView.view) {
             LOGW("Unmapped image buffer in pool: 0x{:X}", textureHeader.Iova());
             return nullptr;
         }
 
-        return GetOrCreateTexelBufferView(ctx, cachedView, format->first);
+        return GetOrCreateTexelBufferView(ctx, cachedView, format->first, format->second,
+                                          vk::FormatFeatureFlagBits::eStorageTexelBuffer);
     }
 }

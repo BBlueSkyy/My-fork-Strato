@@ -229,6 +229,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     return accessor.GetTextureType(BindlessHandle{ .raw = index }.textureIndex);
                 }, [&](u32 index) {
                     return accessor.GetTextureCompareFunc(index);
+                }, [&](u32 index) {
+                    return accessor.GetTextureSwizzle(BindlessHandle{ .raw = index }.textureIndex);
                 })};
             if (i == stageIdx(PipelineStage::Vertex) && packedState.shaderHashes[stageIdx(PipelineStage::VertexCullBeforeFetch)]) {
                 ignoreVertexCullBeforeFetch = true;
