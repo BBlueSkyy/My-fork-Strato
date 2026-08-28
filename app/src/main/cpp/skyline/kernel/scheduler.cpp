@@ -21,6 +21,21 @@ namespace skyline::kernel {
         {
             TRACE_EVENT_FMT("scheduler", "{} Signal", signal == PreemptionSignal ? "Preemption" : "Yield");
             const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
+
+            // Diagnostic: SetThreadActivity(Paused) removes a running thread from the
+            // scheduler and sends it a YieldSignal. At this exact point ucontext still
+            // contains the live guest CPU state, unlike KThread::ctx which only preserves
+            // the SVC ABI subset. Capture the values needed to diagnose GetThreadContext3.
+            if (state.thread->isPaused) {
+                const auto &mctx{ctx->uc_mcontext};
+                LOGI("THREADCTX-PAUSE: T{} PC=0x{:X} SP=0x{:X} FP=0x{:X} LR=0x{:X}",
+                     state.thread->id,
+                     mctx.pc,
+                     mctx.sp,
+                     mctx.regs[29],
+                     mctx.regs[30]);
+            }
+
             if (signal == PreemptionSignal)
                 state.thread->isPreempted = false;
             state.scheduler->Rotate(false);
