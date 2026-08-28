@@ -22,18 +22,35 @@ namespace skyline::service::audio {
         auto transferMemoryHandle{request.copyHandles.at(0)};
         auto processHandle{request.copyHandles.at(1)};
 
+        u64 requiredWorkBufferSize{};
+        const auto sizeResult{
+            state.audio->audioRendererManager->GetWorkBufferSize(params, requiredWorkBufferSize)};
+        LOGI("OpenAudioRenderer: revision={} transfer=0x{:X} required=0x{:X} sizeResult=0x{:X}",
+             AudioCore::GetRevisionNum(params.revision), transferMemorySize,
+             requiredWorkBufferSize, u32{sizeResult});
+
+        if (sizeResult.IsError()) {
+            return Result{sizeResult};
+        }
+
         i32 sessionId{state.audio->audioRendererManager->GetSessionId()};
         if (sessionId == -1) {
             LOGW("Out of audio renderer sessions!");
             return Result{Service::Audio::ResultOutOfSessions};
         }
 
-        manager.RegisterService(std::make_shared<IAudioRenderer>(state, manager,
-                                                                 *state.audio->audioRendererManager,
-                                                                 params,
-                                                                 transferMemorySize, processHandle, appletResourceUserId, sessionId),
-                                session, response);
+        auto renderer{std::make_shared<IAudioRenderer>(
+            state, manager, *state.audio->audioRendererManager, params, transferMemorySize,
+            processHandle, appletResourceUserId, sessionId)};
 
+        const auto initResult{renderer->GetInitializationResult()};
+        if (initResult.IsError()) {
+            LOGW("OpenAudioRenderer: initialization failed: 0x{:X}", u32{initResult});
+            state.audio->audioRendererManager->ReleaseSessionId(sessionId);
+            return Result{initResult};
+        }
+
+        manager.RegisterService(renderer, session, response);
         return {};
     }
 

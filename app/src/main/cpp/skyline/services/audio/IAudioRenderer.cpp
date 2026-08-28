@@ -17,11 +17,17 @@ namespace skyline::service::audio {
                               [renderedEvent = this->renderedEvent]() { renderedEvent->ResetSignal(); }},
           transferMemoryWrapper{transferMemorySize},
           impl{state.audio->audioSystem, rendererManager, &renderedEventWrapper} {
-        impl.Initialize(params, &transferMemoryWrapper, transferMemorySize, processHandle, appletResourceUserId, sessionId);
+        initializationResult =
+            impl.Initialize(params, &transferMemoryWrapper, transferMemorySize, processHandle,
+                            appletResourceUserId, sessionId);
     }
 
     IAudioRenderer::~IAudioRenderer() {
         impl.Finalize();
+    }
+
+    Result IAudioRenderer::GetInitializationResult() const {
+        return initializationResult;
     }
 
     Result IAudioRenderer::GetSampleRate(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
