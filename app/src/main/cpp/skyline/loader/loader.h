@@ -96,6 +96,13 @@ namespace skyline::loader {
          */
         ExecutableLoadInfo LoadExecutable(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state, Executable &executable, size_t offset = 0, const std::string &name = {}, bool dynamicallyLinked = false);
 
+        /**
+         * @brief Removes symbolic bookkeeping for an executable that is being unloaded
+         * @param base The host address returned as the executable allocation base
+         * @return True if symbolic information for the executable was found and removed
+         */
+        bool UnloadExecutable(void *base);
+
         std::optional<vfs::NACP> nacp;
         std::optional<vfs::CNMT> cnmt;
         std::optional<vfs::NCA> programNca; //!< The main program NCA within the NSP
