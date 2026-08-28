@@ -959,15 +959,53 @@ namespace skyline::kernel::svc {
     }
 
     void Break(const DeviceState &state, SvcContext &ctx) {
-        auto reason{ctx.x0};
+        const u64 reason{ctx.x0};
+        const u64 infoAddress{ctx.x1};
+        const u64 infoSize{ctx.x2};
+
         if (reason & (1ULL << 31)) {
             LOGD("Debugger is being engaged ({})", reason);
-        } else {
-            LOGE("Exit Stack Trace ({}){}", reason, state.loader->GetStackTrace());
-            if (state.thread->id)
-                state.process->Kill(false);
-            std::longjmp(state.thread->originalCtx, true);
+            return;
         }
+
+        // svcBreak(BreakReason, arg, size) is commonly used by nnSdk/libnx panic paths.
+        // Do not call Loader::GetStackTrace() here: Break is entered from guest SVC context
+        // and attempting to walk a host-style frame chain can fault recursively.
+        //
+        // diagAbortWithResult-style panics pass a 4-byte Result at X1/X2. Decode it when the
+        // pointer is a readable guest address so the original failure is not lost behind the
+        // generic SetTerminateResult(ApplicationAborted) that follows.
+        bool decodedResult{};
+        u32 panicResult{};
+
+        if (infoSize == sizeof(panicResult) && infoAddress != 0) {
+            auto *infoPtr{reinterpret_cast<u8 *>(infoAddress)};
+            span<u8> infoSpan{infoPtr, sizeof(panicResult)};
+
+            if (state.process->memory.AddressSpaceContains(infoSpan)) {
+                auto chunk{state.process->memory.GetChunk(infoPtr)};
+                if (chunk && chunk->second.permission.r) {
+                    std::memcpy(&panicResult, infoPtr, sizeof(panicResult));
+                    decodedResult = true;
+                }
+            }
+        }
+
+        if (decodedResult) {
+            constexpr u32 ModuleMask{0x1FF};
+            const u32 module{panicResult & ModuleMask};
+            const u32 description{panicResult >> 9};
+
+            LOGE("Guest panic: reason=0x{:X}, result=0x{:X} (module={}, description={}), info=0x{:X}, size=0x{:X}",
+                 reason, panicResult, module, description, infoAddress, infoSize);
+        } else {
+            LOGE("Guest break: reason=0x{:X}, info=0x{:X}, size=0x{:X}",
+                 reason, infoAddress, infoSize);
+        }
+
+        if (state.thread->id)
+            state.process->Kill(false);
+        std::longjmp(state.thread->originalCtx, true);
     }
 
     void OutputDebugString(const DeviceState &state, SvcContext &ctx) {
