@@ -13,7 +13,14 @@ namespace skyline::input {
           hid{reinterpret_cast<HidSharedMemory *>(kHid->host.data())},
           npad{state, hid},
           touch{state, hid},
-          updateThread{&Input::UpdateThread, this} {}
+          updateThread{&Input::UpdateThread, this} {
+        hid->npadCondition = NpadCondition{
+            ._reserved = 0,
+            .isInitialized = 1,
+            .holdType = 1,
+            .isValid = 1,
+        };
+    }
 
     void Input::UpdateThread() {
         if (int result{pthread_setname_np(pthread_self(), "Sky-Input")})
