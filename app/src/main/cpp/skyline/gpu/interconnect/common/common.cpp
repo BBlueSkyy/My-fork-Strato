@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <cstring>
 #include <gpu/buffer_manager.h>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
@@ -57,15 +58,17 @@ namespace skyline::gpu::interconnect {
 
         auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(address, size)};
         size_t translatedSize{};
-        bool fullyMapped{!mappings.empty()};
+        size_t mappedSize{};
+        bool allMappingsValid{!mappings.empty()};
         for (auto mapping : mappings) {
-            if (!mapping.valid()) {
-                fullyMapped = false;
-                break;
-            }
             translatedSize += mapping.size();
+            if (mapping.valid())
+                mappedSize += mapping.size();
+            else
+                allMappingsValid = false;
         }
-        fullyMapped &= translatedSize == size;
+        bool rangeCovered{!mappings.empty() && translatedSize == size};
+        bool fullyMapped{rangeCovered && allMappingsValid};
 
         // Multiple GMMU blocks may still resolve to one contiguous CPU range. Use it for this
         // lookup, but deliberately do not store it in the block cache.
@@ -74,19 +77,34 @@ namespace skyline::gpu::interconnect {
             return;
         }
 
-        if (fullyMapped && access == BufferMappingAccess::ReadOnly) {
-            static std::atomic_flag splitMappingLogged{};
-            if (!splitMappingLogged.test_and_set(std::memory_order_relaxed))
-                LOGI("Split read-only buffer mapping support active (first range: address 0x{:X}, size 0x{:X}, mappings {})",
-                     address, size, mappings.size());
+        if (rangeCovered && mappedSize && access == BufferMappingAccess::ReadOnly) {
+            if (fullyMapped) {
+                static std::atomic_flag splitMappingLogged{};
+                if (!splitMappingLogged.test_and_set(std::memory_order_relaxed))
+                    LOGI("Split read-only buffer mapping support active (first range: address 0x{:X}, size 0x{:X}, mappings {})",
+                         address, size, mappings.size());
+            } else {
+                static std::atomic_flag partialMappingLogged{};
+                if (!partialMappingLogged.test_and_set(std::memory_order_relaxed))
+                    LOGI("Partially mapped read-only buffer staging active (first range: address 0x{:X}, size 0x{:X}, mapped 0x{:X}, mappings {})",
+                         address, size, mappedSize, mappings.size());
+            }
 
             auto newStagingBuffer{ctx.gpu.buffer.CreateHostOnlyBuffer(size)};
             ContextLock lock{ctx.executor.tag, *newStagingBuffer};
             auto stagingMapping{newStagingBuffer->GetBackingSpan()};
 
-            // GMMU::Read gathers every physical range in GPU virtual order and correctly fills
-            // sparse mappings with zeroes.
-            ctx.channelCtx.asCtx->gmmu.Read(stagingMapping.data(), address, size);
+            // Preserve GPU virtual ordering while representing sparse/unmapped holes as zeroes.
+            // This path is read-only, so no scatter/writeback is required after execution.
+            size_t stagingOffset{};
+            for (auto mapping : mappings) {
+                auto *destination{stagingMapping.data() + stagingOffset};
+                if (mapping.valid())
+                    std::memcpy(destination, mapping.data(), mapping.size());
+                else
+                    std::memset(destination, 0, mapping.size());
+                stagingOffset += mapping.size();
+            }
 
             newStagingBuffer->BlockSequencedCpuBackingWrites();
             stagingBuffer = std::move(newStagingBuffer);
@@ -95,9 +113,15 @@ namespace skyline::gpu::interconnect {
             return;
         }
 
-        if (splitMappingWarn)
-            LOGW("Split writable or partially unmapped buffer mapping is not supported: address 0x{:X}, requested 0x{:X}, contiguous 0x{:X}",
-                 address, size, fullMapping.size());
+        if (splitMappingWarn) {
+            static std::atomic_flag unsupportedReadOnlyLogged{};
+            static std::atomic_flag unsupportedReadWriteLogged{};
+            auto *logged{access == BufferMappingAccess::ReadOnly ? &unsupportedReadOnlyLogged : &unsupportedReadWriteLogged};
+            if (!logged->test_and_set(std::memory_order_relaxed))
+                LOGW("Unsupported {} buffer mapping: address 0x{:X}, requested 0x{:X}, contiguous 0x{:X}, mapped 0x{:X}, mappings {}",
+                     access == BufferMappingAccess::ReadOnly ? "read-only" : "read-write",
+                     address, size, fullMapping.size(), mappedSize, mappings.size());
+        }
 
         if (fullMapping.valid())
             useContiguousMapping(fullMapping.first(std::min(fullMapping.size(), size)));
