@@ -26,7 +26,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (engine->vertexStream.format.enable && engine->vertexStream.location != 0 &&
             engine->vertexStreamLimit >= engine->vertexStream.location) {
             size_t size{engine->vertexStreamLimit - engine->vertexStream.location + 1};
-            view.Update(ctx, engine->vertexStream.location, size);
+            view.Update(ctx, engine->vertexStream.location, size, true, BufferMappingAccess::ReadOnly);
             if (*view) {
                 ctx.executor.AttachBuffer(*view);
                 view->GetBuffer()->PopulateReadBarrier(vk::PipelineStageFlagBits::eVertexInput, srcStageMask, dstStageMask);
@@ -137,7 +137,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 return GetIndexBufferSize(engine->indexBuffer.indexSize, firstIndex + elementCount);
         }()};
 
-        view.Update(ctx, engine->indexBuffer.address, size, !estimateSize);
+        view.Update(ctx, engine->indexBuffer.address, size, !estimateSize, BufferMappingAccess::ReadOnly);
         if (!*view) {
             LOGD("Unmapped index buffer: 0x{:X}", engine->indexBuffer.address);
             megaBufferBinding = {};

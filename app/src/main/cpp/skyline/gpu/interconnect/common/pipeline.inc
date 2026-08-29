@@ -50,7 +50,9 @@ namespace skyline::gpu::interconnect {
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         size_t padding{ssbo.address & (ctx.gpu.traits.minimumStorageBufferAlignment - 1)};
-        cachedView.Update(ctx, ssbo.address - padding, util::AlignUp(ssbo.size + padding, ctx.gpu.traits.minimumStorageBufferAlignment));
+        cachedView.Update(ctx, ssbo.address - padding,
+                          util::AlignUp(ssbo.size + padding, ctx.gpu.traits.minimumStorageBufferAlignment), true,
+                          desc.is_written ? BufferMappingAccess::ReadWrite : BufferMappingAccess::ReadOnly);
         if (!cachedView.view) // Retorna um buffer dummy se o SSBO não estiver vinculado
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
@@ -102,7 +104,7 @@ namespace skyline::gpu::interconnect {
                                                  CachedMappedBufferView &cachedView,
                                                  vk::PipelineStageFlagBits dstStage,
                                                  vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        auto *bufferView{textures.GetImageBufferView(ctx, handle.textureIndex, format, cachedView)};
+        auto *bufferView{textures.GetImageBufferView(ctx, handle.textureIndex, format, isWritten, cachedView)};
         if (!bufferView)
             return {};
 

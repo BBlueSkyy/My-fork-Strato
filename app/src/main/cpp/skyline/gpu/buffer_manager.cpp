@@ -8,6 +8,10 @@
 namespace skyline::gpu {
     BufferManager::BufferManager(GPU &gpu) : gpu{gpu} {}
 
+    std::shared_ptr<Buffer> BufferManager::CreateHostOnlyBuffer(vk::DeviceSize size) {
+        return std::make_shared<Buffer>(delegateAllocatorState, gpu, size, nextBufferId++);
+    }
+
     bool BufferManager::BufferLessThan(const std::shared_ptr<Buffer> &it, u8 *pointer) {
         return it->guest->begin().base() < pointer;
     }

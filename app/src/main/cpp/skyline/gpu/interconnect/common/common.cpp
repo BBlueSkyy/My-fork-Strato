@@ -7,43 +7,107 @@
 #include "common.h"
 
 namespace skyline::gpu::interconnect {
-    void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn) {
-        // Ignore size for the mapping end check here as we don't support buffers split across multiple mappings so only the first one would be used anyway. It's also impossible for the mapping to have been remapped with a larger one since the original lookup because the we force the mapping to be reset after semaphores
+    void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn, BufferMappingAccess access) {
+        auto clearView{[&] {
+            view = {};
+            stagingBuffer.reset();
+        }};
+
+        if (!size) {
+            clearView();
+            return;
+        }
+
+        // The cached block is only reused when it contains the complete requested range. A
+        // mapping assembled across GMMU blocks must never be cached as a single block because
+        // one of its component mappings may be replaced independently.
         if (address < blockMappingStartAddr || address >= blockMappingEndAddr) {
             u64 blockOffset{};
             std::tie(blockMapping, blockOffset) = ctx.channelCtx.asCtx->gmmu.LookupBlock(address);
             if (!blockMapping.valid()) {
-                view = {};
                 blockMappingEndAddr = 0;
-                return;
+            } else {
+                blockMappingStartAddr = address - blockOffset;
+                blockMappingEndAddr = blockMappingStartAddr + blockMapping.size();
             }
-
-            blockMappingStartAddr = address - blockOffset;
-            blockMappingEndAddr = blockMappingStartAddr + blockMapping.size();
         }
 
-        // Mapping from the start of the buffer view to the end of the block
-        auto fullMapping{blockMapping.subspan(address - blockMappingStartAddr)};
+        span<u8> fullMapping{};
+        if (blockMapping.valid() && address >= blockMappingStartAddr && address < blockMappingEndAddr)
+            fullMapping = blockMapping.subspan(address - blockMappingStartAddr);
 
-        if (splitMappingWarn && fullMapping.size() < size)
-            LOGW("Split buffer mappings are not supported");
+        auto useContiguousMapping{[&](span<u8> mapping) {
+            bool previousViewWasStaged{static_cast<bool>(stagingBuffer)};
+            stagingBuffer.reset();
 
-        // Mapping covering just the requested input view (or less in the case of split mappings)
-        auto viewMapping{fullMapping.first(std::min(fullMapping.size(), size))};
+            // First attempt to skip lookup by trying to reuse the previous view's underlying buffer.
+            if (!previousViewWasStaged && view)
+                if (view = view.GetBuffer()->TryGetView(mapping); view)
+                    return;
 
-        // First attempt to skip lookup by trying to reuse the previous view's underlying buffer
-        if (view)
-            if (view = view.GetBuffer()->TryGetView(viewMapping); view)
-                return;
+            view = ctx.gpu.buffer.FindOrCreate(mapping, ctx.executor.tag, [&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
+                ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
+            });
+        }};
 
-        // Otherwise perform a full lookup
-        view = ctx.gpu.buffer.FindOrCreate(viewMapping, ctx.executor.tag, [&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
-            ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
-        });
+        if (fullMapping.valid() && fullMapping.size() >= size) {
+            useContiguousMapping(fullMapping.first(size));
+            return;
+        }
+
+        auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(address, size)};
+        size_t translatedSize{};
+        bool fullyMapped{!mappings.empty()};
+        for (auto mapping : mappings) {
+            if (!mapping.valid()) {
+                fullyMapped = false;
+                break;
+            }
+            translatedSize += mapping.size();
+        }
+        fullyMapped &= translatedSize == size;
+
+        // Multiple GMMU blocks may still resolve to one contiguous CPU range. Use it for this
+        // lookup, but deliberately do not store it in the block cache.
+        if (fullyMapped && mappings.size() == 1 && fullMapping.valid()) {
+            useContiguousMapping(mappings.front());
+            return;
+        }
+
+        if (fullyMapped && access == BufferMappingAccess::ReadOnly) {
+            static std::atomic_flag splitMappingLogged{};
+            if (!splitMappingLogged.test_and_set(std::memory_order_relaxed))
+                LOGI("Split read-only buffer mapping support active (first range: address 0x{:X}, size 0x{:X}, mappings {})",
+                     address, size, mappings.size());
+
+            auto newStagingBuffer{ctx.gpu.buffer.CreateHostOnlyBuffer(size)};
+            ContextLock lock{ctx.executor.tag, *newStagingBuffer};
+            auto stagingMapping{newStagingBuffer->GetBackingSpan()};
+
+            // GMMU::Read gathers every physical range in GPU virtual order and correctly fills
+            // sparse mappings with zeroes.
+            ctx.channelCtx.asCtx->gmmu.Read(stagingMapping.data(), address, size);
+
+            newStagingBuffer->BlockSequencedCpuBackingWrites();
+            stagingBuffer = std::move(newStagingBuffer);
+            view = stagingBuffer->GetView(0, size);
+            ctx.executor.AttachLockedBuffer(stagingBuffer, std::move(lock));
+            return;
+        }
+
+        if (splitMappingWarn)
+            LOGW("Split writable or partially unmapped buffer mapping is not supported: address 0x{:X}, requested 0x{:X}, contiguous 0x{:X}",
+                 address, size, fullMapping.size());
+
+        if (fullMapping.valid())
+            useContiguousMapping(fullMapping.first(std::min(fullMapping.size(), size)));
+        else
+            clearView();
     }
 
     void CachedMappedBufferView::PurgeCaches() {
         view = {};
+        stagingBuffer.reset();
         blockMappingEndAddr = 0; // Will force a retranslate of `blockMapping` on the next `Update()` call
     }
 

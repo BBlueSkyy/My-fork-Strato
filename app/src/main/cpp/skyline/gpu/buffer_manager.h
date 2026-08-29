@@ -75,6 +75,11 @@ namespace skyline::gpu {
         BufferManager(GPU &gpu);
 
         /**
+         * @brief Creates a host-only buffer for temporary gathered GPU mappings
+         */
+        std::shared_ptr<Buffer> CreateHostOnlyBuffer(vk::DeviceSize size);
+
+        /**
          * @brief Acquires an exclusive lock on the texture for the calling thread
          * @note Naming is in accordance to the BasicLockable named requirement
          */

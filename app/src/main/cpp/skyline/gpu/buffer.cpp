@@ -328,6 +328,11 @@ namespace skyline::gpu {
     }
 
     void Buffer::ReadImplStaged(bool isFirstUsage, const std::function<void()> &flushHostCallback, span<u8> data, vk::DeviceSize offset) {
+        if (!guest) {
+            std::memcpy(data.data(), backing->data() + offset, data.size());
+            return;
+        }
+
         if (dirtyState == DirtyState::GpuDirty)
             SynchronizeGuestImmediate(isFirstUsage, flushHostCallback);
 
@@ -597,6 +602,9 @@ namespace skyline::gpu {
     }
 
     span<u8> Buffer::GetReadOnlyBackingSpan(bool isFirstUsage, const std::function<void()> &flushHostCallback) {
+        if (!guest)
+            return span<u8>(*backing);
+
         if (!isDirect) {
             std::unique_lock lock{stateMutex};
             if (dirtyState == DirtyState::GpuDirty)

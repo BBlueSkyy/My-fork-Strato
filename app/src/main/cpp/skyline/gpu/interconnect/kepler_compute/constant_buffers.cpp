@@ -9,7 +9,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             if (qmd.constantBufferValid & (1U << i)) {
                 auto &buffer{cachedBuffers[i]};
                 const auto &qmdBuffer{qmd.constantBuffer[i]};
-                buffer.Update(ctx, qmdBuffer.Address(), qmdBuffer.size);
+                buffer.Update(ctx, qmdBuffer.Address(), qmdBuffer.size, true, BufferMappingAccess::ReadOnly);
                 boundConstantBuffers[i] = {*buffer};
             }
         }
