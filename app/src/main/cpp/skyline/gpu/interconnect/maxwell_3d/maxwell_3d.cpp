@@ -192,10 +192,27 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                  vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
          Pipeline *oldPipeline{activeState.GetPipeline()};
          samplers.Update(ctx, samplerBinding.value == engine::SamplerBinding::Value::ViaHeaderBinding);
+         ContextTag executionTag{ctx.executor.executionTag};
          activeState.Update(ctx, textures, samplers, constantBuffers.boundConstantBuffers,
                             builder,
                             indexed, topology, estimateIndexBufferSize, firstIndex, count,
                             srcStageMask, dstStageMask);
+
+         if (ctx.executor.executionTag != executionTag) {
+             // A GPU-dirty constant buffer forced a submission while the pipeline
+             // state was being prepared. The submission invalidates all cached
+             // Maxwell state, including the sampler pool, so rebuild the complete
+             // draw against the new command executor slot.
+             builder.Reset(*ctx.executor.allocator);
+             srcStageMask = {};
+             dstStageMask = {};
+             samplers.Update(ctx, samplerBinding.value == engine::SamplerBinding::Value::ViaHeaderBinding);
+             activeState.Update(ctx, textures, samplers, constantBuffers.boundConstantBuffers,
+                                builder,
+                                indexed, topology, estimateIndexBufferSize, firstIndex, count,
+                                srcStageMask, dstStageMask);
+         }
+
          Pipeline *pipeline{activeState.GetPipeline()};
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
 

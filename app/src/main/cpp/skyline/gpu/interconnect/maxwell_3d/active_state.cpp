@@ -447,7 +447,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto updateFunc{[&](auto &stateElem, auto &&... args) { stateElem.Update(ctx, builder, args...); }};
         auto updateFuncBuffer{[&](auto &stateElem, auto &&... args) { stateElem.Update(ctx, builder, srcStageMask, dstStageMask, args...); }};
 
+        ContextTag executionTag{ctx.executor.executionTag};
         pipeline.Update(ctx, textures, samplers, constantBuffers, builder);
+        if (ctx.executor.executionTag != executionTag)
+            return;
+
         ranges::for_each(vertexBuffers, updateFuncBuffer);
         if (indexed)
             updateFuncBuffer(indexBuffer, directState.inputAssembly.NeedsQuadConversion(), estimateIndexBufferSize, drawFirstIndex, drawElementCount);

@@ -440,13 +440,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             LOGI("Synchronizing GPU-dirty constant buffers before draw");
             ctx.executor.Submit({}, true);
             builder.Reset(*ctx.executor.allocator);
-
-            for (auto view : colorAttachments)
-                if (view)
-                    ctx.executor.AttachTexture(view);
-
-            if (depthAttachment)
-                ctx.executor.AttachTexture(depthAttachment);
+            return;
         }
 
         auto newPipeline{ctx.gpu.graphicsPipelineManager->FindOrCreate(ctx, textures, samplers, constantBuffers, packedState, shaderBinaries)};
