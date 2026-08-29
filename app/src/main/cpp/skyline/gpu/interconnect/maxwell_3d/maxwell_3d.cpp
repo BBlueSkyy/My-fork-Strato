@@ -83,6 +83,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                      u32 count, u32 instanceCount) {
      TRACE_EVENT("gpu", "DrawWithInlineIndex", "count", count, "instanceCount", instanceCount);
 
+       SynchronizeGpuDirtyConstantBuffers();
        StateUpdateBuilder builder{*ctx.executor.allocator};
        vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
@@ -120,6 +121,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
           ctx.executor.AddCheckpoint("After inline index draw");
      }    
+
+     void Maxwell3D::SynchronizeGpuDirtyConstantBuffers() {
+         if (constantBuffers.HasGpuDirtyBinding(ctx)) {
+             LOGI("Synchronizing GPU-dirty constant buffers before draw");
+             ctx.executor.Submit({}, true);
+         }
+     }
    
      vk::Rect2D Maxwell3D::GetClearScissor() {
         const auto &clearSurfaceControl{clearEngineRegisters.clearSurfaceControl};
@@ -352,6 +360,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     void Maxwell3D::Draw(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, u32 count, u32 first, u32 instanceCount, u32 vertexOffset, u32 firstInstance) {
         TRACE_EVENT("gpu", "Draw", "indexed", indexed, "count", count, "instanceCount", instanceCount);
 
+        SynchronizeGpuDirtyConstantBuffers();
         StateUpdateBuilder builder{*ctx.executor.allocator};
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
@@ -416,6 +425,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         TRACE_EVENT("gpu", "Indirect Draw", "buffer", reinterpret_cast<uintptr_t>(indirectBuffer.data()));
 
+        SynchronizeGpuDirtyConstantBuffers();
         StateUpdateBuilder builder{*ctx.executor.allocator};
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 

@@ -63,6 +63,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         size_t UpdateQuadConversionBuffer(u32 count, u32 firstVertex);
 
+        void SynchronizeGpuDirtyConstantBuffers();
+
         /**
          * @brief A scissor derived from the current clear register state
          */
