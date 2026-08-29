@@ -47,13 +47,12 @@ namespace skyline::gpu::interconnect {
         blockMappingEndAddr = 0; // Will force a retranslate of `blockMapping` on the next `Update()` call
     }
 
-    static void FlushHostCallback() {
-        // TODO: here we should trigger `Execute()`, however that doesn't currently work due to Read being called mid-draw and attached objects not handling this case
-        LOGW("GPU dirty buffer reads for attached buffers are unimplemented");
-    }
-
-    void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset) {
+    void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset, std::source_location location) {
         ContextLock lock{executor.tag, view};
-        view.Read(lock.IsFirstUsage(), FlushHostCallback, dstBuffer, srcOffset);
+        view.Read(lock.IsFirstUsage(), [location, srcOffset, size = dstBuffer.size()] {
+            // TODO: here we should trigger `Execute()`, however that doesn't currently work due to Read being called mid-draw and attached objects not handling this case
+            LOGW("GPU dirty buffer reads for attached buffers are unimplemented (caller: {}:{}, function: {}, offset: 0x{:X}, size: 0x{:X})",
+                 location.file_name(), location.line(), location.function_name(), srcOffset, size);
+        }, dstBuffer, srcOffset);
     }
 }
