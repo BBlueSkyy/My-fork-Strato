@@ -36,18 +36,19 @@ namespace skyline::gpu {
                 .type = vk::DescriptorType::eStorageImage,
             },
             vk::DescriptorPoolSize{
-                .descriptorCount = 4,
+                .descriptorCount = 64,
                 .type = vk::DescriptorType::eUniformTexelBuffer,
             },
             vk::DescriptorPoolSize{
-                .descriptorCount = 4,
+                .descriptorCount = 16,
                 .type = vk::DescriptorType::eStorageTexelBuffer,
             } //!< Approximated descriptor counts based off empirical testing, the total amount will grow in these ratios
         };
 
+        const u32 descriptorSetMultiplier{descriptorSetCount / DescriptorSetCountIncrement};
         DescriptorSizes descriptorSizes{BaseDescriptorSizes};
         for (auto &descriptorSize : descriptorSizes)
-            descriptorSize.descriptorCount *= descriptorMultiplier;
+            descriptorSize.descriptorCount *= descriptorMultiplier * descriptorSetMultiplier;
 
         pool = std::make_shared<DescriptorPool>(gpu.vkDevice, vk::DescriptorPoolCreateInfo{
             .maxSets = descriptorSetCount,
