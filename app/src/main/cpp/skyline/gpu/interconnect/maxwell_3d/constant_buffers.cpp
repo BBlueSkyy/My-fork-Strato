@@ -98,6 +98,21 @@ namespace skyline::gpu::interconnect::maxwell3d {
         boundConstantBuffers[static_cast<size_t>(stage)][index] = {};
     }
 
+    bool ConstantBuffers::HasGpuDirtyBinding(InterconnectContext &ctx, ConstantBufferSet &constantBuffers) {
+        for (auto &stage : constantBuffers) {
+            for (auto &constantBuffer : stage) {
+                if (!constantBuffer.view)
+                    continue;
+
+                ContextLock lock{ctx.executor.tag, constantBuffer.view};
+                if (constantBuffer.view.GetBuffer()->IsCurrentExecutionGpuDirty())
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
     void ConstantBuffers::ResetQuickBind() {
         quickBindEnabled = true;
         quickBind.reset();

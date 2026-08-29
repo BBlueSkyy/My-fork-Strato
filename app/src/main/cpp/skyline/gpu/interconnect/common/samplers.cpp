@@ -174,8 +174,24 @@ namespace skyline::gpu::interconnect {
         u32 index{samplerPoolObj.didUseTexHeaderBinding ? textureIndex : samplerIndex};
         auto texSamplers{samplerPoolObj.texSamplers};
         if (index >= texSamplers.size()) {
-            LOGW("Sampler requested for out-of-range TSC index {}", index);
-            return nullptr;
+            LOGW("Sampler requested for out-of-range TSC index {} (pool size: {}, sampler index: {}, texture index: {}, via header: {})",
+                 index, texSamplers.size(), samplerIndex, textureIndex, samplerPoolObj.didUseTexHeaderBinding);
+
+            // A null sampler is not legal unless VK_EXT_robustness2's nullDescriptor
+            // feature is enabled. In particular, passing one to Turnip through a push
+            // descriptor can crash the driver rather than merely returning zeroes.
+            if (!fallbackSampler) {
+                fallbackSampler = std::make_unique<vk::raii::Sampler>(ctx.gpu.vkDevice, vk::SamplerCreateInfo{
+                    .magFilter = vk::Filter::eLinear,
+                    .minFilter = vk::Filter::eLinear,
+                    .mipmapMode = vk::SamplerMipmapMode::eNearest,
+                    .addressModeU = vk::SamplerAddressMode::eClampToEdge,
+                    .addressModeV = vk::SamplerAddressMode::eClampToEdge,
+                    .addressModeW = vk::SamplerAddressMode::eClampToEdge,
+                    .maxLod = 0.25f,
+                });
+            }
+            return fallbackSampler.get();
         }
 
         if (texSamplers.size() != texSamplerCache.size()) {

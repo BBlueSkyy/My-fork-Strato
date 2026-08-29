@@ -287,7 +287,7 @@ namespace skyline::gpu {
                 else if (guest->tileConfig.mode == texture::TileMode::Pitch)
                     texture::CopyPitchLinearToLinear(*guest, pointer, outputLayer);
                 else if (guest->tileConfig.mode == texture::TileMode::Linear)
-                    std::memcpy(outputLayer, pointer, surfaceSize);
+                    std::memcpy(outputLayer, pointer, deswizzledLayerStride);
                 pointer += guestLayerStride;
                 outputLayer += deswizzledLayerStride;
             }
@@ -466,7 +466,7 @@ namespace skyline::gpu {
                 else if (guest->tileConfig.mode == texture::TileMode::Pitch)
                     texture::CopyLinearToPitchLinear(*guest, hostBuffer, guestOutput);
                 else if (guest->tileConfig.mode == texture::TileMode::Linear)
-                    std::memcpy(hostBuffer, guestOutput, layerStride);
+                    std::memcpy(guestOutput, hostBuffer, layerStride);
                 guestOutput += guestLayerStride;
                 hostBuffer += layerStride;
             }
@@ -574,6 +574,18 @@ namespace skyline::gpu {
         return surfaceSize;
     }
 
+    static bool RequiresMutableBcnFormat(texture::Format inputFormat) {
+        switch (inputFormat->vkFormat) {
+            case vk::Format::eBc1RgbaUnormBlock:
+            case vk::Format::eBc1RgbaSrgbBlock:
+            case vk::Format::eBc3UnormBlock:
+            case vk::Format::eBc3SrgbBlock:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     Texture::Texture(GPU &pGpu, GuestTexture pGuest)
         : gpu(pGpu),
           guest(std::move(pGuest)),
@@ -597,7 +609,9 @@ namespace skyline::gpu {
           deswizzledSurfaceSize(CalculateLevelStride(mipLayouts) * layerCount),
           surfaceSize(format == guest->format ? deswizzledSurfaceSize : (CalculateTargetLevelStride(mipLayouts) * layerCount)),
           sampleCount(vk::SampleCountFlagBits::e1),
-          flags(gpu.traits.quirks.vkImageMutableFormatCostly ? vk::ImageCreateFlags{} : vk::ImageCreateFlagBits::eMutableFormat),
+          flags((!gpu.traits.quirks.vkImageMutableFormatCostly || RequiresMutableBcnFormat(format))
+                    ? vk::ImageCreateFlags{vk::ImageCreateFlagBits::eMutableFormat}
+                    : vk::ImageCreateFlags{}),
           usage(vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled) {
         if ((format->vkAspect & vk::ImageAspectFlagBits::eColor) && !format->IsCompressed())
             usage |= vk::ImageUsageFlagBits::eColorAttachment;
@@ -877,7 +891,9 @@ namespace skyline::gpu {
             pFormat = format; // We want to use the texture's format if it isn't supplied or if the requested format matches the guest format then we want to use the host format just in case it is host incompatible and the host format differs from the guest format
 
         auto viewFormat{pFormat->vkFormat}, textureFormat{format->vkFormat};
-        if (gpu.traits.quirks.vkImageMutableFormatCostly && viewFormat != textureFormat && (!gpu.traits.quirks.adrenoRelaxedFormatAliasing || !texture::IsAdrenoAliasCompatible(viewFormat, textureFormat)))
+        if ((flags & vk::ImageCreateFlagBits::eMutableFormat) == vk::ImageCreateFlags{} &&
+            viewFormat != textureFormat &&
+            (!gpu.traits.quirks.adrenoRelaxedFormatAliasing || !texture::IsAdrenoAliasCompatible(viewFormat, textureFormat)))
             LOGW("Creating a view of a texture with a different format without mutable format: {} - {}", vk::to_string(viewFormat), vk::to_string(textureFormat));
 
         if ((pFormat->vkAspect & format->vkAspect) == vk::ImageAspectFlagBits{}) {
@@ -887,7 +903,11 @@ namespace skyline::gpu {
 
         // Workaround to avoid aliasing when sampling from a BGRA texture with a RGBA view and a mapping to counteract that
         // TODO: drop this after new texture manager
-        if (pFormat == format::R8G8B8A8Unorm && format == format::B8G8R8A8Unorm && mapping == vk::ComponentMapping{vk::ComponentSwizzle::eB, vk::ComponentSwizzle::eG, vk::ComponentSwizzle::eR, vk::ComponentSwizzle::eA}) {
+        bool isRgbaBgraPair{
+            (pFormat == format::R8G8B8A8Unorm && format == format::B8G8R8A8Unorm) ||
+            (pFormat == format::R8G8B8A8Srgb && format == format::B8G8R8A8Srgb)
+        };
+        if (isRgbaBgraPair && mapping == vk::ComponentMapping{vk::ComponentSwizzle::eB, vk::ComponentSwizzle::eG, vk::ComponentSwizzle::eR, vk::ComponentSwizzle::eA}) {
             pFormat = format;
             mapping = vk::ComponentMapping{};
         }

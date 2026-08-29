@@ -8,7 +8,11 @@
 
 namespace skyline::gpu::interconnect {
     void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn) {
-        // Ignore size for the mapping end check here as we don't support buffers split across multiple mappings so only the first one would be used anyway. It's also impossible for the mapping to have been remapped with a larger one since the original lookup because the we force the mapping to be reset after semaphores
+        if (!size) {
+            view = {};
+            return;
+        }
+
         if (address < blockMappingStartAddr || address >= blockMappingEndAddr) {
             u64 blockOffset{};
             std::tie(blockMapping, blockOffset) = ctx.channelCtx.asCtx->gmmu.LookupBlock(address);
@@ -25,8 +29,21 @@ namespace skyline::gpu::interconnect {
         // Mapping from the start of the buffer view to the end of the block
         auto fullMapping{blockMapping.subspan(address - blockMappingStartAddr)};
 
-        if (splitMappingWarn && fullMapping.size() < size)
-            LOGW("Split buffer mappings are not supported");
+        if (fullMapping.size() < size) {
+            // Separate GMMU blocks can still point at physically contiguous guest
+            // memory. TranslateRange coalesces those blocks into one span, which is
+            // fully compatible with the existing BufferManager representation.
+            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(address, size)};
+            if (mappings.size() == 1 && mappings.front().valid() && mappings.front().size() >= size) {
+                blockMapping = mappings.front();
+                blockMappingStartAddr = address;
+                blockMappingEndAddr = address + size;
+                fullMapping = blockMapping;
+            } else if (splitMappingWarn) {
+                LOGW("Split buffer mapping is physically non-contiguous: address 0x{:X}, requested 0x{:X}, contiguous 0x{:X}, mappings {}",
+                     address, size, fullMapping.size(), mappings.size());
+            }
+        }
 
         // Mapping covering just the requested input view (or less in the case of split mappings)
         auto viewMapping{fullMapping.first(std::min(fullMapping.size(), size))};
@@ -47,13 +64,12 @@ namespace skyline::gpu::interconnect {
         blockMappingEndAddr = 0; // Will force a retranslate of `blockMapping` on the next `Update()` call
     }
 
-    static void FlushHostCallback() {
-        // TODO: here we should trigger `Execute()`, however that doesn't currently work due to Read being called mid-draw and attached objects not handling this case
-        LOGW("GPU dirty buffer reads for attached buffers are unimplemented");
-    }
-
-    void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset) {
+    void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset, std::source_location location) {
         ContextLock lock{executor.tag, view};
-        view.Read(lock.IsFirstUsage(), FlushHostCallback, dstBuffer, srcOffset);
+        view.Read(lock.IsFirstUsage(), [location, srcOffset, size = dstBuffer.size()] {
+            // TODO: here we should trigger `Execute()`, however that doesn't currently work due to Read being called mid-draw and attached objects not handling this case
+            LOGW("GPU dirty buffer reads for attached buffers are unimplemented (caller: {}:{}, function: {}, offset: 0x{:X}, size: 0x{:X})",
+                 location.file_name(), location.line(), location.function_name(), srcOffset, size);
+        }, dstBuffer, srcOffset);
     }
 }
