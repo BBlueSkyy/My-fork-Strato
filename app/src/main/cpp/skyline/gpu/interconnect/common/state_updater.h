@@ -300,7 +300,7 @@ namespace skyline::gpu::interconnect {
      */
     class StateUpdateBuilder {
       private:
-        LinearAllocatorState<> &allocator;
+        LinearAllocatorState<> *allocator;
         u32 vertexBatchBindNextBinding{};
         SetVertexBuffersDynamicCmd *vertexBatchBind{};
         StateUpdateCmdHeader *head{};
@@ -318,20 +318,28 @@ namespace skyline::gpu::interconnect {
 
         template<typename Cmd>
         void AppendCmd(typename Cmd::CmdType &&contents) {
-            Cmd *cmd{allocator.template EmplaceUntracked<Cmd>(std::forward<typename Cmd::CmdType>(contents))};
+            Cmd *cmd{allocator->template EmplaceUntracked<Cmd>(std::forward<typename Cmd::CmdType>(contents))};
             AppendCmd(reinterpret_cast<StateUpdateCmdHeader *>(cmd));
         }
 
         void FlushVertexBatchBind() {
             if (vertexBatchBind->cmd.base.bindingCount != 0) {
                 AppendCmd(reinterpret_cast<StateUpdateCmdHeader *>(vertexBatchBind));
-                vertexBatchBind = allocator.EmplaceUntracked<SetVertexBuffersDynamicCmd>();
+                vertexBatchBind = allocator->EmplaceUntracked<SetVertexBuffersDynamicCmd>();
             }
         }
 
       public:
-        StateUpdateBuilder(LinearAllocatorState<> &allocator) : allocator{allocator} {
-            vertexBatchBind = allocator.EmplaceUntracked<SetVertexBuffersDynamicCmd>();
+        StateUpdateBuilder(LinearAllocatorState<> &allocator) {
+            Reset(allocator);
+        }
+
+        void Reset(LinearAllocatorState<> &newAllocator) {
+            allocator = &newAllocator;
+            vertexBatchBindNextBinding = 0;
+            head = nullptr;
+            tail = nullptr;
+            vertexBatchBind = allocator->EmplaceUntracked<SetVertexBuffersDynamicCmd>();
         }
 
         StateUpdater Build() {

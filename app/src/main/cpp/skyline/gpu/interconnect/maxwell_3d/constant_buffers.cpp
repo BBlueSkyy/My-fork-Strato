@@ -98,8 +98,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         boundConstantBuffers[static_cast<size_t>(stage)][index] = {};
     }
 
-    bool ConstantBuffers::HasGpuDirtyBinding(InterconnectContext &ctx) {
-        for (auto &stage : boundConstantBuffers) {
+    bool ConstantBuffers::HasGpuDirtyBinding(InterconnectContext &ctx, ConstantBufferSet &constantBuffers) {
+        for (auto &stage : constantBuffers) {
             for (auto &constantBuffer : stage) {
                 if (!constantBuffer.view)
                     continue;

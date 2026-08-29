@@ -65,7 +65,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
          * @return Whether a bound constant buffer was written by the GPU in the
          * current execution and therefore requires submission before a host read
          */
-        bool HasGpuDirtyBinding(InterconnectContext &ctx);
+        static bool HasGpuDirtyBinding(InterconnectContext &ctx, ConstantBufferSet &constantBuffers);
 
         /**
          * @brief Resets quick binding state to be ready store a new bind, this should be called after every draw

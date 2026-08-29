@@ -9,6 +9,7 @@
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include <gpu.h>
+#include "constant_buffers.h"
 #include "pipeline_state.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
@@ -432,6 +433,19 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 pipeline = newPipeline;
                 return;
             }
+        }
+
+        if (ConstantBuffers::HasGpuDirtyBinding(ctx, constantBuffers)) {
+            LOGI("Synchronizing GPU-dirty constant buffers before draw");
+            ctx.executor.Submit({}, true);
+            builder.Reset(*ctx.executor.allocator);
+
+            for (auto view : colorAttachments)
+                if (view)
+                    ctx.executor.AttachTexture(view);
+
+            if (depthAttachment)
+                ctx.executor.AttachTexture(depthAttachment);
         }
 
         auto newPipeline{ctx.gpu.graphicsPipelineManager->FindOrCreate(ctx, textures, samplers, constantBuffers, packedState, shaderBinaries)};
