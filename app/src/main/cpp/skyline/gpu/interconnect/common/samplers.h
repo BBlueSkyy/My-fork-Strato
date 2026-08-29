@@ -40,6 +40,7 @@ namespace skyline::gpu::interconnect {
 
         tsl::robin_map<TextureSamplerControl, std::unique_ptr<vk::raii::Sampler>, util::ObjectHash<TextureSamplerControl>> texSamplerStore;
         std::vector<vk::raii::Sampler *> texSamplerCache;
+        std::unique_ptr<vk::raii::Sampler> fallbackSampler;
 
       public:
         Samplers(DirtyManager &manager, const SamplerPoolState::EngineRegisters &engine);
