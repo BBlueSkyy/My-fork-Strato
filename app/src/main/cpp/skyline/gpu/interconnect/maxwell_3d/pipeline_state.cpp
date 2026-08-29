@@ -9,6 +9,7 @@
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include <gpu.h>
+#include <gpu/interconnect/common/state_updater.h>
 #include "constant_buffers.h"
 #include "pipeline_state.h"
 
