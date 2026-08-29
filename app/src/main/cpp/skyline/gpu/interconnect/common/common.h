@@ -41,8 +41,8 @@ namespace skyline::gpu::interconnect {
     class CachedMappedBufferView {
       private:
         span<u8> blockMapping; //!< The underlying mapping that `view` is a part of
-        u64 blockMappingStartAddr; //!< The start GPU address of `blockMapping`
-        u64 blockMappingEndAddr; //!< The end GPU address of `blockMapping`
+        u64 blockMappingStartAddr{}; //!< The start GPU address of `blockMapping`
+        u64 blockMappingEndAddr{}; //!< The end GPU address of `blockMapping`
 
       public:
         BufferView view{}; //!< The buffer view created as a result of a call to `Update()`
