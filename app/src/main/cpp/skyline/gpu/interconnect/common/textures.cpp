@@ -425,7 +425,11 @@ namespace skyline::gpu::interconnect {
             return nullptr;
         }
 
-        size_t elementCount{textureHeader.widthMinusOne + 1u};
+        size_t elementCount{
+            (static_cast<size_t>(textureHeader.tileConfig.widthMinusOne_16_31) << 16) |
+            textureHeader.widthMinusOne
+        };
+        elementCount++;
         size_t sizeBytes{elementCount * format->bpb};
 
         cachedView.Update(ctx, textureHeader.Iova(), sizeBytes);
@@ -473,7 +477,11 @@ namespace skyline::gpu::interconnect {
             return nullptr;
         }
 
-        size_t elementCount{textureHeader.widthMinusOne + 1u};
+        size_t elementCount{
+            (static_cast<size_t>(textureHeader.tileConfig.widthMinusOne_16_31) << 16) |
+            textureHeader.widthMinusOne
+        };
+        elementCount++;
         size_t sizeBytes{elementCount * format->second};
 
         cachedView.Update(ctx, textureHeader.Iova(), sizeBytes);

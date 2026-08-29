@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <source_location>
 #include <common/dirty_tracking.h>
 #include <vulkan/vulkan_raii.hpp>
 #include <gpu/buffer.h>
@@ -73,12 +74,14 @@ namespace skyline::gpu::interconnect {
     struct ConstantBuffer {
         BufferView view;
 
-        void Read(CommandExecutor &executor, span <u8> dstBuffer, size_t srcOffset);
+        void Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset,
+                  std::source_location location = std::source_location::current());
 
         template<typename T>
-        T Read(CommandExecutor &executor, size_t srcOffset) {
+        T Read(CommandExecutor &executor, size_t srcOffset,
+               std::source_location location = std::source_location::current()) {
             T object;
-            Read(executor, span<T>{object}.template cast<u8>(), srcOffset);
+            Read(executor, span<T>{object}.template cast<u8>(), srcOffset, location);
             return object;
         }
     };
