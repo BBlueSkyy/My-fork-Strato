@@ -107,7 +107,11 @@ namespace skyline::gpu::interconnect::kepler_compute {
           descriptorInfo{MakePipelineDescriptorInfo(shaderStage)},
           compiledPipeline{MakeCompiledPipeline(ctx, packedState, shaderStage, descriptorInfo.descriptorSetLayoutBindings)},
           sourcePackedState{packedState} {
-        storageBufferViews.resize(shaderStage.info.storage_buffers_descriptors.size());
+        size_t storageBufferCount{};
+        for (const auto &desc : shaderStage.info.storage_buffers_descriptors)
+            storageBufferCount += desc.count;
+
+        storageBufferViews.resize(storageBufferCount);
         texelBufferViews.resize(descriptorInfo.totalTexelBufferDescCount);
     }
 
@@ -201,12 +205,11 @@ namespace skyline::gpu::interconnect::kepler_compute {
                          });
 
         writeBufferDescs(vk::DescriptorType::eStorageBuffer, shaderStage.info.storage_buffers_descriptors,
-                         [&](const Shader::StorageBufferDescriptor &desc, size_t arrayIdx) {
+                         [&](const Shader::StorageBufferDescriptor &desc, size_t) {
                              auto binding{GetStorageBufferBinding(ctx, desc, constantBuffers[desc.cbuf_index],
-                                                                  storageBufferViews[storageBufferIdx],
+                                                                  storageBufferViews[storageBufferIdx++],
                                                                   vk::PipelineStageFlagBits::eComputeShader,
                                                                   srcStageMask, dstStageMask)};
-                             storageBufferIdx += arrayIdx ? 0 : 1;
                              return binding;
                          });
 
