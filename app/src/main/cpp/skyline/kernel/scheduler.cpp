@@ -8,12 +8,51 @@
 #include "scheduler.h"
 
 namespace skyline::kernel {
+    namespace {
+        constexpr int SolateriaDiagnosticSignal{SIGRTMIN + 2};
+        constexpr size_t SolateriaSamplerThreadId{27};
+        constexpr size_t SolateriaTargetThreadId{1};
+
+        void SolateriaDiagnosticGuestSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
+            const auto &deviceState{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
+            const auto &thread{deviceState.thread};
+            const auto &mctx{ctx->uc_mcontext};
+
+            LOGW("SOLATERIA-PC: T{} sample in GUEST | PC=0x{:X} | SP=0x{:X} | FP=0x{:X} | LR=0x{:X} | coreId={} | priority={} | affinity={}",
+                 thread->id,
+                 mctx.pc,
+                 mctx.sp,
+                 mctx.regs[29],
+                 mctx.regs[30],
+                 thread->coreId,
+                 thread->priority.load(),
+                 thread->affinityMask.to_string());
+        }
+
+        void SolateriaDiagnosticHostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+            const auto &mctx{ctx->uc_mcontext};
+
+            LOGW("SOLATERIA-PC: diagnostic signal landed in HOST | hostTid={} | PC=0x{:X} | SP=0x{:X} | FP=0x{:X} | LR=0x{:X}",
+                 gettid(),
+                 mctx.pc,
+                 mctx.sp,
+                 mctx.regs[29],
+                 mctx.regs[30]);
+        }
+    }
+
     Scheduler::CoreContext::CoreContext(u8 id, i8 preemptionPriority) : id(id), preemptionPriority(preemptionPriority) {}
 
     Scheduler::Scheduler(const DeviceState &state) : state(state) {
+        LOGW("SOLATERIA-DIAG: C0/C1/C2 queue snapshots and T1 live-PC sampling enabled (sampler T27)");
         // Don't restart syscalls: we want futexes to fail and their predicates rechecked
         signal::SetGuestSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::GuestSignalHandler, false);
         signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::HostSignalHandler, false);
+
+        // Diagnostic-only signal: sample the interrupted context and return without
+        // rotating queues, changing priorities or modifying scheduler state.
+        signal::SetGuestSignalHandler({SolateriaDiagnosticSignal}, SolateriaDiagnosticGuestSignalHandler, true);
+        signal::SetHostSignalHandler({SolateriaDiagnosticSignal}, SolateriaDiagnosticHostSignalHandler, true);
     }
 
     void Scheduler::GuestSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
@@ -189,6 +228,58 @@ namespace skyline::kernel {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
+
+                if (thread->id == SolateriaSamplerThreadId) {
+                    std::shared_ptr<type::KThread> targetThread{};
+
+                    // Snapshot each application core independently while holding no other
+                    // core lock. Core 3 is reserved for system work and is intentionally skipped.
+                    for (size_t coreIndex{}; coreIndex < constant::CoreCount - 1; ++coreIndex) {
+                        auto &diagnosticCore{cores.at(coreIndex)};
+                        std::unique_lock diagnosticLock{diagnosticCore.mutex};
+
+                        LOGW("SOLATERIA-QUEUE: C{} | preemptionPriority={} | queueSize={}",
+                             diagnosticCore.id,
+                             diagnosticCore.preemptionPriority,
+                             diagnosticCore.queue.size());
+
+                        size_t position{};
+                        for (const auto &residentThread : diagnosticCore.queue) {
+                            const bool isTarget{residentThread->id == SolateriaTargetThreadId};
+                            if (isTarget)
+                                targetThread = residentThread;
+
+                            LOGW("SOLATERIA-QUEUE: C{} queue[{}] = T{} | priority={} | affinity={} | idealCore={} | pendingYield={} | forceYield={} | isPreempted={}{}{}",
+                                 diagnosticCore.id,
+                                 position,
+                                 residentThread->id,
+                                 residentThread->priority.load(),
+                                 residentThread->affinityMask.to_string(),
+                                 residentThread->idealCore,
+                                 residentThread->pendingYield,
+                                 residentThread->forceYield,
+                                 residentThread->isPreempted,
+                                 position == 0 ? " [FRONT]" : "",
+                                 isTarget ? " [TARGET]" : "");
+                            ++position;
+                        }
+
+                        if (diagnosticCore.queue.empty())
+                            LOGW("SOLATERIA-QUEUE: C{} EMPTY", diagnosticCore.id);
+                    }
+
+                    if (targetThread) {
+                        LOGW("SOLATERIA-PC: requesting live sample from T{} | coreId={} | priority={} | affinity={}",
+                             targetThread->id,
+                             targetThread->coreId,
+                             targetThread->priority.load(),
+                             targetThread->affinityMask.to_string());
+                        targetThread->SendSignal(SolateriaDiagnosticSignal);
+                    } else {
+                        LOGW("SOLATERIA-PC: T{} not found in C0/C1/C2 queues", SolateriaTargetThreadId);
+                    }
+                }
+
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 auto newCore{&GetOptimalCoreForThread(state.thread)};
                 lock.lock();
