@@ -9,30 +9,63 @@
 
 namespace skyline::kernel {
     namespace {
-        const int SolateriaDiagnosticSignal{SIGRTMIN + 2};
+        const int SolateriaMainDiagnosticSignal{SIGRTMIN + 2};
+        const int SolateriaWorkerDiagnosticSignal{SIGRTMIN + 3};
         constexpr size_t SolateriaSamplerThreadId{27};
         constexpr size_t SolateriaTargetThreadId{1};
+        constexpr size_t SolateriaWorkerThreadId{30};
+
+        std::weak_ptr<type::KThread> solateriaTargetThread;
+        std::weak_ptr<type::KThread> solateriaWorkerThread;
+
+        size_t SolateriaRequestedThreadId(int signal) {
+            return signal == SolateriaWorkerDiagnosticSignal ? SolateriaWorkerThreadId : SolateriaTargetThreadId;
+        }
 
         void SolateriaDiagnosticGuestSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
             const auto &deviceState{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
             const auto &thread{deviceState.thread};
             const auto &mctx{ctx->uc_mcontext};
 
-            LOGW("SOLATERIA-PC: T{} sample in GUEST | PC=0x{:X} | SP=0x{:X} | FP=0x{:X} | LR=0x{:X} | coreId={} | priority={} | affinity={}",
+            LOGW("SOLATERIA-PC: requested T{}; sampled T{} in GUEST | PC=0x{:X} | SP=0x{:X} | FP=0x{:X} | LR=0x{:X} | PSTATE=0x{:X} | coreId={} | priority={} | affinity={}",
+                 SolateriaRequestedThreadId(signal),
                  thread->id,
                  mctx.pc,
                  mctx.sp,
                  mctx.regs[29],
                  mctx.regs[30],
+                 mctx.pstate,
                  thread->coreId,
                  thread->priority.load(),
                  thread->affinityMask.to_string());
+
+            LOGW("SOLATERIA-REGS: T{} | X0=0x{:X} X1=0x{:X} X2=0x{:X} X3=0x{:X} X4=0x{:X} X5=0x{:X} X6=0x{:X} X7=0x{:X}",
+                 thread->id, mctx.regs[0], mctx.regs[1], mctx.regs[2], mctx.regs[3], mctx.regs[4], mctx.regs[5], mctx.regs[6], mctx.regs[7]);
+            LOGW("SOLATERIA-REGS: T{} | X8=0x{:X} X9=0x{:X} X10=0x{:X} X11=0x{:X} X12=0x{:X} X13=0x{:X} X14=0x{:X} X15=0x{:X}",
+                 thread->id, mctx.regs[8], mctx.regs[9], mctx.regs[10], mctx.regs[11], mctx.regs[12], mctx.regs[13], mctx.regs[14], mctx.regs[15]);
+            LOGW("SOLATERIA-REGS: T{} | X16=0x{:X} X17=0x{:X} X18=0x{:X} X19=0x{:X} X20=0x{:X} X21=0x{:X} X22=0x{:X} X23=0x{:X}",
+                 thread->id, mctx.regs[16], mctx.regs[17], mctx.regs[18], mctx.regs[19], mctx.regs[20], mctx.regs[21], mctx.regs[22], mctx.regs[23]);
+            LOGW("SOLATERIA-REGS: T{} | X24=0x{:X} X25=0x{:X} X26=0x{:X} X27=0x{:X} X28=0x{:X}",
+                 thread->id, mctx.regs[24], mctx.regs[25], mctx.regs[26], mctx.regs[27], mctx.regs[28]);
+
+            // Keep the complete diagnostic window inside the same mapped code page.
+            const auto codeAddress{static_cast<uintptr_t>(mctx.pc) & ~uintptr_t{0x3F}};
+            const auto *instructions{reinterpret_cast<const u32 *>(codeAddress)};
+            LOGW("SOLATERIA-CODE: T{} | 0x{:X}: {:08X} {:08X} {:08X} {:08X}",
+                 thread->id, codeAddress, instructions[0], instructions[1], instructions[2], instructions[3]);
+            LOGW("SOLATERIA-CODE: T{} | 0x{:X}: {:08X} {:08X} {:08X} {:08X}",
+                 thread->id, codeAddress + 0x10, instructions[4], instructions[5], instructions[6], instructions[7]);
+            LOGW("SOLATERIA-CODE: T{} | 0x{:X}: {:08X} {:08X} {:08X} {:08X}",
+                 thread->id, codeAddress + 0x20, instructions[8], instructions[9], instructions[10], instructions[11]);
+            LOGW("SOLATERIA-CODE: T{} | 0x{:X}: {:08X} {:08X} {:08X} {:08X}",
+                 thread->id, codeAddress + 0x30, instructions[12], instructions[13], instructions[14], instructions[15]);
         }
 
         void SolateriaDiagnosticHostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
             const auto &mctx{ctx->uc_mcontext};
 
-            LOGW("SOLATERIA-PC: diagnostic signal landed in HOST | hostTid={} | PC=0x{:X} | SP=0x{:X} | FP=0x{:X} | LR=0x{:X}",
+            LOGW("SOLATERIA-PC: requested T{}; signal landed in HOST | hostTid={} | PC=0x{:X} | SP=0x{:X} | FP=0x{:X} | LR=0x{:X}",
+                 SolateriaRequestedThreadId(signal),
                  gettid(),
                  mctx.pc,
                  mctx.sp,
@@ -44,15 +77,15 @@ namespace skyline::kernel {
     Scheduler::CoreContext::CoreContext(u8 id, i8 preemptionPriority) : id(id), preemptionPriority(preemptionPriority) {}
 
     Scheduler::Scheduler(const DeviceState &state) : state(state) {
-        LOGW("SOLATERIA-DIAG: C0/C1/C2 queue snapshots and T1 live-PC sampling enabled (sampler T27)");
+        LOGW("SOLATERIA-DIAG: C0/C1/C2 queues, T1/T30 live contexts and instruction sampling enabled (sampler T27)");
         // Don't restart syscalls: we want futexes to fail and their predicates rechecked
         signal::SetGuestSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::GuestSignalHandler, false);
         signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::HostSignalHandler, false);
 
         // Diagnostic-only signal: sample the interrupted context and return without
         // rotating queues, changing priorities or modifying scheduler state.
-        signal::SetGuestSignalHandler({SolateriaDiagnosticSignal}, SolateriaDiagnosticGuestSignalHandler, true);
-        signal::SetHostSignalHandler({SolateriaDiagnosticSignal}, SolateriaDiagnosticHostSignalHandler, true);
+        signal::SetGuestSignalHandler({SolateriaMainDiagnosticSignal, SolateriaWorkerDiagnosticSignal}, SolateriaDiagnosticGuestSignalHandler, true);
+        signal::SetHostSignalHandler({SolateriaMainDiagnosticSignal, SolateriaWorkerDiagnosticSignal}, SolateriaDiagnosticHostSignalHandler, true);
     }
 
     void Scheduler::GuestSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
@@ -231,6 +264,9 @@ namespace skyline::kernel {
 
                 if (thread->id == SolateriaSamplerThreadId) {
                     std::shared_ptr<type::KThread> targetThread{};
+                    std::shared_ptr<type::KThread> workerThread{};
+                    bool targetInQueue{};
+                    bool workerInQueue{};
 
                     // Snapshot each application core independently while holding no other
                     // core lock. Core 3 is reserved for system work and is intentionally skipped.
@@ -246,10 +282,18 @@ namespace skyline::kernel {
                         size_t position{};
                         for (const auto &residentThread : diagnosticCore.queue) {
                             const bool isTarget{residentThread->id == SolateriaTargetThreadId};
-                            if (isTarget)
+                            const bool isWorker{residentThread->id == SolateriaWorkerThreadId};
+                            if (isTarget) {
                                 targetThread = residentThread;
+                                solateriaTargetThread = residentThread;
+                                targetInQueue = true;
+                            } else if (isWorker) {
+                                workerThread = residentThread;
+                                solateriaWorkerThread = residentThread;
+                                workerInQueue = true;
+                            }
 
-                            LOGW("SOLATERIA-QUEUE: C{} queue[{}] = T{} | priority={} | affinity={} | idealCore={} | pendingYield={} | forceYield={} | isPreempted={}{}{}",
+                            LOGW("SOLATERIA-QUEUE: C{} queue[{}] = T{} | priority={} | affinity={} | idealCore={} | pendingYield={} | forceYield={} | isPreempted={}{}{}{}",
                                  diagnosticCore.id,
                                  position,
                                  residentThread->id,
@@ -260,7 +304,8 @@ namespace skyline::kernel {
                                  residentThread->forceYield,
                                  residentThread->isPreempted,
                                  position == 0 ? " [FRONT]" : "",
-                                 isTarget ? " [TARGET]" : "");
+                                 isTarget ? " [TARGET]" : "",
+                                 isWorker ? " [WORKER]" : "");
                             ++position;
                         }
 
@@ -268,15 +313,38 @@ namespace skyline::kernel {
                             LOGW("SOLATERIA-QUEUE: C{} EMPTY", diagnosticCore.id);
                     }
 
+                    if (!targetThread)
+                        targetThread = solateriaTargetThread.lock();
+                    if (!workerThread)
+                        workerThread = solateriaWorkerThread.lock();
+
                     if (targetThread) {
-                        LOGW("SOLATERIA-PC: requesting live sample from T{} | coreId={} | priority={} | affinity={}",
+                        LOGW("SOLATERIA-PC: requesting live sample from T{} | source={} | coreId={} | priority={} | affinity={}",
                              targetThread->id,
+                             targetInQueue ? "queue" : "cached",
                              targetThread->coreId,
                              targetThread->priority.load(),
                              targetThread->affinityMask.to_string());
-                        targetThread->SendSignal(SolateriaDiagnosticSignal);
+                        targetThread->SendSignal(SolateriaMainDiagnosticSignal);
                     } else {
-                        LOGW("SOLATERIA-PC: T{} not found in C0/C1/C2 queues", SolateriaTargetThreadId);
+                        LOGW("SOLATERIA-PC: T{} has not been observed yet", SolateriaTargetThreadId);
+                    }
+
+                    if (workerThread) {
+                        LOGW("SOLATERIA-PC: requesting live sample from T{} | source={} | coreId={} | priority={} | affinity={} | running={} | ready={} | killed={} | cancellable={} | paused={}",
+                             workerThread->id,
+                             workerInQueue ? "queue" : "cached",
+                             workerThread->coreId,
+                             workerThread->priority.load(),
+                             workerThread->affinityMask.to_string(),
+                             workerThread->running,
+                             workerThread->ready,
+                             workerThread->killed,
+                             workerThread->isCancellable,
+                             workerThread->isPaused);
+                        workerThread->SendSignal(SolateriaWorkerDiagnosticSignal);
+                    } else {
+                        LOGW("SOLATERIA-PC: T{} has not been observed yet", SolateriaWorkerThreadId);
                     }
                 }
 

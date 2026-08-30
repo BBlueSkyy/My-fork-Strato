@@ -751,8 +751,27 @@ namespace skyline::kernel::svc {
         TRACE_EVENT_FMT("kernel", fmt::runtime(waitHandles.size() == 1 ? "WaitSynchronization 0x{:X}" : "WaitSynchronizationMultiple 0x{:X}"), waitHandles[0]);
 
         std::unique_lock lock(type::KSyncObject::syncObjectMutex);
+        const bool solateriaDiagnosticThread{state.thread->id == 1 || state.thread->id == 30};
+        if (solateriaDiagnosticThread) {
+            LOGW("SOLATERIA-WAIT: T{} entering WaitSynchronization | handleCount={} | timeout={}ns",
+                 state.thread->id,
+                 waitHandles.size(),
+                 timeout);
+            for (size_t diagnosticIndex{}; diagnosticIndex < waitHandles.size(); ++diagnosticIndex) {
+                LOGW("SOLATERIA-WAIT: T{} handle[{}]=0x{:X} | objectType={} | signalled={} | waiterCount={}",
+                     state.thread->id,
+                     diagnosticIndex,
+                     waitHandles[diagnosticIndex],
+                     objectTable[diagnosticIndex]->objectType,
+                     objectTable[diagnosticIndex]->signalled,
+                     objectTable[diagnosticIndex]->syncObjectWaiters.size());
+            }
+        }
+
         if (state.thread->cancelSync) {
             state.thread->cancelSync = false;
+            if (solateriaDiagnosticThread)
+                LOGW("SOLATERIA-WAIT: T{} cancelled before blocking", state.thread->id);
             ctx.w0 = result::Cancelled;
             return;
         }
@@ -760,6 +779,8 @@ namespace skyline::kernel::svc {
         u32 index{};
         for (const auto &object : objectTable) {
             if (object->signalled) {
+                if (solateriaDiagnosticThread)
+                    LOGW("SOLATERIA-WAIT: T{} completed immediately | handleIndex={} | handle=0x{:X}", state.thread->id, index, waitHandles[index]);
                 LOGD("Signalled 0x{:X}", waitHandles[index]);
                 ctx.w0 = Result{};
                 ctx.w1 = index;
@@ -769,6 +790,8 @@ namespace skyline::kernel::svc {
         }
 
         if (timeout == 0) {
+            if (solateriaDiagnosticThread)
+                LOGW("SOLATERIA-WAIT: T{} timed out immediately", state.thread->id);
             LOGD("No handle is currently signalled");
             ctx.w0 = result::TimedOut;
             return;
@@ -781,6 +804,9 @@ namespace skyline::kernel::svc {
         state.thread->isCancellable = true;
         state.thread->wakeObject = nullptr;
         state.scheduler->RemoveThread();
+
+        if (solateriaDiagnosticThread)
+            LOGW("SOLATERIA-WAIT: T{} removed from scheduler and blocking", state.thread->id);
 
         lock.unlock();
         if (timeout > 0)
@@ -808,14 +834,20 @@ namespace skyline::kernel::svc {
         }
 
         if (wakeObject) {
+            if (solateriaDiagnosticThread)
+                LOGW("SOLATERIA-WAIT: T{} woke by handleIndex={} | handle=0x{:X}", state.thread->id, wakeIndex, waitHandles[wakeIndex]);
             LOGD("Signalled 0x{:X}", waitHandles[wakeIndex]);
             ctx.w0 = Result{};
             ctx.w1 = wakeIndex;
         } else if (state.thread->cancelSync) {
             state.thread->cancelSync = false;
+            if (solateriaDiagnosticThread)
+                LOGW("SOLATERIA-WAIT: T{} woke by cancellation", state.thread->id);
             LOGD("Wait has been cancelled");
             ctx.w0 = result::Cancelled;
         } else {
+            if (solateriaDiagnosticThread)
+                LOGW("SOLATERIA-WAIT: T{} woke by timeout", state.thread->id);
             LOGD("Wait has timed out");
             ctx.w0 = result::TimedOut;
             lock.unlock();
