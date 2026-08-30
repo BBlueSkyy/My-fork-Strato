@@ -2,7 +2,6 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <numbers>
 #include "gesture.h"
@@ -233,11 +232,10 @@ namespace skyline::input {
         section.header.currentEntry = (section.header.currentEntry + 1) % constant::HidEntryCount;
 
         auto &entry{section.entries[section.header.currentEntry]};
-        std::atomic_ref<u64> marker{entry.globalTimestamp};
         const auto completedMarker{static_cast<u64>(state.samplingNumber) << 1};
-        marker.store(completedMarker | 1, std::memory_order_relaxed);
+        __atomic_store_n(&entry.globalTimestamp, completedMarker | 1, __ATOMIC_RELAXED);
         entry.data = state;
-        marker.store(completedMarker, std::memory_order_release);
+        __atomic_store_n(&entry.globalTimestamp, completedMarker, __ATOMIC_RELEASE);
     }
 
     void GestureManager::Activate(u32 newBasicGestureId) {
