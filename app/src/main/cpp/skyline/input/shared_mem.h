@@ -51,6 +51,7 @@ namespace skyline {
             NpadCondition npadCondition;
             std::array<u8, 0x1DF0> _pad3_;
         };
+        static_assert(offsetof(HidSharedMemory, gesture) == 0x3BA00);
         static_assert(offsetof(HidSharedMemory, debugMouse) == 0x3DC00);
         static_assert(offsetof(HidSharedMemory, npadCondition) == 0x3E200);
         static_assert(sizeof(HidSharedMemory) == 0x40000);

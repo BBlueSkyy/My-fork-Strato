@@ -284,6 +284,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/input.cpp
         ${source_DIR}/skyline/input/npad.cpp
         ${source_DIR}/skyline/input/npad_device.cpp
+        ${source_DIR}/skyline/input/gesture.cpp
         ${source_DIR}/skyline/input/touch.cpp
         ${source_DIR}/skyline/crypto/aes_cipher.cpp
         ${source_DIR}/skyline/crypto/key_store.cpp

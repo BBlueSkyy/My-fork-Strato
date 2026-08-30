@@ -52,7 +52,8 @@ namespace skyline::input {
         void SetResolution(uint32_t width, uint32_t height);
         /**
          * @brief Writes the current state of the touch screen to HID shared memory
+         * @return A snapshot of the state written for use by gesture recognition
          */
-        void UpdateSharedMemory();
+        TouchScreenState UpdateSharedMemory();
     };
 }

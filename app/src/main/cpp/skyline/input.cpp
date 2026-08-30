@@ -68,6 +68,7 @@ namespace skyline::input {
           hid{InitializeHidSharedMemory(kHid->host)},
           npad{state, hid},
           touch{state, hid},
+          gesture{hid},
           updateThread{&Input::UpdateThread, this} {}
 
     void Input::UpdateThread() {
@@ -99,7 +100,8 @@ namespace skyline::input {
                         pad.UpdateSharedMemory();
                 }},
                 UpdateCallback{TouchUpdatePeriod, [&](UpdateCallback &callback) {
-                    touch.UpdateSharedMemory();
+                    const auto touchState{touch.UpdateSharedMemory()};
+                    gesture.Update(touchState, util::GetTimeNs());
                 }},
             };
 

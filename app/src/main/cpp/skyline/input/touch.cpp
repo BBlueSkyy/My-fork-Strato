@@ -51,7 +51,7 @@ namespace skyline::input {
             screenState.data[i] = {};
     }
 
-    void TouchManager::UpdateSharedMemory() {
+    TouchScreenState TouchManager::UpdateSharedMemory() {
         std::scoped_lock lock{mutex};
 
         for (size_t i{}; i < screenState.data.size(); i++) {
@@ -77,7 +77,7 @@ namespace skyline::input {
         }
 
         if (!activated)
-            return;
+            return screenState;
 
         const auto &lastEntry{section.entries[section.header.currentEntry]};
 
@@ -90,5 +90,6 @@ namespace skyline::input {
         entry = screenState;
         entry.localTimestamp = lastEntry.localTimestamp + 1;
         entry.globalTimestamp = entry.localTimestamp << 1;
+        return screenState;
     }
 }
