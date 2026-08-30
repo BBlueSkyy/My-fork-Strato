@@ -84,6 +84,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
    void ConstantBuffers::Bind(InterconnectContext &ctx, engine::ShaderStage stage, size_t index) {
+      LOGD("ConstantBuffers::Bind stage={} idx={}", static_cast<int>(stage), index);
       auto &view{*selectorState.UpdateGet(ctx).view};
       if (!view)
         throw exception("Constant buffer selector is not mapped");
