@@ -7,10 +7,65 @@
 #include "input.h"
 
 namespace skyline::input {
+    namespace {
+        void InitializeLifoHeader(CommonHeader &header) {
+            header = {};
+            // This field is the fixed LIFO capacity, not the number of valid
+            // samples. The latter is stored in maxEntry and starts at zero.
+            header.entryCount = constant::HidEntryCount;
+        }
+
+        HidSharedMemory *InitializeHidSharedMemory(span<u8> memory) {
+            auto *hid{std::construct_at(reinterpret_cast<HidSharedMemory *>(memory.data()))};
+
+            InitializeLifoHeader(hid->debugPad.header);
+            InitializeLifoHeader(hid->touchScreen.header);
+            InitializeLifoHeader(hid->mouse.header);
+            InitializeLifoHeader(hid->keyboard.header);
+            InitializeLifoHeader(hid->homeButton.header);
+            InitializeLifoHeader(hid->sleepButton.header);
+            InitializeLifoHeader(hid->captureButton.header);
+
+            for (auto &npad : hid->npad) {
+                for (auto *header : {
+                         &npad.fullKeyController.header,
+                         &npad.handheldController.header,
+                         &npad.dualController.header,
+                         &npad.leftController.header,
+                         &npad.rightController.header,
+                         &npad.palmaController.header,
+                         &npad.defaultController.header,
+                         &npad.fullKeySixAxis.header,
+                         &npad.handheldSixAxis.header,
+                         &npad.dualLeftSixAxis.header,
+                         &npad.dualRightSixAxis.header,
+                         &npad.leftSixAxis.header,
+                         &npad.rightSixAxis.header,
+                     }) {
+                    InitializeLifoHeader(*header);
+                }
+            }
+
+            InitializeLifoHeader(hid->gesture.header);
+            InitializeLifoHeader(hid->debugMouse.header);
+
+            // nn::hid checks this modern shared-memory block before exposing
+            // controller state to applications.
+            hid->npadCondition = {
+                ._unknown_ = 0,
+                .initialized = 1,
+                .holdType = 1, // Horizontal
+                .valid = 1,
+            };
+
+            return hid;
+        }
+    }
+
     Input::Input(const DeviceState &state)
         : state{state},
           kHid{std::make_shared<kernel::type::KSharedMemory>(state, sizeof(HidSharedMemory))},
-          hid{reinterpret_cast<HidSharedMemory *>(kHid->host.data())},
+          hid{InitializeHidSharedMemory(kHid->host)},
           npad{state, hid},
           touch{state, hid},
           updateThread{&Input::UpdateThread, this} {}
