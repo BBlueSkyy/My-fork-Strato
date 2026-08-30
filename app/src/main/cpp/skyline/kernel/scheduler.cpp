@@ -9,7 +9,7 @@
 
 namespace skyline::kernel {
     namespace {
-        constexpr int SolateriaDiagnosticSignal{SIGRTMIN + 2};
+        const int SolateriaDiagnosticSignal{SIGRTMIN + 2};
         constexpr size_t SolateriaSamplerThreadId{27};
         constexpr size_t SolateriaTargetThreadId{1};
 
