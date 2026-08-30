@@ -69,10 +69,10 @@ namespace skyline::service::hid {
     }
 
     Result IHidServer::ActivateGesture(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // Takes a PID-descriptor, a s32 (sdknso always passes 1), and an AppletResourceUserId. No output.
-        // Gesture recognition isn't implemented, so this is just acknowledged like ActivateMouse/ActivateKeyboard.
-        auto unknown{request.Pop<u32>()};
+        auto basicGestureId{request.Pop<u32>()};
         auto appletResourceUserId{request.Pop<u64>()};
+        state.input->gesture.Activate(basicGestureId);
+        LOGD("Activated gesture input: ID {}, AppletResourceUserId 0x{:X}", basicGestureId, appletResourceUserId);
         return {};
     }
 
