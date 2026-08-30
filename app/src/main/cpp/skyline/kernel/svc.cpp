@@ -968,6 +968,51 @@ namespace skyline::kernel::svc {
             return;
         }
 
+        // Diagnostic-only fallback for guest aborts: the panic payload is a
+        // local variable on the guest stack. Scan forward through the mapped
+        // stack chunk and symbolicate values which look like guest code return
+        // addresses. Unlike GetStackTrace(), this never dereferences an
+        // untrusted guest frame-pointer chain.
+        std::vector<void *> stackCandidates;
+        if (infoAddress) {
+            constexpr u64 GuestCodeStart{0x800000000ULL};
+            constexpr u64 GuestCodeEnd{0x810000000ULL};
+            constexpr u64 MaximumScanSize{0x10000};
+
+            const u64 scanStart{infoAddress & ~(sizeof(u64) - 1)};
+            auto *guestStart{reinterpret_cast<u8 *>(scanStart)};
+            auto chunk{state.process->memory.GetChunk(guestStart)};
+
+            if (chunk && chunk->second.permission.r) {
+                const u64 chunkEnd{reinterpret_cast<u64>(chunk->first + chunk->second.size)};
+                const u64 scanEnd{std::min(scanStart + MaximumScanSize, chunkEnd)};
+
+                if (scanEnd > scanStart) {
+                    span<u8> guestStack{guestStart, static_cast<size_t>(scanEnd - scanStart)};
+                    auto hostStack{state.process->memory.GetHostSpan(guestStack)};
+
+                    for (size_t offset{}; offset + sizeof(u64) <= hostStack.size(); offset += sizeof(u64)) {
+                        u64 candidate{};
+                        std::memcpy(&candidate, hostStack.data() + offset, sizeof(candidate));
+
+                        if (candidate >= GuestCodeStart && candidate < GuestCodeEnd && !(candidate & 0x3)) {
+                            auto pointer{reinterpret_cast<void *>(candidate)};
+                            if (std::find(stackCandidates.begin(), stackCandidates.end(), pointer) == stackCandidates.end())
+                                stackCandidates.push_back(pointer);
+
+                            if (stackCandidates.size() == 256)
+                                break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!stackCandidates.empty())
+            LOGE("SOLATERIA-BREAK-CANDIDATES:{}", state.loader->GetStackTrace(stackCandidates));
+        else
+            LOGE("SOLATERIA-BREAK-CANDIDATES: unavailable (info=0x{:X})", infoAddress);
+
         // svcBreak(BreakReason, arg, size) is commonly used by nnSdk/libnx panic paths.
         // Do not call Loader::GetStackTrace() here: Break is entered from guest SVC context
         // and attempting to walk a host-style frame chain can fault recursively.
