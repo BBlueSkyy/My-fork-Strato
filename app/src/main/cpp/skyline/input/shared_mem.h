@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include "sections/DebugPad.h"
 #include "sections/TouchScreen.h"
 #include "sections/Mouse.h"
@@ -16,6 +17,17 @@
 
 namespace skyline {
     namespace input {
+        /**
+         * @brief Global Npad condition state used by recent versions of nn::hid
+         */
+        struct NpadCondition {
+            u32 _unknown_;
+            u32 initialized;
+            u32 holdType;
+            u32 valid;
+        };
+        static_assert(sizeof(NpadCondition) == 0x10);
+
         /**
          * @url https://switchbrew.org/wiki/HID_Shared_Memory
          */
@@ -33,8 +45,14 @@ namespace skyline {
             std::array<NpadSection, constant::NpadCount> npad; //!< The NPad (Nintendo Pad) section (https://switchbrew.org/wiki/HID_Shared_Memory#Npad)
             GestureSection gesture; //!< The Gesture section (https://switchbrew.org/wiki/HID_Shared_Memory#Gesture)
             ConsoleSixAxisSensorSection consoleSixAxisSensor; //!< The SixAxis (Gyroscope/Accelerometer) section on FW 5.0.0 and above (https://switchbrew.org/wiki/HID_Shared_Memory#ConsoleSixAxisSensor)
-            u64 _pad1_[0x7BC];
+            std::array<u8, 0x19E0> _pad1_;
+            MouseSection debugMouse;
+            std::array<u8, 0x200> _pad2_;
+            NpadCondition npadCondition;
+            std::array<u8, 0x1DF0> _pad3_;
         };
+        static_assert(offsetof(HidSharedMemory, debugMouse) == 0x3DC00);
+        static_assert(offsetof(HidSharedMemory, npadCondition) == 0x3E200);
         static_assert(sizeof(HidSharedMemory) == 0x40000);
     }
 }
