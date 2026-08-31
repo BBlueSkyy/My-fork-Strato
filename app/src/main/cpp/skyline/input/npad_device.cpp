@@ -162,6 +162,39 @@ namespace skyline::input {
             sixAxisInfoRight = &GetSixAxisInfo(MotionId::Right);
 
         UpdateSharedMemory();
+
+        const auto &activeEntry{controllerInfo->state.at(controllerInfo->header.currentEntry)};
+        LOGI("NpadStateTrace: connect id=0x{:X}, type=0x{:X}, source=active, entryCount={}, currentEntry={}, maxEntry={}, outerSampling={}, sampling={}, buttons=0x{:016X}, left=({}, {}), right=({}, {}), status=0x{:X}",
+             static_cast<u32>(id),
+             static_cast<u32>(type),
+             controllerInfo->header.entryCount,
+             controllerInfo->header.currentEntry,
+             controllerInfo->header.maxEntry,
+             activeEntry.globalTimestamp,
+             activeEntry.localTimestamp,
+             activeEntry.buttons.raw,
+             activeEntry.leftX,
+             activeEntry.leftY,
+             activeEntry.rightX,
+             activeEntry.rightY,
+             activeEntry.status.raw);
+
+        const auto &defaultEntry{section.defaultController.state.at(section.defaultController.header.currentEntry)};
+        LOGI("NpadStateTrace: connect id=0x{:X}, type=0x{:X}, source=default, entryCount={}, currentEntry={}, maxEntry={}, outerSampling={}, sampling={}, buttons=0x{:016X}, left=({}, {}), right=({}, {}), status=0x{:X}",
+             static_cast<u32>(id),
+             static_cast<u32>(type),
+             section.defaultController.header.entryCount,
+             section.defaultController.header.currentEntry,
+             section.defaultController.header.maxEntry,
+             defaultEntry.globalTimestamp,
+             defaultEntry.localTimestamp,
+             defaultEntry.buttons.raw,
+             defaultEntry.leftX,
+             defaultEntry.leftY,
+             defaultEntry.rightX,
+             defaultEntry.rightY,
+             defaultEntry.status.raw);
+
         updateEvent->Signal();
     }
 
@@ -307,6 +340,10 @@ namespace skyline::input {
     }
 
     void NpadDevice::SetButtonState(NpadButton mask, bool pressed) {
+        const u64 requestedMask{mask.raw};
+        const u64 previousControllerButtons{controllerState.buttons.raw};
+        const u64 previousDefaultButtons{defaultState.buttons.raw};
+
         if (pressed)
             controllerState.buttons.raw |= mask.raw;
         else
@@ -349,10 +386,22 @@ namespace skyline::input {
             defaultState.buttons.raw |= mask.raw;
         else
             defaultState.buttons.raw &= ~mask.raw;
+
+        if (controllerState.buttons.raw != previousControllerButtons || defaultState.buttons.raw != previousDefaultButtons) {
+            LOGI("NpadStateTrace: button id=0x{:X}, type=0x{:X}, requestedMask=0x{:016X}, pressed={}, controllerButtons=0x{:016X}, defaultButtons=0x{:016X}",
+                 static_cast<u32>(id),
+                 static_cast<u32>(type),
+                 requestedMask,
+                 pressed,
+                 controllerState.buttons.raw,
+                 defaultState.buttons.raw);
+        }
     }
 
     void NpadDevice::SetAxisValue(NpadAxisId axis, i32 value) {
         constexpr i16 threshold{std::numeric_limits<i16>::max() / 2}; // A 50% deadzone for the stick buttons
+        const NpadControllerState previousControllerState{controllerState};
+        const NpadControllerState previousDefaultState{defaultState};
 
         if (manager.orientation == NpadJoyOrientation::Vertical || (type != NpadControllerType::JoyconLeft && type != NpadControllerType::JoyconRight)) {
             switch (axis) {
@@ -436,6 +485,37 @@ namespace skyline::input {
                     defaultState.buttons.rightStickDown = defaultState.rightY <= -threshold;
                     break;
             }
+        }
+
+        const bool controllerChanged{
+            controllerState.leftX != previousControllerState.leftX ||
+            controllerState.leftY != previousControllerState.leftY ||
+            controllerState.rightX != previousControllerState.rightX ||
+            controllerState.rightY != previousControllerState.rightY ||
+            controllerState.buttons.raw != previousControllerState.buttons.raw};
+        const bool defaultChanged{
+            defaultState.leftX != previousDefaultState.leftX ||
+            defaultState.leftY != previousDefaultState.leftY ||
+            defaultState.rightX != previousDefaultState.rightX ||
+            defaultState.rightY != previousDefaultState.rightY ||
+            defaultState.buttons.raw != previousDefaultState.buttons.raw};
+
+        if (controllerChanged || defaultChanged) {
+            LOGI("NpadStateTrace: axis id=0x{:X}, type=0x{:X}, axis={}, requestedValue={}, controllerLeft=({}, {}), controllerRight=({}, {}), controllerButtons=0x{:016X}, defaultLeft=({}, {}), defaultRight=({}, {}), defaultButtons=0x{:016X}",
+                 static_cast<u32>(id),
+                 static_cast<u32>(type),
+                 static_cast<u32>(axis),
+                 value,
+                 controllerState.leftX,
+                 controllerState.leftY,
+                 controllerState.rightX,
+                 controllerState.rightY,
+                 controllerState.buttons.raw,
+                 defaultState.leftX,
+                 defaultState.leftY,
+                 defaultState.rightX,
+                 defaultState.rightY,
+                 defaultState.buttons.raw);
         }
     }
 
