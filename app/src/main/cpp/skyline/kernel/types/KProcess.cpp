@@ -30,6 +30,8 @@ namespace skyline::kernel::type {
         }
 
         for (const auto &thread : threadsToKill)
+            thread->Kill(false);
+        for (const auto &thread : threadsToKill)
             thread->Kill(true);
 
         // Must happen after all threads have been killed/joined so no host thread can fault into
@@ -64,8 +66,14 @@ namespace skyline::kernel::type {
 
         // A guest thread can be inside CreateThread and waiting for threadMutex. Holding it while
         // joining that thread would deadlock graceful process transitions.
+        //
+        // Stop every thread before joining any of them: a thread being joined can depend on a
+        // resource owned by another guest thread, which must also receive its stop request.
         for (const auto &thread : threadsToKill)
-            thread->Kill(join, disableCreation);
+            thread->Kill(false, disableCreation);
+        if (join)
+            for (const auto &thread : threadsToKill)
+                thread->Kill(true, disableCreation);
     }
 
     void KProcess::InitializeHeapTls() {
