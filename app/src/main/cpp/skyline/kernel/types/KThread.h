@@ -30,6 +30,13 @@ namespace skyline {
             void StartThread();
 
           public:
+            struct PausedGuestContext {
+                std::array<u64, 31> gpr{};
+                u64 sp{};
+                u64 pc{};
+                u32 pstate{};
+            };
+
             std::mutex statusMutex; //!< Synchronizes all thread state changes (running/ready/killed)
             std::condition_variable statusCondition; //!< Signalled on the status of the thread changing
             bool running{false}; //!< If the host thread that corresponds to this thread is running, this doesn't reflect guest scheduling changes
@@ -75,8 +82,11 @@ namespace skyline {
             bool cancelSync{false}; //!< Whether to cancel the SvcWaitSynchronization call this thread currently is in/the next one it joins
             type::KSyncObject *wakeObject{}; //!< A pointer to the synchronization object responsible for waking this thread up
 
-            bool isPaused{false}; //!< If the thread is currently paused and not runnable
+            std::atomic<bool> isPaused{false}; //!< If the thread is currently paused and not runnable
             bool insertThreadOnResume{false}; //!< If the thread should be inserted into the scheduler when it resumes (used for pausing threads during sleep/sync)
+
+            PausedGuestContext pausedGuestContext{}; //!< Full integer/control register snapshot captured by the scheduler signal handler while paused
+            std::atomic<bool> pausedGuestContextValid{false}; //!< Set after pausedGuestContext has been fully written
 
             KThread(const DeviceState &state, KHandle handle, KProcess *parent, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore);
 
