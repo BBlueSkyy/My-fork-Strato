@@ -257,6 +257,18 @@ namespace skyline::kernel::type {
         if (join) {
             if (gracefulStop)
                 LOGW("Graceful stop HOS-{}: waiting for thread exit (running={})", id, running);
+
+            if (gracefulStop && running &&
+                !statusCondition.wait_for(lock, std::chrono::seconds(1), [this]() { return !running; })) {
+                LOGW("Graceful stop HOS-{} stalled: hostCall={} hostCallId=0x{:X} PC=0x{:X} LR=0x{:X} SP=0x{:X}",
+                     id,
+                     gracefulStopHostCall.load(std::memory_order_acquire),
+                     gracefulStopHostCallId.load(std::memory_order_relaxed),
+                     gracefulStopHostPc.load(std::memory_order_relaxed),
+                     gracefulStopHostLr.load(std::memory_order_relaxed),
+                     gracefulStopHostSp.load(std::memory_order_relaxed));
+            }
+
             statusCondition.wait(lock, [this]() { return !running; });
             if (gracefulStop)
                 LOGW("Graceful stop HOS-{}: thread exit observed", id);
