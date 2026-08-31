@@ -15,6 +15,36 @@
 #include "nce.h"
 
 namespace skyline::nce {
+    namespace {
+        void BeginGuestKernelExecution(const DeviceState &state) {
+            if (state.thread->BeginGuestKernelExecution()) {
+                state.scheduler->Rotate(false);
+                state.thread->AcknowledgeContextPause();
+                kernel::Scheduler::YieldPending = false;
+                state.scheduler->WaitSchedule();
+            }
+        }
+
+        u32 *WriteGuestPc(u32 *code, u64 pc) {
+            *code++ = 0xD53BD041; // MRS X1, TPIDR_EL0
+            *code++ = 0xF9416C21; // LDR X1, [X1, #0x2D8] (ThreadContext::guestCpuContext)
+            for (const auto &mov : instructions::MoveRegister(registers::X0, pc))
+                *code++ = mov ? mov : 0xD503201F; // NOP
+            *code++ = 0xF9008020; // STR X0, [X1, #0x100] (GuestCpuContext::pc)
+            return code;
+        }
+
+        u32 *WriteGuestReturnContext(u32 *code) {
+            *code++ = 0xD53BD040; // MRS X0, TPIDR_EL0
+            *code++ = 0xF9415401; // LDR X1, [X0, #0x2A8] (ThreadContext::hostSp)
+            *code++ = 0xF9400021; // LDR X1, [X1] (saved guest LR)
+            *code++ = 0xF9416C00; // LDR X0, [X0, #0x2D8] (ThreadContext::guestCpuContext)
+            *code++ = 0xF9007801; // STR X1, [X0, #0xF0] (GuestCpuContext::lr)
+            *code++ = 0xF9008001; // STR X1, [X0, #0x100] (GuestCpuContext::pc)
+            return code;
+        }
+    }
+
     NCE::ExitException::ExitException(bool killAllThreads) : killAllThreads(killAllThreads) {}
 
     const char *NCE::ExitException::what() const noexcept {
@@ -25,6 +55,8 @@ namespace skyline::nce {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
+        state.thread->PublishGuestContext();
+        BeginGuestKernelExecution(state);
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
@@ -85,11 +117,14 @@ namespace skyline::nce {
             std::longjmp(state.thread->originalCtx, true);
         }
 
+        state.thread->EndGuestKernelExecution();
         TRACE_EVENT_BEGIN("guest", "Guest");
     }
 
     void NCE::HookHandler(HookId hookId, ThreadContext *ctx) {
         const auto &state{*ctx->state};
+        state.thread->PublishGuestContext();
+        BeginGuestKernelExecution(state);
         auto hookedSymbol{state.nce->hookedSymbols[hookId.index]};
         try {
             std::visit(VariantVisitor{
@@ -142,6 +177,8 @@ namespace skyline::nce {
         } catch (const std::exception &e) {
             LOGENF("{} (Hook: {})\nStack Trace:{}", e.what(), hookedSymbol.prettyName, state.loader->GetStackTrace());
         }
+
+        state.thread->EndGuestKernelExecution();
     }
 
     void NCE::SignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
@@ -347,7 +384,7 @@ namespace skyline::nce {
             auto instructionOffset{static_cast<size_t>(instruction - start)};
 
             if (svc.Verify()) {
-                size += 7;
+                size += 14;
                 offsets.push_back(instructionOffset);
             } else if (mrs.Verify()) {
                 if (mrs.srcReg == TpidrroEl0 || mrs.srcReg == TpidrEl0) {
@@ -374,7 +411,7 @@ namespace skyline::nce {
         return {util::AlignUp(size * sizeof(u32), constant::PageSize), offsets};
     }
 
-    void NCE::PatchCode(std::vector<u8> &text, u32 *patch, size_t patchSize, const std::vector<size_t> &offsets, size_t textOffset) {
+    void NCE::PatchCode(std::vector<u8> &text, u32 *patch, size_t patchSize, const std::vector<size_t> &offsets, u64 guestPatchAddress, size_t textOffset) {
         u32 *start{patch};
         u32 *end{patch + (patchSize / sizeof(u32))};
 
@@ -405,6 +442,10 @@ namespace skyline::nce {
                 *patch++ = 0xF81F0FFE; // STR LR, [SP, #-16]!
                 *patch = instructions::BL(static_cast<i32>(startOffset())).raw;
                 patch++;
+
+                /* Store the ELR-style guest continuation PC in the persistent context */
+                const u64 guestPc{guestPatchAddress + patchSize + textOffset + ((offset + 1) * sizeof(u32))};
+                patch = WriteGuestPc(patch, guestPc);
 
                 /* Jump to main SVC trampoline */
                 *patch++ = instructions::Movz(registers::W0, static_cast<u16>(svc.value)).raw;
@@ -489,7 +530,7 @@ namespace skyline::nce {
                 /* Store new TLS value into ThreadContext */
                 *patch++ = x0x1 ? 0xD53BD040 : 0xD53BD042; // MRS X(0/2), TPIDR_EL0
                 *patch++ = instructions::Mov(x0x1 ? registers::X1 : registers::X3, registers::X(msr.srcReg)).raw;
-                *patch++ = x0x1 ? 0xF9015C01 : 0xF9015C43; // STR X(1/3), [X(0/2), #0x4B8] (ThreadContext::tpidrEl0)
+                *patch++ = x0x1 ? 0xF9015C01 : 0xF9015C43; // STR X(1/3), [X(0/2), #0x2B8] (ThreadContext::tpidrEl0)
 
                 /* Restore Scratch Registers and Return */
                 *patch++ = x0x1 ? 0xA8C107E0 : 0xA8C10FE2; // LDP X(0/2), X(1/3), [SP], #16
@@ -505,16 +546,17 @@ namespace skyline::nce {
 
         size_t size{guest::SaveCtxSize + guest::LoadCtxSize + TrampolineSize};
         for (const auto &entry : entries) {
-            constexpr size_t EmitTrampolineSize{10};
+            constexpr size_t EntryTrampolineSize{16};
+            constexpr size_t ReturnTrampolineSize{15};
             if (std::holds_alternative<hle::OverrideHook>(entry.hook))
-                size += EmitTrampolineSize + 1;
+                size += EntryTrampolineSize + 1;
             else if (std::holds_alternative<hle::EntryExitHook>(entry.hook))
-                size += 4 + EmitTrampolineSize + 1 + EmitTrampolineSize + 4 + 1;
+                size += 6 + EntryTrampolineSize + 1 + ReturnTrampolineSize + 6 + 1;
         }
         return size * sizeof(u32);
     }
 
-    void NCE::WriteHookSection(span<hle::HookedSymbolEntry> entries, span<u32> hookSection) {
+    void NCE::WriteHookSection(span<hle::HookedSymbolEntry> entries, span<u32> hookSection, u64 guestHookAddress) {
         u32 *start{hookSection.data()};
         u32 *end{hookSection.end().base()};
         u32 *hook{start};
@@ -530,13 +572,19 @@ namespace skyline::nce {
         u64 hookIndex{static_cast<u64>(hookedSymbols.size())};
         hookedSymbols.reserve(entries.size());
         for (const auto &entry : entries) {
+            Elf64_Addr originalOffset{*entry.offset};
             auto startOffset{[&] { return static_cast<size_t>(start - hook); }};
             auto endOffset{[&] { return static_cast<size_t>(end - hook); }};
-            auto emitTrampoline{[&](HookId hookId) {
+            auto emitTrampoline{[&](HookId hookId, bool returning) {
                 /* Save Context */
                 *hook++ = 0xF81F0FFE; // STR LR, [SP, #-16]!
                 *hook = instructions::BL(static_cast<i32>(startOffset())).raw; // BL SaveCtx
                 hook++;
+
+                if (returning)
+                    hook = WriteGuestReturnContext(hook);
+                else
+                    hook = WriteGuestPc(hook, guestHookAddress + hookSection.size_bytes() + originalOffset);
 
                 /* Jump to entry trampoline */
                 for (const auto &mov : instructions::MoveRegister(registers::X0, hookId.raw))
@@ -551,12 +599,11 @@ namespace skyline::nce {
                 *hook++ = 0xF84107FE; // LDR LR, [SP], #16
             }};
 
-            Elf64_Addr originalOffset{*entry.offset};
             *entry.offset = -(endOffset() * sizeof(u32));
 
             if (std::holds_alternative<hle::OverrideHook>(entry.hook)) {
                 /* Override Hook */
-                emitTrampoline(HookId{hookIndex, false});
+                emitTrampoline(HookId{hookIndex, false}, false);
             } else if (std::holds_alternative<hle::EntryExitHook>(entry.hook)) {
                 /* TLS LR Store */
                 *hook++ = 0xA9BF07E0; // STP X0, X1, [SP, #-16]!
@@ -567,13 +614,13 @@ namespace skyline::nce {
                 *hook++ = 0xA8C107E0; // LDP X0, X1, [SP], #16
 
                 /* Entry Hook */
-                emitTrampoline(HookId{hookIndex, false});
+                emitTrampoline(HookId{hookIndex, false}, false);
 
                 /* Function Proxy */
                 *hook++ = instructions::BL(static_cast<i32>(endOffset() + (originalOffset / sizeof(u32)))).raw;
 
                 /* Exit Hook */
-                emitTrampoline(HookId{hookIndex, true});
+                emitTrampoline(HookId{hookIndex, true}, true);
 
                 /* TLS LR Load */
                 *hook++ = 0xA9BF07E0; // STP X0, X1, [SP, #-16]!

@@ -30,6 +30,20 @@ namespace skyline {
             void StartThread();
 
           public:
+            enum class GuestExecutionState : u32 {
+                Kernel,
+                Guest,
+                PauseRequested,
+                Paused,
+                Terminated,
+            };
+
+            enum class ContextPauseRequest {
+                Stable,
+                Signal,
+                Terminated,
+            };
+
             std::mutex statusMutex; //!< Synchronizes all thread state changes (running/ready/killed)
             std::condition_variable statusCondition; //!< Signalled on the status of the thread changing
             bool running{false}; //!< If the host thread that corresponds to this thread is running, this doesn't reflect guest scheduling changes
@@ -39,8 +53,12 @@ namespace skyline {
             KHandle handle;
             size_t id; //!< Index of thread in parent process's KThread vector
 
-            nce::ThreadContext ctx{}; //!< The context of the guest thread during the last SVC
+            std::array<nce::GuestCpuContext, 2> guestCpuContexts{}; //!< Double-buffered guest contexts; only a complete capture is published
+            nce::ThreadContext ctx{}; //!< The context used by NCE while entering host code; its full-context pointer always targets the unpublished buffer
             jmp_buf originalCtx; //!< The context of the host thread prior to jumping into guest code
+
+            std::atomic<nce::GuestCpuContext *> publishedGuestCpuContext{}; //!< Immutable full context exposed to GetThreadContext3
+            alignas(sizeof(u32)) std::atomic<GuestExecutionState> guestExecutionState{GuestExecutionState::Kernel}; //!< Synchronizes full-context capture with pause/resume
 
             void *entry; //!< A function pointer to the thread's entry
             u64 entryArgument; //!< An argument to provide with to the thread entry function
@@ -75,7 +93,7 @@ namespace skyline {
             bool cancelSync{false}; //!< Whether to cancel the SvcWaitSynchronization call this thread currently is in/the next one it joins
             type::KSyncObject *wakeObject{}; //!< A pointer to the synchronization object responsible for waking this thread up
 
-            bool isPaused{false}; //!< If the thread is currently paused and not runnable
+            std::atomic<bool> isPaused{false}; //!< If the thread is currently paused and not runnable
             bool insertThreadOnResume{false}; //!< If the thread should be inserted into the scheduler when it resumes (used for pausing threads during sleep/sync)
 
             KThread(const DeviceState &state, KHandle handle, KProcess *parent, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore);
@@ -108,6 +126,55 @@ namespace skyline {
              * @brief Disarms the preemption kernel timer, any scheduled firings will be cancelled
              */
             void DisarmPreemptionTimer();
+
+            /**
+             * @brief Marks entry from guest execution into a stable host/kernel boundary
+             * @return True when a pending SetThreadActivity pause must be acknowledged after removing this thread from execution
+             */
+            bool BeginGuestKernelExecution();
+
+            /**
+             * @brief Atomically publishes the completed full-context capture and selects the old buffer for the next capture
+             */
+            void PublishGuestContext();
+
+            const nce::GuestCpuContext &GetPublishedGuestContext() const;
+
+            /**
+             * @brief Returns from a host/kernel boundary to guest execution, blocking without polling while paused
+             */
+            void EndGuestKernelExecution();
+
+            /**
+             * @brief Requests a stable full-context pause
+             */
+            ContextPauseRequest RequestContextPause();
+
+            /**
+             * @brief Publishes completion of a live guest-context capture to SetThreadActivity
+             */
+            void AcknowledgeContextPause();
+
+            /**
+             * @brief Blocks until a requested live guest capture is stable or the thread terminates
+             */
+            void WaitForContextPause();
+
+            /**
+             * @brief Releases a paused guest/kernel boundary
+             */
+            void ResumeContext();
+
+            /**
+             * @brief Wakes all context-state waiters when the thread exits
+             */
+            void MarkContextTerminated();
+
+            bool IsContextPauseRequested() const;
+
+            bool HasPausedContext() const;
+
+            bool IsContextTerminated() const;
 
             /**
              * @brief Recursively updates the priority for any threads this thread might be waiting on

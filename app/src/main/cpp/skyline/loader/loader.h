@@ -103,6 +103,11 @@ namespace skyline::loader {
          */
         bool UnloadExecutable(void *base);
 
+        /**
+         * @return True when the host PC is inside an NCE-generated patch or hook trampoline
+         */
+        bool IsNceTrampoline(void *ptr) const;
+
         std::optional<vfs::NACP> nacp;
         std::optional<vfs::CNMT> cnmt;
         std::optional<vfs::NCA> programNca; //!< The main program NCA within the NSP

@@ -10,6 +10,8 @@
 #include "svc.h"
 
 namespace skyline::kernel::svc {
+    constexpr u32 Aarch64UserPstateMask{0xF0000000U}; //!< NZCV is the user-visible AArch64 PSTATE subset returned by Horizon
+
     void SetHeapSize(const DeviceState &state, SvcContext &ctx) {
         // FIX: 'size' used to be read as `u32 size{ctx.w1}`, truncating to the low 32 bits of the
         // register. On real hardware svcSetHeapSize takes a 64-bit size_t passed in the full X1
@@ -1316,7 +1318,7 @@ namespace skyline::kernel::svc {
 
             std::scoped_lock guard{thread->coreMigrationMutex};
             if (activity == ThreadActivity::Runnable) {
-                if (thread->running && thread->isPaused) {
+                if (thread->running && thread->isPaused.load(std::memory_order_acquire)) {
                     LOGD("Resuming Thread #{}", thread->id);
                     state.scheduler->ResumeThread(thread);
                 } else {
@@ -1325,7 +1327,7 @@ namespace skyline::kernel::svc {
                     return;
                 }
             } else if (activity == ThreadActivity::Paused) {
-                if (thread->running && !thread->isPaused) {
+                if (thread->running && !thread->isPaused.load(std::memory_order_acquire)) {
                     LOGD("Pausing Thread #{}", thread->id);
                     state.scheduler->PauseThread(thread);
                 } else {
@@ -1353,44 +1355,28 @@ namespace skyline::kernel::svc {
             }
 
             std::scoped_lock guard{thread->coreMigrationMutex};
-            if (!thread->isPaused) {
+            if (!thread->isPaused.load(std::memory_order_acquire)) {
                 LOGW("Attemping to get context of running thread #{}", thread->id);
                 ctx.w0 = result::InvalidState;
                 return;
             }
 
-            struct ThreadContext {
-                std::array<u64, 29> gpr;
-                u64 fp;
-                u64 lr;
-                u64 sp;
-                u64 pc;
-                u32 pstate;
-                u32 _pad_;
-                std::array<u128, 32> vreg;
-                u32 fpcr;
-                u32 fpsr;
-                u64 tpidr;
-            };
-            static_assert(sizeof(ThreadContext) == 0x320);
+            auto &context{*reinterpret_cast<nce::GuestCpuContext *>(ctx.x0)};
+            if (thread->IsContextTerminated()) {
+                context = {};
+            } else {
+                if (!thread->HasPausedContext()) {
+                    LOGW("Paused thread #{} has no stable guest context", thread->id);
+                    ctx.w0 = result::InvalidState;
+                    return;
+                }
 
-            auto &context{*reinterpret_cast<ThreadContext *>(ctx.x0)};
-            context = {}; // Zero-initialize the contents of the context as not all fields are set
+                context = thread->GetPublishedGuestContext();
+                context.pstate &= Aarch64UserPstateMask;
+            }
 
-            auto &targetContext{thread->ctx};
-            for (size_t i{}; i < targetContext.gpr.regs.size(); i++)
-                context.gpr[i] = targetContext.gpr.regs[i];
-
-            for (size_t i{}; i < targetContext.fpr.regs.size(); i++)
-                context.vreg[i] = targetContext.fpr.regs[i];
-
-            context.fpcr = targetContext.fpr.fpcr;
-            context.fpsr = targetContext.fpr.fpsr;
-
-            context.tpidr = reinterpret_cast<u64>(targetContext.tpidrEl0);
-
-            // Note: We don't write the whole context as we only store the parts required according to the ARMv8 ABI for syscall handling
-            LOGD("Written partial context for thread #{}", thread->id);
+            LOGD("Written full context for thread #{} (PC: 0x{:X}, SP: 0x{:X}, TPIDR_EL0: 0x{:X})",
+                 thread->id, context.pc, context.sp, context.tpidr);
 
             ctx.w0 = Result{};
         } catch (const std::out_of_range &) {

@@ -2,12 +2,59 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <unistd.h>
+#include <asm/sigcontext.h>
 #include <common/signal.h>
 #include <common/trace.h>
+#include <loader/loader.h>
 #include "types/KThread.h"
 #include "scheduler.h"
 
 namespace skyline::kernel {
+    namespace {
+        const fpsimd_context *GetFpSimdContext(const mcontext_t &context) {
+            const auto *begin{reinterpret_cast<const u8 *>(context.__reserved)};
+            size_t offset{};
+
+            while (offset + sizeof(_aarch64_ctx) <= sizeof(context.__reserved)) {
+                const auto *header{reinterpret_cast<const _aarch64_ctx *>(begin + offset)};
+                if (!header->magic || !header->size)
+                    break;
+                if (header->size < sizeof(_aarch64_ctx) || offset + header->size > sizeof(context.__reserved))
+                    break;
+                if (header->magic == FPSIMD_MAGIC && header->size >= sizeof(fpsimd_context))
+                    return reinterpret_cast<const fpsimd_context *>(header);
+
+                offset += header->size;
+            }
+
+            return nullptr;
+        }
+
+        bool CaptureGuestContext(nce::ThreadContext &threadContext, const ucontext &signalContext) {
+            auto &context{*threadContext.guestCpuContext};
+            const auto &machineContext{signalContext.uc_mcontext};
+            const auto *fpContext{GetFpSimdContext(machineContext)};
+            if (!fpContext)
+                return false;
+
+            for (size_t index{}; index < context.gpr.size(); index++)
+                context.gpr[index] = machineContext.regs[index];
+
+            context.fp = machineContext.regs[29];
+            context.lr = machineContext.regs[30];
+            context.sp = machineContext.sp;
+            context.pc = machineContext.pc;
+            context.pstate = static_cast<u32>(machineContext.pstate);
+            context.tpidr = reinterpret_cast<u64>(threadContext.tpidrEl0);
+
+            for (size_t index{}; index < context.vreg.size(); index++)
+                context.vreg[index] = fpContext->vregs[index];
+            context.fpcr = fpContext->fpcr;
+            context.fpsr = fpContext->fpsr;
+            return true;
+        }
+    }
+
     Scheduler::CoreContext::CoreContext(u8 id, i8 preemptionPriority) : id(id), preemptionPriority(preemptionPriority) {}
 
     Scheduler::Scheduler(const DeviceState &state) : state(state) {
@@ -20,17 +67,36 @@ namespace skyline::kernel {
         TRACE_EVENT_END("guest");
         {
             TRACE_EVENT_FMT("scheduler", "{} Signal", signal == PreemptionSignal ? "Preemption" : "Yield");
-            const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
+            auto &threadContext{*reinterpret_cast<nce::ThreadContext *>(*tls)};
+            const auto &state{*threadContext.state};
+            if (!state.loader->IsNceTrampoline(reinterpret_cast<void *>(ctx->uc_mcontext.pc))) {
+                if (CaptureGuestContext(threadContext, *ctx))
+                    state.thread->PublishGuestContext();
+            }
+            const bool pauseRequested{state.thread->BeginGuestKernelExecution()};
             if (signal == PreemptionSignal)
                 state.thread->isPreempted = false;
             state.scheduler->Rotate(false);
+            if (pauseRequested)
+                state.thread->AcknowledgeContextPause();
             YieldPending = false;
             state.scheduler->WaitSchedule();
+            state.thread->EndGuestKernelExecution();
         }
         TRACE_EVENT_BEGIN("guest", "Guest");
     }
 
     void Scheduler::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+        auto *thread{DeviceState::thread.get()};
+        if (thread && thread->IsContextPauseRequested() && thread->BeginGuestKernelExecution()) {
+            thread->state.scheduler->Rotate(false);
+            thread->AcknowledgeContextPause();
+            YieldPending = false;
+            thread->state.scheduler->WaitSchedule();
+            thread->EndGuestKernelExecution();
+            return;
+        }
+
         YieldPending = true;
     }
 
@@ -110,7 +176,7 @@ namespace skyline::kernel {
         auto &core{cores.at(thread->coreId)};
         std::unique_lock lock{core.mutex};
 
-        if (thread->isPaused) {
+        if (thread->isPaused.load(std::memory_order_acquire)) {
             // We cannot insert a thread that is paused, so we just let the resuming thread insert it
             thread->insertThreadOnResume = true;
             return;
@@ -264,7 +330,7 @@ namespace skyline::kernel {
             auto &core{cores.at(thread->coreId)};
             std::unique_lock lock(core.mutex);
 
-            if (!thread->isPaused) {
+            if (!thread->isPaused.load(std::memory_order_acquire)) {
                 auto it{std::find(core.queue.begin(), core.queue.end(), thread)};
                 if (it != core.queue.end()) {
                     it = core.queue.erase(it);
@@ -374,37 +440,52 @@ namespace skyline::kernel {
 
     void Scheduler::PauseThread(const std::shared_ptr<type::KThread> &thread) {
         CoreContext *core{&cores.at(thread->coreId)};
-        std::unique_lock lock{core->mutex};
+        auto pauseRequest{type::KThread::ContextPauseRequest::Terminated};
 
-        thread->isPaused = true;
+        {
+            std::unique_lock lock{core->mutex};
 
-        auto it{std::find(core->queue.begin(), core->queue.end(), thread)};
-        if (it != core->queue.end()) {
-            thread->insertThreadOnResume = true; // If we're handling removing the thread then we need to be responsible for inserting it back inside ResumeThread
+            thread->isPaused.store(true, std::memory_order_release);
+            pauseRequest = thread->RequestContextPause();
 
-            it = core->queue.erase(it);
-            if (it == core->queue.begin() && it != core->queue.end())
-                (*it)->scheduleCondition.notify();
+            auto it{std::find(core->queue.begin(), core->queue.end(), thread)};
+            if (it != core->queue.end()) {
+                thread->insertThreadOnResume = true; // If we're handling removing the thread then we need to be responsible for inserting it back inside ResumeThread
 
-            if (it == core->queue.begin()) {
-                // We need to send a yield signal to the thread if it's currently running
-                YieldThread(thread);
-                thread->forceYield = true;
+                const bool wasRunning{it == core->queue.begin()};
+                it = core->queue.erase(it);
+                if (wasRunning && it != core->queue.end())
+                    (*it)->scheduleCondition.notify();
+                if (wasRunning)
+                    thread->forceYield = true;
+            } else {
+                // If removal of the thread was performed by a lock/sleep/etc then we don't need to handle inserting it back ourselves inside ResumeThread
+                // It'll be automatically re-inserted when the lock/sleep is completed and InsertThread will block till the thread is resumed
+                thread->insertThreadOnResume = false;
             }
-        } else {
-            // If removal of the thread was performed by a lock/sleep/etc then we don't need to handle inserting it back ourselves inside ResumeThread
-            // It'll be automatically re-inserted when the lock/sleep is completed and InsertThread will block till the thread is resumed
-            thread->insertThreadOnResume = false;
+
+            if (pauseRequest == type::KThread::ContextPauseRequest::Signal && thread->IsContextPauseRequested()) {
+                YieldThread(thread);
+            }
         }
+
+        thread->DisarmPreemptionTimer();
+        if (pauseRequest == type::KThread::ContextPauseRequest::Signal)
+            thread->WaitForContextPause();
+
+        LOGD("Paused T{} with a stable full context ({})", thread->id,
+             pauseRequest == type::KThread::ContextPauseRequest::Signal ? "live guest capture" :
+             pauseRequest == type::KThread::ContextPauseRequest::Stable ? "kernel boundary" : "terminated");
     }
 
     void Scheduler::ResumeThread(const std::shared_ptr<type::KThread> &thread) {
-        thread->isPaused = false;
+        thread->isPaused.store(false, std::memory_order_release);
         if (thread->insertThreadOnResume)
             // If we handled removing the thread then we need to be responsible for inserting it back as well
             InsertThread(thread);
         else
             // If we're not inserting the thread back into the queue ourselves then we need to notify the thread inserting it about the updated pause state
             thread->scheduleCondition.notify();
+        thread->ResumeContext();
     }
 }

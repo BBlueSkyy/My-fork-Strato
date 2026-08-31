@@ -93,9 +93,9 @@ namespace skyline::loader {
 
         // Patch the executable (NCE and symbol hooks)
         if (patch.size > 0) {
-            state.nce->PatchCode(executable.text.contents, reinterpret_cast<u32 *>(base), patch.size, patch.offsets, hookSize);
+            state.nce->PatchCode(executable.text.contents, reinterpret_cast<u32 *>(base), patch.size, patch.offsets, reinterpret_cast<u64>(guestBase), hookSize);
             if (hookSize)
-                state.nce->WriteHookSection(executableSymbols, span<u8>{base + patch.size, hookSize}.cast<u32>());
+                state.nce->WriteHookSection(executableSymbols, span<u8>{base + patch.size, hookSize}.cast<u32>(), reinterpret_cast<u64>(guestBase + patch.size));
         }
 
         // Copy the executable sections to code memory
@@ -116,6 +116,11 @@ namespace skyline::loader {
 
         executables.erase(executable);
         return true;
+    }
+
+    bool Loader::IsNceTrampoline(void *ptr) const {
+        auto executable{std::lower_bound(executables.begin(), executables.end(), ptr, [](const ExecutableSymbolicInfo &it, void *address) { return it.programEnd < address; })};
+        return executable != executables.end() && ptr >= executable->patchStart && ptr < executable->programStart;
     }
 
     template<ElfSymbol ElfSym>

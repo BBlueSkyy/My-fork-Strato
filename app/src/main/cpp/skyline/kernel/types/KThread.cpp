@@ -3,6 +3,9 @@
 
 #include <cxxabi.h>
 #include <unistd.h>
+#include <climits>
+#include <linux/futex.h>
+#include <sys/syscall.h>
 #include <common/signal.h>
 #include <common/trace.h>
 #include <nce.h>
@@ -11,6 +14,28 @@
 #include "KThread.h"
 
 namespace skyline::kernel::type {
+    namespace {
+        static_assert(sizeof(std::atomic<KThread::GuestExecutionState>) == sizeof(u32));
+        static_assert(std::atomic<KThread::GuestExecutionState>::is_always_lock_free);
+        static_assert(std::atomic<nce::GuestCpuContext *>::is_always_lock_free);
+
+        u32 *GetFutexAddress(std::atomic<KThread::GuestExecutionState> &state) {
+            return reinterpret_cast<u32 *>(std::addressof(state));
+        }
+
+        void WaitForStateChange(std::atomic<KThread::GuestExecutionState> &state, KThread::GuestExecutionState expected) {
+            while (state.load(std::memory_order_acquire) == expected) {
+                if (syscall(SYS_futex, GetFutexAddress(state), FUTEX_WAIT_PRIVATE, static_cast<u32>(expected), nullptr, nullptr, 0) == -1 &&
+                    errno != EAGAIN && errno != EINTR)
+                    throw exception("Failed to wait for guest execution state: {}", strerror(errno));
+            }
+        }
+
+        void WakeStateWaiters(std::atomic<KThread::GuestExecutionState> &state) {
+            syscall(SYS_futex, GetFutexAddress(state), FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr, 0);
+        }
+    }
+
     KThread::KThread(const DeviceState &state, KHandle handle, KProcess *parent, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore)
         : handle(handle),
           parent(parent),
@@ -24,6 +49,15 @@ namespace skyline::kernel::type {
           coreId(idealCore),
           KSyncObject(state, KType::KThread) {
         affinityMask.set(coreId);
+        auto &initialContext{guestCpuContexts[0]};
+        initialContext.gpr[0] = argument;
+        initialContext.gpr[1] = handle;
+        initialContext.lr = reinterpret_cast<u64>(entry);
+        initialContext.sp = reinterpret_cast<u64>(stackTop);
+        initialContext.pc = reinterpret_cast<u64>(entry);
+        guestCpuContexts[1] = initialContext;
+        publishedGuestCpuContext.store(&initialContext, std::memory_order_relaxed);
+        ctx.guestCpuContext = &guestCpuContexts[1];
     }
 
     KThread::~KThread() {
@@ -53,6 +87,7 @@ namespace skyline::kernel::type {
 
         if (setjmp(originalCtx)) { // Returns 1 if it's returning from guest, 0 otherwise
             state.scheduler->RemoveThread();
+            MarkContextTerminated();
 
             {
                 std::scoped_lock lock{statusMutex};
@@ -96,6 +131,7 @@ namespace skyline::kernel::type {
                 state.scheduler->WaitSchedule();
             }
 
+            EndGuestKernelExecution();
             TRACE_EVENT_BEGIN("guest", "Guest");
 
             asm volatile(
@@ -266,6 +302,111 @@ namespace skyline::kernel::type {
             timer_settime(preemptionTimer, 0, &spec, nullptr);
             isPreempted = false;
         }
+    }
+
+    bool KThread::BeginGuestKernelExecution() {
+        auto expected{GuestExecutionState::Guest};
+        if (guestExecutionState.compare_exchange_strong(expected, GuestExecutionState::Kernel, std::memory_order_acq_rel))
+            return false;
+
+        return expected == GuestExecutionState::PauseRequested;
+    }
+
+    void KThread::PublishGuestContext() {
+        auto *capturedContext{ctx.guestCpuContext};
+        auto *previousContext{publishedGuestCpuContext.exchange(capturedContext, std::memory_order_acq_rel)};
+        ctx.guestCpuContext = previousContext;
+    }
+
+    const nce::GuestCpuContext &KThread::GetPublishedGuestContext() const {
+        return *publishedGuestCpuContext.load(std::memory_order_acquire);
+    }
+
+    void KThread::EndGuestKernelExecution() {
+        while (true) {
+            auto current{guestExecutionState.load(std::memory_order_acquire)};
+            switch (current) {
+                case GuestExecutionState::Kernel:
+                    if (guestExecutionState.compare_exchange_weak(current, GuestExecutionState::Guest, std::memory_order_acq_rel))
+                        return;
+                    break;
+
+                case GuestExecutionState::Paused:
+                    forceYield = false;
+                    pendingYield = false;
+                    Scheduler::YieldPending = false;
+                    WaitForStateChange(guestExecutionState, GuestExecutionState::Paused);
+                    if (guestExecutionState.load(std::memory_order_acquire) != GuestExecutionState::Terminated)
+                        state.scheduler->WaitSchedule();
+                    break;
+
+                case GuestExecutionState::Terminated:
+                    return;
+
+                default:
+                    throw exception("Invalid guest execution state while returning to guest: {}", static_cast<u32>(current));
+            }
+        }
+    }
+
+    KThread::ContextPauseRequest KThread::RequestContextPause() {
+        auto current{guestExecutionState.load(std::memory_order_acquire)};
+        while (true) {
+            switch (current) {
+                case GuestExecutionState::Kernel:
+                    if (guestExecutionState.compare_exchange_weak(current, GuestExecutionState::Paused, std::memory_order_acq_rel)) {
+                        WakeStateWaiters(guestExecutionState);
+                        return ContextPauseRequest::Stable;
+                    }
+                    break;
+
+                case GuestExecutionState::Guest:
+                    if (guestExecutionState.compare_exchange_weak(current, GuestExecutionState::PauseRequested, std::memory_order_acq_rel))
+                        return ContextPauseRequest::Signal;
+                    break;
+
+                case GuestExecutionState::Terminated:
+                    return ContextPauseRequest::Terminated;
+
+                case GuestExecutionState::PauseRequested:
+                case GuestExecutionState::Paused:
+                    return ContextPauseRequest::Stable;
+            }
+        }
+    }
+
+    void KThread::AcknowledgeContextPause() {
+        auto expected{GuestExecutionState::PauseRequested};
+        if (guestExecutionState.compare_exchange_strong(expected, GuestExecutionState::Paused, std::memory_order_acq_rel))
+            WakeStateWaiters(guestExecutionState);
+    }
+
+    void KThread::WaitForContextPause() {
+        while (guestExecutionState.load(std::memory_order_acquire) == GuestExecutionState::PauseRequested)
+            WaitForStateChange(guestExecutionState, GuestExecutionState::PauseRequested);
+    }
+
+    void KThread::ResumeContext() {
+        auto expected{GuestExecutionState::Paused};
+        if (guestExecutionState.compare_exchange_strong(expected, GuestExecutionState::Kernel, std::memory_order_acq_rel))
+            WakeStateWaiters(guestExecutionState);
+    }
+
+    void KThread::MarkContextTerminated() {
+        guestExecutionState.store(GuestExecutionState::Terminated, std::memory_order_release);
+        WakeStateWaiters(guestExecutionState);
+    }
+
+    bool KThread::IsContextPauseRequested() const {
+        return guestExecutionState.load(std::memory_order_acquire) == GuestExecutionState::PauseRequested;
+    }
+
+    bool KThread::HasPausedContext() const {
+        return guestExecutionState.load(std::memory_order_acquire) == GuestExecutionState::Paused;
+    }
+
+    bool KThread::IsContextTerminated() const {
+        return guestExecutionState.load(std::memory_order_acquire) == GuestExecutionState::Terminated;
     }
 
     void KThread::UpdatePriorityInheritance() {

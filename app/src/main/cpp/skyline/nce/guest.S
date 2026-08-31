@@ -49,6 +49,57 @@ SaveCtx:
     STR	W0, [LR, #0x2C0]
     LDR X0, [SP], #16
 
+    /* Store a complete guest snapshot into the unpublished capture buffer */
+    LDR LR, [LR, #0x2D8] // ThreadContext::guestCpuContext
+
+    STP X0, X1, [LR, #(8 * 0)]
+    STP X2, X3, [LR, #(8 * 2)]
+    STP X4, X5, [LR, #(8 * 4)]
+    STP X6, X7, [LR, #(8 * 6)]
+    STP X8, X9, [LR, #(8 * 8)]
+    STP X10, X11, [LR, #(8 * 10)]
+    STP X12, X13, [LR, #(8 * 12)]
+    STP X14, X15, [LR, #(8 * 14)]
+    STP X16, X17, [LR, #(8 * 16)]
+    STP X18, X19, [LR, #(8 * 18)]
+    STP X20, X21, [LR, #(8 * 20)]
+    STP X22, X23, [LR, #(8 * 22)]
+    STP X24, X25, [LR, #(8 * 24)]
+    STP X26, X27, [LR, #(8 * 26)]
+    STP X28, X29, [LR, #0xE0]
+
+    LDR X0, [SP]
+    STR X0, [LR, #0xF0] // GuestCpuContext::lr
+    ADD X0, SP, #16
+    STR X0, [LR, #0xF8] // GuestCpuContext::sp
+
+    STP Q0, Q1, [LR, #(0x110 + 16 * 0)]
+    STP Q2, Q3, [LR, #(0x110 + 16 * 2)]
+    STP Q4, Q5, [LR, #(0x110 + 16 * 4)]
+    STP Q6, Q7, [LR, #(0x110 + 16 * 6)]
+    STP Q8, Q9, [LR, #(0x110 + 16 * 8)]
+    STP Q10, Q11, [LR, #(0x110 + 16 * 10)]
+    STP Q12, Q13, [LR, #(0x110 + 16 * 12)]
+    STP Q14, Q15, [LR, #(0x110 + 16 * 14)]
+    STP Q16, Q17, [LR, #(0x110 + 16 * 16)]
+    STP Q18, Q19, [LR, #(0x110 + 16 * 18)]
+    STP Q20, Q21, [LR, #(0x110 + 16 * 20)]
+    STP Q22, Q23, [LR, #(0x110 + 16 * 22)]
+    STP Q24, Q25, [LR, #(0x110 + 16 * 24)]
+    STP Q26, Q27, [LR, #(0x110 + 16 * 26)]
+    STP Q28, Q29, [LR, #(0x110 + 16 * 28)]
+    STP Q30, Q31, [LR, #(0x110 + 16 * 30)]
+
+    MRS X0, FPSR
+    STR W0, [LR, #0x314]
+    MRS X0, FPCR
+    STR W0, [LR, #0x310]
+    MRS X0, NZCV
+    STR W0, [LR, #0x108]
+    MRS X0, TPIDR_EL0
+    LDR X1, [X0, #0x2B8]
+    STR X1, [LR, #0x318]
+
     /* Restore Scratch Register */
     LDR LR, [SP, #8]
     RET

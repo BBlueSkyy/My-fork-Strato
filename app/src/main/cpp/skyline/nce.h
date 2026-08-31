@@ -74,12 +74,13 @@ namespace skyline::nce {
         /**
          * @brief Writes the .patch section and mutates the code accordingly
          * @param patch A pointer to the .patch section which should be exactly patchSize in size and located before the .text section
+         * @param guestPatchAddress The address of the .patch section in the guest address space
          * @param textOffset The offset of the .text section, this must be page-aligned
          */
-        static void PatchCode(std::vector<u8> &text, u32 *patch, size_t patchSize, const std::vector<size_t> &offsets, size_t textOffset = 0);
+        static void PatchCode(std::vector<u8> &text, u32 *patch, size_t patchSize, const std::vector<size_t> &offsets, u64 guestPatchAddress, size_t textOffset = 0);
 
         static size_t GetHookSectionSize(span<hle::HookedSymbolEntry> entries);
 
-        void WriteHookSection(span<hle::HookedSymbolEntry> entries, span<u32> hookSection);
+        void WriteHookSection(span<hle::HookedSymbolEntry> entries, span<u32> hookSection, u64 guestHookAddress);
     };
 }
