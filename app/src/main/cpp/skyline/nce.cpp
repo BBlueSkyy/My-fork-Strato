@@ -4,17 +4,110 @@
 #include <fstream>
 #include <cxxabi.h>
 #include <linux/elf.h>
+#include <thread>
+#include <chrono>
 #include "common/signal.h"
 #include "common/trace.h"
 #include "os.h"
 #include "jvm.h"
 #include "kernel/types/KProcess.h"
+#include "kernel/results.h"
 #include "kernel/svc.h"
 #include "nce/guest.h"
 #include "nce/instructions.h"
 #include "nce.h"
 
 namespace skyline::nce {
+    namespace {
+        void GetThreadContext3Experimental(const DeviceState &state, kernel::svc::SvcContext &ctx) {
+            KHandle threadHandle{ctx.w1};
+            try {
+                auto thread{state.process->GetHandle<kernel::type::KThread>(threadHandle)};
+                if (thread == state.thread) {
+                    LOGW("Thread attempting to retrieve own context");
+                    ctx.w0 = kernel::result::Busy;
+                    return;
+                }
+
+                std::scoped_lock guard{thread->coreMigrationMutex};
+                if (!thread->isPaused.load(std::memory_order_acquire)) {
+                    LOGW("Attemping to get context of running thread #{}", thread->id);
+                    ctx.w0 = kernel::result::InvalidState;
+                    return;
+                }
+
+                struct SvcThreadContext {
+                    std::array<u64, 29> gpr;
+                    u64 fp;
+                    u64 lr;
+                    u64 sp;
+                    u64 pc;
+                    u32 pstate;
+                    u32 _pad_;
+                    std::array<u128, 32> vreg;
+                    u32 fpcr;
+                    u32 fpsr;
+                    u64 tpidr;
+                };
+                static_assert(sizeof(SvcThreadContext) == 0x320);
+
+                // SetThreadActivity only requests a yield; the target host thread may need a
+                // short scheduling window before its signal handler can publish the live ucontext.
+                // Bound the wait so threads paused while already inside a kernel wait still fall
+                // back to the legacy partial context rather than deadlocking the caller.
+                const auto deadline{std::chrono::steady_clock::now() + std::chrono::milliseconds{50}};
+                while (!thread->pausedGuestContextValid.load(std::memory_order_acquire) &&
+                       std::chrono::steady_clock::now() < deadline) {
+                    std::this_thread::yield();
+                }
+
+                SvcThreadContext context{};
+                auto &targetContext{thread->ctx};
+
+                // Preserve the old SIMD/TLS path for this first experiment. The change under test
+                // is specifically the integer and control-register state that KThread::ctx cannot
+                // represent (X19-X30, SP, PC and PSTATE).
+                for (size_t i{}; i < targetContext.gpr.regs.size(); i++)
+                    context.gpr[i] = targetContext.gpr.regs[i];
+
+                for (size_t i{}; i < targetContext.fpr.regs.size(); i++)
+                    context.vreg[i] = targetContext.fpr.regs[i];
+
+                context.fpcr = targetContext.fpr.fpcr;
+                context.fpsr = targetContext.fpr.fpsr;
+                context.tpidr = reinterpret_cast<u64>(targetContext.tpidrEl0);
+
+                if (thread->pausedGuestContextValid.load(std::memory_order_acquire)) {
+                    const auto &snapshot{thread->pausedGuestContext};
+
+                    for (size_t i{}; i < context.gpr.size(); i++)
+                        context.gpr[i] = snapshot.gpr[i];
+
+                    context.fp = snapshot.gpr[29];
+                    context.lr = snapshot.gpr[30];
+                    context.sp = snapshot.sp;
+                    context.pc = snapshot.pc;
+                    context.pstate = snapshot.pstate;
+
+                    LOGI("THREADCTX-FULL: T{} PC=0x{:X} SP=0x{:X} FP=0x{:X} LR=0x{:X}",
+                         thread->id,
+                         context.pc,
+                         context.sp,
+                         context.fp,
+                         context.lr);
+                } else {
+                    LOGW("THREADCTX-FALLBACK: no paused ucontext snapshot for T{}; returning legacy partial context", thread->id);
+                }
+
+                *reinterpret_cast<SvcThreadContext *>(ctx.x0) = context;
+                ctx.w0 = Result{};
+            } catch (const std::out_of_range &) {
+                LOGW("'handle' invalid: 0x{:X}", threadHandle);
+                ctx.w0 = kernel::result::InvalidHandle;
+            }
+        }
+    }
+
     NCE::ExitException::ExitException(bool killAllThreads) : killAllThreads(killAllThreads) {}
 
     const char *NCE::ExitException::what() const noexcept {
@@ -30,7 +123,10 @@ namespace skyline::nce {
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
-                (svc.function)(state, svcContext);
+                if (svcId == 0x33)
+                    GetThreadContext3Experimental(state, svcContext);
+                else
+                    (svc.function)(state, svcContext);
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
             }
