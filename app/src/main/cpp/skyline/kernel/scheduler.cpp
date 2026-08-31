@@ -21,6 +21,33 @@ namespace skyline::kernel {
         {
             TRACE_EVENT_FMT("scheduler", "{} Signal", signal == PreemptionSignal ? "Preemption" : "Yield");
             const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
+
+            // Experimental GetThreadContext3 support: when SetThreadActivity(Paused) has
+            // requested this thread to stop, the signal ucontext is the only place where
+            // the complete live integer/control register state still exists. KThread::ctx
+            // only preserves the SVC ABI subset (X0-X18), so snapshot X0-X30 plus SP/PC/PSTATE
+            // before the scheduler rotates the thread out.
+            if (state.thread->isPaused.load(std::memory_order_acquire)) {
+                state.thread->pausedGuestContextValid.store(false, std::memory_order_relaxed);
+
+                auto &snapshot{state.thread->pausedGuestContext};
+                const auto &mctx{ctx->uc_mcontext};
+                for (size_t index{}; index < snapshot.gpr.size(); index++)
+                    snapshot.gpr[index] = mctx.regs[index];
+
+                snapshot.sp = mctx.sp;
+                snapshot.pc = mctx.pc;
+                snapshot.pstate = static_cast<u32>(mctx.pstate & 0xFF0FFE20ULL);
+
+                state.thread->pausedGuestContextValid.store(true, std::memory_order_release);
+                LOGI("THREADCTX-CAPTURE: T{} PC=0x{:X} SP=0x{:X} FP=0x{:X} LR=0x{:X}",
+                     state.thread->id,
+                     snapshot.pc,
+                     snapshot.sp,
+                     snapshot.gpr[29],
+                     snapshot.gpr[30]);
+            }
+
             if (signal == PreemptionSignal)
                 state.thread->isPreempted = false;
             state.scheduler->Rotate(false);
@@ -274,7 +301,7 @@ namespace skyline::kernel {
                             thread->averageTimeslice = (thread->averageTimeslice / 4) + (3 * (util::GetTimeTicks() - thread->timesliceStart / 4));
 
                         if (it != core.queue.end())
-                            (*it)->scheduleCondition.notify(); // We need to wake the thread at the front of the queue, if we were at the front previously
+                            (*it)->scheduleCondition.notify(); // We need to wake the thread at the front up, if we were at the front previously
                     }
                 } else {
                     LOGW("T{} was not in C{}'s queue", thread->id, thread->coreId);
@@ -376,7 +403,9 @@ namespace skyline::kernel {
         CoreContext *core{&cores.at(thread->coreId)};
         std::unique_lock lock{core->mutex};
 
-        thread->isPaused = true;
+        // Invalidate any snapshot from an earlier pause before publishing the new paused state.
+        thread->pausedGuestContextValid.store(false, std::memory_order_release);
+        thread->isPaused.store(true, std::memory_order_release);
 
         auto it{std::find(core->queue.begin(), core->queue.end(), thread)};
         if (it != core->queue.end()) {
@@ -399,7 +428,8 @@ namespace skyline::kernel {
     }
 
     void Scheduler::ResumeThread(const std::shared_ptr<type::KThread> &thread) {
-        thread->isPaused = false;
+        thread->pausedGuestContextValid.store(false, std::memory_order_release);
+        thread->isPaused.store(false, std::memory_order_release);
         if (thread->insertThreadOnResume)
             // If we handled removing the thread then we need to be responsible for inserting it back as well
             InsertThread(thread);
