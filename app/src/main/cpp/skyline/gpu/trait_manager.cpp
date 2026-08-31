@@ -250,7 +250,7 @@ namespace skyline::gpu {
 
                 brokenSubgroupShuffle = true;
                 brokenSpirvVectorAccessChain = true;
-                brokenTextureShadowCompare = true;
+                brokenTextureShadowCompare = false;
                 brokenFp16FloatControls = true;
                 maxGlobalPriority = vk::QueueGlobalPriorityEXT::eHigh;
                 break;
