@@ -304,12 +304,34 @@ namespace skyline::kernel::type {
         }
     }
 
-    bool KThread::BeginGuestKernelExecution() {
-        auto expected{GuestExecutionState::Guest};
-        if (guestExecutionState.compare_exchange_strong(expected, GuestExecutionState::Kernel, std::memory_order_acq_rel))
-            return false;
+    KThread::GuestKernelEntry KThread::BeginGuestKernelExecution() {
+        auto current{guestExecutionState.load(std::memory_order_acquire)};
+        while (true) {
+            switch (current) {
+                case GuestExecutionState::Guest:
+                    if (guestExecutionState.compare_exchange_weak(current, GuestExecutionState::Kernel, std::memory_order_acq_rel))
+                        return GuestKernelEntry::Entered;
+                    break;
 
-        return expected == GuestExecutionState::PauseRequested;
+                case GuestExecutionState::PauseRequested:
+                    if (guestExecutionState.compare_exchange_weak(current, GuestExecutionState::PauseAcknowledging, std::memory_order_acq_rel))
+                        return GuestKernelEntry::PauseRequested;
+                    break;
+
+                case GuestExecutionState::Terminated:
+                    return GuestKernelEntry::Terminated;
+
+                case GuestExecutionState::Kernel:
+                case GuestExecutionState::PauseAcknowledging:
+                case GuestExecutionState::Paused:
+                    return GuestKernelEntry::AlreadyEntered;
+            }
+        }
+    }
+
+    bool KThread::TryClaimContextPause() {
+        auto expected{GuestExecutionState::PauseRequested};
+        return guestExecutionState.compare_exchange_strong(expected, GuestExecutionState::PauseAcknowledging, std::memory_order_acq_rel);
     }
 
     void KThread::PublishGuestContext() {
@@ -343,6 +365,7 @@ namespace skyline::kernel::type {
                 case GuestExecutionState::Terminated:
                     return;
 
+                case GuestExecutionState::PauseAcknowledging:
                 default:
                     throw exception("Invalid guest execution state while returning to guest: {}", static_cast<u32>(current));
             }
@@ -369,21 +392,31 @@ namespace skyline::kernel::type {
                     return ContextPauseRequest::Terminated;
 
                 case GuestExecutionState::PauseRequested:
+                case GuestExecutionState::PauseAcknowledging:
                 case GuestExecutionState::Paused:
                     return ContextPauseRequest::Stable;
             }
         }
     }
 
-    void KThread::AcknowledgeContextPause() {
-        auto expected{GuestExecutionState::PauseRequested};
-        if (guestExecutionState.compare_exchange_strong(expected, GuestExecutionState::Paused, std::memory_order_acq_rel))
+    bool KThread::AcknowledgeContextPause() {
+        auto expected{GuestExecutionState::PauseAcknowledging};
+        if (guestExecutionState.compare_exchange_strong(expected, GuestExecutionState::Paused, std::memory_order_acq_rel)) {
             WakeStateWaiters(guestExecutionState);
+            return true;
+        }
+
+        return false;
     }
 
     void KThread::WaitForContextPause() {
-        while (guestExecutionState.load(std::memory_order_acquire) == GuestExecutionState::PauseRequested)
-            WaitForStateChange(guestExecutionState, GuestExecutionState::PauseRequested);
+        while (true) {
+            auto current{guestExecutionState.load(std::memory_order_acquire)};
+            if (current != GuestExecutionState::PauseRequested && current != GuestExecutionState::PauseAcknowledging)
+                return;
+
+            WaitForStateChange(guestExecutionState, current);
+        }
     }
 
     void KThread::ResumeContext() {

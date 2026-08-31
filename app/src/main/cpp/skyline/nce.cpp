@@ -16,13 +16,26 @@
 
 namespace skyline::nce {
     namespace {
-        void BeginGuestKernelExecution(const DeviceState &state) {
-            if (state.thread->BeginGuestKernelExecution()) {
-                state.scheduler->Rotate(false);
-                state.thread->AcknowledgeContextPause();
-                kernel::Scheduler::YieldPending = false;
-                state.scheduler->WaitSchedule();
+        bool BeginGuestKernelExecution(const DeviceState &state) {
+            switch (state.thread->BeginGuestKernelExecution()) {
+                case kernel::type::KThread::GuestKernelEntry::Entered:
+                    return true;
+
+                case kernel::type::KThread::GuestKernelEntry::PauseRequested:
+                    state.scheduler->Rotate(false);
+                    if (!state.thread->AcknowledgeContextPause())
+                        return false;
+
+                    kernel::Scheduler::YieldPending = false;
+                    state.scheduler->WaitSchedule();
+                    return true;
+
+                case kernel::type::KThread::GuestKernelEntry::AlreadyEntered:
+                case kernel::type::KThread::GuestKernelEntry::Terminated:
+                    return false;
             }
+
+            return false;
         }
 
         u32 *WriteGuestPc(u32 *code, u64 pc) {
@@ -56,7 +69,8 @@ namespace skyline::nce {
 
         const auto &state{*ctx->state};
         state.thread->PublishGuestContext();
-        BeginGuestKernelExecution(state);
+        if (!BeginGuestKernelExecution(state))
+            return;
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
@@ -124,7 +138,8 @@ namespace skyline::nce {
     void NCE::HookHandler(HookId hookId, ThreadContext *ctx) {
         const auto &state{*ctx->state};
         state.thread->PublishGuestContext();
-        BeginGuestKernelExecution(state);
+        if (!BeginGuestKernelExecution(state))
+            return;
         auto hookedSymbol{state.nce->hookedSymbols[hookId.index]};
         try {
             std::visit(VariantVisitor{

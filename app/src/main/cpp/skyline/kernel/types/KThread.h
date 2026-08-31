@@ -34,7 +34,15 @@ namespace skyline {
                 Kernel,
                 Guest,
                 PauseRequested,
+                PauseAcknowledging,
                 Paused,
+                Terminated,
+            };
+
+            enum class GuestKernelEntry {
+                Entered,
+                PauseRequested,
+                AlreadyEntered,
                 Terminated,
             };
 
@@ -129,9 +137,15 @@ namespace skyline {
 
             /**
              * @brief Marks entry from guest execution into a stable host/kernel boundary
-             * @return True when a pending SetThreadActivity pause must be acknowledged after removing this thread from execution
+             * @return The result of atomically claiming this guest-to-kernel transition
              */
-            bool BeginGuestKernelExecution();
+            GuestKernelEntry BeginGuestKernelExecution();
+
+            /**
+             * @brief Atomically claims an outstanding guest pause from a host-side signal handler
+             * @return True only for the handler responsible for acknowledging and completing the pause
+             */
+            bool TryClaimContextPause();
 
             /**
              * @brief Atomically publishes the completed full-context capture and selects the old buffer for the next capture
@@ -152,8 +166,9 @@ namespace skyline {
 
             /**
              * @brief Publishes completion of a live guest-context capture to SetThreadActivity
+             * @return True if this caller completed the transition to the paused state
              */
-            void AcknowledgeContextPause();
+            bool AcknowledgeContextPause();
 
             /**
              * @brief Blocks until a requested live guest capture is stable or the thread terminates

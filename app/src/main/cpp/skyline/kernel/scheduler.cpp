@@ -73,26 +73,33 @@ namespace skyline::kernel {
                 if (CaptureGuestContext(threadContext, *ctx))
                     state.thread->PublishGuestContext();
             }
-            const bool pauseRequested{state.thread->BeginGuestKernelExecution()};
+            const auto guestKernelEntry{state.thread->BeginGuestKernelExecution()};
             if (signal == PreemptionSignal)
                 state.thread->isPreempted = false;
-            state.scheduler->Rotate(false);
-            if (pauseRequested)
-                state.thread->AcknowledgeContextPause();
-            YieldPending = false;
-            state.scheduler->WaitSchedule();
-            state.thread->EndGuestKernelExecution();
+            if (guestKernelEntry == type::KThread::GuestKernelEntry::Entered ||
+                guestKernelEntry == type::KThread::GuestKernelEntry::PauseRequested) {
+                state.scheduler->Rotate(false);
+                if (guestKernelEntry != type::KThread::GuestKernelEntry::PauseRequested ||
+                    state.thread->AcknowledgeContextPause()) {
+                    YieldPending = false;
+                    state.scheduler->WaitSchedule();
+                }
+                state.thread->EndGuestKernelExecution();
+            } else if (guestKernelEntry == type::KThread::GuestKernelEntry::AlreadyEntered) {
+                YieldPending = true;
+            }
         }
         TRACE_EVENT_BEGIN("guest", "Guest");
     }
 
     void Scheduler::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
         auto *thread{DeviceState::thread.get()};
-        if (thread && thread->IsContextPauseRequested() && thread->BeginGuestKernelExecution()) {
+        if (thread && thread->TryClaimContextPause()) {
             thread->state.scheduler->Rotate(false);
-            thread->AcknowledgeContextPause();
-            YieldPending = false;
-            thread->state.scheduler->WaitSchedule();
+            if (thread->AcknowledgeContextPause()) {
+                YieldPending = false;
+                thread->state.scheduler->WaitSchedule();
+            }
             thread->EndGuestKernelExecution();
             return;
         }
