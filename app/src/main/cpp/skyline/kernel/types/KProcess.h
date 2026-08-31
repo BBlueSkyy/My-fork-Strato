@@ -32,7 +32,34 @@ namespace skyline {
             std::atomic_bool alreadyKilled{}; //!< If the process has already been killed prior so there's no need to redundantly kill it again
             std::vector<std::shared_ptr<KThread>> threads;
 
-            using SyncWaiters = std::multimap<void *, std::shared_ptr<KThread>>;
+            struct SyncWaiters : std::multimap<void *, std::shared_ptr<KThread>> {
+                using Base = std::multimap<void *, std::shared_ptr<KThread>>;
+                using Base::Base;
+                using Base::insert;
+                using Base::erase;
+
+                iterator insert(const_iterator hint, const value_type &value) {
+                    const auto before{Base::count(value.first)};
+                    auto it{Base::insert(hint, value)};
+                    LOGI("GRID-SYNCQ-INSERT: key={} T{} before={} after={}",
+                         fmt::ptr(value.first), value.second ? value.second->id : 0, before, before + 1);
+                    return it;
+                }
+
+                iterator erase(iterator position) {
+                    if (position == Base::end())
+                        return position;
+
+                    void *key{position->first};
+                    auto thread{position->second};
+                    const auto before{Base::count(key)};
+                    auto next{Base::erase(position)};
+                    LOGI("GRID-SYNCQ-ERASE: key={} T{} before={} after={}",
+                         fmt::ptr(key), thread ? thread->id : 0, before, before ? before - 1 : 0);
+                    return next;
+                }
+            };
+
             std::mutex syncWaiterMutex; //!< Synchronizes all mutations to the map to prevent races
             SyncWaiters syncWaiters; //!< All threads waiting on process-wide synchronization primitives (Atomic keys + Address Arbiter)
 
