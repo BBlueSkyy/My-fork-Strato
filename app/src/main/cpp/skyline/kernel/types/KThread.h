@@ -35,7 +35,7 @@ namespace skyline {
             bool running{false}; //!< If the host thread that corresponds to this thread is running, this doesn't reflect guest scheduling changes
             bool ready{false}; //!< If this thread is ready to recieve signals or not
             bool killed{false}; //!< If this thread was previously running and has been killed
-            std::atomic_bool allowDirectSignalExit{false}; //!< Whether a graceful SIGINT may return directly to originalCtx
+            std::atomic_bool gracefulStopRequested{false}; //!< Whether this thread should exit at its next safe host/guest boundary
 
             KHandle handle;
             size_t id; //!< Index of thread in parent process's KThread vector
@@ -93,7 +93,7 @@ namespace skyline {
             /**
              * @param join Return after the thread has joined rather than instantly
              */
-            void Kill(bool join, bool directSignalExitOnTerminate = false);
+            void Kill(bool join, bool gracefulStop = false);
 
             /**
              * @brief Sends a host OS signal to the thread which is running this KThread

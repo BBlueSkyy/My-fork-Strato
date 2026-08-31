@@ -96,6 +96,9 @@ namespace skyline::kernel::type {
                 state.scheduler->WaitSchedule();
             }
 
+            if (gracefulStopRequested.load(std::memory_order_acquire))
+                throw nce::NCE::ExitException(false);
+
             TRACE_EVENT_BEGIN("guest", "Guest");
 
             asm volatile(
@@ -178,6 +181,9 @@ namespace skyline::kernel::type {
             );
 
             __builtin_unreachable();
+        } catch (const nce::NCE::ExitException &) {
+            abi::__cxa_end_catch();
+            std::longjmp(originalCtx, true);
         } catch (const std::exception &e) {
             LOGE("{}", e.what());
             if (id) {
@@ -221,12 +227,14 @@ namespace skyline::kernel::type {
         }
     }
 
-    void KThread::Kill(bool join, bool directSignalExitOnTerminate) {
+    void KThread::Kill(bool join, bool gracefulStop) {
         std::unique_lock lock(statusMutex);
         if (!killed && running) {
             statusCondition.wait(lock, [this]() { return ready || killed; });
             if (!killed) {
-                allowDirectSignalExit.store(directSignalExitOnTerminate, std::memory_order_relaxed);
+                gracefulStopRequested.store(gracefulStop, std::memory_order_release);
+                if (gracefulStop)
+                    scheduleCondition.notify();
                 pthread_kill(pthread, SIGINT);
                 killed = true;
                 statusCondition.notify_all();

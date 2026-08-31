@@ -174,6 +174,9 @@ namespace skyline::kernel {
         std::unique_lock lock(core->mutex);
 
         auto wakeFunction{[&]() {
+            if (thread->gracefulStopRequested.load(std::memory_order_acquire))
+                return true;
+
             if (!thread->affinityMask.test(thread->coreId)) [[unlikely]] {
                 lock.unlock(); // If the core migration mutex is locked by a thread seeking the core mutex, it'll result in a deadlock
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
@@ -201,6 +204,9 @@ namespace skyline::kernel {
             thread->scheduleCondition.wait(lock, wakeFunction);
         }
 
+        if (thread->gracefulStopRequested.load(std::memory_order_acquire))
+            return;
+
         if (thread->priority == core->preemptionPriority)
             // If the thread needs to be preempted then arm its preemption timer
             thread->ArmPreemptionTimer(PreemptiveTimeslice);
@@ -215,12 +221,18 @@ namespace skyline::kernel {
         TRACE_EVENT("scheduler", "TimedWaitSchedule");
         std::unique_lock lock(core->mutex);
         if (thread->scheduleCondition.wait_for(lock, timeout, [&]() {
+            if (thread->gracefulStopRequested.load(std::memory_order_acquire))
+                return true;
+
             if (!thread->affinityMask.test(thread->coreId)) [[unlikely]] {
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 MigrateToCore(thread, core, &cores.at(thread->idealCore), lock);
             }
             return !core->queue.empty() && core->queue.front() == thread;
         })) {
+            if (thread->gracefulStopRequested.load(std::memory_order_acquire))
+                return false;
+
             if (thread->priority == core->preemptionPriority)
                 thread->ArmPreemptionTimer(PreemptiveTimeslice);
 

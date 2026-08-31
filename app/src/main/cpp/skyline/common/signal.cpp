@@ -6,12 +6,10 @@
 #include <unwind.h>
 #include <fcntl.h>
 #include <cxxabi.h>
-#include <kernel/types/KThread.h>
 #include "signal.h"
 
 namespace skyline::signal {
     thread_local std::exception_ptr SignalExceptionPtr;
-    thread_local u32 SignalUnwindAttempts{};
 
     void ExceptionThrow() {
         std::rethrow_exception(SignalExceptionPtr);
@@ -40,22 +38,11 @@ namespace skyline::signal {
     void TerminateHandler() {
         auto exception{std::current_exception()};
         if (exception && exception == SignalExceptionPtr) {
-            bool gracefulInterrupt{};
             try {
                 std::rethrow_exception(exception);
             } catch (const SignalException &e) {
-                gracefulInterrupt = e.signal == SIGINT && DeviceState::thread &&
-                    DeviceState::thread->allowDirectSignalExit.load(std::memory_order_relaxed);
-
-                if (!gracefulInterrupt)
-                    LOGE("Terminating due to sinal sem catch handler na pilha: {}", e.what());
+                LOGE("Terminating due to sinal sem catch handler na pilha: {}", e.what());
             }
-
-            // The signal trampoline may cross more than one frame without unwind metadata before
-            // reaching StartThread's catch. Graceful shutdowns are allowed to keep advancing, but
-            // remain bounded so a genuinely handler-less stack cannot loop forever.
-            if (gracefulInterrupt && ++SignalUnwindAttempts > 16)
-                SleepTillExit();
 
             StackFrame *frame;
             asm("MOV %0, FP" : "=r"(frame));
@@ -76,7 +63,7 @@ namespace skyline::signal {
                 if (lookupFrame->lr >= reinterpret_cast<void *>(&ExceptionThrow) && lookupFrame->lr < exceptionThrowEnd) {
                     // We need to check if the current stack frame is from ExceptionThrow
                     // As we need to skip past it (2 frames) and be able to recognize when we're in an infinite loop
-                    if (!hasAdvanced || gracefulInterrupt) {
+                    if (!hasAdvanced) {
                         frame = SafeFrameRecurse(2, lookupFrame);
                         hasAdvanced = true;
                     } else {
@@ -127,7 +114,6 @@ namespace skyline::signal {
         }
 
         SignalExceptionPtr = std::make_exception_ptr(signalException);
-        SignalUnwindAttempts = 0;
         context->uc_mcontext.pc = reinterpret_cast<u64>(&ExceptionThrow);
 
         std::set_terminate(TerminateHandler);
