@@ -35,7 +35,6 @@ namespace skyline {
             struct SyncWaiters : std::multimap<void *, std::shared_ptr<KThread>> {
                 using Base = std::multimap<void *, std::shared_ptr<KThread>>;
                 using Base::Base;
-                using Base::insert;
                 using Base::erase;
 
                 iterator insert(const_iterator hint, const value_type &value) {
@@ -43,6 +42,16 @@ namespace skyline {
                     auto it{Base::insert(hint, value)};
                     LOGI("GRID-SYNCQ-INSERT: key={} T{} before={} after={}",
                          fmt::ptr(value.first), value.second ? value.second->id : 0, before, before + 1);
+                    return it;
+                }
+
+                iterator insert(const_iterator hint, value_type &&value) {
+                    void *key{value.first};
+                    auto thread{value.second};
+                    const auto before{Base::count(key)};
+                    auto it{Base::insert(hint, std::move(value))};
+                    LOGI("GRID-SYNCQ-INSERT: key={} T{} before={} after={}",
+                         fmt::ptr(key), thread ? thread->id : 0, before, before + 1);
                     return it;
                 }
 
