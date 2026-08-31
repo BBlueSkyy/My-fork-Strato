@@ -111,12 +111,11 @@ namespace skyline::loader {
         std::shared_ptr<vfs::PartitionFileSystem> normal; //!< A shared pointer to the normal HFS0 partition
         std::shared_ptr<vfs::PartitionFileSystem> logo; //!< A shared pointer to the logo HFS0 partition
         std::shared_ptr<vfs::RomFileSystem> controlRomFs; //!< A shared pointer to the control NCA's RomFS
-        std::optional<vfs::NCA> programNca; //!< The main program NCA within the secure partition
         std::optional<vfs::NCA> controlNca; //!< The main control NCA within the secure partition
         std::optional<vfs::NCA> metaNca; //!< The main meta NCA within the secure partition
 
       public:
-        XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore);
+        XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore, size_t programIndex = 0);
 
         std::vector<u8> GetIcon(language::ApplicationLanguage language) override;
 

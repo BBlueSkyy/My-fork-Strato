@@ -94,7 +94,7 @@ namespace skyline::service::fssrv {
 
     Result IFileSystemProxy::OpenDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
 
-        if (state.updateLoader) {
+        if (state.updateLoader && state.updateLoader->programNca) {
             auto patchManager{std::make_shared<vfs::PatchManager>()};
             auto romFs{patchManager->PatchRomFS(state, state.updateLoader->programNca, state.loader->programNca->ivfcOffset)};
             manager.RegisterService(std::make_shared<IStorage>(romFs, state, manager), session, response);
@@ -144,6 +144,26 @@ namespace skyline::service::fssrv {
 
     Result IFileSystemProxy::OpenPatchDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         return result::EntityNotFound;
+    }
+
+    Result IFileSystemProxy::OpenDataStorageWithProgramIndex(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const u8 programIndex{request.Pop<u8>()};
+        const auto baseProgramNca{state.loader->GetProgramNca(programIndex)};
+        if (!baseProgramNca || !baseProgramNca->romFs)
+            return result::NoRomFsAvailable;
+
+        std::shared_ptr<vfs::Backing> romFs{baseProgramNca->romFs};
+        if (state.updateLoader) {
+            const auto updateProgramNca{state.updateLoader->GetProgramNca(programIndex)};
+            if (updateProgramNca) {
+                auto patchManager{std::make_shared<vfs::PatchManager>()};
+                romFs = patchManager->PatchRomFS(state, std::optional<vfs::NCA>{*updateProgramNca}, *baseProgramNca);
+            }
+        }
+
+        LOGD("Opening data storage for program index {} (ProgramId {:016X})", programIndex, baseProgramNca->header.titleId);
+        manager.RegisterService(std::make_shared<IStorage>(romFs, state, manager), session, response);
+        return {};
     }
 
     Result IFileSystemProxy::GetGlobalAccessLogMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {

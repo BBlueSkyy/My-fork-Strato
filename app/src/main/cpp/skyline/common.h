@@ -67,6 +67,8 @@ namespace skyline {
         std::shared_ptr<loader::Loader> loader;
         std::vector<std::shared_ptr<loader::Loader>> dlcLoaders;
         std::shared_ptr<loader::Loader> updateLoader;
+        i32 currentProgramIndex{};
+        i32 previousProgramIndex{-1};
         std::shared_ptr<nce::NCE> nce;
         std::shared_ptr<kernel::type::KProcess> process{};
         static thread_local inline std::shared_ptr<kernel::type::KThread> thread{}; //!< The KThread of the thread which accesses this object

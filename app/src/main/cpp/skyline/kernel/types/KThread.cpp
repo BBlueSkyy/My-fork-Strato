@@ -221,11 +221,12 @@ namespace skyline::kernel::type {
         }
     }
 
-    void KThread::Kill(bool join) {
+    void KThread::Kill(bool join, bool directSignalExitOnTerminate) {
         std::unique_lock lock(statusMutex);
         if (!killed && running) {
             statusCondition.wait(lock, [this]() { return ready || killed; });
             if (!killed) {
+                allowDirectSignalExit.store(directSignalExitOnTerminate, std::memory_order_relaxed);
                 pthread_kill(pthread, SIGINT);
                 killed = true;
                 statusCondition.notify_all();

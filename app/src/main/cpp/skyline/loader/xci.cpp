@@ -8,7 +8,7 @@
 #include "xci.h"
 
 namespace skyline::loader {
-    XciLoader::XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore) {
+    XciLoader::XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore, size_t programIndex) {
         header = backing->Read<GamecardHeader>();
 
         if (header.magic != util::MakeMagic<u32>("HEAD"))
@@ -39,7 +39,7 @@ namespace skyline::loader {
                     auto nca{vfs::NCA(secure->OpenFile(entry.name), keyStore, true)};
 
                     if (nca.contentType == vfs::NCAContentType::Program && nca.romFs != nullptr && nca.exeFs != nullptr)
-                        programNca = std::move(nca);
+                        AddProgramNca(std::move(nca));
                     else if (nca.contentType == vfs::NCAContentType::Control && nca.romFs != nullptr)
                         controlNca = std::move(nca);
                     else if (nca.contentType == vfs::NCAContentType::Meta)
@@ -54,8 +54,7 @@ namespace skyline::loader {
             throw exception("Corrupted secure partition");
         }
 
-        if (programNca)
-            romFs = programNca->romFs;
+        SelectProgram(programIndex);
 
         if (controlNca) {
             controlRomFs = std::make_shared<vfs::RomFileSystem>(controlNca->romFs);
@@ -67,6 +66,9 @@ namespace skyline::loader {
     }
 
     void *XciLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
+        if (!programNca)
+            throw loader_exception(LoaderResult::ParsingError, fmt::format("XCI does not contain program index {}", state.currentProgramIndex));
+
         process->npdm = vfs::NPDM(programNca->exeFs->OpenFile("main.npdm"));
         return NcaLoader::LoadExeFs(this, programNca->exeFs, process, state);
     }

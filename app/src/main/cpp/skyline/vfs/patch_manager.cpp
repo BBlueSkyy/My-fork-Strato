@@ -16,11 +16,18 @@ namespace skyline::vfs {
         return updateProgramNCA->exeFs;
     }
 
-    std::shared_ptr<vfs::Backing> PatchManager::PatchRomFS(const DeviceState &state, std::optional<vfs::NCA> nca, u64 ivfcOffset) {
-        if (!nca || !state.loader || !state.loader->programNca || !state.loader->programNca->rawRomFs)
+    std::shared_ptr<vfs::Backing> PatchManager::PatchRomFS(const DeviceState &state, std::optional<vfs::NCA> nca, u64) {
+        if (!state.loader || !state.loader->programNca)
+            throw exception("Cannot patch RomFS without a selected base program");
+
+        return PatchRomFS(state, std::move(nca), *state.loader->programNca);
+    }
+
+    std::shared_ptr<vfs::Backing> PatchManager::PatchRomFS(const DeviceState &state, std::optional<vfs::NCA> updateNca, const vfs::NCA &baseNca) {
+        if (!updateNca || !baseNca.rawRomFs)
             throw exception("Cannot patch RomFS without update and base raw RomFS layers");
 
-        auto newNca{std::make_shared<vfs::NCA>(std::move(nca), state.os->keyStore, state.loader->programNca->rawRomFs, ivfcOffset)};
+        auto newNca{std::make_shared<vfs::NCA>(std::move(updateNca), state.os->keyStore, baseNca.rawRomFs, baseNca.ivfcOffset)};
         return newNca->romFs;
     }
 }

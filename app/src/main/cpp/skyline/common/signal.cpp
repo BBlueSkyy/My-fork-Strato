@@ -6,6 +6,7 @@
 #include <unwind.h>
 #include <fcntl.h>
 #include <cxxabi.h>
+#include <kernel/types/KThread.h>
 #include "signal.h"
 
 namespace skyline::signal {
@@ -41,6 +42,16 @@ namespace skyline::signal {
             try {
                 std::rethrow_exception(exception);
             } catch (const SignalException &e) {
+                // SIGINT is also the internal KThread stop signal. During a graceful process
+                // transition it can interrupt a host futex frame that has no unwind metadata.
+                // Return to StartThread's cleanup checkpoint instead of sleeping forever.
+                if (e.signal == SIGINT && DeviceState::thread &&
+                    DeviceState::thread->allowDirectSignalExit.load(std::memory_order_relaxed)) {
+                    auto &originalCtx{DeviceState::thread->originalCtx};
+                    abi::__cxa_end_catch();
+                    std::longjmp(originalCtx, true);
+                }
+
                 LOGE("Terminating due to sinal sem catch handler na pilha: {}", e.what());
             }
 

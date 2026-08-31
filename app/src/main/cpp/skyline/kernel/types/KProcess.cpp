@@ -50,9 +50,9 @@ namespace skyline::kernel::type {
             disableThreadCreation = true;
         if (all) {
             for (const auto &thread : threads)
-                thread->Kill(join);
+                thread->Kill(join, disableCreation);
         } else if (!threads.empty()) {
-            threads[0]->Kill(join);
+            threads[0]->Kill(join, disableCreation);
         }
     }
 
