@@ -263,7 +263,6 @@ namespace skyline::gpu {
                 // UE4 pipelines push larger/mixed descriptor sets (including texel buffers).
                 // Use regular descriptor sets until per-pipeline maxPushDescriptors checks
                 // are implemented.
-                brokenPushDescriptors = true;
                 brokenTextureShadowCompare = true;  
                 brokenFp16FloatControls = true;
                 break;
