@@ -29,8 +29,17 @@ namespace skyline::nce {
         try {
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
+                const u64 inputX1{ctx->gpr.x1};
+                const u64 inputX2{ctx->gpr.x2};
+                const u64 inputX3{ctx->gpr.x3};
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
                 (svc.function)(state, svcContext);
+
+                if (svcId == 0x15) {
+                    LOGI("svcCreateTransferMemory boundary: address=0x{:X}, size=0x{:X}, "
+                         "permission=0x{:X}, result=0x{:X}, outHandle=0x{:X}",
+                         inputX1, inputX2, inputX3, ctx->gpr.x0, ctx->gpr.x1);
+                }
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
             }

@@ -662,6 +662,14 @@ namespace skyline::kernel::svc {
             return;
         }
 
+        if (const auto chunk{state.process->memory.GetChunk(address)}; chunk) {
+            LOGI("CreateTransferMemory owner state: base={}, chunkSize=0x{:X}, state=0x{:X}, "
+                 "type=0x{:X}, permission=0x{:X}, attributes=0x{:X}, ipcLockCount={}",
+                 fmt::ptr(chunk->first), chunk->second.size, chunk->second.state.value,
+                 static_cast<u32>(chunk->second.state.type), chunk->second.permission.raw,
+                 chunk->second.attributes.value, chunk->second.ipcLockCount);
+        }
+
         LOGD("Creating transfer memory (0x{:X}) at {} - {} (0x{:X} bytes) ({}{}{})", tmem.handle, fmt::ptr(address), fmt::ptr(address + size), size, permission.r ? 'R' : '-', permission.w ? 'W' : '-', permission.x ? 'X' : '-');
 
         ctx.w0 = Result{};
