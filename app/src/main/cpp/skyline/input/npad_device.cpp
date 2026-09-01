@@ -262,14 +262,17 @@ namespace skyline::input {
 
         auto &nextEntry{info.state.at(info.header.currentEntry)};
 
-        nextEntry.localTimestamp = lastEntry.localTimestamp + 1;
-        nextEntry.globalTimestamp = nextEntry.localTimestamp << 1;
+        const auto nextSamplingNumber{lastEntry.localTimestamp + 1};
+        const auto completedMarker{nextSamplingNumber << 1};
+        __atomic_store_n(&nextEntry.globalTimestamp, completedMarker | 1, __ATOMIC_RELAXED);
+        nextEntry.localTimestamp = nextSamplingNumber;
         nextEntry.buttons = entry.buttons;
         nextEntry.leftX = entry.leftX;
         nextEntry.leftY = entry.leftY;
         nextEntry.rightX = entry.rightX;
         nextEntry.rightY = entry.rightY;
         nextEntry.status.raw = connectionState.raw;
+        __atomic_store_n(&nextEntry.globalTimestamp, completedMarker, __ATOMIC_RELEASE);
     }
 
     void NpadDevice::WriteNextEntry(NpadSixAxisInfo &info, NpadSixAxisState entry) {
@@ -282,14 +285,17 @@ namespace skyline::input {
 
         auto &nextEntry{info.state.at(info.header.currentEntry)};
 
-        nextEntry.localTimestamp = lastEntry.localTimestamp + 1;
-        nextEntry.globalTimestamp = nextEntry.localTimestamp << 1;
+        const auto nextSamplingNumber{lastEntry.localTimestamp + 1};
+        const auto completedMarker{nextSamplingNumber << 1};
+        __atomic_store_n(&nextEntry.globalTimestamp, completedMarker | 1, __ATOMIC_RELAXED);
         nextEntry.deltaTimestamp = entry.deltaTimestamp;
+        nextEntry.localTimestamp = nextSamplingNumber;
         nextEntry.accelerometer = entry.accelerometer;
         nextEntry.gyroscope = entry.gyroscope;
         nextEntry.rotation = entry.rotation;
         nextEntry.orientation = entry.orientation;
         nextEntry.attribute = entry.attribute;
+        __atomic_store_n(&nextEntry.globalTimestamp, completedMarker, __ATOMIC_RELEASE);
     }
 
     void NpadDevice::WriteEmptyEntries() {
