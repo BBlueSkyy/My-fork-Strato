@@ -26,11 +26,31 @@ namespace skyline::nce {
 
         const auto &state{*ctx->state};
         auto svc{kernel::svc::SvcTable[svcId]};
+        auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
+
+        static thread_local int audioSvcTraceCountdown{};
+        if (state.thread->id == 4 && svcId == 0x15)
+            audioSvcTraceCountdown = 10;
+
+        const bool traceAudioSvc{state.thread->id == 4 && audioSvcTraceCountdown > 0};
+
+        if (traceAudioSvc) {
+            LOGI("AUDIO-SVC ENTER: id=0x{:X}, name={}, X0=0x{:X}, X1=0x{:X}, X2=0x{:X}, X3=0x{:X}",
+                 svcId,
+                 svc ? svc.name : "<unimplemented>",
+                 svcContext.x0, svcContext.x1, svcContext.x2, svcContext.x3);
+        }
+
         try {
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
-                auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
                 (svc.function)(state, svcContext);
+
+                if (traceAudioSvc) {
+                    LOGI("AUDIO-SVC EXIT: id=0x{:X}, name={}, W0=0x{:X}, X1=0x{:X}",
+                         svcId, svc.name, svcContext.x0 & 0xFFFFFFFFULL, svcContext.x1);
+                    --audioSvcTraceCountdown;
+                }
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
             }

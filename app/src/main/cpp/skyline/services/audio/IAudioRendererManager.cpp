@@ -3,6 +3,7 @@
 // Copyright © 2022 yuzu Emulator Project (https://github.com/yuzu-emu/)
 
 #include <audio_core/common/audio_renderer_parameter.h>
+#include <audio_core/common/feature_support.h>
 #include <audio_core/audio_render_manager.h>
 #include <common/utils.h>
 #include <audio.h>
@@ -15,11 +16,29 @@ namespace skyline::service::audio {
         : BaseService(state, manager) {}
 
     Result IAudioRendererManager::OpenAudioRenderer(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        LOGI("OpenAudioRenderer: entered cmdArgSz=0x{:X}, paramSize=0x{:X}, copyHandles={}, moveHandles={}",
+             request.cmdArgSz,
+             sizeof(AudioCore::AudioRendererParameterInternal),
+             request.copyHandles.size(),
+             request.moveHandles.size());
+
         const auto &params{request.Pop<AudioCore::AudioRendererParameterInternal>()};
+        request.Pop<u32>(); // 4-byte CMIF padding after the 0x34-byte parameter
         u64 transferMemorySize{request.Pop<u64>()};
         u64 appletResourceUserId{request.Pop<u64>()};
         auto transferMemoryHandle{request.copyHandles.at(0)};
         auto processHandle{request.copyHandles.at(1)};
+
+        u64 requiredWorkBufferSize{};
+        const auto sizeResult{
+            state.audio->audioRendererManager->GetWorkBufferSize(params, requiredWorkBufferSize)};
+        LOGI("OpenAudioRenderer: revision={} transfer=0x{:X} required=0x{:X} sizeResult=0x{:X}",
+             AudioCore::GetRevisionNum(params.revision), transferMemorySize,
+             requiredWorkBufferSize, u32{sizeResult});
+
+        if (sizeResult.IsError()) {
+            return Result{sizeResult};
+        }
 
         i32 sessionId{state.audio->audioRendererManager->GetSessionId()};
         if (sessionId == -1) {
@@ -27,20 +46,57 @@ namespace skyline::service::audio {
             return Result{Service::Audio::ResultOutOfSessions};
         }
 
-        manager.RegisterService(std::make_shared<IAudioRenderer>(state, manager,
-                                                                 *state.audio->audioRendererManager,
-                                                                 params,
-                                                                 transferMemorySize, processHandle, appletResourceUserId, sessionId),
-                                session, response);
+        auto renderer{std::make_shared<IAudioRenderer>(
+            state, manager, *state.audio->audioRendererManager, params, transferMemorySize,
+            processHandle, appletResourceUserId, sessionId)};
 
+        const auto initResult{renderer->GetInitializationResult()};
+        if (initResult.IsError()) {
+            LOGW("OpenAudioRenderer: initialization failed: 0x{:X}", u32{initResult});
+            state.audio->audioRendererManager->ReleaseSessionId(sessionId);
+            return Result{initResult};
+        }
+
+        manager.RegisterService(renderer, session, response);
         return {};
     }
 
     Result IAudioRendererManager::GetWorkBufferSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto &params{request.Pop<AudioCore::AudioRendererParameterInternal>()};
 
+        LOGI("AudioRenderer revision: raw=0x{:08X}, revision={}",
+             params.revision,
+             AudioCore::GetRevisionNum(params.revision));
+
+        LOGI("GetWorkBufferSize IPC: cmdArgSz=0x{:X}, paramSize=0x{:X}",
+             request.cmdArgSz,
+             sizeof(AudioCore::AudioRendererParameterInternal));
+
+        LOGI("AudioRenderer params: revision={}, mode={}, sampleRate={}, sampleCount={}, "
+             "voices={}, mixes={}, subMixes={}, sinks={}, effects={}, "
+             "splitterInfos={}, splitterDestinations={}, voiceDrop={}, "
+             "renderDevice={}, externalContext=0x{:X}",
+             AudioCore::GetRevisionNum(params.revision),
+             static_cast<u32>(params.execution_mode),
+             params.sample_rate,
+             params.sample_count,
+             params.voices,
+             params.mixes,
+             params.sub_mixes,
+             params.sinks,
+             params.effects,
+             params.splitter_infos,
+             params.splitter_destinations,
+             params.voice_drop_enabled,
+             params.rendering_device,
+             params.external_context_size);
+
         u64 size{};
         auto err{state.audio->audioRendererManager->GetWorkBufferSize(params, size)};
+
+        LOGI("GetWorkBufferSize result: size=0x{:X}, result=0x{:X}",
+             size, u32{err});
+
         if (err.IsError())
             LOGW("Failed to calculate work buffer size");
 
