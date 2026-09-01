@@ -3,6 +3,7 @@
 
 #include <cxxabi.h>
 #include <common/trace.h>
+#include <kernel/types/KThread.h>
 #include "base_service.h"
 
 namespace skyline::service {
@@ -22,17 +23,25 @@ namespace skyline::service {
     Result service::BaseService::HandleRequest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         ServiceFunctionDescriptor function;
         u32 functionId{request.isTipc ? static_cast<u32>(request.header->type) : request.payload->value};
+        const u32 threadId{state.thread ? state.thread->id : 0};
 
         try {
             function = GetServiceFunction(functionId, request.isTipc);
             LOGDNF("Service: {}", function.name);
+            LOGI("IPC init trace ENTER: T{} {} service='{}' cmd=0x{:X} ({}) function='{}'",
+                 threadId, request.isTipc ? "TIPC" : "HIPC", GetName(), functionId, functionId, function.name);
         } catch (const std::out_of_range &) {
             LOGW("Cannot find {0} function in service '{1}': 0x{2:X} ({2})", request.isTipc ? "TIPC" : "HIPC", GetName(), static_cast<u32>(functionId));
+            LOGW("IPC init trace UNKNOWN: T{} {} service='{}' cmd=0x{:X} ({}) -> compatibility fallback ResultSuccess with no command-specific payload",
+                 threadId, request.isTipc ? "TIPC" : "HIPC", GetName(), functionId, functionId);
             return {};
         }
         TRACE_EVENT("service", perfetto::StaticString{function.name});
         try {
-            return function(session, request, response);
+            Result result{function(session, request, response)};
+            LOGI("IPC init trace EXIT: T{} {} service='{}' cmd=0x{:X} ({}) function='{}' result=0x{:X}",
+                 threadId, request.isTipc ? "TIPC" : "HIPC", GetName(), functionId, functionId, function.name, result.raw);
+            return result;
         } catch (exception &e) {
             // We need to forward any skyline::exception objects without modification even though they inherit from std::exception
             std::rethrow_exception(std::current_exception());
