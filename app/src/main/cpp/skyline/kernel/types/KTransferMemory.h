@@ -13,6 +13,9 @@ namespace skyline::kernel::type {
     class KTransferMemory : public KMemory {
       private:
         ChunkDescriptor originalMapping;
+        bool ownerBackingPreserved{};
+
+        void RestoreOriginalMapping(span<u8> map);
 
       public:
         /**
