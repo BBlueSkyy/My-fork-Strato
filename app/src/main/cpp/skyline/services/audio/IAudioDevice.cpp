@@ -3,6 +3,7 @@
 // Copyright © 2022 yuzu Emulator Project (https://github.com/yuzu-emu/)
 
 #include <audio_core/audio_core.h>
+#include <audio_core/common/feature_support.h>
 #include <audio.h>
 #include <kernel/types/KProcess.h>
 #include "IAudioDevice.h"
@@ -11,7 +12,8 @@ namespace skyline::service::audio {
     IAudioDevice::IAudioDevice(const DeviceState &state, ServiceManager &manager, u64 appletResourceUserId, u32 revision)
         : BaseService{state, manager},
           event{std::make_shared<type::KEvent>(state, true)},
-          impl{state.audio->audioSystem, appletResourceUserId, revision} {}
+          impl{state.audio->audioSystem, appletResourceUserId, revision},
+          revision{revision} {}
 
     Result IAudioDevice::ListAudioDeviceName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         span buffer{request.outputBuf.at(0)};
@@ -82,6 +84,45 @@ namespace skyline::service::audio {
         u32 writtenCount{impl.ListAudioOutputDeviceName(outputNames, buffer.size() / sizeof(AudioCore::AudioRenderer::AudioDevice::AudioDeviceName))};
         response.Push<u32>(writtenCount);
         buffer.copy_from(outputNames);
+        return {};
+    }
+
+    Result IAudioDevice::GetActiveAudioOutputDeviceName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!AudioCore::CheckFeatureSupported(AudioCore::SupportTags::DeviceApiVersion2, revision)) {
+            response.Push<float>(1.0f);
+            return {};
+        }
+
+        return GetActiveAudioDeviceName(session, request, response);
+    }
+
+    Result IAudioDevice::AcquireAudioInputDeviceNotification(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        request.Pop<u64>();
+        return Result{Service::Audio::ResultNotSupported};
+    }
+
+    Result IAudioDevice::ReleaseAudioInputDeviceNotification(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        request.Pop<u64>();
+        return Result{Service::Audio::ResultNotSupported};
+    }
+
+    Result IAudioDevice::AcquireAudioOutputDeviceNotification(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        request.Pop<u64>();
+        return Result{Service::Audio::ResultNotSupported};
+    }
+
+    Result IAudioDevice::ReleaseAudioOutputDeviceNotification(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        request.Pop<u64>();
+        return Result{Service::Audio::ResultNotSupported};
+    }
+
+    Result IAudioDevice::SetAudioDeviceOutputVolumeAutoTuneEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        outputVolumeAutoTuneEnabled = request.Pop<u8>() != 0;
+        return {};
+    }
+
+    Result IAudioDevice::IsAudioDeviceOutputVolumeAutoTuneEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(outputVolumeAutoTuneEnabled ? 1 : 0);
         return {};
     }
 }

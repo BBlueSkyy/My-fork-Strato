@@ -16,6 +16,7 @@ namespace skyline::service::audio {
 
     Result IAudioRendererManager::OpenAudioRenderer(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto &params{request.Pop<AudioCore::AudioRendererParameterInternal>()};
+        request.Pop<u32>(); // CMIF padding after the 0x34-byte REV12+ parameter.
         u64 transferMemorySize{request.Pop<u64>()};
         u64 appletResourceUserId{request.Pop<u64>()};
         auto transferMemoryHandle{request.copyHandles.at(0)};
@@ -27,11 +28,17 @@ namespace skyline::service::audio {
             return Result{Service::Audio::ResultOutOfSessions};
         }
 
-        manager.RegisterService(std::make_shared<IAudioRenderer>(state, manager,
-                                                                 *state.audio->audioRendererManager,
-                                                                 params,
-                                                                 transferMemorySize, processHandle, appletResourceUserId, sessionId),
-                                session, response);
+        auto renderer{std::make_shared<IAudioRenderer>(
+            state, manager, *state.audio->audioRendererManager, params, transferMemorySize,
+            processHandle, appletResourceUserId, sessionId)};
+
+        const auto initializationResult{renderer->GetInitializationResult()};
+        if (initializationResult.IsError()) {
+            state.audio->audioRendererManager->ReleaseSessionId(sessionId);
+            return Result{initializationResult};
+        }
+
+        manager.RegisterService(renderer, session, response);
 
         return {};
     }
