@@ -15,8 +15,8 @@ namespace skyline::kernel {
             // HOS 21.0.0+: on switch-in the kernel stores a signed differential in
             // TLR+0x108 so currentTick + threadCpuTime yields the running CPU time.
             if (thread->ctx.tpidrroEl0)
-                *reinterpret_cast<s64 *>(thread->ctx.tpidrroEl0 + ThreadCpuTimeTlsOffset) =
-                    static_cast<s64>(thread->cpuTime) - static_cast<s64>(currentTick);
+                *reinterpret_cast<i64 *>(thread->ctx.tpidrroEl0 + ThreadCpuTimeTlsOffset) =
+                     static_cast<i64>(thread->cpuTime) - static_cast<i64>(currentTick);
 
             thread->timesliceStart = currentTick;
             thread->cpuTimesliceStart = currentTick;
