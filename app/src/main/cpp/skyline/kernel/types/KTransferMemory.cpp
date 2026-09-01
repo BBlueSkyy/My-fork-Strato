@@ -55,15 +55,13 @@ namespace skyline::kernel::type {
             return nullptr;
         }
 
-        // Keep a host-visible snapshot for existing HLE users of KTransferMemory::host.
         auto hostMap{state.process->memory.GetHostSpan(map)};
         std::memcpy(host.data(), hostMap.data(), hostMap.size());
 
         if (!permission.raw) {
-            // Horizon's LockForTransferMemory keeps the owner's original physical pages and
-            // changes their owner permission/Locked attribute. Do the same for the common
-            // permission=None path instead of MAP_FIXED-replacing the region with a copied
-            // ASharedMemory object. Newer nnSdk audio clients validate this ownership model.
+            // Horizon locks the owner's existing pages for TransferMemory. For owner
+            // permission=None, keep those pages in place and make them inaccessible
+            // instead of replacing the range with a copied ASharedMemory mapping.
             if (mprotect(hostMap.data(), hostMap.size(), PROT_NONE) == -1) [[unlikely]] {
                 LOGW("Failed to protect TransferMemory owner backing at {} (0x{:X} bytes): {}", fmt::ptr(map.data()), map.size(), strerror(errno));
                 return nullptr;
@@ -72,11 +70,11 @@ namespace skyline::kernel::type {
             guest = map;
             ownerBackingPreserved = true;
         } else {
+            // Keep the existing Read/ReadWrite path unchanged in this focused fix.
             if (!KMemory::Map(map, permission)) [[unlikely]]
                 return nullptr;
         }
 
-        // The owner's memory type stays unchanged; only permission and Locked/Borrowed change.
         state.process->memory.SetRegionPermission(guest, permission);
         state.process->memory.SetRegionBorrowed(guest, true);
         return guest.data();
@@ -86,23 +84,23 @@ namespace skyline::kernel::type {
         if (ownerBackingPreserved) {
             auto hostMap{state.process->memory.GetHostSpan(map)};
 
-            // Temporarily make the original pages writable so HLE-side changes to the
-            // transfer-memory snapshot can be committed before restoring owner protection.
             if (mprotect(hostMap.data(), hostMap.size(), PROT_READ | PROT_WRITE) == -1) [[unlikely]]
                 throw exception("Failed to unprotect TransferMemory owner backing: {}", strerror(errno));
 
             std::memcpy(hostMap.data(), host.data(), hostMap.size());
 
-            const int originalProtection{originalMapping.permission.Get()};
-            if (mprotect(hostMap.data(), hostMap.size(), originalProtection) == -1) [[unlikely]]
+            if (mprotect(hostMap.data(), hostMap.size(), originalMapping.permission.Get()) == -1) [[unlikely]]
                 throw exception("Failed to restore TransferMemory owner protection: {}", strerror(errno));
+
+            RestoreOriginalMapping(map);
         } else {
+            // Preserve the pre-existing behavior for non-None owner permissions.
             KMemory::Unmap(map);
+            RestoreOriginalMapping(map);
             auto hostMap{state.process->memory.GetHostSpan(map)};
             std::memcpy(hostMap.data(), host.data(), hostMap.size());
         }
 
-        RestoreOriginalMapping(map);
         guest = span<u8>{};
         ownerBackingPreserved = false;
     }
@@ -122,15 +120,17 @@ namespace skyline::kernel::type {
                 if (mprotect(hostMap.data(), hostMap.size(), originalMapping.permission.Get()) == -1) [[unlikely]]
                     LOGW("Failed to restore TransferMemory owner protection during destruction: {}", strerror(errno));
             }
-        } else {
-            if (mmap(state.process->memory.GetHostSpan(guest).data(), guest.size(), PROT_READ | PROT_WRITE,
-                     MAP_SHARED | MAP_FIXED | MAP_ANONYMOUS, -1, 0) == MAP_FAILED) [[unlikely]]
-                LOGW("An error occurred while unmapping transfer memory in guest: {}", strerror(errno));
 
-            auto hostMap{state.process->memory.GetHostSpan(guest)};
-            std::memcpy(hostMap.data(), host.data(), hostMap.size());
+            RestoreOriginalMapping(guest);
+            return;
         }
 
+        // Preserve the original destruction path for Read/ReadWrite TransferMemory.
+        if (mmap(guest.data(), guest.size(), PROT_READ | PROT_WRITE,
+                 MAP_SHARED | MAP_FIXED | MAP_ANONYMOUS, -1, 0) == MAP_FAILED) [[unlikely]]
+            LOGW("An error occurred while unmapping transfer memory in guest: {}", strerror(errno));
+
         RestoreOriginalMapping(guest);
+        std::memcpy(guest.data(), host.data(), guest.size());
     }
 }
