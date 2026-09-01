@@ -60,7 +60,8 @@ namespace skyline::service::audio {
         const auto initializationResult{renderer->GetInitializationResult()};
         if (initializationResult.IsError()) {
             LOGI("OpenAudioRenderer initialization failed: raw=0x{:X}, module={}, id={}",
-                 initializationResult.raw, initializationResult.module, initializationResult.id);
+                 initializationResult.raw, static_cast<u32>(initializationResult.module),
+                 static_cast<u32>(initializationResult.id));
             state.audio->audioRendererManager->ReleaseSessionId(sessionId);
             return Result{initializationResult};
         }
@@ -80,7 +81,7 @@ namespace skyline::service::audio {
         u64 size{};
         auto err{state.audio->audioRendererManager->GetWorkBufferSize(params, size)};
         LOGI("GetWorkBufferSize result: size=0x{:X}, raw=0x{:X}, module={}, id={}",
-             size, err.raw, err.module, err.id);
+             size, err.raw, static_cast<u32>(err.module), static_cast<u32>(err.id));
         if (err.IsError())
             LOGW("Failed to calculate work buffer size");
 
