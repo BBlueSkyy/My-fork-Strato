@@ -24,6 +24,11 @@ namespace skyline::kernel::type {
             return nullptr; // Nothing has been touched yet, safe to bail out here
         }
 
+        // HOS 19.0.0+ exposes InfoType_TransferMemoryHint (34), which is based on the
+        // owner's original source VA. Keep that address even though KMemory::Map later
+        // replaces the owner mapping with the shared-memory-backed guest span.
+        sourceAddress = reinterpret_cast<uintptr_t>(map.data());
+
         // Get the host address of the guest memory
         auto hostMap{state.process->memory.GetHostSpan(map)};
         std::memcpy(host.data(), hostMap.data(), hostMap.size());
@@ -37,6 +42,21 @@ namespace skyline::kernel::type {
         state.process->memory.SetRegionPermission(guest, permission);
         state.process->memory.SetRegionBorrowed(guest, true);
         return result;
+    }
+
+    uintptr_t KTransferMemory::GetHint() const {
+        const size_t size{host.size()};
+
+        // Matches Horizon/Mesosphere KTransferMemory::GetHint(). The kernel exposes
+        // the low address bits corresponding to the largest placement granularity
+        // applicable to the transfer-memory size.
+        if (size >= 0x200000)
+            return sourceAddress & (0x200000 - 1);
+        if (size >= 0x10000)
+            return sourceAddress & (0x10000 - 1);
+        if (size >= 0x1000)
+            return sourceAddress & (0x1000 - 1);
+        return 0;
     }
 
     void KTransferMemory::Unmap(span<u8> map) {
