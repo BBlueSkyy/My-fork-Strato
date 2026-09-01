@@ -13,6 +13,7 @@ namespace skyline::kernel::type {
     class KTransferMemory : public KMemory {
       private:
         ChunkDescriptor originalMapping;
+        uintptr_t sourceAddress{}; //!< Original owner VA supplied to svcCreateTransferMemory; used by GetInfo(TransferMemoryHint)
 
       public:
         /**
@@ -24,6 +25,12 @@ namespace skyline::kernel::type {
          * @note 'ptr' needs to be in guest-reserved address space
          */
         u8 *Map(span<u8> map, memory::Permission permission);
+
+        /**
+         * @brief Returns the HOS 19.0.0+ address-placement hint for this transfer memory.
+         * @note The hint is derived from the original owner address and the transfer-memory size.
+         */
+        [[nodiscard]] uintptr_t GetHint() const;
 
         /**
          * @note 'ptr' needs to be in guest-reserved address space
