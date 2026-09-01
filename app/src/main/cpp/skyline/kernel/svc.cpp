@@ -4,6 +4,7 @@
 #include <os.h>
 #include <nce.h>
 #include <kernel/types/KProcess.h>
+#include <kernel/types/KTransferMemory.h>
 #include <common/trace.h>
 #include <vfs/npdm.h>
 #include "results.h"
@@ -1063,6 +1064,7 @@ namespace skyline::kernel::svc {
             // (29-33). If a game logs "Unimplemented case ID0: X" for X in that range, adjust this
             // value to match.
             IsVammEnabled = 29,
+            TransferMemoryHint = 34,
         };
 
         InfoState info{static_cast<u32>(ctx.w1)};
@@ -1096,6 +1098,31 @@ namespace skyline::kernel::svc {
             case InfoState::AliasRegionExtraSize:
                 out = state.process->memory.aliasRegionExtraSize; // NPDM META flags bit6, 18.0.0+
                 break;
+
+            case InfoState::TransferMemoryHint: {
+                if (id1 != 0) [[unlikely]] {
+                    LOGW("TransferMemoryHint requires ID1/subtype 0, got {}", id1);
+                    ctx.w0 = result::InvalidCombination;
+                    return;
+                }
+
+                try {
+                    auto object{state.process->GetHandle(handle)};
+                    if (object->objectType != type::KType::KTransferMemory) [[unlikely]] {
+                        LOGW("TransferMemoryHint handle has invalid type: 0x{:X} ({})", handle, object->objectType);
+                        ctx.w0 = result::InvalidHandle;
+                        return;
+                    }
+
+                    out = std::static_pointer_cast<type::KTransferMemory>(object)->GetHint();
+                    LOGD("TransferMemoryHint: handle=0x{:X}, hint=0x{:X}", handle, out);
+                } catch (const std::out_of_range &) {
+                    LOGW("TransferMemoryHint handle invalid: 0x{:X}", handle);
+                    ctx.w0 = result::InvalidHandle;
+                    return;
+                }
+                break;
+            }
             
             case InfoState::IsVammEnabled:
                 // Virtual Address Memory Manager (nn::os::detail::VammManager) — introduced in
