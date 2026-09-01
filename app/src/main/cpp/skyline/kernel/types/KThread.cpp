@@ -11,6 +11,10 @@
 #include "KThread.h"
 
 namespace skyline::kernel::type {
+    namespace {
+        constexpr size_t CurrentThreadHandleTlsOffset{0x110};
+    }
+
     KThread::KThread(const DeviceState &state, KHandle handle, KProcess *parent, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore)
         : handle(handle),
           parent(parent),
@@ -24,6 +28,12 @@ namespace skyline::kernel::type {
           coreId(idealCore),
           KSyncObject(state, KType::KThread) {
         affinityMask.set(coreId);
+
+        // HOS 22.0.0+: CreateThread/Run expose the current thread handle in the TLR.
+        // Allocate the TLR as part of KThread creation so the value exists before the
+        // thread executes any guest instructions.
+        ctx.tpidrroEl0 = parent->AllocateTlsSlot();
+        *reinterpret_cast<KHandle *>(ctx.tpidrroEl0 + CurrentThreadHandleTlsOffset) = handle;
     }
 
     KThread::~KThread() {

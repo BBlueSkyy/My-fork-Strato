@@ -8,6 +8,29 @@
 #include "scheduler.h"
 
 namespace skyline::kernel {
+    namespace {
+        constexpr size_t ThreadCpuTimeTlsOffset{0x108};
+
+        void BeginThreadCpuTimeslice(const std::shared_ptr<type::KThread> &thread, u64 currentTick) {
+            // HOS 21.0.0+: on switch-in the kernel stores a signed differential in
+            // TLR+0x108 so currentTick + threadCpuTime yields the running CPU time.
+            if (thread->ctx.tpidrroEl0)
+                *reinterpret_cast<s64 *>(thread->ctx.tpidrroEl0 + ThreadCpuTimeTlsOffset) =
+                    static_cast<s64>(thread->cpuTime) - static_cast<s64>(currentTick);
+
+            thread->timesliceStart = currentTick;
+            thread->cpuTimesliceStart = currentTick;
+        }
+
+        void EndThreadCpuTimeslice(const std::shared_ptr<type::KThread> &thread, u64 currentTick) {
+            if (!thread->cpuTimesliceStart)
+                return;
+
+            thread->cpuTime += currentTick - thread->cpuTimesliceStart;
+            thread->cpuTimesliceStart = 0;
+        }
+    }
+
     Scheduler::CoreContext::CoreContext(u8 id, i8 preemptionPriority) : id(id), preemptionPriority(preemptionPriority) {}
 
     Scheduler::Scheduler(const DeviceState &state) : state(state) {
@@ -205,7 +228,7 @@ namespace skyline::kernel {
             // If the thread needs to be preempted then arm its preemption timer
             thread->ArmPreemptionTimer(PreemptiveTimeslice);
 
-        thread->timesliceStart = util::GetTimeTicks();
+        BeginThreadCpuTimeslice(thread, util::GetTimeTicks());
     }
 
     bool Scheduler::TimedWaitSchedule(std::chrono::nanoseconds timeout) {
@@ -224,7 +247,7 @@ namespace skyline::kernel {
             if (thread->priority == core->preemptionPriority)
                 thread->ArmPreemptionTimer(PreemptiveTimeslice);
 
-            thread->timesliceStart = util::GetTimeTicks();
+            BeginThreadCpuTimeslice(thread, util::GetTimeTicks());
 
             return true;
         } else {
@@ -251,7 +274,9 @@ namespace skyline::kernel {
             throw exception("T{} called Rotate while not being in C{}'s queue", thread->id, thread->coreId);
         }
 
-        thread->averageTimeslice = (thread->averageTimeslice / 4) + (3 * (util::GetTimeTicks() - thread->timesliceStart / 4));
+        const u64 currentTick{util::GetTimeTicks()};
+        thread->averageTimeslice = (thread->averageTimeslice / 4) + (3 * (currentTick - thread->timesliceStart / 4));
+        EndThreadCpuTimeslice(thread, currentTick);
 
         thread->DisarmPreemptionTimer(); // If a preemptive thread did a cooperative yield then we need to disarm the preemptive timer
         thread->pendingYield = false;
@@ -260,6 +285,7 @@ namespace skyline::kernel {
 
     void Scheduler::RemoveThread() {
         auto &thread{state.thread};
+        const u64 currentTick{util::GetTimeTicks()};
         {
             auto &core{cores.at(thread->coreId)};
             std::unique_lock lock(core.mutex);
@@ -271,7 +297,7 @@ namespace skyline::kernel {
                     if (it == core.queue.begin()) {
                         // We need to update the averageTimeslice accordingly, if we've been unscheduled by this
                         if (thread->timesliceStart)
-                            thread->averageTimeslice = (thread->averageTimeslice / 4) + (3 * (util::GetTimeTicks() - thread->timesliceStart / 4));
+                            thread->averageTimeslice = (thread->averageTimeslice / 4) + (3 * (currentTick - thread->timesliceStart / 4));
 
                         if (it != core.queue.end())
                             (*it)->scheduleCondition.notify(); // We need to wake the thread at the front of the queue, if we were at the front previously
@@ -284,6 +310,7 @@ namespace skyline::kernel {
             }
         }
 
+        EndThreadCpuTimeslice(thread, currentTick);
         thread->DisarmPreemptionTimer();
         thread->pendingYield = false;
         thread->forceYield = false;

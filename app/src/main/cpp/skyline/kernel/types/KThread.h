@@ -55,6 +55,8 @@ namespace skyline {
             u8 coreId; //!< The CPU core on which this thread is running
             CoreMask affinityMask{}; //!< A mask of CPU cores this thread is allowed to run on
 
+            u64 cpuTime{}; //!< Total CPU time consumed by this thread in guest CNTVCT ticks
+            u64 cpuTimesliceStart{}; //!< Guest tick when the current CPU-accounting timeslice began
             u64 timesliceStart{}; //!< A timestamp in host CNTVCT ticks of when the thread's current timeslice started
             u64 averageTimeslice{}; //!< A weighted average of the timeslice duration for this thread
 
