@@ -205,7 +205,9 @@ namespace skyline::kernel {
             // If the thread needs to be preempted then arm its preemption timer
             thread->ArmPreemptionTimer(PreemptiveTimeslice);
 
-        thread->timesliceStart = util::GetTimeTicks();
+        const u64 currentTick{util::GetTimeTicks()};
+        thread->UpdateTlsThreadMetadata(currentTick);
+        thread->timesliceStart = currentTick;
     }
 
     bool Scheduler::TimedWaitSchedule(std::chrono::nanoseconds timeout) {
@@ -224,7 +226,9 @@ namespace skyline::kernel {
             if (thread->priority == core->preemptionPriority)
                 thread->ArmPreemptionTimer(PreemptiveTimeslice);
 
-            thread->timesliceStart = util::GetTimeTicks();
+            const u64 currentTick{util::GetTimeTicks()};
+            thread->UpdateTlsThreadMetadata(currentTick);
+            thread->timesliceStart = currentTick;
 
             return true;
         } else {
@@ -251,6 +255,9 @@ namespace skyline::kernel {
             throw exception("T{} called Rotate while not being in C{}'s queue", thread->id, thread->coreId);
         }
 
+        if (thread->timesliceStart)
+            thread->AddCpuTime(util::GetTimeTicks() - thread->timesliceStart);
+
         thread->averageTimeslice = (thread->averageTimeslice / 4) + (3 * (util::GetTimeTicks() - thread->timesliceStart / 4));
 
         thread->DisarmPreemptionTimer(); // If a preemptive thread did a cooperative yield then we need to disarm the preemptive timer
@@ -270,8 +277,10 @@ namespace skyline::kernel {
                     it = core.queue.erase(it);
                     if (it == core.queue.begin()) {
                         // We need to update the averageTimeslice accordingly, if we've been unscheduled by this
-                        if (thread->timesliceStart)
+                        if (thread->timesliceStart) {
+                            thread->AddCpuTime(util::GetTimeTicks() - thread->timesliceStart);
                             thread->averageTimeslice = (thread->averageTimeslice / 4) + (3 * (util::GetTimeTicks() - thread->timesliceStart / 4));
+                        }
 
                         if (it != core.queue.end())
                             (*it)->scheduleCondition.notify(); // We need to wake the thread at the front of the queue, if we were at the front previously

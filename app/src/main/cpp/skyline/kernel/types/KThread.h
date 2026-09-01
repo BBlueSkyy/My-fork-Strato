@@ -56,6 +56,7 @@ namespace skyline {
             CoreMask affinityMask{}; //!< A mask of CPU cores this thread is allowed to run on
 
             u64 timesliceStart{}; //!< A timestamp in host CNTVCT ticks of when the thread's current timeslice started
+            u64 cpuTime{}; //!< HOS 21.0.0+ accumulated scheduled CPU time in guest counter ticks (19.2 MHz)
             u64 averageTimeslice{}; //!< A weighted average of the timeslice duration for this thread
 
             bool isPreempted{}; //!< If the preemption timer has been armed and will fire
@@ -108,6 +109,21 @@ namespace skyline {
              * @brief Disarms the preemption kernel timer, any scheduled firings will be cancelled
              */
             void DisarmPreemptionTimer();
+
+            /**
+             * @brief Adds a completed scheduled timeslice to the thread's accumulated CPU time
+             */
+            void AddCpuTime(u64 ticks) {
+                cpuTime += ticks;
+            }
+
+            /**
+             * @brief Updates HOS 21.0.0+ ThreadCpuTime in TLR+0x108 before guest execution resumes
+             */
+            void UpdateTlsThreadMetadata(u64 currentTick) {
+                if (ctx.tpidrroEl0)
+                    *reinterpret_cast<i64 *>(ctx.tpidrroEl0 + 0x108) = static_cast<i64>(cpuTime) - static_cast<i64>(currentTick);
+            }
 
             /**
              * @brief Recursively updates the priority for any threads this thread might be waiting on

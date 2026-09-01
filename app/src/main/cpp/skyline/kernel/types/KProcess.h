@@ -121,8 +121,19 @@ namespace skyline {
                     item = std::make_shared<objectClass>(state, constant::BaseHandleIndex + handles.size(), args...);
                 else
                     item = std::make_shared<objectClass>(state, args...);
+
                 handles.push_back(std::static_pointer_cast<KObject>(item));
-                return {item, static_cast<KHandle>((constant::BaseHandleIndex + handles.size()) - 1)};
+                const KHandle handle{static_cast<KHandle>((constant::BaseHandleIndex + handles.size()) - 1)};
+
+                if constexpr (std::is_same<objectClass, KThread>()) {
+                    // HOS 22.0.0+: CurrentThreadHandle must exist in the TLR before CreateThread returns.
+                    lock.unlock();
+                    if (!item->ctx.tpidrroEl0)
+                        item->ctx.tpidrroEl0 = AllocateTlsSlot();
+                    *reinterpret_cast<KHandle *>(item->ctx.tpidrroEl0 + 0x110) = handle;
+                }
+
+                return {item, handle};
             }
 
             /**
