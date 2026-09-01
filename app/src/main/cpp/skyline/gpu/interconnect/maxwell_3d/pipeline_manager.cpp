@@ -363,7 +363,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 usage.writeDescCount++;
 
                 descriptorInfo.totalUniformTexelBufferCount += desc.count;
-            }); 
+            });
             descriptorInfo.totalTexelBufferDescCount += stageDescInfo.uniformTexelBufferDescTotalCount + stageDescInfo.storageTexelBufferDescTotalCount;
 
             pushBindings(vk::DescriptorType::eCombinedImageSampler, stage.info.texture_descriptors,
