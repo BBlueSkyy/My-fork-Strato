@@ -18,7 +18,7 @@ import androidx.core.content.ContextCompat;
 import java.util.WeakHashMap;
 
 public final class ShaderCompilationNotifier {
-    private static final long HideDelayMs = 350;
+    private static final long HideDelayMs = 1000;
     private static final WeakHashMap<Activity, State> States = new WeakHashMap<>();
 
     private ShaderCompilationNotifier() {}
@@ -38,15 +38,13 @@ public final class ShaderCompilationNotifier {
 
             if (compiling) {
                 state.pendingCompilations++;
+                state.compilationCount++;
                 state.updateText(activity);
                 state.notice.setVisibility(View.VISIBLE);
             } else {
                 state.pendingCompilations = Math.max(0, state.pendingCompilations - 1);
-                if (state.pendingCompilations > 0) {
-                    state.updateText(activity);
-                } else {
+                if (state.pendingCompilations == 0)
                     state.notice.postDelayed(state.hideRunnable, HideDelayMs);
-                }
             }
         });
     }
@@ -59,6 +57,7 @@ public final class ShaderCompilationNotifier {
         final TextView notice;
         final Runnable hideRunnable;
         int pendingCompilations;
+        int compilationCount;
 
         State(Activity activity) {
             notice = new TextView(activity);
@@ -91,7 +90,7 @@ public final class ShaderCompilationNotifier {
         }
 
         void updateText(Activity activity) {
-            notice.setText(activity.getString(R.string.compiling_shaders, pendingCompilations));
+            notice.setText(activity.getString(R.string.compiling_shaders, compilationCount));
         }
     }
 }
