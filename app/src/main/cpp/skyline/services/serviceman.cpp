@@ -3,6 +3,7 @@
 
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
+#include <common/utils.h>
 #include "sm/IUserInterface.h"
 #include "settings/ISettingsServer.h"
 #include "settings/ISystemSettingsServer.h"
@@ -213,27 +214,51 @@ namespace skyline::service {
 
     namespace {
         /**
-         * @brief Marks all of an IPC request's buffers as IPC-locked for the duration of the request via RAII,
-         * guaranteeing the lock is released even if a service handler throws
+         * @brief Marks the fully-covered pages of IPC request buffers as IPC-locked for the duration
+         * of the request, matching Horizon's page-granular direct IPC mapping behavior.
          */
         class IpcBufferLockGuard {
           private:
             kernel::MemoryManager &memory;
             const ipc::IpcRequest &request;
 
+            static span<u8> GetPageAlignedInterior(span<u8> buffer) {
+                if (buffer.empty())
+                    return {};
+
+                u8 *start{util::AlignUp(buffer.data(), constant::PageSize)};
+                u8 *end{util::AlignDown(buffer.end().base(), constant::PageSize)};
+                if (start >= end)
+                    return {};
+
+                return {start, static_cast<size_t>(end - start)};
+            }
+
+            void LockBuffer(span<u8> buffer) {
+                auto aligned{GetPageAlignedInterior(buffer)};
+                if (!aligned.empty())
+                    memory.LockRegionForIpc(aligned);
+            }
+
+            void UnlockBuffer(span<u8> buffer) {
+                auto aligned{GetPageAlignedInterior(buffer)};
+                if (!aligned.empty())
+                    memory.UnlockRegionForIpc(aligned);
+            }
+
           public:
             IpcBufferLockGuard(kernel::MemoryManager &memory, const ipc::IpcRequest &request) : memory(memory), request(request) {
                 for (const auto &buf : request.inputBuf)
-                    memory.LockRegionForIpc(buf);
+                    LockBuffer(buf);
                 for (const auto &buf : request.outputBuf)
-                    memory.LockRegionForIpc(buf);
+                    LockBuffer(buf);
             }
 
             ~IpcBufferLockGuard() {
                 for (const auto &buf : request.inputBuf)
-                    memory.UnlockRegionForIpc(buf);
+                    UnlockBuffer(buf);
                 for (const auto &buf : request.outputBuf)
-                    memory.UnlockRegionForIpc(buf);
+                    UnlockBuffer(buf);
             }
         };
     }
@@ -249,8 +274,8 @@ namespace skyline::service {
             ipc::IpcRequest request(session->isDomain, state);
             ipc::IpcResponse response(state);
 
-            // Marks every input/output buffer of this request as IPC-locked for the scope of the request,
-            // so a concurrent SetMemoryAttribute/UnmapMemory/etc. on another thread can't race the transfer
+            // Marks every fully-covered page of input/output buffers as IPC-locked for the request.
+            // Unaligned edge fragments are not allowed to split the guest memory block map.
             IpcBufferLockGuard bufferLock{state.process->memory, request};
 
             switch (request.header->type) {
