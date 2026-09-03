@@ -6,13 +6,14 @@
 package org.stratoemu.strato;
 
 import android.app.Activity;
-import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.TextView;
+
+import androidx.core.content.ContextCompat;
 
 import java.util.WeakHashMap;
 
@@ -37,11 +38,15 @@ public final class ShaderCompilationNotifier {
 
             if (compiling) {
                 state.pendingCompilations++;
+                state.updateText(activity);
                 state.notice.setVisibility(View.VISIBLE);
             } else {
                 state.pendingCompilations = Math.max(0, state.pendingCompilations - 1);
-                if (state.pendingCompilations == 0)
+                if (state.pendingCompilations > 0) {
+                    state.updateText(activity);
+                } else {
                     state.notice.postDelayed(state.hideRunnable, HideDelayMs);
+                }
             }
         });
     }
@@ -57,8 +62,7 @@ public final class ShaderCompilationNotifier {
 
         State(Activity activity) {
             notice = new TextView(activity);
-            notice.setText(activity.getString(R.string.compiling_shaders));
-            notice.setTextColor(Color.WHITE);
+            notice.setTextColor(ContextCompat.getColor(activity, R.color.colorPerfStatsPrimary));
             notice.setTextSize(14);
             notice.setGravity(Gravity.CENTER);
             notice.setPadding(dp(activity, 12), dp(activity, 7), dp(activity, 12), dp(activity, 7));
@@ -84,6 +88,10 @@ public final class ShaderCompilationNotifier {
                 if (pendingCompilations == 0)
                     notice.setVisibility(View.GONE);
             };
+        }
+
+        void updateText(Activity activity) {
+            notice.setText(activity.getString(R.string.compiling_shaders, pendingCompilations));
         }
     }
 }
