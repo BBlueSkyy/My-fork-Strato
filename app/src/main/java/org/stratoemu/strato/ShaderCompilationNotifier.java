@@ -73,7 +73,8 @@ public final class ShaderCompilationNotifier {
             FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+                    Gravity.BOTTOM | Gravity.END);
+            params.setMarginEnd(dp(activity, 20));
             params.bottomMargin = dp(activity, 20);
 
             ViewGroup content = activity.findViewById(android.R.id.content);
