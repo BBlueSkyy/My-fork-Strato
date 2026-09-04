@@ -130,8 +130,10 @@ namespace skyline::gpu {
             }, guestTexture.format, guestTexture.swizzle);
         }
 
-        for (auto &texture : matches)
+        for (auto &texture : matches) {
             texture->SynchronizeGuest(false, true);
+            texture->replaced = true;
+        }
 
         // Create a texture as we cannot find one that matches
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
