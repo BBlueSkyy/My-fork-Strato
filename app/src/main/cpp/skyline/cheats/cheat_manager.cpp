@@ -4,16 +4,17 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <charconv>
 #include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <sys/mman.h>
 #include <unordered_map>
 #include <unordered_set>
+#include <input.h>
 #include <os.h>
 #include <kernel/scheduler.h>
 #include <kernel/types/KProcess.h>
@@ -24,7 +25,6 @@ namespace skyline::cheats {
     namespace {
         std::mutex mainNsoMutex;
         std::unordered_map<const kernel::type::KProcess *, MainNsoInfo> mainNsoInfos;
-        std::array<std::atomic<u64>, 16> controllerKeys{};
 
         std::string ToLower(std::string value) {
             std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -180,10 +180,14 @@ namespace skyline::cheats {
                     return false;
 
                 const size_t chunkRemaining{chunk->second.size - static_cast<size_t>(current - chunk->first)};
-                const uintptr_t pageAddress{reinterpret_cast<uintptr_t>(current) & ~(constant::PageSize - 1)};
+                const uintptr_t pageAddress{reinterpret_cast<uintptr_t>(current) & ~(static_cast<uintptr_t>(constant::PageSize) - 1)};
                 auto *pageGuest{reinterpret_cast<u8 *>(pageAddress)};
                 const size_t pageOffset{static_cast<size_t>(current - pageGuest)};
-                const size_t amount{std::min({size - copied, chunkRemaining, constant::PageSize - pageOffset})};
+                const size_t amount{std::min({
+                    size - copied,
+                    chunkRemaining,
+                    static_cast<size_t>(constant::PageSize) - pageOffset,
+                })};
 
                 auto hostPage{process->memory.GetHostSpan(span<u8>{pageGuest, constant::PageSize})};
                 auto *hostCurrent{hostPage.data() + pageOffset};
@@ -224,20 +228,8 @@ namespace skyline::cheats {
         mainNsoInfos.erase(process);
     }
 
-    void UpdateKeyState(size_t controller, u64 mask, bool pressed) {
-        if (controller >= controllerKeys.size())
-            return;
-        if (pressed)
-            controllerKeys[controller].fetch_or(mask, std::memory_order_relaxed);
-        else
-            controllerKeys[controller].fetch_and(~mask, std::memory_order_relaxed);
-    }
-
     CheatManager::CheatManager(const DeviceState &state, std::shared_ptr<kernel::type::KProcess> process)
         : state{state}, process{std::move(process)}, vm{*this} {
-        for (auto &keys : controllerKeys)
-            keys.store(0, std::memory_order_relaxed);
-
         const auto info{GetMainNsoInfo(this->process.get())};
         if (!info)
             return;
@@ -353,9 +345,18 @@ namespace skyline::cheats {
     }
 
     u64 CheatManager::KeysDown() {
+        if (!state.input || !state.input->hid)
+            return 0;
+
+        std::scoped_lock lock{state.input->npad.mutex};
         u64 keys{};
-        for (auto &controller : controllerKeys)
-            keys |= controller.load(std::memory_order_relaxed);
+        for (const auto &section : state.input->hid->npad) {
+            const auto &info{section.defaultController};
+            const auto index{info.header.currentEntry % constant::HidEntryCount};
+            const auto &entry{info.state.at(index)};
+            if (entry.status.connected)
+                keys |= entry.buttons.raw;
+        }
         return keys;
     }
 
