@@ -125,7 +125,7 @@ class GameModManager(
     private fun installDiscoveredPackages(sourceRoot: File, fallbackName: String): Int {
         val packages = discoverPackages(sourceRoot)
         if (packages.isEmpty())
-            throw IllegalArgumentException("Package does not contain supported ExeFS or RomFS content for this game")
+            throw IllegalArgumentException("Package does not contain supported ExeFS, RomFS, or ExeFS patch content for this game")
 
         if (!root.isDirectory && !root.mkdirs())
             throw IllegalStateException("Failed to create game mod directory")
@@ -167,7 +167,7 @@ class GameModManager(
         try {
             copyDirectory(source, staging)
             if (!isModPackage(staging))
-                throw IllegalArgumentException("Package does not contain supported ExeFS or RomFS content")
+                throw IllegalArgumentException("Package does not contain supported ExeFS, RomFS, or ExeFS patch content")
 
             if (target.exists() && !target.deleteRecursively())
                 throw IllegalStateException("Failed to replace existing mod")
@@ -233,7 +233,8 @@ class GameModManager(
 
     private fun isModPackage(directory: File): Boolean {
         return findChildDirectory(directory, "exefs") != null ||
-            findChildDirectory(directory, "romfs") != null
+            findChildDirectory(directory, "romfs") != null ||
+            findChildDirectory(directory, "exefs_patches") != null
     }
 
     private fun isTitleIdDirectory(directory: File): Boolean {
