@@ -3,6 +3,8 @@
 
 #include <lz4.h>
 #include <nce.h>
+#include <os.h>
+#include <mods/pchtxt.h>
 #include <kernel/types/KProcess.h>
 #include <boost/regex/v5/regex.hpp>
 #include "nso.h"
@@ -55,6 +57,42 @@ namespace skyline::loader {
         if (header.dynsym.offset + header.dynsym.size <= header.ro.decompressedSize && header.dynstr.offset + header.dynstr.size <= header.ro.decompressedSize) {
             executable.dynsym = {header.dynsym.offset, header.dynsym.size};
             executable.dynstr = {header.dynstr.offset, header.dynstr.size};
+        }
+
+        const u64 titleId{process->npdm.aci0.programId};
+        if (titleId) {
+            auto patches{mods::CollectPchtxtPatches(state.os->publicAppFilesPath, titleId, header.buildId)};
+            if (!patches.empty()) {
+                const size_t programSize{std::max({
+                    static_cast<size_t>(header.text.memoryOffset) + header.text.decompressedSize,
+                    static_cast<size_t>(header.ro.memoryOffset) + header.ro.decompressedSize,
+                    static_cast<size_t>(header.data.memoryOffset) + header.data.decompressedSize,
+                })};
+                std::vector<u8> image(sizeof(NsoHeader) + programSize);
+                std::memcpy(image.data(), &header, sizeof(NsoHeader));
+                std::memcpy(image.data() + sizeof(NsoHeader) + header.text.memoryOffset, executable.text.contents.data(), header.text.decompressedSize);
+                std::memcpy(image.data() + sizeof(NsoHeader) + header.ro.memoryOffset, executable.ro.contents.data(), header.ro.decompressedSize);
+                std::memcpy(image.data() + sizeof(NsoHeader) + header.data.memoryOffset, executable.data.contents.data(), header.data.decompressedSize);
+
+                for (const auto &patch : patches) {
+                    size_t applied{};
+                    for (const auto &write : patch.writes) {
+                        if (write.offset < sizeof(NsoHeader) || write.offset > image.size() || write.value.size() > image.size() - static_cast<size_t>(write.offset)) {
+                            LOGW("PCHTXT: write outside NSO image in '{}' at 0x{:X}", patch.path.filename().string(), write.offset);
+                            continue;
+                        }
+
+                        std::memcpy(image.data() + static_cast<size_t>(write.offset), write.value.data(), write.value.size());
+                        applied++;
+                    }
+                    if (applied)
+                        LOGI("PCHTXT: applied '{}' to {} ({} writes)", patch.path.filename().string(), name.empty() ? "NSO" : name, applied);
+                }
+
+                std::memcpy(executable.text.contents.data(), image.data() + sizeof(NsoHeader) + header.text.memoryOffset, header.text.decompressedSize);
+                std::memcpy(executable.ro.contents.data(), image.data() + sizeof(NsoHeader) + header.ro.memoryOffset, header.ro.decompressedSize);
+                std::memcpy(executable.data.contents.data(), image.data() + sizeof(NsoHeader) + header.data.memoryOffset, header.data.decompressedSize);
+            }
         }
 
         PrintRoContentsInfo(executable.ro.contents);
