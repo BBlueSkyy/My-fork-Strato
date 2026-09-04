@@ -8,6 +8,7 @@
 #include <vfs/nca.h>
 #include <vfs/os_filesystem.h>
 #include "layered_filesystem.h"
+#include "layered_romfs.h"
 #include "patch_manager.h"
 #include "region_backing.h"
 
@@ -63,6 +64,12 @@ namespace skyline::vfs {
             });
             return directories;
         }
+
+        bool DirectoryHasEntries(const std::filesystem::path &path) {
+            std::error_code error;
+            const bool hasEntries{std::filesystem::directory_iterator(path, error) != std::filesystem::directory_iterator{}};
+            return !error && hasEntries;
+        }
     }
 
     PatchManager::PatchManager() {}
@@ -80,11 +87,7 @@ namespace skyline::vfs {
         std::vector<std::shared_ptr<FileSystem>> layers;
         for (const auto &modDirectory : GetModificationDirectories(state, titleId)) {
             auto exefsDirectory{FindSubdirectoryCaseless(modDirectory, "exefs")};
-            if (!exefsDirectory)
-                continue;
-
-            std::error_code error;
-            if (std::filesystem::directory_iterator(*exefsDirectory, error) == std::filesystem::directory_iterator{} || error)
+            if (!exefsDirectory || !DirectoryHasEntries(*exefsDirectory))
                 continue;
 
             layers.emplace_back(std::make_shared<OsFileSystem>(exefsDirectory->string()));
@@ -104,5 +107,33 @@ namespace skyline::vfs {
 
         auto newNca{std::make_shared<vfs::NCA>(std::move(nca), state.os->keyStore, state.loader->programNca->rawRomFs, ivfcOffset)};
         return newNca->romFs;
+    }
+
+    std::shared_ptr<vfs::Backing> PatchManager::PatchRomFS(const DeviceState &state, std::optional<vfs::NCA> nca, u64 ivfcOffset, u64 titleId) {
+        std::shared_ptr<Backing> patchedRomFs;
+        if (nca) {
+            patchedRomFs = PatchRomFS(state, std::move(nca), ivfcOffset);
+            LOGI("RomFS: applied update/BKTR layer");
+        } else if (state.loader) {
+            patchedRomFs = state.loader->romFs;
+        }
+
+        if (!patchedRomFs)
+            throw exception("Cannot patch a null RomFS");
+
+        std::vector<std::filesystem::path> layers;
+        for (const auto &modDirectory : GetModificationDirectories(state, titleId)) {
+            auto romfsDirectory{FindSubdirectoryCaseless(modDirectory, "romfs")};
+            if (!romfsDirectory || !DirectoryHasEntries(*romfsDirectory))
+                continue;
+
+            layers.push_back(*romfsDirectory);
+            LOGI("RomFS: applying LayeredRomFS mod '{}'", modDirectory.filename().string());
+        }
+
+        if (layers.empty())
+            return patchedRomFs;
+
+        return std::make_shared<LayeredRomFsBacking>(std::move(patchedRomFs), std::move(layers));
     }
 }
