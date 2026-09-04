@@ -141,7 +141,7 @@ class ManageContentActivity : AppCompatActivity() {
     private fun showContentTypeDialog() {
         val choices = arrayOf(
             getString(R.string.updates_and_dlc),
-            getString(R.string.mods_and_cheats)
+            getString(R.string.mods)
         )
         var selected = 0
 
