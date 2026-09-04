@@ -110,9 +110,10 @@ class ManageContentActivity : AppCompatActivity() {
             onDelete = { mod -> handleModDelete(mod) }
         )
 
-        cheatsAdapter = CheatListAdapter { cheat, isEnabled ->
-            handleCheatToggle(cheat, isEnabled)
-        }
+        cheatsAdapter = CheatListAdapter(
+            onToggled = { cheat, isEnabled -> handleCheatToggle(cheat, isEnabled) },
+            onDelete = { cheat -> handleCheatDelete(cheat) }
+        )
 
         binding.recyclerViewUpdates.apply {
             layoutManager = LinearLayoutManager(this@ManageContentActivity)
@@ -308,6 +309,16 @@ class ManageContentActivity : AppCompatActivity() {
             cheatManager.setEnabled(cheat, isEnabled)
         } catch (e: Exception) {
             Log.e("ManageContent", "Failed to toggle cheat ${cheat.name}", e)
+            Snackbar.make(binding.root, R.string.cheat_operation_failed, Snackbar.LENGTH_LONG).show()
+        }
+        loadExistingContent()
+    }
+
+    private fun handleCheatDelete(cheat: GameCheat) {
+        try {
+            cheatManager.remove(cheat)
+        } catch (e: Exception) {
+            Log.e("ManageContent", "Failed to delete cheat ${cheat.name}", e)
             Snackbar.make(binding.root, R.string.cheat_operation_failed, Snackbar.LENGTH_LONG).show()
         }
         loadExistingContent()
