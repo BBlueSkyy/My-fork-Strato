@@ -56,7 +56,7 @@ include_directories(SYSTEM "libraries/frozen/include")
 
 # MbedTLS
 set(ENABLE_TESTING OFF CACHE BOOL "Build mbed TLS tests." FORCE)
-set(ENABLE_PROGRAMS OFF CACHE BOOL "Build mbed TLS programs." FORCE)
+set(ENABLE_PROGRAMS OFF CACHE BOOL "Install programs" FORCE)
 set(UNSAFE_BUILD ON CACHE BOOL "Allow unsafe builds. These builds ARE NOT SECURE." FORCE)
 add_subdirectory("libraries/mbedtls")
 include_directories(SYSTEM "libraries/mbedtls/include")
@@ -348,6 +348,21 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/am/storage/TransferMemoryIStorage.cpp
         ${source_DIR}/skyline/services/am/storage/IStorageAccessor.cpp
         ${source_DIR}/skyline/services/am/applet/ILibraryAppletAccessor.cpp
+        ${source_DIR}/skyline/services/am/applet/IApplet.cpp
+        ${source_DIR}/skyline/services/bcat/IBcatService.cpp
+        ${source_DIR}/skyline/services/bcat/IDeliveryCacheStorageService.cpp
+        ${source_DIR}/skyline/services/bcat/IDeliveryCacheFileService.cpp
+        ${source_DIR}/skyline/services/bcat/IDeliveryCacheDirectoryService.cpp
+        ${source_DIR}/skyline/services/bcat/IServiceCreator.cpp
+        ${source_DIR}/skyline/services/bcat/IDeliveryCacheProgressService.cpp
+        ${source_DIR}/skyline/services/bt/IBluetoothUser.cpp
+        ${source_DIR}/skyline/services/btm/IBtmUser.cpp
+        ${source_DIR}/skyline/services/btm/IBtmUserCore.cpp
+        ${source_DIR}/skyline/services/capsrv/IAlbumAccessorService.cpp
+        ${source_DIR}/skyline/services/capsrv/ICaptureControllerService.cpp
+        ${source_DIR}/skyline/services/capsrv/IAlbumApplicationService.cpp
+        ${source_DIR}/skyline/services/capsrv/IScreenShotApplicationService.cpp
+        ${source_DIR}/skyline/services/ro/IRoInterface.cpp
         ${source_DIR}/skyline/applet/applet_creator.cpp
         ${source_DIR}/skyline/applet/controller_applet.cpp
         ${source_DIR}/skyline/applet/data_erase_applet.cpp
