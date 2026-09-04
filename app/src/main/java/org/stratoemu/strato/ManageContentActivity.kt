@@ -195,7 +195,12 @@ class ManageContentActivity : AppCompatActivity() {
                 Snackbar.make(binding.root, getString(R.string.mod_import_success, count), Snackbar.LENGTH_LONG).show()
             } catch (e: Exception) {
                 Log.e("ManageContent", "Failed to import mod archive", e)
-                Snackbar.make(binding.root, R.string.mod_import_failed, Snackbar.LENGTH_LONG).show()
+                val reason = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+                Snackbar.make(
+                    binding.root,
+                    "${getString(R.string.mod_import_failed)}: $reason",
+                    Snackbar.LENGTH_LONG
+                ).show()
             }
         }
     }
@@ -210,7 +215,12 @@ class ManageContentActivity : AppCompatActivity() {
                 Snackbar.make(binding.root, getString(R.string.mod_import_success, count), Snackbar.LENGTH_LONG).show()
             } catch (e: Exception) {
                 Log.e("ManageContent", "Failed to import mod folder", e)
-                Snackbar.make(binding.root, R.string.mod_import_failed, Snackbar.LENGTH_LONG).show()
+                val reason = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+                Snackbar.make(
+                    binding.root,
+                    "${getString(R.string.mod_import_failed)}: $reason",
+                    Snackbar.LENGTH_LONG
+                ).show()
             }
         }
     }
