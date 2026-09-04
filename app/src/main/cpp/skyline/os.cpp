@@ -11,6 +11,7 @@
 #include "loader/nca.h"
 #include "loader/nsp.h"
 #include "loader/xci.h"
+#include "cheats/cheat_manager.h"
 #include "os.h"
 #include <logger/logger.h>
 
@@ -76,10 +77,12 @@ namespace skyline::kernel {
         }
 
         process->InitializeHeapTls();
+        auto cheatManager{std::make_unique<cheats::CheatManager>(state, process)};
         auto thread{process->CreateThread(entry)};
         if (thread) {
             LOGI("Starting main HOS thread");
             thread->Start(true);
+            cheatManager.reset();
             process->Kill(true, true, true);
             skyline::AsyncLogger::Finalize(true);
         }
