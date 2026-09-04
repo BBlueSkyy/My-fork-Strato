@@ -93,10 +93,18 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystemProxy::OpenDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (state.loader->programNca) {
+            std::optional<vfs::NCA> updateNca;
+            if (state.updateLoader)
+                updateNca = state.updateLoader->programNca;
 
-        if (state.updateLoader) {
             auto patchManager{std::make_shared<vfs::PatchManager>()};
-            auto romFs{patchManager->PatchRomFS(state, state.updateLoader->programNca, state.loader->programNca->ivfcOffset)};
+            auto romFs{patchManager->PatchRomFS(
+                state,
+                std::move(updateNca),
+                state.loader->programNca->ivfcOffset,
+                state.loader->programNca->header.titleId
+            )};
             manager.RegisterService(std::make_shared<IStorage>(romFs, state, manager), session, response);
         } else {
             if (!state.loader->romFs)
