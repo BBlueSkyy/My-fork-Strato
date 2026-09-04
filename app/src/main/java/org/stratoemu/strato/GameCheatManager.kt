@@ -61,24 +61,72 @@ class GameCheatManager(context: Context, titleId: String) {
             disabled.remove(cheat.name)
         else
             disabled.add(cheat.name)
+        writeDisabled(cheat.file, disabled)
+    }
 
-        val target = disabledFile(cheat.file)
-        if (disabled.isEmpty()) {
-            if (target.exists() && !target.delete())
-                throw IllegalStateException("Failed to enable cheat ${cheat.name}")
+    fun remove(cheat: GameCheat) {
+        val file = cheat.file
+        if (!file.isFile)
             return
+
+        val lines = file.readLines()
+        val output = mutableListOf<String>()
+        var removing = false
+        var removed = false
+
+        for (line in lines) {
+            val trimmed = line.trim()
+            val isRegularHeader = trimmed.startsWith("[") && trimmed.endsWith("]") && trimmed.length > 2
+            val isMasterHeader = trimmed.startsWith("{") && trimmed.endsWith("}") && trimmed.length > 2
+            val isHeader = isRegularHeader || isMasterHeader
+
+            if (removing && isHeader)
+                removing = false
+
+            if (!removed && isRegularHeader && trimmed.substring(1, trimmed.length - 1) == cheat.name) {
+                removing = true
+                removed = true
+                continue
+            }
+
+            if (!removing)
+                output += line
         }
 
-        val temp = File(target.parentFile, ".${target.name}.tmp")
-        temp.writeText(disabled.sorted().joinToString("\n", postfix = "\n"))
-        if (target.exists() && !target.delete()) {
+        if (!removed)
+            throw IllegalStateException("Failed to find cheat ${cheat.name}")
+
+        val temp = File(file.parentFile, ".${file.name}.tmp")
+        val normalized = output.joinToString("\n").trimEnd()
+        if (normalized.isEmpty())
+            temp.writeText("")
+        else
+            temp.writeText("$normalized\n")
+
+        if (file.exists() && !file.delete()) {
             temp.delete()
-            throw IllegalStateException("Failed to update cheat state")
+            throw IllegalStateException("Failed to delete cheat ${cheat.name}")
         }
-        if (!temp.renameTo(target)) {
-            temp.copyTo(target, overwrite = true)
+        if (!temp.renameTo(file)) {
+            temp.copyTo(file, overwrite = true)
             if (!temp.delete())
-                throw IllegalStateException("Failed to finalize cheat state")
+                throw IllegalStateException("Failed to finalize cheat deletion")
+        }
+
+        val disabled = disabledNames(file).toMutableSet()
+        disabled.remove(cheat.name)
+        writeDisabled(file, disabled)
+
+        if (parseSectionNames(file).isEmpty()) {
+            val stateFile = disabledFile(file)
+            if (file.exists() && !file.delete())
+                throw IllegalStateException("Failed to delete empty cheat file")
+            if (stateFile.exists() && !stateFile.delete())
+                throw IllegalStateException("Failed to delete cheat state")
+
+            val cheatsDir = file.parentFile
+            if (cheatsDir?.isDirectory == true && cheatsDir.listFiles().isNullOrEmpty())
+                cheatsDir.delete()
         }
     }
 
@@ -124,6 +172,27 @@ class GameCheatManager(context: Context, titleId: String) {
         if (!stateFile.isFile)
             return emptySet()
         return stateFile.readLines().map { it.removeSuffix("\r") }.filter { it.isNotEmpty() }.toSet()
+    }
+
+    private fun writeDisabled(file: File, disabled: Set<String>) {
+        val target = disabledFile(file)
+        if (disabled.isEmpty()) {
+            if (target.exists() && !target.delete())
+                throw IllegalStateException("Failed to update cheat state")
+            return
+        }
+
+        val temp = File(target.parentFile, ".${target.name}.tmp")
+        temp.writeText(disabled.sorted().joinToString("\n", postfix = "\n"))
+        if (target.exists() && !target.delete()) {
+            temp.delete()
+            throw IllegalStateException("Failed to update cheat state")
+        }
+        if (!temp.renameTo(target)) {
+            temp.copyTo(target, overwrite = true)
+            if (!temp.delete())
+                throw IllegalStateException("Failed to finalize cheat state")
+        }
     }
 
     private fun disabledFile(file: File): File {
