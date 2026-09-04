@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="content_type_title">Content type</string>
+    <string name="updates_and_dlc">Updates and DLC</string>
+    <string name="mod_import_source">Import mods</string>
+    <string name="mod_import_zip">ZIP archive</string>
+    <string name="mod_import_folder">Folder</string>
+    <string name="mods">Mods</string>
+    <string name="no_mods_found">No mods installed for this game</string>
+    <string name="mod_import_success">Imported %1$d mod package(s)</string>
+    <string name="mod_import_failed">Could not import mod package</string>
+    <string name="mod_operation_failed">Could not update mod state</string>
+    <string name="no_addons_added">No add-ons installed</string>
+    <string name="tap_install_content">Tap Install to add updates, DLC, or mods</string>
+</resources>
