@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <thread>
 #include "cheat_vm.h"
 
@@ -32,11 +33,12 @@ namespace skyline {
             CheatProcessMetadata metadata{};
             std::vector<CheatEntry> entries;
             CheatVm vm;
-            std::jthread worker;
+            std::thread worker;
+            std::atomic_bool stopRequested{};
             std::vector<std::shared_ptr<kernel::type::KThread>> pausedThreads;
             bool processPaused{};
 
-            void Run(std::stop_token stopToken);
+            void Run();
             std::vector<CheatEntry> LoadCheats();
 
             bool ReadMemory(u64 address, void *data, size_t size) override;
