@@ -24,9 +24,10 @@ class GameModManager(
     private val context: Context,
     titleId: String
 ) {
+    private val normalizedTitleId = titleId.uppercase(Locale.ROOT)
     private val root = File(
         context.getPublicFilesDir(),
-        "switch/load/${titleId.uppercase(Locale.ROOT)}"
+        "switch/load/$normalizedTitleId"
     )
 
     fun listMods(): List<GameMod> {
@@ -124,14 +125,16 @@ class GameModManager(
     private fun installDiscoveredPackages(sourceRoot: File, fallbackName: String): Int {
         val packages = discoverPackages(sourceRoot)
         if (packages.isEmpty())
-            throw IllegalArgumentException("Package does not contain supported ExeFS content")
+            throw IllegalArgumentException("Package does not contain supported ExeFS or RomFS content for this game")
 
         if (!root.isDirectory && !root.mkdirs())
             throw IllegalStateException("Failed to create game mod directory")
 
         val usedNames = mutableSetOf<String>()
         packages.forEachIndexed { index, source ->
-            val requestedName = if (source == sourceRoot) fallbackName else source.name
+            val requestedName = if (
+                source == sourceRoot || source.name.equals(normalizedTitleId, ignoreCase = true)
+            ) fallbackName else source.name
             val baseName = safeName(requestedName, index)
             var packageName = baseName
             var suffix = 2
@@ -143,6 +146,8 @@ class GameModManager(
     }
 
     private fun discoverPackages(directory: File, depth: Int = 0): List<File> {
+        if (isTitleIdDirectory(directory) && !directory.name.equals(normalizedTitleId, ignoreCase = true))
+            return emptyList()
         if (isModPackage(directory))
             return listOf(directory)
         if (depth >= MaxDiscoveryDepth)
@@ -162,7 +167,7 @@ class GameModManager(
         try {
             copyDirectory(source, staging)
             if (!isModPackage(staging))
-                throw IllegalArgumentException("Package does not contain supported ExeFS content")
+                throw IllegalArgumentException("Package does not contain supported ExeFS or RomFS content")
 
             if (target.exists() && !target.deleteRecursively())
                 throw IllegalStateException("Failed to replace existing mod")
@@ -227,7 +232,12 @@ class GameModManager(
     }
 
     private fun isModPackage(directory: File): Boolean {
-        return findChildDirectory(directory, "exefs") != null
+        return findChildDirectory(directory, "exefs") != null ||
+            findChildDirectory(directory, "romfs") != null
+    }
+
+    private fun isTitleIdDirectory(directory: File): Boolean {
+        return TitleIdPattern.matches(directory.name)
     }
 
     private fun findChildDirectory(parent: File, name: String): File? {
@@ -247,8 +257,9 @@ class GameModManager(
 
     companion object {
         const val DisabledMarker = ".disabled"
-        private const val MaxDiscoveryDepth = 2
+        private const val MaxDiscoveryDepth = 4
         private const val MaxNameLength = 96
         private val InvalidFilenameChars = Regex("[\\\\/:*?\"<>|]")
+        private val TitleIdPattern = Regex("^[0-9A-Fa-f]{16}$")
     }
 }
