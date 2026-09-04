@@ -4,11 +4,16 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <sys/mman.h>
+#include <unordered_map>
+#include <unordered_set>
 #include <os.h>
 #include <kernel/scheduler.h>
 #include <kernel/types/KProcess.h>
@@ -154,6 +159,57 @@ namespace skyline::cheats {
                 return std::nullopt;
             return it->second;
         }
+
+        bool AccessGuestMemory(const std::shared_ptr<kernel::type::KProcess> &process, u64 address, void *buffer, size_t size, bool write) {
+            if (!size)
+                return true;
+            if (address > std::numeric_limits<u64>::max() - size)
+                return false;
+
+            auto *guest{reinterpret_cast<u8 *>(address)};
+            if (!process->memory.AddressSpaceContains(span<u8>{guest, size}))
+                return false;
+
+            auto *bytes{reinterpret_cast<u8 *>(buffer)};
+            size_t copied{};
+            while (copied < size) {
+                auto *current{guest + copied};
+                auto chunk{process->memory.GetChunk(current)};
+                if (!chunk || chunk->second.state == memory::states::Unmapped ||
+                    (write && !chunk->second.state.forceReadWritableByDebugSyscalls))
+                    return false;
+
+                const size_t chunkRemaining{chunk->second.size - static_cast<size_t>(current - chunk->first)};
+                const uintptr_t pageAddress{reinterpret_cast<uintptr_t>(current) & ~(constant::PageSize - 1)};
+                auto *pageGuest{reinterpret_cast<u8 *>(pageAddress)};
+                const size_t pageOffset{static_cast<size_t>(current - pageGuest)};
+                const size_t amount{std::min({size - copied, chunkRemaining, constant::PageSize - pageOffset})};
+
+                auto hostPage{process->memory.GetHostSpan(span<u8>{pageGuest, constant::PageSize})};
+                auto *hostCurrent{hostPage.data() + pageOffset};
+                process->trap.HandleTrap(hostCurrent, write);
+
+                void *mirror{mremap(hostPage.data(), 0, constant::PageSize, MREMAP_MAYMOVE)};
+                if (mirror == MAP_FAILED)
+                    return false;
+                if (mprotect(mirror, constant::PageSize, PROT_READ | PROT_WRITE)) {
+                    munmap(mirror, constant::PageSize);
+                    return false;
+                }
+
+                auto *mirrorCurrent{reinterpret_cast<u8 *>(mirror) + pageOffset};
+                if (write) {
+                    std::memcpy(mirrorCurrent, bytes + copied, amount);
+                    __builtin___clear_cache(reinterpret_cast<char *>(mirrorCurrent), reinterpret_cast<char *>(mirrorCurrent + amount));
+                    __builtin___clear_cache(reinterpret_cast<char *>(hostCurrent), reinterpret_cast<char *>(hostCurrent + amount));
+                } else {
+                    std::memcpy(bytes + copied, mirrorCurrent, amount);
+                }
+                munmap(mirror, constant::PageSize);
+                copied += amount;
+            }
+            return true;
+        }
     }
 
     void RecordMainNso(const kernel::type::KProcess *process, const std::array<u64, 4> &buildId, u64 base, u64 size) {
@@ -179,6 +235,9 @@ namespace skyline::cheats {
 
     CheatManager::CheatManager(const DeviceState &state, std::shared_ptr<kernel::type::KProcess> process)
         : state{state}, process{std::move(process)}, vm{*this} {
+        for (auto &keys : controllerKeys)
+            keys.store(0, std::memory_order_relaxed);
+
         const auto info{GetMainNsoInfo(this->process.get())};
         if (!info)
             return;
@@ -286,11 +345,11 @@ namespace skyline::cheats {
 
     bool CheatManager::ReadMemory(u64 address, void *data, size_t size) {
         std::memset(data, 0, size);
-        return process->memory.ReadDebugMemory(address, data, size);
+        return AccessGuestMemory(process, address, data, size, false);
     }
 
     bool CheatManager::WriteMemory(u64 address, const void *data, size_t size) {
-        return process->memory.WriteDebugMemory(address, data, size);
+        return AccessGuestMemory(process, address, const_cast<void *>(data), size, true);
     }
 
     u64 CheatManager::KeysDown() {
