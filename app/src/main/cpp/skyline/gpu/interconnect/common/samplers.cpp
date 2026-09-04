@@ -209,7 +209,9 @@ namespace skyline::gpu::interconnect {
                     .mipLodBias = texSampler.MipLodBias(),
                     .anisotropyEnable = ctx.gpu.traits.supportsAnisotropicFiltering && maxAnisotropy > 1.0f,
                     .maxAnisotropy = maxAnisotropy,
-                    .compareEnable = !ctx.gpu.traits.quirks.brokenTextureShadowCompare && texSampler.depthCompareEnable,
+                    // Experimental Link's Awakening/Adreno test: bypass the brokenTextureShadowCompare quirk
+                    // and let Vulkan perform the guest's native depth comparison for shadow samplers.
+                    .compareEnable = texSampler.depthCompareEnable,
                     .compareOp = ConvertSamplerCompareOp(texSampler.depthCompareOp),
                     .minLod = texSampler.mipFilter == TextureSamplerControl::MipFilter::None ? 0.0f : texSampler.MinLodClamp(),
                     .maxLod = texSampler.mipFilter == TextureSamplerControl::MipFilter::None ? 0.25f : texSampler.MaxLodClamp(),
