@@ -33,9 +33,11 @@ class ManageContentActivity : AppCompatActivity() {
     private lateinit var gameContentPreference: GameContentPreference
     private lateinit var nspFilePicker: NspFilePicker
     private lateinit var modManager: GameModManager
+    private lateinit var cheatManager: GameCheatManager
     private lateinit var updatesAdapter: ContentListAdapter
     private lateinit var dlcsAdapter: ContentListAdapter
     private lateinit var modsAdapter: ModListAdapter
+    private lateinit var cheatsAdapter: CheatListAdapter
 
     private val modArchivePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -85,24 +87,21 @@ class ManageContentActivity : AppCompatActivity() {
         gameContentPreference = GameContentPreference(this)
         gameContentPreference.setBaseTitleId(titleId)
         modManager = GameModManager(this, titleId)
+        cheatManager = GameCheatManager(this, titleId)
 
         nspFilePicker = NspFilePicker.withMultiple(this, binding.root) { uri, fileName ->
             handleNspSelection(uri, fileName)
         }
 
         updatesAdapter = ContentListAdapter(
-            onUpdateToggled = { contentItem, isEnabled ->
-                handleUpdateToggle(contentItem, isEnabled)
-            },
+            onUpdateToggled = { contentItem, isEnabled -> handleUpdateToggle(contentItem, isEnabled) },
             onDlcToggled = { _, _ -> },
             onItemDelete = { contentItem -> handleItemDelete(contentItem) }
         )
 
         dlcsAdapter = ContentListAdapter(
             onUpdateToggled = { _, _ -> },
-            onDlcToggled = { contentItem, isEnabled ->
-                handleDlcToggle(contentItem, isEnabled)
-            },
+            onDlcToggled = { contentItem, isEnabled -> handleDlcToggle(contentItem, isEnabled) },
             onItemDelete = { contentItem -> handleItemDelete(contentItem) }
         )
 
@@ -110,6 +109,10 @@ class ManageContentActivity : AppCompatActivity() {
             onToggled = { mod, isEnabled -> handleModToggle(mod, isEnabled) },
             onDelete = { mod -> handleModDelete(mod) }
         )
+
+        cheatsAdapter = CheatListAdapter { cheat, isEnabled ->
+            handleCheatToggle(cheat, isEnabled)
+        }
 
         binding.recyclerViewUpdates.apply {
             layoutManager = LinearLayoutManager(this@ManageContentActivity)
@@ -122,6 +125,10 @@ class ManageContentActivity : AppCompatActivity() {
         binding.recyclerViewMods.apply {
             layoutManager = LinearLayoutManager(this@ManageContentActivity)
             adapter = modsAdapter
+        }
+        binding.recyclerViewCheats.apply {
+            layoutManager = LinearLayoutManager(this@ManageContentActivity)
+            adapter = cheatsAdapter
         }
 
         binding.fabAddContent.setOnClickListener { showContentTypeDialog() }
@@ -188,19 +195,13 @@ class ManageContentActivity : AppCompatActivity() {
     private fun importModArchive(uri: Uri, displayName: String) {
         lifecycleScope.launch {
             try {
-                val count = withContext(Dispatchers.IO) {
-                    modManager.importArchive(uri, displayName)
-                }
+                val count = withContext(Dispatchers.IO) { modManager.importArchive(uri, displayName) }
                 loadExistingContent()
                 Snackbar.make(binding.root, getString(R.string.mod_import_success, count), Snackbar.LENGTH_LONG).show()
             } catch (e: Exception) {
-                Log.e("ManageContent", "Failed to import mod archive", e)
+                Log.e("ManageContent", "Failed to import add-on archive", e)
                 val reason = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
-                Snackbar.make(
-                    binding.root,
-                    "${getString(R.string.mod_import_failed)}: $reason",
-                    Snackbar.LENGTH_LONG
-                ).show()
+                Snackbar.make(binding.root, "${getString(R.string.mod_import_failed)}: $reason", Snackbar.LENGTH_LONG).show()
             }
         }
     }
@@ -208,19 +209,13 @@ class ManageContentActivity : AppCompatActivity() {
     private fun importModFolder(uri: Uri) {
         lifecycleScope.launch {
             try {
-                val count = withContext(Dispatchers.IO) {
-                    modManager.importFolder(uri)
-                }
+                val count = withContext(Dispatchers.IO) { modManager.importFolder(uri) }
                 loadExistingContent()
                 Snackbar.make(binding.root, getString(R.string.mod_import_success, count), Snackbar.LENGTH_LONG).show()
             } catch (e: Exception) {
-                Log.e("ManageContent", "Failed to import mod folder", e)
+                Log.e("ManageContent", "Failed to import add-on folder", e)
                 val reason = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
-                Snackbar.make(
-                    binding.root,
-                    "${getString(R.string.mod_import_failed)}: $reason",
-                    Snackbar.LENGTH_LONG
-                ).show()
+                Snackbar.make(binding.root, "${getString(R.string.mod_import_failed)}: $reason", Snackbar.LENGTH_LONG).show()
             }
         }
     }
@@ -272,17 +267,20 @@ class ManageContentActivity : AppCompatActivity() {
         val updates = ContentManager.getUpdatesForGame(titleId)
         val dlcs = ContentManager.getDlcsForGame(titleId)
         val mods = modManager.listMods()
+        val cheats = cheatManager.listCheats()
 
         updatesAdapter.submitList(updates)
         dlcsAdapter.submitList(dlcs)
         modsAdapter.submitList(mods)
+        cheatsAdapter.submitList(cheats)
 
-        val hasContent = updates.isNotEmpty() || dlcs.isNotEmpty() || mods.isNotEmpty()
+        val hasContent = updates.isNotEmpty() || dlcs.isNotEmpty() || mods.isNotEmpty() || cheats.isNotEmpty()
         binding.emptyState.visibility = if (hasContent) android.view.View.GONE else android.view.View.VISIBLE
         binding.contentScrollView.visibility = if (hasContent) android.view.View.VISIBLE else android.view.View.GONE
         binding.emptyUpdates.visibility = if (updates.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
         binding.emptyDlcs.visibility = if (dlcs.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
         binding.emptyMods.visibility = if (mods.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+        binding.emptyCheats.visibility = if (cheats.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
     }
 
     private fun handleModToggle(mod: GameMod, isEnabled: Boolean) {
@@ -301,6 +299,16 @@ class ManageContentActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.e("ManageContent", "Failed to delete mod ${mod.name}", e)
             Snackbar.make(binding.root, R.string.mod_operation_failed, Snackbar.LENGTH_LONG).show()
+        }
+        loadExistingContent()
+    }
+
+    private fun handleCheatToggle(cheat: GameCheat, isEnabled: Boolean) {
+        try {
+            cheatManager.setEnabled(cheat, isEnabled)
+        } catch (e: Exception) {
+            Log.e("ManageContent", "Failed to toggle cheat ${cheat.name}", e)
+            Snackbar.make(binding.root, R.string.cheat_operation_failed, Snackbar.LENGTH_LONG).show()
         }
         loadExistingContent()
     }
