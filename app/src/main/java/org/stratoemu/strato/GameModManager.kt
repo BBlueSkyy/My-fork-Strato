@@ -148,7 +148,7 @@ class GameModManager(
     private fun discoverPackages(directory: File, depth: Int = 0): List<File> {
         if (isTitleIdDirectory(directory) && !directory.name.equals(normalizedTitleId, ignoreCase = true))
             return emptyList()
-        if (isModPackage(directory))
+        if (isImportablePackage(directory))
             return listOf(directory)
         if (depth >= MaxDiscoveryDepth)
             return emptyList()
@@ -166,7 +166,7 @@ class GameModManager(
         val target = File(root, packageName)
         try {
             copyDirectory(source, staging)
-            if (!isModPackage(staging))
+            if (!isImportablePackage(staging))
                 throw IllegalArgumentException("Package does not contain supported ExeFS, RomFS, ExeFS patches, or cheats")
 
             if (target.exists() && !target.deleteRecursively())
@@ -231,11 +231,14 @@ class GameModManager(
         return child
     }
 
+    private fun isImportablePackage(directory: File): Boolean {
+        return isModPackage(directory) || findChildDirectory(directory, "cheats") != null
+    }
+
     private fun isModPackage(directory: File): Boolean {
         return findChildDirectory(directory, "exefs") != null ||
             findChildDirectory(directory, "romfs") != null ||
-            findChildDirectory(directory, "exefs_patches") != null ||
-            findChildDirectory(directory, "cheats") != null
+            findChildDirectory(directory, "exefs_patches") != null
     }
 
     private fun isTitleIdDirectory(directory: File): Boolean {
