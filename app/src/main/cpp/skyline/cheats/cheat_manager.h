@@ -3,10 +3,7 @@
 
 #pragma once
 
-#include <atomic>
-#include <filesystem>
 #include <thread>
-#include <unordered_map>
 #include "cheat_vm.h"
 
 namespace skyline {
@@ -21,6 +18,7 @@ namespace skyline {
 
         void RecordMainNso(const kernel::type::KProcess *process, const std::array<u64, 4> &buildId, u64 base, u64 size);
         void ClearMainNso(const kernel::type::KProcess *process);
+        void UpdateKeyState(size_t controller, u64 mask, bool pressed);
 
         class CheatManager final : private CheatVm::Callbacks {
           public:
