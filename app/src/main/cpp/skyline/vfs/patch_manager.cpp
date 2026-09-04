@@ -13,6 +13,8 @@
 
 namespace skyline::vfs {
     namespace {
+        constexpr std::string_view DisabledMarker{".disabled"};
+
         std::string ToLower(std::string value) {
             std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
                 return static_cast<char>(std::tolower(c));
@@ -38,8 +40,22 @@ namespace skyline::vfs {
                 return directories;
 
             for (std::filesystem::directory_iterator it(root, error), end; !error && it != end; it.increment(error)) {
-                if (it->is_directory(error) && !error)
-                    directories.push_back(it->path());
+                if (!it->is_directory(error) || error)
+                    continue;
+
+                const auto path{it->path()};
+                const auto name{path.filename().string()};
+                if (name.starts_with('.'))
+                    continue;
+
+                error.clear();
+                const bool disabled{std::filesystem::exists(path / DisabledMarker, error)};
+                if (error) {
+                    error.clear();
+                    continue;
+                }
+                if (!disabled)
+                    directories.push_back(path);
             }
 
             std::sort(directories.begin(), directories.end(), [](const auto &left, const auto &right) {

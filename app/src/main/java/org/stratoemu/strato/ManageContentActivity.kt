@@ -5,11 +5,20 @@
 
 package org.stratoemu.strato
 
+import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.view.MenuItem
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.documentfile.provider.DocumentFile
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.snackbar.Snackbar
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.stratoemu.strato.data.AppItem
 import org.stratoemu.strato.data.AppItemTag
 import org.stratoemu.strato.databinding.ActivityManageContentBinding
@@ -17,45 +26,47 @@ import org.stratoemu.strato.preference.GameContentPreference
 import org.stratoemu.strato.utils.NspFilePicker
 import org.stratoemu.strato.utils.serializable
 
-/**
- * Activity for managing game content (updates and DLC)
- */
 class ManageContentActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityManageContentBinding
     private lateinit var gameItem: AppItem
     private lateinit var gameContentPreference: GameContentPreference
     private lateinit var nspFilePicker: NspFilePicker
+    private lateinit var modManager: GameModManager
     private lateinit var updatesAdapter: ContentListAdapter
     private lateinit var dlcsAdapter: ContentListAdapter
+    private lateinit var modsAdapter: ModListAdapter
+
+    private val modArchivePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            val displayName = DocumentFile.fromSingleUri(this, uri)?.name ?: "mod.zip"
+            importModArchive(uri, displayName)
+        }
+    }
+
+    private val modFolderPicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null)
+            importModFolder(uri)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityManageContentBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Get game item from intent
         gameItem = intent.serializable<AppItem>(AppItemTag)
             ?: throw IllegalStateException("ManageContentActivity requires an AppItem")
 
-        // Setup toolbar
         setSupportActionBar(binding.toolbar)
         supportActionBar?.apply {
             setDisplayHomeAsUpEnabled(true)
             setDisplayShowHomeEnabled(true)
-
             title = gameItem.title
 
             val isDarkTheme = resources.configuration.uiMode and
                 android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
                 android.content.res.Configuration.UI_MODE_NIGHT_YES
-
-            val textColor = if (isDarkTheme) {
-                android.graphics.Color.WHITE
-            } else {
-                android.graphics.Color.BLACK
-            }
-
+            val textColor = if (isDarkTheme) android.graphics.Color.WHITE else android.graphics.Color.BLACK
             binding.toolbar.setTitleTextColor(textColor)
 
             val backArrow = androidx.appcompat.content.res.AppCompatResources.getDrawable(
@@ -66,22 +77,19 @@ class ManageContentActivity : AppCompatActivity() {
             setHomeAsUpIndicator(backArrow)
         }
 
-        // Setup game content preference
-        gameItem.titleId?.let { titleId ->
-            gameContentPreference = GameContentPreference(this)
-            gameContentPreference.setBaseTitleId(titleId)
-        } ?: run {
+        val titleId = gameItem.titleId ?: run {
             finish()
             return
         }
 
-        // Setup NSP file picker with multiple-selection support.
-        // Every selected URI is processed independently, with no artificial count limit.
+        gameContentPreference = GameContentPreference(this)
+        gameContentPreference.setBaseTitleId(titleId)
+        modManager = GameModManager(this, titleId)
+
         nspFilePicker = NspFilePicker.withMultiple(this, binding.root) { uri, fileName ->
             handleNspSelection(uri, fileName)
         }
 
-        // Setup RecyclerViews
         updatesAdapter = ContentListAdapter(
             onUpdateToggled = { contentItem, isEnabled ->
                 handleUpdateToggle(contentItem, isEnabled)
@@ -98,22 +106,25 @@ class ManageContentActivity : AppCompatActivity() {
             onItemDelete = { contentItem -> handleItemDelete(contentItem) }
         )
 
+        modsAdapter = ModListAdapter(
+            onToggled = { mod, isEnabled -> handleModToggle(mod, isEnabled) },
+            onDelete = { mod -> handleModDelete(mod) }
+        )
+
         binding.recyclerViewUpdates.apply {
             layoutManager = LinearLayoutManager(this@ManageContentActivity)
             adapter = updatesAdapter
         }
-
         binding.recyclerViewDlcs.apply {
             layoutManager = LinearLayoutManager(this@ManageContentActivity)
             adapter = dlcsAdapter
         }
-
-        // Setup FAB
-        binding.fabAddContent.setOnClickListener {
-            nspFilePicker.openNspFilePicker()
+        binding.recyclerViewMods.apply {
+            layoutManager = LinearLayoutManager(this@ManageContentActivity)
+            adapter = modsAdapter
         }
 
-        // Load existing content
+        binding.fabAddContent.setOnClickListener { showContentTypeDialog() }
         loadExistingContent()
     }
 
@@ -123,110 +134,126 @@ class ManageContentActivity : AppCompatActivity() {
                 onBackPressed()
                 true
             }
-
             else -> super.onOptionsItemSelected(item)
         }
     }
 
-    private fun handleNspSelection(uri: android.net.Uri, fileName: String) {
-        // Take persistent URI permissions first
+    private fun showContentTypeDialog() {
+        val choices = arrayOf(
+            getString(R.string.updates_and_dlc),
+            getString(R.string.mods_and_cheats)
+        )
+        var selected = 0
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.content_type_title)
+            .setSingleChoiceItems(choices, selected) { _, which -> selected = which }
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                if (selected == 0)
+                    nspFilePicker.openNspFilePicker()
+                else
+                    showModImportDialog()
+            }
+            .show()
+    }
+
+    private fun showModImportDialog() {
+        val choices = arrayOf(
+            getString(R.string.mod_import_zip),
+            getString(R.string.mod_import_folder)
+        )
+        var selected = 0
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.mod_import_source)
+            .setSingleChoiceItems(choices, selected) { _, which -> selected = which }
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                if (selected == 0) {
+                    modArchivePicker.launch(
+                        arrayOf(
+                            "application/zip",
+                            "application/x-zip-compressed",
+                            "application/octet-stream"
+                        )
+                    )
+                } else {
+                    modFolderPicker.launch(null)
+                }
+            }
+            .show()
+    }
+
+    private fun importModArchive(uri: Uri, displayName: String) {
+        lifecycleScope.launch {
+            try {
+                val count = withContext(Dispatchers.IO) {
+                    modManager.importArchive(uri, displayName)
+                }
+                loadExistingContent()
+                Snackbar.make(binding.root, getString(R.string.mod_import_success, count), Snackbar.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Log.e("ManageContent", "Failed to import mod archive", e)
+                Snackbar.make(binding.root, R.string.mod_import_failed, Snackbar.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun importModFolder(uri: Uri) {
+        lifecycleScope.launch {
+            try {
+                val count = withContext(Dispatchers.IO) {
+                    modManager.importFolder(uri)
+                }
+                loadExistingContent()
+                Snackbar.make(binding.root, getString(R.string.mod_import_success, count), Snackbar.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Log.e("ManageContent", "Failed to import mod folder", e)
+                Snackbar.make(binding.root, R.string.mod_import_failed, Snackbar.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun handleNspSelection(uri: Uri, fileName: String) {
         try {
             contentResolver.takePersistableUriPermission(
                 uri,
                 android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
-        } catch (e: Exception) {
-            // Continue anyway, might still work
+        } catch (_: Exception) {
         }
 
-        // Parse NSP metadata
         val metadata = org.stratoemu.strato.loader.NspParser.parseNspMetadata(this, uri)
-
         if (metadata != null) {
             when {
                 metadata.isUpdate -> {
-                    // Validate it's an update for this game
-                    if (
-                        org.stratoemu.strato.loader.NspParser.isValidUpdate(
-                            this,
-                            uri,
-                            gameItem.titleId!!
-                        )
-                    ) {
+                    if (org.stratoemu.strato.loader.NspParser.isValidUpdate(this, uri, gameItem.titleId!!))
                         addUpdate(uri, metadata)
-                    }
                 }
-
                 metadata.isDlc -> {
-                    // Validate it's DLC for this game
-                    if (
-                        org.stratoemu.strato.loader.NspParser.isValidDlc(
-                            this,
-                            uri,
-                            gameItem.titleId!!
-                        )
-                    ) {
+                    if (org.stratoemu.strato.loader.NspParser.isValidDlc(this, uri, gameItem.titleId!!))
                         addDlc(uri, metadata, fileName)
-                    }
                 }
-
-                else -> {}
             }
         }
     }
 
-    private fun addUpdate(
-        uri: android.net.Uri,
-        metadata: org.stratoemu.strato.loader.NspMetadata
-    ) {
-        // Save the update (this will replace any existing update)
+    private fun addUpdate(uri: Uri, metadata: org.stratoemu.strato.loader.NspMetadata) {
         gameContentPreference.saveSelectedUpdate(uri, metadata.version)
-
-        // Add to content manager and automatically enable it
-        ContentManager.addUpdate(
-            gameItem.titleId!!,
-            uri,
-            metadata.name,
-            metadata.version
-        )
+        ContentManager.addUpdate(gameItem.titleId!!, uri, metadata.name, metadata.version)
         ContentManager.setUpdateEnabled(gameItem.titleId!!, uri, true)
-
-        // Refresh the list
         loadExistingContent()
     }
 
-    private fun addDlc(
-        uri: android.net.Uri,
-        metadata: org.stratoemu.strato.loader.NspMetadata,
-        fileName: String
-    ) {
+    private fun addDlc(uri: Uri, metadata: org.stratoemu.strato.loader.NspMetadata, fileName: String) {
         val titleId = gameItem.titleId!!
         val displayName = fileName.removeSuffix(".nsp")
 
-        // Add DLC to the content list
-        ContentManager.addDlc(
-            titleId,
-            uri,
-            metadata.name,
-            displayName
-        )
-
-        // Enable the DLC immediately
-        ContentManager.setDlcEnabled(
-            titleId,
-            uri,
-            true
-        )
-
-        // Keep the compatibility preference in sync
-        gameContentPreference.addDlc(
-            uri,
-            metadata.name
-        )
-
-        // Refresh the list so the enabled state appears immediately
+        ContentManager.addDlc(titleId, uri, metadata.name, displayName)
+        ContentManager.setDlcEnabled(titleId, uri, true)
+        gameContentPreference.addDlc(uri, metadata.name)
         loadExistingContent()
-
         Log.d("ManageContent", "DLC added and enabled: ${metadata.name}")
     }
 
@@ -234,120 +261,77 @@ class ManageContentActivity : AppCompatActivity() {
         val titleId = gameItem.titleId!!
         val updates = ContentManager.getUpdatesForGame(titleId)
         val dlcs = ContentManager.getDlcsForGame(titleId)
+        val mods = modManager.listMods()
 
         updatesAdapter.submitList(updates)
         dlcsAdapter.submitList(dlcs)
+        modsAdapter.submitList(mods)
 
-        val hasContent = updates.isNotEmpty() || dlcs.isNotEmpty()
-        binding.emptyState.visibility =
-            if (hasContent) android.view.View.GONE else android.view.View.VISIBLE
+        val hasContent = updates.isNotEmpty() || dlcs.isNotEmpty() || mods.isNotEmpty()
+        binding.emptyState.visibility = if (hasContent) android.view.View.GONE else android.view.View.VISIBLE
+        binding.contentScrollView.visibility = if (hasContent) android.view.View.VISIBLE else android.view.View.GONE
+        binding.emptyUpdates.visibility = if (updates.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+        binding.emptyDlcs.visibility = if (dlcs.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+        binding.emptyMods.visibility = if (mods.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+    }
 
-        binding.contentScrollView.visibility =
-            if (hasContent) android.view.View.VISIBLE else android.view.View.GONE
+    private fun handleModToggle(mod: GameMod, isEnabled: Boolean) {
+        try {
+            modManager.setEnabled(mod, isEnabled)
+        } catch (e: Exception) {
+            Log.e("ManageContent", "Failed to toggle mod ${mod.name}", e)
+            Snackbar.make(binding.root, R.string.mod_operation_failed, Snackbar.LENGTH_LONG).show()
+        }
+        loadExistingContent()
+    }
 
-        binding.emptyUpdates.visibility =
-            if (updates.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
-
-        binding.emptyDlcs.visibility =
-            if (dlcs.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+    private fun handleModDelete(mod: GameMod) {
+        try {
+            modManager.remove(mod)
+        } catch (e: Exception) {
+            Log.e("ManageContent", "Failed to delete mod ${mod.name}", e)
+            Snackbar.make(binding.root, R.string.mod_operation_failed, Snackbar.LENGTH_LONG).show()
+        }
+        loadExistingContent()
     }
 
     private fun handleUpdateToggle(contentItem: ContentItem, isEnabled: Boolean) {
-        // Update the content manager state FIRST
-        ContentManager.setUpdateEnabled(
-            gameItem.titleId!!,
-            contentItem.uri,
-            isEnabled
-        )
+        ContentManager.setUpdateEnabled(gameItem.titleId!!, contentItem.uri, isEnabled)
 
         if (isEnabled) {
-            // Enable this update (disable others first)
-            gameContentPreference.saveSelectedUpdate(
-                contentItem.uri,
-                contentItem.version ?: ""
-            )
-            Log.d(
-                "ManageContent",
-                "Update enabled in both systems: ${contentItem.name}"
-            )
-
-            // Verify it was saved correctly
-            val savedUri = gameContentPreference.getSelectedUpdateUri()
-            Log.d(
-                "ManageContent",
-                "Verification - savedUri from GameContentPreference: $savedUri"
-            )
-
-            val enabledFromContentManager =
-                ContentManager.getEnabledUpdate(gameItem.titleId!!)
-            Log.d(
-                "ManageContent",
-                "Verification - enabled from ContentManager: ${enabledFromContentManager?.uri}"
-            )
+            gameContentPreference.saveSelectedUpdate(contentItem.uri, contentItem.version ?: "")
+            Log.d("ManageContent", "Update enabled in both systems: ${contentItem.name}")
         } else {
-            // Disable update
             gameContentPreference.clearUpdate()
-            Log.d(
-                "ManageContent",
-                "Update disabled in both systems: ${contentItem.name}"
-            )
+            Log.d("ManageContent", "Update disabled in both systems: ${contentItem.name}")
         }
-
-        // Refresh list to update UI
         loadExistingContent()
     }
 
     private fun handleDlcToggle(contentItem: ContentItem, isEnabled: Boolean) {
-        ContentManager.setDlcEnabled(
-            gameItem.titleId!!,
-            contentItem.uri,
-            isEnabled
-        )
-
-        // Update preferences
-        if (isEnabled) {
-            gameContentPreference.addDlc(
-                contentItem.uri,
-                contentItem.name
-            )
-        } else {
+        ContentManager.setDlcEnabled(gameItem.titleId!!, contentItem.uri, isEnabled)
+        if (isEnabled)
+            gameContentPreference.addDlc(contentItem.uri, contentItem.name)
+        else
             gameContentPreference.removeDlc(contentItem.uri)
-        }
 
-        Log.d(
-            "ManageContent",
-            "DLC ${if (isEnabled) "enabled" else "disabled"}: ${contentItem.name}"
-        )
+        Log.d("ManageContent", "DLC ${if (isEnabled) "enabled" else "disabled"}: ${contentItem.name}")
     }
 
     private fun handleItemDelete(contentItem: ContentItem) {
-        // Remove from content manager
-        ContentManager.removeContent(
-            gameItem.titleId!!,
-            contentItem.uri
-        )
-
-        // Remove from preferences if it was enabled
-        if (contentItem.type == ContentType.UPDATE) {
+        ContentManager.removeContent(gameItem.titleId!!, contentItem.uri)
+        if (contentItem.type == ContentType.UPDATE)
             gameContentPreference.clearUpdate()
-        } else {
+        else
             gameContentPreference.removeDlc(contentItem.uri)
-        }
 
-        // Refresh list
         loadExistingContent()
-
-        Log.d(
-            "ManageContent",
-            "Content item deleted: ${contentItem.name}"
-        )
+        Log.d("ManageContent", "Content item deleted: ${contentItem.name}")
     }
 
     override fun onDestroy() {
         super.onDestroy()
-
-        if (::nspFilePicker.isInitialized) {
+        if (::nspFilePicker.isInitialized)
             nspFilePicker.cleanup()
-        }
     }
 }

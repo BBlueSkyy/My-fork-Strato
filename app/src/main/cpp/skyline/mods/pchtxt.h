@@ -307,8 +307,22 @@ namespace skyline::mods {
 
         std::vector<std::filesystem::path> modDirectories;
         for (std::filesystem::directory_iterator it(root, error), end; !error && it != end; it.increment(error)) {
-            if (it->is_directory(error) && !error)
-                modDirectories.push_back(it->path());
+            if (!it->is_directory(error) || error)
+                continue;
+
+            const auto path{it->path()};
+            const auto name{path.filename().string()};
+            if (name.starts_with('.'))
+                continue;
+
+            error.clear();
+            const bool disabled{std::filesystem::exists(path / ".disabled", error)};
+            if (error) {
+                error.clear();
+                continue;
+            }
+            if (!disabled)
+                modDirectories.push_back(path);
         }
         std::sort(modDirectories.begin(), modDirectories.end());
 
