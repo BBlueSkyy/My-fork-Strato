@@ -16,7 +16,8 @@ import com.google.android.material.color.MaterialColors
 import org.stratoemu.strato.databinding.ItemContentBinding
 
 class CheatListAdapter(
-    private val onToggled: (GameCheat, Boolean) -> Unit
+    private val onToggled: (GameCheat, Boolean) -> Unit,
+    private val onDelete: (GameCheat) -> Unit
 ) : ListAdapter<GameCheat, CheatListAdapter.CheatViewHolder>(DiffCallback()) {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): CheatViewHolder {
@@ -38,7 +39,7 @@ class CheatListAdapter(
             binding.contentTypeIcon.setImageResource(R.drawable.ic_extension)
             binding.radioButton.visibility = View.GONE
             binding.checkBox.visibility = View.VISIBLE
-            binding.deleteButton.visibility = View.GONE
+            binding.deleteButton.visibility = View.VISIBLE
             binding.selectionContainer.visibility = View.VISIBLE
             binding.checkBox.isChecked = cheat.enabled
             binding.checkBox.isEnabled = cheat.packEnabled
@@ -59,6 +60,9 @@ class CheatListAdapter(
 
             binding.checkBox.setOnClickListener {
                 onToggled(cheat, binding.checkBox.isChecked)
+            }
+            binding.deleteButton.setOnClickListener {
+                onDelete(cheat)
             }
             binding.root.setOnClickListener {
                 if (!cheat.packEnabled)
