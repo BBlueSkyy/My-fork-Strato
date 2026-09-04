@@ -75,10 +75,8 @@ namespace skyline::loader {
     }
 
     void *NspLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
-        if (state.updateLoader) {
-            auto patchManager{std::make_shared<vfs::PatchManager>()};
-            programNca->exeFs = patchManager->PatchExeFS(state, programNca->exeFs);
-        }
+        auto patchManager{std::make_shared<vfs::PatchManager>()};
+        programNca->exeFs = patchManager->PatchExeFS(state, programNca->exeFs, programNca->header.titleId);
 
         process->npdm = vfs::NPDM(programNca->exeFs->OpenFile("main.npdm"));
         return NcaLoader::LoadExeFs(this, programNca->exeFs, process, state);

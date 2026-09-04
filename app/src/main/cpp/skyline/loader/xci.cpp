@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
-// Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
+// Copyright © 2021 Skyline Team and Contributors (https://github.com/strato-emu/)
 
 #include <common.h>
 #include <kernel/types/KProcess.h>
 #include <vfs/region_backing.h>
 #include "nca.h"
 #include "xci.h"
+#include "vfs/patch_manager.h"
 
 namespace skyline::loader {
     XciLoader::XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore) {
@@ -67,6 +68,9 @@ namespace skyline::loader {
     }
 
     void *XciLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
+        auto patchManager{std::make_shared<vfs::PatchManager>()};
+        programNca->exeFs = patchManager->PatchExeFS(state, programNca->exeFs, programNca->header.titleId);
+
         process->npdm = vfs::NPDM(programNca->exeFs->OpenFile("main.npdm"));
         return NcaLoader::LoadExeFs(this, programNca->exeFs, process, state);
     }
