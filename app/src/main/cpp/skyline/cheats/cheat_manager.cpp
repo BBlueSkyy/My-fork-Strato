@@ -261,14 +261,13 @@ namespace skyline::cheats {
             return;
 
         LOGI("Cheats: starting VM for {:016X}, Build ID {} with {} opcodes", metadata.titleId, BuildIdString(metadata.buildId), vm.ProgramSize());
-        worker = std::jthread([this](std::stop_token stopToken) { Run(stopToken); });
+        worker = std::thread([this] { Run(); });
     }
 
     CheatManager::~CheatManager() {
-        if (worker.joinable()) {
-            worker.request_stop();
+        stopRequested.store(true, std::memory_order_relaxed);
+        if (worker.joinable())
             worker.join();
-        }
         if (processPaused)
             ResumeProcess();
         ClearMainNso(process.get());
@@ -323,10 +322,10 @@ namespace skyline::cheats {
         return result;
     }
 
-    void CheatManager::Run(std::stop_token stopToken) {
+    void CheatManager::Run() {
         constexpr auto interval{std::chrono::nanoseconds{1000000000 / 12}};
         auto next{std::chrono::steady_clock::now()};
-        while (!stopToken.stop_requested()) {
+        while (!stopRequested.load(std::memory_order_relaxed)) {
             vm.Execute(metadata);
             next += interval;
             std::this_thread::sleep_until(next);
