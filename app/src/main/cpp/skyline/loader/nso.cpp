@@ -5,6 +5,7 @@
 #include <nce.h>
 #include <os.h>
 #include <mods/pchtxt.h>
+#include <cheats/cheat_manager.h>
 #include <kernel/types/KProcess.h>
 #include <boost/regex/v5/regex.hpp>
 #include "nso.h"
@@ -97,7 +98,15 @@ namespace skyline::loader {
 
         PrintRoContentsInfo(executable.ro.contents);
 
-        return loader->LoadExecutable(process, state, executable, offset, name, dynamicallyLinked);
+        const size_t mappedProgramSize{std::max({
+            executable.text.offset + executable.text.contents.size(),
+            executable.ro.offset + executable.ro.contents.size(),
+            executable.data.offset + executable.data.contents.size() + executable.bssSize,
+        })};
+        auto loadInfo{loader->LoadExecutable(process, state, executable, offset, name, dynamicallyLinked)};
+        if (name == "main.nso")
+            cheats::RecordMainNso(process.get(), header.buildId, reinterpret_cast<u64>(loadInfo.entry), mappedProgramSize);
+        return loadInfo;
     }
 
     void *NsoLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
