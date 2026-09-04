@@ -31,17 +31,19 @@ namespace skyline::kernel {
           state(this, jvmManager, settings),
           serviceManager(state) {}
 
-    void OS::Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType) {
+    void OS::Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType, size_t programIndex, i32 previousProgramIndex) {
         auto romFile{std::make_shared<vfs::OsBacking>(romFd)};
         keyStore = std::make_shared<crypto::KeyStore>(privateAppFilesPath + "keys/");
+        state.currentProgramIndex = static_cast<i32>(programIndex);
+        state.previousProgramIndex = previousProgramIndex;
 
         LOGI("OS::Execute - romFd: {}, updateFd: {}, dlcFds count: {}", romFd, updateFd, dlcFds.size());
 
-        state.loader = GetLoader(romFd, keyStore, romType);
+        state.loader = GetLoader(romFd, keyStore, romType, programIndex);
 
         if (updateFd > 0) {
             LOGI("OS::Execute - Loading update from FD: {}", updateFd);
-            state.updateLoader = GetLoader(updateFd, keyStore, romType);
+            state.updateLoader = GetLoader(updateFd, keyStore, romType, programIndex);
             LOGI("OS::Execute - Update loader created successfully");
         } else {
             LOGI("OS::Execute - No update to load (updateFd: {})", updateFd);
@@ -49,7 +51,7 @@ namespace skyline::kernel {
 
         if (dlcFds.size() > 0)
             for (int fd : dlcFds)
-                state.dlcLoaders.push_back(GetLoader(fd, keyStore, romType));
+                state.dlcLoaders.push_back(GetLoader(fd, keyStore, romType, programIndex));
 
         state.gpu->Initialise();
 
@@ -81,11 +83,25 @@ namespace skyline::kernel {
             LOGI("Starting main HOS thread");
             thread->Start(true);
             process->Kill(true, true, true);
-            skyline::AsyncLogger::Finalize(true);
         }
     }
 
-    std::shared_ptr<loader::Loader> OS::GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType) {
+    bool OS::RequestProgramChange(u64 programIndex) {
+        const auto index{static_cast<size_t>(programIndex)};
+        if (!state.loader || !state.loader->HasProgram(index))
+            return false;
+
+        requestedProgramIndex = index;
+        return true;
+    }
+
+    std::optional<size_t> OS::TakeRequestedProgramIndex() {
+        auto requested{requestedProgramIndex};
+        requestedProgramIndex.reset();
+        return requested;
+    }
+
+    std::shared_ptr<loader::Loader> OS::GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType, size_t programIndex) {
         auto file{std::make_shared<vfs::OsBacking>(fd)};
         switch (romType) {
             case loader::RomFormat::NRO:
@@ -95,9 +111,9 @@ namespace skyline::kernel {
             case loader::RomFormat::NCA:
                 return std::make_shared<loader::NcaLoader>(std::move(file), std::move(keyStore));
             case loader::RomFormat::NSP:
-                return std::make_shared<loader::NspLoader>(file, keyStore);
+                return std::make_shared<loader::NspLoader>(file, keyStore, "", loader::NspLoadMode::Full, programIndex);
             case loader::RomFormat::XCI:
-                return std::make_shared<loader::XciLoader>(file, keyStore);
+                return std::make_shared<loader::XciLoader>(file, keyStore, programIndex);
             default:
                 throw exception("Unsupported ROM extension.");
         }

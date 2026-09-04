@@ -25,6 +25,8 @@ namespace skyline::nce {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
+        state.thread->gracefulStopHostCallId.store(svcId, std::memory_order_relaxed);
+        state.thread->gracefulStopHostCall.store(1, std::memory_order_release);
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
@@ -40,6 +42,9 @@ namespace skyline::nce {
                 kernel::Scheduler::YieldPending = false;
                 state.scheduler->WaitSchedule();
             }
+
+            if (state.thread->gracefulStopRequested.load(std::memory_order_acquire))
+                throw ExitException(false);
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 LOGENF("{} (SVC: {})\nStack Trace:{}", e.what(), svc.name, state.loader->GetStackTrace(e.frames));
@@ -85,11 +90,14 @@ namespace skyline::nce {
             std::longjmp(state.thread->originalCtx, true);
         }
 
+        state.thread->gracefulStopHostCall.store(0, std::memory_order_release);
         TRACE_EVENT_BEGIN("guest", "Guest");
     }
 
     void NCE::HookHandler(HookId hookId, ThreadContext *ctx) {
         const auto &state{*ctx->state};
+        state.thread->gracefulStopHostCallId.store(hookId.raw, std::memory_order_relaxed);
+        state.thread->gracefulStopHostCall.store(2, std::memory_order_release);
         auto hookedSymbol{state.nce->hookedSymbols[hookId.index]};
         try {
             std::visit(VariantVisitor{
@@ -117,6 +125,12 @@ namespace skyline::nce {
                 kernel::Scheduler::YieldPending = false;
                 state.scheduler->WaitSchedule();
             }
+
+            if (state.thread->gracefulStopRequested.load(std::memory_order_acquire))
+                throw ExitException(false);
+        } catch (const ExitException &) {
+            abi::__cxa_end_catch();
+            std::longjmp(state.thread->originalCtx, true);
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 LOGENF("{} (Hook: {})\nStack Trace:{}", e.what(), hookedSymbol.prettyName, state.loader->GetStackTrace(e.frames));
@@ -142,6 +156,8 @@ namespace skyline::nce {
         } catch (const std::exception &e) {
             LOGENF("{} (Hook: {})\nStack Trace:{}", e.what(), hookedSymbol.prettyName, state.loader->GetStackTrace());
         }
+
+        state.thread->gracefulStopHostCall.store(0, std::memory_order_release);
     }
 
     void NCE::SignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
@@ -181,6 +197,14 @@ namespace skyline::nce {
     }
 
     void NCE::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+        if (signal == SIGINT && DeviceState::thread &&
+            DeviceState::thread->gracefulStopRequested.load(std::memory_order_acquire)) {
+            DeviceState::thread->gracefulStopHostPc.store(ctx->uc_mcontext.pc, std::memory_order_relaxed);
+            DeviceState::thread->gracefulStopHostLr.store(ctx->uc_mcontext.regs[30], std::memory_order_relaxed);
+            DeviceState::thread->gracefulStopHostSp.store(ctx->uc_mcontext.sp, std::memory_order_relaxed);
+            return;
+        }
+
         if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
             return;
 
@@ -232,6 +256,7 @@ namespace skyline::nce {
     NCE::NCE(const DeviceState &state) : state(state) {
         signal::SetTlsRestorer(&NceTlsRestorer);
         signal::SetGuestSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, nce::NCE::SignalHandler);
+        signal::SetHostSignalHandler({SIGINT}, nce::NCE::HostSignalHandler, false);
         signal::SetHostSignalHandler({SIGSEGV}, nce::NCE::HostSignalHandler);
     }
 

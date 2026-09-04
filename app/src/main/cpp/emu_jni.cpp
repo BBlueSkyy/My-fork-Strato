@@ -29,6 +29,8 @@ std::weak_ptr<skyline::gpu::GPU> GpuWeak;
 std::weak_ptr<skyline::audio::Audio> AudioWeak;
 std::weak_ptr<skyline::input::Input> InputWeak;
 std::weak_ptr<skyline::Settings> SettingsWeak;
+std::mutex SurfaceMutex;
+jobject SurfaceGlobal{};
 
 // https://cs.android.com/android/platform/superproject/+/master:bionic/libc/tzcode/bionic.cpp;l=43;drc=master;bpv=1;bpt=1
 static std::string GetTimeZoneName() {
@@ -105,25 +107,58 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
         // Host signal handlers need to be set before NCE is initialized, this is the only place where we can do that
         skyline::signal::SetHostSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, skyline::signal::ExceptionalSignalHandler);
         std::set_terminate(skyline::signal::TerminateHandler); // Install it from the start, not just after the first sign.
-        auto os{std::make_shared<skyline::kernel::OS>(
-            jvmManager,
-            settings,
-            publicAppFilesPath,
-            privateAppFilesPath,
-            nativeLibraryPath,
-            GetTimeZoneName(),
-            std::make_shared<skyline::vfs::AndroidAssetFileSystem>(AAssetManager_fromJava(env, assetManager))
-        )};
-        OsWeak = os;
-        GpuWeak = os->state.gpu;
-        AudioWeak = os->state.audio;
-        InputWeak = os->state.input;
-        SettingsWeak = settings;
-        jvmManager->InitializeControllers();
+        std::deque<std::vector<skyline::u8>> userChannel;
+        size_t programIndex{};
+        skyline::i32 previousProgramIndex{-1};
 
-        LOGDNF("Launching ROM {}", skyline::JniString(env, romUriJstring));
+        while (true) {
+            std::optional<size_t> nextProgramIndex;
 
-        os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
+            {
+                auto os{std::make_shared<skyline::kernel::OS>(
+                    jvmManager,
+                    settings,
+                    publicAppFilesPath,
+                    privateAppFilesPath,
+                    nativeLibraryPath,
+                    GetTimeZoneName(),
+                    std::make_shared<skyline::vfs::AndroidAssetFileSystem>(AAssetManager_fromJava(env, assetManager))
+                )};
+                os->userChannel = std::move(userChannel);
+                OsWeak = os;
+                GpuWeak = os->state.gpu;
+                AudioWeak = os->state.audio;
+                InputWeak = os->state.input;
+                SettingsWeak = settings;
+
+                {
+                    std::scoped_lock surfaceGuard{SurfaceMutex};
+                    if (SurfaceGlobal)
+                        os->state.gpu->presentation.UpdateSurface(SurfaceGlobal);
+                }
+
+                jvmManager->InitializeControllers();
+
+                LOGDNF("Launching ROM {} with program index {}", skyline::JniString(env, romUriJstring), programIndex);
+
+                os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType), programIndex, previousProgramIndex);
+
+                userChannel = std::move(os->userChannel);
+                nextProgramIndex = os->TakeRequestedProgramIndex();
+
+                OsWeak.reset();
+                GpuWeak.reset();
+                AudioWeak.reset();
+                InputWeak.reset();
+            }
+
+            if (!nextProgramIndex)
+                break;
+
+            previousProgramIndex = static_cast<skyline::i32>(programIndex);
+            programIndex = *nextProgramIndex;
+            LOGINF("Relaunching multi-program application: {} -> {}", previousProgramIndex, programIndex);
+        }
     } catch (std::exception &e) {
         LOGENF("An uncaught exception has occurred: {}", e.what());
     } catch (const skyline::signal::SignalException &e) {
@@ -134,7 +169,18 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
 
     perfetto::TrackEvent::Flush();
 
+    OsWeak.reset();
+    GpuWeak.reset();
+    AudioWeak.reset();
     InputWeak.reset();
+
+    {
+        std::scoped_lock surfaceGuard{SurfaceMutex};
+        if (SurfaceGlobal) {
+            env->DeleteGlobalRef(SurfaceGlobal);
+            SurfaceGlobal = nullptr;
+        }
+    }
 
     auto end{std::chrono::steady_clock::now()};
     LOGINF("Emulation has ended in {}ms", std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
@@ -161,11 +207,21 @@ extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_stopEm
     return true;
 }
 
-extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_setSurface(JNIEnv *, jobject, jobject surface) {
+extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_setSurface(JNIEnv *env, jobject, jobject surface) {
+    std::scoped_lock surfaceGuard{SurfaceMutex};
+
+    if (SurfaceGlobal) {
+        env->DeleteGlobalRef(SurfaceGlobal);
+        SurfaceGlobal = nullptr;
+    }
+    if (surface)
+        SurfaceGlobal = env->NewGlobalRef(surface);
+
     auto gpu{GpuWeak.lock()};
     if (!gpu)
         return false;
-    gpu->presentation.UpdateSurface(surface);
+
+    gpu->presentation.UpdateSurface(SurfaceGlobal);
     return true;
 }
 

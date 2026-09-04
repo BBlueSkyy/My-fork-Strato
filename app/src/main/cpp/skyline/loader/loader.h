@@ -78,6 +78,15 @@ namespace skyline::loader {
 
         std::vector<ExecutableSymbolicInfo> executables;
 
+        std::optional<u64> ResolveProgramId(size_t programIndex) const;
+
+      protected:
+        std::map<u64, vfs::NCA> programNcas; //!< All program NCAs in a multi-program application, keyed by ProgramId
+
+        void AddProgramNca(vfs::NCA nca);
+
+        void SelectProgram(size_t programIndex);
+
       public:
         /**
          * @brief Information about the placement of an executable in memory
@@ -109,6 +118,10 @@ namespace skyline::loader {
         std::optional<vfs::NCA> controlNca; //!< The main control NCA within the NSP
         std::optional<vfs::NCA> publicNca;
         std::shared_ptr<vfs::Backing> romFs;
+
+        const vfs::NCA *GetProgramNca(size_t programIndex) const;
+
+        bool HasProgram(size_t programIndex) const;
 
         virtual ~Loader() = default;
 

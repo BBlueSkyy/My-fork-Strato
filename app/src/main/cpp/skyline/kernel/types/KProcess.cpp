@@ -22,9 +22,16 @@ namespace skyline::kernel::type {
     }
 
     KProcess::~KProcess() {
-        std::scoped_lock guard{threadMutex};
-        disableThreadCreation = true;
-        for (const auto &thread : threads)
+        std::vector<std::shared_ptr<KThread>> threadsToKill;
+        {
+            std::scoped_lock guard{threadMutex};
+            disableThreadCreation = true;
+            threadsToKill = threads;
+        }
+
+        for (const auto &thread : threadsToKill)
+            thread->Kill(false);
+        for (const auto &thread : threadsToKill)
             thread->Kill(true);
 
         // Must happen after all threads have been killed/joined so no host thread can fault into
@@ -45,15 +52,28 @@ namespace skyline::kernel::type {
         else
             alreadyKilled.store(true);
 
-        std::scoped_lock guard{threadMutex};
-        if (disableCreation)
-            disableThreadCreation = true;
-        if (all) {
-            for (const auto &thread : threads)
-                thread->Kill(join);
-        } else if (!threads.empty()) {
-            threads[0]->Kill(join);
+        std::vector<std::shared_ptr<KThread>> threadsToKill;
+        {
+            std::scoped_lock guard{threadMutex};
+            if (disableCreation)
+                disableThreadCreation = true;
+
+            if (all)
+                threadsToKill = threads;
+            else if (!threads.empty())
+                threadsToKill.push_back(threads[0]);
         }
+
+        // A guest thread can be inside CreateThread and waiting for threadMutex. Holding it while
+        // joining that thread would deadlock graceful process transitions.
+        //
+        // Stop every thread before joining any of them: a thread being joined can depend on a
+        // resource owned by another guest thread, which must also receive its stop request.
+        for (const auto &thread : threadsToKill)
+            thread->Kill(false, disableCreation);
+        if (join)
+            for (const auto &thread : threadsToKill)
+                thread->Kill(true, disableCreation);
     }
 
     void KProcess::InitializeHeapTls() {

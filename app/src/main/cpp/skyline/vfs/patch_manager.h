@@ -13,6 +13,8 @@ namespace skyline::vfs {
 
         std::shared_ptr<vfs::Backing> PatchRomFS(const DeviceState &state, std::optional<vfs::NCA> nca , u64 ivfcOffset);
 
+        std::shared_ptr<vfs::Backing> PatchRomFS(const DeviceState &state, std::optional<vfs::NCA> updateNca, const vfs::NCA &baseNca);
+
         std::shared_ptr<FileSystem> PatchExeFS(const DeviceState &state, std::shared_ptr<FileSystem> exefs);
     };
 }

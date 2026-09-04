@@ -10,6 +10,55 @@
 #include "loader.h"
 
 namespace skyline::loader {
+    void Loader::AddProgramNca(vfs::NCA nca) {
+        const u64 programId{nca.header.titleId};
+        programNcas.insert_or_assign(programId, std::move(nca));
+    }
+
+    std::optional<u64> Loader::ResolveProgramId(size_t programIndex) const {
+        constexpr u64 ProgramIdIndexMask{0xFFF};
+
+        if (programNcas.empty() || programIndex > ProgramIdIndexMask)
+            return std::nullopt;
+
+        const u64 baseProgramId{programNcas.begin()->first & ~ProgramIdIndexMask};
+        const u64 requestedProgramId{baseProgramId + programIndex};
+        if (programNcas.find(requestedProgramId) != programNcas.end())
+            return requestedProgramId;
+
+        // A regular update can use base + 0x800 as its ProgramId. With one
+        // program NCA it still represents program index zero.
+        if (programIndex == 0 && programNcas.size() == 1)
+            return programNcas.begin()->first;
+
+        return std::nullopt;
+    }
+
+    const vfs::NCA *Loader::GetProgramNca(size_t programIndex) const {
+        const auto programId{ResolveProgramId(programIndex)};
+        if (!programId)
+            return nullptr;
+
+        return &programNcas.at(*programId);
+    }
+
+    bool Loader::HasProgram(size_t programIndex) const {
+        return GetProgramNca(programIndex) != nullptr;
+    }
+
+    void Loader::SelectProgram(size_t programIndex) {
+        const auto nca{GetProgramNca(programIndex)};
+        if (!nca) {
+            programNca.reset();
+            romFs.reset();
+            return;
+        }
+
+        programNca = *nca;
+        romFs = programNca->romFs;
+        LOGI("Selected application program index {} (ProgramId {:016X})", programIndex, programNca->header.titleId);
+    }
+
     Loader::ExecutableLoadInfo Loader::LoadExecutable(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state, Executable &executable, size_t offset, const std::string &name, bool dynamicallyLinked) {
         u8 *base{reinterpret_cast<u8 *>(process->memory.code.host.data() + offset)};
         // The base address in the guest address space, used to map memory by the memory manager

@@ -25,7 +25,7 @@ namespace skyline::loader {
     }
 
     NspLoader::NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore,
-                         const std::string &diagnosticsPath, NspLoadMode loadMode)
+                         const std::string &diagnosticsPath, NspLoadMode loadMode, size_t programIndex)
         : nsp(std::make_shared<vfs::PartitionFileSystem>(backing)) {
         ExtractTickets(nsp, keyStore);
 
@@ -40,7 +40,7 @@ namespace skyline::loader {
                 auto nca{vfs::NCA(nsp->OpenFile(entry.name), keyStore, false, ncaParseMode)};
 
                 if (nca.contentType == vfs::NCAContentType::Program && nca.romFs != nullptr && nca.exeFs != nullptr)
-                    programNca = std::move(nca);
+                    AddProgramNca(std::move(nca));
                 else if (nca.contentType == vfs::NCAContentType::Control && nca.romFs != nullptr)
                     controlNca = std::move(nca);
                 else if (nca.contentType == vfs::NCAContentType::Meta)
@@ -62,8 +62,7 @@ namespace skyline::loader {
             }
         }
 
-        if (programNca)
-            romFs = programNca->romFs;
+        SelectProgram(programIndex);
 
         if (controlNca) {
             controlRomFs = std::make_shared<vfs::RomFileSystem>(controlNca->romFs);
@@ -75,7 +74,10 @@ namespace skyline::loader {
     }
 
     void *NspLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
-        if (state.updateLoader) {
+        if (!programNca)
+            throw loader_exception(LoaderResult::ParsingError, fmt::format("NSP does not contain program index {}", state.currentProgramIndex));
+
+        if (state.updateLoader && state.updateLoader->programNca) {
             auto patchManager{std::make_shared<vfs::PatchManager>()};
             programNca->exeFs = patchManager->PatchExeFS(state, programNca->exeFs);
         }

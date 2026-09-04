@@ -96,6 +96,9 @@ namespace skyline::kernel::type {
                 state.scheduler->WaitSchedule();
             }
 
+            if (gracefulStopRequested.load(std::memory_order_acquire))
+                throw nce::NCE::ExitException(false);
+
             TRACE_EVENT_BEGIN("guest", "Guest");
 
             asm volatile(
@@ -178,6 +181,9 @@ namespace skyline::kernel::type {
             );
 
             __builtin_unreachable();
+        } catch (const nce::NCE::ExitException &) {
+            abi::__cxa_end_catch();
+            std::longjmp(originalCtx, true);
         } catch (const std::exception &e) {
             LOGE("{}", e.what());
             if (id) {
@@ -221,18 +227,55 @@ namespace skyline::kernel::type {
         }
     }
 
-    void KThread::Kill(bool join) {
+    void KThread::Kill(bool join, bool gracefulStop) {
+        if (gracefulStop)
+            LOGW("Graceful stop HOS-{}: entering Kill(join={})", id, join);
+
         std::unique_lock lock(statusMutex);
+        if (gracefulStop)
+            LOGW("Graceful stop HOS-{}: status locked (running={}, ready={}, killed={})", id, running, ready, killed);
+
         if (!killed && running) {
+            if (gracefulStop && !ready)
+                LOGW("Graceful stop HOS-{}: waiting for thread readiness", id);
             statusCondition.wait(lock, [this]() { return ready || killed; });
+            if (gracefulStop)
+                LOGW("Graceful stop HOS-{}: readiness wait complete (ready={}, killed={})", id, ready, killed);
+
             if (!killed) {
+                gracefulStopRequested.store(gracefulStop, std::memory_order_release);
+                if (gracefulStop)
+                    scheduleCondition.notify();
                 pthread_kill(pthread, SIGINT);
                 killed = true;
                 statusCondition.notify_all();
+                if (gracefulStop)
+                    LOGW("Graceful stop HOS-{}: stop requested", id);
             }
         }
-        if (join)
+
+        if (join) {
+            if (gracefulStop)
+                LOGW("Graceful stop HOS-{}: waiting for thread exit (running={})", id, running);
+
+            if (gracefulStop && running &&
+                !statusCondition.wait_for(lock, std::chrono::seconds(1), [this]() { return !running; })) {
+                LOGW("Graceful stop HOS-{} stalled: hostCall={} hostCallId=0x{:X} PC=0x{:X} LR=0x{:X} SP=0x{:X}",
+                     id,
+                     gracefulStopHostCall.load(std::memory_order_acquire),
+                     gracefulStopHostCallId.load(std::memory_order_relaxed),
+                     gracefulStopHostPc.load(std::memory_order_relaxed),
+                     gracefulStopHostLr.load(std::memory_order_relaxed),
+                     gracefulStopHostSp.load(std::memory_order_relaxed));
+            }
+
             statusCondition.wait(lock, [this]() { return !running; });
+            if (gracefulStop)
+                LOGW("Graceful stop HOS-{}: thread exit observed", id);
+        }
+
+        if (gracefulStop)
+            LOGW("Graceful stop HOS-{}: leaving Kill(join={})", id, join);
     }
 
     void KThread::SendSignal(int signal) {

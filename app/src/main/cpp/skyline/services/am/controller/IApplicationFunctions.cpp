@@ -6,6 +6,8 @@
 #include <loader/loader.h>
 #include <common/settings.h>
 #include <kernel/types/KProcess.h>
+#include <nce.h>
+#include <os.h>
 #include <services/account/IAccountServiceForApplication.h>
 #include <services/am/storage/VectorIStorage.h>
 #include "IApplicationFunctions.h"
@@ -30,8 +32,14 @@ namespace skyline::service::am {
 
         std::shared_ptr<IStorage> storageService;
         switch (launchParameterKind) {
-            case LaunchParameterKind::UserChannel:
-                return result::NotAvailable;
+            case LaunchParameterKind::UserChannel: {
+                if (state.os->userChannel.empty())
+                    return result::NotAvailable;
+
+                storageService = std::make_shared<VectorIStorage>(state, manager, std::move(state.os->userChannel.front()));
+                state.os->userChannel.pop_front();
+                break;
+            }
 
             case LaunchParameterKind::PreselectedUser: {
                 storageService = std::make_shared<VectorIStorage>(state, manager, LaunchParameterSize);
@@ -198,8 +206,49 @@ namespace skyline::service::am {
         return {};
     }
 
+    Result IApplicationFunctions::ExecuteProgram(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto kind{request.Pop<ProgramSpecifyKind>()};
+        const u64 programIndex{request.Pop<u64>()};
+
+        if (kind != ProgramSpecifyKind::ExecuteProgram && kind != ProgramSpecifyKind::RestartProgram)
+            return result::InvalidInput;
+
+        if (!state.os->RequestProgramChange(programIndex)) {
+            LOGW("ExecuteProgram requested unavailable program index {}", programIndex);
+            return result::InvalidInput;
+        }
+
+        LOGI("ExecuteProgram requested program index {} (kind {})", programIndex, static_cast<u32>(kind));
+
+        // ExecuteProgram is a normal frontend transition rather than a guest crash. Stop HOS-1
+        // through the graceful path used by JNI so OS::Execute can join every remaining thread
+        // before the outer emulation loop relaunches the requested program.
+        state.process->Kill(false, false, true);
+        return {};
+    }
+
+    Result IApplicationFunctions::ClearUserChannel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        state.os->userChannel.clear();
+        return {};
+    }
+
+    Result IApplicationFunctions::UnpopToUserChannel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        constexpr size_t MaximumUserChannelStorageSize{0x1000};
+
+        auto storage{request.PopService<IStorage>(0, session)};
+        auto storageSpan{storage->GetSpan()};
+        if (storageSpan.size() > MaximumUserChannelStorageSize)
+            return result::InvalidParameters;
+
+        std::vector<u8> data(storageSpan.size());
+        if (!data.empty())
+            std::memcpy(data.data(), storageSpan.data(), data.size());
+        state.os->userChannel.emplace_back(std::move(data));
+        return {};
+    }
+
     Result IApplicationFunctions::GetPreviousProgramIndex(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<i32>(previousProgramIndex);
+        response.Push<i32>(state.previousProgramIndex);
         return {};
     }
 

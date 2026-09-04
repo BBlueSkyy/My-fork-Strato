@@ -24,11 +24,16 @@ namespace skyline::service::am {
         static constexpr i64 SaveDataSize{200000000};
         static constexpr i64 JournalSaveDataSize{200000000};
 
+        enum class ProgramSpecifyKind : u32 {
+            ExecuteProgram = 0,
+            JumpToSubApplicationProgramForDevelopment = 1,
+            RestartProgram = 2,
+        };
+
         std::shared_ptr<type::KEvent> gpuErrorEvent; //!< The event signalled on GPU errors
         std::shared_ptr<type::KEvent> friendInvitationStorageChannelEvent; //!< The event signalled on friend invitations
         std::shared_ptr<type::KEvent> notificationStorageChannelEvent;
         std::shared_ptr<type::KEvent> unknownEvent210; //!< Stub event for cmd 210 (added in FW 20.0.0, unnamed on switchbrew), never signalled
-        i32 previousProgramIndex{-1}; //!< There was no previous title
 
       public:
         IApplicationFunctions(const DeviceState &state, ServiceManager &manager);
@@ -135,6 +140,12 @@ namespace skyline::service::am {
          */
         Result QueryApplicationPlayStatisticsByUid(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result ExecuteProgram(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result ClearUserChannel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result UnpopToUserChannel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         /**
          * @brief Gets the ProgramIndex of the Application which launched this title
          * @url https://switchbrew.org/wiki/Applet_Manager_services#GetPreviousProgramIndex
@@ -185,6 +196,9 @@ namespace skyline::service::am {
             SFUNC(0x66, IApplicationFunctions, SetApplicationCopyrightVisibility),
             SFUNC(0x6E, IApplicationFunctions, QueryApplicationPlayStatistics),
             SFUNC(0x6F, IApplicationFunctions, QueryApplicationPlayStatisticsByUid),
+            SFUNC(0x78, IApplicationFunctions, ExecuteProgram),
+            SFUNC(0x79, IApplicationFunctions, ClearUserChannel),
+            SFUNC(0x7A, IApplicationFunctions, UnpopToUserChannel),
             SFUNC(0x7B, IApplicationFunctions, GetPreviousProgramIndex),
             SFUNC(0x82, IApplicationFunctions, GetGpuErrorDetectedSystemEvent),
             SFUNC(0x8C, IApplicationFunctions, GetFriendInvitationStorageChannelEvent),

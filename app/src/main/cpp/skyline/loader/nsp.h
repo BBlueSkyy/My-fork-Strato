@@ -27,7 +27,7 @@ namespace skyline::loader {
 
       public:
         NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore,
-                  const std::string &diagnosticsPath = {}, NspLoadMode loadMode = NspLoadMode::Full);
+                  const std::string &diagnosticsPath = {}, NspLoadMode loadMode = NspLoadMode::Full, size_t programIndex = 0);
 
         std::vector<u8> GetIcon(language::ApplicationLanguage language) override;
 

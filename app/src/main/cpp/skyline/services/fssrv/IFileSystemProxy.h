@@ -116,6 +116,12 @@ namespace skyline::service::fssrv {
         Result OpenPatchDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @brief Returns the program RomFS selected by a multi-program application index
+         * @url https://switchbrew.org/wiki/Filesystem_services#OpenDataStorageWithProgramIndex
+         */
+        Result OpenDataStorageWithProgramIndex(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
           * @brief Returns the filesystem log access mode
           * @url https://switchbrew.org/wiki/Filesystem_services#GetGlobalAccessLogMode
           */
@@ -138,6 +144,7 @@ namespace skyline::service::fssrv {
             SFUNC(0xC8, IFileSystemProxy, OpenDataStorageByCurrentProcess),
             SFUNC(0xCA, IFileSystemProxy, OpenDataStorageByDataId),
             SFUNC(0xCB, IFileSystemProxy, OpenPatchDataStorageByCurrentProcess),
+            SFUNC(0xCD, IFileSystemProxy, OpenDataStorageWithProgramIndex),
             SFUNC(0x3ED, IFileSystemProxy, GetGlobalAccessLogMode),
             SFUNC(0x4B0, IFileSystemProxy, OpenMultiCommitManager)
         )
