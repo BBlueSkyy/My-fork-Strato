@@ -1096,7 +1096,7 @@ namespace skyline::kernel::svc {
                 break;
         
             case InfoState::AliasRegionExtraSize:
-                out = state.process->memory.aliasRegionExtraSize; // NPDM META flags bit6, 18.0.0+
+                out = 0; // No extra space reserved in the Alias ​​region
                 break;
 
             case InfoState::TransferMemoryHint: {
@@ -1264,18 +1264,17 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        // FIX: real hardware only allows svcMapPhysicalMemory to target memory that's currently
-        // Unmapped (Free) across the *entire* requested range -- mapping over memory that's already
-        // mapped must be rejected atomically, the same way SetMemoryPermission/SetMemoryAttribute
-        // validate their whole range under a single lock via their own IfAllowed helpers. Without this,
-        // a second MapPhysicalMemory call over an already-mapped range was silently accepted instead of
-        // failing, letting the guest's own physical memory pool bookkeeping (used by titles that recycle
-        // alias-region chunks for asset streaming, e.g. DKCR HD) silently desync from our actual chunk
-        // state until its internal accounting underflows and it self-aborts.
-        if (!state.process->memory.MapPhysicalMemoryIfAllowed(span<u8>{address, size})) [[unlikely]] {
-            ctx.w0 = result::InvalidState;
-            LOGW("Cannot map physical memory over a region that isn't entirely Unmapped: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
-            return;
+        switch (state.process->memory.MapPhysicalMemoryIfAllowed(span<u8>{address, size})) {
+            case MemoryManager::MapPhysicalMemoryResult::NotUnmapped:
+                ctx.w0 = result::InvalidState;
+                LOGW("Cannot map physical memory over a region that isn't Unmapped or already Heap-mapped: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
+                return;
+            case MemoryManager::MapPhysicalMemoryResult::LimitExceeded:
+                ctx.w0 = result::OutOfResource;
+                LOGW("Refusing to map physical memory at {} - {} (0x{:X} bytes): would exceed the process's physical memory budget", fmt::ptr(address), fmt::ptr(address + size), size);
+                return;
+            case MemoryManager::MapPhysicalMemoryResult::Success:
+                break;
         }
 
         LOGD("Mapped physical memory at {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
@@ -1304,7 +1303,7 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        if (!state.process->memory.UnmapMemory(span<u8>{address, size})) [[unlikely]] {
+        if (!state.process->memory.UnmapPhysicalMemoryIfAllowed(span<u8>{address, size})) [[unlikely]] {
             ctx.w0 = result::InvalidState;
             LOGW("Cannot unmap physical memory while it is IPC-locked: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
             return;
