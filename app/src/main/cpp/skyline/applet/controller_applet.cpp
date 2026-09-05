@@ -88,6 +88,14 @@ namespace skyline::applet {
                 HandleShowControllerSupport(argPrivate.styleSet, appletVersion, normalInputData.front()->GetSpan());
                 normalInputData.pop();
                 break;
+            case ControllerSupportMode::ShowControllerStrapGuide:
+                // StrapGuide uses ControllerSupportArg too. Strato does not expose the native
+                // strap-guide UI, so complete it using the current controller configuration and
+                // return the 0xC ControllerSupportResultInfo expected by the guest.
+                LOGD("Controller Strap Guide requested; completing with current controller configuration");
+                HandleShowControllerSupport(argPrivate.styleSet, appletVersion, normalInputData.front()->GetSpan());
+                normalInputData.pop();
+                break;
             default:
                 LOGW("Controller applet mode {} is unimplemented", static_cast<u32>(argPrivate.mode));
                 normalInputData.pop();

@@ -19,6 +19,8 @@ namespace skyline::service::friends {
 
         Result GetCompletionEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result GetFriendListIds(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         Result GetFriendList(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         Result CheckFriendListAvailability(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
@@ -35,6 +37,7 @@ namespace skyline::service::friends {
 
         SERVICE_DECL(
             SFUNC(0x0, IFriendService, GetCompletionEvent),
+            SFUNC(0x2774, IFriendService, GetFriendListIds),
             SFUNC(0x2775, IFriendService, GetFriendList),
             SFUNC(0x2788, IFriendService, CheckFriendListAvailability ),
             SFUNC(0x28A0, IFriendService, GetBlockedUserListIds),
