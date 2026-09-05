@@ -97,6 +97,7 @@ namespace skyline {
               SFUNC(0x5, IAccountServiceForApplication, GetProfile),
               SFUNC(0x32, IAccountServiceForApplication, IsUserRegistrationRequestPermitted),
               SFUNC(0x33, IAccountServiceForApplication, TrySelectUserWithoutInteraction),
+              SFUNC(0x34, IAccountServiceForApplication, TrySelectUserWithoutInteraction),
               SFUNC(0x64, IAccountServiceForApplication, InitializeApplicationInfoV0),
               SFUNC(0x65, IAccountServiceForApplication, GetBaasAccountManagerForApplication),
               SFUNC(0x6E, IAccountServiceForApplication, StoreSaveDataThumbnail),

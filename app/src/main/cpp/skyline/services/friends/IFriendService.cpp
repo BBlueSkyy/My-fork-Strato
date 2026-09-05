@@ -16,6 +16,13 @@ namespace skyline::service::friends {
         return {};
     }
 
+    Result IFriendService::GetFriendListIds(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // Strato currently has no backing friend database, so expose an empty list.
+        // The guest uses the returned count to determine how many IDs are valid in the output buffer.
+        response.Push<u32>(0);
+        return {};
+    }
+
     Result IFriendService::GetFriendList(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         response.Push<u32>(0); // Count of friends
         return {};
