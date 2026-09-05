@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
-// Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
+// Copyright © 2020 Skyline Team and Contributors (https://github.com/strato-emu/)
 
 #include <lz4.h>
 #include <nce.h>
+#include <os.h>
+#include <mods/ips.h>
+#include <mods/pchtxt.h>
 #include <kernel/types/KProcess.h>
 #include <boost/regex/v5/regex.hpp>
 #include "nso.h"
@@ -55,6 +58,69 @@ namespace skyline::loader {
         if (header.dynsym.offset + header.dynsym.size <= header.ro.decompressedSize && header.dynstr.offset + header.dynstr.size <= header.ro.decompressedSize) {
             executable.dynsym = {header.dynsym.offset, header.dynsym.size};
             executable.dynstr = {header.dynstr.offset, header.dynstr.size};
+        }
+
+        const u64 titleId{process->npdm.aci0.programId};
+        if (titleId) {
+            auto pchtxtPatches{mods::CollectPchtxtPatches(state.os->publicAppFilesPath, titleId, header.buildId)};
+            auto ipsPatches{mods::CollectIpsPatches(state.os->publicAppFilesPath, titleId, header.buildId)};
+            if (!pchtxtPatches.empty() || !ipsPatches.empty()) {
+                const size_t programSize{std::max({
+                    static_cast<size_t>(header.text.memoryOffset) + header.text.decompressedSize,
+                    static_cast<size_t>(header.ro.memoryOffset) + header.ro.decompressedSize,
+                    static_cast<size_t>(header.data.memoryOffset) + header.data.decompressedSize,
+                })};
+                std::vector<u8> image(sizeof(NsoHeader) + programSize);
+                std::memcpy(image.data(), &header, sizeof(NsoHeader));
+                std::memcpy(image.data() + sizeof(NsoHeader) + header.text.memoryOffset, executable.text.contents.data(), header.text.decompressedSize);
+                std::memcpy(image.data() + sizeof(NsoHeader) + header.ro.memoryOffset, executable.ro.contents.data(), header.ro.decompressedSize);
+                std::memcpy(image.data() + sizeof(NsoHeader) + header.data.memoryOffset, executable.data.contents.data(), header.data.decompressedSize);
+
+                // PCHTXT and Atmosphere IPS/IPS32 share the same decompressed NSO
+                // image. Apply both before LoadExecutable so NCE sees patched code.
+                for (const auto &patch : pchtxtPatches) {
+                    size_t applied{};
+                    for (const auto &write : patch.writes) {
+                        if (write.offset < sizeof(NsoHeader) || write.offset > image.size() || write.value.size() > image.size() - static_cast<size_t>(write.offset)) {
+                            LOGW("PCHTXT: write outside NSO image in '{}' at 0x{:X}", patch.path.filename().string(), write.offset);
+                            continue;
+                        }
+
+                        std::memcpy(image.data() + static_cast<size_t>(write.offset), write.value.data(), write.value.size());
+                        applied++;
+                    }
+                    if (applied)
+                        LOGI("PCHTXT: applied '{}' to {} ({} writes)", patch.path.filename().string(), name.empty() ? "NSO" : name, applied);
+                }
+
+                for (const auto &patch : ipsPatches) {
+                    const char *format{patch.ips32 ? "IPS32" : "IPS"};
+                    size_t applied{};
+                    for (const auto &write : patch.writes) {
+                        if (write.offset < sizeof(NsoHeader) || write.offset >= image.size()) {
+                            LOGW("{}: write outside NSO image in '{}' at 0x{:X}", format, patch.path.filename().string(), write.offset);
+                            continue;
+                        }
+
+                        const size_t imageOffset{static_cast<size_t>(write.offset)};
+                        const size_t available{image.size() - imageOffset};
+                        const size_t writeSize{std::min(write.value.size(), available)};
+                        if (!writeSize)
+                            continue;
+
+                        std::memcpy(image.data() + imageOffset, write.value.data(), writeSize);
+                        applied++;
+                        if (writeSize != write.value.size())
+                            LOGW("{}: truncated write in '{}' at 0x{:X} from 0x{:X} to 0x{:X} bytes", format, patch.path.filename().string(), write.offset, write.value.size(), writeSize);
+                    }
+                    if (applied)
+                        LOGI("{}: applied '{}' to {} ({} writes)", format, patch.path.filename().string(), name.empty() ? "NSO" : name, applied);
+                }
+
+                std::memcpy(executable.text.contents.data(), image.data() + sizeof(NsoHeader) + header.text.memoryOffset, header.text.decompressedSize);
+                std::memcpy(executable.ro.contents.data(), image.data() + sizeof(NsoHeader) + header.ro.memoryOffset, header.ro.decompressedSize);
+                std::memcpy(executable.data.contents.data(), image.data() + sizeof(NsoHeader) + header.data.memoryOffset, header.data.decompressedSize);
+            }
         }
 
         PrintRoContentsInfo(executable.ro.contents);
