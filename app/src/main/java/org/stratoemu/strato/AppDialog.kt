@@ -253,9 +253,11 @@ class AppDialog : BottomSheetDialogFragment() {
         }
 
         binding.manageTitles.setOnClickListener {
-            val intent = Intent(requireContext(), ManageContentActivity::class.java)
-            intent.putExtra(AppItemTag, item)
-            startActivity(intent)
+            openManageContent()
+        }
+
+        binding.manageMods.setOnClickListener {
+            openManageContent()
         }
 
         dialog?.setOnKeyListener { _, keyCode, event ->
@@ -266,6 +268,12 @@ class AppDialog : BottomSheetDialogFragment() {
                 false
             }
         }
+    }
+
+    private fun openManageContent() {
+        val intent = Intent(requireContext(), ManageContentActivity::class.java)
+        intent.putExtra(AppItemTag, item)
+        startActivity(intent)
     }
     
     override fun onResume() {
