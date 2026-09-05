@@ -64,12 +64,6 @@ namespace skyline::signal {
     void ExceptionalSignalHandler(int signal, siginfo *, ucontext *context);
 
     /**
-     * @brief Custom termination handler, installed from the start of execution
-     *to avoid silent abort() in approaches unrelated to signals
-     */
-    void TerminateHandler();
-
-    /**
      * @brief Our delegator for sigaction, we need to do this due to sigchain hooking bionic's sigaction and it intercepting signals before they're passed onto userspace
      * This not only leads to performance degradation but also requires host TLS to be in the TLS register which we cannot ensure for in-guest signals
      */
