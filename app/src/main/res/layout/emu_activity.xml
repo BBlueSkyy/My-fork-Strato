@@ -32,15 +32,34 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
-        <TextView
-            android:id="@+id/perf_stats"
+        <LinearLayout
+            android:id="@+id/performance_overlay_row"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="top|left"
-            android:layout_marginLeft="@dimen/onScreenItemHorizontalMargin"
-            android:layout_marginTop="5dp"
-            android:textColor="@color/colorPerfStatsPrimary"
-            tools:text="60 FPS • 2000 MB" />
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/perf_stats"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="@dimen/onScreenItemHorizontalMargin"
+                android:layout_marginTop="5dp"
+                android:textColor="@color/colorPerfStatsPrimary"
+                tools:text="60 FPS • 2000 MB" />
+
+            <TextView
+                android:id="@+id/shader_compilation_stats"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:layout_marginTop="5dp"
+                android:textColor="@color/colorPerfStatsPrimary"
+                android:visibility="gone"
+                tools:text="Compiling shaders: 27"
+                tools:visibility="visible" />
+
+        </LinearLayout>
 
         <ImageButton
             android:id="@+id/on_screen_pause_toggle"
