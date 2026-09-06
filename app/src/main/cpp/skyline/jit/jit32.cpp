@@ -13,8 +13,8 @@ namespace skyline::jit {
     static std::array<JitCore32, CoreCount> MakeJitCores(const DeviceState &state, Dynarmic::ExclusiveMonitor &monitor) {
         // AArch32 guest code executes inside Dynarmic as ordinary host code, so scheduler
         // signals must halt the JIT rather than going through the NCE guest signal path.
-        signal::SetHostSignalHandler({Scheduler::YieldSignal,
-                                      Scheduler::PreemptionSignal,
+        signal::SetHostSignalHandler({kernel::Scheduler::YieldSignal,
+                                      kernel::Scheduler::PreemptionSignal,
                                       SIGINT,
                                       SIGILL,
                                       SIGTRAP,
@@ -42,8 +42,8 @@ namespace skyline::jit {
     void Jit32::SignalHandler(int signal, siginfo *info, ucontext *ctx) {
         auto thread{DeviceState::thread};
 
-        if (signal == Scheduler::YieldSignal || signal == Scheduler::PreemptionSignal) {
-            Scheduler::YieldPending = true;
+        if (signal == kernel::Scheduler::YieldSignal || signal == kernel::Scheduler::PreemptionSignal) {
+            kernel::Scheduler::YieldPending = true;
             if (thread && thread->jit)
                 thread->jit->HaltExecution(HaltReason::Preempted);
             return;
