@@ -6,6 +6,8 @@
 #include <common/signal.h>
 #include <common/trace.h>
 #include <nce.h>
+#include <jit/jit32.h>
+#include <jit/jit_core_32.h>
 #include <os.h>
 #include "KProcess.h"
 #include "KThread.h"
@@ -34,6 +36,10 @@ namespace skyline::kernel::type {
             timer_delete(preemptionTimer);
     }
 
+    bool KThread::Is64Bit() const {
+        return parent->npdm.meta.flags.is64Bit;
+    }
+
     void KThread::StartThread() {
         pthread = pthread_self();
         std::array<char, 16> threadName{};
@@ -44,14 +50,27 @@ namespace skyline::kernel::type {
             LOGW("Failed to set the thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
 
-        if (!ctx.tpidrroEl0)
-            ctx.tpidrroEl0 = parent->AllocateTlsSlot();
+        const bool is64Bit{Is64Bit()};
+        if (is64Bit) {
+            if (!ctx.tpidrroEl0)
+                ctx.tpidrroEl0 = parent->AllocateTlsSlot();
 
-        ctx.state = &state;
-        state.ctx = &ctx;
+            ctx.state = &state;
+            state.ctx = &ctx;
+        } else {
+            if (!jitTlsRegion)
+                jitTlsRegion = parent->AllocateTlsSlot();
+
+            jit32Ctx.gpr[0] = static_cast<u32>(entryArgument);
+            jit32Ctx.gpr[1] = static_cast<u32>(handle);
+            jit32Ctx.sp = static_cast<u32>(reinterpret_cast<uintptr_t>(stackTop));
+            jit32Ctx.pc = static_cast<u32>(reinterpret_cast<uintptr_t>(entry));
+            state.ctx = nullptr;
+        }
         state.thread = shared_from_this();
 
         if (setjmp(originalCtx)) { // Returns 1 if it's returning from guest, 0 otherwise
+            jit = nullptr;
             state.scheduler->RemoveThread();
 
             {
@@ -89,11 +108,37 @@ namespace skyline::kernel::type {
         try {
             if (!Scheduler::YieldPending)
                 state.scheduler->WaitSchedule();
+
             while (Scheduler::YieldPending) {
-                // If there is a yield pending on us after thread creation
-                state.scheduler->Rotate();
+                state.scheduler->Rotate(false);
                 Scheduler::YieldPending = false;
                 state.scheduler->WaitSchedule();
+            }
+
+            if (!is64Bit) {
+                LOGI("HOS-{}: entering AArch32/JIT32 at PC=0x{:X}, SP=0x{:X}", id, jit32Ctx.pc, jit32Ctx.sp);
+
+                while (!killed) {
+                    while (Scheduler::YieldPending) {
+                        state.scheduler->Rotate(false);
+                        Scheduler::YieldPending = false;
+                        state.scheduler->WaitSchedule();
+                    }
+
+                    jit = &state.jit32->GetCore(coreId);
+                    jit->RestoreContext(jit32Ctx);
+                    jit->SetThreadPointer(static_cast<u32>(handle));
+                    // AllocateTlsSlot returns a guest virtual address. In the AArch32 VMM the
+                    // JIT fastmem base applies guestOffset when actually accessing that address.
+                    jit->SetTlsPointer(static_cast<u32>(reinterpret_cast<uintptr_t>(jitTlsRegion)));
+
+                    jit->Run();
+
+                    jit->SaveContext(jit32Ctx);
+                    jit = nullptr;
+                }
+
+                std::longjmp(originalCtx, true);
             }
 
             TRACE_EVENT_BEGIN("guest", "Guest");
@@ -179,6 +224,7 @@ namespace skyline::kernel::type {
 
             __builtin_unreachable();
         } catch (const std::exception &e) {
+            jit = nullptr;
             LOGE("{}", e.what());
             if (id) {
                 signal::BlockSignal({SIGINT});
@@ -187,6 +233,7 @@ namespace skyline::kernel::type {
             abi::__cxa_end_catch();
             std::longjmp(originalCtx, true);
         } catch (const signal::SignalException &e) {
+            jit = nullptr;
             if (e.signal != SIGINT) {
                 LOGE("{}", e.what());
                 if (id) {
@@ -276,8 +323,6 @@ namespace skyline::kernel::type {
         while (waitingOn) {
             i8 ownerPriority;
             do {
-                // Try to CAS the priority of the owner with the current thread
-                // If the new priority is equivalent to the current priority then we don't need to CAS
                 ownerPriority = waitingOn->priority.load();
                 if (ownerPriority <= currentPriority)
                     return;
@@ -286,8 +331,6 @@ namespace skyline::kernel::type {
             if (ownerPriority != currentPriority) {
                 std::unique_lock waiterLock{waitingOn->waiterMutex, std::try_to_lock};
                 if (!waiterLock) {
-                    // We want to avoid a deadlock here from the thread holding waitingOn->waiterMutex waiting for waiterMutex
-                    // We use a fallback mechanism to avoid this, resetting the state and trying again after being able to successfully acquire waitingOn->waiterMutex once
                     waitingOn->priority = ownerPriority;
 
                     lock.unlock();
@@ -303,10 +346,8 @@ namespace skyline::kernel::type {
 
                 auto nextThread{waitingOn->waitThread};
                 if (nextThread) {
-                    // We need to update the location of the owner thread in the waiter queue of the thread it's waiting on
                     std::unique_lock nextWaiterLock{nextThread->waiterMutex, std::try_to_lock};
                     if (!nextWaiterLock) {
-                        // We want to avoid a deadlock here from the thread holding nextThread->waiterMutex waiting for waiterMutex or waitingOn->waiterMutex
                         waitingOn->priority = ownerPriority;
 
                         lock.unlock();
