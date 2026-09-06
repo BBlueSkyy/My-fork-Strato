@@ -3,7 +3,7 @@ name: Build
 
 on:
   push: 
-    branches: [ master ]
+    branches: [ master, feat/aarch32-jit-revival ]
 
 jobs:
   build:
