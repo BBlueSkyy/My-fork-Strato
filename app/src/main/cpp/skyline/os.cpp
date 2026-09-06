@@ -3,6 +3,7 @@
 
 #include "gpu.h"
 #include "nce.h"
+#include <jit/jit32.h>
 #include "nce/guest.h"
 #include "kernel/types/KProcess.h"
 #include "vfs/os_backing.h"
@@ -56,7 +57,17 @@ namespace skyline::kernel {
         auto &process{state.process};
         process = std::make_shared<kernel::type::KProcess>(state);
 
+        // LoadProcessData resolves the effective Program/NPDM, including the selected update,
+        // before we choose the CPU execution backend.
         auto entry{state.loader->LoadProcessData(process, state)};
+
+        if (process->npdm.meta.flags.is64Bit) {
+            LOGINF("Process architecture: AArch64/NCE");
+        } else {
+            LOGINF("Process architecture: AArch32/JIT32");
+            state.jit32 = std::make_shared<jit::Jit32>(state);
+        }
+
         auto &nacp{state.loader->nacp};
         if (nacp) {
             std::string name{nacp->GetApplicationName(language::ApplicationLanguage::AmericanEnglish)}, publisher{nacp->GetApplicationPublisher(language::ApplicationLanguage::AmericanEnglish)};
