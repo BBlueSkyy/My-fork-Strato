@@ -30,7 +30,36 @@ namespace skyline::nce {
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
+
+                // Dying Light memory-budget trace. Keep this deliberately narrow so the game can
+                // still reproduce timing-sensitive behavior with the global logger left at Info.
+                constexpr u64 DyingLightTitleId{0x01008C8012920000};
+                const bool traceDyingLight{state.process->npdm.aci0.programId == DyingLightTitleId};
+                const bool traceSetHeap{traceDyingLight && svcId == 0x01};
+                const u32 getInfoId{svcContext.w1};
+                const bool traceGetInfo{traceDyingLight && svcId == 0x29 &&
+                                        (getInfoId == 6 || getInfoId == 7 || getInfoId == 21 || getInfoId == 22)};
+                const u64 setHeapRequest{traceSetHeap ? svcContext.x1 : 0};
+                const u32 getInfoHandle{traceGetInfo ? svcContext.w2 : 0};
+                const u64 getInfoSubId{traceGetInfo ? svcContext.x3 : 0};
+
+                if (traceSetHeap) {
+                    LOGI("[DL-MEM] SetHeapSize enter: request=0x{:X}, committed=0x{:X}, heapRegion=0x{:X}",
+                         setHeapRequest, state.process->memory.processHeapSize, state.process->memory.heap.size());
+                }
+
                 (svc.function)(state, svcContext);
+
+                if (traceSetHeap) {
+                    LOGI("[DL-MEM] SetHeapSize exit: result=0x{:X}, request=0x{:X}, returnedBase=0x{:X}, committed=0x{:X}, heapRegion=0x{:X}",
+                         svcContext.w0, setHeapRequest, svcContext.x1, state.process->memory.processHeapSize,
+                         state.process->memory.heap.size());
+                } else if (traceGetInfo) {
+                    LOGI("[DL-MEM] GetInfo: id={}, sub={}, handle=0x{:X}, result=0x{:X}, out=0x{:X}, committed=0x{:X}, heapRegion=0x{:X}, systemResource=0x{:X}",
+                         getInfoId, getInfoSubId, getInfoHandle, svcContext.w0, svcContext.x1,
+                         state.process->memory.processHeapSize, state.process->memory.heap.size(),
+                         state.process->npdm.meta.systemResourceSize);
+                }
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
             }
