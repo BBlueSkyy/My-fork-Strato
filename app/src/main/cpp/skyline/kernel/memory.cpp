@@ -18,12 +18,10 @@ namespace skyline::kernel {
     }
 
     void MemoryManager::MapInternal(const std::pair<u8 *, ChunkDescriptor> &newDesc) {
-        // The chunk that contains / precedes the new chunk base address
         auto firstChunkBase{chunks.lower_bound(newDesc.first)};
         if (newDesc.first <= firstChunkBase->first && firstChunkBase != chunks.begin())
             --firstChunkBase;
 
-        // The chunk that contains / follows the end address of the new chunk
         auto lastChunkBase{chunks.lower_bound(newDesc.first + newDesc.second.size)};
         if ((newDesc.first + newDesc.second.size) < lastChunkBase->first)
             --lastChunkBase;
@@ -34,30 +32,22 @@ namespace skyline::kernel {
         bool needsReprotection{false};
         bool isUnmapping{newDesc.second.state == memory::states::Unmapped};
 
-        // We cut a hole in a single chunk
         if (firstChunkBase->first == lastChunkBase->first) {
             if (firstChunk.IsCompatible(newDesc.second)) [[unlikely]]
-                // No editing necessary
                 return;
 
             if ((firstChunk.state == memory::states::Unmapped) != isUnmapping)
                 needsReprotection = true;
 
-            // We reduce the size of the first half
             firstChunk.size = static_cast<size_t>(newDesc.first - firstChunkBase->first);
             chunks.insert_or_assign(firstChunkBase->first, firstChunk);
 
-            // We create the chunk's second half
             lastChunk.size = static_cast<size_t>((lastChunkBase->first + lastChunk.size) - (newDesc.first + newDesc.second.size));
             chunks.insert_or_assign(newDesc.first + newDesc.second.size, lastChunk);
-
-            // Insert new chunk in between
             chunks.insert_or_assign(newDesc.first, newDesc.second);
         } else {
-            // If there are descriptors between first and last chunk, delete them
             if ((firstChunkBase->first + firstChunk.size) != lastChunkBase->first) {
                 auto tempChunkBase{std::next(firstChunkBase)};
-
                 while (tempChunkBase->first != lastChunkBase->first) {
                     auto tmp{tempChunkBase++};
                     if ((tmp->second.state == memory::states::Unmapped) != isUnmapping)
@@ -67,54 +57,41 @@ namespace skyline::kernel {
             }
 
             bool shouldInsert{true};
-
-            // We check if the new chunk and the first chunk is mergeable
             if (firstChunk.IsCompatible(newDesc.second)) {
                 shouldInsert = false;
-
                 firstChunk.size = static_cast<size_t>((newDesc.first + newDesc.second.size) - firstChunkBase->first);
                 chunks.insert_or_assign(firstChunkBase->first, firstChunk);
-            } else if ((firstChunkBase->first + firstChunk.size) != newDesc.first) { // If it's not mergeable check if it needs resizing
+            } else if ((firstChunkBase->first + firstChunk.size) != newDesc.first) {
                 firstChunk.size = static_cast<size_t>(newDesc.first - firstChunkBase->first);
-
                 chunks.insert_or_assign(firstChunkBase->first, firstChunk);
-
                 if ((firstChunk.state == memory::states::Unmapped) != isUnmapping)
                     needsReprotection = true;
             }
 
-            // We check if the new chunk and the last chunk is mergeable
             if (lastChunk.IsCompatible(newDesc.second)) {
                 u8 *oldBase{lastChunkBase->first};
                 chunks.erase(lastChunkBase);
-
                 if (shouldInsert) {
                     shouldInsert = false;
-
-                    lastChunk.size = static_cast<size_t>((lastChunk.size + oldBase) - (newDesc.first));
-
+                    lastChunk.size = static_cast<size_t>((lastChunk.size + oldBase) - newDesc.first);
                     chunks.insert_or_assign(newDesc.first, lastChunk);
                 } else {
                     firstChunk.size = static_cast<size_t>((lastChunk.size + oldBase) - firstChunkBase->first);
                     chunks.insert_or_assign(firstChunkBase->first, firstChunk);
                 }
-            } else if ((newDesc.first + newDesc.second.size) != lastChunkBase->first) { // If it's not mergeable check if it needs resizing
+            } else if ((newDesc.first + newDesc.second.size) != lastChunkBase->first) {
                 lastChunk.size = static_cast<size_t>((lastChunk.size + lastChunkBase->first) - (newDesc.first + newDesc.second.size));
-
                 chunks.erase(lastChunkBase);
                 chunks.insert_or_assign(newDesc.first + newDesc.second.size, lastChunk);
-
                 if ((lastChunk.state == memory::states::Unmapped) != isUnmapping)
                     needsReprotection = true;
             }
 
-            // Insert if not merged
             if (shouldInsert)
                 chunks.insert_or_assign(newDesc.first, newDesc.second);
         }
 
         if (needsReprotection) {
-            // Retrieve the host region to re-protect
             span<u8> hostSpan{GetHostSpan({newDesc.first, newDesc.second.size})};
             if (mprotect(hostSpan.data(), hostSpan.size(), !isUnmapping ? PROT_READ | PROT_WRITE | PROT_EXEC : PROT_NONE)) [[unlikely]]
                 LOGW("Reprotection failed: {}", strerror(errno));
@@ -122,23 +99,17 @@ namespace skyline::kernel {
     }
 
     void MemoryManager::ForeachChunkInRange(span<u8> memory, auto editCallback) {
-        // editCallback typically calls MapInternal, which mutates `chunks` (insert/erase/merge). A std::map
-        // iterator can be invalidated by that mutation if its own node is erased/split, so we must never
-        // reuse an iterator across an editCallback call - instead, re-query `chunks` fresh on every step.
         u8 *addr{memory.data()};
         size_t sizeLeft{memory.size()};
-
         while (sizeLeft) {
             auto chunkBase{chunks.lower_bound(addr)};
             if (addr < chunkBase->first)
                 --chunkBase;
 
             size_t chunkSize{std::min<size_t>(chunkBase->second.size - static_cast<size_t>(addr - chunkBase->first), sizeLeft)};
-
             std::pair<u8 *, ChunkDescriptor> temp{addr, chunkBase->second};
             temp.second.size = chunkSize;
             editCallback(temp);
-
             addr += chunkSize;
             sizeLeft -= chunkSize;
         }
@@ -155,19 +126,18 @@ namespace skyline::kernel {
             auto end{util::HexStringToInt<u64>(std::string_view(maps.data() + line, sizeof(u64) * 2))};
             if (end < start)
                 continue;
-            if (end - start > size + (alignedStart - start)) { // We don't want to overflow if alignedStart > start
+            if (end - start > size + (alignedStart - start)) {
                 if (findLargest)
                     size = end - start;
 
                 region = span<u8>{reinterpret_cast<u8 *>(alignedStart), size};
-
                 if (!findLargest)
                     break;
             }
 
             start = util::HexStringToInt<u64>(std::string_view(maps.data() + maps.find_first_of('-', line) + 1, sizeof(u64) * 2));
             alignedStart = util::AlignUp(start, align);
-            if (alignedStart + size > maxAddress) // We don't want to map past the end of the address space
+            if (alignedStart + size > maxAddress)
                 break;
         } while ((line = maps.find_first_of('\n', line)) != std::string::npos && line++);
 
@@ -182,41 +152,50 @@ namespace skyline::kernel {
     }
 
     namespace {
-        constexpr size_t RegionAlignment{1ULL << 21}; //!< The minimum alignment of a HOS memory region
+        constexpr size_t RegionAlignment{1ULL << 21};
+
+        namespace AS32bit {
+            constexpr size_t CodeRegionStart{0x200000};
+            constexpr size_t CodeRegionSize{0x3fe00000};
+            constexpr size_t AliasRegionSize{0x40000000};
+            constexpr size_t HeapRegionSize{0x40000000};
+            constexpr size_t TotalSize{1ULL << 32};
+        }
 
         namespace AS36bit {
-            constexpr size_t CodeRegionStart{0x8000000}; //!< The start address of the code region (128MiB)
-            constexpr size_t CodeRegionSize{0x78000000}; //!< The size of the code region (2GiB - 128MiB)
-            constexpr size_t AliasRegionSize{0x180000000}; //!< The size of the alias region (6GiB)
-            constexpr size_t HeapRegionSize{0x180000000}; //!< The size of the heap region (6GiB)
-
+            constexpr size_t CodeRegionStart{0x8000000};
+            constexpr size_t CodeRegionSize{0x78000000};
+            constexpr size_t AliasRegionSize{0x180000000};
+            constexpr size_t HeapRegionSize{0x180000000};
             constexpr size_t TotalSize{AliasRegionSize + HeapRegionSize};
         }
 
         namespace AS39bit {
-            constexpr size_t MaxCodeRegionSize{4ULL * 1024 * 1024 * 1024}; //!< The assumed maximum size of the code region (4GiB)
-            constexpr size_t AliasRegionSize{0x1000000000}; //!< The size of the alias region (64GiB)
-            constexpr size_t HeapRegionSize{0x180000000}; //!< The size of the heap region (6GiB)
-            constexpr size_t StackRegionSize{0x80000000}; //!< The size of the stack region (2GiB)
-            constexpr size_t TlsIoRegionSize{0x1000000000}; //!< The size of the TLS/IO region (64GiB)
-
+            constexpr size_t MaxCodeRegionSize{4ULL * 1024 * 1024 * 1024};
+            constexpr size_t AliasRegionSize{0x1000000000};
+            constexpr size_t HeapRegionSize{0x180000000};
+            constexpr size_t StackRegionSize{0x80000000};
+            constexpr size_t TlsIoRegionSize{0x1000000000};
             constexpr size_t TotalSize{MaxCodeRegionSize + AliasRegionSize + HeapRegionSize + StackRegionSize + TlsIoRegionSize};
         }
     }
 
     void MemoryManager::InitializeVmm(memory::AddressSpaceType type, bool enableAliasRegionExtraSize) {
         addressSpaceType = type;
-
         LOGD("Initializing VMM for {}", to_string(addressSpaceType));
 
         size_t baseSize{}, maxAddress{};
         switch (type) {
             case memory::AddressSpaceType::AddressSpace32Bit:
-            case memory::AddressSpaceType::AddressSpace32BitNoReserved:
-                throw exception("32-bit address spaces are not supported");
+            case memory::AddressSpaceType::AddressSpace32BitNoReserved: {
+                addressSpace = span<u8>{reinterpret_cast<u8 *>(0), 1ULL << 32};
+                baseSize = AS32bit::TotalSize;
+                maxAddress = std::numeric_limits<size_t>::max();
+                break;
+            }
 
             case memory::AddressSpaceType::AddressSpace36Bit: {
-                addressSpace = span<u8>{reinterpret_cast<u8 *>(0), (1ULL << 36)};
+                addressSpace = span<u8>{reinterpret_cast<u8 *>(0), 1ULL << 36};
                 baseSize = AS36bit::TotalSize;
                 maxAddress = addressSpace.size();
                 break;
@@ -224,13 +203,8 @@ namespace skyline::kernel {
 
             case memory::AddressSpaceType::AddressSpace39Bit: {
                 addressSpace = span<u8>{reinterpret_cast<u8 *>(0), 1ULL << 39};
-
-                // [18.0.0+] NPDM META flags bit6 (EnableAliasRegionExtraSize): reserves an
-                // extra addressSpaceSize/8 on top of the normal Alias region, used by titles
-                // that do heavy physical-memory streaming (SetHeapSize/MapPhysicalMemory).
                 if (enableAliasRegionExtraSize)
                     aliasRegionExtraSize = addressSpace.size() >> 3;
-
                 baseSize = AS39bit::TotalSize + aliasRegionExtraSize;
                 maxAddress = addressSpace.size();
                 break;
@@ -240,31 +214,31 @@ namespace skyline::kernel {
                 throw exception("VMM initialization with unknown address space");
         }
 
-        // Qualcomm KGSL (Kernel Graphic Support Layer/Kernel GPU driver) maps below 35-bits, reserving it causes KGSL to go OOM
         static constexpr size_t KgslReservedRegionSize{1ULL << 35};
-
         base = AllocateMappedRange(baseSize, RegionAlignment, KgslReservedRegionSize, maxAddress, false);
 
         switch (type) {
+            case memory::AddressSpaceType::AddressSpace32Bit:
+            case memory::AddressSpaceType::AddressSpace32BitNoReserved: {
+                guestOffset = reinterpret_cast<uintptr_t>(base.data());
+                code = MemoryRegion{span<u8>{base.data() + AS32bit::CodeRegionStart, AS32bit::CodeRegionSize}, guestOffset};
+                break;
+            }
+
             case memory::AddressSpaceType::AddressSpace36Bit: {
                 code = codeBase36Bit = AllocateMappedRange(AS36bit::CodeRegionSize, RegionAlignment, AS36bit::CodeRegionStart, KgslReservedRegionSize, false);
-
                 if ((reinterpret_cast<u64>(base.data()) + baseSize) > (1ULL << 36)) {
                     LOGW("Couldn't fit regions into 36 bit AS! Resizing AS to 39 bits!");
                     addressSpace = span<u8>{reinterpret_cast<u8 *>(0), 1ULL << 39};
                 }
-
                 break;
             }
 
-            default: {
-                // Will be resized later when initializing regions
+            default:
                 code = base;
                 break;
-            }
         }
 
-        // Insert a placeholder element at the end of the map to make sure upper_bound/lower_bound never triggers std::map::end() which is broken
         chunks = {{addressSpace.data(), {
             .size = addressSpace.size(),
             .state = memory::states::Unmapped,
@@ -274,15 +248,29 @@ namespace skyline::kernel {
     }
 
     void MemoryManager::InitializeRegions(span<u8> codeRegion) {
-        // Get the host address of the code region
         codeRegion = GetHostSpan(codeRegion);
 
         if (!util::IsAligned(codeRegion.data(), RegionAlignment)) [[unlikely]]
             throw exception("Non-aligned code region was used to initialize regions: {} - {}", fmt::ptr(codeRegion.data()), fmt::ptr(codeRegion.end().base()));
 
         switch (addressSpaceType) {
+            case memory::AddressSpaceType::AddressSpace32Bit: {
+                stack = code;
+                tlsIo = stack;
+                alias = MemoryRegion{span<u8>{stack.host.end().base(), AS32bit::AliasRegionSize}, guestOffset};
+                heap = MemoryRegion{span<u8>{alias.host.end().base(), AS32bit::HeapRegionSize}, guestOffset};
+                break;
+            }
+
+            case memory::AddressSpaceType::AddressSpace32BitNoReserved: {
+                stack = code;
+                tlsIo = stack;
+                heap = MemoryRegion{span<u8>{stack.host.end().base(), AS32bit::HeapRegionSize * 2}, guestOffset};
+                alias = MemoryRegion{span<u8>{heap.host.end().base(), 0}, guestOffset};
+                break;
+            }
+
             case memory::AddressSpaceType::AddressSpace36Bit: {
-                // As a workaround if we can't place the code region at the base of the AS we mark it as inaccessible heap so rtld doesn't crash
                 if (codeBase36Bit.data() != reinterpret_cast<u8 *>(AS36bit::CodeRegionStart)) {
                     MapInternal(std::pair<u8 *, ChunkDescriptor>(reinterpret_cast<u8 *>(AS36bit::CodeRegionStart), {
                         .size = reinterpret_cast<size_t>(codeBase36Bit.data() - AS36bit::CodeRegionStart),
@@ -290,10 +278,9 @@ namespace skyline::kernel {
                     }));
                 }
 
-                // Place code, stack and TLS/IO in the lower 36-bits of the host AS and heap and alias past that
                 code = span<u8>{codeBase36Bit.data(), codeBase36Bit.data() + AS36bit::CodeRegionSize};
-                stack = code; // stack is shared with code on 36-bit
-                tlsIo = stack; // TLS/IO is shared with stack on 36-bit
+                stack = code;
+                tlsIo = stack;
                 alias = span<u8>{base.data(), AS36bit::AliasRegionSize};
                 heap = span<u8>{alias.host.end().base(), AS36bit::HeapRegionSize};
                 break;
@@ -307,13 +294,10 @@ namespace skyline::kernel {
                 tlsIo = span<u8>{stack.host.end().base(), AS39bit::TlsIoRegionSize};
 
                 u64 newSize{code.size() + alias.size() + stack.size() + heap.size() + tlsIo.size()};
-
                 if (newSize > base.size()) [[unlikely]]
                     throw exception("Guest VMM size has exceeded host carveout size: 0x{:X}/0x{:X} (Code: 0x{:X}/0x{:X})", newSize, base.size(), code.size(), AS39bit::MaxCodeRegionSize);
-
                 if (newSize != base.size()) [[likely]]
                     munmap(base.end().base(), newSize - base.size());
-
                 break;
             }
 
@@ -340,9 +324,7 @@ namespace skyline::kernel {
     }
 
     span<u8> MemoryManager::CreateMirror(span<u8> mapping) {
-        // Get the host address of the mapping
         mapping = GetHostSpan(mapping);
-
         if (!base.contains(mapping)) [[unlikely]]
             throw exception("Mapping is outside of VMM base: {} - {}", fmt::ptr(mapping.data()), fmt::ptr(mapping.end().base()));
 
@@ -353,9 +335,7 @@ namespace skyline::kernel {
         auto mirror{mremap(mapping.data(), 0, mapping.size(), MREMAP_MAYMOVE)};
         if (mirror == MAP_FAILED) [[unlikely]]
             throw exception("Failed to create mirror mapping at {} - {} (0x{:X}): {}", fmt::ptr(mapping.data()), fmt::ptr(mapping.end().base()), offset, strerror(errno));
-
         mprotect(mirror, mapping.size(), PROT_READ | PROT_WRITE);
-
         return span<u8>{reinterpret_cast<u8 *>(mirror), mapping.size()};
     }
 
@@ -364,15 +344,13 @@ namespace skyline::kernel {
         for (const auto &region : regions)
             totalSize += region.size();
 
-        auto mirrorBase{mmap(nullptr, totalSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)}; // Reserve address space for all mirrors
+        auto mirrorBase{mmap(nullptr, totalSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)};
         if (mirrorBase == MAP_FAILED) [[unlikely]]
             throw exception("Failed to create mirror base: {} (0x{:X} bytes)", strerror(errno), totalSize);
 
         size_t mirrorOffset{};
         for (const auto &region : regions) {
-            // Get the host address of the region
             auto hostRegion{GetHostSpan(region)};
-
             if (!base.contains(hostRegion)) [[unlikely]]
                 throw exception("Mapping is outside of VMM base: {} - {}", fmt::ptr(hostRegion.data()), fmt::ptr(hostRegion.end().base()));
 
@@ -383,21 +361,17 @@ namespace skyline::kernel {
             auto mirror{mremap(hostRegion.data(), 0, hostRegion.size(), MREMAP_FIXED | MREMAP_MAYMOVE, reinterpret_cast<u8 *>(mirrorBase) + mirrorOffset)};
             if (mirror == MAP_FAILED) [[unlikely]]
                 throw exception("Failed to create mirror mapping at {} - {} (0x{:X}): {}", fmt::ptr(hostRegion.data()), fmt::ptr(hostRegion.end().base()), offset, strerror(errno));
-
             mprotect(mirror, hostRegion.size(), PROT_READ | PROT_WRITE);
-
             mirrorOffset += hostRegion.size();
         }
 
         if (mirrorOffset != totalSize) [[unlikely]]
             throw exception("Mirror size mismatch: 0x{:X} != 0x{:X}", mirrorOffset, totalSize);
-
         return span<u8>{reinterpret_cast<u8 *>(mirrorBase), totalSize};
     }
 
     void MemoryManager::SetRegionBorrowed(span<u8> memory, bool value) {
         std::unique_lock lock{mutex};
-
         ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
             desc.second.attributes.isBorrowed = value;
             MapInternal(desc);
@@ -406,7 +380,6 @@ namespace skyline::kernel {
 
     void MemoryManager::SetRegionCpuCaching(span<u8> memory, bool value) {
         std::unique_lock lock{mutex};
-
         ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
             desc.second.attributes.isUncached = value;
             MapInternal(desc);
@@ -415,10 +388,6 @@ namespace skyline::kernel {
 
     bool MemoryManager::SetRegionCpuCachingIfAllowed(span<u8> memory, bool value) {
         std::unique_lock lock{mutex};
-
-        // First pass: read-only, bail out without modifying anything if any chunk in the range
-        // disallows attribute changes (this includes gaps, which are represented as explicit
-        // Unmapped chunks whose attributeChangeAllowed is always false)
         bool allowed{true};
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
             if (!desc.second.state.attributeChangeAllowed) [[unlikely]] {
@@ -426,22 +395,18 @@ namespace skyline::kernel {
                 LOGW("SetRegionCpuCachingIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which doesn't allow attribute changes", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
             }
         });
-
         if (!allowed) [[unlikely]]
             return false;
 
-        // Second pass: only reached if the entire range passed validation, still under the same lock
         ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
             desc.second.attributes.isUncached = value;
             MapInternal(desc);
         });
-
         return true;
     }
 
     bool MemoryManager::SetRegionPermissionLockedIfAllowed(span<u8> memory) {
         std::unique_lock lock{mutex};
-
         bool allowed{true};
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
             if (!desc.second.state.attributeChangeAllowed) [[unlikely]] {
@@ -449,7 +414,6 @@ namespace skyline::kernel {
                 LOGW("SetRegionPermissionLockedIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which doesn't allow attribute changes", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
             }
         });
-
         if (!allowed) [[unlikely]]
             return false;
 
@@ -457,13 +421,11 @@ namespace skyline::kernel {
             desc.second.attributes.isPermissionLocked = true;
             MapInternal(desc);
         });
-
         return true;
     }
 
     void MemoryManager::LockRegionForIpc(span<u8> memory) {
         std::unique_lock lock{mutex};
-
         ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
             desc.second.ipcLockCount++;
             desc.second.attributes.isIpcLocked = true;
@@ -473,13 +435,11 @@ namespace skyline::kernel {
 
     void MemoryManager::UnlockRegionForIpc(span<u8> memory) {
         std::unique_lock lock{mutex};
-
         ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
             if (desc.second.ipcLockCount > 0) [[likely]]
                 desc.second.ipcLockCount--;
             else
                 LOGW("UnlockRegionForIpc: ipcLockCount underflow at {} (0x{:X} bytes)", fmt::ptr(desc.first), desc.second.size);
-
             desc.second.attributes.isIpcLocked = desc.second.ipcLockCount != 0;
             MapInternal(desc);
         });
@@ -487,7 +447,6 @@ namespace skyline::kernel {
 
     void MemoryManager::SetRegionPermission(span<u8> memory, memory::Permission permission) {
         std::unique_lock lock{mutex};
-
         ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
             desc.second.permission = permission;
             MapInternal(desc);
@@ -496,16 +455,11 @@ namespace skyline::kernel {
 
     bool MemoryManager::SetRegionPermissionIfAllowed(span<u8> memory, memory::Permission permission) {
         std::unique_lock lock{mutex};
-
-        // Read-only pass: covers the entire range (fixing the previous single-chunk-only check) and also
-        // rejects chunks currently in use as an IPC buffer, so permissions can't change mid-transfer, and
-        // chunks that had their permission locked via svcSetMemoryAttribute's PermissionLocked bit
         bool allowed{true};
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
             if (!desc.second.state.permissionChangeAllowed || desc.second.ipcLockCount != 0 || desc.second.attributes.isPermissionLocked) [[unlikely]]
                 allowed = false;
         });
-
         if (!allowed) [[unlikely]]
             return false;
 
@@ -513,158 +467,110 @@ namespace skyline::kernel {
             desc.second.permission = permission;
             MapInternal(desc);
         });
-
         return true;
     }
 
     std::optional<std::pair<u8 *, ChunkDescriptor>> MemoryManager::GetChunk(u8 *addr) {
         std::shared_lock lock{mutex};
-
         if (!addressSpace.contains(addr)) [[unlikely]]
             return std::nullopt;
 
         auto chunkBase{chunks.lower_bound(addr)};
         if (addr < chunkBase->first)
             --chunkBase;
-
         return std::make_optional(*chunkBase);
     }
 
     bool MemoryManager::MapPhysicalMemoryIfAllowed(span<u8> memory) {
-    std::unique_lock lock{mutex};
+        std::unique_lock lock{mutex};
+        bool allowed{true};
+        std::vector<std::pair<u8 *, size_t>> toMap;
+        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+            if (desc.second.state == memory::states::Unmapped) {
+                toMap.emplace_back(desc.first, desc.second.size);
+            } else if (desc.second.state != memory::states::Heap) [[unlikely]] {
+                allowed = false;
+                LOGW("MapPhysicalMemoryIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which is neither Unmapped nor Heap", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
+            }
+        });
+        if (!allowed) [[unlikely]]
+            return false;
 
-    // Passo de leitura: só rejeita se algum sub-trecho não for Unmapped nem Heap.
-    // Heap já mapeado é um "completar" legítimo (idempotente) - hardware real
-    // aceita chamadas sobrepostas de MapPhysicalMemory em vez de falhar tudo.
-    bool allowed{true};
-    std::vector<std::pair<u8 *, size_t>> toMap;
-    ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
-        if (desc.second.state == memory::states::Unmapped) {
-            toMap.emplace_back(desc.first, desc.second.size);
-        } else if (desc.second.state != memory::states::Heap) [[unlikely]] {
-            allowed = false;
-            LOGW("MapPhysicalMemoryIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which is neither Unmapped nor Heap", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
-        }
-    });
-
-    if (!allowed) [[unlikely]]
-        return false;
-
-    // Passo de escrita: mapeia só os sub-trechos que estavam Unmapped de fato.
-    // Coletados antes (não mapeados dentro do ForeachChunkInRange) pra não mexer
-    // no mapa de chunks enquanto ainda estamos iterando ele.
-    for (const auto &[chunkAddr, chunkSize] : toMap) {
-        MapInternal(std::pair<u8 *, ChunkDescriptor>(
-            chunkAddr, {
+        for (const auto &[chunkAddr, chunkSize] : toMap) {
+            MapInternal(std::pair<u8 *, ChunkDescriptor>(chunkAddr, {
                 .size = chunkSize,
                 .permission = {true, true, false},
                 .state = memory::states::Heap
             }));
-    }
-
+        }
         return true;
     }
-  
+
     __attribute__((always_inline)) void MemoryManager::MapCodeMemory(span<u8> memory, memory::Permission permission) {
         std::unique_lock lock{mutex};
-
-        MapInternal(std::pair<u8 *, ChunkDescriptor>(
-            memory.data(), {
-                .size = memory.size(),
-                .permission = permission,
-                .state = memory::states::Code
-            }));
+        MapInternal(std::pair<u8 *, ChunkDescriptor>(memory.data(), {
+            .size = memory.size(), .permission = permission, .state = memory::states::Code
+        }));
     }
 
     __attribute__((always_inline)) void MemoryManager::MapMutableCodeMemory(span<u8> memory) {
         std::unique_lock lock{mutex};
-
-        MapInternal(std::pair<u8 *, ChunkDescriptor>(
-            memory.data(), {
-                .size = memory.size(),
-                .permission = {true, true, false},
-                .state = memory::states::CodeMutable
-            }));
+        MapInternal(std::pair<u8 *, ChunkDescriptor>(memory.data(), {
+            .size = memory.size(), .permission = {true, true, false}, .state = memory::states::CodeMutable
+        }));
     }
 
     __attribute__((always_inline)) void MemoryManager::MapStackMemory(span<u8> memory) {
         std::unique_lock lock{mutex};
-
-        MapInternal(std::pair<u8 *, ChunkDescriptor>(
-            memory.data(), {
-                .size = memory.size(),
-                .permission = {true, true, false},
-                .state = memory::states::Stack,
-                .isSrcMergeDisallowed = true
-            }));
+        MapInternal(std::pair<u8 *, ChunkDescriptor>(memory.data(), {
+            .size = memory.size(), .permission = {true, true, false}, .state = memory::states::Stack, .isSrcMergeDisallowed = true
+        }));
     }
 
     __attribute__((always_inline)) void MemoryManager::MapHeapMemory(span<u8> memory) {
         std::unique_lock lock{mutex};
-
-        MapInternal(std::pair<u8 *, ChunkDescriptor>(
-            memory.data(), {
-                .size = memory.size(),
-                .permission = {true, true, false},
-                .state = memory::states::Heap
-            }));
+        MapInternal(std::pair<u8 *, ChunkDescriptor>(memory.data(), {
+            .size = memory.size(), .permission = {true, true, false}, .state = memory::states::Heap
+        }));
     }
 
     __attribute__((always_inline)) void MemoryManager::MapSharedMemory(span<u8> memory, memory::Permission permission) {
         std::unique_lock lock{mutex};
-
-        MapInternal(std::pair<u8 *, ChunkDescriptor>(
-            memory.data(), {
-                .size = memory.size(),
-                .permission = permission,
-                .state = memory::states::SharedMemory,
-                .isSrcMergeDisallowed = true
-            }));
+        MapInternal(std::pair<u8 *, ChunkDescriptor>(memory.data(), {
+            .size = memory.size(), .permission = permission, .state = memory::states::SharedMemory, .isSrcMergeDisallowed = true
+        }));
     }
 
     __attribute__((always_inline)) void MemoryManager::MapTransferMemory(span<u8> memory, memory::Permission permission) {
         std::unique_lock lock{mutex};
-
-        MapInternal(std::pair<u8 *, ChunkDescriptor>(
-            memory.data(), {
-                .size = memory.size(),
-                .permission = permission,
-                .state = permission.raw ? memory::states::TransferMemory : memory::states::TransferMemoryIsolated,
-                .isSrcMergeDisallowed = true
-            }));
+        MapInternal(std::pair<u8 *, ChunkDescriptor>(memory.data(), {
+            .size = memory.size(), .permission = permission,
+            .state = permission.raw ? memory::states::TransferMemory : memory::states::TransferMemoryIsolated,
+            .isSrcMergeDisallowed = true
+        }));
     }
 
     __attribute__((always_inline)) void MemoryManager::MapThreadLocalMemory(span<u8> memory) {
         std::unique_lock lock{mutex};
-
-        MapInternal(std::pair<u8 *, ChunkDescriptor>(
-            memory.data(), {
-                .size = memory.size(),
-                .permission = {true, true, false},
-                .state = memory::states::ThreadLocal
-            }));
+        MapInternal(std::pair<u8 *, ChunkDescriptor>(memory.data(), {
+            .size = memory.size(), .permission = {true, true, false}, .state = memory::states::ThreadLocal
+        }));
     }
 
     __attribute__((always_inline)) void MemoryManager::Reserve(span<u8> memory) {
         std::unique_lock lock{mutex};
-
-        MapInternal(std::pair<u8 *, ChunkDescriptor>(
-            memory.data(), {
-                .size = memory.size(),
-                .permission = {false, false, false},
-                .state = memory::states::Reserved
-            }));
+        MapInternal(std::pair<u8 *, ChunkDescriptor>(memory.data(), {
+            .size = memory.size(), .permission = {false, false, false}, .state = memory::states::Reserved
+        }));
     }
 
     __attribute__((always_inline)) bool MemoryManager::UnmapMemory(span<u8> memory) {
         std::unique_lock lock{mutex};
-
         bool locked{};
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
             if (desc.second.ipcLockCount != 0) [[unlikely]]
                 locked = true;
         });
-
         if (locked) [[unlikely]]
             return false;
 
@@ -673,44 +579,31 @@ namespace skyline::kernel {
                 FreeMemory(span<u8>(desc.first, desc.second.size));
         });
 
-        MapInternal(std::pair<u8 *, ChunkDescriptor>(
-            memory.data(), {
-                .size = memory.size(),
-                .permission = {false, false, false},
-                .state = memory::states::Unmapped
-            }));
-
+        MapInternal(std::pair<u8 *, ChunkDescriptor>(memory.data(), {
+            .size = memory.size(), .permission = {false, false, false}, .state = memory::states::Unmapped
+        }));
         return true;
     }
 
     __attribute__((always_inline)) void MemoryManager::FreeMemory(span<u8> memory) {
-    memory = GetHostSpan(memory);
-       // Get the host address of memory
-    u8 *alignedStart{util::AlignUp(memory.data(), constant::PageSize)};
-    u8 *alignedEnd{util::AlignDown(memory.end().base(), constant::PageSize)};
+        memory = GetHostSpan(memory);
+        u8 *alignedStart{util::AlignUp(memory.data(), constant::PageSize)};
+        u8 *alignedEnd{util::AlignDown(memory.end().base(), constant::PageSize)};
 
-    if (alignedStart < alignedEnd) [[likely]] {
-        size_t alignedSize{static_cast<size_t>(alignedEnd - alignedStart)};
-
-        // MADV_REMOVE requires the mapping to be writable, force it before freeing
-        if (mprotect(alignedStart, alignedSize, PROT_READ | PROT_WRITE) == -1) [[unlikely]]
-            LOGW("Failed to reprotect memory before freeing: {}", strerror(errno));
-
-        if (madvise(alignedStart, alignedSize, MADV_REMOVE) == -1) [[unlikely]]
-            LOGE("Failed to free memory: {}", strerror(errno));
+        if (alignedStart < alignedEnd) [[likely]] {
+            size_t alignedSize{static_cast<size_t>(alignedEnd - alignedStart)};
+            if (mprotect(alignedStart, alignedSize, PROT_READ | PROT_WRITE) == -1) [[unlikely]]
+                LOGW("Failed to reprotect memory before freeing: {}", strerror(errno));
+            if (madvise(alignedStart, alignedSize, MADV_REMOVE) == -1) [[unlikely]]
+                LOGE("Failed to free memory: {}", strerror(errno));
         }
     }
 
     void MemoryManager::SvcMapMemory(span<u8> source, span<u8> destination) {
         std::unique_lock lock{mutex};
-
-        MapInternal(std::pair<u8 *, ChunkDescriptor>(
-            destination.data(), {
-                .size = destination.size(),
-                .permission = {true, true, false},
-                .state = memory::states::Stack,
-                .isSrcMergeDisallowed = true
-            }));
+        MapInternal(std::pair<u8 *, ChunkDescriptor>(destination.data(), {
+            .size = destination.size(), .permission = {true, true, false}, .state = memory::states::Stack, .isSrcMergeDisallowed = true
+        }));
 
         auto sourceHost{GetHostSpan(source)};
         auto destinationHost{GetHostSpan(destination)};
@@ -725,7 +618,6 @@ namespace skyline::kernel {
 
     bool MemoryManager::SvcUnmapMemory(span<u8> source, span<u8> destination) {
         std::unique_lock lock{mutex};
-
         auto dstChunk = chunks.lower_bound(destination.data());
         if (destination.data() < dstChunk->first)
             --dstChunk;
@@ -747,7 +639,6 @@ namespace skyline::kernel {
             auto destinationOffset{dstChunk->first - destination.data()};
             std::memcpy(sourceHost.data() + destinationOffset, dstChunkHost.data(), dstChunkHost.size());
         }
-
         return true;
     }
 
@@ -757,7 +648,6 @@ namespace skyline::kernel {
 
     void MemoryManager::RemoveRef(const std::shared_ptr<type::KMemory> &ptr) {
         auto i = std::find(memRefs.begin(), memRefs.end(), ptr);
-
         if (*i == ptr) [[likely]]
             memRefs.erase(i);
     }
@@ -765,15 +655,12 @@ namespace skyline::kernel {
     size_t MemoryManager::GetUserMemoryUsage() {
         std::shared_lock lock{mutex};
         size_t size{};
-
         auto currChunk = chunks.lower_bound(heap.guest.data());
-
         while (currChunk->first < heap.guest.end().base()) {
             if (currChunk->second.state == memory::states::Heap)
                 size += currChunk->second.size;
             ++currChunk;
         }
-
         return size + code.size() + state.process->mainThreadStack.size();
     }
 
