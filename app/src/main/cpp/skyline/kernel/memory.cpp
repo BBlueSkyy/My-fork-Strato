@@ -766,7 +766,7 @@ namespace skyline::kernel {
         std::shared_lock lock{mutex};
         size_t size{};
 
-        auto currChunk = chunks.lower_bound(heap.guest.data());
+        auto currChunk = chunks.lower_bound(alias.guest.data());
 
         while (currChunk->first < heap.guest.end().base()) {
             if (currChunk->second.state == memory::states::Heap)
