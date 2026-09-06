@@ -72,15 +72,10 @@ namespace skyline::service::am {
             attribute.userId = saveUserId;
             attribute.type = type;
 
-            // Keep this path identical to IFileSystemProxy::OpenSaveDataFileSystem for Account and
-            // Device save data so EnsureSaveData and the later mount always resolve to the same
-            // backing directory.
-            auto saveDataPath{fmt::format(
-                "/nand/user/save/{:016X}/{:016X}{:016X}/{:016X}/",
-                0,
-                attribute.userId.lower,
-                attribute.userId.upper,
-                attribute.programId
+            auto saveDataPath{fssrv::GetSaveDataPath(
+                fssrv::SaveDataSpaceId::User,
+                attribute,
+                nacp.saveDataOwnerId
             )};
 
             [[maybe_unused]] auto saveFileSystem{std::make_shared<vfs::OsFileSystem>(
