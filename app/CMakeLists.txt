@@ -35,16 +35,15 @@ add_subdirectory("libraries/lz4/build/cmake")
 include_directories(SYSTEM "libraries/lz4/lib")
 
 # Vulkan + Vulkan-Hpp
-add_compile_definitions(VK_USE_PLATFORM_ANDROID_KHR) # We want all the Android-specific structures to be defined
-add_compile_definitions(VULKAN_HPP_NO_SPACESHIP_OPERATOR) # libcxx doesn't implement operator<=> for std::array which breaks this
-add_compile_definitions(VULKAN_HPP_NO_STRUCT_CONSTRUCTORS) # We want to use designated initializers in Vulkan-Hpp
+add_compile_definitions(VK_USE_PLATFORM_ANDROID_KHR)
+add_compile_definitions(VULKAN_HPP_NO_SPACESHIP_OPERATOR)
+add_compile_definitions(VULKAN_HPP_NO_STRUCT_CONSTRUCTORS)
 add_compile_definitions(VULKAN_HPP_NO_SETTERS)
 add_compile_definitions(VULKAN_HPP_NO_SMART_HANDLE)
-
-add_compile_definitions(VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1) # We use the dynamic loader rather than the static one to avoid an additional level of indirection
-add_compile_definitions(VULKAN_HPP_ENABLE_DYNAMIC_LOADER_TOOL=0) # We disable the dynamic loader tool so we can supply our own getInstanceProcAddress function from a custom driver
+add_compile_definitions(VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1)
+add_compile_definitions(VULKAN_HPP_ENABLE_DYNAMIC_LOADER_TOOL=0)
 include_directories(SYSTEM "libraries/vkhpp")
-include_directories(SYSTEM "libraries/vkhpp/Vulkan-Headers/include") # We use base Vulkan headers from this to ensure version parity with Vulkan-Hpp
+include_directories(SYSTEM "libraries/vkhpp/Vulkan-Headers/include")
 
 # Vulkan Memory Allocator
 include_directories("libraries/vkma/include")
@@ -66,7 +65,7 @@ target_compile_options(mbedcrypto PRIVATE -Wno-everything)
 set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "Install Opus CMake package config module" FORCE)
 include_directories(SYSTEM "libraries/opus/include")
 add_subdirectory("libraries/opus")
-target_compile_definitions(opus PRIVATE OPUS_WILL_BE_SLOW=1) # libopus will warn when built without optimizations
+target_compile_definitions(opus PRIVATE OPUS_WILL_BE_SLOW=1)
 
 # Cubeb
 set(USE_OPENSL ON)
@@ -103,7 +102,6 @@ include_directories("libraries/thread-pool")
 
 # FFmpeg (decoder-only build of the submodule, used for NVDEC video decoding)
 include(ExternalProject)
-# FFmpeg only supports in-tree builds when driven through a Windows shell, the source tree doubles as the build tree
 set(FFMPEG_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libraries/ffmpeg")
 set(FFMPEG_BUILD_DIR "${FFMPEG_SOURCE_DIR}")
 get_filename_component(FFMPEG_TOOLCHAIN_BIN "${CMAKE_C_COMPILER}" DIRECTORY)
@@ -154,12 +152,9 @@ set_target_properties(ffmpeg-swscale PROPERTIES
         IMPORTED_LOCATION "${FFMPEG_BUILD_DIR}/libswscale/libswscale.a"
         INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_SOURCE_DIR};${FFMPEG_BUILD_DIR}")
 
-# Build Skyline with full debugging data and -Og for debug builds
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g3 -glldb -gdwarf-5 -fno-omit-frame-pointer")
-# Build Skyline with full debugging data and some optimizations for reldebug builds, build speed is prioritised
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O1 -g3 -glldb -gdwarf-5 -fno-omit-frame-pointer -fno-stack-protector")
 
-# Include headers from libraries as system headers to silence warnings from them
 function(target_link_libraries_system target)
     set(libraries ${ARGN})
     foreach (library ${libraries})
@@ -183,6 +178,12 @@ add_subdirectory("libraries/audio-core")
 include_directories(SYSTEM "libraries/audio-core/include")
 target_link_libraries_system(audio_core Boost::intrusive Boost::container range-v3)
 
+# Dynarmic AArch32 backend
+set(DYNARMIC_FRONTENDS "A32" CACHE STRING "Enabled Dynarmic frontends" FORCE)
+set(DYNARMIC_INSTALL OFF CACHE BOOL "Skip Dynarmic installation" FORCE)
+set(DYNARMIC_USE_PRECOMPILED_HEADERS OFF CACHE BOOL "Use precompiled headers for Dynarmic" FORCE)
+add_subdirectory("libraries/dynarmic")
+
 # Skyline
 add_library(skyline SHARED
         ${source_DIR}/driver_jni.cpp
@@ -197,6 +198,9 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/common/trace.cpp
         ${source_DIR}/skyline/common/trap_manager.cpp
         ${source_DIR}/skyline/logger/logger.cpp
+        ${source_DIR}/skyline/jit/coproc_15.cpp
+        ${source_DIR}/skyline/jit/jit_core_32.cpp
+        ${source_DIR}/skyline/jit/jit32.cpp
         ${source_DIR}/skyline/nce/guest.S
         ${source_DIR}/skyline/nce.cpp
         ${source_DIR}/skyline/jvm.cpp
@@ -464,9 +468,8 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/ngc/INgcServiceForApplication.cpp
         )
 target_include_directories(skyline PRIVATE ${source_DIR}/skyline)
-# target_precompile_headers(skyline PRIVATE ${source_DIR}/skyline/common.h) # PCH will currently break Intellisense
 target_compile_options(skyline PRIVATE -Wall -Wno-unknown-attributes -Wno-c++20-extensions -Wno-c++17-extensions -Wno-c99-designator -Wno-reorder -Wno-missing-braces -Wno-unused-variable -Wno-unused-private-field -Wno-dangling-else -Wconversion -fsigned-bitfields)
 
 add_dependencies(skyline ffmpeg)
-target_link_libraries(skyline PRIVATE shader_recompiler audio_core)
+target_link_libraries(skyline PRIVATE shader_recompiler audio_core dynarmic)
 target_link_libraries_system(skyline android perfetto fmt lz4_static tzcode vkma mbedcrypto opus Boost::intrusive Boost::container Boost::preprocessor Boost::regex range-v3 adrenotools tsl::robin_map ffmpeg-avcodec ffmpeg-swscale ffmpeg-avutil)
