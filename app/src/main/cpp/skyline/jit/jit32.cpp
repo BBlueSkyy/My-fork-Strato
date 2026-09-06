@@ -2,15 +2,27 @@
 // Copyright © 2023 Strato Team and Contributors (https://github.com/strato-emu/)
 
 #include "jit32.h"
+#include "halt_reason.h"
 #include <common/trap_manager.h>
 #include <common/signal.h>
+#include <kernel/scheduler.h>
 #include <kernel/types/KThread.h>
 #include <kernel/types/KProcess.h>
-#include <loader/loader.h>
 
 namespace skyline::jit {
     static std::array<JitCore32, CoreCount> MakeJitCores(const DeviceState &state, Dynarmic::ExclusiveMonitor &monitor) {
-        signal::SetHostSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, Jit32::SignalHandler);
+        // AArch32 guest code executes inside Dynarmic as ordinary host code, so scheduler
+        // signals must halt the JIT rather than going through the NCE guest signal path.
+        signal::SetHostSignalHandler({Scheduler::YieldSignal,
+                                      Scheduler::PreemptionSignal,
+                                      SIGINT,
+                                      SIGILL,
+                                      SIGTRAP,
+                                      SIGBUS,
+                                      SIGFPE,
+                                      SIGSEGV},
+                                     Jit32::SignalHandler,
+                                     false);
 
         return {JitCore32(state, monitor, 0),
                 JitCore32(state, monitor, 1),
@@ -28,40 +40,46 @@ namespace skyline::jit {
     }
 
     void Jit32::SignalHandler(int signal, siginfo *info, ucontext *ctx) {
-        if (signal == SIGSEGV)
+        auto thread{DeviceState::thread};
+
+        if (signal == Scheduler::YieldSignal || signal == Scheduler::PreemptionSignal) {
+            Scheduler::YieldPending = true;
+            if (thread && thread->jit)
+                thread->jit->HaltExecution(HaltReason::Preempted);
+            return;
+        }
+
+        if (signal == SIGSEGV) {
+            // Handle accesses to regions tracked by TrapManager before considering this a JIT crash.
             if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
                 return;
+        }
+
+        const bool isGuest{thread && thread->jit != nullptr};
+        if (!isGuest) {
+            signal::ExceptionalSignalHandler(signal, info, ctx);
+            return;
+        }
 
         auto &mctx{ctx->uc_mcontext};
-        auto thread{kernel::this_thread};
-        bool isGuest{thread->jit != nullptr};
+        if (signal != SIGINT) {
+            std::string cpuContext;
+            if (mctx.fault_address)
+                cpuContext += fmt::format("\n  Fault Address: 0x{:X}", mctx.fault_address);
+            if (mctx.sp)
+                cpuContext += fmt::format("\n  Host Stack Pointer: 0x{:X}", mctx.sp);
 
-        if (isGuest) {
-            if (signal != SIGINT) {
-                signal::StackFrame topFrame{.lr = reinterpret_cast<void *>(ctx->uc_mcontext.pc), .next = reinterpret_cast<signal::StackFrame *>(ctx->uc_mcontext.regs[29])};
-                std::string trace{thread->process.state.loader->GetStackTrace(&topFrame)};
+            LOGE("AArch32 HOS-{} crashed due to host signal: {}{}", thread->id, strsignal(signal), cpuContext);
 
-                std::string cpuContext;
-                if (mctx.fault_address)
-                    cpuContext += fmt::format("\n  Fault Address: 0x{:X}", mctx.fault_address);
-                if (mctx.sp)
-                    cpuContext += fmt::format("\n  Stack Pointer: 0x{:X}", mctx.sp);
-                for (size_t index{}; index < (sizeof(mcontext_t::regs) / sizeof(u64)); index += 2)
-                    cpuContext += fmt::format("\n  X{:<2}: 0x{:<16X} X{:<2}: 0x{:X}", index, mctx.regs[index], index + 1, mctx.regs[index + 1]);
-
-                LOGE("Thread #{} has crashed due to signal: {}\nStack Trace:{} \nCPU Context:{}", thread->id, strsignal(signal), trace, cpuContext);
-
-                if (thread->id) {
-                    signal::BlockSignal({SIGINT});
-                    thread->process.Kill(false);
-                }
+            if (thread->id) {
+                signal::BlockSignal({SIGINT});
+                thread->GetProcess()->Kill(false);
             }
-
-            mctx.pc = reinterpret_cast<u64>(&std::longjmp);
-            mctx.regs[0] = reinterpret_cast<u64>(thread->originalCtx);
-            mctx.regs[1] = true;
-        } else {
-            signal::ExceptionalSignalHandler(signal, info, ctx);
         }
+
+        // Return from the JIT host frame to KThread's setjmp recovery path.
+        mctx.pc = reinterpret_cast<u64>(&std::longjmp);
+        mctx.regs[0] = reinterpret_cast<u64>(thread->originalCtx);
+        mctx.regs[1] = true;
     }
 }
