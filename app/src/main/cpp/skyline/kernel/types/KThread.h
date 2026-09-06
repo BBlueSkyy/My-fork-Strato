@@ -5,6 +5,7 @@
 
 #include <csetjmp>
 #include <nce/guest.h>
+#include <jit/thread_context32.h>
 #include <kernel/scheduler.h>
 #include <common/signal.h>
 #include <common/spin_lock.h>
@@ -12,6 +13,10 @@
 #include "KSharedMemory.h"
 
 namespace skyline {
+    namespace jit {
+        class JitCore32;
+    }
+
     namespace kernel::type {
         /**
          * @brief KThread manages a single thread of execution which is responsible for running guest code and kernel code which is invoked by the guest
@@ -39,7 +44,10 @@ namespace skyline {
             KHandle handle;
             size_t id; //!< Index of thread in parent process's KThread vector
 
-            nce::ThreadContext ctx{}; //!< The context of the guest thread during the last SVC
+            nce::ThreadContext ctx{}; //!< AArch64/NCE context. Kept in place for the existing kernel/SVC paths.
+            jit::ThreadContext32 jit32Ctx{}; //!< AArch32/Dynarmic context when this is a 32-bit process
+            jit::JitCore32 *jit{}; //!< Active JIT core while executing AArch32 guest code
+            u8 *jitTlsRegion{}; //!< Guest TLS pointer used by AArch32 processes
             jmp_buf originalCtx; //!< The context of the host thread prior to jumping into guest code
 
             void *entry; //!< A function pointer to the thread's entry
@@ -81,6 +89,12 @@ namespace skyline {
             KThread(const DeviceState &state, KHandle handle, KProcess *parent, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore);
 
             ~KThread();
+
+            KProcess *GetProcess() const {
+                return parent;
+            }
+
+            bool Is64Bit() const;
 
             /**
              * @param self If the calling thread should jump directly into guest code or if a new thread should be created for it
