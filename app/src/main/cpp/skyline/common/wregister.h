@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <fmt/format.h>
 #include <common/base.h>
 
 namespace skyline {
@@ -20,3 +21,11 @@ namespace skyline {
         }
     };
 }
+
+template<>
+struct fmt::formatter<skyline::WRegister> : fmt::formatter<skyline::u32> {
+    template<typename FormatContext>
+    auto format(const skyline::WRegister &reg, FormatContext &ctx) const {
+        return fmt::formatter<skyline::u32>::format(static_cast<skyline::u32>(reg), ctx);
+    }
+};
