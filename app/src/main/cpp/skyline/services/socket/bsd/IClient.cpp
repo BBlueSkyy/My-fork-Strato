@@ -37,7 +37,8 @@ namespace skyline::service::socket {
         span outputBuf{request.outputBuf.at(0)};
         auto fds{span<pollfd>(reinterpret_cast<pollfd*>(outputBuf.data()), static_cast<u32>(fdsCount))};
         i32 result{poll(fds.data(), static_cast<u32>(fdsCount), static_cast<i32>(timeout))};
-        return PushBsdResult(response, result, errno);
+        i32 errorCode{result == -1 ? errno : 0};
+        return PushBsdResult(response, result, errorCode);
     }
 
     Result IClient::Recv(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
