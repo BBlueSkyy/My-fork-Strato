@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="auto_stub">Enable Auto-Stub</string>
+    <string name="auto_stub_disabled">Auto-Stub is disabled</string>
+    <string name="auto_stub_enabled">Missing services are stubbed as successful. This may improve compatibility but can cause crashes or instability.</string>
+</resources>

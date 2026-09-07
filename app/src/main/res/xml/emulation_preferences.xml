@@ -187,6 +187,12 @@
             app:useSimpleSummaryProvider="true" />
         <SwitchPreferenceCompat
             android:defaultValue="false"
+            android:summaryOff="@string/auto_stub_disabled"
+            android:summaryOn="@string/auto_stub_enabled"
+            app:key="auto_stub"
+            app:title="@string/auto_stub" />
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
             android:summaryOff="@string/validation_layer_disabled"
             android:summaryOn="@string/validation_layer_enabled"
             app:key="validation_layer"

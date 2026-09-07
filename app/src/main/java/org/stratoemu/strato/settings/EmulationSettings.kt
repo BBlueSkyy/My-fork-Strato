@@ -61,6 +61,7 @@ class EmulationSettings private constructor(context : Context, prefName : String
 
     // Debug
     var logLevel by sharedPreferences(context, 2, prefName = prefName) // Info by default
+    var autoStub by sharedPreferences(context, false, prefName = prefName)
     var validationLayer by sharedPreferences(context, false, prefName = prefName)
 
     /**

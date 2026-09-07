@@ -46,6 +46,7 @@ data class NativeSettings(
 
     // Debug
     var logLevel : Int,
+    var autoStub : Boolean,
     var validationLayer : Boolean
 ) {
     constructor(context : Context, pref : EmulationSettings) : this(
@@ -70,6 +71,7 @@ data class NativeSettings(
         pref.enableFastReadbackWrites,
         pref.disableSubgroupShuffle,
         pref.logLevel,
+        pref.autoStub,
         BuildConfig.BUILD_TYPE != "release" && pref.validationLayer
     )
 
