@@ -132,7 +132,7 @@ namespace skyline::vfs {
         const auto blockOffset{sectionOffset & 0xF};
         if (blockOffset != 0) {
             std::vector<u8> block(0x10);
-            auto regionBacking{std::make_shared<RegionBacking>(bktrRomFs, sectionOffset & static_cast<u32>(~0xF), 0x10)};
+            auto regionBacking{std::make_shared<RegionBacking>(bktrRomFs, sectionOffset & ~u64{0xF}, 0x10)};
             regionBacking->Read(block);
 
             cipher.Decrypt(block.data(), block.data(), block.size());
@@ -189,7 +189,7 @@ namespace skyline::vfs {
            throw exception("BKTR: patch read is outside the update section");
 
        if (!isEncrypted)
-           return bktrRomFs->Read(output, sectionOffset);
+           return bktrRomFs->Read(output.first(length), sectionOffset);
 
         const auto subsectionEntry{GetSubsectionEntry(sectionOffset)};
 
@@ -211,7 +211,7 @@ namespace skyline::vfs {
         const auto blockOffset{sectionOffset & 0xF};
         if (blockOffset != 0) {
             std::vector<u8> block(0x10);
-            auto regionBacking{std::make_shared<RegionBacking>(bktrRomFs, sectionOffset & static_cast<u32>(~0xF), 0x10)};
+            auto regionBacking{std::make_shared<RegionBacking>(bktrRomFs, sectionOffset & ~u64{0xF}, 0x10)};
             regionBacking->Read(block);
 
             cipher.Decrypt(block.data(), block.data(), block.size());
