@@ -38,6 +38,10 @@ namespace skyline::vfs {
 
       public:
 
+        /** @brief Compose already decrypted whole sections; AES-CTR-Ex is resolved by NCA first. */
+        BKTR(std::shared_ptr<Backing> original, std::shared_ptr<Backing> patch, RelocationBlock relocation,
+             std::vector<RelocationBucket> buckets);
+
         BKTR(std::shared_ptr<vfs::Backing> pBaseRomfs, std::shared_ptr<vfs::Backing> pBktrRomfs, RelocationBlock pRelocation,
              std::vector<RelocationBucket> pRelocationBuckets, SubsectionBlock pSubsection,
              std::vector<SubsectionBucket> pSubsectionBuckets, bool pIsEncrypted, std::array<u8, 16> pKey,

@@ -39,9 +39,10 @@ namespace skyline::kernel {
 
         state.loader = GetLoader(romFd, keyStore, romType);
 
-        if (updateFd > 0) {
+        if (updateFd >= 0) {
             LOGI("OS::Execute - Loading update from FD: {}", updateFd);
-            state.updateLoader = GetLoader(updateFd, keyStore, romType);
+            // ManageContentActivity imports updates/DLC via NspFilePicker, even for an XCI base.
+            state.updateLoader = GetLoader(updateFd, keyStore, loader::RomFormat::NSP);
             LOGI("OS::Execute - Update loader created successfully");
         } else {
             LOGI("OS::Execute - No update to load (updateFd: {})", updateFd);
@@ -49,7 +50,9 @@ namespace skyline::kernel {
 
         if (dlcFds.size() > 0)
             for (int fd : dlcFds)
-                state.dlcLoaders.push_back(GetLoader(fd, keyStore, romType));
+                state.dlcLoaders.push_back(GetLoader(fd, keyStore, loader::RomFormat::NSP));
+
+        state.loader->ResolveProgramContent(state);
 
         state.gpu->Initialise();
 
@@ -65,14 +68,16 @@ namespace skyline::kernel {
             if (publisher.empty())
                 publisher = nacp->GetApplicationPublisher(nacp->GetFirstSupportedTitleLanguage());
 
-            if (state.updateLoader)
+            if (state.loader->programUpdateApplied && state.updateLoader && state.updateLoader->nacp)
                 LOGINF("Applied update v{}", state.updateLoader->nacp->GetApplicationVersion());
 
             if (state.dlcLoaders.size() > 0)
                 for (auto &loader : state.dlcLoaders)
-                    LOGINF("Applied DLC {}", loader->cnmt->GetTitleId());
+                    if (loader->cnmt)
+                        LOGINF("Applied DLC {}", loader->cnmt->GetTitleId());
 
-            LOGINF(R"(Starting "{}" ({}) v{} by "{}")", name, nacp->GetSaveDataOwnerId(), state.updateLoader ? state.updateLoader->nacp->GetApplicationVersion() : nacp->GetApplicationVersion(), publisher);
+            LOGINF(R"(Starting "{}" ({}) v{} by "{}")", name, nacp->GetSaveDataOwnerId(),
+                   state.loader->programUpdateApplied && state.updateLoader && state.updateLoader->nacp ? state.updateLoader->nacp->GetApplicationVersion() : nacp->GetApplicationVersion(), publisher);
         }
 
         process->InitializeHeapTls();

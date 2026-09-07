@@ -6,7 +6,7 @@
 #include <vfs/region_backing.h>
 #include "nca.h"
 #include "xci.h"
-#include "vfs/patch_manager.h"
+#include "program_content.h"
 
 namespace skyline::loader {
     XciLoader::XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore) {
@@ -30,6 +30,8 @@ namespace skyline::loader {
                 logo = entryDir;
         }
 
+        std::vector<ProgramNcaCandidate> programs;
+        std::vector<vfs::CNMT> metadata;
         if (secure) {
             root = secure->OpenDirectory("", {false, true});
             for (const auto &entry : root->Read()) {
@@ -39,22 +41,27 @@ namespace skyline::loader {
                 try {
                     auto nca{vfs::NCA(secure->OpenFile(entry.name), keyStore, true)};
 
-                    if (nca.contentType == vfs::NCAContentType::Program && nca.romFs != nullptr && nca.exeFs != nullptr)
-                        programNca = std::move(nca);
+                    if (nca.contentType == vfs::NCAContentType::Program)
+                        programs.push_back({entry.name, std::move(nca)});
                     else if (nca.contentType == vfs::NCAContentType::Control && nca.romFs != nullptr)
                         controlNca = std::move(nca);
-                    else if (nca.contentType == vfs::NCAContentType::Meta)
+                    else if (nca.contentType == vfs::NCAContentType::Meta) {
+                        metadata.emplace_back(nca.cnmt);
                         metaNca = std::move(nca);
+                    }
                 } catch (const loader_exception &e) {
                     throw loader_exception(e.error);
                 } catch (const std::exception &e) {
-                    continue;
+                    throw loader_exception(LoaderResult::ParsingError, fmt::format("NCA '{}': {}", entry.name, e.what()));
                 }
             }
         } else {
             throw exception("Corrupted secure partition");
         }
 
+        auto selection{SelectProgramNcas(std::move(programs), metadata)};
+        programNca = std::move(selection.base);
+        programPatchNca = std::move(selection.patch);
         if (programNca)
             romFs = programNca->romFs;
 
@@ -65,14 +72,15 @@ namespace skyline::loader {
 
         if (metaNca)
             cnmt = vfs::CNMT(metaNca->cnmt);
+        if (selection.metadata)
+            cnmt = std::move(selection.metadata);
     }
 
     void *XciLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
-        auto patchManager{std::make_shared<vfs::PatchManager>()};
-        programNca->exeFs = patchManager->PatchExeFS(state, programNca->exeFs, programNca->header.titleId);
-
-        process->npdm = vfs::NPDM(programNca->exeFs->OpenFile("main.npdm"));
-        return NcaLoader::LoadExeFs(this, programNca->exeFs, process, state);
+        if (!programContentResolved || !processExeFs)
+            throw exception("Program content must be resolved before loading the process");
+        process->npdm = vfs::NPDM(processExeFs->OpenFile("main.npdm"));
+        return NcaLoader::LoadExeFs(this, processExeFs, process, state);
     }
 
     std::vector<u8> XciLoader::GetIcon(language::ApplicationLanguage language) {

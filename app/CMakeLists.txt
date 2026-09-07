@@ -289,6 +289,8 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/crypto/aes_cipher.cpp
         ${source_DIR}/skyline/crypto/key_store.cpp
         ${source_DIR}/skyline/loader/loader.cpp
+        ${source_DIR}/skyline/loader/program_content.cpp
+        ${source_DIR}/skyline/loader/resolve_content.cpp
         ${source_DIR}/skyline/loader/nro.cpp
         ${source_DIR}/skyline/loader/nso.cpp
         ${source_DIR}/skyline/loader/nca.cpp
