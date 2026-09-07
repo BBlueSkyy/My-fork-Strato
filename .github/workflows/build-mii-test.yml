@@ -3,6 +3,8 @@ name: Build Mii Test
 on:
   push:
     branches: [ "fix/mk8-mii-service" ]
+  pull_request:
+    branches: [ "fix/nca-update-layering-mk8" ]
   workflow_dispatch:
 
 jobs:
