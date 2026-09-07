@@ -71,3 +71,63 @@ not copied or cherry-picked:
 
 No game regression has been measured in this environment. No game is currently
 proven to fail because of the scheduler, nor proven fixed by this branch.
+
+## Implemented changes
+
+- Adaptive CV: use the owning `unique_lock` to unlock, and a saturated steady-clock
+  deadline. The existing ARM spin strategy is unchanged.
+- Synchronization: one process mutex protects the PI graph and its wait queues;
+  priorities are recomputed from base priority and remaining donors along the
+  complete chain. Mutex handoff and timeout cleanup restore the old owner's
+  priority. Condition-variable and address-arbiter namespaces are separate.
+- Address arbiter: signed comparisons and correct waiter-count boundaries;
+  timing out no longer overwrites the guest's arbitration word.
+- Runnable queues: explicit membership, idempotent removal, killed-thread guards,
+  locked core selection, affinity validation, and repaired park/wake operations.
+- Preemption/lifecycle: publish yield requests before sending signals, clear
+  pending requests before rotation, guard timer creation/arming/deletion, forbid
+  restart after termination, remove wait registrations on exit, and request all
+  process stops before joining without the thread-creation mutex held.
+- Thread SVCs: validate full-width priorities/masks, handle duplicate/invalid
+  synchronization handles and signal-versus-timeout ordering, distinguish normal
+  process exit from a crash, and reject a second StartThread.
+- NCE context: preserve existing TLS offsets; save X19-X30 and guest SP/PC;
+  separate FPSR/FPCR from vector storage; publish a complete synchronized snapshot
+  from SVC entry or the AArch64 signal frame. GetThreadContext3 waits for a complete
+  snapshot while the target is paused.
+
+## Remaining limits, without additional refactoring
+
+All requested areas have been reviewed; coverage does not mean complete HOS
+emulation or game validation. In particular:
+
+- The final host-to-guest check/TLS transition can still lose a deferred scheduling
+  signal. It needs a device reproducer before changing the NCE transition protocol.
+- A signal taken inside generated patch/hook code can expose a trampoline PC.
+  Normalization to the corresponding guest instruction is not implemented.
+- Remote SetThreadCoreMask and SetThreadActivity do not implement Horizon's full
+  synchronous acknowledgement/pinned-thread protocol.
+- The inherited asynchronous SIGINT/C++ exception/longjmp architecture remains.
+  This branch fixes concrete cleanup/lock problems without replacing it.
+- Cyclic guest mutex dependencies remain guest deadlocks. The PI traversal stops
+  rather than spinning the host indefinitely; it does not manufacture an unlock.
+- Direct guest-pointer validation is incomplete in some SVCs. Memory-manager and
+  NPDM/service compatibility questions need their own evidence and changes.
+- Existing GetInfo IsVammEnabled compatibility behavior is outside this work.
+  No GPU, audio, filesystem, service, or memory-manager fixes are included.
+
+## Build and test status
+
+The previous environment completed the native AArch64 Android `skyline` target
+(including the shared-library link) with NDK 27.3.13750724. That environment was
+reset before the local commits were pushed. The changes and focused tests were
+recovered from the recorded work and published with new commit hashes. The old
+native build output is not a substitute for checking this recovered tree.
+
+On the recovered tree, the PI/arbitration test passed with UBSan, and 1,000
+production CV fallback wake cycles plus timeout/deadline checks passed with
+ThreadSanitizer. The recovered SaveCtx/LoadCtx assembly also passed the Unicorn
+AArch64 GP/SP/SIMD/FP-status and instruction-count checks. See
+`tests/kernel/README.md` for reproducible commands.
+The full Android build is tracked in [PR #146](https://github.com/BBlueSkyy/My-fork-Strato/pull/146).
+APK generation is required before device tests; it is not itself game validation.
