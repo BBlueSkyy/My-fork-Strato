@@ -50,9 +50,9 @@ namespace skyline {
         });
     }
 
-    void __attribute__ ((noinline)) AdaptiveSingleWaiterConditionVariable::SpinWait(i64 maxEndTimeNs) {
-        FalloffLock([maxEndTimeNs, this] (size_t i) {
-            return util::GetTimeNs() > maxEndTimeNs  || !unsignalled.test_and_set() || i >= AdaptiveWaitIters;
+    void __attribute__ ((noinline)) AdaptiveSingleWaiterConditionVariable::SpinWait(std::chrono::steady_clock::time_point endTime) {
+        FalloffLock([endTime, this] (size_t i) {
+            return std::chrono::steady_clock::now() >= endTime  || !unsignalled.test_and_set() || i >= AdaptiveWaitIters;
         });
     }
 }
