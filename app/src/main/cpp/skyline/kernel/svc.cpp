@@ -311,7 +311,7 @@ namespace skyline::kernel::svc {
         auto entry{reinterpret_cast<void *>(ctx.x1)};
         auto entryArgument{ctx.x2};
         auto stackTop{reinterpret_cast<u8 *>(ctx.x3)};
-        auto priority{static_cast<i8>(ctx.w4)};
+        auto priority{static_cast<i32>(ctx.w4)};
         auto idealCore{static_cast<i32>(ctx.w5)};
 
         idealCore = (idealCore == IdealCoreUseProcessValue) ? static_cast<i32>(state.process->npdm.meta.idealCore) : idealCore;
@@ -425,7 +425,7 @@ namespace skyline::kernel::svc {
 
     void SetThreadPriority(const DeviceState &state, SvcContext &ctx) {
         KHandle handle{ctx.w0};
-        i8 priority{static_cast<i8>(ctx.w1)};
+        i32 priority{static_cast<i32>(ctx.w1)};
         if (!state.process->npdm.threadInfo.priority.Valid(priority)) {
             LOGW("'priority' invalid: 0x{:X}", priority);
             ctx.w0 = result::InvalidPriority;
@@ -434,16 +434,9 @@ namespace skyline::kernel::svc {
         try {
             auto thread{state.process->GetHandle<type::KThread>(handle)};
             LOGD("Setting thread #{}'s priority to {}", thread->id, priority);
-            if (thread->priority != priority) {
+            {
+                std::scoped_lock lock{state.process->synchronizationMutex};
                 thread->basePriority = priority;
-                i8 newPriority{};
-                do {
-                    // Try to CAS the priority of the thread with its new base priority
-                    // If the new priority is equivalent to the current priority then we don't need to CAS
-                    newPriority = thread->priority.load();
-                    newPriority = std::min(newPriority, priority);
-                } while (newPriority != priority && !thread->priority.compare_exchange_strong(newPriority, priority));
-                state.scheduler->UpdatePriority(thread);
                 thread->UpdatePriorityInheritance();
             }
             ctx.w0 = Result{};

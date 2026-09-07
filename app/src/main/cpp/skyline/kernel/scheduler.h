@@ -31,7 +31,7 @@ namespace skyline {
                 return (std::numeric_limits<u64>::max() >> ((std::numeric_limits<u64>::digits - 1 + min) - max)) << min;
             }
 
-            constexpr bool Valid(i8 value) const {
+            constexpr bool Valid(i32 value) const {
                 return (value >= min) && (value <= max);
             }
         };
