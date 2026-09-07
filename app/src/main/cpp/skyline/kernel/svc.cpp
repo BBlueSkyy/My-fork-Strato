@@ -315,7 +315,7 @@ namespace skyline::kernel::svc {
         auto idealCore{static_cast<i32>(ctx.w5)};
 
         idealCore = (idealCore == IdealCoreUseProcessValue) ? static_cast<i32>(state.process->npdm.meta.idealCore) : idealCore;
-        if (idealCore < 0 || idealCore >= constant::CoreCount) {
+        if (idealCore < 0 || idealCore >= constant::CoreCount || !state.process->npdm.threadInfo.coreMask.test(idealCore)) {
             ctx.w0 = result::InvalidCoreId;
             LOGW("'idealCore' invalid: {}", idealCore);
             return;
@@ -345,8 +345,7 @@ namespace skyline::kernel::svc {
         try {
             auto thread{state.process->GetHandle<type::KThread>(handle)};
             LOGD("Starting thread #{}: 0x{:X}", thread->id, handle);
-            thread->Start();
-            ctx.w0 = Result{};
+            ctx.w0 = thread->Start() ? Result{} : result::InvalidState;
         } catch (const std::out_of_range &) {
             LOGW("'handle' invalid: 0x{:X}", handle);
             ctx.w0 = result::InvalidHandle;
@@ -374,7 +373,7 @@ namespace skyline::kernel::svc {
             };
 
             SchedulerScopedLock schedulerLock(state);
-            nanosleep(&spec, nullptr);
+            while (nanosleep(&spec, &spec) && errno == EINTR) {}
         } else {
             switch (in) {
                 case yieldWithCoreMigration: {
@@ -450,6 +449,7 @@ namespace skyline::kernel::svc {
         KHandle handle{ctx.w2};
         try {
             auto thread{state.process->GetHandle<type::KThread>(handle)};
+            std::scoped_lock lock{thread->coreMigrationMutex};
             auto idealCore{thread->idealCore};
             auto affinityMask{thread->affinityMask};
             LOGD("Getting thread #{}'s Ideal Core ({}) + Affinity Mask ({})", thread->id, idealCore, affinityMask);
@@ -466,56 +466,41 @@ namespace skyline::kernel::svc {
     void SetThreadCoreMask(const DeviceState &state, SvcContext &ctx) {
         KHandle handle{ctx.w0};
         i32 idealCore{static_cast<i32>(ctx.w1)};
-        CoreMask affinityMask{ctx.x2};
+        u64 rawMask{ctx.x2};
         try {
             auto thread{state.process->GetHandle<type::KThread>(handle)};
-
-            if (idealCore == IdealCoreUseProcessValue) {
-                idealCore = state.process->npdm.meta.idealCore;
-                affinityMask.reset().set(static_cast<size_t>(idealCore));
-            } else if (idealCore == IdealCoreNoUpdate) {
-                idealCore = thread->idealCore;
-            } else if (idealCore == IdealCoreDontCare) {
-                idealCore = std::countr_zero(affinityMask.to_ullong()); // The first enabled core in the affinity mask
-            }
-
-            auto processMask{state.process->npdm.threadInfo.coreMask};
-            if ((processMask | affinityMask) != processMask) {
-                LOGW("'affinityMask' invalid: {} (Process Mask: {})", affinityMask, processMask);
-                ctx.w0 = result::InvalidCoreId;
-                return;
-            }
-
-            if (affinityMask.none() || !affinityMask.test(static_cast<size_t>(idealCore))) {
-                LOGW("'affinityMask' invalid: {} (Ideal Core: {})", affinityMask, idealCore);
-                ctx.w0 = result::InvalidCombination;
-                return;
-            }
-
-            LOGD("Setting thread #{}'s Ideal Core ({}) + Affinity Mask ({})", thread->id, idealCore, affinityMask);
-
-            std::scoped_lock guard{thread->coreMigrationMutex};
-            thread->idealCore = static_cast<u8>(idealCore);
-            thread->affinityMask = affinityMask;
-
-            if (!affinityMask.test(static_cast<size_t>(thread->coreId)) && thread->coreId != constant::ParkedCoreId) {
-                LOGD("Migrating thread #{} to Ideal Core C{} -> C{}", thread->id, thread->coreId, idealCore);
-
-                if (thread == state.thread) {
-                    state.scheduler->RemoveThread();
-                    thread->coreId = static_cast<u8>(idealCore);
-                    state.scheduler->InsertThread(state.thread);
-                    state.scheduler->WaitSchedule();
-                } else if (!thread->running) {
-                    thread->coreId = static_cast<u8>(idealCore);
+            {
+                std::scoped_lock lock{thread->coreMigrationMutex};
+                if (idealCore == IdealCoreUseProcessValue) {
+                    idealCore = state.process->npdm.meta.idealCore;
+                    rawMask = u64{1} << idealCore;
                 } else {
-                    state.scheduler->UpdateCore(thread);
+                    if (rawMask & ~state.process->npdm.threadInfo.coreMask.to_ullong()) {
+                        ctx.w0 = result::InvalidCoreId;
+                        return;
+                    }
+                    if (!rawMask) {
+                        ctx.w0 = result::InvalidCombination;
+                        return;
+                    }
+                    if (idealCore < IdealCoreNoUpdate || idealCore >= constant::CoreCount) {
+                        ctx.w0 = result::InvalidCoreId;
+                        return;
+                    }
+                    if (idealCore == IdealCoreNoUpdate)
+                        idealCore = thread->idealCore;
                 }
+                CoreMask affinityMask{rawMask};
+                if (idealCore >= 0 && !affinityMask.test(idealCore)) {
+                    ctx.w0 = result::InvalidCombination;
+                    return;
+                }
+                state.scheduler->SetCoreMask(thread, idealCore, affinityMask);
             }
-
+            if (thread == state.thread)
+                state.scheduler->WaitSchedule();
             ctx.w0 = Result{};
         } catch (const std::out_of_range &) {
-            LOGW("'handle' invalid: 0x{:X}", handle);
             ctx.w0 = result::InvalidHandle;
         }
     }
@@ -702,120 +687,86 @@ namespace skyline::kernel::svc {
     }
 
     void WaitSynchronization(const DeviceState &state, SvcContext &ctx) {
-        constexpr u8 MaxSyncHandles{0x40}; // The total amount of handles that can be passed to WaitSynchronization
-
+        constexpr u32 MaxSyncHandles{0x40};
         u32 numHandles{ctx.w2};
         if (numHandles > MaxSyncHandles) {
             ctx.w0 = result::OutOfRange;
             return;
         }
-
         span waitHandles(reinterpret_cast<KHandle *>(ctx.x1), numHandles);
-        std::vector<std::shared_ptr<type::KSyncObject>> objectTable;
-        objectTable.reserve(numHandles);
-
-        for (const auto &handle : waitHandles) {
-            auto object{state.process->GetHandle(handle)};
-            switch (object->objectType) {
-                case type::KType::KProcess:
-                case type::KType::KThread:
-                case type::KType::KEvent:
-                case type::KType::KSession:
-                    objectTable.push_back(std::static_pointer_cast<type::KSyncObject>(object));
-                    break;
-
-                default: {
-                    LOGD("An invalid handle was supplied: 0x{:X}", handle);
-                    ctx.w0 = result::InvalidHandle;
-                    return;
+        std::vector<std::shared_ptr<type::KSyncObject>> objects;
+        objects.reserve(numHandles);
+        try {
+            for (auto handle : waitHandles) {
+                auto object{state.process->GetHandle(handle)};
+                switch (object->objectType) {
+                    case type::KType::KProcess:
+                    case type::KType::KThread:
+                    case type::KType::KEvent:
+                    case type::KType::KSession:
+                        objects.push_back(std::static_pointer_cast<type::KSyncObject>(object));
+                        break;
+                    default:
+                        ctx.w0 = result::InvalidHandle;
+                        return;
                 }
             }
-        }
-
-        i64 timeout{static_cast<i64>(ctx.x3)};
-        if (waitHandles.size() == 1) {
-            LOGD("Waiting on 0x{:X} for {}ns", waitHandles[0], timeout);
-        } else if (AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Debug)) {
-            std::string handleString;
-            for (const auto &handle : waitHandles)
-                handleString += fmt::format("* 0x{:X}\n", handle);
-            LOGD("Waiting on handles:\n{}Timeout: {}ns", handleString, timeout);
-        }
-
-        TRACE_EVENT_FMT("kernel", fmt::runtime(waitHandles.size() == 1 ? "WaitSynchronization 0x{:X}" : "WaitSynchronizationMultiple 0x{:X}"), waitHandles[0]);
-
-        std::unique_lock lock(type::KSyncObject::syncObjectMutex);
-        if (state.thread->cancelSync) {
-            state.thread->cancelSync = false;
-            ctx.w0 = result::Cancelled;
+        } catch (const std::out_of_range &) {
+            ctx.w0 = result::InvalidHandle;
             return;
         }
-
-        u32 index{};
-        for (const auto &object : objectTable) {
-            if (object->signalled) {
-                LOGD("Signalled 0x{:X}", waitHandles[index]);
+        TRACE_EVENT("kernel", "WaitSynchronization");
+        i64 timeout{static_cast<i64>(ctx.x3)};
+        auto thread{state.thread};
+        std::unique_lock lock{type::KSyncObject::syncObjectMutex};
+        for (u32 index{}; index < objects.size(); ++index) {
+            if (objects[index]->signalled) {
                 ctx.w0 = Result{};
                 ctx.w1 = index;
                 return;
             }
-            index++;
         }
-
         if (timeout == 0) {
-            LOGD("No handle is currently signalled");
             ctx.w0 = result::TimedOut;
             return;
         }
-
-        auto priority{state.thread->priority.load()};
-        for (const auto &object : objectTable)
-            object->syncObjectWaiters.insert(std::upper_bound(object->syncObjectWaiters.begin(), object->syncObjectWaiters.end(), priority, type::KThread::IsHigherPriority), state.thread);
-
-        state.thread->isCancellable = true;
-        state.thread->wakeObject = nullptr;
+        if (thread->cancelSync) {
+            thread->cancelSync = false;
+            ctx.w0 = result::Cancelled;
+            return;
+        }
+        auto priority{thread->priority.load()};
+        for (const auto &object : objects) {
+            object->syncObjectWaiters.insert(std::upper_bound(object->syncObjectWaiters.begin(), object->syncObjectWaiters.end(), priority, type::KThread::IsHigherPriority), thread);
+            thread->waitObjects.push_back(object);
+        }
+        thread->isCancellable = true;
+        thread->wakeObject = nullptr;
         state.scheduler->RemoveThread();
-
         lock.unlock();
         if (timeout > 0)
             state.scheduler->TimedWaitSchedule(std::chrono::nanoseconds(timeout));
         else
             state.scheduler->WaitSchedule(false);
         lock.lock();
-
-        state.thread->isCancellable = false;
-        auto wakeObject{state.thread->wakeObject};
-
-        u32 wakeIndex{};
-        index = 0;
-        for (const auto &object : objectTable) {
-            if (object.get() == wakeObject)
-                wakeIndex = index;
-
-            auto it{std::find(object->syncObjectWaiters.begin(), object->syncObjectWaiters.end(), state.thread)};
-            if (it != object->syncObjectWaiters.end())
-                object->syncObjectWaiters.erase(it);
-            else
-                throw exception("svcWaitSynchronization: An object (0x{:X}) has been removed from the syncObjectWaiters queue incorrectly", waitHandles[index]);
-
-            index++;
-        }
-
+        thread->isCancellable = false;
+        auto wakeObject{thread->wakeObject};
+        for (const auto &object : objects)
+            object->syncObjectWaiters.remove(thread);
+        thread->waitObjects.clear();
         if (wakeObject) {
-            LOGD("Signalled 0x{:X}", waitHandles[wakeIndex]);
+            ctx.w1 = std::distance(objects.begin(), std::find_if(objects.begin(), objects.end(), [wakeObject](const auto &object) { return object.get() == wakeObject; }));
             ctx.w0 = Result{};
-            ctx.w1 = wakeIndex;
-        } else if (state.thread->cancelSync) {
-            state.thread->cancelSync = false;
-            LOGD("Wait has been cancelled");
+        } else if (thread->cancelSync) {
+            thread->cancelSync = false;
             ctx.w0 = result::Cancelled;
         } else {
-            LOGD("Wait has timed out");
             ctx.w0 = result::TimedOut;
-            lock.unlock();
-            state.scheduler->InsertThread(state.thread);
-            state.scheduler->WaitSchedule();
+            state.scheduler->InsertThread(thread);
         }
+        lock.unlock();
+        // A signal can beat a timeout without the recipient being scheduled yet.
+        state.scheduler->WaitSchedule(false);
     }
 
     void CancelSynchronization(const DeviceState &state, SvcContext &ctx) {

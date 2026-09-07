@@ -29,10 +29,12 @@ namespace skyline::kernel::type {
 
     KThread::~KThread() {
         Kill(true);
-        if (thread.joinable())
-            thread.join();
-        if (preemptionTimer)
-            timer_delete(preemptionTimer);
+        if (thread.joinable()) {
+            if (thread.get_id() == std::this_thread::get_id())
+                thread.detach();
+            else
+                thread.join();
+        }
     }
 
     void KThread::StartThread() {
@@ -45,24 +47,46 @@ namespace skyline::kernel::type {
             LOGW("Failed to set the thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
 
-        if (!ctx.tpidrroEl0)
-            ctx.tpidrroEl0 = parent->AllocateTlsSlot();
-
         ctx.state = &state;
         state.ctx = &ctx;
         state.thread = shared_from_this();
 
+        sigset_t previousSignalMask;
+        pthread_sigmask(SIG_SETMASK, nullptr, &previousSignalMask);
         if (setjmp(originalCtx)) { // Returns 1 if it's returning from guest, 0 otherwise
+            sigset_t exitSignals;
+            sigemptyset(&exitSignals);
+            for (int signal : {Scheduler::YieldSignal, Scheduler::PreemptionSignal, SIGINT})
+                sigaddset(&exitSignals, signal);
+            pthread_sigmask(SIG_BLOCK, &exitSignals, nullptr);
+            killed = true;
             state.scheduler->RemoveThread();
-
+            parent->RemoveThreadWaiter(state.thread);
+            {
+                std::scoped_lock lock{KSyncObject::syncObjectMutex};
+                for (auto &weakObject : waitObjects)
+                    if (auto object{weakObject.lock()})
+                        object->syncObjectWaiters.remove(state.thread);
+                waitObjects.clear();
+                isCancellable = false;
+                wakeObject = nullptr;
+            }
             {
                 std::scoped_lock lock{statusMutex};
-                running = false;
                 ready = false;
-                statusCondition.notify_all();
+                if (preemptionTimerCreated) {
+                    timer_delete(preemptionTimer);
+                    preemptionTimerCreated = false;
+                }
+                isPreempted = false;
             }
-
             Signal();
+            timespec noWait{};
+            while (sigtimedwait(&exitSignals, nullptr, &noWait) >= 0) {}
+            Scheduler::YieldPending = false;
+            state.ctx = nullptr;
+            state.thread.reset();
+            pthread_sigmask(SIG_SETMASK, &previousSignalMask, nullptr);
 
             if (threadName[0] != 'H' || threadName[1] != 'O' || threadName[2] != 'S' || threadName[3] != '-') {
                 if (int result{pthread_setname_np(pthread, threadName.data())})
@@ -70,30 +94,37 @@ namespace skyline::kernel::type {
                 AsyncLogger::UpdateTag();
             }
 
+            {
+                std::scoped_lock lock{statusMutex};
+                running = false;
+                statusCondition.notify_all();
+            }
             return;
         }
 
-        struct sigevent event{
-            .sigev_signo = Scheduler::PreemptionSignal,
-            .sigev_notify = SIGEV_THREAD_ID,
-            .sigev_notify_thread_id = gettid(),
-        };
-        if (timer_create(CLOCK_THREAD_CPUTIME_ID, &event, &preemptionTimer))
-            throw exception("timer_create has failed with '{}'", strerror(errno));
-
-        {
-            std::scoped_lock lock{statusMutex};
-            ready = true;
-            statusCondition.notify_all();
-        }
-
         try {
-            if (!Scheduler::YieldPending)
-                state.scheduler->WaitSchedule();
+            if (!ctx.tpidrroEl0)
+                ctx.tpidrroEl0 = parent->AllocateTlsSlot();
+            struct sigevent event{
+                .sigev_signo = Scheduler::PreemptionSignal,
+                .sigev_notify = SIGEV_THREAD_ID,
+                .sigev_notify_thread_id = gettid(),
+            };
+            {
+                std::scoped_lock lock{statusMutex};
+                if (timer_create(CLOCK_THREAD_CPUTIME_ID, &event, &preemptionTimer))
+                    throw exception("timer_create has failed with '{}'", strerror(errno));
+                preemptionTimerCreated = true;
+                ready = true;
+                statusCondition.notify_all();
+            }
+            if (killed)
+                throw nce::NCE::ExitException(false);
+            state.scheduler->InsertThread(state.thread);
+            state.scheduler->WaitSchedule();
             while (Scheduler::YieldPending) {
-                // If there is a yield pending on us after thread creation
-                state.scheduler->Rotate();
                 Scheduler::YieldPending = false;
+                state.scheduler->Rotate();
                 state.scheduler->WaitSchedule();
             }
 
@@ -179,6 +210,9 @@ namespace skyline::kernel::type {
             );
 
             __builtin_unreachable();
+        } catch (const nce::NCE::ExitException &) {
+            abi::__cxa_end_catch();
+            std::longjmp(originalCtx, true);
         } catch (const std::exception &e) {
             LOGE("{}", e.what());
             if (id) {
@@ -200,73 +234,66 @@ namespace skyline::kernel::type {
         }
     }
 
-    void KThread::Start(bool self) {
-        std::unique_lock lock(statusMutex);
-        if (!running) {
-            {
-                std::scoped_lock migrationLock{coreMigrationMutex};
-                auto thisShared{shared_from_this()};
-                coreId = state.scheduler->GetOptimalCoreForThread(thisShared).id;
-                state.scheduler->InsertThread(thisShared);
-            }
-
+    bool KThread::Start(bool self) {
+        {
+            std::unique_lock lock{statusMutex};
+            if (started || killed)
+                return false;
+            started = true;
             running = true;
-            killed = false;
-            statusCondition.notify_all();
-            if (self) {
-                lock.unlock();
-                StartThread();
-            } else {
-                thread = std::thread(&KThread::StartThread, this);
+            try {
+                if (!self)
+                    thread = std::thread(&KThread::StartThread, this);
+            } catch (...) {
+                started = false;
+                running = false;
+                throw;
             }
         }
+        if (self)
+            StartThread();
+        return true;
     }
 
     void KThread::Kill(bool join) {
-        std::unique_lock lock(statusMutex);
-        if (!killed && running) {
-            statusCondition.wait(lock, [this]() { return ready || killed; });
-            if (!killed) {
+        std::unique_lock lock{statusMutex};
+        if (!killed.exchange(true) && running) {
+            statusCondition.wait(lock, [this] { return ready || !running; });
+            if (ready && running)
                 pthread_kill(pthread, SIGINT);
-                killed = true;
-                statusCondition.notify_all();
-            }
         }
-        if (join)
-            statusCondition.wait(lock, [this]() { return !running; });
+        scheduleCondition.notify();
+        if (join && state.thread.get() != this)
+            statusCondition.wait(lock, [this] { return !running; });
     }
 
-    void KThread::SendSignal(int signal) {
-        std::unique_lock lock(statusMutex);
-        statusCondition.wait(lock, [this]() { return ready || killed; });
-        if (!killed && running)
-            pthread_kill(pthread, signal);
+    bool KThread::SendSignal(int signal) {
+        std::scoped_lock lock{statusMutex};
+        return ready && running && !killed && pthread_kill(pthread, signal) == 0;
     }
 
     void KThread::ArmPreemptionTimer(std::chrono::nanoseconds timeToFire) {
-        std::unique_lock lock(statusMutex);
-        statusCondition.wait(lock, [this]() { return ready || killed; });
-        if (!killed && running) {
-            struct itimerspec spec{.it_value = {
-                .tv_nsec = std::min(static_cast<i64>(timeToFire.count()), constant::NsInSecond),
-                .tv_sec = std::max(std::chrono::duration_cast<std::chrono::seconds>(timeToFire).count() - 1, 0LL),
-            }};
-            timer_settime(preemptionTimer, 0, &spec, nullptr);
-            isPreempted = true;
-        }
+        std::scoped_lock lock{statusMutex};
+        if (!ready || !running || killed || !preemptionTimerCreated)
+            return;
+        auto ns{timeToFire.count()};
+        struct itimerspec spec{.it_value = {
+            .tv_sec = static_cast<time_t>(ns / 1000000000),
+            .tv_nsec = static_cast<long>(ns % 1000000000),
+        }};
+        if (timer_settime(preemptionTimer, 0, &spec, nullptr))
+            throw exception("timer_settime has failed with '{}'", strerror(errno));
+        isPreempted = ns != 0;
     }
 
     void KThread::DisarmPreemptionTimer() {
-        if (!isPreempted) [[unlikely]]
-            return;
-
-        std::unique_lock lock(statusMutex);
-        statusCondition.wait(lock, [this]() { return ready || killed; });
-        if (!killed && running) {
+        std::scoped_lock lock{statusMutex};
+        if (preemptionTimerCreated) {
             struct itimerspec spec{};
-            timer_settime(preemptionTimer, 0, &spec, nullptr);
-            isPreempted = false;
+            if (timer_settime(preemptionTimer, 0, &spec, nullptr))
+                throw exception("timer_settime has failed with '{}'", strerror(errno));
         }
+        isPreempted = false;
     }
 
     void KThread::UpdatePriorityInheritance() {

@@ -36,8 +36,8 @@ namespace skyline::nce {
             }
 
             while (kernel::Scheduler::YieldPending) [[unlikely]] {
-                state.scheduler->Rotate(false);
                 kernel::Scheduler::YieldPending = false;
+                state.scheduler->Rotate(false);
                 state.scheduler->WaitSchedule();
             }
         } catch (const signal::SignalException &e) {
@@ -55,7 +55,7 @@ namespace skyline::nce {
         } catch (const ExitException &e) {
             if (e.killAllThreads && state.thread->id) {
                 signal::BlockSignal({SIGINT});
-                state.process->Kill(false);
+                state.process->Kill(false, true, true);
             }
 
             abi::__cxa_end_catch();
@@ -113,8 +113,8 @@ namespace skyline::nce {
             }, hookedSymbol.hook);
 
             while (kernel::Scheduler::YieldPending) [[unlikely]] {
-                state.scheduler->Rotate(false);
                 kernel::Scheduler::YieldPending = false;
+                state.scheduler->Rotate(false);
                 state.scheduler->WaitSchedule();
             }
         } catch (const signal::SignalException &e) {

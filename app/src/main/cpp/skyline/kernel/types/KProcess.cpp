@@ -23,10 +23,7 @@ namespace skyline::kernel::type {
     }
 
     KProcess::~KProcess() {
-        std::scoped_lock guard{threadMutex};
-        disableThreadCreation = true;
-        for (const auto &thread : threads)
-            thread->Kill(true);
+        Kill(true, true, true);
 
         // Must happen after all threads have been killed/joined so no host thread can fault into
         // this process' trap map while (or after) it's being torn down
@@ -45,15 +42,21 @@ namespace skyline::kernel::type {
         else
             alreadyKilled.store(true);
 
-        std::scoped_lock guard{threadMutex};
-        if (disableCreation)
+        std::vector<std::shared_ptr<KThread>> targets;
+        {
+            std::scoped_lock guard{threadMutex};
             disableThreadCreation = true;
-        if (all) {
-            for (const auto &thread : threads)
-                thread->Kill(join);
-        } else if (!threads.empty()) {
-            threads[0]->Kill(join);
+            if (all)
+                targets = threads;
+            else if (!threads.empty())
+                targets.push_back(threads.front());
         }
+        // Request every stop before waiting; never join while holding the creation lock.
+        for (const auto &thread : targets)
+            thread->Kill(false);
+        if (join)
+            for (const auto &thread : targets)
+                thread->Kill(true);
     }
 
     void KProcess::InitializeHeapTls() {
@@ -130,7 +133,7 @@ namespace skyline::kernel::type {
     }
 
     void KProcess::ClearHandleTable() {
-        std::shared_lock lock(handleMutex);
+        std::unique_lock lock(handleMutex);
         handles.clear();
     }
 
