@@ -71,9 +71,15 @@ namespace skyline {
           getVersionCodeId{environ->GetMethodID(instanceClass, "getVersionCode", "()I")},
           getDhcpInfoId{environ->GetMethodID(instanceClass, "getDhcpInfo", "()Landroid/net/DhcpInfo;")} {
         env.Initialize(environ);
+
+        auto notifierClass{environ->FindClass("org/stratoemu/strato/ShaderCompilationNotifier")};
+        shaderCompilationNotifierClass = reinterpret_cast<jclass>(environ->NewGlobalRef(notifierClass));
+        updateShaderCompilationStateId = environ->GetStaticMethodID(shaderCompilationNotifierClass, "update", "(Landroid/app/Activity;Z)V");
+        environ->DeleteLocalRef(notifierClass);
     }
 
     JvmManager::~JvmManager() {
+        env->DeleteGlobalRef(shaderCompilationNotifierClass);
         env->DeleteGlobalRef(instanceClass);
         env->DeleteGlobalRef(instance);
     }
@@ -180,6 +186,10 @@ namespace skyline {
 
     void JvmManager::HidePipelineLoadingScreen() {
         env->CallVoidMethod(instance, hidePipelineLoadingScreenId);
+    }
+
+    void JvmManager::UpdateShaderCompilationState(bool compiling) {
+        env->CallStaticVoidMethod(shaderCompilationNotifierClass, updateShaderCompilationStateId, instance, static_cast<jboolean>(compiling));
     }
 
     i32 JvmManager::GetVersionCode() {

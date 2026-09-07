@@ -205,6 +205,11 @@ namespace skyline {
         void HidePipelineLoadingScreen();
 
         /**
+         * @brief Updates the runtime shader compilation notifier on Android
+         */
+        void UpdateShaderCompilationState(bool compiling);
+
+        /**
          * @brief A call to EmulationActivity.getVersionCode in Kotlin
          * @return A version code in Vulkan's format with 14-bit patch + 10-bit major and minor components
          */
@@ -230,6 +235,9 @@ namespace skyline {
         jmethodID showPipelineLoadingScreenId;
         jmethodID updatePipelineLoadingProgressId;
         jmethodID hidePipelineLoadingScreenId;
+
+        jclass shaderCompilationNotifierClass{};
+        jmethodID updateShaderCompilationStateId{};
 
         jmethodID getVersionCodeId;
 

@@ -5,6 +5,7 @@
 #include <fstream>
 #include <filesystem>
 #include <gpu.h>
+#include <jvm.h>
 #include "graphics_pipeline_assembler.h"
 #include "trait_manager.h"
 
@@ -213,10 +214,18 @@ namespace skyline::gpu {
             for (auto &shaderStage : pipelineDescIt->shaderStages)
                 (*gpu.vkDevice).destroyShaderModule(shaderStage.module, nullptr,  *gpu.vkDevice.getDispatcher());
 
-        std::scoped_lock lock{mutex};
-        compilePendingDescs.erase(pipelineDescIt);
-        if (compilationCallback)
-            compilationCallback();
+        bool runtimeCompilation{};
+        {
+            std::scoped_lock lock{mutex};
+            compilePendingDescs.erase(pipelineDescIt);
+            if (compilationCallback)
+                compilationCallback();
+            else
+                runtimeCompilation = true;
+        }
+
+        if (runtimeCompilation)
+            gpu.state.jvm->UpdateShaderCompilationState(false);
 
         return pipeline;
     }
@@ -236,11 +245,16 @@ namespace skyline::gpu {
             .pushConstantRangeCount = static_cast<u32>(pushConstantRanges.size()),
         }};
 
-        auto descIt{[this, &state]() {
+        bool runtimeCompilation{};
+        auto descIt{[this, &state, &runtimeCompilation]() {
             std::scoped_lock lock{mutex};
+            runtimeCompilation = !compilationCallback;
             compilePendingDescs.emplace_back(state);
             return std::prev(compilePendingDescs.end());
         }()};
+
+        if (runtimeCompilation)
+            gpu.state.jvm->UpdateShaderCompilationState(true);
 
         auto pipelineFuture{pool.submit(&GraphicsPipelineAssembler::AssemblePipeline, this, descIt, *pipelineLayout)};
         return CompiledPipeline{std::move(descriptorSetLayout), std::move(pipelineLayout), std::move(pipelineFuture)};
