@@ -87,7 +87,7 @@ namespace skyline::vfs {
      */
     class CNMT {
       private:
-        OptionalHeader optionalHeader;
+        OptionalHeader optionalHeader{};
         std::vector<PackagedContentInfo> contentInfos;
         std::vector<ContentMetaInfo> contentMetaInfos;
 
@@ -101,6 +101,9 @@ namespace skyline::vfs {
         std::string GetParentTitleId();
 
         ContentMetaType GetContentMetaType();
+
+        const std::vector<PackagedContentInfo> &GetContentInfos() const { return contentInfos; }
+        u64 GetParentProgramId() const { return optionalHeader.titleId; }
     };
 
 }

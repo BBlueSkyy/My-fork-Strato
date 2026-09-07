@@ -12,9 +12,6 @@ namespace skyline::loader {
      * @url https://switchbrew.org/wiki/NSO
      */
     class NcaLoader : public Loader {
-      private:
-        vfs::NCA nca; //!< The backing NCA of the loader
-
       public:
         NcaLoader(std::shared_ptr<vfs::Backing> backing, std::shared_ptr<crypto::KeyStore> keyStore);
 

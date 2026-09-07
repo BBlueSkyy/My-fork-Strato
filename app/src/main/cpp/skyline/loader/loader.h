@@ -106,9 +106,19 @@ namespace skyline::loader {
         std::optional<vfs::NACP> nacp;
         std::optional<vfs::CNMT> cnmt;
         std::optional<vfs::NCA> programNca; //!< The main program NCA within the NSP
+        std::optional<vfs::NCA> programPatchNca; //!< Kept even when its RomFS requires the base NCA
         std::optional<vfs::NCA> controlNca; //!< The main control NCA within the NSP
         std::optional<vfs::NCA> publicNca;
         std::shared_ptr<vfs::Backing> romFs;
+        std::shared_ptr<vfs::FileSystem> processExeFs;
+        std::shared_ptr<vfs::Backing> currentProcessRomFs;
+        std::shared_ptr<vfs::Backing> patchDataRomFs;
+        std::string currentProcessRomFsIdentity;
+        bool programContentResolved{};
+        bool programUpdateApplied{};
+
+        /** @brief Resolve base/update and mods once, before NPDM or any NSO is loaded. */
+        void ResolveProgramContent(const DeviceState &state);
 
         virtual ~Loader() = default;
 

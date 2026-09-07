@@ -5,6 +5,12 @@
 #include "region_backing.h"
 
 namespace skyline::vfs {
+    BKTR::BKTR(std::shared_ptr<Backing> original, std::shared_ptr<Backing> patch, RelocationBlock relocation,
+               std::vector<RelocationBucket> buckets)
+        : BKTR(std::move(original), patch, relocation, std::move(buckets),
+               SubsectionBlock{0, 1, patch->size, {0}}, {{1, patch->size, {{0, {}, 0}, {patch->size, {}, 0}}}},
+               false, {}, 0, 0, {}) {}
+
     template <typename BlockType, typename BucketType>
     std::pair<u64, u64> SearchBucketEntry(u64 offset, const BlockType &block, const BucketType &buckets, bool isSubsection) {
         if (block.numberBuckets == 0 || block.numberBuckets > block.baseOffsets.size() || block.numberBuckets > buckets.size())
