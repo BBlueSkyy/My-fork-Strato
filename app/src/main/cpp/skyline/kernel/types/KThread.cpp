@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <cxxabi.h>
+#include <asm/sigcontext.h>
 #include <unistd.h>
 #include <common/signal.h>
 #include <common/trace.h>
@@ -60,6 +61,10 @@ namespace skyline::kernel::type {
                 sigaddset(&exitSignals, signal);
             pthread_sigmask(SIG_BLOCK, &exitSignals, nullptr);
             killed = true;
+            {
+                std::scoped_lock lock{contextMutex};
+                contextCondition.notify_all();
+            }
             state.scheduler->RemoveThread();
             parent->RemoveThreadWaiter(state.thread);
             {
@@ -120,6 +125,12 @@ namespace skyline::kernel::type {
             }
             if (killed)
                 throw nce::NCE::ExitException(false);
+            ctx.gpr.x0 = entryArgument;
+            ctx.gpr.x1 = handle;
+            ctx.calleeSaved[11] = reinterpret_cast<u64>(entry);
+            ctx.sp = reinterpret_cast<u64>(stackTop);
+            ctx.pc = reinterpret_cast<u64>(entry);
+            CaptureSvcContext();
             state.scheduler->InsertThread(state.thread);
             state.scheduler->WaitSchedule();
             while (Scheduler::YieldPending) {
@@ -128,6 +139,7 @@ namespace skyline::kernel::type {
                 state.scheduler->WaitSchedule();
             }
 
+            LeaveContextSnapshot();
             TRACE_EVENT_BEGIN("guest", "Guest");
 
             asm volatile(
@@ -234,6 +246,68 @@ namespace skyline::kernel::type {
         }
     }
 
+    void KThread::CaptureSvcContext() {
+        std::scoped_lock lock{contextMutex};
+        contextSnapshot = {};
+        std::copy(ctx.gpr.regs.begin(), ctx.gpr.regs.end(), contextSnapshot.gpr.begin());
+        std::copy_n(ctx.calleeSaved.begin(), 10, contextSnapshot.gpr.begin() + 19);
+        contextSnapshot.fp = ctx.calleeSaved[10];
+        contextSnapshot.lr = ctx.calleeSaved[11];
+        contextSnapshot.sp = ctx.sp;
+        contextSnapshot.pc = ctx.pc;
+        contextSnapshot.pstate = ctx.nzcv;
+        contextSnapshot.vreg = ctx.fpr.regs;
+        contextSnapshot.fpcr = ctx.fpcr;
+        contextSnapshot.fpsr = ctx.fpsr;
+        contextSnapshot.tpidr = reinterpret_cast<u64>(ctx.tpidrEl0);
+        contextCaptureFailed = false;
+        contextAvailable = true;
+        contextCondition.notify_all();
+    }
+
+    void KThread::CaptureSignalContext(const ucontext &signalContext) {
+        std::scoped_lock lock{contextMutex};
+        contextSnapshot = {};
+        const auto &machine{signalContext.uc_mcontext};
+        std::copy_n(machine.regs, 29, contextSnapshot.gpr.begin());
+        contextSnapshot.fp = machine.regs[29];
+        contextSnapshot.lr = machine.regs[30];
+        contextSnapshot.sp = machine.sp;
+        contextSnapshot.pc = machine.pc;
+        contextSnapshot.pstate = machine.pstate & 0xF0000000;
+        contextSnapshot.tpidr = reinterpret_cast<u64>(ctx.tpidrEl0);
+        bool hasFp{};
+        const auto *cursor{reinterpret_cast<const u8 *>(machine.__reserved)};
+        const auto *end{cursor + sizeof(machine.__reserved)};
+        while (static_cast<size_t>(end - cursor) >= sizeof(_aarch64_ctx)) {
+            const auto *header{reinterpret_cast<const _aarch64_ctx *>(cursor)};
+            if (header->size < sizeof(_aarch64_ctx) || header->size > static_cast<size_t>(end - cursor))
+                break;
+            if (header->magic == FPSIMD_MAGIC && header->size >= sizeof(fpsimd_context)) {
+                const auto *fp{reinterpret_cast<const fpsimd_context *>(cursor)};
+                std::memcpy(contextSnapshot.vreg.data(), fp->vregs, sizeof(contextSnapshot.vreg));
+                contextSnapshot.fpcr = fp->fpcr;
+                contextSnapshot.fpsr = fp->fpsr;
+                hasFp = true;
+                break;
+            }
+            cursor += header->size;
+        }
+        contextCaptureFailed = !hasFp;
+        contextAvailable = hasFp;
+        contextCondition.notify_all();
+    }
+
+    void KThread::LeaveContextSnapshot() {
+        std::unique_lock lock{contextMutex};
+        while (isPaused && !killed) {
+            lock.unlock();
+            state.scheduler->WaitSchedule();
+            lock.lock();
+        }
+        contextAvailable = false;
+    }
+
     bool KThread::Start(bool self) {
         {
             std::unique_lock lock{statusMutex};
@@ -263,6 +337,10 @@ namespace skyline::kernel::type {
                 pthread_kill(pthread, SIGINT);
         }
         scheduleCondition.notify();
+        {
+            std::scoped_lock contextLock{contextMutex};
+            contextCondition.notify_all();
+        }
         if (join && state.thread.get() != this)
             statusCondition.wait(lock, [this] { return !running; });
     }

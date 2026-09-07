@@ -42,6 +42,15 @@ namespace skyline {
             size_t id; //!< Index of thread in parent process's KThread vector
 
             nce::ThreadContext ctx{}; //!< The context of the guest thread during the last SVC
+            std::mutex contextMutex;
+            std::condition_variable contextCondition;
+            nce::GuestThreadContext contextSnapshot{};
+            bool contextCaptureFailed{};
+            bool contextAvailable{};
+            void CaptureSvcContext();
+            void CaptureSignalContext(const ucontext &signalContext);
+            void LeaveContextSnapshot();
+
             jmp_buf originalCtx; //!< The context of the host thread prior to jumping into guest code
 
             void *entry; //!< A function pointer to the thread's entry

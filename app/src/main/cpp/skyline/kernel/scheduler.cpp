@@ -22,11 +22,13 @@ namespace skyline::kernel {
         try {
             TRACE_EVENT_FMT("scheduler", "{} Signal", signal == PreemptionSignal ? "Preemption" : "Yield");
             const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
+            state.thread->CaptureSignalContext(*ctx);
             if (signal == PreemptionSignal)
                 state.thread->isPreempted = false;
             YieldPending = false;
             state.scheduler->Rotate(false);
             state.scheduler->WaitSchedule();
+            state.thread->LeaveContextSnapshot();
         } catch (const nce::NCE::ExitException &) {
             nce::NCE::SignalHandler(SIGINT, info, ctx, tls);
             return;
@@ -399,7 +401,10 @@ namespace skyline::kernel {
     void Scheduler::PauseThread(const std::shared_ptr<type::KThread> &thread) {
         if (thread->coreId == constant::ParkedCoreId) {
             std::scoped_lock lock{parkedMutex};
-            thread->isPaused = true;
+            {
+                std::scoped_lock contextLock{thread->contextMutex};
+                thread->isPaused = true;
+            }
             thread->insertThreadOnResume = true;
             parkedQueue.remove(thread);
             return;
@@ -407,7 +412,10 @@ namespace skyline::kernel {
         CoreContext *core{&cores.at(thread->coreId)};
         std::unique_lock lock{core->mutex};
 
-        thread->isPaused = true;
+        {
+            std::scoped_lock contextLock{thread->contextMutex};
+            thread->isPaused = true;
+        }
 
         auto it{std::find(core->queue.begin(), core->queue.end(), thread)};
         if (it != core->queue.end()) {
@@ -431,7 +439,11 @@ namespace skyline::kernel {
     }
 
     void Scheduler::ResumeThread(const std::shared_ptr<type::KThread> &thread) {
-        thread->isPaused = false;
+        {
+            std::scoped_lock contextLock{thread->contextMutex};
+            thread->isPaused = false;
+            thread->contextCondition.notify_all();
+        }
         if (thread->insertThreadOnResume)
             // If we handled removing the thread then we need to be responsible for inserting it back as well
             InsertThread(thread);

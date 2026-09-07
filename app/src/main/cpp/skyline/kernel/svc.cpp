@@ -1285,45 +1285,21 @@ namespace skyline::kernel::svc {
                 return;
             }
 
-            std::scoped_lock guard{thread->coreMigrationMutex};
-            if (!thread->isPaused) {
-                LOGW("Attemping to get context of running thread #{}", thread->id);
+            std::unique_lock lock{thread->contextMutex};
+            if (!thread->isPaused || thread->killed) {
                 ctx.w0 = result::InvalidState;
                 return;
             }
-
-            struct ThreadContext {
-                std::array<u64, 29> gpr;
-                u64 fp;
-                u64 lr;
-                u64 sp;
-                u64 pc;
-                u32 pstate;
-                u32 _pad_;
-                std::array<u128, 32> vreg;
-                u32 fpcr;
-                u32 fpsr;
-                u64 tpidr;
-            };
-            static_assert(sizeof(ThreadContext) == 0x320);
-
-            auto &context{*reinterpret_cast<ThreadContext *>(ctx.x0)};
-            context = {}; // Zero-initialize the contents of the context as not all fields are set
-
-            auto &targetContext{thread->ctx};
-            for (size_t i{}; i < targetContext.gpr.regs.size(); i++)
-                context.gpr[i] = targetContext.gpr.regs[i];
-
-            for (size_t i{}; i < targetContext.fpr.regs.size(); i++)
-                context.vreg[i] = targetContext.fpr.regs[i];
-
-            context.fpcr = targetContext.fpr.fpcr;
-            context.fpsr = targetContext.fpr.fpsr;
-
-            context.tpidr = reinterpret_cast<u64>(targetContext.tpidrEl0);
-
-            // Note: We don't write the whole context as we only store the parts required according to the ARMv8 ABI for syscall handling
-            LOGD("Written partial context for thread #{}", thread->id);
+            thread->contextCondition.wait(lock, [&] {
+                return thread->contextAvailable || thread->contextCaptureFailed || !thread->isPaused || thread->killed;
+            });
+            if (!thread->isPaused || thread->killed || thread->contextCaptureFailed) {
+                ctx.w0 = result::InvalidState;
+                return;
+            }
+            auto snapshot{thread->contextSnapshot};
+            lock.unlock();
+            std::memcpy(reinterpret_cast<void *>(ctx.x0), &snapshot, sizeof(snapshot));
 
             ctx.w0 = Result{};
         } catch (const std::out_of_range &) {

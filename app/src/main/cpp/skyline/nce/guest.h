@@ -70,8 +70,6 @@ namespace skyline {
          */
         union alignas(16) FpRegisters {
             std::array<u128, 32> regs;
-            u32 fpsr;
-            u32 fpcr;
         };
 
         /**
@@ -88,10 +86,44 @@ namespace skyline {
             u32 nzcv;
             const DeviceState *state;
             u64 magic{constant::SkyTlsMagic};
+            u32 fpsr;
+            u32 fpcr;
+            std::array<u64, 12> calleeSaved; //!< X19-X30
+            u64 sp;
+            u64 pc;
         };
 
+        static_assert(offsetof(ThreadContext, fpr) == 0xA0);
+        static_assert(offsetof(ThreadContext, hostTpidrEl0) == 0x2A0);
+        static_assert(offsetof(ThreadContext, hostSp) == 0x2A8);
+        static_assert(offsetof(ThreadContext, tpidrroEl0) == 0x2B0);
+        static_assert(offsetof(ThreadContext, tpidrEl0) == 0x2B8);
+        static_assert(offsetof(ThreadContext, nzcv) == 0x2C0);
+        static_assert(offsetof(ThreadContext, magic) == 0x2D0);
+        static_assert(offsetof(ThreadContext, fpsr) == 0x2D8);
+        static_assert(offsetof(ThreadContext, fpcr) == 0x2DC);
+        static_assert(offsetof(ThreadContext, calleeSaved) == 0x2E0);
+        static_assert(offsetof(ThreadContext, sp) == 0x340);
+        static_assert(offsetof(ThreadContext, pc) == 0x348);
+
+        struct GuestThreadContext {
+            std::array<u64, 29> gpr;
+            u64 fp;
+            u64 lr;
+            u64 sp;
+            u64 pc;
+            u32 pstate;
+            u32 padding;
+            std::array<u128, 32> vreg;
+            u32 fpcr;
+            u32 fpsr;
+            u64 tpidr;
+        };
+        static_assert(sizeof(GuestThreadContext) == 0x320);
+        static_assert(offsetof(GuestThreadContext, vreg) == 0x110);
+
         namespace guest {
-            constexpr size_t SaveCtxSize{38}; //!< The size of the SaveCtx function in 32-bit ARMv8 instructions
+            constexpr size_t SaveCtxSize{51}; //!< The size of the SaveCtx function in 32-bit ARMv8 instructions
             constexpr size_t LoadCtxSize{36}; //!< The size of the LoadCtx function in 32-bit ARMv8 instructions
 
             /**
