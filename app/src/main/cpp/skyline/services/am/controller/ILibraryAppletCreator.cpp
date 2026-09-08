@@ -51,7 +51,7 @@ namespace skyline::service::am {
             return ObjectInvalid;
 
         auto transferMemory{state.process->GetHandle<kernel::type::KTransferMemory>(request.copyHandles.at(0))};
-        if (!transferMemory || static_cast<u64>(size) > transferMemory->GetSpan().size())
+        if (!transferMemory || static_cast<u64>(size) > transferMemory->host.size())
             return ObjectInvalid;
 
         manager.RegisterService(SRVREG(TransferMemoryIStorage, transferMemory, writable), session, response);
@@ -64,11 +64,9 @@ namespace skyline::service::am {
             return ObjectInvalid;
 
         auto transferMemory{state.process->GetHandle<kernel::type::KTransferMemory>(request.copyHandles.at(0))};
-        if (!transferMemory || static_cast<u64>(size) > transferMemory->GetSpan().size())
+        if (!transferMemory || static_cast<u64>(size) > transferMemory->host.size())
             return ObjectInvalid;
 
-        // HandleStorage has no writable flag; Eden keeps the transfer-memory backing while
-        // Ryujinx exposes it writable, so use the existing live transfer-memory storage here.
         manager.RegisterService(SRVREG(TransferMemoryIStorage, transferMemory, true), session, response);
         return {};
     }
