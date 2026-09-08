@@ -45,6 +45,20 @@ namespace skyline::nce::diagnostics {
             AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, std::move(message), "GuestDiagnostic");
         }
 
+        template<typename Function>
+        void Diagnostic(const char *stage, Function &&function) {
+            PreserveErrno preserve;
+            if (!AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Info))
+                return;
+            try {
+                function();
+            } catch (const signal::SignalException &error) {
+                Write(fmt::format("Diagnostic stage \"{}\" failed: {}; continuing remaining capture", stage, error.what()));
+            } catch (const std::exception &error) {
+                Write(fmt::format("Diagnostic stage \"{}\" unavailable: {}; continuing remaining capture", stage, error.what()));
+            }
+        }
+
         // Never dereference arbitrary guest diagnostic pointers. Checking the VMM
         // alone is insufficient: another thread can unmap/protect a page afterwards.
         // Both kernel-assisted readers return errors/short reads instead of taking
@@ -140,26 +154,35 @@ namespace skyline::nce::diagnostics {
             for (size_t i{}; i < trace.registers.size(); i++)
                 Write(fmt::format("X{}=0x{:016X}", i, trace.registers[i]));
 
+            DumpHistory();
+            Diagnostic("stack bytes", [&] { DumpBytes(state, "guest stack bytes", trace.sp, 0x100); });
             std::vector<void *> frames{reinterpret_cast<void *>(trace.pc), reinterpret_cast<void *>(trace.registers[30])};
-            u64 fp{trace.registers[29]};
-            for (size_t i{}; i < 24; i++) {
-                std::array<u64, 2> frame{};
-                if ((fp & 0xF) || fp < trace.sp || fp - trace.sp > 0x100000 ||
-                    Read(state, fp, frame.data(), sizeof(frame)) != sizeof(frame))
-                    break;
-                frames.push_back(reinterpret_cast<void *>(frame[1]));
-                if (frame[0] <= fp)
-                    break;
-                fp = frame[0];
-            }
-            Write(fmt::format("Guest stack (bounded frame-pointer walk; symbols when available):{}", state.loader->GetStackTrace(frames)));
-            DumpBytes(state, "guest stack bytes", trace.sp, 0x100);
+            Diagnostic("frame walk", [&] {
+                u64 fp{trace.registers[29]};
+                for (size_t i{}; i < 24; i++) {
+                    std::array<u64, 2> frame{};
+                    if ((fp & 0xF) || fp < trace.sp || fp - trace.sp > 0x100000 ||
+                        Read(state, fp, frame.data(), sizeof(frame)) != sizeof(frame))
+                        break;
+                    frames.push_back(reinterpret_cast<void *>(frame[1]));
+                    if (frame[0] <= fp)
+                        break;
+                    fp = frame[0];
+                }
+            });
+            // Always print raw addresses before consulting symbolic bookkeeping.
+            for (size_t i{}; i < frames.size(); i++)
+                Write(fmt::format("Guest frame[{}] PC/LR=0x{:X}", i, reinterpret_cast<u64>(frames[i])));
+            Diagnostic("stack symbols", [&] {
+                Write(fmt::format("Guest stack (bounded frame-pointer walk; symbols when available):{}", state.loader->GetStackTrace(frames)));
+            });
             for (size_t i{}; i < std::min<size_t>(frames.size(), 8); i++) {
                 const auto address{reinterpret_cast<u64>(frames[i])};
                 if (address >= 0x60)
-                    DumpBytes(state, fmt::format("frame[{}] AArch64 instructions (includes NCE patches)", i), address - 0x60, 0xA0);
+                    Diagnostic("frame instructions", [&] {
+                        DumpBytes(state, fmt::format("frame[{}] AArch64 instructions (includes NCE patches)", i), address - 0x60, 0xA0);
+                    });
             }
-            DumpHistory();
         }
 
         // Uninterpreted candidate objects, not assumed exception layouts. Following
@@ -168,6 +191,10 @@ namespace skyline::nce::diagnostics {
         void DumpCandidates(const DeviceState &state) {
             std::vector<std::pair<u64, unsigned>> pending;
             std::vector<u64> seen;
+            // Prioritize callee-saved candidates: the C++ throw path commonly
+            // keeps its arguments here while X0-X2 are reused for svcBreak.
+            for (size_t i{19}; i < 29; i++)
+                pending.emplace_back(trace.registers[i], 0);
             for (auto address : trace.registers)
                 pending.emplace_back(address, 0);
             for (size_t i{}; i < pending.size() && seen.size() < 48; i++) {
@@ -195,19 +222,6 @@ namespace skyline::nce::diagnostics {
             }
         }
 
-        template<typename Function>
-        void Diagnostic(Function &&function) {
-            PreserveErrno preserve;
-            if (!AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Info))
-                return;
-            try {
-                function();
-            } catch (const signal::SignalException &) {
-                Write("Diagnostic read failed; preserving the original guest operation");
-            } catch (const std::exception &) {
-                Write("Diagnostic unavailable; preserving the original guest operation");
-            }
-        }
     }
 
     void BeginSvc(u16 svcId, const ThreadContext &ctx) {
@@ -226,20 +240,20 @@ namespace skyline::nce::diagnostics {
         trace.current = {.sequence = ++trace.sequence, .pc = trace.pc, .lr = trace.registers[30], .id = svcId};
         std::copy_n(trace.registers.begin(), trace.current.input.size(), trace.current.input.begin());
         if (svcId == 0x15 && trace.audioTrace)
-            Diagnostic([&] { DumpRegion(*ctx.state, "CreateTransferMemory owner BEFORE", trace.current.input[1]); });
+            Diagnostic("transfer owner before", [&] { DumpRegion(*ctx.state, "CreateTransferMemory owner BEFORE", trace.current.input[1]); });
     }
 
     void EndSvc(const DeviceState &state, const ThreadContext &ctx) {
         trace.current.output = {ctx.gpr.x0, ctx.gpr.x1};
         trace.calls[trace.callCount++ % trace.calls.size()] = trace.current;
         if (trace.audioTrace && trace.current.id == 0x15) {
-            Diagnostic([&] {
+            Diagnostic("transfer return", [&] {
                 Write(fmt::format("CreateTransferMemory RETURN result=0x{:X} handle=0x{:X}", ctx.gpr.x0, ctx.gpr.x1));
                 DumpRegion(state, "CreateTransferMemory owner AFTER", trace.current.input[1]);
                 DumpContext(state, "audio transfer-memory boundary");
             });
         } else if (trace.audioTrace && trace.current.id == 0x6 && ctx.gpr.x0 == 0) {
-            Diagnostic([&] { DumpBytes(state, "QueryMemory RETURN MemoryInfo", trace.current.input[0], 0x28); });
+            Diagnostic("query memory return", [&] { DumpBytes(state, "QueryMemory RETURN MemoryInfo", trace.current.input[0], 0x28); });
         }
     }
 
@@ -251,19 +265,20 @@ namespace skyline::nce::diagnostics {
     void DisarmAudioTrace() { trace.audioTrace = false; }
 
     void DumpGuestContext(const DeviceState &state, const char *event) {
-        Diagnostic([&] {
-            DumpContext(state, event);
-            DumpCandidates(state);
-        });
+        Diagnostic("guest context", [&] { DumpContext(state, event); });
+        Diagnostic("pointer candidates", [&] { DumpCandidates(state); });
     }
 
     void DumpBreak(const DeviceState &state, u64 reason, u64 info, u64 size) {
-        Diagnostic([&] {
+        Diagnostic("break reason", [&] {
             const auto code{reason & ~(1ULL << 31)};
             Write(fmt::format("svcBreak reason=0x{:X} code={} notificationOnly={} info=0x{:X} size=0x{:X}{}",
                               reason, code, (reason & (1ULL << 31)) != 0, info, size,
                               code == 7 ? " (CppException notification; not the exception type)" : ""));
-            DumpContext(state, "svcBreak entry");
+        });
+        // Payload comes first: an unrelated failure in symbolisation must not
+        // hide the Result passed to a fatal Break. Each phase is independent.
+        Diagnostic("break payload", [&] {
             if (size) {
                 DumpBytes(state, "Break info (bounded to 0x100 bytes)", info, std::min<u64>(size, 0x100));
                 if (size == sizeof(u32)) {
@@ -272,7 +287,8 @@ namespace skyline::nce::diagnostics {
                         Write(fmt::format("Break info u32=0x{:X}; if a Result: module={} description={}", value, value & 0x1FF, (value >> 9) & 0x1FFF));
                 }
             }
-            DumpCandidates(state);
         });
+        Diagnostic("break context", [&] { DumpContext(state, "svcBreak entry"); });
+        Diagnostic("break pointer candidates", [&] { DumpCandidates(state); });
     }
 }

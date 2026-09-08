@@ -2,6 +2,8 @@
 
 Estado: **diagnóstico implementado; causas dos jogos ainda não identificadas; nenhuma correção causal confirmada**.
 
+Atualização após teste do usuário: **defeito de lifetime das tabelas de símbolos do loader reproduzido e corrigido**. Esse defeito é do diagnóstico/stack trace do emulador; não é apresentado como causa dos abortos dos jogos.
+
 Base desta branch: `92f2d08` da master, já contendo o PR #147. As outras branches e os working trees existentes foram preservados. Não se incorporou o scheduler do PR #146 nem o port de Mii do PR #148.
 
 ## Evidência dos anexos
@@ -41,6 +43,7 @@ Leituras diagnósticas usam a descrição do VMM e `process_vm_readv` do própri
 - `git diff --check`.
 - `tests/kernel/abort_diagnostics.py`: compila o emissor de trampoline e as definições de layout/instruções da produção; monta SaveCtx/LoadCtx e executa a sequência real de SVC em Unicorn AArch64. Verifica PC/LR/SP, X19–X30, saída W0/W1, retorno ao guest, TLS, stack e igualdade do estado final dos registradores com a base sem captura.
 - `tests/kernel/diagnostic_memory.py`: compila o leitor de produção com um adaptador de metadados VMM e testa páginas Linux reais legíveis, PROT_NONE, removidas, leituras parciais, ponteiro nulo e overflow.
+- `tests/kernel/loader_symbol_lifetime.py`: reproduz a falha das tabelas antigas após a destruição de .rodata e verifica que a cópia de produção sobrevive, inclusive à realocação dos módulos. Verifica também limites da cópia e conversão de offsets dos dois caminhos de NRO.
 - Build Android local bloqueada antes da compilação: download do Gradle 8.2 falha por rede indisponível. A build Android completa deve ser verificada na CI do PR.
 - Não há execução dos jogos ou acesso ao aparelho nesta sessão. Os logs fornecidos não permitem reconstruir retroativamente registradores ou o objeto da exceção. Não se inventa nome de assert, causa raiz nem jogo corrigido.
 - Instrumentação temporária com custo de diagnóstico e possíveis efeitos de timing/layout. Deve ser removida após localizar as causas e não deve ser mesclada como correção definitiva.
@@ -52,3 +55,15 @@ Usar a APK **reldebug** desta branch com log em **Info ou Debug**. Executar Anim
 Em Animal Well, correlacionar `GetWorkBufferSize`, `CreateTransferMemory RETURN`, qualquer QueryMemory e os frames de `SetTerminateResult`. Em Constance, começar pelo primeiro `svcBreak code=7`, não pelo término posterior. Usar PC/LR, frames, instruções e eventuais RTTI/mensagens para identificar o lançamento/checagem. Um frame sem símbolos ou uma leitura indisponível pode exigir um trecho adicional de ExeFS obtido da cópia do próprio usuário.
 
 Somente após essa evidência criar correções comportamentais, separadas por causa. Uma correção comum exige comprovação de que os dois caminhos atingem a mesma falha.
+
+## Segunda coleta: registradores confirmados e interrupção do diagnóstico
+
+A primeira APK do PR #149 passou na build Android completa, execução `34177896386`, commit `f6ae420`. O usuário testou ambos os jogos e forneceu novos logs em Info.
+
+**Animal Well:** REV15 `0x3F564552` aceita; workbuffer `0xC3000`, Result 0; CreateTransferMemory também Result 0, handle `0xD01F`. O owner mantém CodeMutable (tipo 4), passando de RW/atributos 0 para None/Borrowed. SVC 0x15 é seq=178, PC `0x823B30580`, LR `0x823B026A0`. A chamada seguinte, seq=179, é o IPC de SetTerminateResult; não houve outro SVC entre eles. O Break fatal posterior usa info `0x19A57FF42C`, size 4. O erro original contido nesses quatro bytes ainda não foi capturado.
+
+**Constance:** o primeiro Break é seq=2140, reason `0x80000007`, info 0, size 0, PC `0x80922674C`, LR `0x8096D5B6C`, SP/FP `0x1989EFF0F0`. Candidatos preservados: X19=`0x86637A170`, X20=`0x809C13960`, X21=`0x8096D5C90`. X7=`0x726F7272655F6D65` contém os bytes ASCII `em_error`, compatíveis com o fim de `system_error`, mas insuficientes para confirmar o tipo/mensagem. O resultado 674 aparece na próxima chamada (seq=2141); o Break fatal vem em seq=2142. Não há base para atribuir essa exceção ao AudioRenderer.
+
+Nos dois logs a coleta para com `Diagnostic read failed` depois dos registradores e antes da pilha. A inspeção encontrou `.symbols` e `.symbolStrings` armazenadas como spans de `Executable::ro.contents`, que é destruído ao retornar de LoadNso. GetStackTrace/ResolveSymbol consultavam essas referências pendentes. O teste `tests/kernel/loader_symbol_lifetime.py` usa a estrutura e o inicializador reais: após remover a .rodata temporária, a versão antiga falha com SIGSEGV; as cópias próprias da correção sobrevivem à remoção e à realocação do vetor de módulos. A resolução também exige terminador NUL dentro do tamanho de .dynstr, e as tabelas são validadas contra os limites de .rodata antes da cópia. Os dois produtores de `Executable` para NRO agora convertem offsets do arquivo para offsets relativos a .rodata, como exige essa estrutura; isso evita que a cópia leia fora do buffer nesses caminhos. Não se atribui esse defeito de offsets aos dois jogos.
+
+A nova revisão imprime histórico e stack bytes antes de resolver símbolos, sempre imprime os endereços brutos, captura o payload do Break em etapa independente e mantém a inspeção dos ponteiros mesmo se a resolução simbólica falhar. Falhas informam a etapa e o PC/endereço do sinal. Isso evita que um erro auxiliar elimine o restante da evidência. Ainda é necessário repetir os dois jogos nesta revisão para localizar a checagem/lançamento no guest.
