@@ -15,7 +15,11 @@ namespace skyline::kernel::ipc {
 
         if (header->handleDesc) {
             handleDesc = reinterpret_cast<HandleDescriptor *>(pointer);
-            pointer += sizeof(HandleDescriptor) + (handleDesc->sendPid ? sizeof(u64) : 0);
+            pointer += sizeof(HandleDescriptor);
+            if (handleDesc->sendPid) {
+                pid = *reinterpret_cast<u64 *>(pointer);
+                pointer += sizeof(u64);
+            }
             for (u32 index{}; handleDesc->copyCount > index; index++) {
                 copyHandles.push_back(*reinterpret_cast<KHandle *>(pointer));
                 pointer += sizeof(KHandle);
@@ -69,8 +73,8 @@ namespace skyline::kernel::ipc {
             cmdArg = pointer;
             cmdArgSz = header->rawSize * sizeof(u32);
         } else {
-            size_t offset{static_cast<size_t>(pointer - tls)}; // We calculate the relative offset as the absolute one might differ
-            auto padding{util::AlignUp(offset, constant::IpcPaddingSum) - offset}; // Calculate the amount of padding at the front
+            size_t offset{static_cast<size_t>(pointer - tls)};
+            auto padding{util::AlignUp(offset, constant::IpcPaddingSum) - offset};
             pointer += padding;
 
             if (isDomain && (header->type == CommandType::Request || header->type == CommandType::RequestWithContext)) {
@@ -99,7 +103,7 @@ namespace skyline::kernel::ipc {
 
         payloadOffset = cmdArg;
 
-        if (!isTipc && payload->magic != util::MakeMagic<u32>("SFCI") && (header->type != CommandType::Control && header->type != CommandType::ControlWithContext && header->type != CommandType::Close) && (!domain || domain->command != DomainCommand::CloseVHandle)) // SFCI is the magic in received IPC messages
+        if (!isTipc && payload->magic != util::MakeMagic<u32>("SFCI") && (header->type != CommandType::Control && header->type != CommandType::ControlWithContext && header->type != CommandType::Close) && (!domain || domain->command != DomainCommand::CloseVHandle))
             LOGD("Unexpected Magic in PayloadHeader: 0x{:X}", static_cast<u32>(payload->magic));
 
         if (header->cFlag == BufferCFlag::SingleDescriptor) {
@@ -109,7 +113,7 @@ namespace skyline::kernel::ipc {
                 LOGV("Buf C: {}, 0x{:X}", fmt::ptr(bufC->Pointer()), static_cast<u16>(bufC->size));
             }
         } else if (header->cFlag > BufferCFlag::SingleDescriptor) {
-            for (u8 index{}; (static_cast<u8>(header->cFlag) - 2) > index; index++) { // (cFlag - 2) C descriptors are present
+            for (u8 index{}; (static_cast<u8>(header->cFlag) - 2) > index; index++) {
                 auto bufC{reinterpret_cast<BufferDescriptorC *>(bufCPointer)};
                 if (bufC->address) {
                     outputBuf.emplace_back(bufC->Pointer(), static_cast<u16>(bufC->size));
@@ -122,7 +126,7 @@ namespace skyline::kernel::ipc {
         if (header->type == CommandType::Request || header->type == CommandType::RequestWithContext) {
             LOGV("Header: Input No: {}, Output No: {}, Raw Size: {}", inputBuf.size(), outputBuf.size(), static_cast<u64>(cmdArgSz));
             if (header->handleDesc)
-                LOGV("Handle Descriptor: Send PID: {}, Copy Count: {}, Move Count: {}", static_cast<bool>(handleDesc->sendPid), static_cast<u32>(handleDesc->copyCount), static_cast<u32>(handleDesc->moveCount));
+                LOGV("Handle Descriptor: Send PID: {}, PID: 0x{:X}, Copy Count: {}, Move Count: {}", static_cast<bool>(handleDesc->sendPid), pid, static_cast<u32>(handleDesc->copyCount), static_cast<u32>(handleDesc->moveCount));
             if (isDomain)
                 LOGV("Domain Header: Command: {}, Input Object Count: {}, Object ID: 0x{:X}", domain->command, domain->inputCount, domain->objectId);
 
@@ -143,7 +147,7 @@ namespace skyline::kernel::ipc {
 
         auto header{reinterpret_cast<CommandHeader *>(pointer)};
         size_t sizeBytes{isTipc ? (payload.size() + sizeof(Result)) : (sizeof(PayloadHeader) + constant::IpcPaddingSum + payload.size() + (domainObjects.size() * sizeof(KHandle)) + (isDomain ? sizeof(DomainHeaderRequest) : 0))};
-        header->rawSize = static_cast<u32>(util::DivideCeil(sizeBytes, sizeof(u32))); // Size is in 32-bit units because Nintendo
+        header->rawSize = static_cast<u32>(util::DivideCeil(sizeBytes, sizeof(u32)));
         header->handleDesc = (!copyHandles.empty() || !moveHandles.empty());
         pointer += sizeof(CommandHeader);
 
@@ -169,8 +173,8 @@ namespace skyline::kernel::ipc {
             pointer += sizeof(Result);
             std::memcpy(pointer, payload.data(), payload.size());
         } else {
-            size_t offset{static_cast<size_t>(pointer - tls)}; // We calculate the relative offset as the absolute one might differ
-            auto padding{util::AlignUp(offset, constant::IpcPaddingSum) - offset}; // Calculate the amount of padding at the front
+            size_t offset{static_cast<size_t>(pointer - tls)};
+            auto padding{util::AlignUp(offset, constant::IpcPaddingSum) - offset};
             pointer += padding;
 
             if (isDomain) {
@@ -180,7 +184,7 @@ namespace skyline::kernel::ipc {
             }
 
             auto payloadHeader{reinterpret_cast<PayloadHeader *>(pointer)};
-            payloadHeader->magic = util::MakeMagic<u32>("SFCO"); // SFCO is the magic in IPC responses
+            payloadHeader->magic = util::MakeMagic<u32>("SFCO");
             payloadHeader->version = 1;
             payloadHeader->value = errorCode;
             pointer += sizeof(PayloadHeader);
