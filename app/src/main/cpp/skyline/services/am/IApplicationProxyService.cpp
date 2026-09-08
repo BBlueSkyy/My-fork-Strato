@@ -8,7 +8,7 @@ namespace skyline::service::am {
     IApplicationProxyService::IApplicationProxyService(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
 
     Result IApplicationProxyService::OpenApplicationProxy(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(IApplicationProxy), session, response);
+        manager.RegisterService(SRVREG(IApplicationProxy, request.pid), session, response);
         return {};
     }
 }
