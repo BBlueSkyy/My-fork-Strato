@@ -110,6 +110,7 @@ namespace skyline::service::am {
         u32 screenShotPermission{};
         u32 screenShotAppletId{};
         u64 screenShotApplicationId{};
+        u64 appletResourceUserId{};
         u32 cpuBoostMode{};
         i32 cpuBoostRequestPriority{};
         u32 gamePlayRecordingState{};
@@ -127,5 +128,6 @@ namespace skyline::service::am {
         i64 saveDataSize{};
         i64 saveDataJournalSize{};
         i64 gpuTimeSliceBoost{};
+        i64 appletGpuTimeSlice{};
     };
 }
