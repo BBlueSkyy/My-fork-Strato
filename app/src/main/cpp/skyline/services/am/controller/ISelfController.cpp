@@ -7,130 +7,219 @@
 #include "ISelfController.h"
 
 namespace skyline::service::am {
-    ISelfController::ISelfController(const DeviceState &state, ServiceManager &manager)
-        : libraryAppletLaunchableEvent(std::make_shared<type::KEvent>(state, false)),
-          accumulatedSuspendedTickChangedEvent(std::make_shared<type::KEvent>(state, true)),
-          hosbinder(manager.CreateOrGetService<hosbinder::IHOSBinderDriver>("dispdrv")),
-          BaseService(state, manager) {}
+    ISelfController::ISelfController(const DeviceState &state, ServiceManager &manager,
+                                     std::shared_ptr<AppletState> appletState)
+        : BaseService(state, manager), appletState(std::move(appletState)),
+          hosbinder(manager.CreateOrGetService<hosbinder::IHOSBinderDriver>("dispdrv")) {}
 
-    Result ISelfController::Exit(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ISelfController::Exit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
         throw nce::NCE::ExitException(true);
     }
 
-    Result ISelfController::LockExit(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ISelfController::LockExit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->exitLocked = true;
         return {};
     }
 
-    Result ISelfController::UnlockExit(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ISelfController::UnlockExit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->exitLocked = false;
         return {};
     }
 
-    Result ISelfController::GetLibraryAppletLaunchableEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        libraryAppletLaunchableEvent->Signal();
-
-        KHandle handle{state.process->InsertItem(libraryAppletLaunchableEvent)};
-        LOGD("Library Applet Launchable Event Handle: 0x{:X}", handle);
-
-        response.copyHandles.push_back(handle);
+    Result ISelfController::EnterFatalSection(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        ++appletState->fatalSectionCount;
         return {};
     }
 
-    Result ISelfController::SetScreenShotPermission(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ISelfController::LeaveFatalSection(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        if (appletState->fatalSectionCount == 0)
+            return result::FatalSectionCountImbalance;
+        --appletState->fatalSectionCount;
         return {};
     }
 
-    Result ISelfController::SetOperationModeChangedNotification(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ISelfController::GetLibraryAppletLaunchableEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        appletState->libraryAppletLaunchableEvent->Signal();
+        response.copyHandles.push_back(state.process->InsertItem(appletState->libraryAppletLaunchableEvent));
         return {};
     }
 
-    Result ISelfController::SetPerformanceModeChangedNotification(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ISelfController::SetScreenShotPermission(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->screenShotPermission = request.Pop<u32>();
         return {};
     }
 
-    Result ISelfController::SetFocusHandlingMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ISelfController::SetOperationModeChangedNotification(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->operationModeChangedNotification = request.Pop<u8>() != 0;
         return {};
     }
 
-    Result ISelfController::SetRestartMessageEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ISelfController::SetPerformanceModeChangedNotification(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->performanceModeChangedNotification = request.Pop<u8>() != 0;
         return {};
     }
 
-    Result ISelfController::SetOutOfFocusSuspendingEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ISelfController::SetFocusHandlingMode(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        const bool notify{request.Pop<u8>() != 0};
+        const bool background{request.Pop<u8>() != 0};
+        const bool suspend{request.Pop<u8>() != 0};
+        std::scoped_lock lock{appletState->mutex};
+        appletState->focusStateChangedNotification = notify;
+        appletState->focusBackgroundMode = background;
+        appletState->focusSuspendingMode = suspend;
         return {};
     }
 
-    Result ISelfController::SetAlbumImageOrientation(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ISelfController::SetRestartMessageEnabled(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->restartMessageEnabled = request.Pop<u8>() != 0;
         return {};
     }
 
-    Result ISelfController::CreateManagedDisplayLayer(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto layerId{hosbinder->CreateLayer(hosbinder::DisplayId::Default)};
-        LOGD("Creating Managed Layer #{} on 'Default' Display", layerId);
-        response.Push(layerId);
+    Result ISelfController::SetScreenShotAppletIdentityInfo(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        const u32 appletId{request.Pop<u32>()};
+        request.Skip<u32>();
+        const u64 applicationId{request.Pop<u64>()};
+        std::scoped_lock lock{appletState->mutex};
+        appletState->screenShotAppletId = appletId;
+        appletState->screenShotApplicationId = applicationId;
         return {};
     }
 
-    Result ISelfController::SetIdleTimeDetectionExtension(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        idleTimeDetectionExtension = request.Pop<u32>();
-        LOGD("Setting Idle Time Detection Extension: 0x{:X}", idleTimeDetectionExtension);
+    Result ISelfController::SetOutOfFocusSuspendingEnabled(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->outOfFocusSuspendingEnabled = request.Pop<u8>() != 0;
         return {};
     }
 
-    Result ISelfController::GetIdleTimeDetectionExtension(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u32>(idleTimeDetectionExtension);
+    Result ISelfController::SetAlbumImageOrientation(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->screenShotImageOrientation = request.Pop<u32>();
         return {};
     }
 
-    Result ISelfController::ReportUserIsActive(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ISelfController::CreateManagedDisplayLayer(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        const auto layerId{hosbinder->CreateLayer(hosbinder::DisplayId::Default)};
+        response.Push<u64>(layerId);
         return {};
     }
 
-    Result ISelfController::IsIlluminanceAvailable(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u8>(true);
-
-        return {};
-    }
-
-    Result ISelfController::SetAutoSleepDisabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        autoSleepDisabled = request.Pop<u8>();
-        return {};
-    }
-
-    Result ISelfController::IsAutoSleepDisabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u8>(autoSleepDisabled);
-        return {};
-    }
-
-    Result ISelfController::GetCurrentIlluminanceEx(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // Values based in Ryujinx
-        // https://github.com/Ryujinx/Ryujinx/blob/773e239db7ceb2c55aa15f9787add4430edcdfcf/src/Ryujinx.HLE/HOS/Services/Am/AppletAE/AllSystemAppletProxiesService/SystemAppletProxy/ISelfController.cs#L342
-        response.Push<u32>(1);
-        response.Push<float>(10000.0);
-
-        return {};
-    }
-
-    Result ISelfController::GetAccumulatedSuspendedTickValue(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // TODO: Properly handle this after we implement game suspending
+    Result ISelfController::CreateManagedDisplaySeparableLayer(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        // Eden also exposes a zero recording-layer id when the display backend only supports one layer.
+        const auto layerId{hosbinder->CreateLayer(hosbinder::DisplayId::Default)};
+        response.Push<u64>(layerId);
         response.Push<u64>(0);
         return {};
     }
 
-    Result ISelfController::GetAccumulatedSuspendedTickChangedEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto handle{state.process->InsertItem(accumulatedSuspendedTickChangedEvent)};
-        LOGD("Accumulated Suspended Tick Event Handle: 0x{:X}", handle);
-
-        response.copyHandles.push_back(handle);
+    Result ISelfController::SetHandlesRequestToDisplay(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->handlesRequestToDisplay = request.Pop<u8>() != 0;
         return {};
     }
 
-    Result ISelfController::SetAlbumImageTakenNotificationEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto albumImageTakenNotificationEnabled{request.Pop<u8>()};;
-        LOGD("Setting Album Image Taken Notification Enabled: {}", albumImageTakenNotificationEnabled);
+    Result ISelfController::ApproveToDisplay(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
         return {};
     }
 
-    Result ISelfController::SetRecordVolumeMuted(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ISelfController::OverrideAutoSleepTimeAndDimmingTime(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        request.Pop<i32>();
+        request.Pop<i32>();
+        request.Pop<i32>();
+        request.Pop<i32>();
+        return {};
+    }
+
+    Result ISelfController::SetMediaPlaybackState(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->mediaPlaybackState = request.Pop<u8>() != 0;
+        return {};
+    }
+
+    Result ISelfController::SetIdleTimeDetectionExtension(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->idleTimeDetectionExtension = request.Pop<u32>();
+        return {};
+    }
+
+    Result ISelfController::GetIdleTimeDetectionExtension(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        std::scoped_lock lock{appletState->mutex};
+        response.Push<u32>(appletState->idleTimeDetectionExtension);
+        return {};
+    }
+
+    Result ISelfController::ReportUserIsActive(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        return {};
+    }
+
+    Result ISelfController::IsIlluminanceAvailable(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.Push<u8>(false);
+        return {};
+    }
+
+    Result ISelfController::SetAutoSleepDisabled(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->autoSleepDisabled = request.Pop<u8>() != 0;
+        return {};
+    }
+
+    Result ISelfController::IsAutoSleepDisabled(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        std::scoped_lock lock{appletState->mutex};
+        response.Push<u8>(appletState->autoSleepDisabled);
+        return {};
+    }
+
+    Result ISelfController::GetCurrentIlluminanceEx(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.Push<u32>(1);
+        response.Push<float>(10000.0F);
+        return {};
+    }
+
+    Result ISelfController::SetInputDetectionPolicy(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->inputDetectionPolicy = request.Pop<u32>();
+        return {};
+    }
+
+    Result ISelfController::GetAccumulatedSuspendedTickValue(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        std::scoped_lock lock{appletState->mutex};
+        response.Push<u64>(appletState->accumulatedSuspendedTicks);
+        return {};
+    }
+
+    Result ISelfController::GetAccumulatedSuspendedTickChangedEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.copyHandles.push_back(state.process->InsertItem(appletState->accumulatedSuspendedTickChangedEvent));
+        return {};
+    }
+
+    Result ISelfController::SetAlbumImageTakenNotificationEnabled(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->albumImageTakenNotificationEnabled = request.Pop<u8>() != 0;
+        return {};
+    }
+
+    Result ISelfController::SaveCurrentScreenshot(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        [[maybe_unused]] const u32 reportOption{request.Pop<u32>()};
+        // No capture backend is exposed here; Eden also succeeds when its screenshot service is unavailable.
+        return {};
+    }
+
+    Result ISelfController::SetRecordVolumeMuted(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->recordVolumeMuted = request.Pop<u8>() != 0;
+        return {};
+    }
+
+    Result ISelfController::Unknown230(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        [[maybe_unused]] const u32 value{request.Pop<u32>()};
+        response.Push<u16>(0);
         return {};
     }
 }
