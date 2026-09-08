@@ -19,6 +19,7 @@ namespace skyline::service::am {
             SFUNC_BASE(10, IOverlayAppletProxy, BaseProxy, GetProcessWindingController),
             SFUNC_BASE(11, IOverlayAppletProxy, BaseProxy, GetLibraryAppletCreator),
             SFUNC_BASE(21, IOverlayAppletProxy, BaseProxy, GetAppletCommonFunctions),
+            SFUNC_BASE(23, IOverlayAppletProxy, BaseProxy, GetGlobalStateController),
             SFUNC_BASE(1000, IOverlayAppletProxy, BaseProxy, GetDebugFunctions)
         )
     };
