@@ -92,8 +92,11 @@ namespace skyline::service::am {
 
     Result ICommonStateGetter::PushToGeneralChannel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
         auto storage{request.PopService<IStorage>(0, session)};
-        std::scoped_lock lock{appletState->mutex};
-        appletState->generalChannel.emplace_back(std::move(storage));
+        {
+            std::scoped_lock lock{appletState->mutex};
+            appletState->generalChannel.emplace_back(std::move(storage));
+        }
+        appletState->generalChannelEvent->Signal();
         return {};
     }
 
