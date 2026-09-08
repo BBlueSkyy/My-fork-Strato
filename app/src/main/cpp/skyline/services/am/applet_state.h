@@ -10,6 +10,7 @@
 
 namespace skyline::service::am {
     class IStorage;
+    class ILibraryAppletAccessor;
 
     /**
      * @brief State shared by the AM controller objects returned from one applet proxy.
@@ -70,6 +71,8 @@ namespace skyline::service::am {
         std::deque<std::shared_ptr<IStorage>> friendInvitationStorageChannel;
         std::deque<std::shared_ptr<IStorage>> notificationStorageChannel;
         std::deque<std::shared_ptr<IStorage>> processWindingContext;
+        std::shared_ptr<ILibraryAppletAccessor> reservedLibraryApplet;
+        std::shared_ptr<ILibraryAppletAccessor> callingLibraryApplet;
 
         Result terminateResult{};
         i32 previousProgramIndex{-1};
@@ -105,6 +108,7 @@ namespace skyline::service::am {
         bool jitServiceLaunched{};
         bool saveDataSizeOverridden{};
         bool requestExitToLibraryAppletAtExecuteNextProgramEnabled{};
+        bool unwindAfterReserved{};
 
         u8 focusState{1};
         u32 screenShotPermission{};
