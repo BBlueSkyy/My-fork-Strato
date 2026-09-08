@@ -12,20 +12,21 @@
 #include "base_proxy.h"
 
 namespace skyline::service::am {
-    BaseProxy::BaseProxy(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
+    BaseProxy::BaseProxy(const DeviceState &state, ServiceManager &manager)
+        : BaseService(state, manager), appletState(std::make_shared<AppletState>(state)) {}
 
     Result BaseProxy::GetCommonStateGetter(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(ICommonStateGetter), session, response);
+        manager.RegisterService(SRVREG(ICommonStateGetter, appletState), session, response);
         return {};
     }
 
     Result BaseProxy::GetSelfController(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(ISelfController), session, response);
+        manager.RegisterService(SRVREG(ISelfController, appletState), session, response);
         return {};
     }
 
     Result BaseProxy::GetWindowController(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(IWindowController), session, response);
+        manager.RegisterService(SRVREG(IWindowController, appletState), session, response);
         return {};
     }
 
@@ -40,7 +41,7 @@ namespace skyline::service::am {
     }
 
     Result BaseProxy::GetLibraryAppletCreator(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(ILibraryAppletCreator), session, response);
+        manager.RegisterService(SRVREG(ILibraryAppletCreator, appletState), session, response);
         return {};
     }
 
@@ -50,7 +51,7 @@ namespace skyline::service::am {
     }
 
     Result BaseProxy::GetAppletCommonFunctions(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(IAppletCommonFunctions), session, response);
+        manager.RegisterService(SRVREG(IAppletCommonFunctions, appletState), session, response);
         return {};
     }
 }
