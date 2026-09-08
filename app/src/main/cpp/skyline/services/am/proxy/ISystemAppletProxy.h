@@ -18,6 +18,8 @@ namespace skyline::service::am {
             SFUNC_BASE(4, ISystemAppletProxy, BaseProxy, GetDisplayController),
             SFUNC_BASE(10, ISystemAppletProxy, BaseProxy, GetProcessWindingController),
             SFUNC_BASE(11, ISystemAppletProxy, BaseProxy, GetLibraryAppletCreator),
+            SFUNC_BASE(20, ISystemAppletProxy, BaseProxy, GetHomeMenuFunctions),
+            SFUNC_BASE(21, ISystemAppletProxy, BaseProxy, GetGlobalStateController),
             SFUNC_BASE(23, ISystemAppletProxy, BaseProxy, GetAppletCommonFunctions),
             SFUNC_BASE(1000, ISystemAppletProxy, BaseProxy, GetDebugFunctions)
         )
