@@ -66,6 +66,7 @@ namespace skyline::service::am {
 
         std::deque<u32> messageQueue;
         std::deque<std::shared_ptr<IStorage>> userChannel;
+        std::deque<std::shared_ptr<IStorage>> generalChannel;
         std::deque<std::shared_ptr<IStorage>> friendInvitationStorageChannel;
         std::deque<std::shared_ptr<IStorage>> notificationStorageChannel;
         std::deque<std::shared_ptr<IStorage>> processWindingContext;
@@ -90,11 +91,14 @@ namespace skyline::service::am {
         bool homeButtonShortPressedBlocked{};
         bool homeButtonLongPressedBlocked{};
         bool homeButtonDoubleClickEnabled{};
+        bool handlingCaptureButtonShortPressedMessageEnabled{};
+        bool handlingCaptureButtonLongPressedMessageEnabled{};
         bool albumImageTakenNotificationEnabled{};
         bool recordVolumeMuted{};
         bool foregroundRightsAcquired{};
         bool jitServiceLaunched{};
         bool saveDataSizeOverridden{};
+        bool requestExitToLibraryAppletAtExecuteNextProgramEnabled{};
 
         u8 screenShotPermission{};
         u8 focusState{1};
