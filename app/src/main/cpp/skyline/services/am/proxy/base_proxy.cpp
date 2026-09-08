@@ -8,6 +8,8 @@
 #include <services/am/controller/IDisplayController.h>
 #include <services/am/controller/IProcessWindingController.h>
 #include <services/am/controller/ILibraryAppletCreator.h>
+#include <services/am/controller/IHomeMenuFunctions.h>
+#include <services/am/controller/IGlobalStateController.h>
 #include <services/am/controller/IDebugFunctions.h>
 #include <services/am/controller/IAppletCommonFunctions.h>
 #include "base_proxy.h"
@@ -50,6 +52,16 @@ namespace skyline::service::am {
 
     Result BaseProxy::GetLibraryAppletCreator(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
         manager.RegisterService(SRVREG(ILibraryAppletCreator, appletState), session, response);
+        return {};
+    }
+
+    Result BaseProxy::GetHomeMenuFunctions(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        manager.RegisterService(SRVREG(IHomeMenuFunctions, appletState), session, response);
+        return {};
+    }
+
+    Result BaseProxy::GetGlobalStateController(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        manager.RegisterService(SRVREG(IGlobalStateController, appletState), session, response);
         return {};
     }
 
