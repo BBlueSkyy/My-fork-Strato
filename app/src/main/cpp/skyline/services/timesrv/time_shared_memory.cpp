@@ -7,6 +7,7 @@
 namespace skyline::service::timesrv::core {
     constexpr size_t TimeSharedMemorySize{0x1000}; //!< The size of the time shared memory region
 
+    #pragma pack(1)
     struct ContinuousAdjustmentTimePoint {
         i64 rtcOffset;
         i64 diffScale;
@@ -15,6 +16,7 @@ namespace skyline::service::timesrv::core {
         i64 upper;
         UUID clockSourceId;
     };
+    #pragma pack()
     static_assert(sizeof(ContinuousAdjustmentTimePoint) == 0x38);
 
     struct __attribute__((packed)) TimeSharedMemoryLayout {
