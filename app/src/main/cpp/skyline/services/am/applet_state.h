@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <array>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -13,11 +12,7 @@ namespace skyline::service::am {
     class IStorage;
 
     /**
-     * @brief Process-wide AM state shared by all controller objects returned by a proxy.
-     *
-     * Horizon exposes the individual AM controller interfaces as views over one applet state.
-     * Keeping that state here prevents each IPC object from inventing its own lifecycle/event
-     * state and gives modern nnSdk versions coherent answers across interfaces.
+     * @brief State shared by the AM controller objects returned from one applet proxy.
      */
     struct AppletState {
         static constexpr u32 FocusStateChangedMessage{0xF};
@@ -33,9 +28,7 @@ namespace skyline::service::am {
               friendInvitationStorageChannelEvent(std::make_shared<type::KEvent>(state, false)),
               notificationStorageChannelEvent(std::make_shared<type::KEvent>(state, false)),
               healthWarningDisappearedEvent(std::make_shared<type::KEvent>(state, false)),
-              limitedApplicationLicenseUpgradableEvent(std::make_shared<type::KEvent>(state, false)),
               unknownEvent210(std::make_shared<type::KEvent>(state, false)) {
-            themeStorage.fill(0xAA);
             QueueMessage(FocusStateChangedMessage);
         }
 
@@ -49,6 +42,7 @@ namespace skyline::service::am {
             std::scoped_lock lock{mutex};
             if (messageQueue.empty())
                 return false;
+
             message = messageQueue.front();
             messageQueue.pop_front();
             if (messageQueue.empty())
@@ -68,60 +62,49 @@ namespace skyline::service::am {
         std::shared_ptr<type::KEvent> friendInvitationStorageChannelEvent;
         std::shared_ptr<type::KEvent> notificationStorageChannelEvent;
         std::shared_ptr<type::KEvent> healthWarningDisappearedEvent;
-        std::shared_ptr<type::KEvent> limitedApplicationLicenseUpgradableEvent;
         std::shared_ptr<type::KEvent> unknownEvent210;
 
         std::deque<u32> messageQueue;
         std::deque<std::shared_ptr<IStorage>> userChannel;
-        std::deque<std::shared_ptr<IStorage>> generalChannel;
         std::deque<std::shared_ptr<IStorage>> friendInvitationStorageChannel;
         std::deque<std::shared_ptr<IStorage>> notificationStorageChannel;
-        std::deque<std::shared_ptr<IStorage>> appletBoundChannel;
-
-        std::array<u8, 0x400> themeStorage{};
+        std::deque<std::shared_ptr<IStorage>> processWindingContext;
 
         Result terminateResult{};
         i32 previousProgramIndex{-1};
-        i32 lastApplicationExitReason{};
+        i32 fatalSectionCount{};
 
         bool exitLocked{};
         bool operationModeChangedNotification{};
         bool performanceModeChangedNotification{};
         bool restartMessageEnabled{};
         bool outOfFocusSuspendingEnabled{};
-        bool requestExitToLibraryAppletAtExecuteNextProgramEnabled{};
         bool handlesRequestToDisplay{};
         bool autoSleepDisabled{};
         bool vrModeEnabled{};
         bool vrMode3dEnabled{};
         bool sleepLockAcquired{};
-        bool sleepDisabledTillShutdown{};
-        bool sleepDisablingSuppressed{};
         bool mediaPlaybackState{};
-        bool gameplayRecordingInitialized{};
-        bool crashReportEnabled{};
-        bool homeButtonShortAndLongBlocked{};
-        bool homeButtonBlocked{};
+        bool gamePlayRecordingSupported{};
+        bool applicationCrashReportEnabled{};
+        bool homeButtonShortPressedBlocked{};
+        bool homeButtonLongPressedBlocked{};
         bool homeButtonDoubleClickEnabled{};
-        bool handlingHomeButtonShortPressedEnabled{};
-        bool handlingCaptureButtonShortPressedEnabled{};
-        bool handlingCaptureButtonLongPressedEnabled{};
-        bool blockingCaptureButtonInEntireSystem{};
         bool albumImageTakenNotificationEnabled{};
         bool recordVolumeMuted{};
         bool foregroundRightsAcquired{};
-        bool screenShotPermission{true};
+        bool jitServiceLaunched{};
+        bool saveDataSizeOverridden{};
 
-        u32 focusState{1};
+        u8 screenShotPermission{};
+        u8 focusState{1};
         u32 cpuBoostMode{};
         i32 cpuBoostRequestPriority{};
-        u32 gameplayRecordingState{};
+        u32 gamePlayRecordingState{};
         u32 idleTimeDetectionExtension{};
         u32 applicationCoreUsageMode{};
         u32 screenShotImageOrientation{};
-        u32 desirableKeyboardLayout{};
-        u32 inputDetectionSourceSet{};
-        u32 mediaPlaybackStateRaw{};
+        u32 inputDetectionPolicy{};
 
         float displayMagnificationX{};
         float displayMagnificationY{};
@@ -129,10 +112,8 @@ namespace skyline::service::am {
         float displayMagnificationHeight{1.0F};
 
         u64 accumulatedSuspendedTicks{};
-        u64 wakeupCount{};
-        u64 gpuAbortDelayNs{};
-        u64 launchRequiredVersion{};
-        u64 gpuTimeSliceBoost{};
-        u64 gpuTimeSliceBoostDueToApplication{};
+        i64 saveDataSize{};
+        i64 saveDataJournalSize{};
+        i64 gpuTimeSliceBoost{};
     };
 }
