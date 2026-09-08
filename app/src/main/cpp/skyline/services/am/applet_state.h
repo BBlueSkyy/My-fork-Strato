@@ -12,9 +12,6 @@ namespace skyline::service::am {
     class IStorage;
     class ILibraryAppletAccessor;
 
-    /**
-     * @brief State shared by the AM controller objects returned from one applet proxy.
-     */
     struct AppletState {
         static constexpr u32 FocusStateChangedMessage{0xF};
 
@@ -29,7 +26,9 @@ namespace skyline::service::am {
               friendInvitationStorageChannelEvent(std::make_shared<type::KEvent>(state, false)),
               notificationStorageChannelEvent(std::make_shared<type::KEvent>(state, false)),
               healthWarningDisappearedEvent(std::make_shared<type::KEvent>(state, false)),
-              unknownEvent210(std::make_shared<type::KEvent>(state, false)) {
+              unknownEvent210(std::make_shared<type::KEvent>(state, false)),
+              generalChannelEvent(std::make_shared<type::KEvent>(state, false)),
+              hdcpAuthenticationFailedEvent(std::make_shared<type::KEvent>(state, false)) {
             QueueMessage(FocusStateChangedMessage);
         }
 
@@ -43,7 +42,6 @@ namespace skyline::service::am {
             std::scoped_lock lock{mutex};
             if (messageQueue.empty())
                 return false;
-
             message = messageQueue.front();
             messageQueue.pop_front();
             if (messageQueue.empty())
@@ -64,6 +62,8 @@ namespace skyline::service::am {
         std::shared_ptr<type::KEvent> notificationStorageChannelEvent;
         std::shared_ptr<type::KEvent> healthWarningDisappearedEvent;
         std::shared_ptr<type::KEvent> unknownEvent210;
+        std::shared_ptr<type::KEvent> generalChannelEvent;
+        std::shared_ptr<type::KEvent> hdcpAuthenticationFailedEvent;
 
         std::deque<u32> messageQueue;
         std::deque<std::shared_ptr<IStorage>> userChannel;
@@ -109,6 +109,9 @@ namespace skyline::service::am {
         bool saveDataSizeOverridden{};
         bool requestExitToLibraryAppletAtExecuteNextProgramEnabled{};
         bool unwindAfterReserved{};
+        bool homeMenuForegroundLocked{};
+        bool shutdownRequested{};
+        bool rebootRequested{};
 
         u8 focusState{1};
         u32 screenShotPermission{};
