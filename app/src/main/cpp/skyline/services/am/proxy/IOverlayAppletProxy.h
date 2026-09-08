@@ -6,23 +6,20 @@
 #include "base_proxy.h"
 
 namespace skyline::service::am {
-    /**
-     * @brief IOverlayAppletProxy returns handles to various services
-     * @url https://switchbrew.org/wiki/Applet_Manager_services#IOverlayAppletProxy
-     */
     class IOverlayAppletProxy : public BaseProxy {
       public:
-        IOverlayAppletProxy(const DeviceState &state, ServiceManager &manager);
+        IOverlayAppletProxy(const DeviceState &state, ServiceManager &manager, u64 appletResourceUserId);
 
         SERVICE_DECL(
-            SFUNC(0x0, BaseProxy, GetCommonStateGetter),
-            SFUNC(0x1, BaseProxy, GetSelfController),
-            SFUNC(0x2, BaseProxy, GetWindowController),
-            SFUNC(0x3, BaseProxy, GetAudioController),
-            SFUNC(0x4, BaseProxy, GetDisplayController),
-            SFUNC(0xB, BaseProxy, GetLibraryAppletCreator),
-            SFUNC(0x15, BaseProxy, GetAppletCommonFunctions),
-            SFUNC(0x3E8, BaseProxy, GetDebugFunctions)
+            SFUNC_BASE(0, IOverlayAppletProxy, BaseProxy, GetCommonStateGetter),
+            SFUNC_BASE(1, IOverlayAppletProxy, BaseProxy, GetSelfController),
+            SFUNC_BASE(2, IOverlayAppletProxy, BaseProxy, GetWindowController),
+            SFUNC_BASE(3, IOverlayAppletProxy, BaseProxy, GetAudioController),
+            SFUNC_BASE(4, IOverlayAppletProxy, BaseProxy, GetDisplayController),
+            SFUNC_BASE(10, IOverlayAppletProxy, BaseProxy, GetProcessWindingController),
+            SFUNC_BASE(11, IOverlayAppletProxy, BaseProxy, GetLibraryAppletCreator),
+            SFUNC_BASE(21, IOverlayAppletProxy, BaseProxy, GetAppletCommonFunctions),
+            SFUNC_BASE(1000, IOverlayAppletProxy, BaseProxy, GetDebugFunctions)
         )
     };
 }
