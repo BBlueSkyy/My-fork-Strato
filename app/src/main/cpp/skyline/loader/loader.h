@@ -137,7 +137,12 @@ namespace skyline::loader {
         struct SymbolInfo {
             char *name; //!< The name of the symbol that was found
             std::string_view executableName; //!< The executable that contained the symbol
+            u64 address{}; //!< Start of the symbol, when available
+            size_t size{}; //!< Size recorded in the owned ELF symbol table
         };
+
+        /** @brief Bounded lookup of defined functions for temporary abort diagnostics. */
+        std::vector<SymbolInfo> FindFunctionSymbols64(std::string_view nameFragment, size_t limit = 16);
 
         /**
          * @return All symbolic information about the symbol for the specified address

@@ -1,12 +1,69 @@
 # Animal Well e Constance: investigação de SetTerminateResult(674)
 
-Estado: **diagnóstico implementado; causas dos jogos ainda não identificadas; nenhuma correção causal confirmada**.
+Estado após a terceira coleta: **Constance: exceção e operação que falha identificadas; Animal Well: aborto localizado no cliente de AudioRenderer. Os predicados que ligam esses caminhos a um defeito do emulador ainda precisam ser capturados. Nenhuma correção causal dos jogos confirmada.**
 
 Atualização após teste do usuário: **defeito de lifetime das tabelas de símbolos do loader reproduzido e corrigido**. Esse defeito é do diagnóstico/stack trace do emulador; não é apresentado como causa dos abortos dos jogos.
 
 Base desta branch: `92f2d08` da master, já contendo o PR #147. As outras branches e os working trees existentes foram preservados. Não se incorporou o scheduler do PR #146 nem o port de Mii do PR #148.
 
-## Evidência dos anexos
+## Terceira coleta: evidência atual
+
+APK testada: `e36900add9ed2ac2a154f75b880a627c1297f3ae`, build Android completa [34217297764](https://github.com/BBlueSkyy/My-fork-Strato/actions/runs/34217297764). A captura de pilha, instruções, payload e candidatos funciona nos dois jogos.
+
+Identidade dos anexos atuais (SHA-256):
+
+- `animal well.log`: `75661c262da74d4dcc1c79d9443578fb8bf6abacc321dfc7f42c4400d885dc9d`.
+- `constance.log`: `4091704c339542774f8997e15cebb151116191be852370121a3d13a69a6a879a`.
+
+### Constance
+
+O erro concreto identificado no guest é **`std::__1::system_error`, código 11 (`EAGAIN`), com mensagem `clock_gettime(CLOCK_REALTIME) failed: Resource temporarily unavailable`**. Ele precede `std::terminate`, a notificação C++ e o resultado de aborto 674.
+
+| Evidência | Valor |
+| --- | --- |
+| Primeiro Break (seq=4713, thread 1) | reason `0x80000007`, info `0`, size `0` |
+| PC / LR do Break | `0x80922674C` / `0x8096D5B6C` |
+| SP / FP / NZCV | `0x1989EFF0F0` / `0x1989EFF0F0` / `0x60000000` |
+| X19 | `0x84FB98470`: string de nome demangled; **não** é o objeto da exceção |
+| X20 | `0x809C13960`: RTTI, cujo nome em `0x809ABAC58` é `NSt3__112system_errorE` |
+| Objeto da exceção, encontrado por X8 | `0x86FDF3D70`; vtable em +0, ponteiro da mensagem em +8, código 11 em +0x10, categoria em +0x18 |
+| Mensagem | `0x84EDCEF08` (linhas 553–557 do log) |
+| Chamada que verifica o relógio | `0x809679B0C`, argumento W0=0 (`CLOCK_REALTIME`), X1=SP (timespec) |
+| Caminho de erro | branch por retorno não zero em `0x809679B10`; acesso a errno em `0x809679B4C`; chamada de lançamento de system_error em `0x809679B5C` |
+
+O frame `0x809679B64` foi rotulado como `system_clock::to_time_t` porque LR coincide exatamente com o começo da função seguinte. A instrução anterior, `0x809679B60`, chama `std::terminate` a partir do caminho de erro de `system_clock::now`. A nova captura resolve retornos em **LR−4**, mantendo PC e todos os LRs brutos no log.
+
+O Break observado ocorre no caminho de terminação da exceção. Não se confunde a notificação C++ com o lançamento inicial nem com a operação de relógio que falhou. Os 32 SVCs anteriores no histórico atual são QueryMemory bem-sucedidos do desenrolamento da exceção: eles não registram a primeira falha do relógio.
+
+**Ainda não demonstrado:** qual Result/estado do serviço ou cliente de tempo produziu EAGAIN. A revisão do fork mostra inicialização de steady/local/network com o mesmo UUID e publicação dos contextos em shared memory; o log atual não contém essa memória nem o corpo de `clock_gettime`. Não se alterou esse contrato por hipótese. O erro de latência cubeb não é evidência de causa desta exceção.
+
+### Animal Well
+
+GetWorkBufferSize aceita REV15 e retorna Result 0 / `0xC3000`. CreateTransferMemory (seq=178) retorna Result 0 / handle `0xD01F`, source `0x802134000`, size `0xC3000`; CodeMutable é preservado, RW passa a None/Borrowed. PC `0x823B30580`, LR `0x823B026A0`, SP `0x19A57FF3F0`, FP `0x19A57FF410`.
+
+A pilha desse retorno é `TransferMemoryImplByHorizon::Create` → `nn::os::CreateTransferMemory` → `nn::audio::OpenAudioRenderer` (LR `0x823BDBB98`) → overload com SystemEvent (LR `0x823BDBDE0`) → main. O próximo SVC é SetTerminateResult (seq=179). **O cliente SDK está dentro de OpenAudioRenderer; a implementação HLE do serviço ainda não foi chamada.**
+
+O ponto de aborto em OpenAudioRenderer é a chamada em `0x823BDBD8C` (LR `0x823BDBD90`). O código/pilha apontam para a variante sem argumentos de AbortImpl. O frame `0x823A56ED0`, rotulado anteriormente como `AbortImpl(nn::Result const*)`, também está na fronteira com a função seguinte: a chamada em LR−4 pertence à variante sem argumentos. O Break fatal usa info `0x19A57FF42C`, size 4, e o valor real desses quatro bytes é **zero**. Isso não é uma intervenção do emulador.
+
+**Ainda não demonstrado:** o predicado que desvia para esse aborto. O log tem código até `0x823BDBBD7` e volta em `0x823BDBD80`; falta o trecho intermediário após a criação da TransferMemory. Existe um branch para o mesmo aborto na parte anterior capturada, mas não é possível atribuir o caminho executado a esse branch. Não se conclui insuficiência de workbuffer, falha de alocação ou erro no handle só pela proximidade do aborto.
+
+### Comparação e revisão preparada
+
+Não há evidência de uma mesma falha estrutural nos dois jogos. Há caminhos concretamente diferentes: aborto do cliente de AudioRenderer e exceção de relógio da libc++. A falha comum já corrigida no loader afetava a leitura diagnóstica dos símbolos, sem demonstrar causalidade sobre 674.
+
+A revisão seguinte é **instrumentação dirigida**, não correção comportamental dos jogos:
+
+- Busca funções definidas em tabelas ELF próprias e validadas; captura OpenAudioRenderer na fronteira da TransferMemory e clock_gettime/relógios padrão na primeira notificação C++.
+- Captura corpos limitados a 0x1000 bytes/função, destinos de B/BL, resolução de PLT por GOT e referências estáticas adjacentes ADRP+ADD/LDR. Limites globais: 48 corpos, 0x10000 bytes de código, 64 referências a dados, profundidade 3. Referências são candidatas estáticas, não uma trilha de branches executados.
+- Preserva separadamente os 32 SVCs anteriores que não são QueryMemory, os 16 IPCs de tempo e os oito resultados IPC não zero, para impedir que o desenrolamento da exceção apague a evidência anterior.
+- Registra os primeiros 0x200 bytes da shared memory de tempo ao exportar o handle e no Break da mesma thread, quando a referência continua válida, além da frequência do contador do host.
+- Mantém payload, PC/LR, registradores, resultados e comportamento original de svcBreak/SetTerminateResult.
+
+Validação adicional: `tests/kernel/diagnostic_snapshots.py` compila todo o diagnóstico de produção e a busca/resolução de símbolos com adaptadores de memória/logger Linux. Usa código AArch64 sintético para exercitar PLT relocada e referências a dados, símbolos indefinidos/inválidos, retenção do histórico após 500 QueryMemory, resolução LR−4, continuidade após falha de símbolos e preservação de memória/registradores/errno. Não usa binários dos jogos nem representa execução no aparelho.
+
+**Próximo teste necessário:** executar os mesmos dois jogos na nova APK reldebug do PR #149, log Info ou Debug, e exportar os logs completos. No áudio, o corpo da função deve revelar os branches do trecho ausente; no relógio, os corpos e o estado compartilhado devem revelar a checagem que produz o erro. Se aparecer um defeito causal, sua correção deverá ser separada por causa e validada no aparelho. Não há dispositivo ou ExeFS dos jogos disponível nesta sessão para substituir esse teste.
+
+## Primeira coleta: evidência dos anexos originais
 
 | Caso | Sequência observada | O que falta |
 | --- | --- | --- |
@@ -48,7 +105,7 @@ Leituras diagnósticas usam a descrição do VMM e `process_vm_readv` do própri
 - Não há execução dos jogos ou acesso ao aparelho nesta sessão. Os logs fornecidos não permitem reconstruir retroativamente registradores ou o objeto da exceção. Não se inventa nome de assert, causa raiz nem jogo corrigido.
 - Instrumentação temporária com custo de diagnóstico e possíveis efeitos de timing/layout. Deve ser removida após localizar as causas e não deve ser mesclada como correção definitiva.
 
-## Próxima coleta
+## Procedimento das coletas anteriores (histórico)
 
 Usar a APK **reldebug** desta branch com log em **Info ou Debug**. Executar Animal Well e Constance separadamente, preservando as mesmas versões/updates e configurações que geraram os anexos. Exportar um log completo de cada jogo após o aborto, incluindo o carregamento dos módulos.
 

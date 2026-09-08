@@ -141,11 +141,12 @@ namespace skyline::loader {
         auto symbols{span(executable->symbols).template cast<ElfSym>()};
 
         if (ptr >= executable->programStart) {
-            auto offset{reinterpret_cast<u8 *>(ptr) - reinterpret_cast<u8 *>(executable->programStart)};
-            auto symbol{std::find_if(symbols.begin(), symbols.end(), [&offset](const ElfSym &sym) { return sym.st_value <= offset && sym.st_value + sym.st_size > offset; })};
+            const auto offset{static_cast<u64>(reinterpret_cast<u8 *>(ptr) - reinterpret_cast<u8 *>(executable->programStart))};
+            auto symbol{std::find_if(symbols.begin(), symbols.end(), [&offset](const ElfSym &sym) { return sym.st_value <= offset && offset - sym.st_value < sym.st_size; })};
             if (symbol != symbols.end() && symbol->st_name && symbol->st_name < executable->symbolStrings.size() &&
                 std::memchr(executable->symbolStrings.data() + symbol->st_name, '\0', executable->symbolStrings.size() - symbol->st_name)) {
-                return {executable->symbolStrings.data() + symbol->st_name, executable->name};
+                return {executable->symbolStrings.data() + symbol->st_name, executable->name,
+                        reinterpret_cast<u64>(executable->programStart) + symbol->st_value, symbol->st_size};
             } else {
                 return {.executableName = executable->name};
             }
@@ -154,6 +155,30 @@ namespace skyline::loader {
         } else {
             return {.executableName = executable->patchName};
         }
+    }
+
+    std::vector<Loader::SymbolInfo> Loader::FindFunctionSymbols64(std::string_view nameFragment, size_t limit) {
+        std::vector<SymbolInfo> result;
+        if (nameFragment.empty() || !limit)
+            return result;
+        for (auto &executable : executables) {
+            const auto start{reinterpret_cast<u64>(executable.programStart)};
+            const auto extent{reinterpret_cast<u64>(executable.programEnd) - start};
+            for (const auto &symbol : span(executable.symbols).cast<Elf64_Sym>()) {
+                if (ELF64_ST_TYPE(symbol.st_info) != STT_FUNC || symbol.st_shndx == SHN_UNDEF || !symbol.st_size ||
+                    symbol.st_value >= extent || symbol.st_size > extent - symbol.st_value ||
+                    !symbol.st_name || symbol.st_name >= executable.symbolStrings.size())
+                    continue;
+                char *name{executable.symbolStrings.data() + symbol.st_name};
+                const auto end{static_cast<const char *>(std::memchr(name, '\0', executable.symbolStrings.size() - symbol.st_name))};
+                if (!end || std::string_view(name, end - name).find(nameFragment) == std::string_view::npos)
+                    continue;
+                result.push_back({name, executable.name, start + symbol.st_value, symbol.st_size});
+                if (result.size() >= limit)
+                    return result;
+            }
+        }
+        return result;
     }
 
     inline std::string GetFunctionStackTrace(Loader *loader, void *pointer) {

@@ -7,9 +7,11 @@
 #include <unistd.h>
 #include <kernel/types/KProcess.h>
 #include <kernel/types/KThread.h>
+#include <kernel/types/KSharedMemory.h>
 #include <kernel/svc.h>
 #include <loader/loader.h>
 #include "diagnostics.h"
+#include "diagnostic_instructions.h"
 
 namespace skyline::nce::diagnostics {
     namespace {
@@ -30,9 +32,14 @@ namespace skyline::nce::diagnostics {
             std::array<u64, 31> registers{};
             Call current{};
             std::array<Call, 32> calls{};
+            std::array<Call, 32> nonQueryCalls{};
             std::array<IpcCall, 16> ipc{};
-            size_t callCount{}, ipcCount{};
+            std::array<IpcCall, 16> clockIpc{};
+            std::array<IpcCall, 8> failedIpc{};
+            size_t callCount{}, nonQueryCount{}, ipcCount{}, clockIpcCount{}, failedIpcCount{};
+            std::weak_ptr<kernel::type::KSharedMemory> timeSharedMemory;
             bool audioTrace{};
+            bool audioCodeDumped{}, clockCodeDumped{};
         } trace;
 
         struct PreserveErrno {
@@ -145,6 +152,36 @@ namespace skyline::nce::diagnostics {
                 Write(fmt::format("seq={} {} result=0x{:X} module={} description={}", call.sequence, call.name,
                                   call.result, call.result & 0x1FF, (call.result >> 9) & 0x1FFF));
             }
+            Write("Recent completed SVCs excluding QueryMemory (retain calls preceding exception unwinding):");
+            const size_t nonQueryFirst{trace.nonQueryCount > trace.nonQueryCalls.size() ? trace.nonQueryCount - trace.nonQueryCalls.size() : 0};
+            for (size_t i{nonQueryFirst}; i < trace.nonQueryCount; i++) {
+                const auto &call{trace.nonQueryCalls[i % trace.nonQueryCalls.size()]};
+                Write(fmt::format("seq={} svc=0x{:X} pc=0x{:X} lr=0x{:X} in=[{:X},{:X},{:X},{:X},{:X},{:X}] out=[{:X},{:X}]",
+                                  call.sequence, call.id, call.pc, call.lr, call.input[0], call.input[1], call.input[2],
+                                  call.input[3], call.input[4], call.input[5], call.output[0], call.output[1]));
+            }
+            const auto dumpIpc{[](const auto &calls, size_t count, const char *label) {
+                Write(label);
+                const size_t first{count > calls.size() ? count - calls.size() : 0};
+                for (size_t i{first}; i < count; i++) {
+                    const auto &call{calls[i % calls.size()]};
+                    Write(fmt::format("seq={} {} result=0x{:X} module={} description={}", call.sequence, call.name,
+                                      call.result, call.result & 0x1FF, (call.result >> 9) & 0x1FFF));
+                }
+            }};
+            dumpIpc(trace.clockIpc, trace.clockIpcCount, "Recent time/clock IPC results on this thread:");
+            dumpIpc(trace.failedIpc, trace.failedIpcCount, "Recent nonzero IPC results (may include expected/optional failures):");
+        }
+
+        void DumpTimeSharedMemory() {
+            if (auto memory{trace.timeSharedMemory.lock()}) {
+                // The strong reference keeps this owned host mapping alive. No
+                // untrusted guest pointer is dereferenced here.
+                Write(fmt::format("Time shared memory: guest={}, host size=0x{:X}, host CNTFRQ={}, tick ns={}",
+                                  fmt::ptr(memory->guest.data()), memory->host.size(), util::ClockFrequency, util::GetTimeNs()));
+                for (size_t offset{}; offset < std::min<size_t>(memory->host.size(), 0x200); offset += 32)
+                    Write(fmt::format("Time shmem +0x{:03X}: {}", offset, Bytes(memory->host.data() + offset, std::min<size_t>(32, memory->host.size() - offset))));
+            }
         }
 
         void DumpContext(const DeviceState &state, const char *event) {
@@ -174,7 +211,14 @@ namespace skyline::nce::diagnostics {
             for (size_t i{}; i < frames.size(); i++)
                 Write(fmt::format("Guest frame[{}] PC/LR=0x{:X}", i, reinterpret_cast<u64>(frames[i])));
             Diagnostic("stack symbols", [&] {
-                Write(fmt::format("Guest stack (bounded frame-pointer walk; symbols when available):{}", state.loader->GetStackTrace(frames)));
+                auto callSites{frames};
+                // A saved LR is after BL/BLR and may equal the next function's
+                // start (observed at system_clock::now -> terminate). Keep the
+                // real PC untouched and resolve call sites at LR - 4.
+                for (size_t i{1}; i < callSites.size(); i++)
+                    if (reinterpret_cast<u64>(callSites[i]) >= 4)
+                        callSites[i] = reinterpret_cast<void *>(reinterpret_cast<u64>(callSites[i]) - 4);
+                Write(fmt::format("Guest stack (frame[0] PC; later frames resolved at LR-4; raw LRs above):{}", state.loader->GetStackTrace(callSites)));
             });
             for (size_t i{}; i < std::min<size_t>(frames.size(), 8); i++) {
                 const auto address{reinterpret_cast<u64>(frames[i])};
@@ -224,6 +268,90 @@ namespace skyline::nce::diagnostics {
 
     }
 
+    // Capture relevant bodies, rather than only a window around a return
+    // address. Static references do not imply that a branch was executed.
+    static void DumpFunctions(const DeviceState &state, std::initializer_list<std::string_view> roots) {
+        struct Pending { u64 address; unsigned depth; };
+        std::vector<Pending> pending;
+        for (auto fragment : roots)
+            for (const auto &symbol : state.loader->FindFunctionSymbols64(fragment, 12))
+                pending.push_back({symbol.address, 0});
+        Write(fmt::format("Function snapshots: {} roots, maximum 48 bodies / 0x10000 code bytes / 64 data references", pending.size()));
+        std::vector<u64> seen, dataSeen;
+        size_t remaining{0x10000}, item{};
+        for (; item < pending.size() && seen.size() < 48 && remaining; item++) {
+            const auto [target, depth]{pending[item]};
+            auto symbol{state.loader->ResolveSymbol64(reinterpret_cast<void *>(target))};
+            if (symbol.executableName.empty() || symbol.executableName.ends_with(".patch") || symbol.executableName.ends_with(".hook"))
+                continue;
+            const u64 start{symbol.address ? symbol.address : target};
+            if (std::find(seen.begin(), seen.end(), start) != seen.end())
+                continue;
+            const auto chunk{state.process->memory.GetChunk(reinterpret_cast<u8 *>(start))};
+            if (!chunk || !chunk->second.permission.x)
+                continue;
+            seen.push_back(start);
+            std::array<u8, 0x1000> data{};
+            const size_t requested{std::min({symbol.size ? symbol.size : size_t{0x200}, data.size(), remaining})};
+            const size_t copied{Read(state, start, data.data(), requested)};
+            remaining -= requested;
+            Write(fmt::format("Function snapshot address=0x{:X} name={} module={} depth={} symbolSize=0x{:X} read=0x{:X}/0x{:X} (unknown symbols use a bounded window)",
+                              start, symbol.name ? symbol.name : "<unknown>", symbol.executableName, depth, symbol.size, copied, requested));
+            for (size_t offset{}; offset < copied; offset += 32)
+                Write(fmt::format("  0x{:X}: {}", start + offset, Bytes(data.data() + offset, std::min<size_t>(32, copied - offset))));
+            for (size_t offset{}; offset + 4 <= copied; offset += 4) {
+                u32 word{}, next{};
+                std::memcpy(&word, data.data() + offset, 4);
+                if (offset + 8 <= copied)
+                    std::memcpy(&next, data.data() + offset + 4, 4);
+                if (auto branch{instructions::DirectBranch(word, start + offset)};
+                    branch && (*branch < start || *branch - start >= (symbol.size ? symbol.size : copied))) {
+                    u64 destination{*branch};
+                    // Resolve standard AArch64 PLT stubs through their GOT
+                    // slots after relocation, without executing guest code.
+                    std::array<u32, 4> stub{};
+                    if (Read(state, destination, stub.data(), sizeof(stub)) == sizeof(stub)) {
+                        auto slot{instructions::DataReference(stub[0], stub[1], destination)};
+                        const auto branchReg{(stub[3] >> 5) & 31};
+                        const auto baseReg{stub[0] & 31};
+                        if (slot && slot->pointerLoad && (stub[3] & 0xFFFFFC1F) == 0xD61F0000 &&
+                            branchReg == (stub[1] & 31) && branchReg != baseReg &&
+                            (stub[2] & 0xFFC00000) == 0x91000000 &&
+                            (stub[2] & 31) == baseReg && ((stub[2] >> 5) & 31) == baseReg) {
+                            u64 resolved{};
+                            if (Read(state, slot->address, &resolved, sizeof(resolved)) == sizeof(resolved) && resolved)
+                                destination = resolved;
+                        }
+                    }
+                    const auto callee{state.loader->ResolveSymbol64(reinterpret_cast<void *>(destination))};
+                    Write(fmt::format("Static branch pc=0x{:X} target=0x{:X} resolved=0x{:X} name={}", start + offset, *branch, destination, callee.name ? callee.name : "<unknown>"));
+                    if (depth < 3 && pending.size() < 256)
+                        pending.push_back({destination, depth + 1});
+                }
+                auto reference{instructions::DataReference(word, next, start + offset)};
+                if (!reference || dataSeen.size() >= 64 || std::find(dataSeen.begin(), dataSeen.end(), reference->address) != dataSeen.end())
+                    continue;
+                const auto region{state.process->memory.GetChunk(reinterpret_cast<u8 *>(reference->address))};
+                if (!region || !region->second.permission.r || region->second.permission.x)
+                    continue;
+                dataSeen.push_back(reference->address);
+                DumpBytes(state, fmt::format("Static data reference from pc=0x{:X}", start + offset), reference->address, 0x80);
+                if (reference->pointerLoad && dataSeen.size() < 64) {
+                    u64 pointer{};
+                    if (Read(state, reference->address, &pointer, sizeof(pointer)) == sizeof(pointer)) {
+                        const auto pointee{state.process->memory.GetChunk(reinterpret_cast<u8 *>(pointer))};
+                        if (pointee && pointee->second.permission.r && !pointee->second.permission.x &&
+                            std::find(dataSeen.begin(), dataSeen.end(), pointer) == dataSeen.end()) {
+                            dataSeen.push_back(pointer);
+                            DumpBytes(state, "Static reference pointee (uninterpreted)", pointer, 0x100);
+                        }
+                    }
+                }
+            }
+        }
+        Write(fmt::format("Function snapshots finished: bodies={} dataReferences={} unvisitedCandidates={} remainingCodeBudget=0x{:X}", seen.size(), dataSeen.size(), pending.size() - item, remaining));
+    }
+
     void BeginSvc(u16 svcId, const ThreadContext &ctx) {
         // The saved LR points to BL LoadCtx; the B back into .text is two
         // instructions later. Decode its signed imm26 to recover SVC PC exactly.
@@ -246,19 +374,36 @@ namespace skyline::nce::diagnostics {
     void EndSvc(const DeviceState &state, const ThreadContext &ctx) {
         trace.current.output = {ctx.gpr.x0, ctx.gpr.x1};
         trace.calls[trace.callCount++ % trace.calls.size()] = trace.current;
+        if (trace.current.id != 0x6)
+            trace.nonQueryCalls[trace.nonQueryCount++ % trace.nonQueryCalls.size()] = trace.current;
         if (trace.audioTrace && trace.current.id == 0x15) {
             Diagnostic("transfer return", [&] {
                 Write(fmt::format("CreateTransferMemory RETURN result=0x{:X} handle=0x{:X}", ctx.gpr.x0, ctx.gpr.x1));
                 DumpRegion(state, "CreateTransferMemory owner AFTER", trace.current.input[1]);
                 DumpContext(state, "audio transfer-memory boundary");
             });
+            if (!trace.audioCodeDumped) {
+                trace.audioCodeDumped = true;
+                Diagnostic("audio client functions", [&] { DumpFunctions(state, {"OpenAudioRenderer"}); });
+            }
         } else if (trace.audioTrace && trace.current.id == 0x6 && ctx.gpr.x0 == 0) {
             Diagnostic("query memory return", [&] { DumpBytes(state, "QueryMemory RETURN MemoryInfo", trace.current.input[0], 0x28); });
         }
     }
 
     void RecordIpc(const char *name, u32 result) {
-        trace.ipc[trace.ipcCount++ % trace.ipc.size()] = {trace.current.sequence, name, result};
+        const IpcCall call{trace.current.sequence, name, result};
+        trace.ipc[trace.ipcCount++ % trace.ipc.size()] = call;
+        const std::string_view method{name};
+        if (method.find("Clock") != method.npos || method.find("Time") != method.npos || method.find("GetSharedMemoryNativeHandle") != method.npos)
+            trace.clockIpc[trace.clockIpcCount++ % trace.clockIpc.size()] = call;
+        if (result)
+            trace.failedIpc[trace.failedIpcCount++ % trace.failedIpc.size()] = call;
+    }
+
+    void WatchTimeSharedMemory(const std::shared_ptr<kernel::type::KSharedMemory> &memory) {
+        trace.timeSharedMemory = memory;
+        Diagnostic("time shared memory exported", [] { DumpTimeSharedMemory(); });
     }
 
     void ArmAudioTrace() { trace.audioTrace = true; }
@@ -290,5 +435,12 @@ namespace skyline::nce::diagnostics {
         });
         Diagnostic("break context", [&] { DumpContext(state, "svcBreak entry"); });
         Diagnostic("break pointer candidates", [&] { DumpCandidates(state); });
+        Diagnostic("time shared memory at break", [] { DumpTimeSharedMemory(); });
+        if ((reason & ~(1ULL << 31)) == 7 && !trace.clockCodeDumped) {
+            trace.clockCodeDumped = true;
+            Diagnostic("clock client functions", [&] {
+                DumpFunctions(state, {"clock_gettime", "StandardUserSystemClock", "StandardSteadyClock"});
+            });
+        }
     }
 }

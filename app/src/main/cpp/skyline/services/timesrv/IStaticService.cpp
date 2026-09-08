@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <kernel/types/KProcess.h>
+#include <nce/diagnostics.h>
 #include "results.h"
 #include "core.h"
 #include "ISteadyClock.h"
@@ -51,6 +52,7 @@ namespace skyline::service::timesrv {
 
     Result IStaticService::GetSharedMemoryNativeHandle(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto sharedMemory{core.timeSharedMemory.GetSharedMemory()};
+        nce::diagnostics::WatchTimeSharedMemory(sharedMemory);
         auto handle{state.process->InsertItem<type::KSharedMemory>(sharedMemory)};
         response.copyHandles.push_back(handle);
         return {};
