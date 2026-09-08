@@ -7,7 +7,6 @@
 #include <deque>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <kernel/types/KEvent.h>
 
 namespace skyline::service::am {
@@ -50,7 +49,6 @@ namespace skyline::service::am {
             std::scoped_lock lock{mutex};
             if (messageQueue.empty())
                 return false;
-
             message = messageQueue.front();
             messageQueue.pop_front();
             if (messageQueue.empty())
@@ -75,6 +73,7 @@ namespace skyline::service::am {
 
         std::deque<u32> messageQueue;
         std::deque<std::shared_ptr<IStorage>> userChannel;
+        std::deque<std::shared_ptr<IStorage>> generalChannel;
         std::deque<std::shared_ptr<IStorage>> friendInvitationStorageChannel;
         std::deque<std::shared_ptr<IStorage>> notificationStorageChannel;
         std::deque<std::shared_ptr<IStorage>> appletBoundChannel;
@@ -105,6 +104,9 @@ namespace skyline::service::am {
         bool homeButtonBlocked{};
         bool homeButtonDoubleClickEnabled{};
         bool handlingHomeButtonShortPressedEnabled{};
+        bool handlingCaptureButtonShortPressedEnabled{};
+        bool handlingCaptureButtonLongPressedEnabled{};
+        bool blockingCaptureButtonInEntireSystem{};
         bool albumImageTakenNotificationEnabled{};
         bool recordVolumeMuted{};
         bool foregroundRightsAcquired{};
@@ -112,7 +114,7 @@ namespace skyline::service::am {
 
         u32 focusState{1};
         u32 cpuBoostMode{};
-        u32 cpuBoostRequestPriority{};
+        i32 cpuBoostRequestPriority{};
         u32 gameplayRecordingState{};
         u32 idleTimeDetectionExtension{};
         u32 applicationCoreUsageMode{};
@@ -120,14 +122,17 @@ namespace skyline::service::am {
         u32 desirableKeyboardLayout{};
         u32 inputDetectionSourceSet{};
         u32 mediaPlaybackStateRaw{};
-        u32 displayMagnificationX{};
-        u32 displayMagnificationY{};
-        u32 displayMagnificationWidth{};
-        u32 displayMagnificationHeight{};
+
+        float displayMagnificationX{};
+        float displayMagnificationY{};
+        float displayMagnificationWidth{1.0F};
+        float displayMagnificationHeight{1.0F};
 
         u64 accumulatedSuspendedTicks{};
         u64 wakeupCount{};
         u64 gpuAbortDelayNs{};
         u64 launchRequiredVersion{};
+        u64 gpuTimeSliceBoost{};
+        u64 gpuTimeSliceBoostDueToApplication{};
     };
 }
