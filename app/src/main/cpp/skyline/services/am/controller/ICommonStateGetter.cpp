@@ -2,54 +2,63 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/settings.h>
+#include <cstring>
 #include <kernel/types/KProcess.h>
+#include <services/am/storage/IStorage.h>
 #include "ICommonStateGetter.h"
+#include "ILockAccessor.h"
 
 namespace skyline::service::am {
-    ICommonStateGetter::ICommonStateGetter(const DeviceState &state, ServiceManager &manager, std::shared_ptr<AppletState> appletState)
+    namespace {
+        constexpr u32 AppletMessageFocusStateChanged{15};
+        constexpr u32 AppletMessageHomeButtonShort{20};
+        constexpr u32 AppletMessageHomeButtonLong{21};
+        constexpr u32 AppletMessageCaptureButtonShort{90};
+        constexpr u32 AppletMessageCaptureButtonLong{91};
+        constexpr u32 AppletMessageStartupLogoDisappeared{95};
+    }
+
+    ICommonStateGetter::ICommonStateGetter(const DeviceState &state, ServiceManager &manager,
+                                           std::shared_ptr<AppletState> appletState)
         : BaseService(state, manager), appletState(std::move(appletState)) {
         LOGI("Switch to mode: {}", *state.settings->isDocked ? "Docked" : "Handheld");
     }
 
-    Result ICommonStateGetter::GetEventHandle(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto handle{state.process->InsertItem(appletState->messageEvent)};
-        LOGD("Applet Event Handle: 0x{:X}", handle);
-        response.copyHandles.push_back(handle);
+    Result ICommonStateGetter::GetEventHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.copyHandles.push_back(state.process->InsertItem(appletState->messageEvent));
         return {};
     }
 
-    Result ICommonStateGetter::ReceiveMessage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ICommonStateGetter::ReceiveMessage(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         u32 message{};
         if (!appletState->PopMessage(message))
             return result::NoMessages;
-
         response.Push<u32>(message);
         return {};
     }
 
-    Result ICommonStateGetter::GetCurrentFocusState(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::scoped_lock lock{appletState->mutex};
-        response.Push<u8>(static_cast<u8>(appletState->focusState));
+    Result ICommonStateGetter::GetOperationMode(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.Push<u8>(*state.settings->isDocked ? 1 : 0);
         return {};
     }
 
-    Result ICommonStateGetter::GetOperationMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push(static_cast<OperationMode>(*state.settings->isDocked));
-        return {};
-    }
-
-    Result ICommonStateGetter::GetPerformanceMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ICommonStateGetter::GetPerformanceMode(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         response.Push<u32>(*state.settings->isDocked ? 1 : 0);
         return {};
     }
 
-    Result ICommonStateGetter::GetBootMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // Strato only emulates a normal retail boot environment.
+    Result ICommonStateGetter::GetBootMode(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         response.Push<u8>(0);
         return {};
     }
 
-    Result ICommonStateGetter::RequestToAcquireSleepLock(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ICommonStateGetter::GetCurrentFocusState(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        std::scoped_lock lock{appletState->mutex};
+        response.Push<u8>(appletState->focusState);
+        return {};
+    }
+
+    Result ICommonStateGetter::RequestToAcquireSleepLock(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
         {
             std::scoped_lock lock{appletState->mutex};
             appletState->sleepLockAcquired = true;
@@ -58,7 +67,7 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result ICommonStateGetter::ReleaseSleepLock(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ICommonStateGetter::ReleaseSleepLock(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
         {
             std::scoped_lock lock{appletState->mutex};
             appletState->sleepLockAcquired = false;
@@ -67,152 +76,239 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result ICommonStateGetter::ReleaseSleepLockTransiently(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // There is no asynchronous power manager in Strato, so transient release is
-        // immediately followed by reacquisition while still producing the wake event.
+    Result ICommonStateGetter::ReleaseSleepLockTransiently(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        {
+            std::scoped_lock lock{appletState->mutex};
+            appletState->sleepLockAcquired = false;
+        }
         appletState->sleepLockEvent->ResetSignal();
-        appletState->sleepLockEvent->Signal();
         return {};
     }
 
-    Result ICommonStateGetter::GetAcquiredSleepLockEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto handle{state.process->InsertItem(appletState->sleepLockEvent)};
-        response.copyHandles.push_back(handle);
+    Result ICommonStateGetter::GetAcquiredSleepLockEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.copyHandles.push_back(state.process->InsertItem(appletState->sleepLockEvent));
         return {};
     }
 
-    Result ICommonStateGetter::GetWakeupCount(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ICommonStateGetter::PushToGeneralChannel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        auto storage{request.PopService<IStorage>(0, session)};
         std::scoped_lock lock{appletState->mutex};
-        response.Push<u64>(appletState->wakeupCount);
+        appletState->generalChannel.emplace_back(std::move(storage));
         return {};
     }
 
-    Result ICommonStateGetter::IsVrModeEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ICommonStateGetter::GetHomeButtonReaderLockAccessor(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        manager.RegisterService(SRVREG(ILockAccessor), session, response);
+        return {};
+    }
+
+    Result ICommonStateGetter::GetReaderLockAccessorEx(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        [[maybe_unused]] const u32 buttonType{request.Pop<u32>()};
+        manager.RegisterService(SRVREG(ILockAccessor), session, response);
+        return {};
+    }
+
+    Result ICommonStateGetter::GetWriterLockAccessorEx(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        [[maybe_unused]] const u32 buttonType{request.Pop<u32>()};
+        manager.RegisterService(SRVREG(ILockAccessor), session, response);
+        return {};
+    }
+
+    Result ICommonStateGetter::IsVrModeEnabled(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         std::scoped_lock lock{appletState->mutex};
         response.Push<u8>(appletState->vrModeEnabled);
         return {};
     }
 
-    Result ICommonStateGetter::SetVrModeEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ICommonStateGetter::SetVrModeEnabled(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
         std::scoped_lock lock{appletState->mutex};
         appletState->vrModeEnabled = request.Pop<u8>() != 0;
         return {};
     }
 
-    Result ICommonStateGetter::SetLcdBacklighOffEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        [[maybe_unused]] auto lcdBacklightOffEnabled{request.Pop<u8>()};
+    Result ICommonStateGetter::SetLcdBacklighOffEnabled(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        [[maybe_unused]] const bool enabled{request.Pop<u8>() != 0};
         return {};
     }
 
-    Result ICommonStateGetter::BeginVrModeEx(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ICommonStateGetter::BeginVrModeEx(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
         std::scoped_lock lock{appletState->mutex};
         appletState->vrModeEnabled = true;
         return {};
     }
 
-    Result ICommonStateGetter::EndVrModeEx(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ICommonStateGetter::EndVrModeEx(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
         std::scoped_lock lock{appletState->mutex};
         appletState->vrModeEnabled = false;
         return {};
     }
 
-    Result ICommonStateGetter::IsInControllerFirmwareUpdateSection(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ICommonStateGetter::IsInControllerFirmwareUpdateSection(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         response.Push<u8>(false);
         return {};
     }
 
-    Result ICommonStateGetter::GetDefaultDisplayResolution(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        if (!*state.settings->isDocked) {
-            response.Push<u32>(1280);
-            response.Push<u32>(720);
-        } else {
-            response.Push<u32>(1920);
-            response.Push<u32>(1080);
-        }
+    Result ICommonStateGetter::GetDefaultDisplayResolution(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.Push<i32>(*state.settings->isDocked ? 1920 : 1280);
+        response.Push<i32>(*state.settings->isDocked ? 1080 : 720);
         return {};
     }
 
-    Result ICommonStateGetter::GetDefaultDisplayResolutionChangeEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto handle{state.process->InsertItem(appletState->defaultDisplayResolutionChangeEvent)};
-        LOGD("Default Display Resolution Change Event Handle: 0x{:X}", handle);
-        response.copyHandles.push_back(handle);
+    Result ICommonStateGetter::GetDefaultDisplayResolutionChangeEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.copyHandles.push_back(state.process->InsertItem(appletState->defaultDisplayResolutionChangeEvent));
         return {};
     }
 
-    Result ICommonStateGetter::GetHdcpAuthenticationState(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // 1 is the normal authenticated state used by applications.
+    Result ICommonStateGetter::GetHdcpAuthenticationState(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         response.Push<i32>(1);
         return {};
     }
 
-    Result ICommonStateGetter::GetHdcpAuthenticationStateChangeEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto handle{state.process->InsertItem(appletState->hdcpStateChangeEvent)};
-        response.copyHandles.push_back(handle);
+    Result ICommonStateGetter::GetHdcpAuthenticationStateChangeEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.copyHandles.push_back(state.process->InsertItem(appletState->hdcpStateChangeEvent));
         return {};
     }
 
-    Result ICommonStateGetter::SetCpuBoostMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto mode{request.Pop<CpuBoostMode>()};
-        switch (mode) {
-            case CpuBoostMode::Normal:
-            case CpuBoostMode::FastLoad:
-            case CpuBoostMode::PowerSaving: {
-                std::scoped_lock lock{appletState->mutex};
-                appletState->cpuBoostMode = static_cast<u32>(mode);
-                LOGI("Set CPU boost mode to {}", ToString(mode));
-                return {};
-            }
-            default:
-                LOGE("Unknown CPU boost mode value: 0x{:X}", static_cast<u32>(mode));
-                return result::InvalidParameters;
-        }
-    }
+    Result ICommonStateGetter::SetCpuBoostMode(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        const auto mode{request.Pop<CpuBoostMode>()};
+        if (mode != CpuBoostMode::Normal && mode != CpuBoostMode::FastLoad)
+            return result::InvalidParameters;
 
-    Result ICommonStateGetter::CancelCpuBoostMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         std::scoped_lock lock{appletState->mutex};
-        appletState->cpuBoostMode = static_cast<u32>(CpuBoostMode::Normal);
+        appletState->cpuBoostMode = static_cast<u32>(mode);
         return {};
     }
 
-    Result ICommonStateGetter::GetBuiltInDisplayType(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // The emulated target is the standard built-in LCD.
+    Result ICommonStateGetter::GetBuiltInDisplayType(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         response.Push<i32>(0);
         return {};
     }
 
-    Result ICommonStateGetter::IsSleepEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::scoped_lock lock{appletState->mutex};
-        response.Push<u8>(!appletState->sleepDisabledTillShutdown);
+    Result ICommonStateGetter::PerformSystemButtonPressingIfInFocus(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        const auto type{request.Pop<SystemButtonType>()};
+        bool emit{};
+        u32 message{};
+        {
+            std::scoped_lock lock{appletState->mutex};
+            if (appletState->focusState != 1)
+                return {};
+
+            switch (type) {
+                case SystemButtonType::HomeButtonShortPressing:
+                    emit = !appletState->homeButtonShortPressedBlocked;
+                    message = AppletMessageHomeButtonShort;
+                    break;
+                case SystemButtonType::HomeButtonLongPressing:
+                    emit = !appletState->homeButtonLongPressedBlocked;
+                    message = AppletMessageHomeButtonLong;
+                    break;
+                case SystemButtonType::CaptureButtonShortPressing:
+                    emit = appletState->handlingCaptureButtonShortPressedMessageEnabled;
+                    message = AppletMessageCaptureButtonShort;
+                    break;
+                case SystemButtonType::CaptureButtonLongPressing:
+                    emit = appletState->handlingCaptureButtonLongPressedMessageEnabled;
+                    message = AppletMessageCaptureButtonLong;
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        if (emit)
+            appletState->QueueMessage(message);
         return {};
     }
 
-    Result ICommonStateGetter::IsDisablingSleepSuppressed(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::scoped_lock lock{appletState->mutex};
-        response.Push<u8>(appletState->sleepDisablingSuppressed);
+    Result ICommonStateGetter::GetCurrentPerformanceConfiguration(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.Push<u32>(*state.settings->isDocked ? 0x00020001 : 0x00010000);
         return {};
     }
 
-    Result ICommonStateGetter::BeginVrMode3d(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ICommonStateGetter::SetHandlingHomeButtonShortPressedEnabled(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        const bool enabled{request.Pop<u8>() != 0};
+        std::scoped_lock lock{appletState->mutex};
+        appletState->homeButtonShortPressedBlocked = !enabled;
+        return {};
+    }
+
+    Result ICommonStateGetter::GetAppletLaunchedHistory(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        i32 count{};
+        if (!request.outputBuf.empty() && request.outputBuf.at(0).size() >= sizeof(u32)) {
+            const u32 appletId{1}; // nn::am::AppletId::Application
+            std::memcpy(request.outputBuf.at(0).data(), &appletId, sizeof(appletId));
+            count = 1;
+        }
+        response.Push<i32>(count);
+        return {};
+    }
+
+    Result ICommonStateGetter::EnableStartupLogoDisappearedMessage(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        appletState->QueueMessage(AppletMessageStartupLogoDisappeared);
+        return {};
+    }
+
+    Result ICommonStateGetter::GetOperationModeSystemInfo(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.Push<u32>(0);
+        return {};
+    }
+
+    Result ICommonStateGetter::GetSettingsPlatformRegion(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.Push<i32>(1); // Global
+        return {};
+    }
+
+    Result ICommonStateGetter::Unknown610(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        [[maybe_unused]] const u64 value{request.Pop<u64>()};
+        return {};
+    }
+
+    Result ICommonStateGetter::Unknown611(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        [[maybe_unused]] const u8 value{request.Pop<u8>()};
+        return {};
+    }
+
+    Result ICommonStateGetter::SetRequestExitToLibraryAppletAtExecuteNextProgramEnabled(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        std::scoped_lock lock{appletState->mutex};
+        appletState->requestExitToLibraryAppletAtExecuteNextProgramEnabled = true;
+        return {};
+    }
+
+    Result ICommonStateGetter::BeginVrMode3d(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
         std::scoped_lock lock{appletState->mutex};
         appletState->vrMode3dEnabled = true;
         return {};
     }
 
-    Result ICommonStateGetter::EndVrMode3d(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ICommonStateGetter::EndVrMode3d(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
         std::scoped_lock lock{appletState->mutex};
         appletState->vrMode3dEnabled = false;
         return {};
     }
 
-    Result ICommonStateGetter::IsVrModeEnabled3d(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ICommonStateGetter::IsVrModeEnabled3d(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         std::scoped_lock lock{appletState->mutex};
         response.Push<u8>(appletState->vrMode3dEnabled);
         return {};
     }
 
-    Result ICommonStateGetter::SetRequestExitToLibraryAppletAtExecuteNextProgramEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::scoped_lock lock{appletState->mutex};
-        appletState->requestExitToLibraryAppletAtExecuteNextProgramEnabled = request.Pop<u8>() != 0;
+    Result ICommonStateGetter::GetVrLaboGoggleViewport(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.Push<i32>(0);
+        response.Push<i32>(0);
+        response.Push<i32>(1280);
+        response.Push<i32>(720);
+        return {};
+    }
+
+    Result ICommonStateGetter::GetPanelPhysicalSizeForSpecificTitle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.Push<float>(137.25F);
+        response.Push<float>(77.2F);
+        return {};
+    }
+
+    Result ICommonStateGetter::GetPanelResolutionForSpecificTitle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.Push<i32>(1280);
+        response.Push<i32>(720);
         return {};
     }
 }
