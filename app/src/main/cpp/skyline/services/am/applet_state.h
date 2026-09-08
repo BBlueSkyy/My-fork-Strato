@@ -73,11 +73,15 @@ namespace skyline::service::am {
 
         Result terminateResult{};
         i32 previousProgramIndex{-1};
+        i32 lastApplicationExitReason{};
         i32 fatalSectionCount{};
 
         bool exitLocked{};
         bool operationModeChangedNotification{};
         bool performanceModeChangedNotification{};
+        bool focusStateChangedNotification{};
+        bool focusBackgroundMode{};
+        bool focusSuspendingMode{};
         bool restartMessageEnabled{};
         bool outOfFocusSuspendingEnabled{};
         bool handlesRequestToDisplay{};
@@ -96,12 +100,16 @@ namespace skyline::service::am {
         bool albumImageTakenNotificationEnabled{};
         bool recordVolumeMuted{};
         bool foregroundRightsAcquired{};
+        bool rejectToChangeIntoBackground{};
+        bool appletWindowVisible{true};
         bool jitServiceLaunched{};
         bool saveDataSizeOverridden{};
         bool requestExitToLibraryAppletAtExecuteNextProgramEnabled{};
 
-        u8 screenShotPermission{};
         u8 focusState{1};
+        u32 screenShotPermission{};
+        u32 screenShotAppletId{};
+        u64 screenShotApplicationId{};
         u32 cpuBoostMode{};
         i32 cpuBoostRequestPriority{};
         u32 gamePlayRecordingState{};
