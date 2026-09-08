@@ -21,6 +21,8 @@ namespace skyline::service::am {
         Result GetDisplayController(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result GetProcessWindingController(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result GetLibraryAppletCreator(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        Result GetHomeMenuFunctions(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        Result GetGlobalStateController(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result GetDebugFunctions(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result GetAppletCommonFunctions(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
     };
