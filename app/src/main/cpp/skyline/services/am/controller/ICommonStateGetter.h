@@ -3,9 +3,8 @@
 
 #pragma once
 
-#include <services/serviceman.h>
 #include <services/am/applet_state.h>
-#include <common/macros.h>
+#include <services/serviceman.h>
 
 namespace skyline::service::am {
     namespace result {
@@ -18,14 +17,18 @@ namespace skyline::service::am {
         enum class CpuBoostMode : u32 {
             Normal = 0,
             FastLoad = 1,
-            PowerSaving = 2,
         };
 
-        ENUM_STRING(CpuBoostMode, {
-            ENUM_CASE_PAIR(Normal, "Normal");
-            ENUM_CASE_PAIR(FastLoad, "Fast Load");
-            ENUM_CASE_PAIR(PowerSaving, "Power Saving");
-        })
+        enum class SystemButtonType : u32 {
+            None = 0,
+            HomeButtonShortPressing = 1,
+            HomeButtonLongPressing = 2,
+            PowerButtonShortPressing = 3,
+            PowerButtonLongPressing = 4,
+            ShutdownSystem = 5,
+            CaptureButtonShortPressing = 6,
+            CaptureButtonLongPressing = 7,
+        };
 
         std::shared_ptr<AppletState> appletState;
 
@@ -43,6 +46,9 @@ namespace skyline::service::am {
         Result ReleaseSleepLockTransiently(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result GetAcquiredSleepLockEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result PushToGeneralChannel(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result GetHomeButtonReaderLockAccessor(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result GetReaderLockAccessorEx(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result GetWriterLockAccessorEx(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result IsVrModeEnabled(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result SetVrModeEnabled(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result SetLcdBacklighOffEnabled(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
@@ -56,13 +62,15 @@ namespace skyline::service::am {
         Result SetCpuBoostMode(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result GetBuiltInDisplayType(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result PerformSystemButtonPressingIfInFocus(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result GetCurrentPerformanceConfiguration(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result SetHandlingHomeButtonShortPressedEnabled(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result GetAppletLaunchedHistory(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result EnableStartupLogoDisappearedMessage(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result GetOperationModeSystemInfo(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result GetSettingsPlatformRegion(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
-        Result SetRequestExitToLibraryAppletAtExecuteNextProgramEnabled(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result Unknown610(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result Unknown611(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result SetRequestExitToLibraryAppletAtExecuteNextProgramEnabled(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result BeginVrMode3d(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result EndVrMode3d(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result IsVrModeEnabled3d(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
@@ -82,6 +90,9 @@ namespace skyline::service::am {
             SFUNC(12, ICommonStateGetter, ReleaseSleepLockTransiently),
             SFUNC(13, ICommonStateGetter, GetAcquiredSleepLockEvent),
             SFUNC(20, ICommonStateGetter, PushToGeneralChannel),
+            SFUNC(30, ICommonStateGetter, GetHomeButtonReaderLockAccessor),
+            SFUNC(31, ICommonStateGetter, GetReaderLockAccessorEx),
+            SFUNC(32, ICommonStateGetter, GetWriterLockAccessorEx),
             SFUNC(50, ICommonStateGetter, IsVrModeEnabled),
             SFUNC(51, ICommonStateGetter, SetVrModeEnabled),
             SFUNC(52, ICommonStateGetter, SetLcdBacklighOffEnabled),
@@ -95,7 +106,9 @@ namespace skyline::service::am {
             SFUNC(66, ICommonStateGetter, SetCpuBoostMode),
             SFUNC(68, ICommonStateGetter, GetBuiltInDisplayType),
             SFUNC(80, ICommonStateGetter, PerformSystemButtonPressingIfInFocus),
+            SFUNC(91, ICommonStateGetter, GetCurrentPerformanceConfiguration),
             SFUNC(100, ICommonStateGetter, SetHandlingHomeButtonShortPressedEnabled),
+            SFUNC(120, ICommonStateGetter, GetAppletLaunchedHistory),
             SFUNC(130, ICommonStateGetter, EnableStartupLogoDisappearedMessage),
             SFUNC(200, ICommonStateGetter, GetOperationModeSystemInfo),
             SFUNC(300, ICommonStateGetter, GetSettingsPlatformRegion),
