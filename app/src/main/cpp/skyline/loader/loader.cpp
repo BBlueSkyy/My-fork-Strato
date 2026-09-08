@@ -37,6 +37,12 @@ namespace skyline::loader {
         // Use an empty PatchData if we don't need to patch
         auto patch{needsNcePatching ? state.nce->GetPatchData(executable.text.contents) : nce::NCE::PatchData{}};
 
+        const auto symbolsFit{[roSize = executable.ro.contents.size()](const Executable::RelativeSegment &segment) {
+            return segment.offset <= roSize && segment.size <= roSize - segment.offset;
+        }};
+        if (!symbolsFit(executable.dynsym) || !symbolsFit(executable.dynstr))
+            throw exception("Executable symbol tables are outside .rodata: {}", name);
+
         span dynsym{reinterpret_cast<u8 *>(executable.ro.contents.data() + executable.dynsym.offset), executable.dynsym.size};
         span dynstr{reinterpret_cast<char *>(executable.ro.contents.data() + executable.dynstr.offset), executable.dynstr.size};
 
@@ -85,8 +91,8 @@ namespace skyline::loader {
                 .name = name,
                 .patchName = name + ".patch",
                 .hookName = name + ".hook",
-                .symbols = dynsym,
-                .symbolStrings = dynstr,
+                .symbols = {dynsym.begin(), dynsym.end()},
+                .symbolStrings = {dynstr.begin(), dynstr.end()},
             };
             executables.insert(std::upper_bound(executables.begin(), executables.end(), base, [](void *ptr, const ExecutableSymbolicInfo &it) { return ptr < it.patchStart; }), std::move(symbolicInfo));
         }
@@ -132,12 +138,13 @@ namespace skyline::loader {
         if (executable == executables.end() || ptr < executable->patchStart || ptr > executable->programEnd)
             return {};
 
-        auto symbols{executable->symbols.template cast<ElfSym>()};
+        auto symbols{span(executable->symbols).template cast<ElfSym>()};
 
         if (ptr >= executable->programStart) {
             auto offset{reinterpret_cast<u8 *>(ptr) - reinterpret_cast<u8 *>(executable->programStart)};
             auto symbol{std::find_if(symbols.begin(), symbols.end(), [&offset](const ElfSym &sym) { return sym.st_value <= offset && sym.st_value + sym.st_size > offset; })};
-            if (symbol != symbols.end() && symbol->st_name && symbol->st_name < executable->symbolStrings.size()) {
+            if (symbol != symbols.end() && symbol->st_name && symbol->st_name < executable->symbolStrings.size() &&
+                std::memchr(executable->symbolStrings.data() + symbol->st_name, '\0', executable->symbolStrings.size() - symbol->st_name)) {
                 return {executable->symbolStrings.data() + symbol->st_name, executable->name};
             } else {
                 return {.executableName = executable->name};
