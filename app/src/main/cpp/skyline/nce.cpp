@@ -12,6 +12,7 @@
 #include "kernel/svc.h"
 #include "nce/guest.h"
 #include "nce/instructions.h"
+#include "nce/diagnostics.h"
 #include "nce.h"
 
 namespace skyline::nce {
@@ -28,9 +29,11 @@ namespace skyline::nce {
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
+                diagnostics::BeginSvc(svcId, *ctx);
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
                 (svc.function)(state, svcContext);
+                diagnostics::EndSvc(state, *ctx);
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
             }
@@ -235,7 +238,7 @@ namespace skyline::nce {
         signal::SetHostSignalHandler({SIGSEGV}, nce::NCE::HostSignalHandler);
     }
 
-    constexpr size_t TrampolineSize{18}; // Size of the main SVC trampoline function in u32 units
+    constexpr size_t TrampolineSize{29}; // Includes the 11-instruction guest call-site capture
 
     /**
      * @brief Writes a trampoline to the given target address that saves the current context and calls the given function
@@ -252,6 +255,21 @@ namespace skyline::nce {
 
         /* Replace guest stack with host stack */
         *code++ = 0x910003E2; // MOV X2, SP
+
+        // BEGIN diagnostic call-site capture (X0-X18 are already in SaveCtx).
+        *code++ = 0x910B8023; // ADD X3, X1, #0x2E0 (ThreadContext::callSite)
+        *code++ = 0xA9005073; // STP X19, X20, [X3, #0]
+        *code++ = 0xA9015875; // STP X21, X22, [X3, #16]
+        *code++ = 0xA9026077; // STP X23, X24, [X3, #32]
+        *code++ = 0xA9036879; // STP X25, X26, [X3, #48]
+        *code++ = 0xA904707B; // STP X27, X28, [X3, #64]
+        *code++ = 0xF9400044; // LDR X4, [X2] (original guest LR saved by per-SVC trampoline)
+        *code++ = 0xA905107D; // STP X29, X4, [X3, #80]
+        *code++ = 0x91004044; // ADD X4, X2, #16 (SP before the per-SVC trampoline)
+        *code++ = 0xF9003064; // STR X4, [X3, #96]
+        *code++ = 0xF900347E; // STR LR, [X3, #104] (return into the per-SVC trampoline)
+        // END diagnostic call-site capture. No guest register is changed on return.
+
         *code++ = 0xF9415423; // LDR X3, [X1, #0x2A8] (ThreadContext::hostSp)
         *code++ = 0x9100007F; // MOV SP, X3
 

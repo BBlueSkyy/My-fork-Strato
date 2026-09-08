@@ -3,6 +3,7 @@
 
 #include <os.h>
 #include <nce.h>
+#include <nce/diagnostics.h>
 #include <kernel/types/KProcess.h>
 #include <kernel/types/KTransferMemory.h>
 #include <common/trace.h>
@@ -961,8 +962,9 @@ namespace skyline::kernel::svc {
 
     void Break(const DeviceState &state, SvcContext &ctx) {
         const u64 reason{ctx.x0};
+        nce::diagnostics::DumpBreak(state, reason, ctx.x1, ctx.x2);
         if (reason & (1ULL << 31)) {
-            LOGD("Debugger is being engaged ({})", reason);
+            LOGD("Guest Break notification (reason=0x{:X})", reason);
             return;
         }
 

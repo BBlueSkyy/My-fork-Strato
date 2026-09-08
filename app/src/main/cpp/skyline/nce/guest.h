@@ -88,7 +88,22 @@ namespace skyline {
             u32 nzcv;
             const DeviceState *state;
             u64 magic{constant::SkyTlsMagic};
+
+            // Diagnostic capture made by the trampoline before entering C++. These
+            // are guest registers, not the host compiler's callee-saved registers.
+            // Append it so all existing assembly/TLS offsets remain unchanged.
+            struct alignas(16) CallSite {
+                std::array<u64, 12> x19ToX30{};
+                u64 sp{};
+                u64 trampolineLr{};
+            } callSite;
         };
+
+        static_assert(offsetof(ThreadContext, hostTpidrEl0) == 0x2A0);
+        static_assert(offsetof(ThreadContext, hostSp) == 0x2A8);
+        static_assert(offsetof(ThreadContext, callSite) == 0x2E0);
+        static_assert(offsetof(ThreadContext::CallSite, sp) == 0x60);
+        static_assert(offsetof(ThreadContext::CallSite, trampolineLr) == 0x68);
 
         namespace guest {
             constexpr size_t SaveCtxSize{38}; //!< The size of the SaveCtx function in 32-bit ARMv8 instructions

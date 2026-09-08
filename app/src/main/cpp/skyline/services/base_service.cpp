@@ -3,6 +3,7 @@
 
 #include <cxxabi.h>
 #include <common/trace.h>
+#include <nce/diagnostics.h>
 #include "base_service.h"
 
 namespace skyline::service {
@@ -32,7 +33,9 @@ namespace skyline::service {
         }
         TRACE_EVENT("service", perfetto::StaticString{function.name});
         try {
-            return function(session, request, response);
+            const auto result{function(session, request, response)};
+            nce::diagnostics::RecordIpc(function.name, result.raw);
+            return result;
         } catch (exception &e) {
             // We need to forward any skyline::exception objects without modification even though they inherit from std::exception
             std::rethrow_exception(std::current_exception());

@@ -6,6 +6,7 @@
 #include <loader/loader.h>
 #include <common/settings.h>
 #include <kernel/types/KProcess.h>
+#include <nce/diagnostics.h>
 #include <services/account/IAccountServiceForApplication.h>
 #include <services/am/storage/VectorIStorage.h>
 #include "IApplicationFunctions.h"
@@ -62,6 +63,10 @@ namespace skyline::service::am {
     Result IApplicationFunctions::SetTerminateResult(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto result{request.Pop<Result>()};
         LOGI("App set termination result: {}", result.raw);
+        if (result.raw) {
+            LOGI("Termination result=0x{:X}, module={}, description={}", result.raw, result.raw & 0x1FF, (result.raw >> 9) & 0x1FFF);
+            nce::diagnostics::DumpGuestContext(state, "SetTerminateResult");
+        }
         return {};
     }
 
