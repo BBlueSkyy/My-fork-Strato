@@ -4,12 +4,16 @@
 #pragma once
 
 #include <services/serviceman.h>
+#include <services/am/applet_state.h>
 
 namespace skyline::service::am {
     /**
      * @brief BaseProxy contains common functions used by most service proxies
      */
     class BaseProxy : public BaseService {
+      protected:
+        std::shared_ptr<AppletState> appletState;
+
       public:
         BaseProxy(const DeviceState &state, ServiceManager &manager);
 
