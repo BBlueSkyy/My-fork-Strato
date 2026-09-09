@@ -6,6 +6,10 @@
 #include "IProcessWindingController.h"
 
 namespace skyline::service::am {
+    namespace {
+        constexpr Result ObjectInvalid{128, 500};
+    }
+
     IProcessWindingController::IProcessWindingController(const DeviceState &state, ServiceManager &manager,
                                                          std::shared_ptr<AppletState> appletState)
         : BaseService(state, manager), appletState(std::move(appletState)) {}
@@ -79,7 +83,7 @@ namespace skyline::service::am {
                                                                          ipc::IpcResponse &) {
         auto accessor{request.PopService<ILibraryAppletAccessor>(0, session)};
         if (!accessor)
-            return result::ObjectInvalid;
+            return ObjectInvalid;
         std::scoped_lock lock{appletState->mutex};
         appletState->reservedLibraryApplet = std::move(accessor);
         appletState->unwindAfterReserved = true;
@@ -91,7 +95,7 @@ namespace skyline::service::am {
                                                             ipc::IpcResponse &) {
         auto accessor{request.PopService<ILibraryAppletAccessor>(0, session)};
         if (!accessor)
-            return result::ObjectInvalid;
+            return ObjectInvalid;
         std::scoped_lock lock{appletState->mutex};
         appletState->reservedLibraryApplet = std::move(accessor);
         appletState->unwindAfterReserved = false;
