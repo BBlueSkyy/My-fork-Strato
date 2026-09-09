@@ -16,19 +16,19 @@ namespace skyline::service::am {
         static constexpr u32 FocusStateChangedMessage{0xF};
 
         explicit AppletState(const DeviceState &state)
-            : messageEvent(std::make_shared<type::KEvent>(state, false)),
-              defaultDisplayResolutionChangeEvent(std::make_shared<type::KEvent>(state, false)),
-              sleepLockEvent(std::make_shared<type::KEvent>(state, false)),
-              hdcpStateChangeEvent(std::make_shared<type::KEvent>(state, false)),
-              libraryAppletLaunchableEvent(std::make_shared<type::KEvent>(state, false)),
-              accumulatedSuspendedTickChangedEvent(std::make_shared<type::KEvent>(state, true)),
-              gpuErrorEvent(std::make_shared<type::KEvent>(state, false)),
-              friendInvitationStorageChannelEvent(std::make_shared<type::KEvent>(state, false)),
-              notificationStorageChannelEvent(std::make_shared<type::KEvent>(state, false)),
-              healthWarningDisappearedEvent(std::make_shared<type::KEvent>(state, false)),
-              unknownEvent210(std::make_shared<type::KEvent>(state, false)),
-              generalChannelEvent(std::make_shared<type::KEvent>(state, false)),
-              hdcpAuthenticationFailedEvent(std::make_shared<type::KEvent>(state, false)) {
+            : messageEvent(std::make_shared<kernel::type::KEvent>(state, false)),
+              defaultDisplayResolutionChangeEvent(std::make_shared<kernel::type::KEvent>(state, false)),
+              sleepLockEvent(std::make_shared<kernel::type::KEvent>(state, false)),
+              hdcpStateChangeEvent(std::make_shared<kernel::type::KEvent>(state, false)),
+              libraryAppletLaunchableEvent(std::make_shared<kernel::type::KEvent>(state, false)),
+              accumulatedSuspendedTickChangedEvent(std::make_shared<kernel::type::KEvent>(state, true)),
+              gpuErrorEvent(std::make_shared<kernel::type::KEvent>(state, false)),
+              friendInvitationStorageChannelEvent(std::make_shared<kernel::type::KEvent>(state, false)),
+              notificationStorageChannelEvent(std::make_shared<kernel::type::KEvent>(state, false)),
+              healthWarningDisappearedEvent(std::make_shared<kernel::type::KEvent>(state, false)),
+              unknownEvent210(std::make_shared<kernel::type::KEvent>(state, false)),
+              generalChannelEvent(std::make_shared<kernel::type::KEvent>(state, false)),
+              hdcpAuthenticationFailedEvent(std::make_shared<kernel::type::KEvent>(state, false)) {
             QueueMessage(FocusStateChangedMessage);
         }
 
@@ -51,19 +51,19 @@ namespace skyline::service::am {
 
         std::mutex mutex;
 
-        std::shared_ptr<type::KEvent> messageEvent;
-        std::shared_ptr<type::KEvent> defaultDisplayResolutionChangeEvent;
-        std::shared_ptr<type::KEvent> sleepLockEvent;
-        std::shared_ptr<type::KEvent> hdcpStateChangeEvent;
-        std::shared_ptr<type::KEvent> libraryAppletLaunchableEvent;
-        std::shared_ptr<type::KEvent> accumulatedSuspendedTickChangedEvent;
-        std::shared_ptr<type::KEvent> gpuErrorEvent;
-        std::shared_ptr<type::KEvent> friendInvitationStorageChannelEvent;
-        std::shared_ptr<type::KEvent> notificationStorageChannelEvent;
-        std::shared_ptr<type::KEvent> healthWarningDisappearedEvent;
-        std::shared_ptr<type::KEvent> unknownEvent210;
-        std::shared_ptr<type::KEvent> generalChannelEvent;
-        std::shared_ptr<type::KEvent> hdcpAuthenticationFailedEvent;
+        std::shared_ptr<kernel::type::KEvent> messageEvent;
+        std::shared_ptr<kernel::type::KEvent> defaultDisplayResolutionChangeEvent;
+        std::shared_ptr<kernel::type::KEvent> sleepLockEvent;
+        std::shared_ptr<kernel::type::KEvent> hdcpStateChangeEvent;
+        std::shared_ptr<kernel::type::KEvent> libraryAppletLaunchableEvent;
+        std::shared_ptr<kernel::type::KEvent> accumulatedSuspendedTickChangedEvent;
+        std::shared_ptr<kernel::type::KEvent> gpuErrorEvent;
+        std::shared_ptr<kernel::type::KEvent> friendInvitationStorageChannelEvent;
+        std::shared_ptr<kernel::type::KEvent> notificationStorageChannelEvent;
+        std::shared_ptr<kernel::type::KEvent> healthWarningDisappearedEvent;
+        std::shared_ptr<kernel::type::KEvent> unknownEvent210;
+        std::shared_ptr<kernel::type::KEvent> generalChannelEvent;
+        std::shared_ptr<kernel::type::KEvent> hdcpAuthenticationFailedEvent;
 
         std::deque<u32> messageQueue;
         std::deque<std::shared_ptr<IStorage>> userChannel;
