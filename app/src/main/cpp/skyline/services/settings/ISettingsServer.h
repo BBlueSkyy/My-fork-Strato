@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "settings_store.h"
+
 #include <services/base_service.h>
 
 namespace skyline::service::settings {
@@ -11,8 +13,10 @@ namespace skyline::service::settings {
      * @url https://switchbrew.org/wiki/Settings_services#set
      */
     class ISettingsServer : public BaseService {
+        SettingsStore &store;
+
       public:
-        ISettingsServer(const DeviceState &state, ServiceManager &manager);
+        ISettingsServer(const DeviceState &state, ServiceManager &manager, SettingsStore &store);
 
         /**
          * @brief Gets the current system language
@@ -57,11 +61,17 @@ namespace skyline::service::settings {
          */
         Result GetKeyCodeMapByPort(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result GetQuestFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetDeviceNickName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         Result Unsupported(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
       protected:
         ServiceFunctionDescriptor GetServiceFunction(u32 id, bool isTipc) override {
             static const auto functions = frozen::make_unordered_map({
+                SFUNC(11, ISettingsServer, GetDeviceNickName),
+                SFUNC(8, ISettingsServer, GetQuestFlag),
             SFUNC(0x0, ISettingsServer, GetLanguageCode),
             SFUNC(0x1, ISettingsServer, GetAvailableLanguageCodes),
             SFUNC(0x2, ISettingsServer, MakeLanguageCode),

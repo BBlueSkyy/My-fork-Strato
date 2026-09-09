@@ -4,10 +4,12 @@
 #include <common/language.h>
 #include "ISettingsServer.h"
 #include "ipc_helpers.h"
+#include "ISystemSettingsServer.h"
+#include <services/serviceman.h>
 #include <common/settings.h>
 
 namespace skyline::service::settings {
-    ISettingsServer::ISettingsServer(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
+    ISettingsServer::ISettingsServer(const DeviceState &state, ServiceManager &manager, SettingsStore &store) : BaseService(state, manager), store(store) {}
 
     Result ISettingsServer::GetLanguageCode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto index{static_cast<size_t>(*state.settings->systemLanguage)};
@@ -75,6 +77,14 @@ namespace skyline::service::settings {
     Result ISettingsServer::Unsupported(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
         LOGW("Unsupported settings command: {} (TIPC={})", request.isTipc ? static_cast<u32>(request.header->type) : request.payload->value, request.isTipc);
         return result::UnknownCommand;
+    }
+
+    Result ISettingsServer::GetQuestFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return manager.CreateOrGetService<ISystemSettingsServer>("set:sys")->GetQuestFlag(session, request, response);
+    }
+
+    Result ISettingsServer::GetDeviceNickName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return manager.CreateOrGetService<ISystemSettingsServer>("set:sys")->GetDeviceNickName(session, request, response);
     }
 
 }

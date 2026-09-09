@@ -76,11 +76,12 @@
 namespace skyline::service {
     struct GlobalServiceState {
         timesrv::core::TimeServiceObject timesrv;
+        settings::SettingsStore settingsStore;
         pl::SharedFontCore sharedFontCore;
         irs::SharedIirCore sharedIirCore;
         nvdrv::Driver nvdrv;
 
-        explicit GlobalServiceState(const DeviceState &state) : timesrv(state), sharedFontCore(state), sharedIirCore(state), nvdrv(state) {}
+        explicit GlobalServiceState(const DeviceState &state) : timesrv(state), settingsStore(state), sharedFontCore(state), sharedIirCore(state), nvdrv(state) {}
     };
 
     ServiceManager::ServiceManager(const DeviceState &state) : state(state), smUserInterface(std::make_shared<sm::IUserInterface>(state, *this)), globalServiceState(std::make_shared<GlobalServiceState>(state)) {}
@@ -92,8 +93,8 @@ namespace skyline::service {
 
         switch (name) {
             SERVICE_CASE(fatalsrv::IService, "fatal:u")
-            SERVICE_CASE(settings::ISettingsServer, "set")
-            SERVICE_CASE(settings::ISystemSettingsServer, "set:sys")
+            SERVICE_CASE(settings::ISettingsServer, "set", globalServiceState->settingsStore)
+            SERVICE_CASE(settings::ISystemSettingsServer, "set:sys", globalServiceState->settingsStore)
             SERVICE_CASE(apm::IManager, "apm")
             SERVICE_CASE(am::IApplicationProxyService, "appletOE")
             SERVICE_CASE(am::IAllSystemAppletProxiesService, "appletAE")

@@ -323,6 +323,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/audio/IAudioDevice.cpp
         ${source_DIR}/skyline/services/audio/IAudioRendererManager.cpp
         ${source_DIR}/skyline/services/audio/IAudioRenderer.cpp
+        ${source_DIR}/skyline/services/settings/settings_store.cpp
         ${source_DIR}/skyline/services/settings/ISettingsServer.cpp
         ${source_DIR}/skyline/services/settings/ISystemSettingsServer.cpp
         ${source_DIR}/skyline/services/apm/IManager.cpp
