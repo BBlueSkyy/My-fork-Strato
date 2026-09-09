@@ -3,26 +3,37 @@
 
 #include <common/language.h>
 #include "ISettingsServer.h"
+#include "ipc_helpers.h"
 #include <common/settings.h>
 
 namespace skyline::service::settings {
     ISettingsServer::ISettingsServer(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
 
     Result ISettingsServer::GetLanguageCode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto systemLanguage{language::GetApplicationLanguage(*state.settings->systemLanguage)};
-
-        response.Push(language::GetLanguageCode(language::GetSystemLanguage(systemLanguage)));
+        const auto index{static_cast<size_t>(*state.settings->systemLanguage)};
+        if (index >= language::LanguageCodeList.size())
+            return result::InvalidLanguage;
+        response.Push(language::LanguageCodeList[index]);
         return {};
     }
 
     Result ISettingsServer::GetAvailableLanguageCodes(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        request.outputBuf.at(0).copy_from(span(language::LanguageCodeList).first(constant::OldLanguageCodeListSize));
-        response.Push<i32>(constant::OldLanguageCodeListSize);
+        if (request.outputBuf.empty())
+            return kernel::result::InvalidArgument;
+        const auto count{std::min(constant::OldLanguageCodeListSize, request.outputBuf[0].size_bytes() / sizeof(LanguageCode))};
+        if (count)
+            std::memcpy(request.outputBuf[0].data(), language::LanguageCodeList.data(), count * sizeof(LanguageCode));
+        response.Push(static_cast<i32>(count));
         return {};
     }
 
     Result ISettingsServer::MakeLanguageCode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u64>(language::LanguageCodeList.at(static_cast<size_t>(request.Pop<i32>())));
+        auto index{ReadArgument<i32>(request)};
+        if (!index)
+            return index.result;
+        if (*index < 0 || static_cast<size_t>(*index) >= language::LanguageCodeList.size())
+            return result::InvalidLanguage;
+        response.Push(language::LanguageCodeList[*index]);
         return {};
     }
 
@@ -32,8 +43,12 @@ namespace skyline::service::settings {
     }
 
     Result ISettingsServer::GetAvailableLanguageCodes2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        request.outputBuf.at(0).copy_from(language::LanguageCodeList);
-        response.Push<i32>(constant::NewLanguageCodeListSize);
+        if (request.outputBuf.empty())
+            return kernel::result::InvalidArgument;
+        const auto count{std::min(constant::NewLanguageCodeListSize, request.outputBuf[0].size_bytes() / sizeof(LanguageCode))};
+        if (count)
+            std::memcpy(request.outputBuf[0].data(), language::LanguageCodeList.data(), count * sizeof(LanguageCode));
+        response.Push(static_cast<i32>(count));
         return {};
     }
 
@@ -53,20 +68,13 @@ namespace skyline::service::settings {
     }
    
     Result ISettingsServer::GetKeyCodeMapByPort(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto port{request.Pop<i32>()};
-
-        struct KeyCodeMapHeader {
-            u32 magic{0x01000001};
-            u32 entryCountPerKey{3};
-            u32 mapCount{0};
-            u32 layoutId{0};
-            u8 reserved[0x10]{};
-        };
-        static_assert(sizeof(KeyCodeMapHeader) == 0x20);
-
-        KeyCodeMapHeader header{};
-        request.outputBuf.at(0).copy_from(span(reinterpret_cast<u8 *>(&header), sizeof(header)));
-
-        return {};
+        // Replaced by the verified key-map implementation in the input block.
+        return result::UnknownCommand;
     }
+
+    Result ISettingsServer::Unsupported(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        LOGW("Unsupported settings command: {} (TIPC={})", request.isTipc ? static_cast<u32>(request.header->type) : request.payload->value, request.isTipc);
+        return result::UnknownCommand;
+    }
+
 }

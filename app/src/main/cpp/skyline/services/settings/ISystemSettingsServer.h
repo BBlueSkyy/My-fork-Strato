@@ -39,14 +39,30 @@ namespace skyline::service::settings {
          */
         Result GetFirmwareVersion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result GetFirmwareVersion2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         /**
          * @url https://switchbrew.org/wiki/Settings_services#GetColorSetId
          */
         Result GetColorSetId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
-        SERVICE_DECL(
+        Result Unsupported(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+      protected:
+        ServiceFunctionDescriptor GetServiceFunction(u32 id, bool isTipc) override {
+            static const auto functions = frozen::make_unordered_map({
             SFUNC(0x3, ISystemSettingsServer, GetFirmwareVersion),
+            SFUNC(0x4, ISystemSettingsServer, GetFirmwareVersion2),
             SFUNC(0x17, ISystemSettingsServer, GetColorSetId)
-        )
+            });
+            if (!isTipc) {
+                auto it{functions.find(id)};
+                if (it != functions.end())
+                    return {reinterpret_cast<DerivedService *>(this),
+                            reinterpret_cast<decltype(ServiceFunctionDescriptor::function)>(it->second.first), it->second.second};
+            }
+            return {reinterpret_cast<DerivedService *>(this),
+                    reinterpret_cast<decltype(ServiceFunctionDescriptor::function)>(&ISystemSettingsServer::Unsupported), "ISystemSettingsServer::Unsupported"};
+        }
     };
 }

@@ -57,7 +57,11 @@ namespace skyline::service::settings {
          */
         Result GetKeyCodeMapByPort(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
-        SERVICE_DECL(
+        Result Unsupported(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+      protected:
+        ServiceFunctionDescriptor GetServiceFunction(u32 id, bool isTipc) override {
+            static const auto functions = frozen::make_unordered_map({
             SFUNC(0x0, ISettingsServer, GetLanguageCode),
             SFUNC(0x1, ISettingsServer, GetAvailableLanguageCodes),
             SFUNC(0x2, ISettingsServer, MakeLanguageCode),
@@ -66,6 +70,15 @@ namespace skyline::service::settings {
             SFUNC(0x5, ISettingsServer, GetAvailableLanguageCodes2),
             SFUNC(0x6, ISettingsServer, GetAvailableLanguageCodeCount2),
             SFUNC(0xC, ISettingsServer, GetKeyCodeMapByPort)
-        )
+            });
+            if (!isTipc) {
+                auto it{functions.find(id)};
+                if (it != functions.end())
+                    return {reinterpret_cast<DerivedService *>(this),
+                            reinterpret_cast<decltype(ServiceFunctionDescriptor::function)>(it->second.first), it->second.second};
+            }
+            return {reinterpret_cast<DerivedService *>(this),
+                    reinterpret_cast<decltype(ServiceFunctionDescriptor::function)>(&ISettingsServer::Unsupported), "ISettingsServer::Unsupported"};
+        }
     };
 }
