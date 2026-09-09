@@ -133,14 +133,46 @@ namespace skyline {
     }
 
     std::pair<JvmManager::KeyboardCloseResult, std::u16string> JvmManager::WaitForSubmitOrCancel(jobject keyboardDialog) {
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
+                             fmt::format("Swkbd sync trace: JNI WaitForSubmitOrCancel before CallObjectMethod (dialog={})", keyboardDialog != nullptr),
+                             __builtin_FUNCTION());
         auto returnArray{reinterpret_cast<jobjectArray>(env->CallObjectMethod(instance, waitForSubmitOrCancelId, keyboardDialog))};
-        auto buttonInteger{env->GetObjectArrayElement(returnArray, 0)};
-        auto inputJString{reinterpret_cast<jstring>(env->GetObjectArrayElement(returnArray, 1))};
-        auto stringChars{env->GetStringChars(inputJString, nullptr)};
-        std::u16string input{stringChars, stringChars + env->GetStringLength(inputJString)};
-        env->ReleaseStringChars(inputJString, stringChars);
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
+                             fmt::format("Swkbd sync trace: JNI CallObjectMethod returned (array={}, exception={})", returnArray != nullptr, static_cast<bool>(env->ExceptionCheck())),
+                             __builtin_FUNCTION());
 
-        return {static_cast<KeyboardCloseResult>(env->CallIntMethod(buttonInteger, getIntegerValueId)), input};
+        auto buttonInteger{env->GetObjectArrayElement(returnArray, 0)};
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
+                             fmt::format("Swkbd sync trace: JNI result[0] read (button={}, exception={})", buttonInteger != nullptr, static_cast<bool>(env->ExceptionCheck())),
+                             __builtin_FUNCTION());
+
+        auto inputJString{reinterpret_cast<jstring>(env->GetObjectArrayElement(returnArray, 1))};
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
+                             fmt::format("Swkbd sync trace: JNI result[1] read (text={}, exception={})", inputJString != nullptr, static_cast<bool>(env->ExceptionCheck())),
+                             __builtin_FUNCTION());
+
+        auto stringChars{env->GetStringChars(inputJString, nullptr)};
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
+                             fmt::format("Swkbd sync trace: JNI GetStringChars returned (chars={}, exception={})", stringChars != nullptr, static_cast<bool>(env->ExceptionCheck())),
+                             __builtin_FUNCTION());
+
+        const auto inputLength{env->GetStringLength(inputJString)};
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
+                             fmt::format("Swkbd sync trace: JNI GetStringLength returned (length={}, exception={})", inputLength, static_cast<bool>(env->ExceptionCheck())),
+                             __builtin_FUNCTION());
+
+        std::u16string input{stringChars, stringChars + inputLength};
+        env->ReleaseStringChars(inputJString, stringChars);
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
+                             fmt::format("Swkbd sync trace: JNI string copied (length={}, exception={})", input.size(), static_cast<bool>(env->ExceptionCheck())),
+                             __builtin_FUNCTION());
+
+        const auto buttonValue{env->CallIntMethod(buttonInteger, getIntegerValueId)};
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
+                             fmt::format("Swkbd sync trace: JNI button value read (value={}, exception={})", buttonValue, static_cast<bool>(env->ExceptionCheck())),
+                             __builtin_FUNCTION());
+
+        return {static_cast<KeyboardCloseResult>(buttonValue), input};
     }
 
     DhcpInfo JvmManager::GetDhcpInfo() {
@@ -161,8 +193,13 @@ namespace skyline {
     }
 
     void JvmManager::CloseKeyboard(jobject dialog) {
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning, "Swkbd sync trace: JNI CloseKeyboard before CallVoidMethod", __builtin_FUNCTION());
         env->CallVoidMethod(instance, closeKeyboardId, dialog);
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
+                             fmt::format("Swkbd sync trace: JNI CloseKeyboard CallVoidMethod returned (exception={})", static_cast<bool>(env->ExceptionCheck())),
+                             __builtin_FUNCTION());
         env->DeleteGlobalRef(dialog);
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning, "Swkbd sync trace: JNI CloseKeyboard global reference deleted", __builtin_FUNCTION());
     }
 
     JvmManager::KeyboardCloseResult JvmManager::ShowValidationResult(jobject dialog, KeyboardTextCheckResult checkResult, std::u16string message) {
