@@ -94,7 +94,7 @@ namespace skyline::service {
         switch (name) {
             SERVICE_CASE(fatalsrv::IService, "fatal:u")
             SERVICE_CASE(settings::ISettingsServer, "set", globalServiceState->settingsStore)
-            SERVICE_CASE(settings::ISystemSettingsServer, "set:sys", globalServiceState->settingsStore)
+            SERVICE_CASE(settings::ISystemSettingsServer, "set:sys", globalServiceState->settingsStore, globalServiceState->timesrv)
             SERVICE_CASE(apm::IManager, "apm")
             SERVICE_CASE(am::IApplicationProxyService, "appletOE")
             SERVICE_CASE(am::IAllSystemAppletProxiesService, "appletAE")

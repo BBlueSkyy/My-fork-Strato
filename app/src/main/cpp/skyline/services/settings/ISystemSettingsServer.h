@@ -4,6 +4,7 @@
 #pragma once
 
 #include "settings_store.h"
+#include <services/timesrv/core.h>
 
 #include <services/serviceman.h>
 
@@ -33,9 +34,10 @@ namespace skyline::service::settings {
         static_assert(sizeof(SysVerTitle) == 0x100);
 
         SettingsStore &store;
+        timesrv::core::TimeServiceObject &timeCore;
 
       public:
-        ISystemSettingsServer(const DeviceState &state, ServiceManager &manager, SettingsStore &store);
+        ISystemSettingsServer(const DeviceState &state, ServiceManager &manager, SettingsStore &store, timesrv::core::TimeServiceObject &timeCore);
 
         /**
          * @brief Writes the Firmware version to a 0xA buffer
@@ -122,11 +124,65 @@ namespace skyline::service::settings {
 
         Result SetKeyboardLayout(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result GetExternalSteadyClockSourceId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetUserSystemClockContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetNetworkSystemClockContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetUserSystemClockContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetNetworkSystemClockContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result IsUserSystemClockAutomaticCorrectionEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetUserSystemClockAutomaticCorrectionEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetExternalSteadyClockInternalOffset(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetExternalRtcResetFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetDeviceTimeZoneLocationName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetDeviceTimeZoneLocationUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetUserSystemClockAutomaticCorrectionUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetExternalSteadyClockSourceId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetExternalSteadyClockInternalOffset(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetUserSystemClockAutomaticCorrectionUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetExternalRtcResetFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetDeviceTimeZoneLocationName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetDeviceTimeZoneLocationUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         Result Unsupported(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
       protected:
         ServiceFunctionDescriptor GetServiceFunction(u32 id, bool isTipc) override {
             static const auto functions = frozen::make_unordered_map({
+                SFUNC(151, ISystemSettingsServer, SetDeviceTimeZoneLocationUpdatedTime),
+                SFUNC(54, ISystemSettingsServer, SetDeviceTimeZoneLocationName),
+                SFUNC(102, ISystemSettingsServer, SetExternalRtcResetFlag),
+                SFUNC(153, ISystemSettingsServer, SetUserSystemClockAutomaticCorrectionUpdatedTime),
+                SFUNC(105, ISystemSettingsServer, SetExternalSteadyClockInternalOffset),
+                SFUNC(14, ISystemSettingsServer, SetExternalSteadyClockSourceId),
+                SFUNC(152, ISystemSettingsServer, GetUserSystemClockAutomaticCorrectionUpdatedTime),
+                SFUNC(150, ISystemSettingsServer, GetDeviceTimeZoneLocationUpdatedTime),
+                SFUNC(53, ISystemSettingsServer, GetDeviceTimeZoneLocationName),
+                SFUNC(101, ISystemSettingsServer, GetExternalRtcResetFlag),
+                SFUNC(106, ISystemSettingsServer, GetExternalSteadyClockInternalOffset),
+                SFUNC(61, ISystemSettingsServer, SetUserSystemClockAutomaticCorrectionEnabled),
+                SFUNC(60, ISystemSettingsServer, IsUserSystemClockAutomaticCorrectionEnabled),
+                SFUNC(59, ISystemSettingsServer, SetNetworkSystemClockContext),
+                SFUNC(16, ISystemSettingsServer, SetUserSystemClockContext),
+                SFUNC(58, ISystemSettingsServer, GetNetworkSystemClockContext),
+                SFUNC(15, ISystemSettingsServer, GetUserSystemClockContext),
+                SFUNC(13, ISystemSettingsServer, GetExternalSteadyClockSourceId),
                 SFUNC(137, ISystemSettingsServer, SetKeyboardLayout),
                 SFUNC(136, ISystemSettingsServer, GetKeyboardLayout),
                 SFUNC(38, ISystemSettingsServer, GetSettingsItemValue),

@@ -5,6 +5,7 @@
 #include "ipc_helpers.h"
 #include "settings_items.h"
 #include <common/settings.h>
+#include <os.h>
 
 namespace skyline::service::settings {
     namespace {
@@ -38,7 +39,7 @@ namespace skyline::service::settings {
         }
     }
 
-    ISystemSettingsServer::ISystemSettingsServer(const DeviceState &state, ServiceManager &manager, SettingsStore &store) : BaseService(state, manager), store(store) {}
+    ISystemSettingsServer::ISystemSettingsServer(const DeviceState &state, ServiceManager &manager, SettingsStore &store, timesrv::core::TimeServiceObject &timeCore) : BaseService(state, manager), store(store), timeCore(timeCore) {}
 
     Result ISystemSettingsServer::GetFirmwareVersion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         // Version 1 clears revision_minor; all other bytes match Version 2.
@@ -330,6 +331,169 @@ namespace skyline::service::settings {
         if (*layout > 14)
             return result::InvalidKeyboardLayout;
         return store.Set(136, *layout);
+    }
+
+    Result ISystemSettingsServer::GetExternalSteadyClockSourceId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto point{timeCore.standardSteadyClock.GetCurrentTimePoint()};
+        if (!point)
+            return point.result;
+        response.Push(point->clockSourceId);
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetUserSystemClockContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!timeCore.userSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        return PushValue(response, timeCore.userSystemClock.GetClockContext());
+    }
+
+    Result ISystemSettingsServer::GetNetworkSystemClockContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!timeCore.networkSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        return PushValue(response, timeCore.networkSystemClock.GetClockContext());
+    }
+
+    Result ISystemSettingsServer::SetUserSystemClockContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto context{ReadArgument<timesrv::SystemClockContext>(request)};
+        if (!context)
+            return context.result;
+        if (!timeCore.localSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        auto point{timeCore.standardSteadyClock.GetCurrentTimePoint()};
+        if (!point)
+            return point.result;
+        if (context->timestamp.clockSourceId != point->clockSourceId)
+            return timesrv::result::ClockSourceIdMismatch;
+        if (timeCore.userSystemClock.IsAutomaticCorrectionEnabled())
+            return timesrv::result::PermissionDenied;
+        return timeCore.localSystemClock.UpdateClockContext(*context);
+    }
+
+    Result ISystemSettingsServer::SetNetworkSystemClockContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto context{ReadArgument<timesrv::SystemClockContext>(request)};
+        if (!context)
+            return context.result;
+        if (!timeCore.networkSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        auto point{timeCore.standardSteadyClock.GetCurrentTimePoint()};
+        if (!point)
+            return point.result;
+        if (context->timestamp.clockSourceId != point->clockSourceId)
+            return timesrv::result::ClockSourceIdMismatch;
+        return timeCore.networkSystemClock.UpdateClockContext(*context);
+    }
+
+    Result ISystemSettingsServer::IsUserSystemClockAutomaticCorrectionEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!timeCore.userSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        response.Push<u8>(timeCore.userSystemClock.IsAutomaticCorrectionEnabled());
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetUserSystemClockAutomaticCorrectionEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto flag{ReadArgument<u8>(request)};
+        if (!flag)
+            return flag.result;
+        if (*flag > 1)
+            return kernel::result::InvalidArgument;
+        if (!timeCore.userSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        auto result{timeCore.userSystemClock.UpdateAutomaticCorrectionState(*flag != 0)};
+        if (result)
+            return result;
+        // The existing core changes local context during correction; publish it
+        // through the callback so IPC and time shared memory agree.
+        auto context{timeCore.localSystemClock.GetClockContext()};
+        if (!context)
+            return context.result;
+        return timeCore.localSystemClock.UpdateClockContext(*context);
+    }
+
+    Result ISystemSettingsServer::GetExternalSteadyClockInternalOffset(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!timeCore.standardSteadyClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        response.Push(timeCore.standardSteadyClock.GetInternalOffset().Nanoseconds());
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetExternalRtcResetFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!timeCore.standardSteadyClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        response.Push<u8>(timeCore.standardSteadyClock.IsRtcResetDetected());
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetDeviceTimeZoneLocationName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, timeCore.timeZoneManager.GetLocationName());
+    }
+
+    Result ISystemSettingsServer::GetDeviceTimeZoneLocationUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, timeCore.timeZoneManager.GetUpdateTime());
+    }
+
+    Result ISystemSettingsServer::GetUserSystemClockAutomaticCorrectionUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!timeCore.userSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        response.Push(timeCore.userSystemClock.GetAutomaticCorrectionUpdatedTime());
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetExternalSteadyClockSourceId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return kernel::result::NotImplemented;
+    }
+
+    Result ISystemSettingsServer::SetExternalSteadyClockInternalOffset(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return kernel::result::NotImplemented;
+    }
+
+    Result ISystemSettingsServer::SetUserSystemClockAutomaticCorrectionUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return kernel::result::NotImplemented;
+    }
+
+    Result ISystemSettingsServer::SetExternalRtcResetFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return kernel::result::NotImplemented;
+    }
+
+    Result ISystemSettingsServer::SetDeviceTimeZoneLocationName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto name{ReadArgument<timesrv::LocationName>(request)};
+        if (!name)
+            return name.result;
+        auto end{std::find(name->begin(), name->end(), '\0')};
+        if (end == name->begin() || end == name->end())
+            return kernel::result::InvalidArgument;
+        std::fill(end, name->end(), '\0');
+        if (std::find(timeCore.locationNameList.begin(), timeCore.locationNameList.end(), *name) == timeCore.locationNameList.end())
+            return kernel::result::InvalidArgument;
+        auto point{timeCore.standardSteadyClock.GetCurrentTimePoint()};
+        if (!point)
+            return point.result;
+        const std::string location(name->data());
+        auto file{state.os->assetFileSystem->OpenFileUnchecked("tzdata/zoneinfo/" + location)};
+        if (!file || file->size > 0x100000)
+            return timesrv::result::RuleConversionFailed;
+        std::vector<u8> binary(file->size);
+        if (file->ReadUnchecked(binary) != binary.size())
+            return timesrv::result::RuleConversionFailed;
+        // Copy the full zero-padded name: current timesrv otherwise retains a
+        // suffix when changing from a longer name to a shorter one.
+        auto result{timeCore.timeZoneManager.SetNewLocation(std::string_view(name->data(), name->size()), binary)};
+        if (result)
+            return result;
+        timeCore.timeZoneManager.SetUpdateTime(*point);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetDeviceTimeZoneLocationUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto point{ReadArgument<timesrv::SteadyClockTimePoint>(request)};
+        if (!point)
+            return point.result;
+        auto current{timeCore.standardSteadyClock.GetCurrentTimePoint()};
+        if (!current)
+            return current.result;
+        if (point->clockSourceId != current->clockSourceId)
+            return timesrv::result::ClockSourceIdMismatch;
+        timeCore.timeZoneManager.SetUpdateTime(*point);
+        return {};
     }
 
 }
