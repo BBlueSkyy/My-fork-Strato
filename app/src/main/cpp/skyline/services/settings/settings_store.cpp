@@ -20,7 +20,7 @@ namespace skyline::service::settings {
     }
 
     SettingsStore::SettingsStore(const DeviceState &state)
-        : path(state.os->privateAppFilesPath + "/system-settings.bin") {
+        : path(state.os->privateAppFilesPath + "/system-settings.bin"), internetAllowed(*state.settings->isInternetEnabled) {
         std::ifstream file(path, std::ios::binary);
         if (!file) {
             readable = access(path.c_str(), F_OK) != 0 && errno == ENOENT;
@@ -52,6 +52,9 @@ namespace skyline::service::settings {
             LOGW("Invalid system settings store; preserving file and rejecting access");
         }
         if (readable) {
+            auto wireless{Get<u8>(73, 1)};
+            if (wireless && *wireless <= 1)
+                state.settings->isInternetEnabled = internetAllowed && *wireless;
             auto language{Get<LanguageCode>(0, language::GetLanguageCode(*state.settings->systemLanguage))};
             if (language) {
                 auto it{std::find(language::LanguageCodeList.begin(), language::LanguageCodeList.end(), *language)};

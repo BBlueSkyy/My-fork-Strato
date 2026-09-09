@@ -496,4 +496,158 @@ namespace skyline::service::settings {
         return {};
     }
 
+    Result ISystemSettingsServer::GetWirelessLanEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(*state.settings->isInternetEnabled);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetWirelessLanEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        if (*enabled && !store.internetAllowed)
+            return kernel::result::NotImplemented;
+        auto result{store.Set(73, *enabled)};
+        if (!result)
+            state.settings->isInternetEnabled = *enabled != 0;
+        return result;
+    }
+
+    Result ISystemSettingsServer::GetUsb30EnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetUsb30EnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetNfcEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetNfcEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetBluetoothEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetBluetoothEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetUsbFullKeyEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetUsbFullKeyEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetBluetoothAfhEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetBluetoothAfhEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetBluetoothBoostEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetBluetoothBoostEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetUsb30HostEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetUsb30HostEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetUsb30DeviceEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetUsb30DeviceEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetWebInspectorFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetMemoryUsageRateFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetFieldTestingFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
 }

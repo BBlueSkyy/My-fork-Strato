@@ -160,11 +160,74 @@ namespace skyline::service::settings {
 
         Result SetDeviceTimeZoneLocationUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result GetWirelessLanEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetWirelessLanEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetUsb30EnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetUsb30EnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetNfcEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetNfcEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetBluetoothEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetBluetoothEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetUsbFullKeyEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetUsbFullKeyEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetBluetoothAfhEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetBluetoothAfhEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetBluetoothBoostEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetBluetoothBoostEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetUsb30HostEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetUsb30HostEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetUsb30DeviceEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetUsb30DeviceEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetWebInspectorFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetMemoryUsageRateFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetFieldTestingFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         Result Unsupported(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
       protected:
         ServiceFunctionDescriptor GetServiceFunction(u32 id, bool isTipc) override {
             static const auto functions = frozen::make_unordered_map({
+                SFUNC(201, ISystemSettingsServer, GetFieldTestingFlag),
+                SFUNC(186, ISystemSettingsServer, GetMemoryUsageRateFlag),
+                SFUNC(138, ISystemSettingsServer, GetWebInspectorFlag),
+                SFUNC(167, ISystemSettingsServer, SetUsb30DeviceEnableFlag),
+                SFUNC(166, ISystemSettingsServer, GetUsb30DeviceEnableFlag),
+                SFUNC(165, ISystemSettingsServer, SetUsb30HostEnableFlag),
+                SFUNC(164, ISystemSettingsServer, GetUsb30HostEnableFlag),
+                SFUNC(114, ISystemSettingsServer, SetBluetoothBoostEnableFlag),
+                SFUNC(113, ISystemSettingsServer, GetBluetoothBoostEnableFlag),
+                SFUNC(112, ISystemSettingsServer, SetBluetoothAfhEnableFlag),
+                SFUNC(111, ISystemSettingsServer, GetBluetoothAfhEnableFlag),
+                SFUNC(104, ISystemSettingsServer, SetUsbFullKeyEnableFlag),
+                SFUNC(103, ISystemSettingsServer, GetUsbFullKeyEnableFlag),
+                SFUNC(89, ISystemSettingsServer, SetBluetoothEnableFlag),
+                SFUNC(88, ISystemSettingsServer, GetBluetoothEnableFlag),
+                SFUNC(70, ISystemSettingsServer, SetNfcEnableFlag),
+                SFUNC(69, ISystemSettingsServer, GetNfcEnableFlag),
+                SFUNC(66, ISystemSettingsServer, SetUsb30EnableFlag),
+                SFUNC(65, ISystemSettingsServer, GetUsb30EnableFlag),
+                SFUNC(74, ISystemSettingsServer, SetWirelessLanEnableFlag),
+                SFUNC(73, ISystemSettingsServer, GetWirelessLanEnableFlag),
                 SFUNC(151, ISystemSettingsServer, SetDeviceTimeZoneLocationUpdatedTime),
                 SFUNC(54, ISystemSettingsServer, SetDeviceTimeZoneLocationName),
                 SFUNC(102, ISystemSettingsServer, SetExternalRtcResetFlag),

@@ -19,6 +19,7 @@ namespace skyline::service::settings {
         bool readable{true};
 
       public:
+        const bool internetAllowed; //!< Android setting is an upper bound on guest connectivity.
         explicit SettingsStore(const DeviceState &state);
         ResultValue<std::vector<u8>> Get(u32 key, span<const u8> fallback);
         Result Set(u32 key, span<const u8> value);
