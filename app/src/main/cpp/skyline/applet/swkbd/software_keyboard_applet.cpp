@@ -50,37 +50,22 @@ namespace skyline::applet::swkbd {
     }
 
     void SoftwareKeyboardApplet::SendResult() {
-        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
-                             fmt::format("Swkbd sync trace: SendResult entered (result={}, textLength={}, utf8={}, dialog={})",
-                                         static_cast<u32>(currentResult), currentText.size(), config.commonConfig.isUseUtf8, dialog != nullptr),
-                             __builtin_FUNCTION());
         LOGD("Swkbd trace: SendResult entering (result={}, textLength={}, utf8={}, dialog={})",
              static_cast<u32>(currentResult), currentText.size(), config.commonConfig.isUseUtf8, dialog != nullptr);
         if (dialog) {
-            AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning, "Swkbd sync trace: before CloseKeyboard", __builtin_FUNCTION());
             LOGD("Swkbd trace: closing host keyboard dialog");
             state.jvm->CloseKeyboard(dialog);
-            AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning, "Swkbd sync trace: after CloseKeyboard", __builtin_FUNCTION());
             LOGD("Swkbd trace: host keyboard dialog closed");
         }
 
-        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning, "Swkbd sync trace: before OutputResult construction", __builtin_FUNCTION());
         OutputResult outputResult{currentResult, currentText, config.commonConfig.isUseUtf8};
-        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning, "Swkbd sync trace: after OutputResult construction", __builtin_FUNCTION());
-
-        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning, "Swkbd sync trace: before output storage construction", __builtin_FUNCTION());
         auto outputStorage{std::make_shared<service::am::ObjIStorage<OutputResult>>(state, manager, std::move(outputResult))};
-        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning, "Swkbd sync trace: after output storage construction", __builtin_FUNCTION());
 
         LOGD("Swkbd trace: pushing normal output (size=0x{:X})", sizeof(OutputResult));
-        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning, "Swkbd sync trace: before PushNormalDataAndSignal", __builtin_FUNCTION());
         PushNormalDataAndSignal(std::move(outputStorage));
-        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning, "Swkbd sync trace: after PushNormalDataAndSignal", __builtin_FUNCTION());
 
         LOGD("Swkbd trace: normal output pushed; signalling applet state change");
-        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning, "Swkbd sync trace: before applet state signal", __builtin_FUNCTION());
         onAppletStateChanged->Signal();
-        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning, "Swkbd sync trace: after applet state signal", __builtin_FUNCTION());
         LOGD("Swkbd trace: SendResult completed");
     }
 
@@ -167,16 +152,8 @@ namespace skyline::applet::swkbd {
         } else {
             LOGD("Swkbd trace: waiting for submit or cancel");
             auto result{state.jvm->WaitForSubmitOrCancel(dialog)};
-            AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
-                                 fmt::format("Swkbd sync trace: WaitForSubmitOrCancel returned (result={}, textLength={})",
-                                             static_cast<u32>(result.first), result.second.size()),
-                                 __builtin_FUNCTION());
             currentResult = static_cast<CloseResult>(result.first);
             currentText = result.second;
-            AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
-                                 fmt::format("Swkbd sync trace: submit/cancel state stored (result={}, textLength={})",
-                                             static_cast<u32>(currentResult), currentText.size()),
-                                 __builtin_FUNCTION());
             LOGD("Swkbd trace: submit/cancel returned (result={}, textLength={})", static_cast<u32>(currentResult), currentText.size());
         }
         if (config.commonConfig.isUseTextCheck && currentResult == CloseResult::Enter) {

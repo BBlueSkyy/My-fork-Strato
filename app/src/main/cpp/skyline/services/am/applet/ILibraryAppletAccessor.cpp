@@ -46,10 +46,6 @@ namespace skyline::service::am {
     Result ILibraryAppletAccessor::Start(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
         LOGD("Applet trace: Start entering for {} (mode=0x{:X}, stateChanged={})", ToString(appletId), appletMode, stateChangeEvent->signalled);
         const Result result{StartApplet()};
-        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
-                             fmt::format("Applet sync trace: Start returned for {} (result=0x{:X}, stateChanged={})",
-                                         ToString(appletId), result.raw, stateChangeEvent->signalled),
-                             __builtin_FUNCTION());
         LOGD("Applet trace: Start returned for {} (result=0x{:X}, stateChanged={})", ToString(appletId), result.raw, stateChangeEvent->signalled);
         return result;
     }
@@ -98,23 +94,11 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::PopOutData(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
-                             fmt::format("Applet sync trace: PopOutData entered for {}", ToString(appletId)),
-                             __builtin_FUNCTION());
         if (auto outStorage{applet->PopNormalAndClear()}) {
-            AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
-                                 fmt::format("Applet sync trace: PopOutData obtained 0x{:X} bytes for {}", outStorage->GetSpan().size(), ToString(appletId)),
-                                 __builtin_FUNCTION());
             LOGD("Applet trace: PopOutData for {} returned 0x{:X} bytes", ToString(appletId), outStorage->GetSpan().size());
             manager.RegisterService(outStorage, session, response);
-            AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
-                                 fmt::format("Applet sync trace: PopOutData registered storage for {}", ToString(appletId)),
-                                 __builtin_FUNCTION());
             return {};
         }
-        AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
-                             fmt::format("Applet sync trace: PopOutData returned NotAvailable for {}", ToString(appletId)),
-                             __builtin_FUNCTION());
         LOGD("Applet trace: PopOutData for {} returned NotAvailable", ToString(appletId));
         return result::NotAvailable;
     }
