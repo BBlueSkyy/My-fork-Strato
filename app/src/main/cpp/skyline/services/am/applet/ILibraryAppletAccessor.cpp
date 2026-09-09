@@ -44,7 +44,10 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::Start(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
-        return StartApplet();
+        LOGD("Applet trace: Start entering for {} (mode=0x{:X}, stateChanged={})", ToString(appletId), appletMode, stateChangeEvent->signalled);
+        const Result result{StartApplet()};
+        LOGD("Applet trace: Start returned for {} (result=0x{:X}, stateChanged={})", ToString(appletId), result.raw, stateChangeEvent->signalled);
+        return result;
     }
 
     Result ILibraryAppletAccessor::RequestExit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
@@ -67,7 +70,16 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result ILibraryAppletAccessor::Unknown90(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+    Result ILibraryAppletAccessor::Unknown90(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        if (request.cmdArgSz < (sizeof(u64) * 4)) {
+            LOGD("Applet trace: Unknown90 for {} has only 0x{:X} bytes of command data", ToString(appletId), request.cmdArgSz);
+        } else {
+            const u64 value0{request.Pop<u64>()};
+            const u64 value1{request.Pop<u64>()};
+            const u64 value2{request.Pop<u64>()};
+            const u64 value3{request.Pop<u64>()};
+            LOGD("Applet trace: Unknown90 for {} (args=[0x{:X}, 0x{:X}, 0x{:X}, 0x{:X}])", ToString(appletId), value0, value1, value2, value3);
+        }
         return {};
     }
 
@@ -83,9 +95,11 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::PopOutData(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
         if (auto outStorage{applet->PopNormalAndClear()}) {
+            LOGD("Applet trace: PopOutData for {} returned 0x{:X} bytes", ToString(appletId), outStorage->GetSpan().size());
             manager.RegisterService(outStorage, session, response);
             return {};
         }
+        LOGD("Applet trace: PopOutData for {} returned NotAvailable", ToString(appletId));
         return result::NotAvailable;
     }
 
