@@ -185,7 +185,7 @@ namespace skyline::applet::swkbd {
     }
 
     void SoftwareKeyboardApplet::ConfigureInlineKeyboard(span<u8> calc, bool extendedLayout) {
-        const size_t appearOffset{extendedLayout ? 0x18 : 0x20};
+        const size_t appearOffset{static_cast<size_t>(extendedLayout ? 0x18 : 0x20)};
 
         config = KeyboardConfigVB{};
         config.commonConfig.keyboardMode = ReadInlineValue<KeyboardMode>(calc, appearOffset);
@@ -263,9 +263,9 @@ namespace skyline::applet::swkbd {
         }
 
         const u64 flags{ReadInlineValue<u64>(calc, 0x8)};
-        const size_t cursorOffset{extendedLayout ? 0x8C : 0x1C};
-        const size_t inputTextOffset{extendedLayout ? 0x90 : 0x68};
-        const size_t utf8Offset{extendedLayout ? 0x484 : 0x45C};
+        const size_t cursorOffset{static_cast<size_t>(extendedLayout ? 0x8C : 0x1C)};
+        const size_t inputTextOffset{static_cast<size_t>(extendedLayout ? 0x90 : 0x68)};
+        const size_t utf8Offset{static_cast<size_t>(extendedLayout ? 0x484 : 0x45C)};
 
         if (flags & InlineFlagSetInputText)
             currentText = ReadInlineString(calc, inputTextOffset, InlineInputTextBytes);
