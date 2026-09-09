@@ -307,4 +307,29 @@ namespace skyline::service::settings {
         return {};
     }
 
+    ResultValue<u32> ISystemSettingsServer::GetKeyboardLayoutValue() {
+        // Indexed by Skyline SystemLanguage, following the Eden language/layout mapping.
+        constexpr std::array<u32, 18> layouts{0, 1, 4, 8, 9, 6, 13, 12, 2, 10, 11, 14, 3, 5, 7, 13, 14, 10};
+        const auto language{static_cast<size_t>(*state.settings->systemLanguage)};
+        if (language >= layouts.size())
+            return result::InvalidLanguage;
+        auto layout{store.Get(136, layouts[language])};
+        if (layout && *layout > 14)
+            return result::InvalidKeyboardLayout;
+        return layout;
+    }
+
+    Result ISystemSettingsServer::GetKeyboardLayout(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, GetKeyboardLayoutValue());
+    }
+
+    Result ISystemSettingsServer::SetKeyboardLayout(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto layout{ReadArgument<u32>(request)};
+        if (!layout)
+            return layout.result;
+        if (*layout > 14)
+            return result::InvalidKeyboardLayout;
+        return store.Set(136, *layout);
+    }
+
 }

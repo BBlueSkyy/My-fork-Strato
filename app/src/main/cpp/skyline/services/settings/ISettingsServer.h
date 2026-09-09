@@ -57,7 +57,7 @@ namespace skyline::service::settings {
         /**
          * @brief Returns the KeyCodeMap for the USB HID keyboard connected to the given port
          * @url https://switchbrew.org/wiki/Settings_services#set (cmd 12, [18.0.0+])
-         * @note Input/output format inferred from GetKeyCodeMap (cmd 7); not officially documented
+         * @note One virtual keyboard layout is shared by all ports, as in Eden.
          */
         Result GetKeyCodeMapByPort(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
@@ -65,11 +65,17 @@ namespace skyline::service::settings {
 
         Result GetDeviceNickName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result GetKeyCodeMap2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetKeyCodeMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         Result Unsupported(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
       protected:
         ServiceFunctionDescriptor GetServiceFunction(u32 id, bool isTipc) override {
             static const auto functions = frozen::make_unordered_map({
+                SFUNC(7, ISettingsServer, GetKeyCodeMap),
+                SFUNC(9, ISettingsServer, GetKeyCodeMap2),
                 SFUNC(11, ISettingsServer, GetDeviceNickName),
                 SFUNC(8, ISettingsServer, GetQuestFlag),
             SFUNC(0x0, ISettingsServer, GetLanguageCode),

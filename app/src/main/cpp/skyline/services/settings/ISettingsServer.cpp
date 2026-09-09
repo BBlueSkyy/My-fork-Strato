@@ -4,6 +4,7 @@
 #include <common/language.h>
 #include "ISettingsServer.h"
 #include "ipc_helpers.h"
+#include <os.h>
 #include "ISystemSettingsServer.h"
 #include <services/serviceman.h>
 #include <common/settings.h>
@@ -70,8 +71,11 @@ namespace skyline::service::settings {
     }
    
     Result ISettingsServer::GetKeyCodeMapByPort(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // Replaced by the verified key-map implementation in the input block.
-        return result::UnknownCommand;
+        auto port{ReadArgument<u32>(request)};
+        if (!port)
+            return port.result;
+        // Eden exposes one configured layout for every virtual keyboard port.
+        return GetKeyCodeMap2(session, request, response);
     }
 
     Result ISettingsServer::Unsupported(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
@@ -85,6 +89,44 @@ namespace skyline::service::settings {
 
     Result ISettingsServer::GetDeviceNickName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         return manager.CreateOrGetService<ISystemSettingsServer>("set:sys")->GetDeviceNickName(session, request, response);
+    }
+
+    Result ISettingsServer::GetKeyCodeMap2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto layout{manager.CreateOrGetService<ISystemSettingsServer>("set:sys")->GetKeyboardLayoutValue()};
+        if (!layout)
+            return layout.result;
+        constexpr std::array<const char *, 15> maps{
+            "Default", "EnglishUsInternational", "EnglishUsInternational", "EnglishUk",
+            "French", "FrenchCa", "Spanish", "SpanishLatin", "German", "Italian",
+            "Portuguese", "Russian", "Korean", "ChineseSimplified", "ChineseTraditional"
+        };
+        u32 index{*layout};
+        if (index == 1) {
+            auto language{*state.settings->systemLanguage};
+            if (language == language::SystemLanguage::Korean)
+                index = 12;
+            else if (language == language::SystemLanguage::SimplifiedChinese)
+                index = 13;
+            else if (language == language::SystemLanguage::TraditionalChinese)
+                index = 14;
+        }
+        auto file{state.os->assetFileSystem->OpenFileUnchecked(fmt::format("keymaps/{}.bin", maps[index]))};
+        if (!file || file->size != 0x1000)
+            return kernel::result::NotImplemented;
+        std::array<u8, 0x1000> map{};
+        if (file->ReadUnchecked(map) != map.size())
+            return kernel::result::NotImplemented;
+        return WriteBuffer(request, map, Result{105, 1261});
+    }
+
+    Result ISettingsServer::GetKeyCodeMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto layout{manager.CreateOrGetService<ISystemSettingsServer>("set:sys")->GetKeyboardLayoutValue()};
+        if (!layout)
+            return layout.result;
+        auto result{GetKeyCodeMap2(session, request, response)};
+        if (!result && *layout == 0)
+            request.outputBuf[0][0] = 1;
+        return result;
     }
 
 }

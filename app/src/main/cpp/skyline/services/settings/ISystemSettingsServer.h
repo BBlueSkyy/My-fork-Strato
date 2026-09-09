@@ -116,11 +116,19 @@ namespace skyline::service::settings {
 
         Result GetSettingsItemValue(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        ResultValue<u32> GetKeyboardLayoutValue();
+
+        Result GetKeyboardLayout(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetKeyboardLayout(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         Result Unsupported(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
       protected:
         ServiceFunctionDescriptor GetServiceFunction(u32 id, bool isTipc) override {
             static const auto functions = frozen::make_unordered_map({
+                SFUNC(137, ISystemSettingsServer, SetKeyboardLayout),
+                SFUNC(136, ISystemSettingsServer, GetKeyboardLayout),
                 SFUNC(38, ISystemSettingsServer, GetSettingsItemValue),
                 SFUNC(37, ISystemSettingsServer, GetSettingsItemValueSize),
                 SFUNC(57, ISystemSettingsServer, SetRegionCode),
