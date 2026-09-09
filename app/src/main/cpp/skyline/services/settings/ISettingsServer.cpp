@@ -129,4 +129,8 @@ namespace skyline::service::settings {
         return result;
     }
 
+    Result ISettingsServer::GetFirmwareVersionForDebug(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return kernel::result::NotImplemented;
+    }
+
 }

@@ -42,15 +42,17 @@ namespace skyline::service::settings {
     ISystemSettingsServer::ISystemSettingsServer(const DeviceState &state, ServiceManager &manager, SettingsStore &store, timesrv::core::TimeServiceObject &timeCore) : BaseService(state, manager), store(store), timeCore(timeCore) {}
 
     Result ISystemSettingsServer::GetFirmwareVersion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // Version 1 clears revision_minor; all other bytes match Version 2.
-        const SysVerTitle version{.major=9, .minor=0, .micro=0, .revMajor=4, .revMinor=0, .platform="NX", .verHash="4de65c071fd0869695b7629f75eb97b2551dbf2f", .dispVer="9.0.0", .dispTitle="NintendoSDK Firmware for NX 9.0.0-4.0"};
-        return WriteBuffer(request, version, result::NullFirmwareBuffer);
+        auto result{GetFirmwareVersion2(session, request, response)};
+        if (!result)
+            request.outputBuf[0][offsetof(SysVerTitle, revMinor)] = 0;
+        return result;
     }
 
     Result ISystemSettingsServer::GetFirmwareVersion2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // Strato has no installed system-version archive. Preserve the existing HLE
-        // profile instead of advertising an unsupported firmware revision.
-        return GetFirmwareVersion(session, request, response);
+        // Strato has no installed system-version archive. Preserve the existing
+        // HLE profile instead of advertising an unsupported firmware revision.
+        const SysVerTitle version{.major=9, .minor=0, .micro=0, .revMajor=4, .revMinor=0, .platform="NX", .verHash="4de65c071fd0869695b7629f75eb97b2551dbf2f", .dispVer="9.0.0", .dispTitle="NintendoSDK Firmware for NX 9.0.0-4.0"};
+        return WriteBuffer(request, version, result::NullFirmwareBuffer);
     }
 
     Result ISystemSettingsServer::GetColorSetId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -648,6 +650,93 @@ namespace skyline::service::settings {
     Result ISystemSettingsServer::GetFieldTestingFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         response.Push<u8>(0);
         return {};
+    }
+
+    Result ISystemSettingsServer::GetAccountSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get(17, std::array<u32, 1>{0}));
+    }
+
+    Result ISystemSettingsServer::SetAccountSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<std::array<u32, 1>>(request)};
+        if (!value)
+            return value.result;
+        if (*value != std::array<u32, 1>{(*value)[0] & 1})
+            return kernel::result::InvalidArgument;
+        return store.Set(17, *value);
+    }
+
+    Result ISystemSettingsServer::GetNotificationSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get(29, std::array<i32, 6>{0x300, 2, 9, 0, 21, 0}));
+    }
+
+    Result ISystemSettingsServer::SetNotificationSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<std::array<i32, 6>>(request)};
+        if (!value)
+            return value.result;
+        if ((*value)[1] < 0 || (*value)[1] > 2 || (*value)[2] < 0 || (*value)[2] > 23 || (*value)[3] < 0 || (*value)[3] > 59 || (*value)[4] < 0 || (*value)[4] > 23 || (*value)[5] < 0 || (*value)[5] > 59)
+            return kernel::result::InvalidArgument;
+        return store.Set(29, *value);
+    }
+
+    Result ISystemSettingsServer::GetSleepSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get(71, std::array<i32, 3>{3, 3, 0}));
+    }
+
+    Result ISystemSettingsServer::SetSleepSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<std::array<i32, 3>>(request)};
+        if (!value)
+            return value.result;
+        if ((*value)[1] < 0 || (*value)[1] > 5 || (*value)[2] < 0 || (*value)[2] > 5)
+            return kernel::result::InvalidArgument;
+        return store.Set(71, *value);
+    }
+
+    Result ISystemSettingsServer::GetEulaVersions(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (request.outputBuf.empty())
+            return kernel::result::InvalidArgument;
+        auto values{store.Get(21, span<const u8>{})};
+        if (!values)
+            return values.result;
+        if (values->size() % 48 || values->size() > 1536)
+            return Result{105, 263};
+        const auto count{std::min(request.outputBuf[0].size_bytes() / 48, values->size() / 48)};
+        if (count)
+            std::memcpy(request.outputBuf[0].data(), values->data(), count * 48);
+        response.Push<i32>(static_cast<i32>(count));
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetEulaVersions(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (request.inputBuf.empty())
+            return kernel::result::InvalidArgument;
+        auto values{request.inputBuf[0]};
+        if (values.size_bytes() % 48 || values.size_bytes() > 1536)
+            return kernel::result::InvalidArgument;
+        return store.Set(21, span<const u8>(values.data(), values.size_bytes()));
+    }
+
+    Result ISystemSettingsServer::GetAccountNotificationSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (request.outputBuf.empty())
+            return kernel::result::InvalidArgument;
+        auto values{store.Get(31, span<const u8>{})};
+        if (!values)
+            return values.result;
+        if (values->size() % 24 || values->size() > 192)
+            return Result{105, 263};
+        const auto count{std::min(request.outputBuf[0].size_bytes() / 24, values->size() / 24)};
+        if (count)
+            std::memcpy(request.outputBuf[0].data(), values->data(), count * 24);
+        response.Push<i32>(static_cast<i32>(count));
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetAccountNotificationSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (request.inputBuf.empty())
+            return kernel::result::InvalidArgument;
+        auto values{request.inputBuf[0]};
+        if (values.size_bytes() % 24 || values.size_bytes() > 192)
+            return kernel::result::InvalidArgument;
+        return store.Set(31, span<const u8>(values.data(), values.size_bytes()));
     }
 
 }

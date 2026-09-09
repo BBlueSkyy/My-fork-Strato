@@ -69,23 +69,26 @@ namespace skyline::service::settings {
 
         Result GetKeyCodeMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result GetFirmwareVersionForDebug(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         Result Unsupported(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
       protected:
         ServiceFunctionDescriptor GetServiceFunction(u32 id, bool isTipc) override {
             static const auto functions = frozen::make_unordered_map({
+                SFUNC(0, ISettingsServer, GetLanguageCode),
+                SFUNC(1, ISettingsServer, GetAvailableLanguageCodes),
+                SFUNC(2, ISettingsServer, MakeLanguageCode),
+                SFUNC(3, ISettingsServer, GetAvailableLanguageCodeCount),
+                SFUNC(4, ISettingsServer, GetRegionCode),
+                SFUNC(5, ISettingsServer, GetAvailableLanguageCodes2),
+                SFUNC(6, ISettingsServer, GetAvailableLanguageCodeCount2),
                 SFUNC(7, ISettingsServer, GetKeyCodeMap),
-                SFUNC(9, ISettingsServer, GetKeyCodeMap2),
-                SFUNC(11, ISettingsServer, GetDeviceNickName),
                 SFUNC(8, ISettingsServer, GetQuestFlag),
-            SFUNC(0x0, ISettingsServer, GetLanguageCode),
-            SFUNC(0x1, ISettingsServer, GetAvailableLanguageCodes),
-            SFUNC(0x2, ISettingsServer, MakeLanguageCode),
-            SFUNC(0x3, ISettingsServer, GetAvailableLanguageCodeCount),
-            SFUNC(0x4, ISettingsServer, GetRegionCode),
-            SFUNC(0x5, ISettingsServer, GetAvailableLanguageCodes2),
-            SFUNC(0x6, ISettingsServer, GetAvailableLanguageCodeCount2),
-            SFUNC(0xC, ISettingsServer, GetKeyCodeMapByPort)
+                SFUNC(9, ISettingsServer, GetKeyCodeMap2),
+                SFUNC(10, ISettingsServer, GetFirmwareVersionForDebug),
+                SFUNC(11, ISettingsServer, GetDeviceNickName),
+                SFUNC(12, ISettingsServer, GetKeyCodeMapByPort)
             });
             if (!isTipc) {
                 auto it{functions.find(id)};
