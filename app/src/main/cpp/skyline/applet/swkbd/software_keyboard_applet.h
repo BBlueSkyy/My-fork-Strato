@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <future>
+#include <mutex>
 #include <services/am/applet/IApplet.h>
 #include <services/applet/common_arguments.h>
 #include <jvm.h>
@@ -113,6 +115,9 @@ namespace skyline::applet::swkbd {
         std::u16string currentText{};
         CloseResult currentResult{};
 
+        std::mutex inlineMutex;
+        std::future<void> inlineInputFuture;
+        JvmManager::KeyboardHandle pendingInlineWaitDialog{};
         InlineState inlineState{InlineState::Uninitialized};
         bool inlineUseUtf8{};
         bool inlineUseChangedStringV2{};
@@ -127,12 +132,15 @@ namespace skyline::applet::swkbd {
         void ConfigureInlineKeyboard(span<u8> calc, bool extendedLayout);
         void ShowInlineKeyboard();
         void HideInlineKeyboard();
+        void WaitForInlineKeyboardInput(JvmManager::KeyboardHandle waitDialog);
         void ChangeInlineState(InlineState state);
         void SendInlineReply(InlineReply reply);
         void SendInlineTextReply(InlineReply reply);
 
       public:
         SoftwareKeyboardApplet(const DeviceState &state, service::ServiceManager &manager, std::shared_ptr<kernel::type::KEvent> onAppletStateChanged, std::shared_ptr<kernel::type::KEvent> onNormalDataPushFromApplet, std::shared_ptr<kernel::type::KEvent> onInteractiveDataPushFromApplet, service::applet::LibraryAppletMode appletMode);
+
+        ~SoftwareKeyboardApplet() override;
 
         Result Start() override;
 
