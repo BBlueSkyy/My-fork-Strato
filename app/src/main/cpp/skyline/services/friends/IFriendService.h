@@ -6,6 +6,10 @@
 #include <services/serviceman.h>
 
 namespace skyline::service::friends {
+    namespace result {
+        constexpr Result InvalidArgument(121, 2);
+    }
+
     /**
      * @brief IFriendService is used by applications to access information about a user's friends
      * @url https://switchbrew.org/wiki/Friend_services#IFriendService
