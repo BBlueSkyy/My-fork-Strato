@@ -192,15 +192,28 @@ namespace skyline::gpu {
         if ((result = window->perform(window, NATIVE_WINDOW_GET_NEXT_FRAME_ID, &frameId)))
             throw exception("Retrieving the next frame's ID failed with {}", result);
 
+        vk::Result presentResult;
         {
             std::scoped_lock queueLock{gpu.queueMutex};
-            std::ignore = gpu.vkQueue.presentKHR(vk::PresentInfoKHR{
+            presentResult = gpu.vkQueue.presentKHR(vk::PresentInfoKHR{
                 .swapchainCount = 1,
                 .pSwapchains = &**vkSwapchain,
                 .pImageIndices = &nextImage.second,
                 .waitSemaphoreCount = 1,
                 .pWaitSemaphores = &*presentSemaphore,
             }); // We don't care about suboptimal images as they are caused by not respecting the transform hint, we handle transformations externally
+        }
+
+        // Any result other than success/suboptimal means the frame was NOT actually displayed
+        // (e.g. eErrorOutOfDateKHR from a stale/invalidated swapchain). Previously this was
+        // discarded via `std::ignore =`, so the FPS/frametime accounting below ran unconditionally
+        // even when nothing reached the screen - this is what caused a black/frozen display while
+        // the FPS counter kept climbing normally. Skip the accounting and force the swapchain to
+        // be recreated on the next frame instead of silently pretending the present succeeded.
+        if (presentResult != vk::Result::eSuccess && presentResult != vk::Result::eSuboptimalKHR) {
+            LOGE("vkQueuePresentKHR returned an unhandled result '{}', forcing swapchain recreation", vk::to_string(presentResult));
+            swapchainExtent = {};
+            return;
         }
 
         timestamp = (timestamp && !*state.settings->disableFrameThrottling) ? timestamp : getMonotonicNsNow(); // We tie FPS to the submission time rather than presentation timestamp, if we don't have the presentation timestamp available or if frame throttling is disabled as we want the maximum measured FPS to not be restricted to the refresh rate
