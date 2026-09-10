@@ -79,6 +79,7 @@ namespace skyline::service::account {
     }
 
     Result IAccountServiceForApplication::TrySelectUserWithoutInteraction(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        request.Pop<u8>(); // isNetworkServiceAccountRequired
         response.Push(constant::DefaultUserId);
         return {};
     }
