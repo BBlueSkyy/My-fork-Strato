@@ -58,7 +58,7 @@ namespace skyline::service::am {
     }
 
     Result ISelfController::SetScreenShotPermission(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto permission{request.Pop<s32>()};
+        auto permission{request.Pop<i32>()};
         if (permission < 0 || permission > 2)
             return self_controller_result::InvalidParameters;
 
@@ -189,7 +189,7 @@ namespace skyline::service::am {
 
     Result ISelfController::OverrideAutoSleepTimeAndDimmingTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         for (auto &value : autoSleepTimeAndDimmingTime)
-            value = request.Pop<s32>();
+            value = request.Pop<i32>();
 
         return {};
     }
@@ -270,7 +270,7 @@ namespace skyline::service::am {
     }
 
     Result ISelfController::SetWirelessPriorityMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto mode{request.Pop<s32>()};
+        auto mode{request.Pop<i32>()};
         if (mode < 0 || mode > 1)
             return self_controller_result::InvalidParameters;
 
@@ -311,7 +311,7 @@ namespace skyline::service::am {
     }
 
     Result ISelfController::SaveCurrentScreenshot(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto albumReportOption{request.Pop<s32>()};
+        auto albumReportOption{request.Pop<i32>()};
         if (albumReportOption < 0 || albumReportOption > 3)
             return self_controller_result::InvalidParameters;
 
