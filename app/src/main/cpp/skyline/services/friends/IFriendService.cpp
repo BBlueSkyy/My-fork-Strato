@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <services/account/IAccountServiceForApplication.h>
 #include "IFriendService.h"
 
 namespace skyline::service::friends {
@@ -13,6 +14,16 @@ namespace skyline::service::friends {
         LOGD("Friend Completion Event Handle: 0x{:X}", handle);
 
         response.copyHandles.push_back(handle);
+        return {};
+    }
+
+    Result IFriendService::GetFriendListIds(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        request.Pop<u32>(); // friendOffset
+        auto userId{request.Pop<account::UserId>()};
+        if (userId == account::UserId{})
+            return result::InvalidArgument;
+
+        response.Push<u32>(0); // Count of friends
         return {};
     }
 
