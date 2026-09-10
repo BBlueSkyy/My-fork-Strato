@@ -6,8 +6,11 @@
 #include <loader/loader.h>
 #include <common/settings.h>
 #include <kernel/types/KProcess.h>
+#include <os.h>
 #include <services/account/IAccountServiceForApplication.h>
 #include <services/am/storage/VectorIStorage.h>
+#include <services/fssrv/IFileSystemProxy.h>
+#include <vfs/os_filesystem.h>
 #include "IApplicationFunctions.h"
 
 namespace skyline::service::am {
@@ -55,7 +58,52 @@ namespace skyline::service::am {
     }
 
     Result IApplicationFunctions::EnsureSaveData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u8>(0);
+        auto userId{request.Pop<account::UserId>()};
+        const auto &nacp{state.loader->nacp->nacpContents};
+
+        // EnsureSaveData is nn::fs::EnsureApplicationSaveData exposed through AM. The real
+        // implementation creates the save-data areas declared by control.nacp if they do not
+        // already exist. Strato backs save data with ordinary directories, so no block image or
+        // quota allocation is required here; creating the same directory that fsp-srv later opens
+        // is sufficient.
+        auto ensureDirectory{[&](fssrv::SaveDataType type, account::UserId saveUserId) {
+            fssrv::SaveDataAttribute attribute{};
+            attribute.programId = nacp.saveDataOwnerId;
+            attribute.userId = saveUserId;
+            attribute.type = type;
+
+            auto saveDataPath{fssrv::GetSaveDataPath(
+                fssrv::SaveDataSpaceId::User,
+                attribute,
+                nacp.saveDataOwnerId
+            )};
+
+            [[maybe_unused]] auto saveFileSystem{std::make_shared<vfs::OsFileSystem>(
+                state.os->publicAppFilesPath + "/switch" + saveDataPath
+            )};
+        }};
+
+        if (nacp.userAccountSaveDataSize != 0 || nacp.userAccountSaveDataJournalSize != 0) {
+            LOGD("Ensuring account save data: owner={:016X}, user={:016X}{:016X}, size=0x{:X}, journal=0x{:X}",
+                 nacp.saveDataOwnerId,
+                 userId.upper,
+                 userId.lower,
+                 nacp.userAccountSaveDataSize,
+                 nacp.userAccountSaveDataJournalSize);
+            ensureDirectory(fssrv::SaveDataType::Account, userId);
+        }
+
+        if (nacp.deviceSaveDataSize != 0 || nacp.deviceSaveDataJournalSize != 0) {
+            LOGD("Ensuring device save data: owner={:016X}, size=0x{:X}, journal=0x{:X}",
+                 nacp.saveDataOwnerId,
+                 nacp.deviceSaveDataSize,
+                 nacp.deviceSaveDataJournalSize);
+            ensureDirectory(fssrv::SaveDataType::Device, {});
+        }
+
+        // On success the returned value is the additional space required by the operation. Strato
+        // does not emulate NAND quotas, so successful directory creation always requires 0 bytes.
+        response.Push<u64>(0);
         return {};
     }
 
