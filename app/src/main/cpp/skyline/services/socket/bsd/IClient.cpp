@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <cerrno>
+#include <cstring>
 #include <poll.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
+#include <vector>
 #include "IClient.h"
 
 namespace skyline::service::socket {
@@ -31,13 +36,31 @@ namespace skyline::service::socket {
         i32 fdsCount{request.Pop<i32>()};
         i32 timeout{request.Pop<i32>()};
 
-        if (fdsCount == 0)
-            return PushBsdResult(response, -1, 0);
+        if (fdsCount < 0 || timeout < -1)
+            return PushBsdResult(response, -1, EINVAL);
 
-        span outputBuf{request.outputBuf.at(0)};
-        auto fds{span<pollfd>(reinterpret_cast<pollfd*>(outputBuf.data()), static_cast<u32>(fdsCount))};
-        i32 result{poll(fds.data(), static_cast<u32>(fdsCount), static_cast<i32>(timeout))};
-        return PushBsdResult(response, result, errno);
+        if (fdsCount == 0) {
+            i32 result{poll(nullptr, 0, timeout)};
+            return PushBsdResult(response, result, result == -1 ? errno : 0);
+        }
+
+        const auto requiredSize{static_cast<size_t>(fdsCount) * sizeof(pollfd)};
+        auto inputBuf{request.inputBuf.at(0)};
+        auto outputBuf{request.outputBuf.at(0)};
+
+        if (inputBuf.size() < requiredSize || outputBuf.size() < requiredSize)
+            return PushBsdResult(response, -1, EINVAL);
+
+        std::vector<pollfd> fds(static_cast<size_t>(fdsCount));
+        std::memcpy(fds.data(), inputBuf.data(), requiredSize);
+
+        i32 result{poll(fds.data(), static_cast<nfds_t>(fds.size()), timeout)};
+        const i32 errorCode{result == -1 ? errno : 0};
+
+        if (result >= 0)
+            std::memcpy(outputBuf.data(), fds.data(), requiredSize);
+
+        return PushBsdResult(response, result, errorCode);
     }
 
     Result IClient::Recv(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -217,11 +240,42 @@ namespace skyline::service::socket {
     Result IClient::Close(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         i32 fd{request.Pop<i32>()};
         i32 result{close(fd)};
-        return PushBsdResult(response, 0, errno);
+        return PushBsdResult(response, result, result == -1 ? errno : 0);
     }
 
     Result IClient::EventFd(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        return PushBsdResult(response, 1, 0);
+        u64 initialValue{request.Pop<u64>()};
+        u32 flags{request.Pop<u32>()};
+
+        constexpr u32 GuestEfdSemaphore{0x1};
+        constexpr u32 GuestEfdNonBlock{0x800};
+        constexpr u32 GuestEfdCloseExec{0x80000};
+        constexpr u32 SupportedFlags{
+            GuestEfdSemaphore | GuestEfdNonBlock | GuestEfdCloseExec
+        };
+
+        if ((flags & ~SupportedFlags) != 0)
+            return PushBsdResult(response, -1, EINVAL);
+
+        i32 hostFlags{};
+        if ((flags & GuestEfdSemaphore) != 0)
+            hostFlags |= EFD_SEMAPHORE;
+        if ((flags & GuestEfdNonBlock) != 0)
+            hostFlags |= EFD_NONBLOCK;
+        if ((flags & GuestEfdCloseExec) != 0)
+            hostFlags |= EFD_CLOEXEC;
+
+        i32 fd{eventfd(0, hostFlags)};
+        if (fd == -1)
+            return PushBsdResult(response, -1, errno);
+
+        if (initialValue != 0 && eventfd_write(fd, initialValue) == -1) {
+            const i32 errorCode{errno};
+            close(fd);
+            return PushBsdResult(response, -1, errorCode);
+        }
+
+        return PushBsdResult(response, fd, 0);
     }
 
     Result IClient::PushBsdResult(ipc::IpcResponse &response, i32 result, i32 errorCode) {
