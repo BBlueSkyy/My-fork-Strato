@@ -137,7 +137,6 @@ namespace skyline::applet::swkbd {
 
     void SoftwareKeyboardApplet::ChangeInlineState(InlineState state) {
         inlineState = state;
-        SendInlineReply(InlineReply::Default);
     }
 
     void SoftwareKeyboardApplet::SendInlineReply(InlineReply reply) {
@@ -220,33 +219,54 @@ namespace skyline::applet::swkbd {
 
         if (!dialog) {
             LOGW("Couldn't show inline keyboard dialog");
+            ChangeInlineState(InlineState::Disappearing);
             SendInlineReply(InlineReply::DecidedCancel);
-        } else {
-            auto result{state.jvm->WaitForSubmitOrCancel(dialog)};
-            currentResult = static_cast<CloseResult>(result.first);
-            currentText = std::move(result.second);
-            inlineCursorPosition = static_cast<i32>(currentText.size());
-
-            if (currentResult == CloseResult::Enter) {
-                SendInlineTextReply(inlineUseUtf8 ? InlineReply::DecidedEnterUtf8 : InlineReply::DecidedEnter);
-            } else {
-                SendInlineReply(InlineReply::DecidedCancel);
-            }
+            SendInlineReply(InlineReply::Default);
+            ChangeInlineState(InlineState::Hidden);
+            SendInlineReply(InlineReply::Default);
+            return;
         }
 
-        HideInlineKeyboard();
+        const InlineReply changedReply{inlineUseUtf8
+                                           ? (inlineUseChangedStringV2 ? InlineReply::ChangedStringUtf8V2 : InlineReply::ChangedStringUtf8)
+                                           : (inlineUseChangedStringV2 ? InlineReply::ChangedStringV2 : InlineReply::ChangedString)};
+        SendInlineTextReply(changedReply);
+        SendInlineReply(InlineReply::Default);
+
+        auto result{state.jvm->WaitForSubmitOrCancel(dialog)};
+        currentResult = static_cast<CloseResult>(result.first);
+        currentText = std::move(result.second);
+        inlineCursorPosition = static_cast<i32>(currentText.size());
+
+        ChangeInlineState(InlineState::Disappearing);
+        if (currentResult == CloseResult::Enter) {
+            SendInlineTextReply(inlineUseUtf8 ? InlineReply::DecidedEnterUtf8 : InlineReply::DecidedEnter);
+        } else {
+            SendInlineReply(InlineReply::DecidedCancel);
+        }
+        SendInlineReply(InlineReply::Default);
+
+        if (dialog) {
+            state.jvm->CloseKeyboard(dialog);
+            dialog = {};
+        }
+
+        ChangeInlineState(InlineState::Hidden);
+        SendInlineReply(InlineReply::Default);
     }
 
     void SoftwareKeyboardApplet::HideInlineKeyboard() {
-        if (inlineState != InlineState::Shown)
+        if (inlineState != InlineState::Shown && inlineState != InlineState::Appearing)
             return;
 
         ChangeInlineState(InlineState::Disappearing);
+        SendInlineReply(InlineReply::Default);
         if (dialog) {
             state.jvm->CloseKeyboard(dialog);
             dialog = {};
         }
         ChangeInlineState(InlineState::Hidden);
+        SendInlineReply(InlineReply::Default);
     }
 
     void SoftwareKeyboardApplet::ProcessInlineCalc(span<u8> calc) {
@@ -282,23 +302,23 @@ namespace skyline::applet::swkbd {
         const bool initialize{(flags & InlineFlagInitialize) != 0};
         if (initialize && inlineState == InlineState::Uninitialized) {
             ConfigureInlineKeyboard(calc, extendedLayout);
-            ChangeInlineState(InlineState::Hidden);
             SendInlineReply(InlineReply::FinishedInitialize);
+            ChangeInlineState(InlineState::Hidden);
         }
 
-        if (!initialize && (flags & (InlineFlagSetInputText | InlineFlagSetCursorPosition))) {
-            const InlineReply reply{inlineUseUtf8
-                                        ? (inlineUseChangedStringV2 ? InlineReply::ChangedStringUtf8V2 : InlineReply::ChangedStringUtf8)
-                                        : (inlineUseChangedStringV2 ? InlineReply::ChangedStringV2 : InlineReply::ChangedString)};
-            SendInlineTextReply(reply);
-        }
-
+        bool visibilityHandled{};
         if ((flags & InlineFlagAppear) && inlineState == InlineState::Hidden) {
             ConfigureInlineKeyboard(calc, extendedLayout);
             ShowInlineKeyboard();
-        } else if ((flags & InlineFlagDisappear) && inlineState == InlineState::Shown) {
+            visibilityHandled = true;
+        } else if ((flags & InlineFlagDisappear) &&
+                   (inlineState == InlineState::Shown || inlineState == InlineState::Appearing)) {
             HideInlineKeyboard();
+            visibilityHandled = true;
         }
+
+        if (!visibilityHandled)
+            SendInlineReply(InlineReply::Default);
     }
 
     void SoftwareKeyboardApplet::ProcessInlineRequest(span<u8> data) {
