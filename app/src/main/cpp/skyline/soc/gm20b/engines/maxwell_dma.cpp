@@ -106,21 +106,32 @@ namespace skyline::soc::gm20b::engine {
 
     bool MaxwellDma::RemapNeedsSource() {
         auto &remap{*registers.remapComponents};
-        auto isSrc{[](Registers::RemapComponents::Swizzle swizzle) {
-            return swizzle == Registers::RemapComponents::Swizzle::SrcX ||
-                   swizzle == Registers::RemapComponents::Swizzle::SrcY ||
-                   swizzle == Registers::RemapComponents::Swizzle::SrcZ ||
-                   swizzle == Registers::RemapComponents::Swizzle::SrcW;
-        }};
-        return isSrc(remap.dstX) || isSrc(remap.dstY) || isSrc(remap.dstZ) || isSrc(remap.dstW);
+        std::array<Registers::RemapComponents::Swizzle, 4> dstSwizzle{remap.dstX, remap.dstY, remap.dstZ, remap.dstW};
+        u8 numDstComponents{remap.NumDstComponents()};
+
+        for (u8 component{}; component < numDstComponents; component++) {
+            switch (dstSwizzle[component]) {
+                case Registers::RemapComponents::Swizzle::SrcX:
+                case Registers::RemapComponents::Swizzle::SrcY:
+                case Registers::RemapComponents::Swizzle::SrcZ:
+                case Registers::RemapComponents::Swizzle::SrcW:
+                    return true;
+                default:
+                    break;
+            }
+        }
+        return false;
     }
 
     bool MaxwellDma::RemapNeedsDestinationPreserve() {
         auto &remap{*registers.remapComponents};
-        return remap.dstX == Registers::RemapComponents::Swizzle::NoWrite ||
-               remap.dstY == Registers::RemapComponents::Swizzle::NoWrite ||
-               remap.dstZ == Registers::RemapComponents::Swizzle::NoWrite ||
-               remap.dstW == Registers::RemapComponents::Swizzle::NoWrite;
+        std::array<Registers::RemapComponents::Swizzle, 4> dstSwizzle{remap.dstX, remap.dstY, remap.dstZ, remap.dstW};
+        u8 numDstComponents{remap.NumDstComponents()};
+
+        for (u8 component{}; component < numDstComponents; component++)
+            if (dstSwizzle[component] == Registers::RemapComponents::Swizzle::NoWrite)
+                return true;
+        return false;
     }
 
     /**
