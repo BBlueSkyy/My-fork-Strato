@@ -16,6 +16,11 @@ namespace skyline::service::friends {
         return {};
     }
 
+    Result IFriendService::GetFriendListIds(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u32>(0); // Count of friends
+        return {};
+    }
+
     Result IFriendService::GetFriendList(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         response.Push<u32>(0); // Count of friends
         return {};
