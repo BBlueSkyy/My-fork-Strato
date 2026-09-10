@@ -30,9 +30,23 @@ namespace skyline::service {
             LOGW("Cannot find {0} function in service '{1}': 0x{2:X} ({2})", request.isTipc ? "TIPC" : "HIPC", GetName(), static_cast<u32>(functionId));
             return {};
         }
+
+        const auto &serviceName{GetName()};
+        const bool traceHid{serviceName.compare(0, 5, "hid::") == 0};
+        if (traceHid) {
+            LOGI("HidIpcTrace: enter service={} cmd=0x{:X} ({}) func={}",
+                 serviceName, functionId, functionId, function.name);
+        }
+
         TRACE_EVENT("service", perfetto::StaticString{function.name});
         try {
-            return function(session, request, response);
+            auto result{function(session, request, response)};
+            if (traceHid) {
+                LOGI("HidIpcTrace: exit service={} cmd=0x{:X} ({}) func={} result=0x{:X} module={} description={}",
+                     serviceName, functionId, functionId, function.name,
+                     result.raw, static_cast<u32>(result.module), static_cast<u32>(result.id));
+            }
+            return result;
         } catch (exception &e) {
             // We need to forward any skyline::exception objects without modification even though they inherit from std::exception
             std::rethrow_exception(std::current_exception());
