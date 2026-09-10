@@ -40,7 +40,7 @@ namespace skyline::service::am {
         u32 fatalSectionCount{};
 
         bool exitLocked{};
-        s32 screenShotPermission{};
+        i32 screenShotPermission{};
         bool operationModeChangedNotification{};
         bool performanceModeChangedNotification{};
         std::array<bool, 3> focusHandlingMode{};
@@ -56,13 +56,13 @@ namespace skyline::service::am {
         bool recordingLayerCompositionEnabled{};
         bool handlesRequestToDisplay{};
 
-        std::array<s32, 4> autoSleepTimeAndDimmingTime{};
+        std::array<i32, 4> autoSleepTimeAndDimmingTime{};
         bool mediaPlaybackState{};
         u32 idleTimeDetectionExtension{};
         u32 inputDetectionSourceSet{};
         bool autoSleepDisabled{};
         u32 inputDetectionPolicy{};
-        s32 wirelessPriorityMode{};
+        i32 wirelessPriorityMode{};
 
         bool albumImageTakenNotificationEnabled{};
         std::array<u8, 0x400> applicationAlbumUserData{};
