@@ -199,6 +199,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/logger/logger.cpp
         ${source_DIR}/skyline/nce/guest.S
         ${source_DIR}/skyline/nce.cpp
+        ${source_DIR}/skyline/nce/diagnostics.cpp
         ${source_DIR}/skyline/jvm.cpp
         ${source_DIR}/skyline/os.cpp
         ${source_DIR}/skyline/kernel/memory.cpp

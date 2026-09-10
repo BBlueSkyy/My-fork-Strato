@@ -59,8 +59,9 @@ namespace skyline::loader {
         executable.bssSize = header.bssSize;
 
         if (header.dynsym.offset > header.ro.offset && header.dynsym.offset + header.dynsym.size < header.ro.offset + header.ro.size && header.dynstr.offset > header.ro.offset && header.dynstr.offset + header.dynstr.size < header.ro.offset + header.ro.size) {
-            executable.dynsym = {header.dynsym.offset, header.dynsym.size};
-            executable.dynstr = {header.dynstr.offset, header.dynstr.size};
+            // Executable expects offsets within .rodata, not within the NRO.
+            executable.dynsym = {header.dynsym.offset - header.ro.offset, header.dynsym.size};
+            executable.dynstr = {header.dynstr.offset - header.ro.offset, header.dynstr.size};
         }
 
         state.process->memory.InitializeVmm(memory::AddressSpaceType::AddressSpace39Bit);

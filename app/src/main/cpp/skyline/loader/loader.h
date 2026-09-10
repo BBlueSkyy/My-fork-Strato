@@ -72,8 +72,8 @@ namespace skyline::loader {
             std::string name; //!< The name of the executable
             std::string patchName; //!< The name of the patch section
             std::string hookName; //!< The name of the hook section
-            span<u8> symbols; //!< A span over the .dynsym section, this may be casted to the appropriate Elf_Sym type on demand
-            span<char> symbolStrings; //!< A span over the .dynstr section
+            std::vector<u8> symbols; //!< Owned .dynsym copy; Executable's temporary buffers die after loading
+            std::vector<char> symbolStrings; //!< Owned .dynstr copy, retained until this module is unloaded
         };
 
         std::vector<ExecutableSymbolicInfo> executables;
@@ -137,7 +137,12 @@ namespace skyline::loader {
         struct SymbolInfo {
             char *name; //!< The name of the symbol that was found
             std::string_view executableName; //!< The executable that contained the symbol
+            u64 address{}; //!< Start of the symbol, when available
+            size_t size{}; //!< Size recorded in the owned ELF symbol table
         };
+
+        /** @brief Bounded lookup of defined functions for temporary abort diagnostics. */
+        std::vector<SymbolInfo> FindFunctionSymbols64(std::string_view nameFragment, size_t limit = 16);
 
         /**
          * @return All symbolic information about the symbol for the specified address
