@@ -64,6 +64,24 @@ namespace skyline::applet {
         }
     }
 
+    void ControllerApplet::HandleShowControllerStrapGuide() {
+        auto &npad{state.input->npad};
+        std::scoped_lock lock{npad.mutex};
+
+        PushNormalDataAndSignal(std::make_shared<service::am::ObjIStorage<ControllerSupportResultInfo>>(state, manager, ControllerSupportResultInfo{
+            .playerCount = static_cast<i8>(npad.GetConnectedControllerCount()),
+            .selectedId = [&npad]() {
+                if (npad.controllers[0].device) {
+                    return npad.controllers[0].device->id;
+                } else {
+                    LOGW("Controller strap guide requested but no controller is connected!");
+                    return input::NpadId::Player1;
+                }
+            }(),
+            .result = {}
+        }));
+    }
+
     Result ControllerApplet::Start() {
         auto commonArg{PopNormalInput<service::applet::CommonArguments>()};
         ControllerAppletVersion appletVersion{commonArg.apiVersion};
@@ -87,6 +105,13 @@ namespace skyline::applet {
         switch (argPrivate.mode) {
             case ControllerSupportMode::ShowControllerSupport:
                 HandleShowControllerSupport(argPrivate.styleSet, appletVersion, normalInputData.front()->GetSpan());
+                normalInputData.pop();
+                break;
+            case ControllerSupportMode::ShowControllerStrapGuide:
+                // HOS uses the same controller-support input storage layout for strap-guide mode.
+                // There is no separate frontend UI in Strato; complete successfully and return the
+                // standard ControllerSupportResultInfo payload, matching Eden's HLE behavior.
+                HandleShowControllerStrapGuide();
                 normalInputData.pop();
                 break;
             default:
