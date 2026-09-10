@@ -6,6 +6,7 @@
 package org.stratoemu.strato.applet.swkbd
 
 import android.annotation.SuppressLint
+import android.content.DialogInterface
 import android.os.Bundle
 import android.text.InputType
 import android.view.LayoutInflater
@@ -46,8 +47,14 @@ class SoftwareKeyboardDialog : DialogFragment() {
     private lateinit var binding : KeyboardDialogBinding
 
     private var cancelled : Boolean = false
-    private var futureResult : FutureTask<SoftwareKeyboardResult> = FutureTask<SoftwareKeyboardResult> { return@FutureTask SoftwareKeyboardResult(cancelled, binding.textInput.text.toString()) }
 
+    private fun currentText() = if (::binding.isInitialized) binding.textInput.text.toString() else initialText
+
+    private fun newFutureResult() = FutureTask<SoftwareKeyboardResult> {
+        SoftwareKeyboardResult(cancelled, currentText())
+    }
+
+    private var futureResult : FutureTask<SoftwareKeyboardResult> = newFutureResult()
 
     override fun onCreateView(inflater : LayoutInflater, container : ViewGroup?, savedInstanceState : Bundle?) = if (savedInstanceState?.getBoolean("stopped") != true) KeyboardDialogBinding.inflate(inflater).also { binding = it }.root else null
 
@@ -113,6 +120,12 @@ class SoftwareKeyboardDialog : DialogFragment() {
         super.onStop()
     }
 
+    override fun onDismiss(dialog : DialogInterface) {
+        cancelled = true
+        futureResult.run()
+        super.onDismiss(dialog)
+    }
+
     override fun onSaveInstanceState(outState : Bundle) {
         outState.putBoolean("stopped", stopped)
         super.onSaveInstanceState(outState)
@@ -120,7 +133,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
 
     fun waitForSubmitOrCancel() : SoftwareKeyboardResult {
         val result = futureResult.get()
-        futureResult = FutureTask<SoftwareKeyboardResult> { return@FutureTask SoftwareKeyboardResult(cancelled, binding.textInput.text.toString()) }
+        futureResult = newFutureResult()
         return result
     }
 }
