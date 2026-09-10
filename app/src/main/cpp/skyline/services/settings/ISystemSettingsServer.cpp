@@ -2,17 +2,741 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include "ISystemSettingsServer.h"
+#include "ipc_helpers.h"
+#include "settings_items.h"
+#include <common/settings.h>
+#include <os.h>
 
 namespace skyline::service::settings {
-    ISystemSettingsServer::ISystemSettingsServer(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
+    namespace {
+        ResultValue<std::string_view> ReadSettingName(ipc::IpcRequest &request, size_t index) {
+            if (request.inputBuf.size() <= index || !request.inputBuf[index].data() || request.inputBuf[index].empty())
+                return Result{105, static_cast<u16>(201 + index)};
+            const auto buffer{request.inputBuf[index]};
+            const auto size{std::min<size_t>(buffer.size_bytes(), 0x48)};
+            const auto *start{reinterpret_cast<const char *>(buffer.data())};
+            const auto *end{static_cast<const char *>(std::memchr(start, 0, size))};
+            if (!end)
+                return Result{105, static_cast<u16>(241 + index)};
+            if (start == end)
+                return Result{105, static_cast<u16>(221 + index)};
+            return std::string_view(start, end - start);
+        }
+
+        ResultValue<const SettingsItem *> ReadSettingsItem(ipc::IpcRequest &request) {
+            auto category{ReadSettingName(request, 0)};
+            if (!category)
+                return category.result;
+            auto name{ReadSettingName(request, 1)};
+            if (!name)
+                return name.result;
+            const auto *item{FindSettingsItem(*category, *name)};
+            if (!item) {
+                LOGD("Unknown settings item: {}/{}", *category, *name);
+                return Result{105, 11};
+            }
+            return item;
+        }
+    }
+
+    ISystemSettingsServer::ISystemSettingsServer(const DeviceState &state, ServiceManager &manager, SettingsStore &store, timesrv::core::TimeServiceObject &timeCore) : BaseService(state, manager), store(store), timeCore(timeCore) {}
 
     Result ISystemSettingsServer::GetFirmwareVersion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        request.outputBuf.at(0).as<SysVerTitle>() = {.major=9, .minor=0, .micro=0, .revMajor=4, .revMinor=0, .platform="NX", .verHash="4de65c071fd0869695b7629f75eb97b2551dbf2f", .dispVer="9.0.0", .dispTitle="NintendoSDK Firmware for NX 9.0.0-4.0"};
-        return {};
+        auto result{GetFirmwareVersion2(session, request, response)};
+        if (!result)
+            request.outputBuf[0][offsetof(SysVerTitle, revMinor)] = 0;
+        return result;
+    }
+
+    Result ISystemSettingsServer::GetFirmwareVersion2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // Strato has no installed system-version archive. Preserve the existing
+        // HLE profile instead of advertising an unsupported firmware revision.
+        const SysVerTitle version{.major=9, .minor=0, .micro=0, .revMajor=4, .revMinor=0, .platform="NX", .verHash="4de65c071fd0869695b7629f75eb97b2551dbf2f", .dispVer="9.0.0", .dispTitle="NintendoSDK Firmware for NX 9.0.0-4.0"};
+        return WriteBuffer(request, version, result::NullFirmwareBuffer);
     }
 
     Result ISystemSettingsServer::GetColorSetId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u32>(0); // Basic White
+        return PushValue(response, store.Get<u32>(23, 0));
+    }
+    Result ISystemSettingsServer::Unsupported(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        LOGW("Unsupported settings command: {} (TIPC={})", request.isTipc ? static_cast<u32>(request.header->type) : request.payload->value, request.isTipc);
+        return result::UnknownCommand;
+    }
+
+    Result ISystemSettingsServer::GetLockScreenFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get<u8>(7, 1));
+    }
+
+    Result ISystemSettingsServer::SetLockScreenFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<u8>(request)};
+        if (!value)
+            return value.result;
+        if (*value > 1)
+            return kernel::result::InvalidArgument;
+        return store.Set(7, *value);
+    }
+
+    Result ISystemSettingsServer::SetColorSetId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<u32>(request)};
+        if (!value)
+            return value.result;
+        if (*value > 1)
+            return kernel::result::InvalidArgument;
+        return store.Set(23, *value);
+    }
+
+    Result ISystemSettingsServer::GetConsoleInformationUploadFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get<u8>(25, 0));
+    }
+
+    Result ISystemSettingsServer::SetConsoleInformationUploadFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<u8>(request)};
+        if (!value)
+            return value.result;
+        if (*value > 1)
+            return kernel::result::InvalidArgument;
+        return store.Set(25, *value);
+    }
+
+    Result ISystemSettingsServer::GetAutomaticApplicationDownloadFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get<u8>(27, 0));
+    }
+
+    Result ISystemSettingsServer::SetAutomaticApplicationDownloadFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<u8>(request)};
+        if (!value)
+            return value.result;
+        if (*value > 1)
+            return kernel::result::InvalidArgument;
+        return store.Set(27, *value);
+    }
+
+    Result ISystemSettingsServer::GetQuestFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get<u8>(47, 0));
+    }
+
+    Result ISystemSettingsServer::SetQuestFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<u8>(request)};
+        if (!value)
+            return value.result;
+        if (*value > 1)
+            return kernel::result::InvalidArgument;
+        return store.Set(47, *value);
+    }
+
+    Result ISystemSettingsServer::GetAutoUpdateEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get<u8>(95, 0));
+    }
+
+    Result ISystemSettingsServer::SetAutoUpdateEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<u8>(request)};
+        if (!value)
+            return value.result;
+        if (*value > 1)
+            return kernel::result::InvalidArgument;
+        return store.Set(95, *value);
+    }
+
+    Result ISystemSettingsServer::GetBatteryPercentageFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get<u8>(99, 0));
+    }
+
+    Result ISystemSettingsServer::SetBatteryPercentageFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<u8>(request)};
+        if (!value)
+            return value.result;
+        if (*value > 1)
+            return kernel::result::InvalidArgument;
+        return store.Set(99, *value);
+    }
+
+    Result ISystemSettingsServer::GetPushNotificationActivityModeOnSleep(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get<u32>(120, 0));
+    }
+
+    Result ISystemSettingsServer::SetPushNotificationActivityModeOnSleep(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<u32>(request)};
+        if (!value)
+            return value.result;
+        if (*value > 1)
+            return kernel::result::InvalidArgument;
+        return store.Set(120, *value);
+    }
+
+    Result ISystemSettingsServer::GetErrorReportSharePermission(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get<u32>(124, 2));
+    }
+
+    Result ISystemSettingsServer::SetErrorReportSharePermission(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<u32>(request)};
+        if (!value)
+            return value.result;
+        if (*value > 2)
+            return kernel::result::InvalidArgument;
+        return store.Set(124, *value);
+    }
+
+    Result ISystemSettingsServer::GetChineseTraditionalInputMethod(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get<u32>(170, 0));
+    }
+
+    Result ISystemSettingsServer::SetChineseTraditionalInputMethod(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<u32>(request)};
+        if (!value)
+            return value.result;
+        if (*value > 2)
+            return kernel::result::InvalidArgument;
+        return store.Set(170, *value);
+    }
+
+    Result ISystemSettingsServer::GetPlatformRegion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get<u32>(183, 1));
+    }
+
+    Result ISystemSettingsServer::SetPlatformRegion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<u32>(request)};
+        if (!value)
+            return value.result;
+        if (*value > 2 || *value < 1)
+            return kernel::result::InvalidArgument;
+        return store.Set(183, *value);
+    }
+
+    Result ISystemSettingsServer::GetTouchScreenMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get<u32>(187, 1));
+    }
+
+    Result ISystemSettingsServer::SetTouchScreenMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<u32>(request)};
+        if (!value)
+            return value.result;
+        if (*value > 1)
+            return kernel::result::InvalidArgument;
+        return store.Set(187, *value);
+    }
+
+    Result ISystemSettingsServer::GetT(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto region{store.Get<u32>(183, 1)};
+        if (!region)
+            return region.result;
+        response.Push<u8>(*region == 2);
         return {};
     }
+
+    Result ISystemSettingsServer::SetT(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto flag{ReadArgument<u8>(request)};
+        if (!flag)
+            return flag.result;
+        return store.Set<u32>(183, 1 + (*flag & 1));
+    }
+
+    Result ISystemSettingsServer::GetDeviceNickName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        std::array<char, 0x80> fallback{};
+        std::memcpy(fallback.data(), "Strato", 6);
+        auto name{store.Get(77, fallback)};
+        if (!name)
+            return name.result;
+        return WriteBuffer(request, *name, Result{105, 808});
+    }
+
+    Result ISystemSettingsServer::SetDeviceNickName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto name{ReadBuffer<std::array<char, 0x80>>(request)};
+        if (!name)
+            return name.result;
+        auto end{std::find(name->begin(), name->end(), '\0')};
+        if (end == name->end())
+            return kernel::result::InvalidArgument;
+        std::fill(end, name->end(), '\0');
+        return store.Set(77, *name);
+    }
+
+    Result ISystemSettingsServer::GetProductModel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u32>(1); // Nx: the emulated retail Switch model, independent of dock mode.
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetDebugModeFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0); // Retail HLE profile; matches settings_debug item.
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetLanguageCode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto code{ReadArgument<LanguageCode>(request)};
+        if (!code)
+            return code.result;
+        auto it{std::find(language::LanguageCodeList.begin(), language::LanguageCodeList.end(), *code)};
+        if (it == language::LanguageCodeList.end())
+            return result::InvalidLanguage;
+        auto result{store.Set(0, *code)};
+        if (!result)
+            state.settings->systemLanguage = static_cast<language::SystemLanguage>(it - language::LanguageCodeList.begin());
+        return result;
+    }
+
+    Result ISystemSettingsServer::SetRegionCode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto region{ReadArgument<i32>(request)};
+        if (!region)
+            return region.result;
+        if (*region < 0 || *region > 5)
+            return kernel::result::InvalidArgument;
+        auto result{store.Set(57, *region)};
+        if (!result)
+            state.settings->systemRegion = static_cast<region::RegionCode>(*region);
+        return result;
+    }
+
+    Result ISystemSettingsServer::GetSettingsItemValueSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto item{ReadSettingsItem(request)};
+        if (!item)
+            return item.result;
+        response.Push<u64>((*item)->size);
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetSettingsItemValue(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto item{ReadSettingsItem(request)};
+        if (!item)
+            return item.result;
+        if (request.outputBuf.empty())
+            return Result{105, 205};
+        auto output{request.outputBuf[0]};
+        const auto count{std::min(output.size_bytes(), (*item)->size)};
+        if (count && !output.data())
+            return Result{105, 205};
+        // The ABI is little endian and permits a short output buffer.
+        for (size_t i{}; i < count; ++i)
+            output[i] = static_cast<u8>((*item)->value >> (i * 8));
+        response.Push<u64>(count);
+        return {};
+    }
+
+    ResultValue<u32> ISystemSettingsServer::GetKeyboardLayoutValue() {
+        // Indexed by Skyline SystemLanguage, following the Eden language/layout mapping.
+        constexpr std::array<u32, 18> layouts{0, 1, 4, 8, 9, 6, 13, 12, 2, 10, 11, 14, 3, 5, 7, 13, 14, 10};
+        const auto language{static_cast<size_t>(*state.settings->systemLanguage)};
+        if (language >= layouts.size())
+            return result::InvalidLanguage;
+        auto layout{store.Get(136, layouts[language])};
+        if (layout && *layout > 14)
+            return result::InvalidKeyboardLayout;
+        return layout;
+    }
+
+    Result ISystemSettingsServer::GetKeyboardLayout(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, GetKeyboardLayoutValue());
+    }
+
+    Result ISystemSettingsServer::SetKeyboardLayout(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto layout{ReadArgument<u32>(request)};
+        if (!layout)
+            return layout.result;
+        if (*layout > 14)
+            return result::InvalidKeyboardLayout;
+        return store.Set(136, *layout);
+    }
+
+    Result ISystemSettingsServer::GetExternalSteadyClockSourceId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto point{timeCore.standardSteadyClock.GetCurrentTimePoint()};
+        if (!point)
+            return point.result;
+        response.Push(point->clockSourceId);
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetUserSystemClockContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!timeCore.userSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        return PushValue(response, timeCore.userSystemClock.GetClockContext());
+    }
+
+    Result ISystemSettingsServer::GetNetworkSystemClockContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!timeCore.networkSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        return PushValue(response, timeCore.networkSystemClock.GetClockContext());
+    }
+
+    Result ISystemSettingsServer::SetUserSystemClockContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto context{ReadArgument<timesrv::SystemClockContext>(request)};
+        if (!context)
+            return context.result;
+        if (!timeCore.localSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        auto point{timeCore.standardSteadyClock.GetCurrentTimePoint()};
+        if (!point)
+            return point.result;
+        if (context->timestamp.clockSourceId != point->clockSourceId)
+            return timesrv::result::ClockSourceIdMismatch;
+        if (timeCore.userSystemClock.IsAutomaticCorrectionEnabled())
+            return timesrv::result::PermissionDenied;
+        return timeCore.localSystemClock.UpdateClockContext(*context);
+    }
+
+    Result ISystemSettingsServer::SetNetworkSystemClockContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto context{ReadArgument<timesrv::SystemClockContext>(request)};
+        if (!context)
+            return context.result;
+        if (!timeCore.networkSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        auto point{timeCore.standardSteadyClock.GetCurrentTimePoint()};
+        if (!point)
+            return point.result;
+        if (context->timestamp.clockSourceId != point->clockSourceId)
+            return timesrv::result::ClockSourceIdMismatch;
+        return timeCore.networkSystemClock.UpdateClockContext(*context);
+    }
+
+    Result ISystemSettingsServer::IsUserSystemClockAutomaticCorrectionEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!timeCore.userSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        response.Push<u8>(timeCore.userSystemClock.IsAutomaticCorrectionEnabled());
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetUserSystemClockAutomaticCorrectionEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto flag{ReadArgument<u8>(request)};
+        if (!flag)
+            return flag.result;
+        if (*flag > 1)
+            return kernel::result::InvalidArgument;
+        if (!timeCore.userSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        auto result{timeCore.userSystemClock.UpdateAutomaticCorrectionState(*flag != 0)};
+        if (result)
+            return result;
+        // The existing core changes local context during correction; publish it
+        // through the callback so IPC and time shared memory agree.
+        auto context{timeCore.localSystemClock.GetClockContext()};
+        if (!context)
+            return context.result;
+        return timeCore.localSystemClock.UpdateClockContext(*context);
+    }
+
+    Result ISystemSettingsServer::GetExternalSteadyClockInternalOffset(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!timeCore.standardSteadyClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        response.Push(timeCore.standardSteadyClock.GetInternalOffset().Nanoseconds());
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetExternalRtcResetFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!timeCore.standardSteadyClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        response.Push<u8>(timeCore.standardSteadyClock.IsRtcResetDetected());
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetDeviceTimeZoneLocationName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, timeCore.timeZoneManager.GetLocationName());
+    }
+
+    Result ISystemSettingsServer::GetDeviceTimeZoneLocationUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, timeCore.timeZoneManager.GetUpdateTime());
+    }
+
+    Result ISystemSettingsServer::GetUserSystemClockAutomaticCorrectionUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!timeCore.userSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        response.Push(timeCore.userSystemClock.GetAutomaticCorrectionUpdatedTime());
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetExternalSteadyClockSourceId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return kernel::result::NotImplemented;
+    }
+
+    Result ISystemSettingsServer::SetExternalSteadyClockInternalOffset(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return kernel::result::NotImplemented;
+    }
+
+    Result ISystemSettingsServer::SetUserSystemClockAutomaticCorrectionUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return kernel::result::NotImplemented;
+    }
+
+    Result ISystemSettingsServer::SetExternalRtcResetFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return kernel::result::NotImplemented;
+    }
+
+    Result ISystemSettingsServer::SetDeviceTimeZoneLocationName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto name{ReadArgument<timesrv::LocationName>(request)};
+        if (!name)
+            return name.result;
+        auto end{std::find(name->begin(), name->end(), '\0')};
+        if (end == name->begin() || end == name->end())
+            return kernel::result::InvalidArgument;
+        std::fill(end, name->end(), '\0');
+        if (std::find(timeCore.locationNameList.begin(), timeCore.locationNameList.end(), *name) == timeCore.locationNameList.end())
+            return kernel::result::InvalidArgument;
+        auto point{timeCore.standardSteadyClock.GetCurrentTimePoint()};
+        if (!point)
+            return point.result;
+        const std::string location(name->data());
+        auto file{state.os->assetFileSystem->OpenFileUnchecked("tzdata/zoneinfo/" + location)};
+        if (!file || file->size > 0x100000)
+            return timesrv::result::RuleConversionFailed;
+        std::vector<u8> binary(file->size);
+        if (file->ReadUnchecked(binary) != binary.size())
+            return timesrv::result::RuleConversionFailed;
+        // Copy the full zero-padded name: current timesrv otherwise retains a
+        // suffix when changing from a longer name to a shorter one.
+        auto result{timeCore.timeZoneManager.SetNewLocation(std::string_view(name->data(), name->size()), binary)};
+        if (result)
+            return result;
+        timeCore.timeZoneManager.SetUpdateTime(*point);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetDeviceTimeZoneLocationUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto point{ReadArgument<timesrv::SteadyClockTimePoint>(request)};
+        if (!point)
+            return point.result;
+        auto current{timeCore.standardSteadyClock.GetCurrentTimePoint()};
+        if (!current)
+            return current.result;
+        if (point->clockSourceId != current->clockSourceId)
+            return timesrv::result::ClockSourceIdMismatch;
+        timeCore.timeZoneManager.SetUpdateTime(*point);
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetWirelessLanEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(*state.settings->isInternetEnabled);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetWirelessLanEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        if (*enabled && !store.internetAllowed)
+            return kernel::result::NotImplemented;
+        auto result{store.Set(73, *enabled)};
+        if (!result)
+            state.settings->isInternetEnabled = *enabled != 0;
+        return result;
+    }
+
+    Result ISystemSettingsServer::GetUsb30EnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetUsb30EnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetNfcEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetNfcEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetBluetoothEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetBluetoothEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetUsbFullKeyEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetUsbFullKeyEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetBluetoothAfhEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetBluetoothAfhEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetBluetoothBoostEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetBluetoothBoostEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetUsb30HostEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetUsb30HostEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetUsb30DeviceEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetUsb30DeviceEnableFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto enabled{ReadArgument<u8>(request)};
+        if (!enabled)
+            return enabled.result;
+        if (*enabled > 1)
+            return kernel::result::InvalidArgument;
+        // Disabled is already the actual state; enabling needs a backend.
+        return *enabled ? kernel::result::NotImplemented : Result{};
+    }
+
+    Result ISystemSettingsServer::GetWebInspectorFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetMemoryUsageRateFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetFieldTestingFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(0);
+        return {};
+    }
+
+    Result ISystemSettingsServer::GetAccountSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get(17, std::array<u32, 1>{0}));
+    }
+
+    Result ISystemSettingsServer::SetAccountSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<std::array<u32, 1>>(request)};
+        if (!value)
+            return value.result;
+        if (*value != std::array<u32, 1>{(*value)[0] & 1})
+            return kernel::result::InvalidArgument;
+        return store.Set(17, *value);
+    }
+
+    Result ISystemSettingsServer::GetNotificationSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get(29, std::array<i32, 6>{0x300, 2, 9, 0, 21, 0}));
+    }
+
+    Result ISystemSettingsServer::SetNotificationSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<std::array<i32, 6>>(request)};
+        if (!value)
+            return value.result;
+        if ((*value)[1] < 0 || (*value)[1] > 2 || (*value)[2] < 0 || (*value)[2] > 23 || (*value)[3] < 0 || (*value)[3] > 59 || (*value)[4] < 0 || (*value)[4] > 23 || (*value)[5] < 0 || (*value)[5] > 59)
+            return kernel::result::InvalidArgument;
+        return store.Set(29, *value);
+    }
+
+    Result ISystemSettingsServer::GetSleepSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        return PushValue(response, store.Get(71, std::array<i32, 3>{3, 3, 0}));
+    }
+
+    Result ISystemSettingsServer::SetSleepSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto value{ReadArgument<std::array<i32, 3>>(request)};
+        if (!value)
+            return value.result;
+        if ((*value)[1] < 0 || (*value)[1] > 5 || (*value)[2] < 0 || (*value)[2] > 5)
+            return kernel::result::InvalidArgument;
+        return store.Set(71, *value);
+    }
+
+    Result ISystemSettingsServer::GetEulaVersions(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (request.outputBuf.empty())
+            return kernel::result::InvalidArgument;
+        auto values{store.Get(21, span<const u8>{})};
+        if (!values)
+            return values.result;
+        if (values->size() % 48 || values->size() > 1536)
+            return Result{105, 263};
+        const auto count{std::min(request.outputBuf[0].size_bytes() / 48, values->size() / 48)};
+        if (count)
+            std::memcpy(request.outputBuf[0].data(), values->data(), count * 48);
+        response.Push<i32>(static_cast<i32>(count));
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetEulaVersions(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (request.inputBuf.empty())
+            return kernel::result::InvalidArgument;
+        auto values{request.inputBuf[0]};
+        if (values.size_bytes() % 48 || values.size_bytes() > 1536)
+            return kernel::result::InvalidArgument;
+        return store.Set(21, span<const u8>(values.data(), values.size_bytes()));
+    }
+
+    Result ISystemSettingsServer::GetAccountNotificationSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (request.outputBuf.empty())
+            return kernel::result::InvalidArgument;
+        auto values{store.Get(31, span<const u8>{})};
+        if (!values)
+            return values.result;
+        if (values->size() % 24 || values->size() > 192)
+            return Result{105, 263};
+        const auto count{std::min(request.outputBuf[0].size_bytes() / 24, values->size() / 24)};
+        if (count)
+            std::memcpy(request.outputBuf[0].data(), values->data(), count * 24);
+        response.Push<i32>(static_cast<i32>(count));
+        return {};
+    }
+
+    Result ISystemSettingsServer::SetAccountNotificationSettings(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (request.inputBuf.empty())
+            return kernel::result::InvalidArgument;
+        auto values{request.inputBuf[0]};
+        if (values.size_bytes() % 24 || values.size_bytes() > 192)
+            return kernel::result::InvalidArgument;
+        return store.Set(31, span<const u8>(values.data(), values.size_bytes()));
+    }
+
 }
