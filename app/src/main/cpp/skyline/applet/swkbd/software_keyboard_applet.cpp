@@ -184,7 +184,7 @@ namespace skyline::applet::swkbd {
         PushInteractiveDataAndSignal(std::make_shared<service::am::VectorIStorage>(state, manager, std::move(response)));
     }
 
-    void SoftwareKeyboardApplet::ConfigureInlineKeyboard(span<u8> calc, bool extendedLayout) {
+    void SoftwareKeyboardApplet::ConfigureInlineKeyboard(span<u8> calc, bool) {
         const size_t appearOffset{0x20};
 
         config = KeyboardConfigVB{};
@@ -234,26 +234,7 @@ namespace skyline::applet::swkbd {
         SendInlineTextReply(changedReply);
         SendInlineReply(InlineReply::Default);
 
-        auto result{state.jvm->WaitForSubmitOrCancel(dialog)};
-        currentResult = static_cast<CloseResult>(result.first);
-        currentText = std::move(result.second);
-        inlineCursorPosition = static_cast<i32>(currentText.size());
-
-        ChangeInlineState(InlineState::Disappearing);
-        if (currentResult == CloseResult::Enter) {
-            SendInlineTextReply(inlineUseUtf8 ? InlineReply::DecidedEnterUtf8 : InlineReply::DecidedEnter);
-        } else {
-            SendInlineReply(InlineReply::DecidedCancel);
-        }
-        SendInlineReply(InlineReply::Default);
-
-        if (dialog) {
-            state.jvm->CloseKeyboard(dialog);
-            dialog = {};
-        }
-
-        ChangeInlineState(InlineState::Hidden);
-        SendInlineReply(InlineReply::Default);
+        pendingInlineWaitDialog = state.jvm->CloneKeyboardHandle(dialog);
     }
 
     void SoftwareKeyboardApplet::HideInlineKeyboard() {
@@ -268,6 +249,58 @@ namespace skyline::applet::swkbd {
         }
         ChangeInlineState(InlineState::Hidden);
         SendInlineReply(InlineReply::Default);
+    }
+
+    void SoftwareKeyboardApplet::WaitForInlineKeyboardInput(JvmManager::KeyboardHandle waitDialog) {
+        while (true) {
+            auto update{state.jvm->WaitForInlineKeyboardUpdate(waitDialog)};
+            jobject dialogToClose{};
+            bool finished{};
+
+            {
+                std::scoped_lock lock{inlineMutex};
+
+                if (update.type == JvmManager::KeyboardUpdate::Type::Closed ||
+                    inlineState == InlineState::Uninitialized ||
+                    (inlineState != InlineState::Shown && inlineState != InlineState::Appearing)) {
+                    finished = true;
+                } else {
+                    currentText = std::move(update.text);
+                    inlineCursorPosition = std::clamp(update.cursor, 0, static_cast<i32>(currentText.size()));
+
+                    if (update.type == JvmManager::KeyboardUpdate::Type::Changed) {
+                        const InlineReply changedReply{inlineUseUtf8
+                                                           ? (inlineUseChangedStringV2 ? InlineReply::ChangedStringUtf8V2 : InlineReply::ChangedStringUtf8)
+                                                           : (inlineUseChangedStringV2 ? InlineReply::ChangedStringV2 : InlineReply::ChangedString)};
+                        SendInlineTextReply(changedReply);
+                    } else {
+                        ChangeInlineState(InlineState::Disappearing);
+                        if (update.type == JvmManager::KeyboardUpdate::Type::Enter) {
+                            currentResult = CloseResult::Enter;
+                            SendInlineTextReply(inlineUseUtf8 ? InlineReply::DecidedEnterUtf8 : InlineReply::DecidedEnter);
+                        } else {
+                            currentResult = CloseResult::Cancel;
+                            SendInlineReply(InlineReply::DecidedCancel);
+                        }
+                        SendInlineReply(InlineReply::Default);
+
+                        dialogToClose = dialog;
+                        dialog = {};
+
+                        ChangeInlineState(InlineState::Hidden);
+                        SendInlineReply(InlineReply::Default);
+                        finished = true;
+                    }
+                }
+            }
+
+            if (dialogToClose)
+                state.jvm->CloseKeyboard(dialogToClose);
+            if (finished)
+                break;
+        }
+
+        state.jvm->ReleaseKeyboardHandle(waitDialog);
     }
 
     void SoftwareKeyboardApplet::ProcessInlineCalc(span<u8> calc) {
@@ -378,6 +411,27 @@ namespace skyline::applet::swkbd {
                   appletMode}, mode{appletMode} {
     }
 
+    SoftwareKeyboardApplet::~SoftwareKeyboardApplet() {
+        if (mode != service::applet::LibraryAppletMode::PartialForeground &&
+            mode != service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay)
+            return;
+
+        {
+            std::scoped_lock lock{inlineMutex};
+            if (dialog) {
+                state.jvm->CloseKeyboard(dialog);
+                dialog = {};
+            }
+            if (pendingInlineWaitDialog) {
+                state.jvm->ReleaseKeyboardHandle(pendingInlineWaitDialog);
+                pendingInlineWaitDialog = {};
+            }
+        }
+
+        if (inlineInputFuture.valid())
+            inlineInputFuture.wait();
+    }
+
     Result SoftwareKeyboardApplet::Start() {
         if (mode == service::applet::LibraryAppletMode::PartialForeground ||
             mode == service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay)
@@ -452,7 +506,21 @@ namespace skyline::applet::swkbd {
     void SoftwareKeyboardApplet::PushInteractiveDataToApplet(std::shared_ptr<service::am::IStorage> data) {
         if (mode == service::applet::LibraryAppletMode::PartialForeground ||
             mode == service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay) {
-            ProcessInlineRequest(data->GetSpan());
+            JvmManager::KeyboardHandle waitDialog{};
+            {
+                std::scoped_lock lock{inlineMutex};
+                ProcessInlineRequest(data->GetSpan());
+                waitDialog = pendingInlineWaitDialog;
+                pendingInlineWaitDialog = {};
+            }
+
+            if (waitDialog) {
+                if (inlineInputFuture.valid())
+                    inlineInputFuture.wait();
+                inlineInputFuture = std::async(std::launch::async, [this, waitDialog] {
+                    WaitForInlineKeyboardInput(waitDialog);
+                });
+            }
             return;
         }
 
