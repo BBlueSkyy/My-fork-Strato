@@ -4,5 +4,6 @@
 #include "ISystemAppletProxy.h"
 
 namespace skyline::service::am {
-    ISystemAppletProxy::ISystemAppletProxy(const DeviceState &state, ServiceManager &manager) : BaseProxy(state, manager) {}
+    ISystemAppletProxy::ISystemAppletProxy(const DeviceState &state, ServiceManager &manager, u64 appletResourceUserId)
+        : BaseProxy(state, manager, appletResourceUserId) {}
 }

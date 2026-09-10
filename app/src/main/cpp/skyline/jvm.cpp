@@ -137,10 +137,12 @@ namespace skyline {
         auto buttonInteger{env->GetObjectArrayElement(returnArray, 0)};
         auto inputJString{reinterpret_cast<jstring>(env->GetObjectArrayElement(returnArray, 1))};
         auto stringChars{env->GetStringChars(inputJString, nullptr)};
-        std::u16string input{stringChars, stringChars + env->GetStringLength(inputJString)};
+        const auto inputLength{env->GetStringLength(inputJString)};
+        std::u16string input{stringChars, stringChars + inputLength};
         env->ReleaseStringChars(inputJString, stringChars);
+        const auto buttonValue{env->CallIntMethod(buttonInteger, getIntegerValueId)};
 
-        return {static_cast<KeyboardCloseResult>(env->CallIntMethod(buttonInteger, getIntegerValueId)), input};
+        return {static_cast<KeyboardCloseResult>(buttonValue), input};
     }
 
     DhcpInfo JvmManager::GetDhcpInfo() {

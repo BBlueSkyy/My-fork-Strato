@@ -23,6 +23,7 @@ namespace skyline::applet {
             // No version 6
             Version7 = 0x7, // 8.0.0 - 10.2.0
             Version8 = 0x8, // 11.0.0+
+            Version9 = 0x9,
         };
 
         /**

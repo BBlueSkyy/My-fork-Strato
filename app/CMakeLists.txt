@@ -339,9 +339,14 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/am/controller/IApplicationFunctions.cpp
         ${source_DIR}/skyline/services/am/controller/IAudioController.cpp
         ${source_DIR}/skyline/services/am/controller/ICommonStateGetter.cpp
+        ${source_DIR}/skyline/services/am/controller/ICradleFirmwareUpdater.cpp
         ${source_DIR}/skyline/services/am/controller/IDebugFunctions.cpp
         ${source_DIR}/skyline/services/am/controller/IDisplayController.cpp
+        ${source_DIR}/skyline/services/am/controller/IGlobalStateController.cpp
+        ${source_DIR}/skyline/services/am/controller/IHomeMenuFunctions.cpp
         ${source_DIR}/skyline/services/am/controller/ILibraryAppletCreator.cpp
+        ${source_DIR}/skyline/services/am/controller/ILockAccessor.cpp
+        ${source_DIR}/skyline/services/am/controller/IProcessWindingController.cpp
         ${source_DIR}/skyline/services/am/controller/ISelfController.cpp
         ${source_DIR}/skyline/services/am/controller/IWindowController.cpp
         ${source_DIR}/skyline/services/am/storage/IStorage.cpp

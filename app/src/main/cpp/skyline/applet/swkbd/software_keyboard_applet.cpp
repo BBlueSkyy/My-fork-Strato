@@ -50,10 +50,23 @@ namespace skyline::applet::swkbd {
     }
 
     void SoftwareKeyboardApplet::SendResult() {
-        if (dialog)
+        LOGD("Swkbd trace: SendResult entering (result={}, textLength={}, utf8={}, dialog={})",
+             static_cast<u32>(currentResult), currentText.size(), config.commonConfig.isUseUtf8, dialog != nullptr);
+        if (dialog) {
+            LOGD("Swkbd trace: closing host keyboard dialog");
             state.jvm->CloseKeyboard(dialog);
-        PushNormalDataAndSignal(std::make_shared<service::am::ObjIStorage<OutputResult>>(state, manager, OutputResult{currentResult, currentText, config.commonConfig.isUseUtf8}));
+            LOGD("Swkbd trace: host keyboard dialog closed");
+        }
+
+        OutputResult outputResult{currentResult, currentText, config.commonConfig.isUseUtf8};
+        auto outputStorage{std::make_shared<service::am::ObjIStorage<OutputResult>>(state, manager, std::move(outputResult))};
+
+        LOGD("Swkbd trace: pushing normal output (size=0x{:X})", sizeof(OutputResult));
+        PushNormalDataAndSignal(std::move(outputStorage));
+
+        LOGD("Swkbd trace: normal output pushed; signalling applet state change");
         onAppletStateChanged->Signal();
+        LOGD("Swkbd trace: SendResult completed");
     }
 
     SoftwareKeyboardApplet::SoftwareKeyboardApplet(
@@ -72,6 +85,7 @@ namespace skyline::applet::swkbd {
     }
 
     Result SoftwareKeyboardApplet::Start() {
+        LOGD("Swkbd trace: Start entered (mode=0x{:X})", mode);
         if (mode != service::applet::LibraryAppletMode::AllForeground) {
             LOGW("Stubbing out InlineKeyboard!");
             SendResult();
@@ -79,11 +93,15 @@ namespace skyline::applet::swkbd {
         }
 
         std::scoped_lock lock{normalInputDataMutex};
-        auto commonArgs{normalInputData.front()->GetSpan().as<service::applet::CommonArguments>()};
+        LOGD("Swkbd trace: normal input queue contains {} storage object(s)", normalInputData.size());
+        auto commonArgsSpan{normalInputData.front()->GetSpan()};
+        auto commonArgs{commonArgsSpan.as<service::applet::CommonArguments>()};
         normalInputData.pop();
 
         auto configSpan{normalInputData.front()->GetSpan()};
         normalInputData.pop();
+        LOGD("Swkbd trace: parsing inputs (apiVersion=0x{:X}, commonArgsSize=0x{:X}, configSize=0x{:X}, remainingStorageCount={})",
+             commonArgs.apiVersion, commonArgsSpan.size(), configSpan.size(), normalInputData.size());
         config = [&] {
             if (commonArgs.apiVersion < 0x30007)
                 return KeyboardConfigVB{configSpan.as<KeyboardConfigV0>()};
@@ -112,25 +130,41 @@ namespace skyline::applet::swkbd {
         if (config.commonConfig.textMaxLength > MaxOneLineChars)
             config.commonConfig.inputFormMode = InputFormMode::MultiLine;
 
+        const size_t workBufferSize{normalInputData.empty() ? 0 : normalInputData.front()->GetSpan().size()};
+        LOGD("Swkbd trace: normalized config (textMinLength={}, textMaxLength={}, inputFormMode={}, initialStringOffset=0x{:X}, initialStringLength={}, workBufferSize=0x{:X})",
+             config.commonConfig.textMinLength,
+             config.commonConfig.textMaxLength,
+             static_cast<u32>(config.commonConfig.inputFormMode),
+             config.commonConfig.initialStringOffset,
+             config.commonConfig.initialStringLength,
+             workBufferSize);
+
         if (!normalInputData.empty() && config.commonConfig.initialStringLength > 0)
             currentText = std::u16string(normalInputData.front()->GetSpan().subspan(config.commonConfig.initialStringOffset).cast<char16_t>().data(), config.commonConfig.initialStringLength);
 
+        LOGD("Swkbd trace: calling ShowKeyboard (initialTextLength={})", currentText.size());
         dialog = state.jvm->ShowKeyboard(*reinterpret_cast<JvmManager::KeyboardConfig *>(&config), currentText);
+        LOGD("Swkbd trace: ShowKeyboard returned (dialog={})", dialog != nullptr);
         if (!dialog) {
             LOGW("Couldn't show keyboard dialog, using default text");
             currentResult = CloseResult::Enter;
             currentText = FillDefaultText(config.commonConfig.textMinLength, config.commonConfig.textMaxLength);
         } else {
+            LOGD("Swkbd trace: waiting for submit or cancel");
             auto result{state.jvm->WaitForSubmitOrCancel(dialog)};
             currentResult = static_cast<CloseResult>(result.first);
             currentText = result.second;
+            LOGD("Swkbd trace: submit/cancel returned (result={}, textLength={})", static_cast<u32>(currentResult), currentText.size());
         }
         if (config.commonConfig.isUseTextCheck && currentResult == CloseResult::Enter) {
+            LOGD("Swkbd trace: pushing interactive validation request");
             PushInteractiveDataAndSignal(std::make_shared<service::am::ObjIStorage<ValidationRequest>>(state, manager, ValidationRequest{currentText, config.commonConfig.isUseUtf8}));
             validationPending = true;
         } else {
+            LOGD("Swkbd trace: sending final result without text validation");
             SendResult();
         }
+        LOGD("Swkbd trace: Start completed");
         return {};
     }
 

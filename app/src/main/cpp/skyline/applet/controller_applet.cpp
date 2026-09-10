@@ -55,6 +55,7 @@ namespace skyline::applet {
                 break;
             case ControllerAppletVersion::Version7:
             case ControllerAppletVersion::Version8:
+            case ControllerAppletVersion::Version9:
                 handle(arg.as<ControllerSupportArgNew>());
                 break;
             default:

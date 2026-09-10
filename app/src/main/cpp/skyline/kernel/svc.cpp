@@ -961,6 +961,23 @@ namespace skyline::kernel::svc {
 
     void Break(const DeviceState &state, SvcContext &ctx) {
         const u64 reason{ctx.x0};
+        const u64 info{ctx.x1};
+        const u64 size{ctx.x2};
+
+        LOGD("Guest Break: reason=0x{:X}, info=0x{:X}, size=0x{:X}, thread=#{}", reason, info, size, state.thread->id);
+
+        constexpr size_t PayloadLogLimit{0x40};
+        const size_t payloadSize{static_cast<size_t>(std::min<u64>(size, PayloadLogLimit))};
+        auto payload{span<u8>{reinterpret_cast<u8 *>(info), payloadSize}};
+        if (info && payloadSize && state.process->memory.AddressSpaceContains(payload)) {
+            const auto chunk{state.process->memory.GetChunk(payload.data())};
+            if (chunk) {
+                const u64 chunkEnd{reinterpret_cast<u64>(chunk->first) + chunk->second.size};
+                if (chunk->second.permission.r && info + payloadSize >= info && info + payloadSize <= chunkEnd)
+                    LOGD("Guest Break payload (first 0x{:X} bytes): {}", payloadSize, util::HexDump(payload));
+            }
+        }
+
         if (reason & (1ULL << 31)) {
             LOGD("Debugger is being engaged ({})", reason);
             return;
