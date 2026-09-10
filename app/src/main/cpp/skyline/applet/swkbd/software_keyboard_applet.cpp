@@ -21,7 +21,8 @@ namespace skyline::applet::swkbd {
         constexpr size_t InlineUtf16TextBytes{0x3EC};
         constexpr size_t InlineUtf8TextBytes{0x7D4};
         constexpr size_t InlineCalcOldSize{0x4A0};
-        constexpr size_t InlineCalcNewSize{0x4E8};
+        constexpr size_t InlineCalcExSize{0x4C8};
+        constexpr size_t InlineCalcExAlternativeSize{0x4E8};
 
         constexpr u64 InlineFlagInitialize{0x1};
         constexpr u64 InlineFlagAppear{0x4};
@@ -270,16 +271,17 @@ namespace skyline::applet::swkbd {
     }
 
     void SoftwareKeyboardApplet::ProcessInlineCalc(span<u8> calc) {
-        if (calc.size() < 0x18)
-            throw exception("Software keyboard inline Calc is truncated");
-
-        const u16 declaredSize{ReadInlineValue<u16>(calc, 0x4)};
-        const bool extendedLayout{declaredSize == InlineCalcNewSize ||
-                                  (declaredSize != InlineCalcOldSize && calc.size() == InlineCalcNewSize)};
-        const size_t expectedSize{extendedLayout ? InlineCalcNewSize : InlineCalcOldSize};
-        if (declaredSize != expectedSize || calc.size() < expectedSize) {
-            LOGW("Unsupported inline keyboard Calc size (declared=0x{:X}, storage=0x{:X})", declaredSize, calc.size());
-            return;
+        bool extendedLayout{};
+        switch (calc.size()) {
+            case InlineCalcOldSize:
+                break;
+            case InlineCalcExSize:
+            case InlineCalcExAlternativeSize:
+                extendedLayout = true;
+                break;
+            default:
+                LOGW("Unsupported inline keyboard Calc storage size: 0x{:X}", calc.size());
+                return;
         }
 
         const u64 flags{ReadInlineValue<u64>(calc, 0x8)};
