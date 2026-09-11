@@ -23,6 +23,7 @@ namespace skyline::applet {
             // No version 6
             Version7 = 0x7, // 8.0.0 - 10.2.0
             Version8 = 0x8, // 11.0.0+
+            Version9 = 0x9,
         };
 
         /**
@@ -103,6 +104,11 @@ namespace skyline::applet {
          * @brief Handles the 'ShowControllerSupport' mode of the controller applet
          */
         void HandleShowControllerSupport(input::NpadStyleSet styleSet, ControllerAppletVersion version, span<u8> arg);
+
+        /**
+         * @brief Completes the 'ShowControllerStrapGuide' mode and returns the standard controller result payload
+         */
+        void HandleShowControllerStrapGuide();
 
       public:
         ControllerApplet(const DeviceState &state, service::ServiceManager &manager, std::shared_ptr<kernel::type::KEvent> onAppletStateChanged, std::shared_ptr<kernel::type::KEvent> onNormalDataPushFromApplet, std::shared_ptr<kernel::type::KEvent> onInteractiveDataPushFromApplet, service::applet::LibraryAppletMode appletMode);

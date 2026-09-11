@@ -5,10 +5,11 @@
 #include "IApplicationProxy.h"
 
 namespace skyline::service::am {
-    IApplicationProxy::IApplicationProxy(const DeviceState &state, ServiceManager &manager) : BaseProxy(state, manager) {}
+    IApplicationProxy::IApplicationProxy(const DeviceState &state, ServiceManager &manager, u64 appletResourceUserId)
+        : BaseProxy(state, manager, appletResourceUserId) {}
 
-    Result IApplicationProxy::GetApplicationFunctions(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(IApplicationFunctions), session, response);
+    Result IApplicationProxy::GetApplicationFunctions(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        manager.RegisterService(SRVREG(IApplicationFunctions, appletState), session, response);
         return {};
     }
 }

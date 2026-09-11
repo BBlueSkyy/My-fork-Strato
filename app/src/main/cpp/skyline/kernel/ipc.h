@@ -196,6 +196,7 @@ namespace skyline {
           public:
             CommandHeader *header{};
             HandleDescriptor *handleDesc{};
+            u64 pid{}; //!< Client PID present when HandleDescriptor::sendPid is set
             bool isDomain{}; //!< If this is a domain request
             bool isTipc; //!< If this is request uses the TIPC protocol
             DomainHeaderRequest *domain{};

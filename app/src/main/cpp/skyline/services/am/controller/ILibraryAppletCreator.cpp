@@ -1,4 +1,3 @@
-
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
@@ -10,32 +9,65 @@
 #include "ILibraryAppletCreator.h"
 
 namespace skyline::service::am {
-    ILibraryAppletCreator::ILibraryAppletCreator(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
+    namespace {
+        constexpr Result ObjectInvalid{128, 500};
+    }
+
+    ILibraryAppletCreator::ILibraryAppletCreator(const DeviceState &state, ServiceManager &manager,
+                                                 std::shared_ptr<AppletState> appletState)
+        : BaseService(state, manager), appletState(std::move(appletState)) {}
 
     Result ILibraryAppletCreator::CreateLibraryApplet(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto appletId{request.Pop<skyline::applet::AppletId>()};
-        auto appletMode{request.Pop<applet::LibraryAppletMode>()};
-       
-        LOGD("CreateLibraryApplet: appletId = {} (0x{:X}), mode = 0x{:X}", ToString(appletId), static_cast<u32>(appletId), static_cast<u32>(appletMode));
-      
-        manager.RegisterService(SRVREG(ILibraryAppletAccessor, appletId, appletMode), session, response);
+        const auto appletId{request.Pop<skyline::applet::AppletId>()};
+        const auto appletMode{request.Pop<applet::LibraryAppletMode>()};
+        auto accessor{SRVREG(ILibraryAppletAccessor, appletId, appletMode)};
+        manager.RegisterService(accessor, session, response);
+        appletState->libraryAppletLaunchableEvent->Signal();
+        return {};
+    }
+
+    Result ILibraryAppletCreator::CreateLibraryAppletEx(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto appletId{request.Pop<skyline::applet::AppletId>()};
+        const auto appletMode{request.Pop<applet::LibraryAppletMode>()};
+        [[maybe_unused]] const u64 threadId{request.Pop<u64>()};
+        auto accessor{SRVREG(ILibraryAppletAccessor, appletId, appletMode)};
+        manager.RegisterService(accessor, session, response);
+        appletState->libraryAppletLaunchableEvent->Signal();
         return {};
     }
 
     Result ILibraryAppletCreator::CreateStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto size{request.Pop<i64>()};
-        if (size < 0)
-            throw exception("Cannot create an IStorage with a negative size");
-        manager.RegisterService(SRVREG(VectorIStorage, size), session, response);
+        const i64 size{request.Pop<i64>()};
+        if (size <= 0)
+            return ObjectInvalid;
+        manager.RegisterService(SRVREG(VectorIStorage, static_cast<size_t>(size)), session, response);
         return {};
     }
 
     Result ILibraryAppletCreator::CreateTransferMemoryStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        bool writable{request.Pop<u64>() != 0};
-        i64 size{request.Pop<i64>()};
-        if (size < 0)
-            throw exception("Cannot create an IStorage with a negative size");
-        manager.RegisterService(SRVREG(TransferMemoryIStorage, state.process->GetHandle<kernel::type::KTransferMemory>(request.copyHandles.at(0)), writable), session, response);
+        const bool writable{request.Pop<u64>() != 0};
+        const i64 size{request.Pop<i64>()};
+        if (size <= 0 || request.copyHandles.empty())
+            return ObjectInvalid;
+
+        auto transferMemory{state.process->GetHandle<kernel::type::KTransferMemory>(request.copyHandles.at(0))};
+        if (!transferMemory || static_cast<u64>(size) > transferMemory->host.size())
+            return ObjectInvalid;
+
+        manager.RegisterService(SRVREG(TransferMemoryIStorage, transferMemory, writable), session, response);
+        return {};
+    }
+
+    Result ILibraryAppletCreator::CreateHandleStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const i64 size{request.Pop<i64>()};
+        if (size <= 0 || request.copyHandles.empty())
+            return ObjectInvalid;
+
+        auto transferMemory{state.process->GetHandle<kernel::type::KTransferMemory>(request.copyHandles.at(0))};
+        if (!transferMemory || static_cast<u64>(size) > transferMemory->host.size())
+            return ObjectInvalid;
+
+        manager.RegisterService(SRVREG(TransferMemoryIStorage, transferMemory, true), session, response);
         return {};
     }
 }

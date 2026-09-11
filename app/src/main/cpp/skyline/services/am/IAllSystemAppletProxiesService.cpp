@@ -11,22 +11,22 @@ namespace skyline::service::am {
     IAllSystemAppletProxiesService::IAllSystemAppletProxiesService(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
 
     Result IAllSystemAppletProxiesService::OpenLibraryAppletProxy(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(ILibraryAppletProxy), session, response);
+        manager.RegisterService(SRVREG(ILibraryAppletProxy, request.pid), session, response);
         return {};
     }
 
     Result IAllSystemAppletProxiesService::OpenApplicationProxy(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(IApplicationProxy), session, response);
+        manager.RegisterService(SRVREG(IApplicationProxy, request.pid), session, response);
         return {};
     }
 
     Result IAllSystemAppletProxiesService::OpenOverlayAppletProxy(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(IOverlayAppletProxy), session, response);
+        manager.RegisterService(SRVREG(IOverlayAppletProxy, request.pid), session, response);
         return {};
     }
 
     Result IAllSystemAppletProxiesService::OpenSystemAppletProxy(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(ISystemAppletProxy), session, response);
+        manager.RegisterService(SRVREG(ISystemAppletProxy, request.pid), session, response);
         return {};
     }
 }

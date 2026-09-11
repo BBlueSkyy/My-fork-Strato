@@ -3,38 +3,30 @@
 
 #pragma once
 
+#include <services/am/applet_state.h>
 #include <services/serviceman.h>
 
 namespace skyline::service::am {
-    /**
-     * @brief https://switchbrew.org/wiki/Applet_Manager_services#ILibraryAppletCreator
-     */
     class ILibraryAppletCreator : public BaseService {
+      private:
+        std::shared_ptr<AppletState> appletState;
+
       public:
-        ILibraryAppletCreator(const DeviceState &state, ServiceManager &manager);
+        ILibraryAppletCreator(const DeviceState &state, ServiceManager &manager,
+                              std::shared_ptr<AppletState> appletState);
 
-        /**
-         * @brief Returns a handle to a library applet accessor
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#CreateLibraryApplet
-         */
-        Result CreateLibraryApplet(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @brief Creates an IStorage that can be used by the application, backed by service-allocated memory
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#CreateStorage
-         */
-        Result CreateStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @brief Creates an IStorage that can be used by the application, backed by the supplied transfer memory
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#CreateTransferMemoryStorage
-         */
-        Result CreateTransferMemoryStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        Result CreateLibraryApplet(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result CreateLibraryAppletEx(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result CreateStorage(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result CreateTransferMemoryStorage(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result CreateHandleStorage(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
 
         SERVICE_DECL(
-            SFUNC(0x0, ILibraryAppletCreator, CreateLibraryApplet),
-            SFUNC(0xA, ILibraryAppletCreator, CreateStorage),
-            SFUNC(0xB, ILibraryAppletCreator, CreateTransferMemoryStorage)
+            SFUNC(0, ILibraryAppletCreator, CreateLibraryApplet),
+            SFUNC(3, ILibraryAppletCreator, CreateLibraryAppletEx),
+            SFUNC(10, ILibraryAppletCreator, CreateStorage),
+            SFUNC(11, ILibraryAppletCreator, CreateTransferMemoryStorage),
+            SFUNC(12, ILibraryAppletCreator, CreateHandleStorage)
         )
     };
 }

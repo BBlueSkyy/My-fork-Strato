@@ -55,12 +55,32 @@ namespace skyline::applet {
                 break;
             case ControllerAppletVersion::Version7:
             case ControllerAppletVersion::Version8:
+            case ControllerAppletVersion::Version9:
                 handle(arg.as<ControllerSupportArgNew>());
                 break;
             default:
                 LOGW("Unsupported controller applet version {}", static_cast<u32>(version));
                 break;
         }
+    }
+
+    void ControllerApplet::HandleShowControllerStrapGuide() {
+        auto &npad{state.input->npad};
+        std::scoped_lock lock{npad.mutex};
+
+        PushNormalDataAndSignal(std::make_shared<service::am::ObjIStorage<ControllerSupportResultInfo>>(state, manager, ControllerSupportResultInfo{
+            .playerCount = static_cast<i8>(npad.GetConnectedControllerCount()),
+            .selectedId = [&npad]() {
+                for (const auto &controller : npad.controllers) {
+                    if (controller.device && controller.device->connectionState.connected)
+                        return controller.device->id;
+                }
+
+                LOGW("Controller strap guide requested but no controller is connected!");
+                return input::NpadId::Player1;
+            }(),
+            .result = {}
+        }));
     }
 
     Result ControllerApplet::Start() {
@@ -88,6 +108,32 @@ namespace skyline::applet {
                 HandleShowControllerSupport(argPrivate.styleSet, appletVersion, normalInputData.front()->GetSpan());
                 normalInputData.pop();
                 break;
+            case ControllerSupportMode::ShowControllerStrapGuide: {
+                const auto arg{normalInputData.front()->GetSpan()};
+                size_t expectedArgSize{};
+
+                switch (appletVersion) {
+                    case ControllerAppletVersion::Version3:
+                    case ControllerAppletVersion::Version4:
+                    case ControllerAppletVersion::Version5:
+                        expectedArgSize = sizeof(ControllerSupportArgOld);
+                        break;
+                    case ControllerAppletVersion::Version7:
+                    case ControllerAppletVersion::Version8:
+                    case ControllerAppletVersion::Version9:
+                        expectedArgSize = sizeof(ControllerSupportArgNew);
+                        break;
+                    default:
+                        throw exception("Unsupported controller strap guide applet version: {}", static_cast<u32>(appletVersion));
+                }
+
+                if (arg.size() != expectedArgSize)
+                    throw exception("Unexpected controller strap guide argument size: 0x{:X} (expected 0x{:X})", arg.size(), expectedArgSize);
+
+                HandleShowControllerStrapGuide();
+                normalInputData.pop();
+                break;
+            }
             default:
                 LOGW("Controller applet mode {} is unimplemented", static_cast<u32>(argPrivate.mode));
                 normalInputData.pop();

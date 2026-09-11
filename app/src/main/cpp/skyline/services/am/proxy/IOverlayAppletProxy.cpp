@@ -4,5 +4,6 @@
 #include "IOverlayAppletProxy.h"
 
 namespace skyline::service::am {
-    IOverlayAppletProxy::IOverlayAppletProxy(const DeviceState &state, ServiceManager &manager) : BaseProxy(state, manager) {}
+    IOverlayAppletProxy::IOverlayAppletProxy(const DeviceState &state, ServiceManager &manager, u64 appletResourceUserId)
+        : BaseProxy(state, manager, appletResourceUserId) {}
 }
