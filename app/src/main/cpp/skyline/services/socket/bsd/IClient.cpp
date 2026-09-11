@@ -369,9 +369,9 @@ namespace skyline::service::socket {
     }
 
     Result IClient::EventFd(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        u64 initialValue{request.Pop<u64>()};
         u32 flags{request.Pop<u32>()};
         request.Skip<u32>();
-        u64 initialValue{request.Pop<u64>()};
 
         if (flags & ~GuestEventFdValidFlags)
             return PushBsdResult(response, -1, EINVAL);
