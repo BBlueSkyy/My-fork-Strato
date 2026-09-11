@@ -278,6 +278,13 @@ namespace skyline::service::timesrv::core {
         }
 
         /**
+         * @brief Updates the timestamp associated with automatic correction and notifies listeners
+         */
+        void UpdateAutomaticCorrectionUpdatedTime(const SteadyClockTimePoint &timePoint) {
+            SetAutomaticCorrectionUpdatedTime(timePoint);
+        }
+
+        /**
          * @brief Updates the automatic correction state in shared memory and this clock
          */
         Result UpdateAutomaticCorrectionState(bool enable);
