@@ -200,7 +200,7 @@ Os sete blocos de settings foram transportados para essa base sem incluir as alt
 | 150 | [5.0.0+] GetDeviceTimeZoneLocationUpdatedTime | handler | ausente | estado vivo de timesrv; por execução |
 | 151 | [5.0.0+] SetDeviceTimeZoneLocationUpdatedTime | handler | ausente | estado vivo de timesrv; por execução |
 | 152 | [6.0.0+] GetUserSystemClockAutomaticCorrectionUpdatedTime | handler | ausente | estado vivo de timesrv; por execução |
-| 153 | [6.0.0+] SetUserSystemClockAutomaticCorrectionUpdatedTime | handler | ausente | erro; API de timesrv insuficiente |
+| 153 | [6.0.0+] SetUserSystemClockAutomaticCorrectionUpdatedTime | handler | ausente | estado vivo de timesrv; por execução |
 | 154 | [S1] [6.0.0+] GetAccountOnlineStorageSettings | ausente | ausente | erro CMIF; sem implementação |
 | 155 | [S1] [6.0.0+] SetAccountOnlineStorageSettings | ausente | ausente | erro CMIF; sem implementação |
 | 156 | [S1] [6.0.0+] GetPctlReadyFlag | ausente | ausente | erro CMIF; sem implementação |
