@@ -137,11 +137,10 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        const auto appletResourceUserId{request.Pop<u64>()};
+    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         constexpr u64 IndirectLayerConsumerHandle{1};
-        LOGI("Library applet GetIndirectLayerConsumerHandle: id=0x{:X}, aruid=0x{:X}, handle=0x{:X}",
-             static_cast<u32>(appletId), appletResourceUserId, IndirectLayerConsumerHandle);
+        LOGI("Library applet GetIndirectLayerConsumerHandle: id=0x{:X}, handle=0x{:X}",
+             static_cast<u32>(appletId), IndirectLayerConsumerHandle);
         response.Push<u64>(IndirectLayerConsumerHandle);
         return {};
     }
