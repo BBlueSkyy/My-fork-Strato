@@ -9,6 +9,8 @@
 #include "common.h"
 
 namespace skyline::service::timesrv::core {
+    constexpr size_t TimeZoneRuleSize{0x4000};
+
     /**
      * @brief TimeZoneManager handles converting POSIX times to calendar times and vice-versa by using a rule struct
      */
@@ -66,7 +68,7 @@ namespace skyline::service::timesrv::core {
         void AddOperationEvent(const std::shared_ptr<kernel::type::KEvent> &event);
 
         /**
-         * @brief Parses a raw TZIF2 file into a timezone rule that can be passed to other functions
+         * @brief Parses a raw TZIF2 file into the 0x4000-byte Horizon timezone rule ABI.
          */
         static Result ParseTimeZoneBinary(span<u8> binary, span<u8> ruleOut);
 
