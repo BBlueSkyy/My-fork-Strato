@@ -84,10 +84,18 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::PushInteractiveInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
         auto storage{request.PopService<IStorage>(0, session)};
-        const auto span{storage ? storage->GetSpan() : span<u8>{}};
-        const u32 command{span.empty() ? 0xFFFFFFFFu : static_cast<u32>(span[0])};
+        size_t storageSize{};
+        u32 command{0xFFFFFFFFu};
+        if (storage) {
+            const auto data{storage->GetSpan()};
+            storageSize = data.size();
+            if (data.size() >= sizeof(command))
+                std::memcpy(&command, data.data(), sizeof(command));
+            else if (!data.empty())
+                command = data.front();
+        }
         LOGI("Library applet PushInteractiveInData: id=0x{:X}, mode=0x{:X}, size=0x{:X}, command=0x{:X}",
-             static_cast<u32>(appletId), static_cast<u32>(appletMode), span.size(), command);
+             static_cast<u32>(appletId), static_cast<u32>(appletMode), storageSize, command);
         applet->PushInteractiveDataToApplet(std::move(storage));
         return {};
     }
