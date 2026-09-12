@@ -70,7 +70,7 @@ namespace skyline::service::visrv {
     }
 
     Result IApplicationDisplayService::OpenLayer(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto displayName(request.PopString(0x40)};
+        auto displayName(request.PopString(0x40));
         auto layerId{request.Pop<u64>()};
         LOGD("Opening layer #{} on display: {}", layerId, displayName);
 
