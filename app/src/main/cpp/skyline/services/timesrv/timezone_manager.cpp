@@ -125,14 +125,17 @@ namespace skyline::service::timesrv::core {
     }
 
     Result TimeZoneManager::ParseTimeZoneBinary(span<u8> binary, span<u8> ruleOut) {
-        if (binary.empty() || ruleOut.empty())
+        if (binary.empty() || ruleOut.size_bytes() < TimeZoneRuleSize)
             return result::InvalidArgument;
 
         auto ruleObj{tz_tzalloc(binary.data(), static_cast<long>(binary.size()))};
         if (!ruleObj)
             return result::RuleConversionFailed;
 
-        std::memcpy(ruleOut.data(), ruleObj, ruleOut.size_bytes());
+        // tzcode is built with HORIZON_COMPAT, which pads its state to the
+        // 0x4000-byte nn::time timezone-rule ABI. Never copy the caller's
+        // arbitrary buffer size from the allocated state.
+        std::memcpy(ruleOut.data(), ruleObj, TimeZoneRuleSize);
         tz_tzfree(ruleObj);
         return {};
     }
