@@ -21,8 +21,7 @@ namespace skyline::applet::swkbd {
         constexpr size_t InlineUtf16TextBytes{0x3EC};
         constexpr size_t InlineUtf8TextBytes{0x7D4};
         constexpr size_t InlineCalcOldSize{0x4A0};
-        constexpr size_t InlineCalcExSize{0x4C8};
-        constexpr size_t InlineCalcExAlternativeSize{0x4E8};
+        constexpr size_t InlineCalcNewSize{0x4E8};
 
         constexpr u64 InlineFlagInitialize{0x1};
         constexpr u64 InlineFlagAppear{0x4};
@@ -127,6 +126,7 @@ namespace skyline::applet::swkbd {
         const auto expectedMode{partialForeground
                                     ? service::applet::LibraryAppletMode::PartialForeground
                                     : service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay};
+        LOGD("Inline swkbd start: mode=0x{:X}, modeFlag={}", static_cast<u32>(mode), partialForeground);
         if (mode != expectedMode)
             LOGW("Inline keyboard InitializeArg mode does not match LibraryAppletMode (expected=0x{:X}, actual=0x{:X})",
                  static_cast<u32>(expectedMode), static_cast<u32>(mode));
@@ -137,7 +137,12 @@ namespace skyline::applet::swkbd {
     }
 
     void SoftwareKeyboardApplet::ChangeInlineState(InlineState state) {
+        if (inlineState == state)
+            return;
+
         inlineState = state;
+        LOGD("Inline swkbd state -> 0x{:X}", static_cast<u32>(inlineState));
+        SendInlineReply(InlineReply::Default);
     }
 
     void SoftwareKeyboardApplet::SendInlineReply(InlineReply reply) {
@@ -145,8 +150,8 @@ namespace skyline::applet::swkbd {
         std::vector<u8> response(size);
         WriteInlineValue(response, 0, inlineState);
         WriteInlineValue(response, sizeof(u32), reply);
-        if (reply == InlineReply::FinishedInitialize)
-            response[InlineReplyHeaderSize] = 1;
+        LOGD("Inline swkbd reply: type=0x{:X}, state=0x{:X}, size=0x{:X}",
+             static_cast<u32>(reply), static_cast<u32>(inlineState), response.size());
 
         PushInteractiveDataAndSignal(std::make_shared<service::am::VectorIStorage>(state, manager, std::move(response)));
     }
@@ -181,11 +186,13 @@ namespace skyline::applet::swkbd {
                              std::clamp(inlineCursorPosition, 0, static_cast<i32>(currentText.size())));
         }
 
+        LOGD("Inline swkbd text reply: type=0x{:X}, state=0x{:X}, chars={}",
+             static_cast<u32>(reply), static_cast<u32>(inlineState), currentText.size());
         PushInteractiveDataAndSignal(std::make_shared<service::am::VectorIStorage>(state, manager, std::move(response)));
     }
 
-    void SoftwareKeyboardApplet::ConfigureInlineKeyboard(span<u8> calc, bool) {
-        const size_t appearOffset{0x20};
+    void SoftwareKeyboardApplet::ConfigureInlineKeyboard(span<u8> calc, bool extendedLayout) {
+        const size_t appearOffset{static_cast<size_t>(extendedLayout ? 0x18 : 0x20)};
 
         config = KeyboardConfigVB{};
         config.commonConfig.keyboardMode = ReadInlineValue<KeyboardMode>(calc, appearOffset);
@@ -216,24 +223,15 @@ namespace skyline::applet::swkbd {
     void SoftwareKeyboardApplet::ShowInlineKeyboard() {
         ChangeInlineState(InlineState::Appearing);
         dialog = state.jvm->ShowKeyboard(*reinterpret_cast<JvmManager::KeyboardConfig *>(&config), currentText);
-        ChangeInlineState(InlineState::Shown);
 
         if (!dialog) {
             LOGW("Couldn't show inline keyboard dialog");
-            ChangeInlineState(InlineState::Disappearing);
             SendInlineReply(InlineReply::DecidedCancel);
-            SendInlineReply(InlineReply::Default);
             ChangeInlineState(InlineState::Hidden);
-            SendInlineReply(InlineReply::Default);
             return;
         }
 
-        const InlineReply changedReply{inlineUseUtf8
-                                           ? (inlineUseChangedStringV2 ? InlineReply::ChangedStringUtf8V2 : InlineReply::ChangedStringUtf8)
-                                           : (inlineUseChangedStringV2 ? InlineReply::ChangedStringV2 : InlineReply::ChangedString)};
-        SendInlineTextReply(changedReply);
-        SendInlineReply(InlineReply::Default);
-
+        ChangeInlineState(InlineState::Shown);
         pendingInlineWaitDialog = state.jvm->CloneKeyboardHandle(dialog);
     }
 
@@ -242,19 +240,16 @@ namespace skyline::applet::swkbd {
             return;
 
         ChangeInlineState(InlineState::Disappearing);
-        SendInlineReply(InlineReply::Default);
         if (dialog) {
             state.jvm->CloseKeyboard(dialog);
             dialog = {};
         }
         ChangeInlineState(InlineState::Hidden);
-        SendInlineReply(InlineReply::Default);
     }
 
     void SoftwareKeyboardApplet::WaitForInlineKeyboardInput(JvmManager::KeyboardHandle waitDialog) {
         while (true) {
             auto update{state.jvm->WaitForInlineKeyboardUpdate(waitDialog)};
-            jobject dialogToClose{};
             bool finished{};
 
             {
@@ -274,7 +269,6 @@ namespace skyline::applet::swkbd {
                                                            : (inlineUseChangedStringV2 ? InlineReply::ChangedStringV2 : InlineReply::ChangedString)};
                         SendInlineTextReply(changedReply);
                     } else {
-                        ChangeInlineState(InlineState::Disappearing);
                         if (update.type == JvmManager::KeyboardUpdate::Type::Enter) {
                             currentResult = CloseResult::Enter;
                             SendInlineTextReply(inlineUseUtf8 ? InlineReply::DecidedEnterUtf8 : InlineReply::DecidedEnter);
@@ -282,20 +276,12 @@ namespace skyline::applet::swkbd {
                             currentResult = CloseResult::Cancel;
                             SendInlineReply(InlineReply::DecidedCancel);
                         }
-                        SendInlineReply(InlineReply::Default);
-
-                        dialogToClose = dialog;
-                        dialog = {};
-
-                        ChangeInlineState(InlineState::Hidden);
-                        SendInlineReply(InlineReply::Default);
+                        HideInlineKeyboard();
                         finished = true;
                     }
                 }
             }
 
-            if (dialogToClose)
-                state.jvm->CloseKeyboard(dialogToClose);
             if (finished)
                 break;
         }
@@ -304,23 +290,35 @@ namespace skyline::applet::swkbd {
     }
 
     void SoftwareKeyboardApplet::ProcessInlineCalc(span<u8> calc) {
+        if (calc.size() < 0x18) {
+            LOGW("Software keyboard inline Calc is truncated: 0x{:X}", calc.size());
+            return;
+        }
+
+        const auto calcArgSize{ReadInlineValue<u16>(calc, 0x4)};
+        if (calcArgSize != calc.size()) {
+            LOGW("Software keyboard inline Calc size mismatch: header=0x{:X}, storage=0x{:X}", calcArgSize, calc.size());
+            return;
+        }
+
         bool extendedLayout{};
-        switch (calc.size()) {
+        switch (calcArgSize) {
             case InlineCalcOldSize:
                 break;
-            case InlineCalcExSize:
-            case InlineCalcExAlternativeSize:
+            case InlineCalcNewSize:
                 extendedLayout = true;
                 break;
             default:
-                LOGW("Unsupported inline keyboard Calc storage size: 0x{:X}", calc.size());
+                LOGW("Unsupported inline keyboard Calc size: 0x{:X}", calcArgSize);
                 return;
         }
 
         const u64 flags{ReadInlineValue<u64>(calc, 0x8)};
-        const size_t cursorOffset{0x1C};
+        const size_t cursorOffset{static_cast<size_t>(extendedLayout ? 0x8C : 0x1C)};
         const size_t inputTextOffset{static_cast<size_t>(extendedLayout ? 0x90 : 0x68)};
         const size_t utf8Offset{static_cast<size_t>(extendedLayout ? 0x484 : 0x45C)};
+        LOGD("Inline swkbd Calc: size=0x{:X}, layout={}, flags=0x{:X}, state=0x{:X}",
+             calcArgSize, extendedLayout ? "new" : "old", flags, static_cast<u32>(inlineState));
 
         if (flags & InlineFlagSetInputText)
             currentText = ReadInlineString(calc, inputTextOffset, InlineInputTextBytes);
@@ -329,31 +327,28 @@ namespace skyline::applet::swkbd {
         if (flags & InlineFlagSetUtf8Mode)
             inlineUseUtf8 = ReadInlineValue<u8>(calc, utf8Offset) != 0;
 
-        if (flags & InlineFlagUnsetCustomizeDictionary)
+        if (inlineState <= InlineState::Hidden && (flags & InlineFlagUnsetCustomizeDictionary))
             SendInlineReply(InlineReply::UnsetCustomizeDictionary);
-        if (flags & InlineFlagUnsetUserWordInfo)
+        if (inlineState <= InlineState::Hidden && (flags & InlineFlagUnsetUserWordInfo))
             SendInlineReply(InlineReply::ReleasedUserWordInfo);
 
         const bool initialize{(flags & InlineFlagInitialize) != 0};
         if (initialize && inlineState == InlineState::Uninitialized) {
             ConfigureInlineKeyboard(calc, extendedLayout);
-            SendInlineReply(InlineReply::FinishedInitialize);
             ChangeInlineState(InlineState::Hidden);
+            SendInlineReply(InlineReply::FinishedInitialize);
         }
 
-        bool visibilityHandled{};
         if ((flags & InlineFlagAppear) && inlineState == InlineState::Hidden) {
             ConfigureInlineKeyboard(calc, extendedLayout);
             ShowInlineKeyboard();
-            visibilityHandled = true;
-        } else if ((flags & InlineFlagDisappear) &&
-                   (inlineState == InlineState::Shown || inlineState == InlineState::Appearing)) {
-            HideInlineKeyboard();
-            visibilityHandled = true;
+            return;
         }
 
-        if (!visibilityHandled)
-            SendInlineReply(InlineReply::Default);
+        if ((flags & InlineFlagDisappear) && inlineState == InlineState::Shown) {
+            HideInlineKeyboard();
+            return;
+        }
     }
 
     void SoftwareKeyboardApplet::ProcessInlineRequest(span<u8> data) {
@@ -363,6 +358,8 @@ namespace skyline::applet::swkbd {
         }
 
         const auto request{ReadInlineValue<InlineRequest>(data, 0)};
+        LOGD("Inline swkbd request: type=0x{:X}, size=0x{:X}, state=0x{:X}",
+             static_cast<u32>(request), data.size(), static_cast<u32>(inlineState));
         switch (request) {
             case InlineRequest::Finalize:
                 if (dialog) {
