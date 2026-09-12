@@ -17,18 +17,27 @@ namespace skyline::service::am {
           appletId(appletId), appletMode(appletMode),
           applet(skyline::applet::CreateApplet(state, manager, appletId, stateChangeEvent,
                                                popNormalOutDataEvent, popInteractiveOutDataEvent,
-                                               appletMode)) {
+                                               appletMode)), indirectLayers(manager.indirectLayers) {
+        if (appletMode == applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay)
+            indirectLayerHandle = indirectLayers->Register(applet);
         stateChangeEventHandle = state.process->InsertItem(stateChangeEvent);
         popNormalOutDataEventHandle = state.process->InsertItem(popNormalOutDataEvent);
         popInteractiveOutDataEventHandle = state.process->InsertItem(popInteractiveOutDataEvent);
         LOGI("Applet accessor for {} ID created with appletMode 0x{:X}", ToString(appletId), appletMode);
     }
 
+    ILibraryAppletAccessor::~ILibraryAppletAccessor() {
+        indirectLayers->Unregister(indirectLayerHandle);
+    }
+
     Result ILibraryAppletAccessor::StartApplet() {
         LOGI("Library applet Start: id=0x{:X}, mode=0x{:X}",
              static_cast<u32>(appletId), static_cast<u32>(appletMode));
         stateChangeEvent->ResetSignal();
-        return applet->Start();
+        const auto result{applet->Start()};
+        LOGI("Library applet Start completed: id=0x{:X}, mode=0x{:X}, result=0x{:X}",
+             static_cast<u32>(appletId), static_cast<u32>(appletMode), static_cast<u32>(result));
+        return result;
     }
 
     bool ILibraryAppletAccessor::IsAppletCompleted() const {
@@ -36,6 +45,8 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::GetAppletStateChangedEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        LOGI("Library applet GetAppletStateChangedEvent: id=0x{:X}, handle=0x{:X}",
+             static_cast<u32>(appletId), stateChangeEventHandle);
         response.copyHandles.push_back(stateChangeEventHandle);
         return {};
     }
@@ -52,11 +63,13 @@ namespace skyline::service::am {
     Result ILibraryAppletAccessor::RequestExit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
         // Strato frontends are in-process rather than independent HOS processes. Marking the
         // state event completes the same observable AM contract without killing the application.
+        indirectLayers->Unregister(indirectLayerHandle);
         stateChangeEvent->Signal();
         return {};
     }
 
     Result ILibraryAppletAccessor::Terminate(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        indirectLayers->Unregister(indirectLayerHandle);
         stateChangeEvent->Signal();
         return {};
     }
@@ -138,10 +151,11 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        constexpr u64 IndirectLayerConsumerHandle{1};
+        if (!indirectLayerHandle || !indirectLayers->Get(indirectLayerHandle))
+            return result::ObjectInvalid;
         LOGI("Library applet GetIndirectLayerConsumerHandle: id=0x{:X}, handle=0x{:X}",
-             static_cast<u32>(appletId), IndirectLayerConsumerHandle);
-        response.Push<u64>(IndirectLayerConsumerHandle);
+             static_cast<u32>(appletId), indirectLayerHandle);
+        response.Push<u64>(indirectLayerHandle);
         return {};
     }
 

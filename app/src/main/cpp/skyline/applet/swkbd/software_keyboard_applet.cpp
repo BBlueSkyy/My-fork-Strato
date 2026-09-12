@@ -132,7 +132,9 @@ namespace skyline::applet::swkbd {
                  static_cast<u32>(expectedMode), static_cast<u32>(mode));
 
         normalInputData.pop();
+        std::scoped_lock inlineLock{inlineMutex};
         inlineState = InlineState::Uninitialized;
+        inlineStarted = true;
         return {};
     }
 
@@ -334,6 +336,7 @@ namespace skyline::applet::swkbd {
 
         const bool initialize{(flags & InlineFlagInitialize) != 0};
         if (initialize && inlineState == InlineState::Uninitialized) {
+            LOGI("Inline swkbd initializing from Calc: size=0x{:X}, flags=0x{:X}", calcArgSize, flags);
             ConfigureInlineKeyboard(calc, extendedLayout);
             ChangeInlineState(InlineState::Hidden);
             SendInlineReply(InlineReply::FinishedInitialize);
@@ -362,6 +365,7 @@ namespace skyline::applet::swkbd {
              static_cast<u32>(request), data.size(), static_cast<u32>(inlineState));
         switch (request) {
             case InlineRequest::Finalize:
+                inlineStarted = false;
                 if (dialog) {
                     state.jvm->CloseKeyboard(dialog);
                     dialog = {};
@@ -494,6 +498,17 @@ namespace skyline::applet::swkbd {
 
     Result SoftwareKeyboardApplet::GetResult() {
         return {};
+    }
+
+    bool SoftwareKeyboardApplet::GetIndirectLayerImage(span<u8> image) {
+        std::scoped_lock lock{inlineMutex};
+        if (mode != service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay || !inlineStarted)
+            return false;
+
+        // The Android frontend draws the keyboard above the game's surface. Its guest layer
+        // is transparent, including pitch/height padding, so it does not obscure the game.
+        std::fill(image.begin(), image.end(), u8{});
+        return true;
     }
 
     void SoftwareKeyboardApplet::PushNormalDataToApplet(std::shared_ptr<service::am::IStorage> data) {

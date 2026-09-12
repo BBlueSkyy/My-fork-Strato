@@ -119,6 +119,7 @@ namespace skyline::applet::swkbd {
         std::future<void> inlineInputFuture;
         JvmManager::KeyboardHandle pendingInlineWaitDialog{};
         InlineState inlineState{InlineState::Uninitialized};
+        bool inlineStarted{};
         bool inlineUseUtf8{};
         bool inlineUseChangedStringV2{};
         i32 inlineCursorPosition{};
@@ -145,6 +146,8 @@ namespace skyline::applet::swkbd {
         Result Start() override;
 
         Result GetResult() override;
+
+        bool GetIndirectLayerImage(span<u8> image) override;
 
         void PushNormalDataToApplet(std::shared_ptr<service::am::IStorage> data) override;
 
