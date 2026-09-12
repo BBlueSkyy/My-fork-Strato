@@ -207,12 +207,16 @@ namespace skyline::service::timesrv {
             return result::InvalidArgument;
 
         auto calendarTime{request.Pop<CalendarTime>()};
-        auto posixTime{core::TimeZoneManager::ToPosixTime(reinterpret_cast<tz_timezone_t>(request.inputBuf.at(0).data()), calendarTime)};
-        if (!posixTime)
-            return posixTime;
+        auto posixTimes{core::TimeZoneManager::ToPosixTime(reinterpret_cast<tz_timezone_t>(request.inputBuf.at(0).data()), calendarTime)};
+        if (!posixTimes)
+            return posixTimes;
 
-        request.outputBuf.at(0).as<PosixTime>() = *posixTime;
-        response.Push<u32>(1);
+        auto output{request.outputBuf.at(0).cast<PosixTime>()};
+        const size_t count{std::min(output.size(), posixTimes->size())};
+        for (size_t i{}; i < count; ++i)
+            output[i] = posixTimes->at(i);
+
+        response.Push<u32>(static_cast<u32>(count));
         return {};
     }
 
@@ -221,12 +225,16 @@ namespace skyline::service::timesrv {
             return result::InvalidArgument;
 
         auto calendarTime{request.Pop<CalendarTime>()};
-        auto posixTime{core.timeZoneManager.ToPosixTimeWithMyRule(calendarTime)};
-        if (!posixTime)
-            return posixTime;
+        auto posixTimes{core.timeZoneManager.ToPosixTimeWithMyRule(calendarTime)};
+        if (!posixTimes)
+            return posixTimes;
 
-        request.outputBuf.at(0).as<PosixTime>() = *posixTime;
-        response.Push<u32>(1);
+        auto output{request.outputBuf.at(0).cast<PosixTime>()};
+        const size_t count{std::min(output.size(), posixTimes->size())};
+        for (size_t i{}; i < count; ++i)
+            output[i] = posixTimes->at(i);
+
+        response.Push<u32>(static_cast<u32>(count));
         return {};
     }
 }
