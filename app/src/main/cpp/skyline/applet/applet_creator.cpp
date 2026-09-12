@@ -17,13 +17,15 @@ namespace skyline::applet {
         std::shared_ptr<kernel::type::KEvent> onNormalDataPushFromApplet,
         std::shared_ptr<kernel::type::KEvent> onInteractiveDataPushFromApplet,
         service::applet::LibraryAppletMode appletMode) {
+        LOGI("CreateApplet dispatch: id=0x{:X}, mode=0x{:X}",
+             static_cast<u32>(appletId), static_cast<u32>(appletMode));
         switch (appletId) {
             case AppletId::LibraryAppletController:
                 return std::make_shared<ControllerApplet>(state, manager, std::move(onAppletStateChanged), std::move(onNormalDataPushFromApplet), std::move(onInteractiveDataPushFromApplet), appletMode);
             case AppletId::LibraryAppletPlayerSelect:
                 return std::make_shared<PlayerSelectApplet>(state, manager, std::move(onAppletStateChanged), std::move(onNormalDataPushFromApplet), std::move(onInteractiveDataPushFromApplet), appletMode);
             case AppletId::LibraryAppletMiiEdit:
-                return std::make_shared<MiiEditApplet>(state, manager, std::move(onAppletStateChanged), std::move(onNormalDataPushFromApplet), std::move(onInteractiveDataPushFromApplet), appletMode); 
+                return std::make_shared<MiiEditApplet>(state, manager, std::move(onAppletStateChanged), std::move(onNormalDataPushFromApplet), std::move(onInteractiveDataPushFromApplet), appletMode);
             case AppletId::LibraryAppletSwkbd:
                 return std::make_shared<swkbd::SoftwareKeyboardApplet>(state, manager, std::move(onAppletStateChanged), std::move(onNormalDataPushFromApplet), std::move(onInteractiveDataPushFromApplet), appletMode);
             case AppletId::LibraryAppletError:

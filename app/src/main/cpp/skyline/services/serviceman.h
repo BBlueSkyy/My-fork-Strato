@@ -4,6 +4,7 @@
 #pragma once
 
 #include <kernel/types/KSession.h>
+#include "am/applet/indirect_layer_registry.h"
 #include "base_service.h"
 
 namespace skyline::service {
@@ -24,6 +25,7 @@ namespace skyline::service {
       public:
         std::shared_ptr<BaseService> smUserInterface; //!< Used by applications to open connections to services
         std::shared_ptr<GlobalServiceState> globalServiceState;
+        std::shared_ptr<am::IndirectLayerRegistry> indirectLayers{std::make_shared<am::IndirectLayerRegistry>()};
 
         ServiceManager(const DeviceState &state);
 

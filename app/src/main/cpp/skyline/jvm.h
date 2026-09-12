@@ -38,7 +38,7 @@ namespace skyline {
         jobject settingsInstance; //!< The settings instance
 
       public:
-        KtSettings(JNIEnv *env, jobject settingsInstance) : env(env), settingsInstance(settingsInstance), settingsClass(env->GetObjectClass(settingsInstance)) {}
+        KtSettings(JNIEnv *env, jobject settingsInstance) : env{env}, settingsInstance{settingsInstance}, settingsClass{env->GetObjectClass(settingsInstance)} {}
 
         KtSettings(const KtSettings &) = delete;
 
@@ -80,12 +80,24 @@ namespace skyline {
         using KeyboardCloseResult = u32;
         using KeyboardTextCheckResult = u32;
 
+        struct KeyboardUpdate {
+            enum class Type : u32 {
+                Changed = 0,
+                Enter = 1,
+                Cancel = 2,
+                Closed = 3,
+            };
+
+            Type type;
+            std::u16string text;
+            i32 cursor;
+        };
 
         jobject instance; //!< A reference to the activity
         jclass instanceClass; //!< The class of the activity
 
         /**
-         * @param env A pointer to the JNI environment
+         * @param env A pointer to the current jni environment
          * @param instance A reference to the activity
          */
         JvmManager(JNIEnv *env, jobject instance);
@@ -170,9 +182,24 @@ namespace skyline {
         KeyboardHandle ShowKeyboard(KeyboardConfig &config, std::u16string initialText);
 
         /**
+         * @brief Creates an independent global reference to a keyboard dialog
+         */
+        KeyboardHandle CloneKeyboardHandle(KeyboardHandle dialog);
+
+        /**
+         * @brief Releases a keyboard dialog global reference
+         */
+        void ReleaseKeyboardHandle(KeyboardHandle dialog);
+
+        /**
          * @brief A call to EmulationActivity.waitForSubmitOrCancel in Kotlin
          */
         std::pair<KeyboardCloseResult, std::u16string> WaitForSubmitOrCancel(KeyboardHandle dialog);
+
+        /**
+         * @brief Waits for the next inline keyboard frontend update
+         */
+        KeyboardUpdate WaitForInlineKeyboardUpdate(KeyboardHandle dialog);
 
         /**
          * @brief A call to EmulationActivity.closeKeyboard in Kotlin
@@ -225,8 +252,11 @@ namespace skyline {
         jmethodID vibrateDeviceId;
         jmethodID clearVibrationDeviceId;
 
+        jclass keyboardDialogClass;
         jmethodID showKeyboardId;
         jmethodID waitForSubmitOrCancelId;
+        jmethodID waitForInlineUpdateId;
+        jmethodID cancelInlineWaitId;
         jmethodID closeKeyboardId;
         jmethodID showValidationResultId;
         jmethodID getIntegerValueId;

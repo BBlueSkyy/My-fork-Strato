@@ -30,7 +30,8 @@ namespace skyline::service::am {
             return {};
         std::shared_ptr<IStorage> data(normalOutputData.front());
         normalOutputData.pop();
-        onNormalDataPushFromApplet->ResetSignal();
+        if (normalOutputData.empty())
+            onNormalDataPushFromApplet->ResetSignal();
         return data;
     }
 
@@ -40,7 +41,8 @@ namespace skyline::service::am {
             return {};
         std::shared_ptr<IStorage> data(interactiveOutputData.front());
         interactiveOutputData.pop();
-        onInteractiveDataPushFromApplet->ResetSignal();
+        if (interactiveOutputData.empty())
+            onInteractiveDataPushFromApplet->ResetSignal();
         return data;
     }
 
