@@ -5,6 +5,7 @@
 
 #include <horizon_time.h>
 #include <common.h>
+#include <kernel/types/KEvent.h>
 #include "common.h"
 
 namespace skyline::service::timesrv::core {
@@ -20,12 +21,17 @@ namespace skyline::service::timesrv::core {
         int locationCount{}; //!< The number of possible timezone binary locations
         std::array<u8, 0x10> binaryVersion{}; //!< The version of the tzdata package
         LocationName locationName{}; //!< Name of the currently selected location
+        std::vector<std::weak_ptr<kernel::type::KEvent>> operationEvents;
 
         void MarkInitialized() {
             initialized = true;
         }
 
+        void SignalOperationEventsLocked();
+
       public:
+        ~TimeZoneManager();
+
         bool IsInitialized() {
             return initialized;
         }
@@ -55,6 +61,11 @@ namespace skyline::service::timesrv::core {
         void SetBinaryVersion(std::array<u8, 0x10> pBinaryVersion);
 
         /**
+         * @brief Registers an operation event signalled whenever the active timezone changes.
+         */
+        void AddOperationEvent(const std::shared_ptr<kernel::type::KEvent> &event);
+
+        /**
          * @brief Parses a raw TZIF2 file into a timezone rule that can be passed to other functions
          */
         static Result ParseTimeZoneBinary(span<u8> binary, span<u8> ruleOut);
@@ -65,11 +76,9 @@ namespace skyline::service::timesrv::core {
         static ResultValue<FullCalendarTime> ToCalendarTime(tz_timezone_t pRule, PosixTime posixTime);
 
         /**
-         * @brief Converts a POSIX to a calendar time using the current location's rule
+         * @brief Converts a POSIX time to a calendar time using the current location's rule
          */
-        ResultValue<FullCalendarTime> ToCalendarTimeWithMyRule(PosixTime posixTime) {
-            return ToCalendarTime(rule, posixTime);
-        }
+        ResultValue<FullCalendarTime> ToCalendarTimeWithMyRule(PosixTime posixTime);
 
         /**
          * @brief Converts a calendar time to a POSIX time using the given rule
@@ -79,8 +88,6 @@ namespace skyline::service::timesrv::core {
         /**
          * @brief Converts a calendar time to a POSIX time using the current location's rule
          */
-        ResultValue<PosixTime> ToPosixTimeWithMyRule(CalendarTime calendarTime) {
-            return ToPosixTime(rule, calendarTime);
-        }
+        ResultValue<PosixTime> ToPosixTimeWithMyRule(CalendarTime calendarTime);
     };
 }
