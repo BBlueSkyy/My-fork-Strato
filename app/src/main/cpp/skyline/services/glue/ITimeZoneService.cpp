@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <services/timesrv/ITimeZoneService.h>
+#include <services/timesrv/results.h>
 #include "ITimeZoneService.h"
 
 namespace skyline::service::glue {
