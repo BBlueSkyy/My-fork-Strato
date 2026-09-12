@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <kernel/types/KProcess.h>
+#include <services/settings/settings_items.h>
 #include "results.h"
 #include "core.h"
 #include "ISteadyClock.h"
@@ -45,7 +46,7 @@ namespace skyline::service::timesrv {
     }
 
     Result IStaticService::GetEphemeralNetworkSystemClock(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(std::make_shared<ISystemClock>(state, manager, core.networkSystemClock, permissions.writeNetworkSystemClock, permissions.ignoreUninitializedChecks), session, response);
+        manager.RegisterService(std::make_shared<ISystemClock>(state, manager, core.empheralSystemClock, permissions.writeNetworkSystemClock, permissions.ignoreUninitializedChecks), session, response);
         return {};
     }
 
@@ -57,14 +58,24 @@ namespace skyline::service::timesrv {
     }
 
     Result IStaticService::SetStandardSteadyClockInternalOffset(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        if (permissions.writeSteadyClock)
-            return result::Unimplemented;
-        else
+        if (!permissions.writeSteadyClock)
             return result::PermissionDenied;
+        if (!core.standardSteadyClock.IsClockInitialized())
+            return result::ClockUninitialized;
+
+        const auto offset{request.Pop<TimeSpanType>()};
+        core.standardSteadyClock.SetInternalOffset(offset);
+        core.timeSharedMemory.SetSteadyClockRawTimePoint(core.standardSteadyClock.GetCurrentRawTimePoint());
+        return {};
     }
 
     Result IStaticService::GetStandardSteadyClockRtcValue(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        return result::Unimplemented;
+        auto rtcValue{core.standardSteadyClock.GetRtcValue()};
+        if (!rtcValue)
+            return rtcValue;
+
+        response.Push(*rtcValue);
+        return {};
     }
 
     Result IStaticService::IsStandardUserSystemClockAutomaticCorrectionEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -82,11 +93,20 @@ namespace skyline::service::timesrv {
         if (!permissions.writeUserSystemClock)
             return result::PermissionDenied;
 
-        return core.userSystemClock.UpdateAutomaticCorrectionState(request.Pop<u8>());
+        const auto enabled{request.Pop<u8>()};
+        if (enabled > 1)
+            return result::InvalidArgument;
+
+        return core.userSystemClock.UpdateAutomaticCorrectionState(enabled != 0);
     }
 
     Result IStaticService::GetStandardUserSystemClockInitialYear(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        return result::Unimplemented;
+        const auto *item{settings::FindSettingsItem("time", "standard_user_clock_initial_year")};
+        if (!item || item->size != sizeof(i32))
+            return result::InvalidArgument;
+
+        response.Push<i32>(static_cast<i32>(item->value));
+        return {};
     }
 
     Result IStaticService::IsStandardNetworkSystemClockAccuracySufficient(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -150,7 +170,7 @@ namespace skyline::service::timesrv {
         out.userCalendarTime = userCalendarTime->calendarTime;
         out.userCalendarAdditionalInfo = userCalendarTime->additionalInfo;
 
-        // Not necessarily a fatal error if this fails
+        // A network clock mismatch does not invalidate a user snapshot.
         auto networkPosixTime{ClockSnapshot::GetCurrentTime(out.steadyClockTimePoint, out.networkContext)};
         if (networkPosixTime)
             out.networkPosixTime = *networkPosixTime;
@@ -207,13 +227,23 @@ namespace skyline::service::timesrv {
         auto snapshotA{request.inputBuf.at(0).as<ClockSnapshot>()};
         auto snapshotB{request.inputBuf.at(1).as<ClockSnapshot>()};
 
-        TimeSpanType difference{TimeSpanType::FromSeconds(snapshotB.userContext.offset - snapshotA.userContext.offset)};
+        const TimeSpanType difference{TimeSpanType::FromSeconds(snapshotB.userContext.offset - snapshotA.userContext.offset)};
 
-        if (snapshotA.userContext.timestamp.clockSourceId != snapshotB.userContext.timestamp.clockSourceId) {
-            difference = 0;
-        } else if (snapshotA.automaticCorrectionEnabled && snapshotB.automaticCorrectionEnabled) {
-            if (snapshotA.networkContext.timestamp.clockSourceId != snapshotA.steadyClockTimePoint.clockSourceId || snapshotB.networkContext.timestamp.clockSourceId != snapshotB.steadyClockTimePoint.clockSourceId)
-                difference = 0;
+        if (snapshotA.userContext == snapshotB.userContext ||
+            snapshotA.userContext.timestamp.clockSourceId != snapshotB.userContext.timestamp.clockSourceId) {
+            response.Push<i64>(0);
+            return {};
+        }
+
+        if (!snapshotA.automaticCorrectionEnabled || !snapshotB.automaticCorrectionEnabled) {
+            response.Push<i64>(difference.Nanoseconds());
+            return {};
+        }
+
+        if (snapshotA.networkContext.timestamp.clockSourceId == snapshotA.steadyClockTimePoint.clockSourceId ||
+            snapshotB.networkContext.timestamp.clockSourceId == snapshotB.steadyClockTimePoint.clockSourceId) {
+            response.Push<i64>(0);
+            return {};
         }
 
         response.Push<i64>(difference.Nanoseconds());
@@ -230,12 +260,12 @@ namespace skyline::service::timesrv {
             return difference;
         }
 
-        // If GetSpanBetween fails then fall back to comparing POSIX timepoints
+        // If GetSpanBetween fails then fall back to comparing POSIX timepoints.
         if (snapshotA.networkPosixTime && snapshotB.networkPosixTime) {
             response.Push(TimeSpanType::FromSeconds(snapshotB.networkPosixTime - snapshotA.networkPosixTime).Nanoseconds());
             return {};
-        } else {
-            return result::InvalidComparison;
         }
+
+        return result::InvalidComparison;
     }
 }

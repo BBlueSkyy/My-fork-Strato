@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <kernel/types/KEvent.h>
 #include <services/serviceman.h>
 
 namespace skyline::service::timesrv {
@@ -18,6 +19,7 @@ namespace skyline::service::timesrv {
       private:
         core::TimeServiceObject &core;
         bool writeable; //!< If this instance is allowed to set the device timezone
+        std::shared_ptr<kernel::type::KEvent> operationEvent;
 
       public:
         ITimeZoneService(const DeviceState &state, ServiceManager &manager, core::TimeServiceObject &core, bool writeable);
@@ -64,7 +66,7 @@ namespace skyline::service::timesrv {
             SFUNC(0x6, ITimeZoneService, GetDeviceLocationNameAndUpdatedTime),
             SFUNC(0x7, ITimeZoneService, SetDeviceLocationNameWithTimeZoneBinaryIpc),
             SFUNC(0x8, ITimeZoneService, ParseTimeZoneBinaryIpc),
-            SFUNC(0x9, ITimeZoneService, GetDeviceLocationNameOperationEventReadableHandle),
+            SFUNC(0x14, ITimeZoneService, GetDeviceLocationNameOperationEventReadableHandle),
             SFUNC(0x64, ITimeZoneService, ToCalendarTime),
             SFUNC(0x65, ITimeZoneService, ToCalendarTimeWithMyRule),
             SFUNC(0xC9, ITimeZoneService, ToPosixTime),

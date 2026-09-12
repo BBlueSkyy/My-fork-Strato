@@ -449,7 +449,13 @@ namespace skyline::service::settings {
     }
 
     Result ISystemSettingsServer::SetUserSystemClockAutomaticCorrectionUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        return kernel::result::NotImplemented;
+        auto point{ReadArgument<timesrv::SteadyClockTimePoint>(request)};
+        if (!point)
+            return point.result;
+        if (!timeCore.userSystemClock.IsClockInitialized())
+            return timesrv::result::ClockUninitialized;
+        timeCore.userSystemClock.UpdateAutomaticCorrectionUpdatedTime(*point);
+        return {};
     }
 
     Result ISystemSettingsServer::SetExternalRtcResetFlag(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {

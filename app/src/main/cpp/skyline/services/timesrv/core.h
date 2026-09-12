@@ -118,6 +118,8 @@ namespace skyline::service::timesrv::core {
 
         TimeSpanType GetRawTimePoint() override;
 
+        ResultValue<PosixTime> GetRtcValue() override;
+
         TimeSpanType GetTestOffset() override {
             return testOffset;
         }
@@ -275,6 +277,13 @@ namespace skyline::service::timesrv::core {
 
         SteadyClockTimePoint GetAutomaticCorrectionUpdatedTime() {
             return automaticCorrectionUpdatedTime;
+        }
+
+        /**
+         * @brief Updates the timestamp associated with automatic correction and notifies listeners
+         */
+        void UpdateAutomaticCorrectionUpdatedTime(const SteadyClockTimePoint &timePoint) {
+            SetAutomaticCorrectionUpdatedTime(timePoint);
         }
 
         /**
