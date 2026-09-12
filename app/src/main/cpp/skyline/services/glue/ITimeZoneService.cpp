@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
-#include <os.h>
-#include <kernel/types/KProcess.h>
-#include <services/timesrv/common.h>
-#include <services/timesrv/results.h>
 #include <services/timesrv/ITimeZoneService.h>
-#include <services/timesrv/core.h>
 #include "ITimeZoneService.h"
 
 namespace skyline::service::glue {
@@ -14,7 +9,6 @@ namespace skyline::service::glue {
         : BaseService(state, manager),
           core(std::move(core)),
           timesrvCore(timesrvCore),
-          locationNameUpdateEvent(std::make_shared<kernel::type::KEvent>(state, false)),
           writeable(writeable) {}
 
     Result ITimeZoneService::GetDeviceLocationName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -24,17 +18,7 @@ namespace skyline::service::glue {
     Result ITimeZoneService::SetDeviceLocationName(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         if (!writeable)
             return timesrv::result::PermissionDenied;
-
-        auto locationName{span(request.Pop<timesrv::LocationName>()).as_string(true)};
-        auto timeZoneBinaryFile{state.os->assetFileSystem->OpenFile(fmt::format("tzdata/zoneinfo/{}", locationName))};
-        std::vector<u8> timeZoneBinaryBuffer(timeZoneBinaryFile->size);
-        timeZoneBinaryFile->Read(timeZoneBinaryBuffer);
-        auto result{core->SetDeviceLocationNameWithTimeZoneBinary(span(locationName).as_string(true), timeZoneBinaryBuffer)};
-        if (result)
-            return result;
-
-        locationNameUpdateEvent->Signal();
-        return {};
+        return core->SetDeviceLocationName(session, request, response);
     }
 
     Result ITimeZoneService::GetTotalLocationNameCount(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -42,21 +26,11 @@ namespace skyline::service::glue {
     }
 
     Result ITimeZoneService::LoadLocationNameList(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto outList{request.outputBuf.at(0).cast<timesrv::LocationName>()};
-        auto offset{request.Pop<u32>()};
-
-        outList.copy_from(span(timesrvCore.locationNameList).subspan(offset, outList.size()));
-
-        response.Push(static_cast<u32>(outList.size()));
-        return {};
+        return core->LoadLocationNameList(session, request, response);
     }
 
     Result ITimeZoneService::LoadTimeZoneRule(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto locationName{span(request.Pop<timesrv::LocationName>()).as_string(true)};
-        auto timeZoneBinaryFile{state.os->assetFileSystem->OpenFile(fmt::format("tzdata/zoneinfo/{}", locationName))};
-        std::vector<u8> timeZoneBinaryBuffer(timeZoneBinaryFile->size);
-        timeZoneBinaryFile->Read(timeZoneBinaryBuffer);
-        return core->ParseTimeZoneBinary(timeZoneBinaryBuffer, request.outputBuf.at(0));
+        return core->LoadTimeZoneRule(session, request, response);
     }
 
     Result ITimeZoneService::GetTimeZoneRuleVersion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -64,25 +38,21 @@ namespace skyline::service::glue {
     }
 
     Result ITimeZoneService::GetDeviceLocationNameAndUpdatedTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        return timesrv::result::Unimplemented;
+        return core->GetDeviceLocationNameAndUpdatedTime(session, request, response);
     }
 
     Result ITimeZoneService::SetDeviceLocationNameWithTimeZoneBinary(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         if (!writeable)
             return timesrv::result::PermissionDenied;
-
-        return timesrv::result::Unimplemented;
+        return core->SetDeviceLocationNameWithTimeZoneBinaryIpc(session, request, response);
     }
 
     Result ITimeZoneService::ParseTimeZoneBinary(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        return timesrv::result::Unimplemented;
+        return core->ParseTimeZoneBinaryIpc(session, request, response);
     }
 
     Result ITimeZoneService::GetDeviceLocationNameOperationEventReadableHandle(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto handle{state.process->InsertItem(locationNameUpdateEvent)};
-        LOGD("Location Name Update Event Handle: 0x{:X}", handle);
-        response.copyHandles.push_back(handle);
-        return {};
+        return core->GetDeviceLocationNameOperationEventReadableHandle(session, request, response);
     }
 
     Result ITimeZoneService::ToCalendarTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
