@@ -70,7 +70,7 @@ namespace skyline::service::visrv {
     }
 
     Result IApplicationDisplayService::OpenLayer(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto displayName{request.PopString(0x40)};
+        auto displayName(request.PopString(0x40)};
         auto layerId{request.Pop<u64>()};
         LOGD("Opening layer #{} on display: {}", layerId, displayName);
 
@@ -145,20 +145,27 @@ namespace skyline::service::visrv {
 
     Result IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         i64 width{request.Pop<i64>()}, height{request.Pop<i64>()};
-        LOGI("GetIndirectLayerImageRequiredMemoryInfo: width={}, height={}", width, height);
 
         if (width <= 0 || height <= 0)
             return result::InvalidDimensions;
 
-        constexpr ssize_t A8B8G8R8Size{4}; //!< The size of a pixel in the A8B8G8R8 format, this format is used by indirect layers
-        i64 layerSize{width * height * A8B8G8R8Size};
+        constexpr i64 BytesPerPixel{4};
+        constexpr i64 LinearAlignment{0x40};
+        constexpr i64 BlockSize{0x20000};
+        constexpr u64 DefaultAlignment{0x1000};
 
-        constexpr ssize_t BlockSize{0x20000}; //!< The size of an arbitrarily defined block, the layer size must be aligned to a block
-        response.Push<i64>(util::AlignUpNpot<i64>(layerSize, BlockSize));
+        const i64 pitch{util::AlignUpNpot<i64>(width * BytesPerPixel, LinearAlignment)};
+        const i64 alignedHeight{util::AlignUpNpot<i64>(height, LinearAlignment)};
+        const i64 linearSize{pitch * alignedHeight};
+        const i64 requiredSize{util::AlignUpNpot<i64>(linearSize, static_cast<i64>(DefaultAlignment))};
+        const i64 size{util::AlignUpNpot<i64>(requiredSize, BlockSize)};
 
-        constexpr size_t DefaultAlignment{0x1000}; //!< The default alignment of the buffer
+        LOGI("GetIndirectLayerImageRequiredMemoryInfo: width={}, height={}, pitch=0x{:X}, size=0x{:X}, alignment=0x{:X}",
+             width, height, pitch, size, DefaultAlignment);
+
+        response.Push<i64>(size);
         response.Push<u64>(DefaultAlignment);
 
-        return Result{};
+        return {};
     }
 }
