@@ -128,6 +128,8 @@ namespace skyline::service::visrv {
     Result IApplicationDisplayService::GetIndirectLayerImageMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto width{request.Pop<i64>()};
         auto height{request.Pop<i64>()};
+        LOGI("GetIndirectLayerImageMap: width={}, height={}, outputSize=0x{:X}",
+             width, height, request.outputBuf.empty() ? 0 : request.outputBuf.at(0).size());
 
         if (!request.outputBuf.empty()) {
             // As we don't support indirect layers, we just fill the output buffer with red
@@ -143,6 +145,7 @@ namespace skyline::service::visrv {
 
     Result IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         i64 width{request.Pop<i64>()}, height{request.Pop<i64>()};
+        LOGI("GetIndirectLayerImageRequiredMemoryInfo: width={}, height={}", width, height);
 
         if (width <= 0 || height <= 0)
             return result::InvalidDimensions;
