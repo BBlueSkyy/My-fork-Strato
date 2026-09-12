@@ -21,11 +21,11 @@ namespace skyline::service::am {
         stateChangeEventHandle = state.process->InsertItem(stateChangeEvent);
         popNormalOutDataEventHandle = state.process->InsertItem(popNormalOutDataEvent);
         popInteractiveOutDataEventHandle = state.process->InsertItem(popInteractiveOutDataEvent);
-        LOGD("Applet accessor for {} ID created with appletMode 0x{:X}", ToString(appletId), appletMode);
+        LOGI("Applet accessor for {} ID created with appletMode 0x{:X}", ToString(appletId), appletMode);
     }
 
     Result ILibraryAppletAccessor::StartApplet() {
-        LOGD("Library applet Start: id=0x{:X}, mode=0x{:X}",
+        LOGI("Library applet Start: id=0x{:X}, mode=0x{:X}",
              static_cast<u32>(appletId), static_cast<u32>(appletMode));
         stateChangeEvent->ResetSignal();
         return applet->Start();
@@ -75,7 +75,7 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::PushInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
         auto storage{request.PopService<IStorage>(0, session)};
-        LOGD("Library applet PushInData: id=0x{:X}, mode=0x{:X}, size=0x{:X}",
+        LOGI("Library applet PushInData: id=0x{:X}, mode=0x{:X}, size=0x{:X}",
              static_cast<u32>(appletId), static_cast<u32>(appletMode),
              storage ? storage->GetSpan().size() : 0);
         applet->PushNormalDataToApplet(std::move(storage));
@@ -84,7 +84,7 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::PushInteractiveInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
         auto storage{request.PopService<IStorage>(0, session)};
-        LOGD("Library applet PushInteractiveInData: id=0x{:X}, mode=0x{:X}, size=0x{:X}",
+        LOGI("Library applet PushInteractiveInData: id=0x{:X}, mode=0x{:X}, size=0x{:X}",
              static_cast<u32>(appletId), static_cast<u32>(appletMode),
              storage ? storage->GetSpan().size() : 0);
         applet->PushInteractiveDataToApplet(std::move(storage));

@@ -17,7 +17,7 @@ namespace skyline::applet {
         std::shared_ptr<kernel::type::KEvent> onNormalDataPushFromApplet,
         std::shared_ptr<kernel::type::KEvent> onInteractiveDataPushFromApplet,
         service::applet::LibraryAppletMode appletMode) {
-        LOGD("CreateApplet dispatch: id=0x{:X}, mode=0x{:X}",
+        LOGI("CreateApplet dispatch: id=0x{:X}, mode=0x{:X}",
              static_cast<u32>(appletId), static_cast<u32>(appletMode));
         switch (appletId) {
             case AppletId::LibraryAppletController:
