@@ -81,13 +81,15 @@ namespace skyline::service::timesrv::core {
         ResultValue<FullCalendarTime> ToCalendarTimeWithMyRule(PosixTime posixTime);
 
         /**
-         * @brief Converts a calendar time to a POSIX time using the given rule
+         * @brief Converts a calendar time to one or two POSIX times using the given rule.
+         * Ambiguous DST fall-back times have two valid results, while skipped spring-forward
+         * times have no valid result.
          */
-        static ResultValue<PosixTime> ToPosixTime(tz_timezone_t pRule, CalendarTime calendarTime);
+        static ResultValue<std::vector<PosixTime>> ToPosixTime(tz_timezone_t pRule, CalendarTime calendarTime);
 
         /**
-         * @brief Converts a calendar time to a POSIX time using the current location's rule
+         * @brief Converts a calendar time to one or two POSIX times using the current location's rule
          */
-        ResultValue<PosixTime> ToPosixTimeWithMyRule(CalendarTime calendarTime);
+        ResultValue<std::vector<PosixTime>> ToPosixTimeWithMyRule(CalendarTime calendarTime);
     };
 }
