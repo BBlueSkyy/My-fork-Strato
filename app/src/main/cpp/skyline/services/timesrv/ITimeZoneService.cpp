@@ -1,11 +1,29 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <os.h>
+#include <kernel/types/KProcess.h>
 #include "common.h"
 #include "core.h"
 #include "ITimeZoneService.h"
 
 namespace skyline::service::timesrv {
+    namespace {
+        ResultValue<std::string> NormalizeLocationName(const LocationName &raw) {
+            const auto end{std::find(raw.begin(), raw.end(), '\0')};
+            if (end == raw.begin() || end == raw.end())
+                return result::InvalidArgument;
+            return std::string(raw.begin(), end);
+        }
+
+        LocationName MakeLocationName(std::string_view name) {
+            LocationName out{};
+            const auto length{std::min(name.size(), out.size() - 1)};
+            std::memcpy(out.data(), name.data(), length);
+            return out;
+        }
+    }
+
     ITimeZoneService::ITimeZoneService(const DeviceState &state, ServiceManager &manager, core::TimeServiceObject &core, bool writeable)
         : BaseService(state, manager),
           core(core),
@@ -23,23 +41,71 @@ namespace skyline::service::timesrv {
         if (!writeable)
             return result::PermissionDenied;
 
-        return result::Unimplemented;
+        const auto rawName{request.Pop<LocationName>()};
+        auto locationName{NormalizeLocationName(rawName)};
+        if (!locationName)
+            return locationName.result;
+
+        const auto normalized{MakeLocationName(*locationName)};
+        if (std::find(core.locationNameList.begin(), core.locationNameList.end(), normalized) == core.locationNameList.end())
+            return result::TimeZoneNotFound;
+
+        auto file{state.os->assetFileSystem->OpenFileUnchecked(fmt::format("tzdata/zoneinfo/{}", *locationName))};
+        if (!file || !file->size || file->size > 0x100000)
+            return result::TimeZoneNotFound;
+
+        std::vector<u8> binary(file->size);
+        if (file->ReadUnchecked(binary) != binary.size())
+            return result::RuleConversionFailed;
+
+        return SetDeviceLocationNameWithTimeZoneBinary(*locationName, binary);
     }
 
     Result ITimeZoneService::GetTotalLocationNameCount(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto count{core.timeZoneManager.GetLocationCount()};
         if (count)
-            response.Push<i32>(*count);
+            response.Push<u32>(static_cast<u32>(*count));
 
         return count;
     }
 
     Result ITimeZoneService::LoadLocationNameList(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        return result::Unimplemented;
+        const auto offset{request.Pop<u32>()};
+        if (request.outputBuf.empty())
+            return result::InvalidArgument;
+
+        auto outList{request.outputBuf.at(0).cast<LocationName>()};
+        const size_t start{std::min<size_t>(offset, core.locationNameList.size())};
+        const size_t count{std::min(outList.size(), core.locationNameList.size() - start)};
+        for (size_t i{}; i < count; ++i)
+            outList[i] = core.locationNameList[start + i];
+
+        response.Push<u32>(static_cast<u32>(count));
+        return {};
     }
 
     Result ITimeZoneService::LoadTimeZoneRule(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        return result::Unimplemented;
+        if (request.outputBuf.empty())
+            return result::InvalidArgument;
+
+        const auto rawName{request.Pop<LocationName>()};
+        auto locationName{NormalizeLocationName(rawName)};
+        if (!locationName)
+            return locationName.result;
+
+        const auto normalized{MakeLocationName(*locationName)};
+        if (std::find(core.locationNameList.begin(), core.locationNameList.end(), normalized) == core.locationNameList.end())
+            return result::TimeZoneNotFound;
+
+        auto file{state.os->assetFileSystem->OpenFileUnchecked(fmt::format("tzdata/zoneinfo/{}", *locationName))};
+        if (!file || !file->size || file->size > 0x100000)
+            return result::TimeZoneNotFound;
+
+        std::vector<u8> binary(file->size);
+        if (file->ReadUnchecked(binary) != binary.size())
+            return result::RuleConversionFailed;
+
+        return core::TimeZoneManager::ParseTimeZoneBinary(binary, request.outputBuf.at(0));
     }
 
     Result ITimeZoneService::GetTimeZoneRuleVersion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -60,26 +126,42 @@ namespace skyline::service::timesrv {
             return updateTime;
 
         response.Push(*locationName);
-        response.Push<u32>(0); // Padding
+        response.Push<u32>(0); // CMIF padding before SteadyClockTimePoint.
         response.Push(*updateTime);
-
         return {};
     }
 
     Result ITimeZoneService::SetDeviceLocationNameWithTimeZoneBinaryIpc(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto locationName{request.Pop<LocationName>()};
+        if (request.inputBuf.empty())
+            return result::InvalidArgument;
 
-        return SetDeviceLocationNameWithTimeZoneBinary(span(locationName).as_string(true), request.inputBuf.at(0));
+        const auto rawName{request.Pop<LocationName>()};
+        auto locationName{NormalizeLocationName(rawName)};
+        if (!locationName)
+            return locationName.result;
+
+        return SetDeviceLocationNameWithTimeZoneBinary(*locationName, request.inputBuf.at(0));
     }
 
     Result ITimeZoneService::SetDeviceLocationNameWithTimeZoneBinary(std::string_view locationName, span<u8> binary) {
         if (!writeable)
             return result::PermissionDenied;
 
-        return core.timeZoneManager.SetNewLocation(locationName, binary);
+        auto result{core.timeZoneManager.SetNewLocation(locationName, binary)};
+        if (result)
+            return result;
+
+        auto timePoint{core.standardSteadyClock.GetCurrentTimePoint()};
+        if (!timePoint)
+            return timePoint;
+
+        core.timeZoneManager.SetUpdateTime(*timePoint);
+        return {};
     }
 
     Result ITimeZoneService::ParseTimeZoneBinaryIpc(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (request.inputBuf.empty() || request.outputBuf.empty())
+            return result::InvalidArgument;
         return core::TimeZoneManager::ParseTimeZoneBinary(request.inputBuf.at(0), request.outputBuf.at(0));
     }
 
@@ -88,10 +170,19 @@ namespace skyline::service::timesrv {
     }
 
     Result ITimeZoneService::GetDeviceLocationNameOperationEventReadableHandle(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        return result::Unimplemented;
+        if (!operationEvent) {
+            operationEvent = std::make_shared<kernel::type::KEvent>(state, false);
+            core.timeZoneManager.AddOperationEvent(operationEvent);
+        }
+
+        response.copyHandles.push_back(state.process->InsertItem(operationEvent));
+        return {};
     }
 
     Result ITimeZoneService::ToCalendarTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (request.inputBuf.empty())
+            return result::InvalidArgument;
+
         auto posixTime{request.Pop<PosixTime>()};
         auto calendarTime{core::TimeZoneManager::ToCalendarTime(reinterpret_cast<tz_timezone_t>(request.inputBuf.at(0).data()), posixTime)};
 
@@ -112,6 +203,9 @@ namespace skyline::service::timesrv {
     }
 
     Result ITimeZoneService::ToPosixTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (request.inputBuf.empty() || request.outputBuf.empty() || request.outputBuf.at(0).size_bytes() < sizeof(PosixTime))
+            return result::InvalidArgument;
+
         auto calendarTime{request.Pop<CalendarTime>()};
         auto posixTime{core::TimeZoneManager::ToPosixTime(reinterpret_cast<tz_timezone_t>(request.inputBuf.at(0).data()), calendarTime)};
         if (!posixTime)
@@ -123,6 +217,9 @@ namespace skyline::service::timesrv {
     }
 
     Result ITimeZoneService::ToPosixTimeWithMyRule(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (request.outputBuf.empty() || request.outputBuf.at(0).size_bytes() < sizeof(PosixTime))
+            return result::InvalidArgument;
+
         auto calendarTime{request.Pop<CalendarTime>()};
         auto posixTime{core.timeZoneManager.ToPosixTimeWithMyRule(calendarTime)};
         if (!posixTime)
