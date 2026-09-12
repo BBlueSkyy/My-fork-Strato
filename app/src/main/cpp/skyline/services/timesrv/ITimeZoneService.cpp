@@ -180,7 +180,7 @@ namespace skyline::service::timesrv {
     }
 
     Result ITimeZoneService::ToCalendarTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        if (request.inputBuf.empty())
+        if (request.inputBuf.empty() || request.inputBuf.at(0).size_bytes() < core::TimeZoneRuleSize)
             return result::InvalidArgument;
 
         auto posixTime{request.Pop<PosixTime>()};
@@ -203,7 +203,8 @@ namespace skyline::service::timesrv {
     }
 
     Result ITimeZoneService::ToPosixTime(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        if (request.inputBuf.empty() || request.outputBuf.empty() || request.outputBuf.at(0).size_bytes() < sizeof(PosixTime))
+        if (request.inputBuf.empty() || request.inputBuf.at(0).size_bytes() < core::TimeZoneRuleSize ||
+            request.outputBuf.empty() || request.outputBuf.at(0).size_bytes() < sizeof(PosixTime))
             return result::InvalidArgument;
 
         auto calendarTime{request.Pop<CalendarTime>()};
