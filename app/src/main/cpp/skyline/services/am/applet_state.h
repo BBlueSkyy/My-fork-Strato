@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -87,7 +88,10 @@ namespace skyline::service::am {
         bool focusSuspendingMode{};
         bool restartMessageEnabled{};
         bool outOfFocusSuspendingEnabled{};
+        bool controllerFirmwareUpdateSection{};
+        bool requiresCaptureButtonShortPressedMessage{};
         bool handlesRequestToDisplay{};
+        bool recordingLayerCompositionEnabled{};
         bool autoSleepDisabled{};
         bool vrModeEnabled{};
         bool vrMode3dEnabled{};
@@ -124,7 +128,15 @@ namespace skyline::service::am {
         u32 idleTimeDetectionExtension{};
         u32 applicationCoreUsageMode{};
         u32 screenShotImageOrientation{};
+        u32 desirableKeyboardLayout{};
+        u32 managedDisplayLayerSeparationMode{};
+        u32 inputDetectionSourceSet{};
         u32 inputDetectionPolicy{};
+        i32 wirelessPriorityMode{};
+
+        std::array<i32, 4> autoSleepTimeAndDimmingTime{};
+        std::array<u8, 0x400> applicationAlbumUserData{};
+        u32 applicationAlbumUserDataSize{};
 
         float displayMagnificationX{};
         float displayMagnificationY{};
