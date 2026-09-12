@@ -178,27 +178,66 @@ namespace skyline::service::timesrv::core {
         return ToCalendarTime(rule, posixTime);
     }
 
-    ResultValue<PosixTime> TimeZoneManager::ToPosixTime(tz_timezone_t pRule, CalendarTime calendarTime) {
+    ResultValue<std::vector<PosixTime>> TimeZoneManager::ToPosixTime(tz_timezone_t pRule, CalendarTime calendarTime) {
         if (!pRule)
             return result::InvalidArgument;
         if (calendarTime.month < 1 || calendarTime.month > 12 || calendarTime.day < 1 || calendarTime.day > 31 ||
             calendarTime.hour > 23 || calendarTime.minute > 59 || calendarTime.second > 60)
             return result::TimeZoneOutOfRange;
 
-        struct tm posixCalendarTime{
-            .tm_sec = calendarTime.second,
-            .tm_min = calendarTime.minute,
-            .tm_hour = calendarTime.hour,
-            .tm_mday = calendarTime.day,
-            .tm_mon = calendarTime.month - 1,
-            .tm_year = calendarTime.year - 1900,
-            .tm_isdst = -1,
+        std::vector<PosixTime> times;
+        times.reserve(2);
+
+        const auto tryConversion = [&](int requestedDst) {
+            struct tm candidateCalendar{
+                .tm_sec = calendarTime.second,
+                .tm_min = calendarTime.minute,
+                .tm_hour = calendarTime.hour,
+                .tm_mday = calendarTime.day,
+                .tm_mon = calendarTime.month - 1,
+                .tm_year = calendarTime.year - 1900,
+                .tm_isdst = requestedDst,
+            };
+
+            const PosixTime candidate{static_cast<PosixTime>(tz_mktime_z(pRule, &candidateCalendar))};
+            struct tm roundTrip{};
+            auto converted{tz_localtime_rz(pRule, &candidate, &roundTrip)};
+            if (!converted)
+                return;
+
+            // tz_mktime_z normalizes impossible local times. HOS treats those as
+            // not found rather than silently returning the normalized instant.
+            if (converted->tm_sec != calendarTime.second || converted->tm_min != calendarTime.minute ||
+                converted->tm_hour != calendarTime.hour || converted->tm_mday != calendarTime.day ||
+                converted->tm_mon != calendarTime.month - 1 || converted->tm_year != calendarTime.year - 1900)
+                return;
+
+            // For an explicitly requested DST side, only accept a round-trip that
+            // actually lands on that side of an ambiguous transition.
+            if (requestedDst >= 0 && (converted->tm_isdst > 0) != (requestedDst > 0))
+                return;
+
+            if (std::find(times.begin(), times.end(), candidate) == times.end())
+                times.push_back(candidate);
         };
 
-        return static_cast<PosixTime>(tz_mktime_z(pRule, &posixCalendarTime));
+        // Asking for both sides exposes the two valid instants during a DST
+        // fall-back overlap. Normal local times produce a single unique result.
+        tryConversion(0);
+        tryConversion(1);
+
+        // Some zones do not use a conventional DST flag. Let the timezone
+        // library choose only if neither explicit side produced a valid result.
+        if (times.empty())
+            tryConversion(-1);
+
+        std::sort(times.begin(), times.end());
+        if (times.size() > 2)
+            times.resize(2);
+        return times;
     }
 
-    ResultValue<PosixTime> TimeZoneManager::ToPosixTimeWithMyRule(CalendarTime calendarTime) {
+    ResultValue<std::vector<PosixTime>> TimeZoneManager::ToPosixTimeWithMyRule(CalendarTime calendarTime) {
         std::scoped_lock lock{mutex};
         if (!initialized)
             return result::ClockUninitialized;
