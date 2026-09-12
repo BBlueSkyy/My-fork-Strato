@@ -227,13 +227,23 @@ namespace skyline::service::timesrv {
         auto snapshotA{request.inputBuf.at(0).as<ClockSnapshot>()};
         auto snapshotB{request.inputBuf.at(1).as<ClockSnapshot>()};
 
-        TimeSpanType difference{TimeSpanType::FromSeconds(snapshotB.userContext.offset - snapshotA.userContext.offset)};
+        const TimeSpanType difference{TimeSpanType::FromSeconds(snapshotB.userContext.offset - snapshotA.userContext.offset)};
 
-        if (snapshotA.userContext.timestamp.clockSourceId != snapshotB.userContext.timestamp.clockSourceId) {
-            difference = 0;
-        } else if (snapshotA.automaticCorrectionEnabled && snapshotB.automaticCorrectionEnabled) {
-            if (snapshotA.networkContext.timestamp.clockSourceId != snapshotA.steadyClockTimePoint.clockSourceId || snapshotB.networkContext.timestamp.clockSourceId != snapshotB.steadyClockTimePoint.clockSourceId)
-                difference = 0;
+        if (snapshotA.userContext == snapshotB.userContext ||
+            snapshotA.userContext.timestamp.clockSourceId != snapshotB.userContext.timestamp.clockSourceId) {
+            response.Push<i64>(0);
+            return {};
+        }
+
+        if (!snapshotA.automaticCorrectionEnabled || !snapshotB.automaticCorrectionEnabled) {
+            response.Push<i64>(difference.Nanoseconds());
+            return {};
+        }
+
+        if (snapshotA.networkContext.timestamp.clockSourceId == snapshotA.steadyClockTimePoint.clockSourceId ||
+            snapshotB.networkContext.timestamp.clockSourceId == snapshotB.steadyClockTimePoint.clockSourceId) {
+            response.Push<i64>(0);
+            return {};
         }
 
         response.Push<i64>(difference.Nanoseconds());
