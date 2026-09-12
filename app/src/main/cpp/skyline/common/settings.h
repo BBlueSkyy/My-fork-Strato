@@ -92,6 +92,7 @@ namespace skyline {
 
         // Debug
         Setting<AsyncLogger::LogLevel> logLevel; //!< The log level
+        Setting<bool> autoStub; //!< If missing services should be replaced with generic success stubs
         Setting<bool> validationLayer; //!< If the vulkan validation layer is enabled
 
         Settings() = default;

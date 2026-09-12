@@ -85,11 +85,5 @@ class GameSettingsFragment : PreferenceFragmentCompat() {
         prefToRemove?.parent?.removePreference(prefToRemove)
         prefToRemove = findPreference<Preference>("log_level")
         prefToRemove?.parent?.removePreference(prefToRemove)
-
-        // TODO: remove this once we have more settings under the debug category
-        // Avoid showing the debug category if no settings under it are visible
-        @Suppress("SENSELESS_COMPARISON")
-        if (BuildConfig.BUILD_TYPE == "release")
-            findPreference<PreferenceCategory>("category_debug")?.isVisible = false
     }
 }
