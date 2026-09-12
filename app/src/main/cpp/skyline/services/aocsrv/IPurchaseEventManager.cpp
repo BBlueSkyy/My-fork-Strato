@@ -5,6 +5,10 @@
 #include "IPurchaseEventManager.h"
 
 namespace skyline::service::aocsrv {
+    namespace result {
+        constexpr Result NoPurchasedProductInfoAvailable{164, 400}; // NIMShop::NoPurchasedProductInfoAvailable (0x320A4)
+    }
+
     IPurchaseEventManager::IPurchaseEventManager(const DeviceState &state, ServiceManager &manager)
         : BaseService(state, manager),
           purchasedEvent(std::make_shared<type::KEvent>(state, false)) {}
@@ -22,6 +26,9 @@ namespace skyline::service::aocsrv {
     }
 
     Result IPurchaseEventManager::PopPurchasedProductInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        return {};
+        // There is no emulated eShop purchase queue. Match Horizon/Yuzu/Eden behavior by
+        // reporting that no purchased product information is currently available instead
+        // of returning an empty successful response, which can make callers busy-poll.
+        return result::NoPurchasedProductInfoAvailable;
     }
 }
