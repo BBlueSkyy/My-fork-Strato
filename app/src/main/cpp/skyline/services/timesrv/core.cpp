@@ -260,12 +260,11 @@ namespace skyline::service::timesrv::core {
         constexpr TimeSpanType sufficientAccuracy{TimeSpanType::FromDays(30)}; //!< 43200 minutes, the HOS time setting default
         managerServer.SetupStandardNetworkSystemClock(*context, sufficientAccuracy);
 
-        // Keep the automatic-correction timestamp on the same steady-clock source even before
-        // correction is first enabled. Modern nnSdk compares this UUID.
+        // Keep the automatic-correction timestamp on the same steady-clock source.
         auto automaticCorrectionUpdateTime{standardSteadyClock.GetCurrentTimePoint()};
         if (!automaticCorrectionUpdateTime)
             throw exception("Failed to create automatic-correction updated timepoint!");
-        managerServer.SetupStandardUserSystemClock(false, *automaticCorrectionUpdateTime);
+        managerServer.SetupStandardUserSystemClock(true, *automaticCorrectionUpdateTime);
         managerServer.SetupEphemeralSystemClock();
 
         // Timezone init - normally done in glue
