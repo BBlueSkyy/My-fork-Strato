@@ -16,8 +16,19 @@ namespace skyline::input {
     void NpadManager::Update() {
         std::scoped_lock guard{mutex};
 
-        if (!activated)
+        if (!activated) {
+            LOGI("NpadTrace: Update skipped because Npad is deactivated");
             return;
+        }
+
+        LOGI("NpadTrace: Update begin styles=0x{:08X}, supportedIds={}, orientation={}, handheldActivationMode={}",
+             styles.raw,
+             supportedIds.size(),
+             static_cast<i64>(orientation),
+             static_cast<u64>(handheldActivationMode));
+
+        for (size_t i{}; i < supportedIds.size(); ++i)
+            LOGI("NpadTrace: supportedIds[{}]=0x{:X}", i, static_cast<u32>(supportedIds[i]));
 
         for (auto &controller : controllers)
             controller.device = nullptr;
@@ -72,6 +83,26 @@ namespace skyline::input {
             if (!ranges::any_of(controllers, [&](auto &controller) { return controller.device == &device; }))
                 device.Disconnect();
         }
+
+        for (size_t i{}; i < controllers.size(); ++i) {
+            const auto &controller{controllers[i]};
+            const u32 mappedId{controller.device ? static_cast<u32>(controller.device->id) : 0xFFFFFFFFU};
+            LOGI("NpadTrace: controller[{}] type=0x{:X}, partner={}, mappedNpad=0x{:X}",
+                 i,
+                 static_cast<u32>(controller.type),
+                 static_cast<i32>(controller.partnerIndex),
+                 mappedId);
+        }
+
+        for (const auto &device : npads) {
+            LOGI("NpadTrace: npad id=0x{:X}, type=0x{:X}, connected={}, connectionState=0x{:X}",
+                 static_cast<u32>(device.id),
+                 static_cast<u32>(device.type),
+                 static_cast<bool>(device.connectionState.connected),
+                 device.connectionState.raw);
+        }
+
+        LOGI("NpadTrace: Update end");
     }
 
     void NpadManager::Activate() {
