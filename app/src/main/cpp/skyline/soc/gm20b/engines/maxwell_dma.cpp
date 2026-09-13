@@ -273,7 +273,7 @@ namespace skyline::soc::gm20b::engine {
             }
         }};
 
-        auto copyLinearToPitch{[&](const u8 *src, u64 address, size_t pitch, size_t lineSize) {
+        auto copyLinearToPitch{[&](u8 *src, u64 address, size_t pitch, size_t lineSize) {
             for (size_t slice{}; slice < depth; slice++) {
                 for (size_t line{}; line < lines; line++) {
                     size_t index{slice * lines + line};
