@@ -62,7 +62,8 @@ abstract class OnScreenButton(
 
     final override val config : OnScreenConfiguration = OnScreenConfigurationImpl(onScreenControllerView.context, buttonId, defaultRelativeX, defaultRelativeY, defaultEnabled)
 
-    protected val drawable = ContextCompat.getDrawable(onScreenControllerView.context, drawableId)!!
+    protected val drawable = ContextCompat.getDrawable(onScreenControllerView.context, drawableId)!!.mutate()
+    private val customDrawable = ContextCompat.getDrawable(onScreenControllerView.context, drawableId)!!.mutate()
 
     private val buttonSymbolPaint = Paint().apply {
         color = config.textColor
@@ -156,16 +157,15 @@ abstract class OnScreenButton(
         if (config.enabled) {
             bounds = currentBounds
             val alpha = if (isPressed) (config.alpha - 130).coerceIn(30, 255) else config.alpha
-            drawable.apply {
+            val renderDrawable = if (config.backgroundColor == OnScreenConfiguration.DefaultBackgroundColor) {
+                drawable
+            } else {
+                customDrawable.apply { applyColorsToDrawable(this) }
+            }
+
+            renderDrawable.apply {
                 this.bounds = bounds
                 this.alpha = alpha
-
-                // Skyline Edge 44 draws the stock OSC resources with their intrinsic
-                // translucent colors. Only override them when a custom background color
-                // has explicitly been selected.
-                if (config.backgroundColor != OnScreenConfiguration.DefaultBackgroundColor)
-                    applyColorsToDrawable(this)
-
                 draw(canvas)
             }
 
