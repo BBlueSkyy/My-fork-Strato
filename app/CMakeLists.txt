@@ -61,6 +61,8 @@ set(UNSAFE_BUILD ON CACHE BOOL "Allow unsafe builds. These builds ARE NOT SECURE
 add_subdirectory("libraries/mbedtls")
 include_directories(SYSTEM "libraries/mbedtls/include")
 target_compile_options(mbedcrypto PRIVATE -Wno-everything)
+target_compile_options(mbedx509 PRIVATE -Wno-everything)
+target_compile_options(mbedtls PRIVATE -Wno-everything)
 
 # Opus
 set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "Install Opus CMake package config module" FORCE)
@@ -454,6 +456,9 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/spl/IRandomInterface.cpp
         ${source_DIR}/skyline/services/ssl/ISslService.cpp
         ${source_DIR}/skyline/services/ssl/ISslContext.cpp
+        ${source_DIR}/skyline/services/ssl/ISslConnection.cpp
+        ${source_DIR}/skyline/services/ssl/state.cpp
+        ${source_DIR}/skyline/services/ssl/tls_backend.cpp
         ${source_DIR}/skyline/services/prepo/IPrepoService.cpp
         ${source_DIR}/skyline/services/mmnv/IRequest.cpp
         ${source_DIR}/skyline/services/mii/IStaticService.cpp
@@ -474,4 +479,4 @@ target_compile_options(skyline PRIVATE -Wall -Wno-unknown-attributes -Wno-c++20-
 
 add_dependencies(skyline ffmpeg)
 target_link_libraries(skyline PRIVATE shader_recompiler audio_core)
-target_link_libraries_system(skyline android perfetto fmt lz4_static tzcode vkma mbedcrypto opus Boost::intrusive Boost::container Boost::preprocessor Boost::regex range-v3 adrenotools tsl::robin_map ffmpeg-avcodec ffmpeg-swscale ffmpeg-avutil)
+target_link_libraries_system(skyline android perfetto fmt lz4_static tzcode vkma mbedtls mbedx509 mbedcrypto opus Boost::intrusive Boost::container Boost::preprocessor Boost::regex range-v3 adrenotools tsl::robin_map ffmpeg-avcodec ffmpeg-swscale ffmpeg-avutil)

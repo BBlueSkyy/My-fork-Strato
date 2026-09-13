@@ -48,6 +48,7 @@
 #include "socket/sfdnsres/IResolver.h"
 #include "spl/IRandomInterface.h"
 #include "ssl/ISslService.h"
+#include "ssl/state.h"
 #include "prepo/IPrepoService.h"
 #include "mmnv/IRequest.h"
 #include "bt/IBluetoothUser.h"
@@ -80,8 +81,11 @@ namespace skyline::service {
         pl::SharedFontCore sharedFontCore;
         irs::SharedIirCore sharedIirCore;
         nvdrv::Driver nvdrv;
+        std::shared_ptr<ssl::SslSharedState> sslState;
 
-        explicit GlobalServiceState(const DeviceState &state) : timesrv(state), settingsStore(state), sharedFontCore(state), sharedIirCore(state), nvdrv(state) {}
+        explicit GlobalServiceState(const DeviceState &state)
+            : timesrv(state), settingsStore(state), sharedFontCore(state), sharedIirCore(state), nvdrv(state),
+              sslState(std::make_shared<ssl::SslSharedState>(state)) {}
     };
 
     ServiceManager::ServiceManager(const DeviceState &state) : state(state), smUserInterface(std::make_shared<sm::IUserInterface>(state, *this)), globalServiceState(std::make_shared<GlobalServiceState>(state)) {}
@@ -137,9 +141,9 @@ namespace skyline::service {
             SERVICE_CASE(socket::IManager, "nsd:u")
             SERVICE_CASE(socket::IManager, "nsd:a")
             SERVICE_CASE(socket::IResolver, "sfdnsres")
-            SERVICE_CASE(ssl::ISslService, "ssl")
+            SERVICE_CASE(ssl::ISslService, "ssl", globalServiceState->sslState, ssl::ServicePermission::User)
             SERVICE_CASE(spl::IRandomInterface, "csrng")
-            SERVICE_CASE(ssl::ISslService, "ssl:s")
+            SERVICE_CASE(ssl::ISslService, "ssl:s", globalServiceState->sslState, ssl::ServicePermission::System)
             SERVICE_CASE(prepo::IPrepoService, "prepo:u")
             SERVICE_CASE(prepo::IPrepoService, "prepo:a")
             SERVICE_CASE(mmnv::IRequest, "mm:u")
