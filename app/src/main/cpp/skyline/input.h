@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <unordered_set>
+
 #include "common.h"
 #include "kernel/types/KSharedMemory.h"
 #include "input/shared_mem.h"
