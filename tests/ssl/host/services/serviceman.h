@@ -41,9 +41,12 @@ namespace skyline::service {
     class ServiceManager {
       public:
         std::vector<std::shared_ptr<BaseService>> registered;
+        bool failRegistration{};
 
         template<typename T>
         void RegisterService(std::shared_ptr<T> service, type::KSession &, ipc::IpcResponse &) {
+            if (failRegistration)
+                throw std::runtime_error("injected registration failure");
             registered.emplace_back(std::move(service));
         }
     };
@@ -56,5 +59,6 @@ namespace skyline::service {
       public:
         BaseService(const DeviceState &state, ServiceManager &manager) : state(state), manager(manager) {}
         virtual ~BaseService() = default;
+        virtual void OnSessionClosed(const type::KSession &) {}
     };
 }

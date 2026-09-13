@@ -43,12 +43,12 @@ namespace skyline::service::ssl {
             return ids;
         }
 
-        ResultValue<size_t> GetCertificatesSize(const std::vector<const CertificateStoreCertificate *> &certificates) {
+        ResultValue<size_t> GetCertificatesSize(const std::vector<const CertificateStoreCertificate *> &certificates, bool includeTerminator) {
             constexpr size_t Alignment{4};
-            if (certificates.size() > std::numeric_limits<size_t>::max() / sizeof(BuiltInCertificateInfo) - 1)
+            if (certificates.size() > std::numeric_limits<size_t>::max() / sizeof(BuiltInCertificateInfo) - static_cast<size_t>(includeTerminator))
                 return result::InsufficientMemory;
 
-            size_t size{(certificates.size() + 1) * sizeof(BuiltInCertificateInfo)};
+            size_t size{(certificates.size() + static_cast<size_t>(includeTerminator)) * sizeof(BuiltInCertificateInfo)};
             for (const auto *certificate : certificates) {
                 const size_t padding{(Alignment - (size % Alignment)) % Alignment};
                 if (padding > std::numeric_limits<size_t>::max() - size ||
@@ -65,6 +65,8 @@ namespace skyline::service::ssl {
                 return result::InvalidOption;
 
             auto end{std::find(input->begin(), input->end(), 0)};
+            if (end == input->end())
+                return result::InvalidOption;
             const size_t length{static_cast<size_t>(end - input->begin())};
             if (!length || length > MaximumHostnameLength)
                 return result::InvalidOption;
@@ -77,6 +79,11 @@ namespace skyline::service::ssl {
     ISslService::ISslService(const DeviceState &state, ServiceManager &manager, std::shared_ptr<SslSharedState> sharedState,
                              ServicePermission permission)
         : BaseService(state, manager), sharedState(std::move(sharedState)), permission(permission) {}
+
+    void ISslService::OnSessionClosed(const type::KSession &session) {
+        std::scoped_lock lock{sessionStateMutex};
+        sessionStates.erase(&session);
+    }
 
     ISslService::SessionState ISslService::GetSessionState(const type::KSession &session) {
         std::scoped_lock lock{sessionStateMutex};
@@ -122,7 +129,8 @@ namespace skyline::service::ssl {
         auto selected{sharedState->certificateStore.Select(*ids)};
         if (!selected)
             return selected.result;
-        auto size{GetCertificatesSize(*selected)};
+        const bool includeTerminator{ids->size() == 1 && ids->front() == -1};
+        auto size{GetCertificatesSize(*selected, includeTerminator)};
         if (!size)
             return size.result;
         if (*size > std::numeric_limits<u32>::max())
@@ -139,14 +147,15 @@ namespace skyline::service::ssl {
         auto selected{sharedState->certificateStore.Select(*ids)};
         if (!selected)
             return selected.result;
-        auto requiredSize{GetCertificatesSize(*selected)};
+        const bool includeTerminator{ids->size() == 1 && ids->front() == -1};
+        auto requiredSize{GetCertificatesSize(*selected, includeTerminator)};
         if (!requiredSize)
             return requiredSize.result;
         if (output->size() < *requiredSize)
             return result::CertificateBufferTooSmall;
 
         std::fill(output->begin(), output->end(), 0);
-        const size_t infoSize{(selected->size() + 1) * sizeof(BuiltInCertificateInfo)};
+        const size_t infoSize{(selected->size() + static_cast<size_t>(includeTerminator)) * sizeof(BuiltInCertificateInfo)};
         size_t dataOffset{infoSize};
         for (size_t index{}; index < selected->size(); ++index) {
             const auto &certificate{*(*selected)[index]};
@@ -156,8 +165,10 @@ namespace skyline::service::ssl {
             std::memcpy(output->data() + dataOffset, certificate.der.data(), certificate.der.size());
             dataOffset += certificate.der.size();
         }
-        const BuiltInCertificateInfo terminator{-1, -1, 0, 0};
-        std::memcpy(output->data() + selected->size() * sizeof(terminator), &terminator, sizeof(terminator));
+        if (includeTerminator) {
+            const BuiltInCertificateInfo terminator{-1, -1, 0, 0};
+            std::memcpy(output->data() + selected->size() * sizeof(terminator), &terminator, sizeof(terminator));
+        }
 
         if (GetSessionState(session).interfaceVersion >= 1)
             response.Push<u32>(static_cast<u32>(selected->size()));
@@ -195,6 +206,8 @@ namespace skyline::service::ssl {
                 break;
             }
             case FlushSessionCacheOption::AllHosts:
+                if (!request.inputBuf.empty() && !request.inputBuf.front().empty())
+                    return result::InvalidOption;
                 count = sharedState->sessionCache->Flush(std::nullopt);
                 break;
             default:
@@ -208,22 +221,23 @@ namespace skyline::service::ssl {
         if (GetSessionState(session).interfaceVersion < 3)
             return result::InvalidOption;
         auto rawOption{GetArgument<u32>(request)};
-        auto enabled{GetArgument<u8>(request, sizeof(u32))};
-        if (!rawOption || !enabled || *enabled > 1 || static_cast<DebugOption>(*rawOption) != DebugOption::AllowDisableVerifyOption)
+        auto input{GetInputBuffer(request)};
+        if (!rawOption || !input || static_cast<DebugOption>(*rawOption) != DebugOption::AllowDisableVerifyOption)
             return result::InvalidOption;
 
         std::scoped_lock lock{sessionStateMutex};
-        sessionStates[&session].allowDisableVerifyOption = *enabled != 0;
+        sessionStates[&session].allowDisableVerifyOption = input->front() != 0;
         return {};
     }
 
-    Result ISslService::GetDebugOption(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result ISslService::GetDebugOption(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
         if (GetSessionState(session).interfaceVersion < 3)
             return result::InvalidOption;
         auto rawOption{GetArgument<u32>(request)};
-        if (!rawOption || static_cast<DebugOption>(*rawOption) != DebugOption::AllowDisableVerifyOption)
+        auto output{GetOutputBuffer(request)};
+        if (!rawOption || !output || output->empty() || static_cast<DebugOption>(*rawOption) != DebugOption::AllowDisableVerifyOption)
             return result::InvalidOption;
-        response.Push<u8>(GetSessionState(session).allowDisableVerifyOption);
+        output->front() = GetSessionState(session).allowDisableVerifyOption;
         return {};
     }
 

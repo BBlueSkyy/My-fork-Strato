@@ -204,6 +204,7 @@ namespace skyline::service {
         std::scoped_lock serviceGuard{mutex};
         auto session{state.process->GetHandle<type::KSession>(handle)};
         if (session->IsOpen() && session->handleRefCount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            session->serviceObject->OnSessionClosed(*session);
             if (session->isDomain) {
                 for (const auto &domainService : session->domains)
                     std::erase_if(serviceMap, [domainService](const auto &entry) {

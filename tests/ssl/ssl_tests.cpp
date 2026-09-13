@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cerrno>
 #include <filesystem>
+#include <fcntl.h>
 #include <fstream>
 #include <iostream>
 #include <sys/socket.h>
@@ -215,6 +216,19 @@ int main(int argc, char **argv) {
     kernel::ipc::IpcResponse versionResponse;
     assert(!userService.SetInterfaceVersion(session, versionRequest, versionResponse));
 
+    u32 debugOption{static_cast<u32>(DebugOption::AllowDisableVerifyOption)};
+    u8 debugEnabled{1};
+    auto setDebugRequest{ArgumentRequest(debugOption)};
+    setDebugRequest.inputBuf.emplace_back(&debugEnabled, sizeof(debugEnabled));
+    kernel::ipc::IpcResponse setDebugResponse;
+    assert(!userService.SetDebugOption(session, setDebugRequest, setDebugResponse));
+    u8 debugValue{};
+    auto getDebugRequest{ArgumentRequest(debugOption)};
+    getDebugRequest.outputBuf.emplace_back(&debugValue, sizeof(debugValue));
+    kernel::ipc::IpcResponse getDebugResponse;
+    assert(!userService.GetDebugOption(session, getDebugRequest, getDebugResponse));
+    assert(debugValue == 1 && getDebugResponse.payload.empty());
+
     std::array<u8, 0x10> contextArguments{};
     const u32 contextVersion{SslVersionAuto | (3U << 24)};
     std::memcpy(contextArguments.data(), &contextVersion, sizeof(contextVersion));
@@ -237,8 +251,34 @@ int main(int argc, char **argv) {
     auto invalidSocketRequest{ArgumentRequest(invalidSocket)};
     kernel::ipc::IpcResponse invalidSocketResponse;
     assert(lifecycleConnection->SetSocketDescriptor(session, invalidSocketRequest, invalidSocketResponse).raw == result::InvalidSocket.raw);
+    kernel::ipc::IpcRequest noSocketPendingRequest;
+    kernel::ipc::IpcResponse noSocketPendingResponse;
+    assert(lifecycleConnection->Pending(session, noSocketPendingRequest, noSocketPendingResponse).raw == result::NoSocket.raw);
     lifecycleConnection.reset();
     manager.registered.pop_back();
+    manager.failRegistration = true;
+    bool registrationFailed{};
+    try {
+        kernel::ipc::IpcResponse failedConnectionResponse;
+        contextService->CreateConnection(session, connectionRequest, failedConnectionResponse);
+    } catch (const std::runtime_error &) {
+        registrationFailed = true;
+    }
+    manager.failRegistration = false;
+    kernel::ipc::IpcResponse connectionCountResponse;
+    assert(registrationFailed && !contextService->GetConnectionCount(session, connectionRequest, connectionCountResponse));
+    assert(ResponseValue<u32>(connectionCountResponse) == 0);
+
+    std::array<u8, 1> fakePkcs12{1};
+    kernel::ipc::IpcRequest missingPasswordBufferRequest;
+    missingPasswordBufferRequest.inputBuf.emplace_back(fakePkcs12);
+    kernel::ipc::IpcResponse missingPasswordBufferResponse;
+    assert(contextService->ImportClientPki(session, missingPasswordBufferRequest, missingPasswordBufferResponse).raw ==
+           result::InvalidCertificateBufferSize.raw);
+    missingPasswordBufferRequest.inputBuf.emplace_back(span<u8>{});
+    assert(contextService->ImportClientPki(session, missingPasswordBufferRequest, missingPasswordBufferResponse).raw ==
+           result::UnsupportedCertificate.raw);
+
     contextService.reset();
     manager.registered.clear();
     assert(sharedState->contextCount.load() == 0);
@@ -257,6 +297,25 @@ int main(int argc, char **argv) {
     std::memcpy(&terminator, certificateOutput.data() + sizeof(info), sizeof(terminator));
     assert(info.certificateId == 42 && info.certificateSize == caDer.size());
     assert(terminator.certificateId == -1 && terminator.status == -1);
+
+    std::array<i32, 1> specificCertificateId{42};
+    kernel::ipc::IpcRequest specificSizeRequest;
+    specificSizeRequest.inputBuf.emplace_back(reinterpret_cast<u8 *>(specificCertificateId.data()), sizeof(specificCertificateId));
+    kernel::ipc::IpcResponse specificSizeResponse;
+    assert(!userService.GetCertificateBufSize(session, specificSizeRequest, specificSizeResponse));
+    const u32 specificSize{ResponseValue<u32>(specificSizeResponse)};
+    assert(specificSize == sizeof(BuiltInCertificateInfo) + caDer.size());
+    std::vector<u8> specificCertificateOutput(specificSize);
+    kernel::ipc::IpcRequest specificCertificatesRequest;
+    specificCertificatesRequest.inputBuf.emplace_back(reinterpret_cast<u8 *>(specificCertificateId.data()), sizeof(specificCertificateId));
+    specificCertificatesRequest.outputBuf.emplace_back(specificCertificateOutput);
+    kernel::ipc::IpcResponse specificCertificatesResponse;
+    assert(!userService.GetCertificates(session, specificCertificatesRequest, specificCertificatesResponse));
+    assert(ResponseValue<u32>(specificCertificatesResponse) == 1);
+
+    userService.OnSessionClosed(session);
+    debugValue = 0;
+    assert(userService.GetDebugOption(session, getDebugRequest, getDebugResponse).raw == result::InvalidOption.raw);
 
     kernel::ipc::IpcResponse deniedResponse;
     assert(userService.CreateContextForSystem(session, contextRequest, deniedResponse).raw == result::AccessDenied.raw);
@@ -292,6 +351,14 @@ int main(int argc, char **argv) {
     kernel::ipc::IpcResponse socketResponse;
     assert(!tlsConnection->SetSocketDescriptor(session, socketRequest, socketResponse));
     assert(ResponseValue<i32>(socketResponse) == sockets[0]);
+    kernel::ipc::IpcRequest getSocketRequest;
+    kernel::ipc::IpcResponse getSocketResponse;
+    assert(!tlsConnection->GetSocketDescriptor(session, getSocketRequest, getSocketResponse));
+    const int returnedSocket{ResponseValue<i32>(getSocketResponse)};
+    assert(::fcntl(returnedSocket, F_GETFD) >= 0);
+    ::close(returnedSocket);
+    ::close(sockets[0]);
+    sockets[0] = -1;
 
     std::string hostname{"localhost"};
     hostname.push_back('\0');
@@ -359,7 +426,37 @@ int main(int argc, char **argv) {
     assert(server.succeeded);
     tlsConnection.reset();
     assert(tlsContext->connectionCount.load() == 0);
-    ::close(sockets[0]);
+
+    auto ownershipContext{std::make_shared<SslContextState>(SslVersion{SslVersionAuto}, 3,
+                                                            ServicePermission::User, false)};
+    ownershipContext->connectionCount.store(1);
+    auto ownershipConnection{std::make_shared<ISslConnection>(device, manager, ownershipContext, sharedState->sessionCache)};
+    std::array<u8, 8> ownershipOptionArguments{};
+    ownershipOptionArguments[0] = 1;
+    const u32 ownershipOption{static_cast<u32>(OptionType::DoNotCloseSocket)};
+    std::memcpy(ownershipOptionArguments.data() + sizeof(u32), &ownershipOption, sizeof(ownershipOption));
+    kernel::ipc::IpcRequest ownershipOptionRequest;
+    ownershipOptionRequest.cmdArg = ownershipOptionArguments.data();
+    ownershipOptionRequest.cmdArgSz = ownershipOptionArguments.size();
+    kernel::ipc::IpcResponse ownershipOptionResponse;
+    assert(!ownershipConnection->SetOption(session, ownershipOptionRequest, ownershipOptionResponse));
+    int ownershipSockets[2]{};
+    assert(::socketpair(AF_UNIX, SOCK_STREAM, 0, ownershipSockets) == 0);
+    i32 ownershipSocketArgument{ownershipSockets[0]};
+    auto ownershipSocketRequest{ArgumentRequest(ownershipSocketArgument)};
+    kernel::ipc::IpcResponse ownershipSocketResponse;
+    assert(!ownershipConnection->SetSocketDescriptor(session, ownershipSocketRequest, ownershipSocketResponse));
+    assert(ResponseValue<i32>(ownershipSocketResponse) == -1);
+    kernel::ipc::IpcRequest ownershipGetSocketRequest;
+    kernel::ipc::IpcResponse ownershipGetSocketResponse;
+    assert(!ownershipConnection->GetSocketDescriptor(session, ownershipGetSocketRequest, ownershipGetSocketResponse));
+    const int exportedSocket{ResponseValue<i32>(ownershipGetSocketResponse)};
+    ownershipConnection.reset();
+    assert(ownershipContext->connectionCount.load() == 0);
+    assert(::fcntl(ownershipSockets[0], F_GETFD) >= 0 && ::fcntl(exportedSocket, F_GETFD) >= 0);
+    ::close(exportedSocket);
+    ::close(ownershipSockets[0]);
+    ::close(ownershipSockets[1]);
 
     int untrustedSockets[2]{};
     assert(::socketpair(AF_UNIX, SOCK_STREAM, 0, untrustedSockets) == 0);

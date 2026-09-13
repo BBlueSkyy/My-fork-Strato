@@ -33,6 +33,8 @@ namespace skyline::service::ssl {
       public:
         ISslService(const DeviceState &state, ServiceManager &manager, std::shared_ptr<SslSharedState> sharedState, ServicePermission permission);
 
+        void OnSessionClosed(const type::KSession &session) override;
+
         Result CreateContext(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result GetContextCount(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result GetCertificates(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
