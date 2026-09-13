@@ -4,6 +4,7 @@
 #pragma once
 
 #include <common.h>
+#include <applet/swkbd/post_vi_trace.h>
 #include "svc_context.h"
 
 namespace skyline::kernel::svc {
@@ -254,15 +255,64 @@ namespace skyline::kernel::svc {
     void SignalToAddress(const DeviceState &state, SvcContext &ctx);
 
     /**
+     * @brief Temporary bounded SVC wrapper used only by the SWKBD post-VI diagnostic window.
+     */
+    struct TracedSvcFunction {
+        using Function = void (*)(const DeviceState &, SvcContext &);
+
+        Function target{};
+        const char *name{};
+
+        constexpr TracedSvcFunction() = default;
+        constexpr TracedSvcFunction(Function target, const char *name) : target{target}, name{name} {}
+
+        void operator()(const DeviceState &state, SvcContext &ctx) const {
+            const bool traceActive{skyline::applet::swkbd::trace::PostViSvcTraceActive()};
+            if (traceActive) {
+                LOGI("SWKBD-TRACE POST-VI SVC enter: {} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X} x5=0x{:X}",
+                     name, ctx.x0, ctx.x1, ctx.x2, ctx.x3, ctx.x4, ctx.x5);
+
+                if (std::string_view{name} == "SvcWaitSynchronization") {
+                    const u32 count{ctx.w2};
+                    const auto timeout{static_cast<i64>(ctx.x3)};
+                    LOGI("SWKBD-TRACE POST-VI WAIT enter: count={}, handlesPtr=0x{:X}, timeout={}ns", count, ctx.x1, timeout);
+                    if (count <= 0x40 && ctx.x1) {
+                        const auto *handles{reinterpret_cast<const KHandle *>(ctx.x1)};
+                        const u32 loggedCount{std::min<u32>(count, 8)};
+                        for (u32 index{}; index < loggedCount; ++index)
+                            LOGI("SWKBD-TRACE POST-VI WAIT handle[{}]=0x{:X}", index, handles[index]);
+                    }
+                }
+            }
+
+            target(state, ctx);
+
+            if (traceActive) {
+                if (std::string_view{name} == "SvcWaitSynchronization")
+                    LOGI("SWKBD-TRACE POST-VI WAIT exit: result=0x{:X}, index={}", ctx.w0, ctx.w1);
+                LOGI("SWKBD-TRACE POST-VI SVC exit: {} x0=0x{:X} x1=0x{:X}", name, ctx.x0, ctx.x1);
+                skyline::applet::swkbd::trace::ConsumePostViSvcTrace();
+            }
+        }
+
+        constexpr explicit operator bool() const {
+            return target != nullptr;
+        }
+    };
+
+    /**
      * @brief A per-SVC descriptor with its name and a function pointer
      * @note The descriptor is nullable, the validity of the descriptor can be checked with the boolean operator
      */
     struct SvcDescriptor {
-        void (*function)(const DeviceState &, SvcContext &); //!< A function pointer to a HLE implementation of the SVC
-        const char *name; //!< A pointer to a static string of the SVC name, the underlying data should not be mutated
+        TracedSvcFunction function; //!< A callable wrapper around the HLE implementation of the SVC
+        const char *name{}; //!< A pointer to a static string of the SVC name, the underlying data should not be mutated
 
-        operator bool() {
-            return function;
+        constexpr SvcDescriptor() = default;
+        constexpr SvcDescriptor(TracedSvcFunction::Function function, const char *name) : function{function, name}, name{name} {}
+
+        constexpr operator bool() const {
+            return static_cast<bool>(function);
         }
     };
 
