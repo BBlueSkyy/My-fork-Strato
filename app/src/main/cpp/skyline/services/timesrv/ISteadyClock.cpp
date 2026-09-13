@@ -12,7 +12,6 @@ namespace skyline::service::timesrv {
           ignoreUninitializedChecks(ignoreUninitializedChecks) {}
 
     Result ISteadyClock::GetCurrentTimePoint(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // When a clock is uninitialized it still ticks however the offsets aren't configured
         if (!ignoreUninitializedChecks && !core.IsClockInitialized())
             return result::ClockUninitialized;
 
@@ -32,11 +31,12 @@ namespace skyline::service::timesrv {
     }
 
     Result ISteadyClock::SetTestOffset(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!writeable)
+            return result::PermissionDenied;
         if (!ignoreUninitializedChecks && !core.IsClockInitialized())
             return result::ClockUninitialized;
 
-        auto testOffset{request.Pop<TimeSpanType>()};
-        core.SetTestOffset(testOffset);
+        core.SetTestOffset(request.Pop<TimeSpanType>());
         return {};
     }
 

@@ -26,7 +26,7 @@ namespace skyline::service::glue {
     }
 
     Result IStaticService::GetTimeZoneService(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(std::make_shared<ITimeZoneService>(state, manager, core->GetTimeZoneService(state, manager), timesrvCore, true), session, response);
+        manager.RegisterService(std::make_shared<ITimeZoneService>(state, manager, core->GetTimeZoneService(state, manager), timesrvCore, permissions.writeTimezone), session, response);
         return {};
     }
 
@@ -45,15 +45,11 @@ namespace skyline::service::glue {
     Result IStaticService::SetStandardSteadyClockInternalOffset(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         if (!permissions.writeSteadyClock)
             return timesrv::result::PermissionDenied;
-
-        // HOS would write the offset between the RTC and the epoch here, however as we emulate an RTC with no offset we can ignore this
-        return {};
+        return core->SetStandardSteadyClockInternalOffset(session, request, response);
     }
 
     Result IStaticService::GetStandardSteadyClockRtcValue(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // std::time is effectively our RTC
-        response.Push<timesrv::PosixTime>(std::time(nullptr));
-        return {};
+        return core->GetStandardSteadyClockRtcValue(session, request, response);
     }
 
     Result IStaticService::IsStandardUserSystemClockAutomaticCorrectionEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -65,9 +61,7 @@ namespace skyline::service::glue {
     }
 
     Result IStaticService::GetStandardUserSystemClockInitialYear(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        constexpr i32 standardUserSystemClockInitialYear{2019}; //!< https://switchbrew.org/wiki/System_Settings#time
-        response.Push(standardUserSystemClockInitialYear);
-        return {};
+        return core->GetStandardUserSystemClockInitialYear(session, request, response);
     }
 
     Result IStaticService::IsStandardNetworkSystemClockAccuracySufficient(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <cmath>
 #include <jvm.h>
 #include "npad_device.h"
 #include "npad.h"
@@ -10,8 +11,7 @@ namespace skyline::input {
         : manager(manager),
           section(section),
           id(id),
-          updateEvent(std::make_shared<kernel::type::KEvent>(manager.state, false)),
-          gyroZeroDriftMode(GyroscopeZeroDriftMode::Standard) {
+          updateEvent(std::make_shared<kernel::type::KEvent>(manager.state, false)) {
         constexpr std::size_t InitializeEntryCount{19}; //!< HW initializes the first 19 entries
 
         ResetDeviceProperties();
@@ -54,7 +54,7 @@ namespace skyline::input {
                 section.systemProperties.plusButtonCapability = true;
                 section.systemProperties.minusButtonCapability = true;
 
-                connectionState.handheld = true;
+                connectionState.wired = true;
                 break;
 
             case NpadControllerType::Handheld:
@@ -67,11 +67,11 @@ namespace skyline::input {
                 section.systemProperties.minusButtonCapability = true;
                 section.systemProperties.directionalButtonsSupported = true;
 
-                connectionState.handheld = true;
+                connectionState.wired = true;
                 connectionState.leftJoyconConnected = true;
-                connectionState.leftJoyconHandheld = true;
+                connectionState.leftJoyconWired = true;
                 connectionState.rightJoyconConnected = true;
-                connectionState.rightJoyconHandheld = true;
+                connectionState.rightJoyconWired = true;
                 break;
 
             case NpadControllerType::JoyconDual:
@@ -121,6 +121,15 @@ namespace skyline::input {
                 connectionState.rightJoyconConnected = true;
                 break;
 
+            case NpadControllerType::Gamecube:
+                section.header.type = NpadControllerType::Gamecube;
+                section.deviceType.fullKey = true;
+                section.systemProperties.abxyButtonsOriented = true;
+                section.systemProperties.plusButtonCapability = true;
+                section.systemProperties.directionalButtonsSupported = true;
+                connectionState.wired = true;
+                break;
+
             default:
                 throw exception("Unsupported controller type: {}", newType);
         }
@@ -157,11 +166,14 @@ namespace skyline::input {
         type = newType;
         controllerInfo = &GetControllerInfo();
 
-        sixAxisInfoLeft = &GetSixAxisInfo(MotionId::Left);
-        if (type == NpadControllerType::JoyconDual)
-            sixAxisInfoRight = &GetSixAxisInfo(MotionId::Right);
+        if (type != NpadControllerType::Gamecube) {
+            sixAxisInfoLeft = &GetSixAxisInfo(MotionId::Left);
+            if (type == NpadControllerType::JoyconDual)
+                sixAxisInfoRight = &GetSixAxisInfo(MotionId::Right);
+        }
 
-        UpdateSharedMemory();
+        UpdateControllerSharedMemory();
+        UpdateSixAxisSharedMemory();
         updateEvent->Signal();
     }
 
@@ -170,6 +182,11 @@ namespace skyline::input {
             return;
 
         ResetDeviceProperties();
+        connectionState = {};
+        controllerState = {};
+        defaultState = {};
+        sixAxisStateLeft = {};
+        sixAxisStateRight = {};
 
         index = -1;
         partnerIndex = -1;
@@ -186,6 +203,7 @@ namespace skyline::input {
     NpadControllerInfo &NpadDevice::GetControllerInfo() {
         switch (type) {
             case NpadControllerType::ProController:
+            case NpadControllerType::Gamecube:
                 return section.fullKeyController;
             case NpadControllerType::Handheld:
                 return section.handheldController;
@@ -229,14 +247,17 @@ namespace skyline::input {
 
         auto &nextEntry{info.state.at(info.header.currentEntry)};
 
-        nextEntry.localTimestamp = lastEntry.localTimestamp + 1;
-        nextEntry.globalTimestamp = nextEntry.localTimestamp << 1;
+        const auto nextSamplingNumber{lastEntry.localTimestamp + 1};
+        const auto completedMarker{nextSamplingNumber << 1};
+        __atomic_store_n(&nextEntry.globalTimestamp, completedMarker | 1, __ATOMIC_RELAXED);
+        nextEntry.localTimestamp = nextSamplingNumber;
         nextEntry.buttons = entry.buttons;
         nextEntry.leftX = entry.leftX;
         nextEntry.leftY = entry.leftY;
         nextEntry.rightX = entry.rightX;
         nextEntry.rightY = entry.rightY;
         nextEntry.status.raw = connectionState.raw;
+        __atomic_store_n(&nextEntry.globalTimestamp, completedMarker, __ATOMIC_RELEASE);
     }
 
     void NpadDevice::WriteNextEntry(NpadSixAxisInfo &info, NpadSixAxisState entry) {
@@ -249,14 +270,17 @@ namespace skyline::input {
 
         auto &nextEntry{info.state.at(info.header.currentEntry)};
 
-        nextEntry.localTimestamp = lastEntry.localTimestamp + 1;
-        nextEntry.globalTimestamp = nextEntry.localTimestamp << 1;
+        const auto nextSamplingNumber{lastEntry.localTimestamp + 1};
+        const auto completedMarker{nextSamplingNumber << 1};
+        __atomic_store_n(&nextEntry.globalTimestamp, completedMarker | 1, __ATOMIC_RELAXED);
         nextEntry.deltaTimestamp = entry.deltaTimestamp;
+        nextEntry.localTimestamp = nextSamplingNumber;
         nextEntry.accelerometer = entry.accelerometer;
         nextEntry.gyroscope = entry.gyroscope;
         nextEntry.rotation = entry.rotation;
         nextEntry.orientation = entry.orientation;
         nextEntry.attribute = entry.attribute;
+        __atomic_store_n(&nextEntry.globalTimestamp, completedMarker, __ATOMIC_RELEASE);
     }
 
     void NpadDevice::WriteEmptyEntries() {
@@ -289,7 +313,7 @@ namespace skyline::input {
         section.rightBatteryLevel = NpadBatteryLevel::Empty;
     }
 
-    void NpadDevice::UpdateSharedMemory() {
+    void NpadDevice::UpdateControllerSharedMemory() {
         if (!connectionState.connected)
             return;
 
@@ -297,16 +321,37 @@ namespace skyline::input {
             WriteNextEntry(*controllerInfo, controllerState);
         WriteNextEntry(section.defaultController, defaultState);
 
-        // TODO: SixAxis should be updated every 5 ms
-        if (sixAxisInfoLeft)
-            WriteNextEntry(*sixAxisInfoLeft, sixAxisStateLeft);
-        if (sixAxisInfoRight)
-            WriteNextEntry(*sixAxisInfoRight, sixAxisStateRight);
-
         globalTimestamp++;
     }
 
+    void NpadDevice::UpdateSixAxisSharedMemory() {
+        if (!connectionState.connected)
+            return;
+
+        const auto makeEntry = [](const NpadSixAxisState &state, const SixAxisSensorConfig &config) {
+            if (config.enabled)
+                return state;
+
+            NpadSixAxisState entry{};
+            entry.deltaTimestamp = 5'000'000;
+            entry.accelerometer.z = -1.0F;
+            entry.orientation[0].x = 1.0F;
+            entry.orientation[1].y = 1.0F;
+            entry.orientation[2].z = 1.0F;
+            entry.attribute.isConnected = true;
+            return entry;
+        };
+
+        if (sixAxisInfoLeft) {
+            const size_t configIndex{type == NpadControllerType::ProController || type == NpadControllerType::Handheld ? 2U : 0U};
+            WriteNextEntry(*sixAxisInfoLeft, makeEntry(sixAxisStateLeft, sixAxisConfigs[configIndex]));
+        }
+        if (sixAxisInfoRight)
+            WriteNextEntry(*sixAxisInfoRight, makeEntry(sixAxisStateRight, sixAxisConfigs[1]));
+    }
+
     void NpadDevice::SetButtonState(NpadButton mask, bool pressed) {
+        std::scoped_lock lock{manager.mutex};
         if (pressed)
             controllerState.buttons.raw |= mask.raw;
         else
@@ -352,6 +397,7 @@ namespace skyline::input {
     }
 
     void NpadDevice::SetAxisValue(NpadAxisId axis, i32 value) {
+        std::scoped_lock lock{manager.mutex};
         constexpr i16 threshold{std::numeric_limits<i16>::max() / 2}; // A 50% deadzone for the stick buttons
 
         if (manager.orientation == NpadJoyOrientation::Vertical || (type != NpadControllerType::JoyconLeft && type != NpadControllerType::JoyconRight)) {
@@ -370,8 +416,8 @@ namespace skyline::input {
                     controllerState.leftY = value;
                     defaultState.leftY = value;
 
-                    defaultState.buttons.leftStickUp = controllerState.buttons.leftStickUp;
                     controllerState.buttons.leftStickUp = controllerState.leftY >= threshold;
+                    defaultState.buttons.leftStickUp = controllerState.buttons.leftStickUp;
 
                     controllerState.buttons.leftStickDown = controllerState.leftY <= -threshold;
                     defaultState.buttons.leftStickDown = controllerState.buttons.leftStickDown;
@@ -440,6 +486,7 @@ namespace skyline::input {
     }
 
     void NpadDevice::SetMotionValue(MotionId sensor, MotionSensorState *value) {
+        std::scoped_lock lock{manager.mutex};
         if (!connectionState.connected)
             return;
 
@@ -470,6 +517,12 @@ namespace skyline::input {
 
         sixAxisState->deltaTimestamp = value->deltaTimestamp;
         sixAxisState->attribute.isConnected = true;
+
+        const auto square = [](float component) { return component * component; };
+        const float accelerationMagnitudeSquared{square(value->accelerometer[0]) + square(value->accelerometer[1]) + square(value->accelerometer[2])};
+        const float angularVelocitySquared{square(value->gyroscope[0]) + square(value->gyroscope[1]) + square(value->gyroscope[2])};
+        const size_t configIndex{sensor == MotionId::Right ? 1U : (type == NpadControllerType::ProController || type == NpadControllerType::Handheld ? 2U : 0U)};
+        sixAxisConfigs[configIndex].atRest = std::abs(accelerationMagnitudeSquared - 1.0F) < 0.1F && angularVelocitySquared < 0.0025F;
     }
 
     constexpr jlong MsInSecond{1000}; //!< The amount of milliseconds in a single second of time
@@ -481,9 +534,13 @@ namespace skyline::input {
         jlong start; //!< The timestamp to (re)start the vibration at
         jlong end; //!< The timestamp to end the vibration at
 
+        static bool IsValid(float frequency, float amplitude) {
+            return std::isfinite(frequency) && frequency > 0.0F && std::isfinite(amplitude) && amplitude > 0.0F;
+        }
+
         VibrationInfo(float frequency, float amplitude)
-            : period(static_cast<jlong>(MsInSecond / frequency)),
-              amplitude(static_cast<jint>(amplitude)),
+            : period(IsValid(frequency, amplitude) ? std::max<jlong>(1, static_cast<jlong>(std::lround(MsInSecond / frequency))) : 1),
+              amplitude(IsValid(frequency, amplitude) ? std::clamp(static_cast<jint>(std::lround(amplitude)), 0, AmplitudeMax) : 0),
               start(0), end(period) {}
     };
 
@@ -550,6 +607,7 @@ namespace skyline::input {
     }
 
     void NpadDevice::Vibrate(const NpadVibrationValue &left, const NpadVibrationValue &right) {
+        std::scoped_lock lock{manager.mutex};
         if (vibrationLeft == left && vibrationRight && (*vibrationRight) == right)
             return;
 
@@ -571,19 +629,67 @@ namespace skyline::input {
     }
 
     void NpadDevice::VibrateSingle(bool isRight, const NpadVibrationValue &value) {
-        if (isRight) {
-            if (vibrationRight && (*vibrationRight) == value)
-                return;
-            vibrationRight = value;
+        std::scoped_lock lock{manager.mutex};
+        if (vibrationRight) {
+            const auto left{isRight ? vibrationLeft : value};
+            const auto right{isRight ? value : *vibrationRight};
+            Vibrate(left, right);
         } else {
-            if (vibrationLeft == value)
+            if (!isRight && vibrationLeft == value)
                 return;
-            vibrationLeft = value;
+
+            if (isRight)
+                vibrationRight = value;
+            else
+                vibrationLeft = value;
+            VibrateDevice(manager.state.jvm, index, value);
+        }
+    }
+
+    void NpadDevice::ActivateVibrationDevice(const NpadDeviceHandle &handle) {
+        std::scoped_lock lock{manager.mutex};
+        if (handle.deviceIndex >= activeVibrationTypes.size())
+            return;
+        if (activeVibrationTypes[handle.deviceIndex] == handle.GetType())
+            return;
+
+        activeVibrationTypes[handle.deviceIndex] = handle.GetType();
+        if (handle.isRight)
+            vibrationRight = DefaultNpadVibrationValue;
+        else
+            vibrationLeft = DefaultNpadVibrationValue;
+    }
+
+    bool NpadDevice::IsVibrationDeviceActive(const NpadDeviceHandle &handle) {
+        std::scoped_lock lock{manager.mutex};
+        return handle.deviceIndex < activeVibrationTypes.size() && activeVibrationTypes[handle.deviceIndex] == handle.GetType();
+    }
+
+    bool NpadDevice::IsVibrationDeviceMounted(const NpadDeviceHandle &handle) {
+        std::scoped_lock lock{manager.mutex};
+        return IsVibrationDeviceActive(handle) && connectionState.connected && type == handle.GetType();
+    }
+
+    NpadVibrationValue NpadDevice::GetActualVibrationValue(const NpadDeviceHandle &handle) {
+        std::scoped_lock lock{manager.mutex};
+        if (!IsVibrationDeviceMounted(handle))
+            return DefaultNpadVibrationValue;
+
+        return handle.isRight ? vibrationRight.value_or(DefaultNpadVibrationValue) : vibrationLeft;
+    }
+
+    void NpadDevice::StopVibration() {
+        std::scoped_lock lock{manager.mutex};
+        if (!connectionState.connected || index == NullIndex) {
+            vibrationLeft = DefaultNpadVibrationValue;
+            if (vibrationRight)
+                vibrationRight = DefaultNpadVibrationValue;
+            return;
         }
 
-        if (vibrationRight)
-            Vibrate(vibrationLeft, *vibrationRight);
-        else
-            VibrateDevice(manager.state.jvm, index, value);
+        if (activeVibrationTypes[0])
+            VibrateSingle(false, DefaultNpadVibrationValue);
+        if (activeVibrationTypes[1])
+            VibrateSingle(true, DefaultNpadVibrationValue);
     }
 }

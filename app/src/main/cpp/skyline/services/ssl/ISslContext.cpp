@@ -1,24 +1,43 @@
 // SPDX-License-Identifier: MPL-2.0
-// Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
-
+#include <chrono>
+#include <climits>
+#include <cstring>
+#include <ctime>
+#include <mbedtls/asn1.h>
+#include <mbedtls/bignum.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/rsa.h>
+#include <mbedtls/x509_crt.h>
+#include "ISslConnection.h"
 #include "ISslContext.h"
-
-namespace skyline::service::ssl {
-    ISslContext::ISslContext(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
-
-    Result ISslContext::ImportServerPki(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        enum class CertificateFormat : u32 {
-            Pem = 1,
-            Der = 2,
-        } certificateFormat{request.Pop<CertificateFormat>()};
-
-        LOGD("Certificate format: {}", certificateFormat);
-
-        response.Push<u64>(0);
-        return {};
-    }
-
-    Result ISslContext::RegisterInternalPki(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        return {};
-    }
+namespace skyline::service::ssl{
+ namespace{
+  template<class T>std::optional<T>Arg(const ipc::IpcRequest&r,size_t o=0){if(!r.cmdArg||o>r.cmdArgSz||r.cmdArgSz-o<sizeof(T))return std::nullopt;T v{};std::memcpy(&v,r.cmdArg+o,sizeof(v));return v;}
+  std::optional<span<u8>>In(ipc::IpcRequest&r,size_t i=0){if(r.inputBuf.size()<=i||(!r.inputBuf[i].data()&&!r.inputBuf[i].empty()))return std::nullopt;return r.inputBuf[i];}
+  std::optional<span<u8>>Out(ipc::IpcRequest&r,size_t i=0){if(r.outputBuf.size()<=i||!r.outputBuf[i].data())return std::nullopt;return r.outputBuf[i];}
+  Result Generate(const KeyAndCertParams&p,span<u8>certOut,span<u8>keyOut,u32&certSize,u32&keySize){
+   if(p.version!=1||p.keySize<1024||p.keySize>4096||p.keySize%8||p.publicExponent<3||p.publicExponent>INT_MAX||(p.publicExponent&1)==0||!p.commonNameLength||p.commonNameLength>=sizeof(p.commonName)||strnlen(p.commonName,sizeof(p.commonName))!=p.commonNameLength||certOut.empty()||keyOut.empty())return result::InvalidOption;
+   mbedtls_entropy_context entropy{};mbedtls_ctr_drbg_context random{};mbedtls_pk_context key{};mbedtls_x509write_cert cert{};mbedtls_mpi serial{};mbedtls_entropy_init(&entropy);mbedtls_ctr_drbg_init(&random);mbedtls_pk_init(&key);mbedtls_x509write_crt_init(&cert);mbedtls_mpi_init(&serial);Result rc{};static constexpr char personal[]{"strato-generated-client-cert"};std::string name{"CN="+std::string(p.commonName,p.commonNameLength)};
+   if(mbedtls_ctr_drbg_seed(&random,mbedtls_entropy_func,&entropy,reinterpret_cast<const unsigned char*>(personal),sizeof(personal)-1)||mbedtls_pk_setup(&key,mbedtls_pk_info_from_type(MBEDTLS_PK_RSA))||mbedtls_rsa_gen_key(mbedtls_pk_rsa(key),mbedtls_ctr_drbg_random,&random,static_cast<unsigned>(p.keySize),static_cast<int>(static_cast<u32>(p.publicExponent)))||mbedtls_mpi_fill_random(&serial,16,mbedtls_ctr_drbg_random,&random))rc=result::InternalLogicError;
+   else{mbedtls_x509write_crt_set_version(&cert,MBEDTLS_X509_CRT_VERSION_1);mbedtls_x509write_crt_set_md_alg(&cert,MBEDTLS_MD_SHA256);mbedtls_x509write_crt_set_subject_key(&cert,&key);mbedtls_x509write_crt_set_issuer_key(&cert,&key);auto now{std::chrono::system_clock::now()},later{now+std::chrono::hours(24*30)};auto nowT{std::chrono::system_clock::to_time_t(now)},laterT{std::chrono::system_clock::to_time_t(later)};std::tm a{},b{};gmtime_r(&nowT,&a);gmtime_r(&laterT,&b);char before[16]{},after[16]{};std::strftime(before,sizeof(before),"%Y%m%d%H%M%S",&a);std::strftime(after,sizeof(after),"%Y%m%d%H%M%S",&b);
+    if(mbedtls_x509write_crt_set_serial(&cert,&serial)||mbedtls_x509write_crt_set_subject_name(&cert,name.c_str())||mbedtls_x509write_crt_set_issuer_name(&cert,name.c_str())||mbedtls_x509write_crt_set_validity(&cert,before,after))rc=result::InvalidOption;else{int k{mbedtls_pk_write_key_der(&key,keyOut.data(),keyOut.size())},c{mbedtls_x509write_crt_der(&cert,certOut.data(),certOut.size(),mbedtls_ctr_drbg_random,&random)};if(k==MBEDTLS_ERR_ASN1_BUF_TOO_SMALL||c==MBEDTLS_ERR_ASN1_BUF_TOO_SMALL)rc=result::CertificateBufferTooSmall;else if(k<=0||c<=0)rc=result::InternalLogicError;else{keySize=static_cast<u32>(k);certSize=static_cast<u32>(c);std::memmove(keyOut.data(),keyOut.data()+keyOut.size()-keySize,keySize);std::memmove(certOut.data(),certOut.data()+certOut.size()-certSize,certSize);}}}
+   mbedtls_mpi_free(&serial);mbedtls_x509write_crt_free(&cert);mbedtls_pk_free(&key);mbedtls_ctr_drbg_free(&random);mbedtls_entropy_free(&entropy);return rc;
+  }
+ }
+ ISslContext::ISslContext(const DeviceState&s,ServiceManager&m,std::shared_ptr<SslSharedState>shared,SslVersion version,u32 interfaceVersion,ServicePermission permission,bool allow):BaseService(s,m),sharedState(std::move(shared)),contextState(std::make_shared<SslContextState>(version,interfaceVersion,permission,allow,sharedState->certificateStore.TrustedCertificates())){sharedState->contextCount.fetch_add(1);}
+ ISslContext::~ISslContext(){sharedState->contextCount.fetch_sub(1);}
+ Result ISslContext::SetOption(type::KSession&,ipc::IpcRequest&r,ipc::IpcResponse&){auto o{Arg<u32>(r)};auto v{Arg<i32>(r,4)};return o&&v?contextState->SetOption(static_cast<ContextOption>(*o),*v):result::InvalidOption;}
+ Result ISslContext::GetOption(type::KSession&,ipc::IpcRequest&r,ipc::IpcResponse&resp){auto o{Arg<u32>(r)};if(!o)return result::InvalidOption;auto v{contextState->GetOption(static_cast<ContextOption>(*o))};if(!v)return v.result;resp.Push<i32>(*v);return{};}
+ Result ISslContext::CreateConnectionImpl(type::KSession&s,ipc::IpcResponse&r,bool system){if(system&&contextState->permission!=ServicePermission::System)return result::AccessDenied;size_t limit{system?MaximumSystemConnectionCount:MaximumUserConnectionCount};u32 previous{contextState->connectionCount.fetch_add(1)};if(previous>=limit){contextState->connectionCount.fetch_sub(1);return result::InsufficientMemory;}std::shared_ptr<ISslConnection> connection;try{connection=std::make_shared<ISslConnection>(state,manager,contextState,sharedState->sessionCache);}catch(...){contextState->connectionCount.fetch_sub(1);throw;}manager.RegisterService(std::move(connection),s,r);return{};}
+ Result ISslContext::CreateConnection(type::KSession&s,ipc::IpcRequest&,ipc::IpcResponse&r){return CreateConnectionImpl(s,r,false);}Result ISslContext::CreateConnectionForSystem(type::KSession&s,ipc::IpcRequest&,ipc::IpcResponse&r){return CreateConnectionImpl(s,r,true);}Result ISslContext::GetConnectionCount(type::KSession&,ipc::IpcRequest&,ipc::IpcResponse&r){r.Push<u32>(contextState->connectionCount.load());return{};}
+ Result ISslContext::ImportServerPki(type::KSession&,ipc::IpcRequest&r,ipc::IpcResponse&resp){auto f{Arg<u32>(r)};auto b{In(r)};if(!f||!b)return result::InvalidCertificateBufferSize;auto id{contextState->ImportServerPki(static_cast<CertificateFormat>(*f),{b->data(),b->size()})};if(!id)return id.result;resp.Push<u64>(*id);return{};}
+ Result ISslContext::ImportClientPki(type::KSession&,ipc::IpcRequest&r,ipc::IpcResponse&resp){auto pkcs12{In(r)};auto password{In(r,1)};if(!pkcs12||pkcs12->empty()||!password)return result::InvalidCertificateBufferSize;auto id{contextState->ImportClientPki({pkcs12->data(),pkcs12->size()},{password->data(),password->size()})};if(!id)return id.result;resp.Push<u64>(*id);return{};}
+ Result ISslContext::RemoveServerPki(type::KSession&,ipc::IpcRequest&r,ipc::IpcResponse&){auto id{Arg<u64>(r)};return id?contextState->RemoveServerPki(*id):result::PkiNotFound;}Result ISslContext::RemoveClientPki(type::KSession&,ipc::IpcRequest&r,ipc::IpcResponse&){auto id{Arg<u64>(r)};return id?contextState->RemoveClientPki(*id):result::PkiNotFound;}
+ Result ISslContext::RegisterInternalPki(type::KSession&,ipc::IpcRequest&r,ipc::IpcResponse&){auto v{Arg<u32>(r)};if(!v||static_cast<InternalPki>(*v)!=InternalPki::DeviceClientCertDefault)return result::InvalidOption;return result::NoCertificate;}
+ Result ISslContext::AddPolicyOid(type::KSession&,ipc::IpcRequest&r,ipc::IpcResponse&){if(contextState->interfaceVersion<3)return result::InvalidOption;auto b{In(r)};return b?contextState->AddPolicyOid({b->data(),b->size()}):result::InvalidOption;}
+ Result ISslContext::ImportCrl(type::KSession&,ipc::IpcRequest&r,ipc::IpcResponse&resp){if(contextState->interfaceVersion<1)return result::InvalidOption;auto b{In(r)};if(!b)return result::InvalidCrlFormat;auto id{contextState->ImportCrl({b->data(),b->size()})};if(!id)return id.result;resp.Push<u64>(*id);return{};}Result ISslContext::RemoveCrl(type::KSession&,ipc::IpcRequest&r,ipc::IpcResponse&){if(contextState->interfaceVersion<1)return result::InvalidOption;auto id{Arg<u64>(r)};return id?contextState->RemoveCrl(*id):result::PkiNotFound;}
+ Result ISslContext::ImportClientCertKeyPki(type::KSession&,ipc::IpcRequest&r,ipc::IpcResponse&resp){if(contextState->version.ApiVersion()<3)return result::InvalidOption;auto f{Arg<u32>(r)};auto c{In(r)};auto k{In(r,1)};if(!f||!c||!k)return result::InvalidCertificateBufferSize;auto id{contextState->ImportClientCertKeyPki(static_cast<CertificateFormat>(*f),{c->data(),c->size()},{k->data(),k->size()})};if(!id)return id.result;resp.Push<u64>(*id);return{};}
+ Result ISslContext::GeneratePrivateKeyAndCert(type::KSession&,ipc::IpcRequest&r,ipc::IpcResponse&resp){if(contextState->version.ApiVersion()<3)return result::InvalidOption;auto v{Arg<u32>(r)};auto cert{Out(r)};auto key{Out(r,1)};auto params{In(r)};if(!v||*v!=1||!cert||!key||!params||params->size()!=sizeof(KeyAndCertParams))return result::InvalidOption;KeyAndCertParams p{};std::memcpy(&p,params->data(),sizeof(p));u32 certSize{},keySize{};if(Result rc{Generate(p,*cert,*key,certSize,keySize)};rc)return rc;resp.Push<u32>(certSize);resp.Push<u32>(keySize);return{};}
 }

@@ -3,10 +3,14 @@
 
 #pragma once
 
+#include <unordered_set>
+
 #include "common.h"
 #include "kernel/types/KSharedMemory.h"
 #include "input/shared_mem.h"
 #include "input/gesture.h"
+#include "input/keyboard.h"
+#include "input/mouse.h"
 #include "input/npad.h"
 #include "input/touch.h"
 
@@ -17,6 +21,8 @@ namespace skyline::input {
     class Input {
       private:
         const DeviceState &state;
+        mutable std::mutex appletResourceMutex;
+        std::unordered_set<u64> appletResources;
 
       public:
         std::shared_ptr<kernel::type::KSharedMemory> kHid; //!< The kernel shared memory object for HID Shared Memory
@@ -25,8 +31,19 @@ namespace skyline::input {
         NpadManager npad;
         TouchManager touch;
         GestureManager gesture;
+        MouseManager mouse;
+        KeyboardManager keyboard;
 
         Input(const DeviceState &state);
+
+        /** Registers the application-scoped HID state owned by an IAppletResource. */
+        bool RegisterAppletResource(u64 aruid);
+
+        /** Releases application-scoped HID state when its IAppletResource dies. */
+        void UnregisterAppletResource(u64 aruid);
+
+        /** Returns whether the ARUID currently owns a live IAppletResource. */
+        bool IsAppletResourceRegistered(u64 aruid) const;
 
       private:
         std::thread updateThread; //!< A thread that handles delivering HID shared memory updates at a fixed rate
