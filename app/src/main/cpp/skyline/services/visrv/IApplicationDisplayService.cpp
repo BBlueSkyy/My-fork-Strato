@@ -87,7 +87,7 @@ namespace skyline::service::visrv {
 
     Result IApplicationDisplayService::CloseDisplay(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto displayId{request.Pop<hosbinder::DisplayId>()};
-        LOGD("Closing display: {}", hosbinder::ToString(displayId));
+        LOGD("Closing display: {}", hosbinder->ToString(displayId));
         hosbinder->CloseDisplay(displayId);
         return {};
     }
@@ -205,7 +205,7 @@ namespace skyline::service::visrv {
         response.Push<u64>(IndirectLayerAlignment);
 
         skyline::applet::swkbd::trace::ArmPostViSvcTrace();
-        LOGI("SWKBD-TRACE POST-VI armed: size=0x{:X}, alignment=0x{:X}, budget=24", size, IndirectLayerAlignment);
+        LOGI("SWKBD-TRACE POST-VI armed: size=0x{:X}, alignment=0x{:X}, persistent=true", size, IndirectLayerAlignment);
 
         return {};
     }
