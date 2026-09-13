@@ -4,6 +4,7 @@
 
 #include <gpu.h>
 #include <limits>
+#include <applet/swkbd/post_vi_trace.h>
 #include <kernel/types/KProcess.h>
 #include <services/am/applet/IApplet.h>
 #include <services/serviceman.h>
@@ -202,6 +203,9 @@ namespace skyline::service::visrv {
 
         response.Push<i64>(size);
         response.Push<u64>(IndirectLayerAlignment);
+
+        skyline::applet::swkbd::trace::ArmPostViSvcTrace();
+        LOGI("SWKBD-TRACE POST-VI armed: size=0x{:X}, alignment=0x{:X}, budget=24", size, IndirectLayerAlignment);
 
         return {};
     }
