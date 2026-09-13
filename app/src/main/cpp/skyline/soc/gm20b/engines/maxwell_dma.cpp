@@ -254,11 +254,12 @@ namespace skyline::soc::gm20b::engine {
             LOGE("Blocklinear surfaces with a non-one block width are unsupported on the Tegra X1: {}", registers.dstSurface->blockSize.Width());
             return;
         }
+        if (srcBlockLinear && dstBlockLinear && registers.srcSurface->depth != registers.dstSurface->depth) [[unlikely]] {
+            LOGW("BlockLinear remap with mismatched surface depth is unsupported: {} -> {}", registers.srcSurface->depth, registers.dstSurface->depth);
+            return;
+        }
 
         size_t depth{srcBlockLinear ? registers.srcSurface->depth : registers.dstSurface->depth};
-        if (srcBlockLinear && dstBlockLinear)
-            depth = std::min<size_t>(registers.srcSurface->depth, registers.dstSurface->depth);
-
         size_t totalElements{elementsPerLine * lines * depth};
         std::vector<u8> srcLinear;
         std::vector<u8> dstLinear(totalElements * dstBpp);
