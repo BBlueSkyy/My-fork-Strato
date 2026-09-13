@@ -530,41 +530,88 @@ namespace skyline::kernel {
         return std::make_optional(*chunkBase);
     }
 
-    bool MemoryManager::MapPhysicalMemoryIfAllowed(span<u8> memory) {
-    std::unique_lock lock{mutex};
+    MemoryManager::MapPhysicalMemoryResult MemoryManager::MapPhysicalMemoryIfAllowed(span<u8> memory) {
+        std::unique_lock lock{mutex};
 
-    // Passo de leitura: só rejeita se algum sub-trecho não for Unmapped nem Heap.
-    // Heap já mapeado é um "completar" legítimo (idempotente) - hardware real
-    // aceita chamadas sobrepostas de MapPhysicalMemory em vez de falhar tudo.
-    bool allowed{true};
-    std::vector<std::pair<u8 *, size_t>> toMap;
-    ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
-        if (desc.second.state == memory::states::Unmapped) {
-            toMap.emplace_back(desc.first, desc.second.size);
-        } else if (desc.second.state != memory::states::Heap) [[unlikely]] {
-            allowed = false;
-            LOGW("MapPhysicalMemoryIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which is neither Unmapped nor Heap", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
+        // Read step: only rejects if any subsection is neither Unmapped nor Heap.
+        // Already mapped Heap is a legitimate (idempotent) "complete" - real hardware
+        // Accepts overlapping MapPhysicalMemory calls instead of failing everything.
+        bool allowed{true};
+        size_t deltaSize{};
+        std::vector<std::pair<u8 *, size_t>> toMap;
+        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+            if (desc.second.state == memory::states::Unmapped) {
+                toMap.emplace_back(desc.first, desc.second.size);
+                deltaSize += desc.second.size;
+            } else if (desc.second.state != memory::states::Heap) [[unlikely]] {
+                allowed = false;
+                LOGW("MapPhysicalMemoryIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which is neither Unmapped nor Heap", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
+            }
+        });
+
+        if (!allowed) [[unlikely]]
+            return MapPhysicalMemoryResult::NotUnmapped;
+
+        // NEW: enforce PhysicalMemoryLimit, but only against the not-yet-mapped delta -- a call that's
+        // entirely a top-up over already-Heap-mapped memory costs nothing extra, matching real hardware.
+        // Without this, nothing stops a title from mapping until the *device* runs out of RAM instead of
+        // hitting the budget real HOS enforces, which is what forces its own pool manager to recycle.
+        if (mappedPhysicalMemorySize + deltaSize > PhysicalMemoryLimit) [[unlikely]] {
+            LOGW("MapPhysicalMemoryIfAllowed: refusing to map 0x{:X} new bytes -- would exceed PhysicalMemoryLimit (0x{:X}/0x{:X} already mapped)", deltaSize, mappedPhysicalMemorySize, PhysicalMemoryLimit);
+            return MapPhysicalMemoryResult::LimitExceeded;
         }
-    });
 
-    if (!allowed) [[unlikely]]
-        return false;
+        // Writing step: maps only the sub-sections that were actually unmapped.
+        // Collected beforehand (not mapped within ForeachChunkInRange) so as not to mess with
+        // the chunk map while we are still iterating through it.
+        for (const auto &[chunkAddr, chunkSize] : toMap) {
+            MapInternal(std::pair<u8 *, ChunkDescriptor>(
+                chunkAddr, {
+                    .size = chunkSize,
+                    .permission = {true, true, false},
+                    .state = memory::states::Heap
+                }));
+        }
 
-    // Passo de escrita: mapeia só os sub-trechos que estavam Unmapped de fato.
-    // Coletados antes (não mapeados dentro do ForeachChunkInRange) pra não mexer
-    // no mapa de chunks enquanto ainda estamos iterando ele.
-    for (const auto &[chunkAddr, chunkSize] : toMap) {
-        MapInternal(std::pair<u8 *, ChunkDescriptor>(
-            chunkAddr, {
-                .size = chunkSize,
-                .permission = {true, true, false},
-                .state = memory::states::Heap
-            }));
+        mappedPhysicalMemorySize += deltaSize;
+
+        return MapPhysicalMemoryResult::Success;
     }
+
+    bool MemoryManager::UnmapPhysicalMemoryIfAllowed(span<u8> memory) {
+        std::unique_lock lock{mutex};
+
+        bool locked{};
+        size_t mappedSize{};
+        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
+            if (desc.second.ipcLockCount != 0) [[unlikely]]
+                locked = true;
+            if (desc.second.state != memory::states::Unmapped)
+                mappedSize += desc.second.size;
+        });
+
+        if (locked) [[unlikely]]
+            return false;
+
+        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) {
+            if (desc.second.state != memory::states::Unmapped)
+                FreeMemory(span<u8>(desc.first, desc.second.size));
+        });
+
+        MapInternal(std::pair<u8 *, ChunkDescriptor>(
+            memory.data(), {
+                .size = memory.size(),
+                .permission = {false, false, false},
+                .state = memory::states::Unmapped
+            }));
+
+        // Clamp defensively: mappedSize should never exceed mappedPhysicalMemorySize, but a size_t
+        // underflow from any accounting drift would be far worse than a slightly-stale counter.
+        mappedPhysicalMemorySize -= std::min(mappedSize, mappedPhysicalMemorySize);
 
         return true;
     }
-  
+
     __attribute__((always_inline)) void MemoryManager::MapCodeMemory(span<u8> memory, memory::Permission permission) {
         std::unique_lock lock{mutex};
 
