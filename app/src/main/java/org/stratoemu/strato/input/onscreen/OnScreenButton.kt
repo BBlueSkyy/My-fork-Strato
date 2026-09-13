@@ -10,7 +10,6 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PointF
 import android.graphics.Rect
-import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
@@ -67,8 +66,6 @@ abstract class OnScreenButton(
 
     private val buttonSymbolPaint = Paint().apply {
         color = config.textColor
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        isAntiAlias = true
     }
     protected val textBoundsRect = Rect()
 
@@ -158,11 +155,17 @@ abstract class OnScreenButton(
         var bounds : Rect? = null
         if (config.enabled) {
             bounds = currentBounds
-            val alpha = if (isPressed) config.alpha / 3 else config.alpha
+            val alpha = if (isPressed) (config.alpha - 130).coerceIn(30, 255) else config.alpha
             drawable.apply {
                 this.bounds = bounds
                 this.alpha = alpha
-                applyColorsToDrawable(this)
+
+                // Skyline Edge 44 draws the stock OSC resources with their intrinsic
+                // translucent colors. Only override them when a custom background color
+                // has explicitly been selected.
+                if (config.backgroundColor != OnScreenConfiguration.DefaultBackgroundColor)
+                    applyColorsToDrawable(this)
+
                 draw(canvas)
             }
 
