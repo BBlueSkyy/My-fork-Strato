@@ -63,13 +63,11 @@ namespace skyline::service::am {
     Result ILibraryAppletAccessor::RequestExit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
         // Strato frontends are in-process rather than independent HOS processes. Marking the
         // state event completes the same observable AM contract without killing the application.
-        indirectLayers->Unregister(indirectLayerHandle);
         stateChangeEvent->Signal();
         return {};
     }
 
     Result ILibraryAppletAccessor::Terminate(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
-        indirectLayers->Unregister(indirectLayerHandle);
         stateChangeEvent->Signal();
         return {};
     }
