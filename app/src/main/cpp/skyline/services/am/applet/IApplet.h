@@ -94,7 +94,8 @@ namespace skyline::service::am {
         }
 
         void PushNormalInput(std::shared_ptr<service::am::IStorage> data) {
-            normalInputData.emplace(data);
+            std::scoped_lock lock{normalInputDataMutex};
+            normalInputData.emplace(std::move(data));
         }
     };
 
@@ -122,7 +123,8 @@ namespace skyline::service::am {
         }
 
         void PushInteractiveInput(std::shared_ptr<service::am::IStorage> data) {
-            interactiveInputData.emplace(data);
+            std::scoped_lock lock{interactiveInputDataMutex};
+            interactiveInputData.emplace(std::move(data));
         }
     };
 }
