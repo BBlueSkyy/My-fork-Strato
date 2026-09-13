@@ -272,13 +272,13 @@ namespace skyline::kernel::svc {
                 LOGI("SWKBD-TRACE POST-VI SVC enter: {} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X} x5=0x{:X}",
                      name, ctx.x0, ctx.x1, ctx.x2, ctx.x3, ctx.x4, ctx.x5);
 
-                if (std::string_view{name} == "SvcWaitSynchronization") {
+                if (target == &WaitSynchronization) {
                     const u32 count{ctx.w2};
                     const auto timeout{static_cast<i64>(ctx.x3)};
                     LOGI("SWKBD-TRACE POST-VI WAIT enter: count={}, handlesPtr=0x{:X}, timeout={}ns", count, ctx.x1, timeout);
                     if (count <= 0x40 && ctx.x1) {
-                        const auto *handles{reinterpret_cast<const KHandle *>(ctx.x1)};
-                        const u32 loggedCount{std::min<u32>(count, 8)};
+                        const auto *handles{reinterpret_cast<const u32 *>(ctx.x1)};
+                        const u32 loggedCount{count < 8 ? count : 8};
                         for (u32 index{}; index < loggedCount; ++index)
                             LOGI("SWKBD-TRACE POST-VI WAIT handle[{}]=0x{:X}", index, handles[index]);
                     }
@@ -288,7 +288,7 @@ namespace skyline::kernel::svc {
             target(state, ctx);
 
             if (traceActive) {
-                if (std::string_view{name} == "SvcWaitSynchronization")
+                if (target == &WaitSynchronization)
                     LOGI("SWKBD-TRACE POST-VI WAIT exit: result=0x{:X}, index={}", ctx.w0, ctx.w1);
                 LOGI("SWKBD-TRACE POST-VI SVC exit: {} x0=0x{:X} x1=0x{:X}", name, ctx.x0, ctx.x1);
                 skyline::applet::swkbd::trace::ConsumePostViSvcTrace();
