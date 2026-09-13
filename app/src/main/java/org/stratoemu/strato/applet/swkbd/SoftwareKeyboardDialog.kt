@@ -53,8 +53,15 @@ class SoftwareKeyboardDialog : DialogFragment() {
     private lateinit var binding : KeyboardDialogBinding
 
     private var cancelled : Boolean = false
-    private var futureResult : FutureTask<SoftwareKeyboardResult> = FutureTask<SoftwareKeyboardResult> { return@FutureTask SoftwareKeyboardResult(cancelled, binding.textInput.text.toString()) }
+    private var futureResult : FutureTask<SoftwareKeyboardResult> = FutureTask<SoftwareKeyboardResult> {
+        SoftwareKeyboardResult(cancelled, if (::binding.isInitialized) binding.textInput.text.toString() else initialText)
+    }
     private val inlineUpdates = LinkedBlockingQueue<Array<Any?>>()
+
+    override fun onCreate(savedInstanceState : Bundle?) {
+        super.onCreate(savedInstanceState)
+        isCancelable = !config.isCancelButtonDisabled
+    }
 
     override fun onCreateView(inflater : LayoutInflater, container : ViewGroup?, savedInstanceState : Bundle?) = if (savedInstanceState?.getBoolean("stopped") != true) KeyboardDialogBinding.inflate(inflater).also { binding = it }.root else null
 
@@ -123,7 +130,20 @@ class SoftwareKeyboardDialog : DialogFragment() {
         super.onStop()
     }
 
+    override fun onCancel(dialog : DialogInterface) {
+        cancelled = true
+        val text = if (::binding.isInitialized) binding.textInput.text.toString() else initialText
+        val cursor = if (::binding.isInitialized) binding.textInput.selectionStart.coerceAtLeast(0) else text.length
+        inlineUpdates.offer(arrayOf(inlineUpdateCancel, text, cursor))
+        futureResult.run()
+        super.onCancel(dialog)
+    }
+
     override fun onDismiss(dialog : DialogInterface) {
+        if (!futureResult.isDone) {
+            cancelled = true
+            futureResult.run()
+        }
         cancelInlineWait()
         super.onDismiss(dialog)
     }
@@ -135,7 +155,9 @@ class SoftwareKeyboardDialog : DialogFragment() {
 
     fun waitForSubmitOrCancel() : SoftwareKeyboardResult {
         val result = futureResult.get()
-        futureResult = FutureTask<SoftwareKeyboardResult> { return@FutureTask SoftwareKeyboardResult(cancelled, binding.textInput.text.toString()) }
+        futureResult = FutureTask<SoftwareKeyboardResult> {
+            SoftwareKeyboardResult(cancelled, if (::binding.isInitialized) binding.textInput.text.toString() else initialText)
+        }
         return result
     }
 
