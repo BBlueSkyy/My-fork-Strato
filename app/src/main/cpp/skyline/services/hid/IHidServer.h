@@ -5,12 +5,9 @@
 
 #include <services/serviceman.h>
 #include "IAppletResource.h"
+#include "results.h"
 
 namespace skyline::service::hid {
-    namespace result {
-        constexpr Result InvalidNpadId(202, 709);
-    }
-    
     /**
      * @brief IHidServer or hid service is used to access input devices
      * @url https://switchbrew.org/wiki/HID_services#hid

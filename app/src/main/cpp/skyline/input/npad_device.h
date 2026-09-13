@@ -64,6 +64,11 @@ namespace skyline::input {
             bool nes : 1; //!< NES controller
             bool nesHandheld : 1; //!< NES controller in handheld mode
             bool snes : 1; //!< SNES controller
+            bool n64 : 1; //!< Nintendo 64 controller
+            bool segaGenesis : 1; //!< Sega Genesis controller
+            u32 _reserved_ : 17;
+            bool systemExt : 1; //!< Generic external controller
+            bool system : 1; //!< Generic system controller
         };
     };
     static_assert(sizeof(NpadStyleSet) == 0x4);
@@ -98,12 +103,18 @@ namespace skyline::input {
      * @url https://switchbrew.org/wiki/HID_services#VibrationDeviceHandle
      */
     union __attribute__((__packed__)) NpadDeviceHandle {
-        u32 raw;
+        u32 raw{};
         struct {
             u8 type;
             NpadId id : 8;
-            bool isRight : 1; //!< If this is a right Joy-Con (Both) or right LRA in the Pro-Controller (Vibration)
-            bool isSixAxisSingle : 1; //!< If the Six-Axis device is a single unit, either Handheld or Pro-Controller
+            union {
+                u8 deviceIndex;
+                struct {
+                    bool isRight : 1; //!< Right Joy-Con or right actuator
+                    bool isSixAxisSingle : 1; //!< FullKey/Handheld single IMU (device index 2)
+                };
+            };
+            u8 padding;
         };
 
         constexpr NpadControllerType GetType() const {
@@ -125,6 +136,14 @@ namespace skyline::input {
             }
         }
     };
+    static_assert(sizeof(NpadDeviceHandle) == 0x4);
+    static_assert(alignof(NpadDeviceHandle) == 0x1);
+
+    struct SixAxisSensorFusionParameters {
+        float revisePower{0.03F};
+        float reviseRange{0.4F};
+    };
+    static_assert(sizeof(SixAxisSensorFusionParameters) == 0x8);
 
     /**
      * @url https://switchbrew.org/wiki/HID_services#VibrationDeviceInfo
@@ -160,6 +179,16 @@ namespace skyline::input {
         Tight = 2,
     };
 
+    struct SixAxisSensorConfig {
+        bool enabled{};
+        bool fusionEnabled{true};
+        bool unalteredPassthrough{};
+        bool newlyAssigned{true};
+        bool atRest{true};
+        SixAxisSensorFusionParameters fusion{};
+        GyroscopeZeroDriftMode gyroZeroDriftMode{GyroscopeZeroDriftMode::Standard};
+    };
+
     class NpadManager;
 
     /**
@@ -175,6 +204,7 @@ namespace skyline::input {
         u64 globalTimestamp{}; //!< An incrementing timestamp that's common across all sections
         NpadControllerState controllerState{}, defaultState{}; //!< The current state of the controller (normal and default)
         NpadSixAxisState sixAxisStateLeft{}, sixAxisStateRight{}; //!< The current state of the sixaxis (left and right)
+        std::array<SixAxisSensorConfig, 3> sixAxisConfigs{}; //!< State for left, right and single-unit handles
 
         /**
          * @brief Updates the headers and writes a new entry in HID Shared Memory
@@ -220,7 +250,6 @@ namespace skyline::input {
         NpadControllerType type{};
         NpadConnectionState connectionState{};
         std::shared_ptr<kernel::type::KEvent> updateEvent; //!< This event is triggered on the controller's style changing
-        GyroscopeZeroDriftMode gyroZeroDriftMode;
 
         NpadDevice(NpadManager &manager, NpadSection &section, NpadId id);
 
@@ -245,7 +274,18 @@ namespace skyline::input {
         /**
          * @brief Writes the current state of the controller to HID shared memory
          */
-        void UpdateSharedMemory();
+        void UpdateControllerSharedMemory();
+
+        /** Writes SixAxis state on its native 5 ms sampling cadence. */
+        void UpdateSixAxisSharedMemory();
+
+        SixAxisSensorConfig &GetSixAxisConfig(const NpadDeviceHandle &handle) {
+            return sixAxisConfigs.at(handle.deviceIndex);
+        }
+
+        const SixAxisSensorConfig &GetSixAxisConfig(const NpadDeviceHandle &handle) const {
+            return sixAxisConfigs.at(handle.deviceIndex);
+        }
 
         /**
          * @brief Changes the state of buttons to the specified state

@@ -12,7 +12,11 @@ namespace skyline::service::hid {
     IHidServer::IHidServer(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
 
     Result IHidServer::CreateAppletResource(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(IAppletResource), session, response);
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->RegisterAppletResource(aruid))
+            return result::AruidAlreadyRegistered;
+
+        manager.RegisterService(SRVREG(IAppletResource, aruid), session, response);
         return {};
     }
 
