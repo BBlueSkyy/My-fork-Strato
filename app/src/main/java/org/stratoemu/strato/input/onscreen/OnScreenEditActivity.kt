@@ -42,6 +42,9 @@ class OnScreenEditActivity : AppCompatActivity() {
             setTitle(this@OnScreenEditActivity.getString(R.string.osc_background_color))
             setDefaultColorButton(binding.onScreenControllerView.getButtonBackgroundColor())
             setRoundColorButton(true)
+            // The transparent classic-background entry raises the palette to 11 colors.
+            // Six columns keep both palettes at two rows so OK/Cancel remain visible in landscape.
+            setColumns(6)
             setColors(*SwitchColors.colors.toIntArray())
             setDefaultDoubleColorButton(binding.onScreenControllerView.getButtonTextColor())
             setSecondTitle(this@OnScreenEditActivity.getString(R.string.osc_text_color))
