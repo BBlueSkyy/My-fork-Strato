@@ -33,10 +33,18 @@ namespace skyline::service::hid {
     }
 
     Result IHidServer::ActivateMouse(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        state.input->mouse.Activate();
         return {};
     }
 
     Result IHidServer::ActivateKeyboard(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        state.input->keyboard.Activate();
         return {};
     }
 

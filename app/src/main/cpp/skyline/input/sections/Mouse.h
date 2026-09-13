@@ -6,6 +6,27 @@
 #include "common.h"
 
 namespace skyline::input {
+    union MouseButton {
+        u32 raw{};
+        struct {
+            u32 left : 1;
+            u32 right : 1;
+            u32 middle : 1;
+            u32 forward : 1;
+            u32 back : 1;
+        };
+    };
+    static_assert(sizeof(MouseButton) == 0x4);
+
+    union MouseAttribute {
+        u32 raw{};
+        struct {
+            u32 transferable : 1;
+            u32 connected : 1;
+        };
+    };
+    static_assert(sizeof(MouseAttribute) == 0x4);
+
     /**
      * @url https://switchbrew.org/wiki/HID_Shared_Memory#MouseState
      */
@@ -13,18 +34,23 @@ namespace skyline::input {
         u64 globalTimestamp; //!< The global timestamp in samples
         u64 localTimestamp; //!< The local timestamp in samples
 
-        u32 positionX; //!< The X position of the mouse
-        u32 positionY; //!< The Y position of the mouse
+        i32 positionX; //!< The X position of the mouse
+        i32 positionY; //!< The Y position of the mouse
 
-        u32 deltaX; //!< The change in the X-axis value
-        u32 deltaY; //!< The change in the Y-axis value
+        i32 deltaX; //!< The change in the X-axis value
+        i32 deltaY; //!< The change in the Y-axis value
 
-        u32 scrollChangeY; //!< The amount scrolled in the Y-axis since the last entry
-        u32 scrollChangeX; //!< The amount scrolled in the X-axis since the last entry
+        i32 scrollChangeY; //!< The amount scrolled in the Y-axis since the last entry
+        i32 scrollChangeX; //!< The amount scrolled in the X-axis since the last entry
 
-        std::bitset<64> buttons; //!< The state of the mouse buttons as a bit-array
+        MouseButton buttons;
+        MouseAttribute attributes;
     };
     static_assert(sizeof(MouseState) == 0x30);
+    static_assert(alignof(MouseState) == 0x8);
+    static_assert(offsetof(MouseState, localTimestamp) == 0x8);
+    static_assert(offsetof(MouseState, buttons) == 0x28);
+    static_assert(offsetof(MouseState, attributes) == 0x2C);
 
     /**
      * @url https://switchbrew.org/wiki/HID_Shared_Memory#Mouse

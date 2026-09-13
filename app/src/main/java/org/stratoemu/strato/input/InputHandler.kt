@@ -75,6 +75,12 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
          */
         external fun setTouchState(points : IntArray)
 
+        /** Updates one USB HID keyboard usage and the accompanying modifier state. */
+        private external fun setKeyboardState(usage : Int, pressed : Boolean, modifiers : Int)
+
+        /** Updates the physical mouse state exposed through HID shared memory. */
+        private external fun setMouseState(x : Int, y : Int, deltaX : Int, deltaY : Int, wheelX : Int, wheelY : Int, buttons : Int)
+
         /**
          * Minimum dead zone floor applied to analog axes, used as a fallback when the host
          * driver reports an unreliable (e.g. zero) `flat` value, or reports no [InputDevice.MotionRange]
@@ -226,26 +232,104 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
             else -> return false
         }
 
-        return when (val guestEvent = inputManager.eventMap[KeyHostEvent(event.device.descriptor, event.keyCode)]) {
+        when (val guestEvent = inputManager.eventMap[KeyHostEvent(event.device.descriptor, event.keyCode)]) {
             is ButtonGuestEvent -> {
                 if (guestEvent.button != ButtonId.Menu)
                     setButtonState(guestEvent.id, guestEvent.button.value, action.state)
-                true
+                return true
             }
 
             is AxisGuestEvent -> {
                 setAxisValue(guestEvent.id, guestEvent.axis.ordinal, (if (action == ButtonState.Pressed) if (guestEvent.polarity) Short.MAX_VALUE else Short.MIN_VALUE else 0).toInt())
-                true
+                return true
             }
 
-            else -> false
+            else -> {}
         }
+
+        val usage = androidKeyCodeToHidUsage(event.keyCode)
+        if (usage != null && event.isFromSource(InputDevice.SOURCE_KEYBOARD)) {
+            setKeyboardState(usage, action.state, keyboardModifiers(event.metaState))
+            return true
+        }
+
+        return false
+    }
+
+    private fun keyboardModifiers(metaState : Int) : Int {
+        var modifiers = 0
+        if (metaState and KeyEvent.META_CTRL_ON != 0) modifiers = modifiers or (1 shl 0)
+        if (metaState and KeyEvent.META_SHIFT_ON != 0) modifiers = modifiers or (1 shl 1)
+        if (metaState and KeyEvent.META_ALT_LEFT_ON != 0) modifiers = modifiers or (1 shl 2)
+        if (metaState and KeyEvent.META_ALT_RIGHT_ON != 0) modifiers = modifiers or (1 shl 3)
+        if (metaState and KeyEvent.META_META_ON != 0) modifiers = modifiers or (1 shl 4)
+        if (metaState and KeyEvent.META_CAPS_LOCK_ON != 0) modifiers = modifiers or (1 shl 8)
+        if (metaState and KeyEvent.META_SCROLL_LOCK_ON != 0) modifiers = modifiers or (1 shl 9)
+        if (metaState and KeyEvent.META_NUM_LOCK_ON != 0) modifiers = modifiers or (1 shl 10)
+        return modifiers
+    }
+
+    private fun androidKeyCodeToHidUsage(keyCode : Int) : Int? = when (keyCode) {
+        in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> 0x04 + keyCode - KeyEvent.KEYCODE_A
+        in KeyEvent.KEYCODE_1..KeyEvent.KEYCODE_9 -> 0x1E + keyCode - KeyEvent.KEYCODE_1
+        KeyEvent.KEYCODE_0 -> 0x27
+        KeyEvent.KEYCODE_ENTER -> 0x28
+        KeyEvent.KEYCODE_ESCAPE -> 0x29
+        KeyEvent.KEYCODE_DEL -> 0x2A
+        KeyEvent.KEYCODE_TAB -> 0x2B
+        KeyEvent.KEYCODE_SPACE -> 0x2C
+        KeyEvent.KEYCODE_MINUS -> 0x2D
+        KeyEvent.KEYCODE_EQUALS -> 0x2E
+        KeyEvent.KEYCODE_LEFT_BRACKET -> 0x2F
+        KeyEvent.KEYCODE_RIGHT_BRACKET -> 0x30
+        KeyEvent.KEYCODE_BACKSLASH -> 0x31
+        KeyEvent.KEYCODE_SEMICOLON -> 0x33
+        KeyEvent.KEYCODE_APOSTROPHE -> 0x34
+        KeyEvent.KEYCODE_GRAVE -> 0x35
+        KeyEvent.KEYCODE_COMMA -> 0x36
+        KeyEvent.KEYCODE_PERIOD -> 0x37
+        KeyEvent.KEYCODE_SLASH -> 0x38
+        KeyEvent.KEYCODE_CAPS_LOCK -> 0x39
+        in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12 -> 0x3A + keyCode - KeyEvent.KEYCODE_F1
+        KeyEvent.KEYCODE_SYSRQ -> 0x46
+        KeyEvent.KEYCODE_SCROLL_LOCK -> 0x47
+        KeyEvent.KEYCODE_BREAK -> 0x48
+        KeyEvent.KEYCODE_INSERT -> 0x49
+        KeyEvent.KEYCODE_MOVE_HOME -> 0x4A
+        KeyEvent.KEYCODE_PAGE_UP -> 0x4B
+        KeyEvent.KEYCODE_FORWARD_DEL -> 0x4C
+        KeyEvent.KEYCODE_MOVE_END -> 0x4D
+        KeyEvent.KEYCODE_PAGE_DOWN -> 0x4E
+        KeyEvent.KEYCODE_DPAD_RIGHT -> 0x4F
+        KeyEvent.KEYCODE_DPAD_LEFT -> 0x50
+        KeyEvent.KEYCODE_DPAD_DOWN -> 0x51
+        KeyEvent.KEYCODE_DPAD_UP -> 0x52
+        KeyEvent.KEYCODE_NUM_LOCK -> 0x53
+        KeyEvent.KEYCODE_NUMPAD_DIVIDE -> 0x54
+        KeyEvent.KEYCODE_NUMPAD_MULTIPLY -> 0x55
+        KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> 0x56
+        KeyEvent.KEYCODE_NUMPAD_ADD -> 0x57
+        KeyEvent.KEYCODE_NUMPAD_ENTER -> 0x58
+        in KeyEvent.KEYCODE_NUMPAD_1..KeyEvent.KEYCODE_NUMPAD_9 -> 0x59 + keyCode - KeyEvent.KEYCODE_NUMPAD_1
+        KeyEvent.KEYCODE_NUMPAD_0 -> 0x62
+        KeyEvent.KEYCODE_NUMPAD_DOT -> 0x63
+        KeyEvent.KEYCODE_MENU -> 0x65
+        KeyEvent.KEYCODE_CTRL_LEFT -> 0xE0
+        KeyEvent.KEYCODE_SHIFT_LEFT -> 0xE1
+        KeyEvent.KEYCODE_ALT_LEFT -> 0xE2
+        KeyEvent.KEYCODE_META_LEFT -> 0xE3
+        KeyEvent.KEYCODE_CTRL_RIGHT -> 0xE4
+        KeyEvent.KEYCODE_SHIFT_RIGHT -> 0xE5
+        KeyEvent.KEYCODE_ALT_RIGHT -> 0xE6
+        KeyEvent.KEYCODE_META_RIGHT -> 0xE7
+        else -> null
     }
 
     /**
      * The last value of the axes so the stagnant axes can be eliminated to not wastefully look them up
      */
     private val axesHistory = FloatArray(MotionHostEvent.axes.size)
+    private val mousePositionHistory = mutableMapOf<Int, Pair<Int, Int>>()
 
     /**
      * Handles translating any [MotionHostEvent]s to a [GuestEvent] that is passed into libskyline
@@ -301,6 +385,42 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
             }
 
             return true
+        }
+
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE) || event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_MOVE,
+                MotionEvent.ACTION_HOVER_MOVE,
+                MotionEvent.ACTION_SCROLL,
+                MotionEvent.ACTION_BUTTON_PRESS,
+                MotionEvent.ACTION_BUTTON_RELEASE -> {
+                    val x = event.x.toInt()
+                    val y = event.y.toInt()
+                    val previous = mousePositionHistory.put(event.deviceId, Pair(x, y))
+                    val relativeX = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X).toInt()
+                    val relativeY = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y).toInt()
+                    val deltaX = if (relativeX != 0) relativeX else previous?.let { x - it.first } ?: 0
+                    val deltaY = if (relativeY != 0) relativeY else previous?.let { y - it.second } ?: 0
+
+                    var buttons = 0
+                    if (event.buttonState and MotionEvent.BUTTON_PRIMARY != 0) buttons = buttons or (1 shl 0)
+                    if (event.buttonState and MotionEvent.BUTTON_SECONDARY != 0) buttons = buttons or (1 shl 1)
+                    if (event.buttonState and MotionEvent.BUTTON_TERTIARY != 0) buttons = buttons or (1 shl 2)
+                    if (event.buttonState and MotionEvent.BUTTON_FORWARD != 0) buttons = buttons or (1 shl 3)
+                    if (event.buttonState and MotionEvent.BUTTON_BACK != 0) buttons = buttons or (1 shl 4)
+
+                    setMouseState(
+                        x,
+                        y,
+                        deltaX,
+                        deltaY,
+                        event.getAxisValue(MotionEvent.AXIS_HSCROLL).toInt(),
+                        event.getAxisValue(MotionEvent.AXIS_VSCROLL).toInt(),
+                        buttons
+                    )
+                    return true
+                }
+            }
         }
 
         return false

@@ -7,6 +7,8 @@
 #include "kernel/types/KSharedMemory.h"
 #include "input/shared_mem.h"
 #include "input/gesture.h"
+#include "input/keyboard.h"
+#include "input/mouse.h"
 #include "input/npad.h"
 #include "input/touch.h"
 
@@ -27,6 +29,8 @@ namespace skyline::input {
         NpadManager npad;
         TouchManager touch;
         GestureManager gesture;
+        MouseManager mouse;
+        KeyboardManager keyboard;
 
         Input(const DeviceState &state);
 

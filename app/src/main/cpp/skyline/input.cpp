@@ -69,6 +69,8 @@ namespace skyline::input {
           npad{state, hid},
           touch{state, hid},
           gesture{hid},
+          mouse{hid},
+          keyboard{hid},
           updateThread{&Input::UpdateThread, this} {}
 
     bool Input::RegisterAppletResource(u64 aruid) {
@@ -120,6 +122,8 @@ namespace skyline::input {
                 UpdateCallback{TouchUpdatePeriod, [&](UpdateCallback &callback) {
                     const auto touchState{touch.UpdateSharedMemory()};
                     gesture.Update(touchState, util::GetTimeNs());
+                    mouse.UpdateSharedMemory();
+                    keyboard.UpdateSharedMemory();
                 }},
             };
 
