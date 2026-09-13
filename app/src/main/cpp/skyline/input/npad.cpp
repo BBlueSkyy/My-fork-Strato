@@ -161,4 +161,13 @@ namespace skyline::input {
         for (auto &pad : npads)
             pad.UpdateSixAxisSharedMemory();
     }
+
+    void NpadManager::SetVibrationPermitted(bool permitted) {
+        std::scoped_lock guard{mutex};
+        vibrationPermitted = permitted;
+        if (!permitted) {
+            for (auto &pad : npads)
+                pad.StopVibration();
+        }
+    }
 }

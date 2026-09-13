@@ -34,6 +34,7 @@ namespace skyline::input {
         NpadStyleSet styles; //!< The styles that are supported by the application
         NpadJoyOrientation orientation{}; //!< The orientation all of Joy-Cons are in (This affects stick transformation for them)
         NpadHandheldActivationMode handheldActivationMode{NpadHandheldActivationMode::Dual}; //!< By default two controllers are required to activate handheld mode
+        bool vibrationPermitted{true};
 
         /**
          * @param hid A pointer to HID Shared Memory on the host
@@ -127,5 +128,6 @@ namespace skyline::input {
 
         void UpdateControllerSharedMemory();
         void UpdateSixAxisSharedMemory();
+        void SetVibrationPermitted(bool permitted);
     };
 }
