@@ -57,7 +57,14 @@ namespace skyline::service::timesrv::core {
         if (timePoint > cachedValue)
             cachedValue = timePoint;
 
-        return timePoint;
+        return cachedValue;
+    }
+
+    ResultValue<PosixTime> StandardSteadyClockCore::GetRtcValue() {
+        if (!IsClockInitialized())
+            return result::ClockUninitialized;
+
+        return static_cast<PosixTime>(std::time(nullptr));
     }
 
     ResultValue<SteadyClockTimePoint> TickBasedSteadyClockCore::GetTimePoint() {
@@ -99,9 +106,7 @@ namespace skyline::service::timesrv::core {
             .offset = posixTimePoint - timePoint->timePoint,
         };
 
-        UpdateClockContext(newContext);
-
-        return {};
+        return UpdateClockContext(newContext);
     }
 
     ResultValue<PosixTime> SystemClockCore::GetCurrentTime() {
@@ -157,13 +162,13 @@ namespace skyline::service::timesrv::core {
     }
 
     Result StandardUserSystemClockCore::SetAutomaticCorrectionEnabled(bool enable) {
-        // Resync with network clock before any state transitions
+        // HOS republishes the local context when it is synchronized from the network clock.
         if (enable != automaticCorrectionEnabled && networkSystemClock.IsClockSetup()) {
             auto ctx{networkSystemClock.GetClockContext()};
             if (!ctx)
                 return ctx;
 
-            auto result{localSystemClock.SetClockContext(*ctx)};
+            auto result{localSystemClock.UpdateClockContext(*ctx)};
             if (result)
                 return result;
         }
@@ -209,7 +214,7 @@ namespace skyline::service::timesrv::core {
             if (!ctx)
                 return ctx;
 
-            auto result{localSystemClock.SetClockContext(*ctx)};
+            auto result{localSystemClock.UpdateClockContext(*ctx)};
             if (result)
                 return result;
         }
@@ -232,7 +237,6 @@ namespace skyline::service::timesrv::core {
         auto rtcOffset{TimeSpanType::FromSeconds(std::time(nullptr)) - TimeSpanType::FromNanoseconds(util::GetTimeNs())};
 
         // On the switch the RTC may not always start from the epoch so it is compensated with the internal offset.
-        // We however emulate RTC to start from the epoch so we can set it to zero, if we wanted to add an option for a system time offset we would change this.
         TimeSpanType internalOffset{};
 
         // Setup the standard steady clock from which everything in the system counts
@@ -243,10 +247,9 @@ namespace skyline::service::timesrv::core {
                 .timePoint = 0,
                 .clockSourceId = rtcId,
             },
-            .offset = 0 //!< Zero offset as the RTC is calibrated already
+            .offset = 0
         };
         // Don't supply a POSIX time as the offset will be taken from the above context instead.
-        // Normally the POSIX time would be the initial year for the clock to reset to if the context got wiped.
         managerServer.SetupStandardLocalSystemClock(localSystemClockContext, 0);
 
         // Use the context just created in local clock for the network clock, HOS gets this from settings
@@ -254,18 +257,18 @@ namespace skyline::service::timesrv::core {
         if (!context)
             throw exception("Failed to get local system clock context!");
 
-        constexpr TimeSpanType sufficientAccuracy{TimeSpanType::FromDays(30)}; //!< https://switchbrew.org/wiki/System_Settings#time
-
+        constexpr TimeSpanType sufficientAccuracy{TimeSpanType::FromDays(30)}; //!< 43200 minutes, the HOS time setting default
         managerServer.SetupStandardNetworkSystemClock(*context, sufficientAccuracy);
 
-        // Initialise the user system clock with automatic correction disabled as we don't emulate the automatic correction thread
-        managerServer.SetupStandardUserSystemClock(false, SteadyClockTimePoint{.clockSourceId = UUID::GenerateUuidV4()});
+        // Keep the automatic-correction timestamp on the same steady-clock source.
+        auto automaticCorrectionUpdateTime{standardSteadyClock.GetCurrentTimePoint()};
+        if (!automaticCorrectionUpdateTime)
+            throw exception("Failed to create automatic-correction updated timepoint!");
+        managerServer.SetupStandardUserSystemClock(true, *automaticCorrectionUpdateTime);
         managerServer.SetupEphemeralSystemClock();
 
         // Timezone init - normally done in glue
-
-        // Act as if we just updated the current timezone
-        auto timezoneUpdateTime{standardSteadyClock.GetTimePoint()};
+        auto timezoneUpdateTime{standardSteadyClock.GetCurrentTimePoint()};
         if (!timezoneUpdateTime)
             throw exception("Failed to create a timezone updated timepoint!");
 
@@ -273,17 +276,23 @@ namespace skyline::service::timesrv::core {
         std::vector<u8> buffer(timeZoneBinaryListFile->size);
         timeZoneBinaryListFile->Read(buffer);
 
-        // Parse binaryList.txt into a vector
-        auto prev{buffer.begin()};
-        for (auto it{buffer.begin()}; it != buffer.end(); it++) {
-            if (*it == '\n' && prev != it) {
-                timesrv::LocationName name{};
-                span(prev.base(), static_cast<size_t>(std::distance(prev, std::prev(it)))).as_string().copy(name.data(), name.size());
-                locationNameList.push_back(name);
+        // Parse binaryList.txt, preserving the complete name and a possible final line without '\n'.
+        size_t start{};
+        while (start < buffer.size()) {
+            size_t end{start};
+            while (end < buffer.size() && buffer[end] != '\n' && buffer[end] != '\r')
+                ++end;
 
-                if (std::next(it) != buffer.end())
-                    prev = std::next(it);
+            if (end > start) {
+                timesrv::LocationName name{};
+                const auto length{std::min(end - start, name.size() - 1)};
+                std::memcpy(name.data(), buffer.data() + start, length);
+                locationNameList.push_back(name);
             }
+
+            while (end < buffer.size() && (buffer[end] == '\n' || buffer[end] == '\r'))
+                ++end;
+            start = end;
         }
 
         auto timeZoneBinaryVersionFile{state.os->assetFileSystem->OpenFile("tzdata/version.txt")};

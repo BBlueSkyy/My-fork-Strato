@@ -20,7 +20,7 @@ interface OnScreenConfiguration {
 
         const val MinAlpha = 0
         const val MaxAlpha = 255
-        const val DefaultAlpha = 128
+        const val DefaultAlpha = 255
 
         const val MinScale = 0.5f
         const val MaxScale = 2.5f
@@ -30,8 +30,8 @@ interface OnScreenConfiguration {
         const val DefaultActivationRadius = 1.0f
         const val MaxActivationRadius = 8.0f
 
-        val DefaultTextColor = SwitchColors.BLACK.color
-        val DefaultBackgroundColor = SwitchColors.WHITE.color
+        val DefaultTextColor = SwitchColors.GRAY.color
+        val DefaultBackgroundColor = SwitchColors.TRANSPARENT.color
     }
 
     var enabled : Boolean
@@ -44,7 +44,7 @@ interface OnScreenConfiguration {
     var toggleMode : Boolean
 
     /**
-     * The toggle mode of group of buttons, returns an integer that can be used to set the state of a MaterialCheckBox
+     * The toggle mode of a group of buttons, returns an integer that can be used to set the state of a MaterialCheckBox
      */
     val groupToggleMode get() = if (toggleMode) GroupEnabled else GroupDisabled
 

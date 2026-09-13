@@ -3,6 +3,7 @@
 
 #include <input.h>
 #include "IActiveVibrationDeviceList.h"
+#include "results.h"
 
 using namespace skyline::input;
 
@@ -12,9 +13,14 @@ namespace skyline::service::hid {
     Result IActiveVibrationDeviceList::ActivateVibrationDevice(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto handle{request.Pop<NpadDeviceHandle>()};
 
-        if (NpadManager::IsNpadIdValid(handle.id))
-            if (!handle.isRight)
-                state.input->npad.at(handle.id).vibrationRight = NpadVibrationValue{};
+        if (!NpadManager::IsNpadIdValid(handle.id))
+            return result::VibrationInvalidNpadId;
+        if (handle.padding != 0)
+            return result::InvalidNpadHandle;
+        if (!NpadManager::IsVibrationHandleValid(handle))
+            return handle.GetType() == NpadControllerType::None ? result::VibrationInvalidStyleIndex : result::VibrationDeviceIndexOutOfRange;
+
+        state.input->npad.at(handle.id).ActivateVibrationDevice(handle);
 
         return {};
     }

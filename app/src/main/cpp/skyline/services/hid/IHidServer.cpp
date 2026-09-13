@@ -9,10 +9,38 @@
 using namespace skyline::input;
 
 namespace skyline::service::hid {
+    namespace {
+        Result ValidateSixAxisHandle(const NpadDeviceHandle &handle) {
+            if (!NpadManager::IsNpadIdValid(handle.id))
+                return result::InvalidNpadId;
+            if (handle.padding != 0 || handle.GetType() == NpadControllerType::None)
+                return result::InvalidNpadHandle;
+            if (!NpadManager::IsSixAxisHandleValid(handle))
+                return result::InvalidNpadDeviceIndex;
+            return {};
+        }
+
+        Result ValidateVibrationHandle(const NpadDeviceHandle &handle) {
+            if (!NpadManager::IsNpadIdValid(handle.id))
+                return result::VibrationInvalidNpadId;
+            if (handle.padding != 0)
+                return result::InvalidNpadHandle;
+            if (handle.GetType() == NpadControllerType::None)
+                return result::VibrationInvalidStyleIndex;
+            if (!NpadManager::IsVibrationHandleValid(handle))
+                return result::VibrationDeviceIndexOutOfRange;
+            return {};
+        }
+    }
+
     IHidServer::IHidServer(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
 
     Result IHidServer::CreateAppletResource(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(IAppletResource), session, response);
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->RegisterAppletResource(aruid))
+            return result::AruidAlreadyRegistered;
+
+        manager.RegisterService(SRVREG(IAppletResource, aruid), session, response);
         return {};
     }
 
@@ -21,64 +49,128 @@ namespace skyline::service::hid {
     }
 
     Result IHidServer::ActivateTouchScreen(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
         state.input->touch.Activate();
         return {};
     }
 
     Result IHidServer::ActivateMouse(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        state.input->mouse.Activate();
         return {};
     }
 
     Result IHidServer::ActivateKeyboard(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        state.input->keyboard.Activate();
         return {};
     }
 
     Result IHidServer::StartSixAxisSensor(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        request.Skip<u32>();
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
+            return validation;
+
+        std::scoped_lock lock{state.input->npad.mutex};
+        state.input->npad.at(handle.id).GetSixAxisConfig(handle).enabled = true;
         return {};
     }
 
     Result IHidServer::StopSixAxisSensor(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        request.Skip<u32>();
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
+            return validation;
+
+        std::scoped_lock lock{state.input->npad.mutex};
+        state.input->npad.at(handle.id).GetSixAxisConfig(handle).enabled = false;
         return {};
     }
 
     Result IHidServer::SetGyroscopeZeroDriftMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto npadHandle{request.Pop<NpadDeviceHandle>()};
-        auto mode{request.Pop<GyroscopeZeroDriftMode>()};
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        const auto mode{request.Pop<GyroscopeZeroDriftMode>()};
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
+            return validation;
 
-        state.input->npad[npadHandle.id].gyroZeroDriftMode = mode;
+        std::scoped_lock lock{state.input->npad.mutex};
+        state.input->npad.at(handle.id).GetSixAxisConfig(handle).gyroZeroDriftMode = mode;
         return {};
     }
 
     Result IHidServer::GetGyroscopeZeroDriftMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto npadHandle{request.Pop<NpadDeviceHandle>()};
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        request.Skip<u32>();
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
+            return validation;
 
-        response.Push(state.input->npad[npadHandle.id].gyroZeroDriftMode);
+        std::scoped_lock lock{state.input->npad.mutex};
+        response.Push(state.input->npad.at(handle.id).GetSixAxisConfig(handle).gyroZeroDriftMode);
         return {};
     }
 
     Result IHidServer::ResetGyroscopeZeroDriftMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto npadHandle{request.Pop<NpadDeviceHandle>()};
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        request.Skip<u32>();
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
+            return validation;
 
-        state.input->npad[npadHandle.id].gyroZeroDriftMode = GyroscopeZeroDriftMode::Standard;
+        std::scoped_lock lock{state.input->npad.mutex};
+        state.input->npad.at(handle.id).GetSixAxisConfig(handle).gyroZeroDriftMode = GyroscopeZeroDriftMode::Standard;
         return {};
     }
 
     Result IHidServer::IsSixAxisSensorAtRest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u8>(1);
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        request.Skip<u32>();
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
+            return validation;
+
+        std::scoped_lock lock{state.input->npad.mutex};
+        response.Push<u8>(state.input->npad.at(handle.id).GetSixAxisConfig(handle).atRest);
         return {};
     }
 
     Result IHidServer::ActivateGesture(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto basicGestureId{request.Pop<u32>()};
+        request.Skip<u32>();
         auto appletResourceUserId{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(appletResourceUserId))
+            return result::AruidNotRegistered;
         state.input->gesture.Activate(basicGestureId);
         LOGD("Activated gesture input: ID {}, AppletResourceUserId 0x{:X}", basicGestureId, appletResourceUserId);
         return {};
     }
 
     Result IHidServer::SetGestureOutputRanges(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // Stub — cmd 92, [18.0.0+], undocumented on switchbrew.
-        // Same stub used by Ryujinx, which unblocks DKCR HD.
+        // Command 92 (HOS 18.0.0+) remains undocumented by Switchbrew/libnx.
+        // Eden also exposes it as a four-u32 no-op, so there is no verified state
+        // transition or output contract to reproduce here.
         return {};
     }
    
@@ -128,8 +220,16 @@ namespace skyline::service::hid {
     }
 
     Result IHidServer::DisconnectNpad(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto id{request.Pop<NpadId>()};
+        const auto id{request.Pop<NpadId>()};
+        request.Skip<u32>();
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (!NpadManager::IsNpadIdValid(id))
+            return result::InvalidNpadId;
+
         LOGD("Disconnecting Npad {}", id);
+        state.input->npad.Disconnect(id);
         return {};
     }
 
@@ -229,10 +329,8 @@ namespace skyline::service::hid {
 
     Result IHidServer::GetVibrationDeviceInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto deviceHandle{request.Pop<NpadDeviceHandle>()};
-        auto id{deviceHandle.id};
-
-        if (id > NpadId::Player8 && id != NpadId::Handheld && id != NpadId::Unknown)
-            return result::InvalidNpadId;
+        if (const auto validation{ValidateVibrationHandle(deviceHandle)}; validation.raw)
+            return validation;
 
         auto vibrationDeviceType{NpadVibrationDeviceType::Unknown};
         auto vibrationDevicePosition{NpadVibrationDevicePosition::None};
@@ -254,14 +352,36 @@ namespace skyline::service::hid {
     }
 
     Result IHidServer::SendVibrationValue(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        const auto &handle{request.Pop<NpadDeviceHandle>()};
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        const auto value{request.Pop<NpadVibrationValue>()};
+        request.Skip<u32>();
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateVibrationHandle(handle)}; validation.raw)
+            return validation;
+
+        std::scoped_lock lock{state.input->npad.mutex};
         auto &device{state.input->npad.at(handle.id)};
-        if (device.type == handle.GetType()) {
-            const auto &value{request.Pop<NpadVibrationValue>()};
+        if (device.IsVibrationDeviceActive(handle) && device.IsVibrationDeviceMounted(handle)) {
+            const auto actualValue{state.input->npad.vibrationPermitted ? value : DefaultNpadVibrationValue};
             LOGD("Vibration - Handle: 0x{:02X} (0b{:05b}), Vibration: {:.2f}@{:.2f}Hz, {:.2f}@{:.2f}Hz", static_cast<u8>(handle.id), static_cast<u8>(handle.type), value.amplitudeLow, value.frequencyLow, value.amplitudeHigh, value.frequencyHigh);
-            device.VibrateSingle(handle.isRight, value);
+            device.VibrateSingle(handle.isRight, actualValue);
         }
 
+        return {};
+    }
+
+    Result IHidServer::GetActualVibrationValue(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        request.Skip<u32>();
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateVibrationHandle(handle)}; validation.raw)
+            return validation;
+
+        response.Push(state.input->npad.at(handle.id).GetActualVibrationValue(handle));
         return {};
     }
 
@@ -271,22 +391,35 @@ namespace skyline::service::hid {
     }
 
     Result IHidServer::SendVibrationValues(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        request.Skip<u64>(); // appletResourceUserId
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (request.inputBuf.size() < 2 || request.inputBuf[0].size_bytes() % sizeof(NpadDeviceHandle) != 0 || request.inputBuf[1].size_bytes() % sizeof(NpadVibrationValue) != 0)
+            return result::InvalidArraySize;
 
         auto handles{request.inputBuf.at(0).cast<NpadDeviceHandle>()};
         auto values{request.inputBuf.at(1).cast<NpadVibrationValue>()};
+        if (handles.size() != values.size())
+            return result::VibrationArraySizeMismatch;
 
+        for (const auto &handle : handles) {
+            if (const auto validation{ValidateVibrationHandle(handle)}; validation.raw)
+                return validation;
+        }
+
+        std::scoped_lock lock{state.input->npad.mutex};
         for (size_t i{}; i < handles.size(); ++i) {
             const auto &handle{handles[i]};
             auto &device{state.input->npad.at(handle.id)};
-            if (device.type == handle.GetType()) {
-                if (i + 1 != handles.size() && handles[i + 1].id == handle.id && handles[i + 1].isRight && !handle.isRight) {
+            if (device.IsVibrationDeviceActive(handle) && device.IsVibrationDeviceMounted(handle)) {
+                const auto value{state.input->npad.vibrationPermitted ? values[i] : DefaultNpadVibrationValue};
+                if (i + 1 != handles.size() && handles[i + 1].id == handle.id && handles[i + 1].type == handle.type && handles[i + 1].isRight && !handle.isRight && device.IsVibrationDeviceActive(handles[i + 1]) && device.IsVibrationDeviceMounted(handles[i + 1])) {
+                    const auto rightValue{state.input->npad.vibrationPermitted ? values[i + 1] : DefaultNpadVibrationValue};
                     LOGD("Vibration #{}&{} - Handle: 0x{:02X} (0b{:05b}), Vibration: {:.2f}@{:.2f}Hz, {:.2f}@{:.2f}Hz - {:.2f}@{:.2f}Hz, {:.2f}@{:.2f}Hz", i, i + 1, static_cast<u8>(handle.id), static_cast<u8>(handle.type), values[i].amplitudeLow, values[i].frequencyLow, values[i].amplitudeHigh, values[i].frequencyHigh, values[i + 1].amplitudeLow, values[i + 1].frequencyLow, values[i + 1]
                         .amplitudeHigh, values[i + 1].frequencyHigh);
-                    device.Vibrate(values[i], values[i + 1]);
+                    device.Vibrate(value, rightValue);
                     i++;
                 } else {
-                    const auto &value{values[i]};
                     LOGD("Vibration #{} - Handle: 0x{:02X} (0b{:05b}), Vibration: {:.2f}@{:.2f}Hz, {:.2f}@{:.2f}Hz", i, static_cast<u8>(handle.id), static_cast<u8>(handle.type), value.amplitudeLow, value.frequencyLow, value.amplitudeHigh, value.frequencyHigh);
                     device.VibrateSingle(handle.isRight, value);
                 }
@@ -296,16 +429,27 @@ namespace skyline::service::hid {
         return {};
     }
 
+    Result IHidServer::PermitVibration(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        state.input->npad.SetVibrationPermitted(request.Pop<u8>() != 0);
+        return {};
+    }
+
     Result IHidServer::IsVibrationPermitted(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u8>(0);
+        std::scoped_lock lock{state.input->npad.mutex};
+        response.Push<u8>(state.input->npad.vibrationPermitted);
         return {};
     }
 
     Result IHidServer::IsVibrationDeviceMounted(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto vibrationDeviceHandle{request.Pop<u32>()};
-        auto appletResourceUserId{request.Pop<u64>()};
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        request.Skip<u32>();
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateVibrationHandle(handle)}; validation.raw)
+            return validation;
 
-        response.Push<u8>(true);
+        response.Push<u8>(state.input->npad.at(handle.id).IsVibrationDeviceMounted(handle));
 
         return {};
     }
@@ -337,12 +481,24 @@ namespace skyline::service::hid {
     Result IHidServer::SetTouchScreenResolution(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto width{request.Pop<u32>()};
         auto height{request.Pop<u32>()};
-        request.Skip<u64>(); // appletResourceUserId
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
 
         state.input->touch.SetResolution(width, height);
 
         LOGD("Touch Screen Resolution: {}x{}", width, height);
 
         return {};  
+    }
+
+    Result IHidServer::SetTouchScreenConfiguration(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto configuration{request.Pop<TouchScreenConfiguration>()};
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+
+        state.input->touch.SetConfiguration(configuration);
+        return {};
     }
 }

@@ -90,14 +90,14 @@ namespace skyline::input {
     static_assert(sizeof(NpadButton) == 0x8);
 
     union NpadConnectionState {
-        u64 raw;
+        u64 raw{};
         struct {
             bool connected : 1; //!< If the controller is connected
-            bool handheld : 1; //!< If both Joy-Cons are in handheld mode (or a Pro Controller)
+            bool wired : 1; //!< If the controller is connected over a wired transport
             bool leftJoyconConnected : 1; //!< If the left Joy-Con is connected
-            bool leftJoyconHandheld : 1; //!< If the left Joy-Con is handheld
+            bool leftJoyconWired : 1; //!< If the left Joy-Con is connected over a wired transport
             bool rightJoyconConnected : 1; //!< If the right Joy-Con is connected
-            bool rightJoyconHandheld : 1; //!< If the right Joy-Con is handheld
+            bool rightJoyconWired : 1; //!< If the right Joy-Con is connected over a wired transport
         };
     };
     static_assert(sizeof(NpadConnectionState) == 0x8);

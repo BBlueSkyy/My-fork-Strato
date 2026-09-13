@@ -34,6 +34,7 @@ namespace skyline::input {
         NpadStyleSet styles; //!< The styles that are supported by the application
         NpadJoyOrientation orientation{}; //!< The orientation all of Joy-Cons are in (This affects stick transformation for them)
         NpadHandheldActivationMode handheldActivationMode{NpadHandheldActivationMode::Dual}; //!< By default two controllers are required to activate handheld mode
+        bool vibrationPermitted{true};
 
         /**
          * @param hid A pointer to HID Shared Memory on the host
@@ -100,6 +101,12 @@ namespace skyline::input {
             }
         }
 
+        /** Validates the ABI fields and style/device-index pairing of a SixAxis handle. */
+        static bool IsSixAxisHandleValid(const NpadDeviceHandle &handle);
+
+        /** Validates the ABI fields and style/device-index pairing of a vibration handle. */
+        static bool IsVibrationHandleValid(const NpadDeviceHandle &handle);
+
         /**
          * @brief Deduces all the mappings from guest controllers -> players based on the configuration supplied by HID services and available controllers
          * @note If any class members were edited, the mutex shouldn't be released till this is called
@@ -115,5 +122,12 @@ namespace skyline::input {
          * @brief Disables any activate mappings from guest controllers -> players till Activate has been called
          */
         void Deactivate();
+
+        /** Disconnects one logical Npad and detaches its current host mapping. */
+        void Disconnect(NpadId id);
+
+        void UpdateControllerSharedMemory();
+        void UpdateSixAxisSharedMemory();
+        void SetVibrationPermitted(bool permitted);
     };
 }
