@@ -5,12 +5,9 @@
 
 #include <services/serviceman.h>
 #include "IAppletResource.h"
+#include "results.h"
 
 namespace skyline::service::hid {
-    namespace result {
-        constexpr Result InvalidNpadId(202, 709);
-    }
-    
     /**
      * @brief IHidServer or hid service is used to access input devices
      * @url https://switchbrew.org/wiki/HID_services#hid
@@ -85,6 +82,9 @@ namespace skyline::service::hid {
          * @url https://switchbrew.org/wiki/HID_services#ActivateGesture
          */
         Result ActivateGesture(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /** Sets the touch sensing mode for this applet resource (HOS 9.0.0+). */
+        Result SetTouchScreenConfiguration(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
          * @brief Sets the coordinate ranges used for touch gesture reporting (stub)
@@ -207,6 +207,9 @@ namespace skyline::service::hid {
          */
         Result SendVibrationValue(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        /** Returns the last value applied to an active, mounted vibration device. */
+        Result GetActualVibrationValue(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         /**
          * @brief Returns an instance of #IActiveVibrationDeviceList
          * @url https://switchbrew.org/wiki/HID_services#CreateActiveVibrationDeviceList
@@ -218,6 +221,9 @@ namespace skyline::service::hid {
          * @url https://switchbrew.org/wiki/HID_services#SendVibrationValues
          */
         Result SendVibrationValues(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /** Enables or disables vibration output globally for this HID service. */
+        Result PermitVibration(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
          * @url https://switchbrew.org/wiki/HID_services#IsVibrationPermitted
@@ -291,6 +297,8 @@ namespace skyline::service::hid {
             SFUNC(0xCB, IHidServer, CreateActiveVibrationDeviceList),
             SFUNC(0xC8, IHidServer, GetVibrationDeviceInfo),
             SFUNC(0xC9, IHidServer, SendVibrationValue),
+            SFUNC(0xCA, IHidServer, GetActualVibrationValue),
+            SFUNC(0xCC, IHidServer, PermitVibration),
             SFUNC(0xCE, IHidServer, SendVibrationValues),
             SFUNC(0xCD, IHidServer, IsVibrationPermitted),
             SFUNC(0xD3, IHidServer, IsVibrationDeviceMounted),
@@ -298,6 +306,7 @@ namespace skyline::service::hid {
             SFUNC(0x132, IHidServer, InitializeSevenSixAxisSensor),
             SFUNC(0x136, IHidServer, ResetSevenSixAxisSensorTimestamp),
             SFUNC(0x20D, IHidServer, SetPalmaBoostMode),
+            SFUNC(0x3EA, IHidServer, SetTouchScreenConfiguration),
             SFUNC(0x3EC, IHidServer, SetTouchScreenResolution) 
         )
     };

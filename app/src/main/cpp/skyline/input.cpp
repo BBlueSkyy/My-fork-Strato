@@ -69,7 +69,24 @@ namespace skyline::input {
           npad{state, hid},
           touch{state, hid},
           gesture{hid},
+          mouse{hid},
+          keyboard{hid},
           updateThread{&Input::UpdateThread, this} {}
+
+    bool Input::RegisterAppletResource(u64 aruid) {
+        std::scoped_lock lock{appletResourceMutex};
+        return appletResources.emplace(aruid).second;
+    }
+
+    void Input::UnregisterAppletResource(u64 aruid) {
+        std::scoped_lock lock{appletResourceMutex};
+        appletResources.erase(aruid);
+    }
+
+    bool Input::IsAppletResourceRegistered(u64 aruid) const {
+        std::scoped_lock lock{appletResourceMutex};
+        return appletResources.contains(aruid);
+    }
 
     void Input::UpdateThread() {
         if (int result{pthread_setname_np(pthread_self(), "Sky-Input")})
@@ -92,16 +109,21 @@ namespace skyline::input {
             };
 
             constexpr std::chrono::milliseconds NPadUpdatePeriod{4}; //!< The period at which a Joy-Con is updated (250Hz)
+            constexpr std::chrono::milliseconds SixAxisUpdatePeriod{5}; //!< Native SixAxis sampling period (200Hz)
             constexpr std::chrono::milliseconds TouchUpdatePeriod{4}; //!< The period at which the touch screen is updated (250Hz)
 
-            std::array<UpdateCallback, 2> updateCallbacks{
+            std::array<UpdateCallback, 3> updateCallbacks{
                 UpdateCallback{NPadUpdatePeriod, [&](UpdateCallback &callback) {
-                    for (auto &pad : npad.npads)
-                        pad.UpdateSharedMemory();
+                    npad.UpdateControllerSharedMemory();
+                }},
+                UpdateCallback{SixAxisUpdatePeriod, [&](UpdateCallback &callback) {
+                    npad.UpdateSixAxisSharedMemory();
                 }},
                 UpdateCallback{TouchUpdatePeriod, [&](UpdateCallback &callback) {
                     const auto touchState{touch.UpdateSharedMemory()};
                     gesture.Update(touchState, util::GetTimeNs());
+                    mouse.UpdateSharedMemory();
+                    keyboard.UpdateSharedMemory();
                 }},
             };
 

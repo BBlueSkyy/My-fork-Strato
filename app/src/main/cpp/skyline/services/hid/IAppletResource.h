@@ -11,8 +11,12 @@ namespace skyline::service::hid {
      * @url https://switchbrew.org/wiki/HID_services#IAppletResource
      */
     class IAppletResource : public BaseService {
+      private:
+        u64 aruid;
+
       public:
-        IAppletResource(const DeviceState &state, ServiceManager &manager);
+        IAppletResource(const DeviceState &state, ServiceManager &manager, u64 aruid);
+        ~IAppletResource() override;
 
         /**
          * @brief Opens a handle to HID shared memory
