@@ -255,7 +255,7 @@ namespace skyline::kernel::svc {
     void SignalToAddress(const DeviceState &state, SvcContext &ctx);
 
     /**
-     * @brief Temporary bounded SVC wrapper used only by the SWKBD post-VI diagnostic window.
+     * @brief Temporary filtered SVC wrapper used only by the SWKBD post-VI diagnostic window.
      */
     struct TracedSvcFunction {
         using Function = void (*)(const DeviceState &, SvcContext &);
@@ -268,31 +268,80 @@ namespace skyline::kernel::svc {
 
         void operator()(const DeviceState &state, SvcContext &ctx) const {
             const bool traceActive{skyline::applet::swkbd::trace::PostViSvcTraceActive()};
-            if (traceActive) {
-                LOGI("SWKBD-TRACE POST-VI SVC enter: {} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X} x5=0x{:X}",
-                     name, ctx.x0, ctx.x1, ctx.x2, ctx.x3, ctx.x4, ctx.x5);
+            if (!traceActive) {
+                target(state, ctx);
+                return;
+            }
 
-                if (target == &WaitSynchronization) {
-                    const u32 count{ctx.w2};
-                    const auto timeout{static_cast<i64>(ctx.x3)};
-                    LOGI("SWKBD-TRACE POST-VI WAIT enter: count={}, handlesPtr=0x{:X}, timeout={}ns", count, ctx.x1, timeout);
-                    if (count <= 0x40 && ctx.x1) {
-                        const auto *handles{reinterpret_cast<const u32 *>(ctx.x1)};
-                        const u32 loggedCount{count < 8 ? count : 8};
-                        for (u32 index{}; index < loggedCount; ++index)
-                            LOGI("SWKBD-TRACE POST-VI WAIT handle[{}]=0x{:X}", index, handles[index]);
-                    }
+            const bool ignoredSyncNoise{
+                target == &ArbitrateLock ||
+                target == &ArbitrateUnlock ||
+                target == &SignalProcessWideKey
+            };
+            if (ignoredSyncNoise) {
+                target(state, ctx);
+                return;
+            }
+
+            const bool deferredWait{
+                target == &WaitProcessWideKeyAtomic ||
+                target == &WaitForAddress
+            };
+            if (deferredWait) {
+                const u32 sequence{skyline::applet::swkbd::trace::NextPostViWaitSequence()};
+                LOGI("SWKBD-TRACE POST-VI WAIT-PENDING enter: seq={} svc={} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X}",
+                     sequence, name, ctx.x0, ctx.x1, ctx.x2, ctx.x3);
+                target(state, ctx);
+                if (ctx.w0 != Result{})
+                    LOGI("SWKBD-TRACE POST-VI WAIT-PENDING returned nonzero: seq={} svc={} result=0x{:X}", sequence, name, ctx.w0);
+                return;
+            }
+
+            const bool memoryOperation{
+                target == &SetHeapSize ||
+                target == &SetMemoryPermission ||
+                target == &SetMemoryAttribute ||
+                target == &MapMemory ||
+                target == &UnmapMemory ||
+                target == &QueryMemory ||
+                target == &MapSharedMemory ||
+                target == &UnmapSharedMemory ||
+                target == &CreateTransferMemory ||
+                target == &MapPhysicalMemory ||
+                target == &UnmapPhysicalMemory
+            };
+            const bool terminalCapture{
+                target == &SendSyncRequest ||
+                target == &WaitSynchronization ||
+                memoryOperation
+            };
+
+            if (!terminalCapture) {
+                target(state, ctx);
+                return;
+            }
+
+            LOGI("SWKBD-TRACE POST-VI CAPTURE enter: {} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X} x5=0x{:X}",
+                 name, ctx.x0, ctx.x1, ctx.x2, ctx.x3, ctx.x4, ctx.x5);
+
+            if (target == &WaitSynchronization) {
+                const u32 count{ctx.w2};
+                const auto timeout{static_cast<i64>(ctx.x3)};
+                LOGI("SWKBD-TRACE POST-VI WAIT enter: count={}, handlesPtr=0x{:X}, timeout={}ns", count, ctx.x1, timeout);
+                if (count <= 0x40 && ctx.x1) {
+                    const auto *handles{reinterpret_cast<const u32 *>(ctx.x1)};
+                    const u32 loggedCount{count < 8 ? count : 8};
+                    for (u32 index{}; index < loggedCount; ++index)
+                        LOGI("SWKBD-TRACE POST-VI WAIT handle[{}]=0x{:X}", index, handles[index]);
                 }
             }
 
             target(state, ctx);
 
-            if (traceActive) {
-                if (target == &WaitSynchronization)
-                    LOGI("SWKBD-TRACE POST-VI WAIT exit: result=0x{:X}, index={}", ctx.w0, ctx.w1);
-                LOGI("SWKBD-TRACE POST-VI SVC exit: {} x0=0x{:X} x1=0x{:X}", name, ctx.x0, ctx.x1);
-                skyline::applet::swkbd::trace::ConsumePostViSvcTrace();
-            }
+            if (target == &WaitSynchronization)
+                LOGI("SWKBD-TRACE POST-VI WAIT exit: result=0x{:X}, index={}", ctx.w0, ctx.w1);
+            LOGI("SWKBD-TRACE POST-VI CAPTURE exit: {} x0=0x{:X} x1=0x{:X}", name, ctx.x0, ctx.x1);
+            skyline::applet::swkbd::trace::FinishPostViSvcTrace();
         }
 
         constexpr explicit operator bool() const {
