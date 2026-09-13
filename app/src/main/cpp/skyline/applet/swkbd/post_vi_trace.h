@@ -6,18 +6,23 @@
 #include <common.h>
 
 namespace skyline::applet::swkbd::trace {
-    inline thread_local u32 postViSvcBudget{};
+    inline thread_local bool postViSvcTraceArmed{};
+    inline thread_local u32 postViWaitSequence{};
 
-    inline void ArmPostViSvcTrace(u32 budget = 24) {
-        postViSvcBudget = budget;
+    inline void ArmPostViSvcTrace() {
+        postViSvcTraceArmed = true;
+        postViWaitSequence = 0;
     }
 
     inline bool PostViSvcTraceActive() {
-        return postViSvcBudget != 0;
+        return postViSvcTraceArmed;
     }
 
-    inline void ConsumePostViSvcTrace() {
-        if (postViSvcBudget)
-            --postViSvcBudget;
+    inline u32 NextPostViWaitSequence() {
+        return ++postViWaitSequence;
+    }
+
+    inline void FinishPostViSvcTrace() {
+        postViSvcTraceArmed = false;
     }
 }
