@@ -113,10 +113,10 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        [[maybe_unused]] const auto appletResourceUserId{request.Pop<u64>()};
-        response.Push<u64>(1);
-        return {};
+    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        // The command has no input payload. #151 does not provide an indirect-layer backend;
+        // do not return a fabricated consumer handle.
+        return result::ObjectInvalid;
     }
 
     Result ILibraryAppletAccessor::Unknown170(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
