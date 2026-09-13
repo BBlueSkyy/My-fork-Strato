@@ -20,7 +20,7 @@ interface OnScreenConfiguration {
 
         const val MinAlpha = 0
         const val MaxAlpha = 255
-        const val DefaultAlpha = 128
+        const val DefaultAlpha = 130
 
         const val MinScale = 0.5f
         const val MaxScale = 2.5f
@@ -30,8 +30,8 @@ interface OnScreenConfiguration {
         const val DefaultActivationRadius = 1.0f
         const val MaxActivationRadius = 8.0f
 
-        val DefaultTextColor = SwitchColors.BLACK.color
-        val DefaultBackgroundColor = SwitchColors.WHITE.color
+        val DefaultTextColor = SwitchColors.WHITE.color
+        val DefaultBackgroundColor = 0xFF404040.toInt()
     }
 
     var enabled : Boolean
