@@ -101,24 +101,44 @@ namespace skyline::service::hid {
     }
 
     Result IHidServer::SetGyroscopeZeroDriftMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto npadHandle{request.Pop<NpadDeviceHandle>()};
-        auto mode{request.Pop<GyroscopeZeroDriftMode>()};
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        const auto mode{request.Pop<GyroscopeZeroDriftMode>()};
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
+            return validation;
 
-        state.input->npad[npadHandle.id].gyroZeroDriftMode = mode;
+        std::scoped_lock lock{state.input->npad.mutex};
+        state.input->npad.at(handle.id).GetSixAxisConfig(handle).gyroZeroDriftMode = mode;
         return {};
     }
 
     Result IHidServer::GetGyroscopeZeroDriftMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto npadHandle{request.Pop<NpadDeviceHandle>()};
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        request.Skip<u32>();
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
+            return validation;
 
-        response.Push(state.input->npad[npadHandle.id].gyroZeroDriftMode);
+        std::scoped_lock lock{state.input->npad.mutex};
+        response.Push(state.input->npad.at(handle.id).GetSixAxisConfig(handle).gyroZeroDriftMode);
         return {};
     }
 
     Result IHidServer::ResetGyroscopeZeroDriftMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto npadHandle{request.Pop<NpadDeviceHandle>()};
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        request.Skip<u32>();
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
+            return validation;
 
-        state.input->npad[npadHandle.id].gyroZeroDriftMode = GyroscopeZeroDriftMode::Standard;
+        std::scoped_lock lock{state.input->npad.mutex};
+        state.input->npad.at(handle.id).GetSixAxisConfig(handle).gyroZeroDriftMode = GyroscopeZeroDriftMode::Standard;
         return {};
     }
 
