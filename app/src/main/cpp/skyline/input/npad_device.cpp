@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <cmath>
 #include <jvm.h>
 #include "npad_device.h"
 #include "npad.h"
@@ -533,9 +534,13 @@ namespace skyline::input {
         jlong start; //!< The timestamp to (re)start the vibration at
         jlong end; //!< The timestamp to end the vibration at
 
+        static bool IsValid(float frequency, float amplitude) {
+            return std::isfinite(frequency) && frequency > 0.0F && std::isfinite(amplitude) && amplitude > 0.0F;
+        }
+
         VibrationInfo(float frequency, float amplitude)
-            : period(static_cast<jlong>(MsInSecond / frequency)),
-              amplitude(static_cast<jint>(amplitude)),
+            : period(IsValid(frequency, amplitude) ? std::max<jlong>(1, static_cast<jlong>(std::lround(MsInSecond / frequency))) : 1),
+              amplitude(IsValid(frequency, amplitude) ? std::clamp(static_cast<jint>(std::lround(amplitude)), 0, AmplitudeMax) : 0),
               start(0), end(period) {}
     };
 
@@ -625,19 +630,66 @@ namespace skyline::input {
 
     void NpadDevice::VibrateSingle(bool isRight, const NpadVibrationValue &value) {
         std::scoped_lock lock{manager.mutex};
-        if (isRight) {
-            if (vibrationRight && (*vibrationRight) == value)
-                return;
-            vibrationRight = value;
+        if (vibrationRight) {
+            const auto left{isRight ? vibrationLeft : value};
+            const auto right{isRight ? value : *vibrationRight};
+            Vibrate(left, right);
         } else {
-            if (vibrationLeft == value)
+            if (!isRight && vibrationLeft == value)
                 return;
-            vibrationLeft = value;
+
+            if (isRight)
+                vibrationRight = value;
+            else
+                vibrationLeft = value;
+            VibrateDevice(manager.state.jvm, index, value);
+        }
+    }
+
+    void NpadDevice::ActivateVibrationDevice(const NpadDeviceHandle &handle) {
+        std::scoped_lock lock{manager.mutex};
+        if (handle.deviceIndex >= activeVibrationTypes.size())
+            return;
+        if (activeVibrationTypes[handle.deviceIndex] == handle.GetType())
+            return;
+
+        activeVibrationTypes[handle.deviceIndex] = handle.GetType();
+        if (handle.isRight)
+            vibrationRight = DefaultNpadVibrationValue;
+        else
+            vibrationLeft = DefaultNpadVibrationValue;
+    }
+
+    bool NpadDevice::IsVibrationDeviceActive(const NpadDeviceHandle &handle) {
+        std::scoped_lock lock{manager.mutex};
+        return handle.deviceIndex < activeVibrationTypes.size() && activeVibrationTypes[handle.deviceIndex] == handle.GetType();
+    }
+
+    bool NpadDevice::IsVibrationDeviceMounted(const NpadDeviceHandle &handle) {
+        std::scoped_lock lock{manager.mutex};
+        return IsVibrationDeviceActive(handle) && connectionState.connected && type == handle.GetType();
+    }
+
+    NpadVibrationValue NpadDevice::GetActualVibrationValue(const NpadDeviceHandle &handle) {
+        std::scoped_lock lock{manager.mutex};
+        if (!IsVibrationDeviceMounted(handle))
+            return DefaultNpadVibrationValue;
+
+        return handle.isRight ? vibrationRight.value_or(DefaultNpadVibrationValue) : vibrationLeft;
+    }
+
+    void NpadDevice::StopVibration() {
+        std::scoped_lock lock{manager.mutex};
+        if (!connectionState.connected || index == NullIndex) {
+            vibrationLeft = DefaultNpadVibrationValue;
+            if (vibrationRight)
+                vibrationRight = DefaultNpadVibrationValue;
+            return;
         }
 
-        if (vibrationRight)
-            Vibrate(vibrationLeft, *vibrationRight);
-        else
-            VibrateDevice(manager.state.jvm, index, value);
+        if (activeVibrationTypes[0])
+            VibrateSingle(false, DefaultNpadVibrationValue);
+        if (activeVibrationTypes[1])
+            VibrateSingle(true, DefaultNpadVibrationValue);
     }
 }
