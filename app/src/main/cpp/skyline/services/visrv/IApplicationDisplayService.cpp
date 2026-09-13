@@ -152,30 +152,40 @@ namespace skyline::service::visrv {
         auto height{request.Pop<i64>()};
         const auto handle{request.Pop<u64>()};
         const auto appletResourceUserId{request.Pop<u64>()};
+        LOGI("SWKBD-TRACE VI GetIndirectLayerImageMap enter: handle=0x{:X}, aruid=0x{:X}, width={}, height={}, outBuffers={}",
+             handle, appletResourceUserId, width, height, request.outputBuf.size());
         u64 pitch{}, size{};
-        if (!GetIndirectLayerSize(width, height, pitch, size))
+        if (!GetIndirectLayerSize(width, height, pitch, size)) {
+            LOGI("SWKBD-TRACE VI GetIndirectLayerImageMap invalid dimensions");
             return result::InvalidDimensions;
-        if (request.outputBuf.empty())
+        }
+        if (request.outputBuf.empty()) {
+            LOGI("SWKBD-TRACE VI GetIndirectLayerImageMap missing output buffer");
             return result::InvalidArgument;
+        }
 
         auto imageBuffer{request.outputBuf.at(0)};
-        if (imageBuffer.size() < size || reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment)
+        if (imageBuffer.size() < size || reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment) {
+            LOGI("SWKBD-TRACE VI GetIndirectLayerImageMap invalid output: buffer=0x{:X}, required=0x{:X}, alignment=0x{:X}",
+                 imageBuffer.size(), size, IndirectLayerAlignment);
             return result::InvalidArgument;
+        }
 
         const auto applet{manager.indirectLayers->Get(handle)};
         if (!applet) {
-            LOGW("GetIndirectLayerImageMap: unknown or closed handle=0x{:X}, aruid=0x{:X}", handle, appletResourceUserId);
+            LOGW("SWKBD-TRACE VI GetIndirectLayerImageMap unknown or closed handle=0x{:X}, aruid=0x{:X}", handle, appletResourceUserId);
             return result::InvalidValue;
         }
 
         const bool available{applet->GetIndirectLayerImage(imageBuffer.first(size))};
-        LOGD("GetIndirectLayerImageMap: handle=0x{:X}, aruid=0x{:X}, width={}, height={}, size=0x{:X}, available={}",
-             handle, appletResourceUserId, width, height, size, available);
+        LOGI("SWKBD-TRACE VI GetIndirectLayerImageMap provider returned: handle=0x{:X}, size=0x{:X}, available={}",
+             handle, size, available);
         if (!available)
             return result::NoData;
 
         response.Push<i64>(width);
         response.Push<i64>(height);
+        LOGI("SWKBD-TRACE VI GetIndirectLayerImageMap success: width={}, height={}", width, height);
 
         return {};
     }
@@ -187,7 +197,7 @@ namespace skyline::service::visrv {
         if (!GetIndirectLayerSize(width, height, pitch, size))
             return result::InvalidDimensions;
 
-        LOGI("GetIndirectLayerImageRequiredMemoryInfo: width={}, height={}, pitch=0x{:X}, size=0x{:X}, alignment=0x{:X}",
+        LOGI("SWKBD-TRACE VI GetIndirectLayerImageRequiredMemoryInfo: width={}, height={}, pitch=0x{:X}, size=0x{:X}, alignment=0x{:X}",
              width, height, pitch, size, IndirectLayerAlignment);
 
         response.Push<i64>(size);
