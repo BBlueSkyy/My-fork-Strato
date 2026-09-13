@@ -362,6 +362,9 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
     }
 
     fun handleTouchEvent(view : View, event : MotionEvent) : Boolean {
+        if (view.width <= 0 || view.height <= 0)
+            return false
+
         val count = event.pointerCount
         val points = IntArray(count * 7) // This is an array of skyline::input::TouchScreenPoint in C++ as that allows for efficient transfer of values to it
         var offset = 0
@@ -369,12 +372,14 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
             val pointer = MotionEvent.PointerCoords()
             event.getPointerCoords(index, pointer)
 
-            val x = 0f.coerceAtLeast(pointer.x * 1280 / view.width).toInt()
-            val y = 0f.coerceAtLeast(pointer.y * 720 / view.height).toInt()
+            val x = (pointer.x * 1280 / view.width).coerceIn(0f, 1279f).toInt()
+            val y = (pointer.y * 720 / view.height).coerceIn(0f, 719f).toInt()
 
-            val attribute = when (event.action) {
-                MotionEvent.ACTION_DOWN -> 1
-                MotionEvent.ACTION_UP -> 2
+            val attribute = when {
+                event.actionMasked == MotionEvent.ACTION_CANCEL -> 2
+                index != event.actionIndex -> 0
+                event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_POINTER_DOWN -> 1
+                event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_POINTER_UP -> 2
                 else -> 0
             }
 

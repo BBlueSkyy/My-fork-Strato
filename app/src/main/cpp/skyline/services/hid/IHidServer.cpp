@@ -25,6 +25,9 @@ namespace skyline::service::hid {
     }
 
     Result IHidServer::ActivateTouchScreen(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
         state.input->touch.Activate();
         return {};
     }
@@ -74,7 +77,10 @@ namespace skyline::service::hid {
 
     Result IHidServer::ActivateGesture(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto basicGestureId{request.Pop<u32>()};
+        request.Skip<u32>();
         auto appletResourceUserId{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(appletResourceUserId))
+            return result::AruidNotRegistered;
         state.input->gesture.Activate(basicGestureId);
         LOGD("Activated gesture input: ID {}, AppletResourceUserId 0x{:X}", basicGestureId, appletResourceUserId);
         return {};
@@ -341,12 +347,24 @@ namespace skyline::service::hid {
     Result IHidServer::SetTouchScreenResolution(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto width{request.Pop<u32>()};
         auto height{request.Pop<u32>()};
-        request.Skip<u64>(); // appletResourceUserId
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
 
         state.input->touch.SetResolution(width, height);
 
         LOGD("Touch Screen Resolution: {}x{}", width, height);
 
         return {};  
+    }
+
+    Result IHidServer::SetTouchScreenConfiguration(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        auto configuration{request.Pop<TouchScreenConfiguration>()};
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+
+        state.input->touch.SetConfiguration(configuration);
+        return {};
     }
 }

@@ -83,6 +83,9 @@ namespace skyline::service::hid {
          */
         Result ActivateGesture(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        /** Sets the touch sensing mode for this applet resource (HOS 9.0.0+). */
+        Result SetTouchScreenConfiguration(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         /**
          * @brief Sets the coordinate ranges used for touch gesture reporting (stub)
          * @url https://switchbrew.org/wiki/HID_services#hid (cmd 92, [18.0.0+], sem doc oficial)
@@ -295,6 +298,7 @@ namespace skyline::service::hid {
             SFUNC(0x132, IHidServer, InitializeSevenSixAxisSensor),
             SFUNC(0x136, IHidServer, ResetSevenSixAxisSensorTimestamp),
             SFUNC(0x20D, IHidServer, SetPalmaBoostMode),
+            SFUNC(0x3EA, IHidServer, SetTouchScreenConfiguration),
             SFUNC(0x3EC, IHidServer, SetTouchScreenResolution) 
         )
     };
