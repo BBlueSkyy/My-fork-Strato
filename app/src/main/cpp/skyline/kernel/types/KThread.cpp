@@ -244,9 +244,9 @@ namespace skyline::kernel::type {
 
             if (!killed) {
                 gracefulStopRequested.store(gracefulStop, std::memory_order_release);
+                pthread_kill(pthread, SIGINT);
                 if (gracefulStop)
                     scheduleCondition.notify();
-                pthread_kill(pthread, SIGINT);
                 killed = true;
                 statusCondition.notify_all();
                 if (gracefulStop)
