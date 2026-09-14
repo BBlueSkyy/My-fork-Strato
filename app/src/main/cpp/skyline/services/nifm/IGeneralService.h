@@ -97,6 +97,11 @@ namespace skyline::service::nifm {
         IGeneralService(const DeviceState &state, ServiceManager &manager);
 
         /**
+         * @url https://switchbrew.org/wiki/Network_Interface_services#GetClientId
+         */
+        Result GetClientId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @url https://switchbrew.org/wiki/Network_Interface_services#CreateScanRequest
          */
         Result CreateScanRequest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
@@ -129,7 +134,8 @@ namespace skyline::service::nifm {
         Result IsAnyInternetRequestAccepted(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         SERVICE_DECL(
-            SFUNC(0x1, IGeneralService, CreateScanRequest),
+            SFUNC(0x1, IGeneralService, GetClientId),
+            SFUNC(0x2, IGeneralService, CreateScanRequest),
             SFUNC(0x4, IGeneralService, CreateRequest),
             SFUNC(0x5, IGeneralService, GetCurrentNetworkProfile),
             SFUNC(0xC, IGeneralService, GetCurrentIpAddress),
