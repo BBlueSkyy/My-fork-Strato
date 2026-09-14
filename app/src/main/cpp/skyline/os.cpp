@@ -119,6 +119,8 @@ namespace skyline::kernel {
 
             LOGI("Starting main HOS thread");
             thread->Start(true);
+            if (HasProgramExecutionRequest())
+                process->Kill(false, true, true);
             process->Kill(true, true, true);
 
             std::optional<ProgramExecutionRequest> nextProgram;
