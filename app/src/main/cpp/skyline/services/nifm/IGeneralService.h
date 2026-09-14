@@ -11,6 +11,42 @@ namespace skyline::service::nifm {
         constexpr Result NoInternetConnection{110, 300};
     }
 
+    struct ClientId {
+        u32 id{};
+    };
+    static_assert(sizeof(ClientId) == 0x4);
+
+    enum class NetworkProfileType : u32 {
+        User = 1 << 0,
+        SsidList = 1 << 1,
+        Temporary = 1 << 2,
+    };
+
+    enum class NetworkInterfaceType : u32 {
+        Invalid = 0,
+        Wifi = 1,
+        Ethernet = 2,
+    };
+
+    enum class Authentication : u32 {
+        Invalid = 0,
+        Open = 1,
+        Shared = 2,
+        Wpa = 3,
+        WpaPsk = 4,
+        Wpa2 = 5,
+        Wpa2Psk = 6,
+        Unknown = 7,
+    };
+
+    enum class Encryption : u32 {
+        Invalid = 0,
+        None = 1,
+        Wep = 2,
+        Tkip = 3,
+        Aes = 4,
+    };
+
     struct IpAddressSetting {
         bool isAutomatic{};
         std::array<u8, 4> currentAddress{};
@@ -70,7 +106,10 @@ namespace skyline::service::nifm {
         IpSettingData ipSettingData{};
         UUID uuid{};
         std::array<char, 0x40> networkName{};
-        u8 _unk0_[0x4];
+        u8 profileType{};
+        u8 interfaceType{};
+        u8 isAutoConnect{};
+        u8 isLargeCapacity{};
         SfWirelessSettingData wirelessSettingData{};
         u8 _pad0_[0x1];
     };
@@ -79,58 +118,41 @@ namespace skyline::service::nifm {
     struct NifmNetworkProfileData {
         UUID uuid{};
         std::array<char, 0x40> networkName{};
-        u32 _unk0_[0x2];
-        u8 _unk1_[0x2];
+        NetworkProfileType profileType{};
+        NetworkInterfaceType interfaceType{};
+        u8 isAutoConnect{};
+        u8 isLargeCapacity{};
         u8 _pad0_[0x2];
         NifmWirelessSettingData wirelessSettingData{};
         IpSettingData ipSettingData{};
     };
     static_assert(sizeof(NifmNetworkProfileData) == 0x18E);
+
+    struct SfNetworkProfileBasicInfo {
+        UUID uuid{};
+        std::array<char, 0x40> networkName{};
+        u8 profileType{};
+        u8 interfaceType{};
+        u8 ssidLength{};
+        std::array<char, 0x20> ssid{};
+        u8 authentication{};
+        u8 encryption{};
+    };
+    static_assert(sizeof(SfNetworkProfileBasicInfo) == 0x75);
     #pragma pack(pop)
 
-    /**
-     * @brief IGeneralService is used by applications to control the network connection
-     * @url https://switchbrew.org/wiki/Network_Interface_services#IGeneralService
-     */
     class IGeneralService : public BaseService {
       public:
         IGeneralService(const DeviceState &state, ServiceManager &manager);
 
-        /**
-         * @url https://switchbrew.org/wiki/Network_Interface_services#GetClientId
-         */
         Result GetClientId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @url https://switchbrew.org/wiki/Network_Interface_services#CreateScanRequest
-         */
         Result CreateScanRequest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @url https://switchbrew.org/wiki/Network_Interface_services#CreateRequest
-         */
         Result CreateRequest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @url https://switchbrew.org/wiki/Network_Interface_services#GetCurrentNetworkProfile
-         */
         Result GetCurrentNetworkProfile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @url https://switchbrew.org/wiki/Network_Interface_services#GetCurrentIpAddress
-         */
         Result GetCurrentIpAddress(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @url https://switchbrew.org/wiki/Network_Interface_services#GetCurrentIpConfigInfo
-         */
         Result GetCurrentIpConfigInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
+        Result IsWirelessCommunicationEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result GetInternetConnectionStatus(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @url https://switchbrew.org/wiki/Network_Interface_services#IsAnyInternetRequestAccepted
-         */
         Result IsAnyInternetRequestAccepted(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         SERVICE_DECL(
@@ -140,6 +162,7 @@ namespace skyline::service::nifm {
             SFUNC(0x5, IGeneralService, GetCurrentNetworkProfile),
             SFUNC(0xC, IGeneralService, GetCurrentIpAddress),
             SFUNC(0xF, IGeneralService, GetCurrentIpConfigInfo),
+            SFUNC(0x11, IGeneralService, IsWirelessCommunicationEnabled),
             SFUNC(0x12, IGeneralService, GetInternetConnectionStatus),
             SFUNC(0x15, IGeneralService, IsAnyInternetRequestAccepted)
         )
