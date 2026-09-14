@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
+#include <thread>
 #include "gpu.h"
 #include "nce.h"
 #include "nce/guest.h"
@@ -37,6 +39,7 @@ namespace skyline::kernel {
         previousProgramIndex = previousIndex;
         userChannelLaunchParameters = std::move(userChannel);
         programExecutionRequest.reset();
+        programExecutionReady = false;
     }
 
     void OS::RequestProgramExecution(u8 programIndex, std::vector<std::vector<u8>> userChannel) {
@@ -44,6 +47,16 @@ namespace skyline::kernel {
         if (programExecutionRequest)
             throw exception("A program execution request is already pending");
         programExecutionRequest = ProgramExecutionRequest{programIndex, std::move(userChannel)};
+    }
+
+    void OS::NotifyProgramExecutionReady() {
+        {
+            std::scoped_lock lock{programExecutionMutex};
+            if (!programExecutionRequest || programExecutionReady)
+                return;
+            programExecutionReady = true;
+        }
+        programExecutionCondition.notify_one();
     }
 
     bool OS::HasProgramExecutionRequest() {
@@ -55,6 +68,7 @@ namespace skyline::kernel {
         std::scoped_lock lock{programExecutionMutex};
         auto request{std::move(programExecutionRequest)};
         programExecutionRequest.reset();
+        programExecutionReady = false;
         return request;
     }
 
@@ -126,8 +140,46 @@ namespace skyline::kernel {
         if (!thread)
             return;
 
+        // ExecuteProgram is initiated from a guest IPC thread. Do not tear the process down from
+        // that service handler. Wait until the IPC response has been written, then have a host-side
+        // coordinator stop only HOS-1 so control returns to the frontend/JNI relaunch loop. The
+        // normal process shutdown below remains responsible for stopping and joining every thread.
+        std::atomic_bool executionFinished{};
+        std::thread programHaltCoordinator{[this, process, &executionFinished] {
+            u8 targetProgramIndex{};
+            {
+                std::unique_lock lock{programExecutionMutex};
+                programExecutionCondition.wait(lock, [this, &executionFinished] {
+                    return programExecutionReady || executionFinished.load(std::memory_order_acquire);
+                });
+
+                if (!programExecutionReady || !programExecutionRequest)
+                    return;
+                targetProgramIndex = programExecutionRequest->programIndex;
+            }
+
+            LOGI("ExecuteProgram: frontend halt requested for ProgramIndex {}", targetProgramIndex);
+            process->Kill(false, false, true);
+        }};
+
+        auto finishProgramHaltCoordinator{[&] {
+            executionFinished.store(true, std::memory_order_release);
+            programExecutionCondition.notify_all();
+            if (programHaltCoordinator.joinable())
+                programHaltCoordinator.join();
+        }};
+
         LOGI("Starting main HOS thread");
-        thread->Start(true);
+        try {
+            thread->Start(true);
+        } catch (...) {
+            finishProgramHaltCoordinator();
+            throw;
+        }
+        finishProgramHaltCoordinator();
+
+        if (HasProgramExecutionRequest())
+            LOGI("ExecuteProgram: main HOS returned to frontend");
 
         process->Kill(true, true, true);
     }
