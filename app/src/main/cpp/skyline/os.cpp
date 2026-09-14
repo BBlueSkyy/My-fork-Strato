@@ -76,7 +76,6 @@ namespace skyline::kernel {
     void OS::Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType) {
         keyStore = std::make_shared<crypto::KeyStore>(privateAppFilesPath + "keys/");
 
-        LOGI("SCHED146: KThread lifecycle active");
         LOGI("OS::Execute - romFd: {}, updateFd: {}, dlcFds count: {}, ProgramIndex: {}", romFd, updateFd, dlcFds.size(), currentProgramIndex);
 
         state.loader = GetLoader(romFd, keyStore, romType, currentProgramIndex);
@@ -97,6 +96,7 @@ namespace skyline::kernel {
 
         state.loader->ResolveProgramContent(state);
         state.gpu->Initialise();
+        LOGW("SCHED146-RUN605: runtime active after GPU init");
 
         auto &process{state.process};
         process = std::make_shared<kernel::type::KProcess>(state);
