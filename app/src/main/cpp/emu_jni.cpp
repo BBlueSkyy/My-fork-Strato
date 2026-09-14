@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <array>
 #include <csignal>
+#include <mutex>
 #include <pthread.h>
 #include <android/asset_manager_jni.h>
 #include <sys/system_properties.h>
@@ -29,6 +31,34 @@ std::weak_ptr<skyline::gpu::GPU> GpuWeak;
 std::weak_ptr<skyline::audio::Audio> AudioWeak;
 std::weak_ptr<skyline::input::Input> InputWeak;
 std::weak_ptr<skyline::Settings> SettingsWeak;
+
+namespace {
+    std::mutex SurfaceMutex;
+    jobject SurfaceGlobal{};
+
+    using ControllerConfig = std::array<std::pair<skyline::input::NpadControllerType, skyline::i8>, skyline::constant::ControllerCount>;
+
+    ControllerConfig SnapshotControllerConfig(const std::shared_ptr<skyline::input::Input> &input) {
+        ControllerConfig config{};
+        std::scoped_lock lock{input->npad.mutex};
+        for (size_t index{}; index < config.size(); index++)
+            config[index] = {input->npad.controllers[index].type, input->npad.controllers[index].partnerIndex};
+        return config;
+    }
+
+    void RestoreControllerConfig(const std::shared_ptr<skyline::input::Input> &input, const ControllerConfig &config) {
+        std::scoped_lock lock{input->npad.mutex};
+        for (size_t index{}; index < config.size(); index++)
+            input->npad.controllers[index] = skyline::input::GuestController{config[index].first, config[index].second};
+        input->npad.Update();
+    }
+
+    void RestoreSurface(const std::shared_ptr<skyline::gpu::GPU> &gpu) {
+        std::scoped_lock lock{SurfaceMutex};
+        if (SurfaceGlobal)
+            gpu->presentation.UpdateSurface(SurfaceGlobal);
+    }
+}
 
 // https://cs.android.com/android/platform/superproject/+/master:bionic/libc/tzcode/bionic.cpp;l=43;drc=master;bpv=1;bpt=1
 static std::string GetTimeZoneName() {
@@ -84,6 +114,7 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
         env->GetIntArrayRegion(dlcFds, 0, dlcArrSize, &dlcFdsVector[0]);
 
     std::shared_ptr<skyline::Settings> settings{std::make_shared<skyline::AndroidSettings>(env, settingsInstance)};
+    SettingsWeak = settings;
 
     skyline::JniString publicAppFilesPath(env, publicAppFilesPathJstring);
 
@@ -101,28 +132,61 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
     try {
         skyline::JniString nativeLibraryPath(env, nativeLibraryPathJstring);
         skyline::JniString privateAppFilesPath{env, privateAppFilesPathJstring};
+        auto assetFileSystem{std::make_shared<skyline::vfs::AndroidAssetFileSystem>(AAssetManager_fromJava(env, assetManager))};
 
         // Host signal handlers need to be set before NCE is initialized, this is the only place where we can do that
         skyline::signal::SetHostSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, skyline::signal::ExceptionalSignalHandler);
-        auto os{std::make_shared<skyline::kernel::OS>(
-            jvmManager,
-            settings,
-            publicAppFilesPath,
-            privateAppFilesPath,
-            nativeLibraryPath,
-            GetTimeZoneName(),
-            std::make_shared<skyline::vfs::AndroidAssetFileSystem>(AAssetManager_fromJava(env, assetManager))
-        )};
-        OsWeak = os;
-        GpuWeak = os->state.gpu;
-        AudioWeak = os->state.audio;
-        InputWeak = os->state.input;
-        SettingsWeak = settings;
-        jvmManager->InitializeControllers();
 
-        LOGDNF("Launching ROM {}", skyline::JniString(env, romUriJstring));
+        skyline::u8 currentProgramIndex{};
+        skyline::i32 previousProgramIndex{-1};
+        std::vector<std::vector<skyline::u8>> userChannel;
+        std::optional<ControllerConfig> controllerConfig;
 
-        os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
+        while (true) {
+            auto os{std::make_shared<skyline::kernel::OS>(
+                jvmManager,
+                settings,
+                publicAppFilesPath,
+                privateAppFilesPath,
+                nativeLibraryPath,
+                GetTimeZoneName(),
+                assetFileSystem
+            )};
+            os->SetProgramLaunchContext(currentProgramIndex, previousProgramIndex, std::move(userChannel));
+
+            OsWeak = os;
+            GpuWeak = os->state.gpu;
+            AudioWeak = os->state.audio;
+            InputWeak = os->state.input;
+
+            if (controllerConfig)
+                RestoreControllerConfig(os->state.input, *controllerConfig);
+            else {
+                jvmManager->InitializeControllers();
+                controllerConfig = SnapshotControllerConfig(os->state.input);
+            }
+            RestoreSurface(os->state.gpu);
+
+            LOGDNF("Launching ROM {} [ProgramIndex {}]", skyline::JniString(env, romUriJstring), currentProgramIndex);
+            os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
+
+            auto nextProgram{os->TakeProgramExecutionRequest()};
+            if (!nextProgram)
+                break;
+
+            controllerConfig = SnapshotControllerConfig(os->state.input);
+            const auto oldProgramIndex{currentProgramIndex};
+            previousProgramIndex = oldProgramIndex;
+            currentProgramIndex = nextProgram->programIndex;
+            userChannel = std::move(nextProgram->userChannel);
+
+            LOGI("ExecuteProgram: relaunching ProgramIndex {} -> {}", oldProgramIndex, currentProgramIndex);
+
+            InputWeak.reset();
+            AudioWeak.reset();
+            GpuWeak.reset();
+            OsWeak.reset();
+        }
     } catch (std::exception &e) {
         LOGENF("An uncaught exception has occurred: {}", e.what());
     } catch (const skyline::signal::SignalException &e) {
@@ -134,6 +198,18 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
     perfetto::TrackEvent::Flush();
 
     InputWeak.reset();
+    AudioWeak.reset();
+    GpuWeak.reset();
+    OsWeak.reset();
+    SettingsWeak.reset();
+
+    {
+        std::scoped_lock lock{SurfaceMutex};
+        if (SurfaceGlobal) {
+            env->DeleteGlobalRef(SurfaceGlobal);
+            SurfaceGlobal = nullptr;
+        }
+    }
 
     auto end{std::chrono::steady_clock::now()};
     LOGINF("Emulation has ended in {}ms", std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
@@ -160,7 +236,14 @@ extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_stopEm
     return true;
 }
 
-extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_setSurface(JNIEnv *, jobject, jobject surface) {
+extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_setSurface(JNIEnv *env, jobject, jobject surface) {
+    {
+        std::scoped_lock lock{SurfaceMutex};
+        if (SurfaceGlobal)
+            env->DeleteGlobalRef(SurfaceGlobal);
+        SurfaceGlobal = surface ? env->NewGlobalRef(surface) : nullptr;
+    }
+
     auto gpu{GpuWeak.lock()};
     if (!gpu)
         return false;
@@ -200,12 +283,16 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_updatePerf
 
 extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_00024Companion_setController(JNIEnv *, jobject, jint index, jint type, jint partnerIndex) {
     auto input{InputWeak.lock()};
+    if (!input)
+        return; // We don't mind if we miss controller updates while input hasn't been initialized
     std::lock_guard guard(input->npad.mutex);
     input->npad.controllers[static_cast<size_t>(index)] = skyline::input::GuestController{static_cast<skyline::input::NpadControllerType>(type), static_cast<skyline::i8>(partnerIndex)};
 }
 
 extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_00024Companion_updateControllers(JNIEnv *, jobject) {
-    InputWeak.lock()->npad.Update();
+    auto input{InputWeak.lock()};
+    if (input)
+        input->npad.Update();
 }
 
 extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_00024Companion_setButtonState(JNIEnv *, jobject, jint index, jlong mask, jboolean pressed) {

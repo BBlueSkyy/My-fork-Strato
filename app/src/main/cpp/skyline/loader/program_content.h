@@ -15,7 +15,7 @@ namespace skyline::loader {
         std::optional<vfs::CNMT> metadata;
     };
 
-    // Uses CNMT Program records (idOffset 0), independent of container iteration order.
-    // Header-only fallback is limited to unambiguous containers without Program records.
-    ProgramNcaSelection SelectProgramNcas(std::vector<ProgramNcaCandidate> candidates, const std::vector<vfs::CNMT> &metadata);
+    // Uses the CNMT Program record matching programIndex, independent of container iteration order.
+    // Header-only fallback is limited to ProgramIndex 0 in unambiguous containers without Program records.
+    ProgramNcaSelection SelectProgramNcas(std::vector<ProgramNcaCandidate> candidates, const std::vector<vfs::CNMT> &metadata, u8 programIndex = 0);
 }
