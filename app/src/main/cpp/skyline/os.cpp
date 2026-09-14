@@ -129,10 +129,7 @@ namespace skyline::kernel {
         LOGI("Starting main HOS thread");
         thread->Start(true);
 
-        if (HasProgramExecutionRequest())
-            process->TerminateAllThreads();
-        else
-            process->Kill(true, true, true);
+        process->Kill(true, true, true);
     }
 
     std::shared_ptr<loader::Loader> OS::GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType, u8 programIndex) {
