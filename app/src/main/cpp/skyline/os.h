@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <condition_variable>
 #include <crypto/key_store.h>
 #include <common/language.h>
 #include "vfs/filesystem.h"
@@ -21,7 +22,9 @@ namespace skyline::kernel {
     class OS {
       private:
         std::mutex programExecutionMutex;
+        std::condition_variable programExecutionCondition;
         std::optional<ProgramExecutionRequest> programExecutionRequest;
+        bool programExecutionReady{};
         std::vector<std::vector<u8>> userChannelLaunchParameters;
         u8 currentProgramIndex{};
         i32 previousProgramIndex{-1};
@@ -61,6 +64,7 @@ namespace skyline::kernel {
 
         void SetProgramLaunchContext(u8 programIndex, i32 previousIndex, std::vector<std::vector<u8>> userChannel);
         void RequestProgramExecution(u8 programIndex, std::vector<std::vector<u8>> userChannel);
+        void NotifyProgramExecutionReady();
         bool HasProgramExecutionRequest();
         std::optional<ProgramExecutionRequest> TakeProgramExecutionRequest();
         u8 GetCurrentProgramIndex() const;
