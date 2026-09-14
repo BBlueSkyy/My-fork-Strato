@@ -33,6 +33,7 @@ namespace skyline::gpu {
         friend Texture;
         friend Buffer;
         friend BufferManager;
+        friend GraphicsPipelineAssembler;
 
       public:
         adrenotools_gpu_mapping adrenotoolsImportMapping{}; //!< Persistent struct to store active adrenotools mapping import info

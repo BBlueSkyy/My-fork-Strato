@@ -6,22 +6,31 @@
 #include "common.h"
 
 namespace skyline::input {
-    union ModifierKey {
-        u64 raw;
+    union KeyboardModifier {
+        u32 raw{};
         struct {
-            bool lControl : 1; //!< Left Control Key
-            bool lShift : 1; //!< Left Shift Key
-            bool lAlt : 1; //!< Left Alt Key
-            bool lWindows : 1; //!< Left Windows Key
-            bool rControl : 1; //!< Right Control Key
-            bool rShift : 1; //!< Right Shift Key
-            bool rAlt : 1; //!< Right Alt Key
-            bool rWindows : 1; //!< Right Windows Key
-            bool capsLock : 1; //!< Caps-Lock Key
-            bool scrLock : 1; //!< Scroll-Lock Key
-            bool numLock : 1; //!< Num-Lock Key
+            u32 control : 1;
+            u32 shift : 1;
+            u32 leftAlt : 1;
+            u32 rightAlt : 1;
+            u32 gui : 1;
+            u32 _reserved0_ : 3;
+            u32 capsLock : 1; //!< Caps-Lock Key
+            u32 scrollLock : 1; //!< Scroll-Lock Key
+            u32 numLock : 1; //!< Num-Lock Key
+            u32 katakana : 1;
+            u32 hiragana : 1;
         };
     };
+    static_assert(sizeof(KeyboardModifier) == 0x4);
+
+    union KeyboardAttribute {
+        u32 raw{};
+        struct {
+            u32 connected : 1;
+        };
+    };
+    static_assert(sizeof(KeyboardAttribute) == 0x4);
 
     /**
      * @url https://switchbrew.org/wiki/HID_Shared_Memory#KeyboardState
@@ -30,10 +39,15 @@ namespace skyline::input {
         u64 globalTimestamp; //!< The global timestamp in samples
         u64 localTimestamp; //!< The local timestamp in samples
 
-        ModifierKey modifers; //!< The state of any modifier keys
-        std::bitset<256> keysDown; //!< A bit-array of the state of all the keys
+        KeyboardModifier modifiers; //!< The state of any modifier keys
+        KeyboardAttribute attributes;
+        std::array<u8, 32> keysDown; //!< A 256-bit array indexed by USB HID usage ID
     };
     static_assert(sizeof(KeyboardState) == 0x38);
+    static_assert(alignof(KeyboardState) == 0x8);
+    static_assert(offsetof(KeyboardState, modifiers) == 0x10);
+    static_assert(offsetof(KeyboardState, attributes) == 0x14);
+    static_assert(offsetof(KeyboardState, keysDown) == 0x18);
 
     /**
      * @url https://switchbrew.org/wiki/HID_Shared_Memory#Keyboard

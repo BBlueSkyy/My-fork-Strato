@@ -7,9 +7,11 @@
 #include "nca.h"
 
 namespace skyline::loader {
-    NcaLoader::NcaLoader(std::shared_ptr<vfs::Backing> backing, std::shared_ptr<crypto::KeyStore> keyStore) : nca(std::move(backing), std::move(keyStore)) {
-        if (nca.exeFs == nullptr)
+    NcaLoader::NcaLoader(std::shared_ptr<vfs::Backing> backing, std::shared_ptr<crypto::KeyStore> keyStore) {
+        programNca.emplace(std::move(backing), std::move(keyStore));
+        if (programNca->exeFs == nullptr)
             throw exception("Only NCAs with an ExeFS can be loaded directly");
+        romFs = programNca->romFs;
     }
 
     void *NcaLoader::LoadExeFs(Loader *loader, const std::shared_ptr<vfs::FileSystem> &exeFs, const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
@@ -47,7 +49,9 @@ namespace skyline::loader {
     }
 
     void *NcaLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
-        process->npdm = vfs::NPDM(nca.exeFs->OpenFile("main.npdm"));
-        return LoadExeFs(this, nca.exeFs, process, state);
+        if (!programContentResolved || !processExeFs)
+            throw exception("Program content must be resolved before loading the process");
+        process->npdm = vfs::NPDM(processExeFs->OpenFile("main.npdm"));
+        return LoadExeFs(this, processExeFs, process, state);
     }
 }

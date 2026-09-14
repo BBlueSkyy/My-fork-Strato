@@ -79,10 +79,6 @@ namespace skyline::vfs {
             throw exception("Cannot patch a null ExeFS");
 
         std::shared_ptr<FileSystem> patchedExeFs{std::move(exefs)};
-        if (state.updateLoader && state.updateLoader->programNca && state.updateLoader->programNca->exeFs) {
-            patchedExeFs = state.updateLoader->programNca->exeFs;
-            LOGI("ExeFS: applied update layer");
-        }
 
         std::vector<std::shared_ptr<FileSystem>> layers;
         for (const auto &modDirectory : GetModificationDirectories(state, titleId)) {
@@ -101,23 +97,7 @@ namespace skyline::vfs {
         return std::make_shared<LayeredFileSystem>(std::move(layers));
     }
 
-    std::shared_ptr<vfs::Backing> PatchManager::PatchRomFS(const DeviceState &state, std::optional<vfs::NCA> nca, u64 ivfcOffset) {
-        if (!nca || !state.loader || !state.loader->programNca || !state.loader->programNca->rawRomFs)
-            throw exception("Cannot patch RomFS without update and base raw RomFS layers");
-
-        auto newNca{std::make_shared<vfs::NCA>(std::move(nca), state.os->keyStore, state.loader->programNca->rawRomFs, ivfcOffset)};
-        return newNca->romFs;
-    }
-
-    std::shared_ptr<vfs::Backing> PatchManager::PatchRomFS(const DeviceState &state, std::optional<vfs::NCA> nca, u64 ivfcOffset, u64 titleId) {
-        std::shared_ptr<Backing> patchedRomFs;
-        if (nca) {
-            patchedRomFs = PatchRomFS(state, std::move(nca), ivfcOffset);
-            LOGI("RomFS: applied update/BKTR layer");
-        } else if (state.loader) {
-            patchedRomFs = state.loader->romFs;
-        }
-
+    std::shared_ptr<vfs::Backing> PatchManager::PatchRomFS(const DeviceState &state, std::shared_ptr<Backing> patchedRomFs, u64 titleId) {
         if (!patchedRomFs)
             throw exception("Cannot patch a null RomFS");
 

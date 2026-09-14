@@ -8,6 +8,7 @@ package org.stratoemu.strato.utils
 import android.graphics.Color
 
 enum class SwitchColors(val color : Int) {
+    TRANSPARENT(Color.TRANSPARENT),
     GRAY(Color.GRAY),
     BLACK(Color.rgb(0, 0, 0)),
     WHITE(Color.rgb(255, 255, 255)),

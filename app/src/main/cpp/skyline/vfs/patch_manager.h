@@ -3,17 +3,15 @@
 
 #pragma once
 
-#include <os.h>
-#include <vfs/nca.h>
+#include "filesystem.h"
 
 namespace skyline::vfs {
     class PatchManager {
       public:
         PatchManager();
 
-        std::shared_ptr<vfs::Backing> PatchRomFS(const DeviceState &state, std::optional<vfs::NCA> nca, u64 ivfcOffset);
-
-        std::shared_ptr<vfs::Backing> PatchRomFS(const DeviceState &state, std::optional<vfs::NCA> nca, u64 ivfcOffset, u64 titleId);
+        // These methods add user mods to content already resolved by the loader.
+        std::shared_ptr<vfs::Backing> PatchRomFS(const DeviceState &state, std::shared_ptr<Backing> romFs, u64 titleId);
 
         std::shared_ptr<FileSystem> PatchExeFS(const DeviceState &state, std::shared_ptr<FileSystem> exefs, u64 titleId);
     };

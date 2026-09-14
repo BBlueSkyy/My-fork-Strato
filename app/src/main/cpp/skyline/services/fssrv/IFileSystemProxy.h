@@ -42,6 +42,12 @@ namespace skyline::service::fssrv {
     };
     static_assert(sizeof(SaveDataAttribute) == 0x40);
 
+    /**
+     * @brief Resolves a save-data attribute to Strato's directory-backed save path.
+     * @param defaultProgramId Program ID to use when the attribute contains the HOS sentinel value 0.
+     */
+    std::string GetSaveDataPath(SaveDataSpaceId spaceId, SaveDataAttribute attribute, u64 defaultProgramId);
+
     enum class StorageId : u8 {
         None = 0,
         Host = 1,

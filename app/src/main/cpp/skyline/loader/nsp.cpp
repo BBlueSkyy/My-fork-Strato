@@ -6,7 +6,7 @@
 #include <vfs/ticket.h>
 #include "nca.h"
 #include "nsp.h"
-#include "vfs/patch_manager.h"
+#include "program_content.h"
 
 namespace skyline::loader {
     static void ExtractTickets(const std::shared_ptr<vfs::PartitionFileSystem>& dir, const std::shared_ptr<crypto::KeyStore> &keyStore) {
@@ -30,6 +30,8 @@ namespace skyline::loader {
         ExtractTickets(nsp, keyStore);
 
         const auto ncaParseMode{loadMode == NspLoadMode::MetadataOnly ? vfs::NCAParseMode::MetadataOnly : vfs::NCAParseMode::Full};
+        std::vector<ProgramNcaCandidate> programs;
+        std::vector<vfs::CNMT> metadata;
 
         auto root{nsp->OpenDirectory("", {false, true})};
         for (const auto &entry : root->Read()) {
@@ -39,13 +41,14 @@ namespace skyline::loader {
             try {
                 auto nca{vfs::NCA(nsp->OpenFile(entry.name), keyStore, false, ncaParseMode)};
 
-                if (nca.contentType == vfs::NCAContentType::Program && nca.romFs != nullptr && nca.exeFs != nullptr)
-                    programNca = std::move(nca);
+                if (nca.contentType == vfs::NCAContentType::Program)
+                    programs.push_back({entry.name, std::move(nca)});
                 else if (nca.contentType == vfs::NCAContentType::Control && nca.romFs != nullptr)
                     controlNca = std::move(nca);
-                else if (nca.contentType == vfs::NCAContentType::Meta)
+                else if (nca.contentType == vfs::NCAContentType::Meta) {
+                    metadata.emplace_back(nca.cnmt);
                     metaNca = std::move(nca);
-                else if (nca.contentType == vfs::NCAContentType::PublicData)
+                } else if (nca.contentType == vfs::NCAContentType::PublicData || nca.contentType == vfs::NCAContentType::Data)
                     publicNca = std::move(nca);
             } catch (const loader_exception &e) {
                 if (!diagnosticsPath.empty()) {
@@ -58,10 +61,14 @@ namespace skyline::loader {
                 LOGW("Skipping NCA '{}' while reading NSP metadata: {}", entry.name, e.what());
             } catch (const std::exception &e) {
                 LOGE("NCA parsing failed for '{}': {}", entry.name, e.what());
-                continue;
+                if (loadMode == NspLoadMode::Full)
+                    throw loader_exception(LoaderResult::ParsingError, fmt::format("NCA '{}': {}", entry.name, e.what()));
             }
         }
 
+        auto selection{SelectProgramNcas(std::move(programs), metadata)};
+        programNca = std::move(selection.base);
+        programPatchNca = std::move(selection.patch);
         if (programNca)
             romFs = programNca->romFs;
 
@@ -72,14 +79,15 @@ namespace skyline::loader {
 
         if (metaNca)
             cnmt = vfs::CNMT(metaNca->cnmt);
+        if (selection.metadata)
+            cnmt = std::move(selection.metadata);
     }
 
     void *NspLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
-        auto patchManager{std::make_shared<vfs::PatchManager>()};
-        programNca->exeFs = patchManager->PatchExeFS(state, programNca->exeFs, programNca->header.titleId);
-
-        process->npdm = vfs::NPDM(programNca->exeFs->OpenFile("main.npdm"));
-        return NcaLoader::LoadExeFs(this, programNca->exeFs, process, state);
+        if (!programContentResolved || !processExeFs)
+            throw exception("Program content must be resolved before loading the process");
+        process->npdm = vfs::NPDM(processExeFs->OpenFile("main.npdm"));
+        return NcaLoader::LoadExeFs(this, processExeFs, process, state);
     }
 
     std::vector<u8> NspLoader::GetIcon(language::ApplicationLanguage language) {

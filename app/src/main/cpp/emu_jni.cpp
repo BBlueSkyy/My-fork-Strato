@@ -252,6 +252,18 @@ extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_0
     env->ReleaseIntArrayElements(pointsJni, reinterpret_cast<jint *>(points.data()), JNI_ABORT);
 }
 
+extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_00024Companion_setKeyboardState(JNIEnv *, jobject, jint usage, jboolean pressed, jint modifiers) {
+    auto input{InputWeak.lock()};
+    if (input)
+        input->keyboard.SetKeyState(static_cast<skyline::u32>(usage), pressed, static_cast<skyline::u32>(modifiers));
+}
+
+extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_00024Companion_setMouseState(JNIEnv *, jobject, jint x, jint y, jint deltaX, jint deltaY, jint wheelX, jint wheelY, jint buttons) {
+    auto input{InputWeak.lock()};
+    if (input)
+        input->mouse.SetState(x, y, deltaX, deltaY, wheelX, wheelY, static_cast<skyline::u32>(buttons));
+}
+
 extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_settings_NativeSettings_updateNative(JNIEnv *env, jobject) {
     auto settings{SettingsWeak.lock()};
     if (!settings)

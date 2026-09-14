@@ -10,9 +10,40 @@
 #include "IMultiCommitManager.h"
 #include "IFileSystemProxy.h"
 #include "ISaveDataInfoReader.h"
-#include "vfs/patch_manager.h"
 
 namespace skyline::service::fssrv {
+    std::string GetSaveDataPath(SaveDataSpaceId spaceId, SaveDataAttribute attribute, u64 defaultProgramId) {
+        if (attribute.programId == 0)
+            attribute.programId = defaultProgramId;
+
+        std::string spaceIdStr{[spaceId]() {
+            switch (spaceId) {
+                case SaveDataSpaceId::System:
+                    return "/nand/system";
+                case SaveDataSpaceId::User:
+                    return "/nand/user";
+                case SaveDataSpaceId::Temporary:
+                    return "/nand/temp";
+                default:
+                    throw exception("Unsupported savedata ID: {}", spaceId);
+            }
+        }()};
+
+        switch (attribute.type) {
+            case SaveDataType::System:
+                return fmt::format("{}/save/{:016X}/{:016X}{:016X}/", spaceIdStr, attribute.saveDataId, attribute.userId.lower, attribute.userId.upper);
+            case SaveDataType::Account:
+            case SaveDataType::Device:
+                return fmt::format("{}/save/{:016X}/{:016X}{:016X}/{:016X}/", spaceIdStr, 0, attribute.userId.lower, attribute.userId.upper, attribute.programId);
+            case SaveDataType::Temporary:
+                return fmt::format("{}/{:016X}/{:016X}{:016X}/{:016X}/", spaceIdStr, 0, attribute.userId.lower, attribute.userId.upper, attribute.programId);
+            case SaveDataType::Cache:
+                return fmt::format("{}/save/cache/{:016X}/", spaceIdStr, attribute.programId);
+            default:
+                throw exception("Unsupported savedata type: {}", attribute.type);
+        }
+    }
+
     IFileSystemProxy::IFileSystemProxy(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
 
     Result IFileSystemProxy::SetCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -34,38 +65,7 @@ namespace skyline::service::fssrv {
     Result IFileSystemProxy::OpenSaveDataFileSystem(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto spaceId{request.Pop<SaveDataSpaceId>()};
         auto attribute{request.Pop<SaveDataAttribute>()};
-
-        if (attribute.programId == 0)
-            attribute.programId = state.loader->nacp->nacpContents.saveDataOwnerId;
-
-        std::string saveDataPath{[spaceId, &attribute]() {
-            std::string spaceIdStr{[spaceId]() {
-                switch (spaceId) {
-                    case SaveDataSpaceId::System:
-                        return "/nand/system";
-                    case SaveDataSpaceId::User:
-                        return "/nand/user";
-                    case SaveDataSpaceId::Temporary:
-                        return "/nand/temp";
-                    default:
-                        throw exception("Unsupported savedata ID: {}", spaceId);
-                }
-            }()};
-
-            switch (attribute.type) {
-                case SaveDataType::System:
-                    return fmt::format("{}/save/{:016X}/{:016X}{:016X}/", spaceIdStr, attribute.saveDataId, attribute.userId.lower, attribute.userId.upper);
-                case SaveDataType::Account:
-                case SaveDataType::Device:
-                    return fmt::format("{}/save/{:016X}/{:016X}{:016X}/{:016X}/", spaceIdStr, 0, attribute.userId.lower, attribute.userId.upper, attribute.programId);
-                case SaveDataType::Temporary:
-                    return fmt::format("{}/{:016X}/{:016X}{:016X}/{:016X}/", spaceIdStr, 0, attribute.userId.lower, attribute.userId.upper, attribute.programId);
-                case SaveDataType::Cache:
-                    return fmt::format("{}/save/cache/{:016X}/", spaceIdStr, attribute.programId);
-                default:
-                    throw exception("Unsupported savedata type: {}", attribute.type);
-            }
-        }()};
+        auto saveDataPath{GetSaveDataPath(spaceId, attribute, state.loader->nacp->nacpContents.saveDataOwnerId)};
 
         manager.RegisterService(std::make_shared<IFileSystem>(std::make_shared<vfs::OsFileSystem>(state.os->publicAppFilesPath + "/switch" + saveDataPath), state, manager), session, response);
         return {};
@@ -93,25 +93,11 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystemProxy::OpenDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        if (state.loader->programNca) {
-            std::optional<vfs::NCA> updateNca;
-            if (state.updateLoader)
-                updateNca = state.updateLoader->programNca;
-
-            auto patchManager{std::make_shared<vfs::PatchManager>()};
-            auto romFs{patchManager->PatchRomFS(
-                state,
-                std::move(updateNca),
-                state.loader->programNca->ivfcOffset,
-                state.loader->programNca->header.titleId
-            )};
-            manager.RegisterService(std::make_shared<IStorage>(romFs, state, manager), session, response);
-        } else {
-            if (!state.loader->romFs)
-                return result::NoRomFsAvailable;
-
-            manager.RegisterService(std::make_shared<IStorage>(state.loader->romFs, state, manager), session, response);
-        }
+        auto backing{state.loader->currentProcessRomFs};
+        if (!backing)
+            return result::NoRomFsAvailable;
+        LOGI("OpenDataStorageByCurrentProcess: resolved Program storage, {}", state.loader->currentProcessRomFsIdentity);
+        manager.RegisterService(std::make_shared<IStorage>(backing, state, manager), session, response);
         return {};
     }
 
@@ -119,12 +105,12 @@ namespace skyline::service::fssrv {
         auto storageId{request.Pop<StorageId>()};
         request.Skip<std::array<u8, 7>>(); // 7-bytes padding
         auto dataId{request.Pop<u64>()};
-        auto patchManager{std::make_shared<vfs::PatchManager>()};
-
-        // Try load DLC first
+        // DLC content has its own RomFS; it is never patched against the current Program NCA.
         for (const auto &dlc : state.dlcLoaders) {
-            if (dlc->cnmt->header.id == dataId) {
-                auto romFs{patchManager->PatchRomFS(state, dlc->publicNca, state.loader->programNca->ivfcOffset)};
+            if (dlc->cnmt && dlc->cnmt->header.id == dataId) {
+                auto romFs{dlc->publicNca ? dlc->publicNca->romFs : nullptr};
+                if (!romFs)
+                    return result::EntityNotFound;
                 manager.RegisterService(std::make_shared<IStorage>(romFs, state, manager), session, response);
                 return {};
             }
@@ -151,7 +137,14 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystemProxy::OpenPatchDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        return result::EntityNotFound;
+        // A base-only title (or an ExeFS-only update) has no Program patch data to open.
+        // When available, this is the same persistent base+patch view used by command 200.
+        auto backing{state.loader->patchDataRomFs};
+        if (!backing)
+            return result::EntityNotFound;
+        LOGI("OpenPatchDataStorageByCurrentProcess: resolved Program patch storage, {}", state.loader->currentProcessRomFsIdentity);
+        manager.RegisterService(std::make_shared<IStorage>(backing, state, manager), session, response);
+        return {};
     }
 
     Result IFileSystemProxy::GetGlobalAccessLogMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {

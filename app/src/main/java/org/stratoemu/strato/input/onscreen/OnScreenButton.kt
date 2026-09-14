@@ -10,7 +10,6 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PointF
 import android.graphics.Rect
-import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
@@ -63,12 +62,11 @@ abstract class OnScreenButton(
 
     final override val config : OnScreenConfiguration = OnScreenConfigurationImpl(onScreenControllerView.context, buttonId, defaultRelativeX, defaultRelativeY, defaultEnabled)
 
-    protected val drawable = ContextCompat.getDrawable(onScreenControllerView.context, drawableId)!!
+    protected val drawable = ContextCompat.getDrawable(onScreenControllerView.context, drawableId)!!.mutate()
+    private val customDrawable = ContextCompat.getDrawable(onScreenControllerView.context, drawableId)!!.mutate()
 
     private val buttonSymbolPaint = Paint().apply {
         color = config.textColor
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        isAntiAlias = true
     }
     protected val textBoundsRect = Rect()
 
@@ -158,11 +156,16 @@ abstract class OnScreenButton(
         var bounds : Rect? = null
         if (config.enabled) {
             bounds = currentBounds
-            val alpha = if (isPressed) config.alpha / 3 else config.alpha
-            drawable.apply {
+            val alpha = if (isPressed) (config.alpha - 130).coerceIn(30, 255) else config.alpha
+            val renderDrawable = if (config.backgroundColor == OnScreenConfiguration.DefaultBackgroundColor) {
+                drawable
+            } else {
+                customDrawable.apply { applyColorsToDrawable(this) }
+            }
+
+            renderDrawable.apply {
                 this.bounds = bounds
                 this.alpha = alpha
-                applyColorsToDrawable(this)
                 draw(canvas)
             }
 

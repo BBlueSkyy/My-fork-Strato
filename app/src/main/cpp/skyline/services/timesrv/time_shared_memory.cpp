@@ -7,6 +7,18 @@
 namespace skyline::service::timesrv::core {
     constexpr size_t TimeSharedMemorySize{0x1000}; //!< The size of the time shared memory region
 
+    #pragma pack(1)
+    struct ContinuousAdjustmentTimePoint {
+        i64 rtcOffset;
+        i64 diffScale;
+        i64 shiftAmount;
+        i64 lower;
+        i64 upper;
+        UUID clockSourceId;
+    };
+    #pragma pack()
+    static_assert(sizeof(ContinuousAdjustmentTimePoint) == 0x38);
+
     struct __attribute__((packed)) TimeSharedMemoryLayout {
         template<typename T>
         struct ClockContextEntry {
@@ -21,11 +33,15 @@ namespace skyline::service::timesrv::core {
         struct __attribute__((packed)) {
             u32 updateCount;
             std::array<u8, 2> enabled;
+            std::array<u8, 2> _pad_;
         } standardUserSystemClockAutomaticCorrectionEnabledEntry;
+        ClockContextEntry<ContinuousAdjustmentTimePoint> continuousAdjustmentTimePointEntry;
     };
     static_assert(offsetof(TimeSharedMemoryLayout, localSystemClockContextEntry) == 0x38);
     static_assert(offsetof(TimeSharedMemoryLayout, networkSystemClockContextEntry) == 0x80);
     static_assert(offsetof(TimeSharedMemoryLayout, standardUserSystemClockAutomaticCorrectionEnabledEntry) == 0xC8);
+    static_assert(offsetof(TimeSharedMemoryLayout, continuousAdjustmentTimePointEntry) == 0xD0);
+    static_assert(sizeof(TimeSharedMemoryLayout) == 0x148);
     static_assert(sizeof(TimeSharedMemoryLayout) <= TimeSharedMemorySize);
 
     /**
@@ -62,19 +78,66 @@ namespace skyline::service::timesrv::core {
           timeSharedMemory(reinterpret_cast<TimeSharedMemoryLayout *>(kTimeSharedMemory->host.data())) {}
 
     void TimeSharedMemory::SetupStandardSteadyClock(UUID rtcId, TimeSpanType baseTimePoint) {
+        const i64 currentTimeNs{util::GetTimeNs()};
+        const i64 baseTimeNs{baseTimePoint.Nanoseconds() - currentTimeNs};
+
         SteadyClockTimePoint context{
-            .timePoint = baseTimePoint.Nanoseconds() - util::GetTimeNs(),
+            .timePoint = baseTimeNs,
             .clockSourceId = rtcId
         };
 
         UpdateTimeSharedMemoryItem(timeSharedMemory->standardSteadyClockContextEntry.updateCount, timeSharedMemory->standardSteadyClockContextEntry.context, context);
+
+        // Modern nnSdk versions consume the continuous-adjustment block at 0xD0 when
+        // servicing the userspace fast path for realtime clocks. Horizon initializes it
+        // together with the standard steady clock using the current uptime and base time.
+        ContinuousAdjustmentTimePoint continuousAdjustment{
+            .rtcOffset = currentTimeNs,
+            .diffScale = 0,
+            .shiftAmount = 0,
+            .lower = baseTimeNs,
+            .upper = baseTimeNs,
+            .clockSourceId = rtcId,
+        };
+        UpdateTimeSharedMemoryItem(timeSharedMemory->continuousAdjustmentTimePointEntry.updateCount,
+                                   timeSharedMemory->continuousAdjustmentTimePointEntry.context,
+                                   continuousAdjustment);
     }
 
     void TimeSharedMemory::SetSteadyClockRawTimePoint(TimeSpanType timePoint) {
+        const i64 currentTimeNs{util::GetTimeNs()};
+        const i64 newBaseTimeNs{timePoint.Nanoseconds() - currentTimeNs};
+
         auto context{ReadTimeSharedMemoryItem(timeSharedMemory->standardSteadyClockContextEntry.updateCount, timeSharedMemory->standardSteadyClockContextEntry.context)};
-        context.timePoint = timePoint.Nanoseconds() - util::GetTimeNs();
+        context.timePoint = newBaseTimeNs;
 
         UpdateTimeSharedMemoryItem(timeSharedMemory->standardSteadyClockContextEntry.updateCount, timeSharedMemory->standardSteadyClockContextEntry.context, context);
+
+        auto continuousAdjustment{ReadTimeSharedMemoryItem(timeSharedMemory->continuousAdjustmentTimePointEntry.updateCount,
+                                                           timeSharedMemory->continuousAdjustmentTimePointEntry.context)};
+
+        const i64 elapsedNs{currentTimeNs - continuousAdjustment.rtcOffset};
+        const i64 adjustedTime{(elapsedNs * continuousAdjustment.diffScale) >> continuousAdjustment.shiftAmount};
+        i64 expectedTime{adjustedTime + continuousAdjustment.lower};
+        const i64 previousUpper{continuousAdjustment.upper};
+
+        const i64 lowerCandidate{std::min(expectedTime, previousUpper)};
+        expectedTime = std::max(expectedTime, previousUpper);
+        if (continuousAdjustment.diffScale >= 0)
+            expectedTime = lowerCandidate;
+
+        const i64 newDiffScale{newBaseTimeNs < expectedTime ? -55 : 55};
+
+        continuousAdjustment.rtcOffset = currentTimeNs;
+        continuousAdjustment.diffScale = expectedTime == newBaseTimeNs ? 0 : newDiffScale;
+        continuousAdjustment.shiftAmount = expectedTime == newBaseTimeNs ? 0 : 14;
+        continuousAdjustment.lower = expectedTime;
+        continuousAdjustment.upper = newBaseTimeNs;
+        continuousAdjustment.clockSourceId = context.clockSourceId;
+
+        UpdateTimeSharedMemoryItem(timeSharedMemory->continuousAdjustmentTimePointEntry.updateCount,
+                                   timeSharedMemory->continuousAdjustmentTimePointEntry.context,
+                                   continuousAdjustment);
     }
 
     void TimeSharedMemory::UpdateLocalSystemClockContext(const SystemClockContext &context) {

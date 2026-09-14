@@ -67,7 +67,10 @@ namespace skyline::vfs {
 
     NCA::NCA(std::shared_ptr<vfs::Backing> pBacking, std::shared_ptr<crypto::KeyStore> pKeyStore, bool pUseKeyArea, NCAParseMode parseMode)
         : backing(std::move(pBacking)), keyStore(std::move(pKeyStore)), useKeyArea(pUseKeyArea) {
-        header = backing->Read<NCAHeader>();
+        header = {};
+        if (backing->size < sizeof(header) ||
+            backing->Read(span<u8>(reinterpret_cast<u8 *>(&header), sizeof(header))) != sizeof(header))
+            throw loader_exception(LoaderResult::ParsingError, "Truncated NCA header");
 
         if (header.magic != util::MakeMagic<u32>("NCA3")) {
             if (!keyStore->headerKey)
@@ -85,225 +88,324 @@ namespace skyline::vfs {
         contentType = header.contentType;
         rightsIdEmpty = header.rightsId == crypto::KeyStore::Key128{};
 
-        const std::size_t numberSections{static_cast<size_t>(std::ranges::count_if(header.sectionTables, [](const NCASectionTableEntry &entry) {
-            return entry.mediaOffset > 0;
-        }))};
-
-        sections.resize(numberSections);
-        const auto lengthSections{constant::SectionHeaderSize * numberSections};
-
+        // FS indices are part of the patch contract. Counting present sections loses holes.
+        if (backing->size < constant::SectionHeaderOffset + sizeof(sections))
+            throw loader_exception(LoaderResult::ParsingError, "Truncated NCA section headers");
+        if (backing->Read(span<u8>(reinterpret_cast<u8 *>(sections.data()), sizeof(sections)), constant::SectionHeaderOffset) != sizeof(sections))
+            throw loader_exception(LoaderResult::ParsingError, "Short NCA section header read");
         if (encrypted) {
-            std::vector<u8> raw(lengthSections);
-
-            backing->Read(raw, constant::SectionHeaderOffset);
-
             crypto::AesCipher cipher(*keyStore->headerKey, MBEDTLS_CIPHER_AES_128_XTS);
-            cipher.XtsDecrypt(reinterpret_cast<u8 *>(sections.data()), reinterpret_cast<u8 *>(raw.data()), lengthSections, 2, constant::SectionHeaderSize);
-        } else {
-            for (size_t i{}; i < numberSections; ++i)
-                sections[i] = backing->Read<NCASectionHeader>(constant::SectionHeaderOffset + i * constant::SectionHeaderSize);
+            cipher.XtsDecrypt({reinterpret_cast<u8 *>(sections.data()), sizeof(sections)}, 2, constant::SectionHeaderSize);
         }
 
         if (parseMode == NCAParseMode::MetadataOnly && contentType != NCAContentType::Meta && contentType != NCAContentType::Control)
             return;
 
-        for (std::size_t i = 0; i < sections.size(); ++i) {
-            const auto &section = sections[i];
-
+        for (size_t i{}; i < sections.size(); ++i) {
+            if (!HasSection(i))
+                continue;
+            const auto &section{sections[i]};
             ValidateNCA(section);
-
             if (section.raw.header.fsType == NcaSectionFsType::RomFs) {
-                ReadRomFs(section, header.sectionTables[i]);
+                // Retain the NCA itself as a candidate; a physical patch section is NOT a RomFS.
+                if (section.bktr.relocation.size == 0)
+                    romFs = BuildRomFsBacking(i);
             } else if (section.raw.header.fsType == NcaSectionFsType::PFS0) {
-                ReadPfs0(section, header.sectionTables[i]);
+                auto pfs{OpenPfs0(i)};
+                if (contentType == NCAContentType::Program) {
+                    if (pfs->FileExists("main") && pfs->FileExists("main.npdm"))
+                        exeFs = pfs;
+                    else if (pfs->FileExists("NintendoLogo.png") && pfs->FileExists("StartupMovie.gif"))
+                        logo = pfs;
+                } else if (contentType == NCAContentType::Meta) {
+                    cnmt = pfs;
+                }
             }
         }
     }
 
-    NCA::NCA(std::optional<vfs::NCA> updateNca, std::shared_ptr<crypto::KeyStore> pKeyStore, std::shared_ptr<vfs::Backing> bktrBaseRomfs,
-             u64 bktrBaseIvfcOffset, bool pUseKeyArea)
-        : keyStore(std::move(pKeyStore)), bktrBaseRomfs(std::move(bktrBaseRomfs)), bktrBaseIvfcOffset(bktrBaseIvfcOffset), useKeyArea(pUseKeyArea) {
-        if (!updateNca)
-            throw loader_exception(LoaderResult::ParsingError);
-
-        header = updateNca->header;
-        sections = std::move(updateNca->sections);
-        encrypted = updateNca->encrypted;
-        backing = std::move(updateNca->backing);
-        contentType = header.contentType;
-        rightsIdEmpty = header.rightsId == crypto::KeyStore::Key128{};
-
-        for (std::size_t i = 0; i < sections.size(); ++i) {
-            const auto &section = sections[i];
-
-            ValidateNCA(section);
-
-            if (section.raw.header.fsType == NcaSectionFsType::RomFs)
-                ReadRomFs(section, header.sectionTables[i]);
-        }
+    bool NCA::HasSection(size_t index) const {
+        return index < sections.size() && header.sectionTables[index].mediaOffset != 0;
     }
 
-    void NCA::ReadPfs0(const NCASectionHeader &section, const NCASectionTableEntry &entry) {
-        const size_t sectionStart{static_cast<size_t>(entry.mediaOffset) * constant::MediaUnitSize};
-        const size_t sectionSize{constant::MediaUnitSize * static_cast<size_t>(entry.mediaEndOffset - entry.mediaOffset)};
-
-        std::shared_ptr<Backing> encryptedSection{std::make_shared<RegionBacking>(backing, sectionStart, sectionSize)};
-        encryptedSection = CreateSparseBacking(section, encryptedSection);
-        auto decryptedSection{CreateBacking(section, encryptedSection, sectionStart)};
-        if (!decryptedSection || section.pfs0.pfs0HeaderOffset > decryptedSection->size)
-            throw loader_exception(LoaderResult::ParsingError, "PFS0 offset is outside the section");
-
-        const size_t pfsPhysicalSize{decryptedSection->size - section.pfs0.pfs0HeaderOffset};
-        std::shared_ptr<Backing> pfsBacking{std::make_shared<RegionBacking>(decryptedSection, section.pfs0.pfs0HeaderOffset, pfsPhysicalSize)};
-        pfsBacking = CreateCompressedBacking(section, pfsBacking, pfsPhysicalSize);
-        auto pfs{std::make_shared<PartitionFileSystem>(pfsBacking)};
-
-        if (contentType == NCAContentType::Program) {
-            // An ExeFS must always contain an NPDM and a main NSO, whereas the logo section will always contain a logo and a startup movie
-            if (pfs->FileExists("main") && pfs->FileExists("main.npdm"))
-                exeFs = std::move(pfs);
-            else if (pfs->FileExists("NintendoLogo.png") && pfs->FileExists("StartupMovie.gif"))
-                logo = std::move(pfs);
-        } else if (contentType == NCAContentType::Meta) {
-            cnmt = std::move(pfs);
-        }
+    bool NCA::HasBktrSection() const {
+        for (size_t i{}; i < sections.size(); ++i)
+            if (HasSection(i) && sections[i].bktr.relocation.size != 0)
+                return true;
+        return false;
     }
 
-    void NCA::ReadRomFs(const NCASectionHeader &sectionHeader, const NCASectionTableEntry &entry) {
-        const size_t baseOffset{entry.mediaOffset * constant::MediaUnitSize};
-        const size_t sectionSize{constant::MediaUnitSize * static_cast<size_t>(entry.mediaEndOffset - entry.mediaOffset)};
-        ivfcOffset = sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].offset;
-        const size_t romFsSize{sectionHeader.romfs.ivfc.levels[constant::IvfcMaxLevel - 1].size};
+    bool NCA::HasRomFsSection() const {
+        for (size_t i{}; i < sections.size(); ++i)
+            if (HasSection(i) && sections[i].raw.header.fsType == NcaSectionFsType::RomFs)
+                return true;
+        return false;
+    }
 
-        std::shared_ptr<Backing> encryptedSection{std::make_shared<RegionBacking>(backing, baseOffset, sectionSize)};
-        encryptedSection = CreateSparseBacking(sectionHeader, encryptedSection);
-        auto decryptedSection{CreateBacking(sectionHeader, encryptedSection, baseOffset)};
-        if (!decryptedSection)
-            throw loader_exception(LoaderResult::ParsingError, "Unsupported RomFS encryption type");
-
-        if (sectionHeader.raw.header.encryptionType != NcaSectionEncryptionType::BKTR) {
-            if (ivfcOffset > decryptedSection->size || romFsSize > decryptedSection->size - ivfcOffset)
-                throw loader_exception(LoaderResult::ParsingError, "RomFS IVFC data layer is outside the section");
-
-            auto patchLayer{std::make_shared<RegionBacking>(decryptedSection, ivfcOffset, romFsSize)};
-            rawRomFs = patchLayer;
-            romFs = CreateCompressedBacking(sectionHeader, rawRomFs, rawRomFs->size);
-            return;
+    namespace {
+        bool InRange(u64 offset, u64 size, u64 limit) {
+            return offset <= limit && size <= limit - offset;
         }
 
-        // A patch NCA cannot expose its final RomFS until it is combined with the base title. Keep the
-        // pre-compression layer available so NspLoader can retain the update NCA without interpreting
-        // its compression table against an incomplete standalone view.
-        if (!bktrBaseRomfs) {
-            rawRomFs.reset();
-            romFs = decryptedSection;
-            return;
+        template<typename T>
+        T ReadExact(const std::shared_ptr<Backing> &backing, size_t offset = 0) {
+            T value{};
+            if (backing->Read(span<u8>(reinterpret_cast<u8 *>(&value), sizeof(value)), offset) != sizeof(value))
+                throw loader_exception(LoaderResult::ParsingError, "Short NCA metadata read");
+            return value;
         }
 
-        const auto &relocationInfo{sectionHeader.bktr.relocation};
-        const auto &subsectionInfo{sectionHeader.bktr.subsection};
-        if (relocationInfo.magic != util::MakeMagic<u32>("BKTR") || subsectionInfo.magic != util::MakeMagic<u32>("BKTR") ||
-            relocationInfo.version > 1 || subsectionInfo.version > 1 ||
-            relocationInfo.numberEntries == 0 || subsectionInfo.numberEntries == 0)
-            throw loader_exception(LoaderResult::ParsingError, "Invalid BKTR table headers");
-
-        const size_t relocationEntryStorageSize{QuerySparseEntryStorageSize(relocationInfo.numberEntries)};
-        const size_t subsectionEntryStorageSize{QuerySubsectionEntryStorageSize(subsectionInfo.numberEntries)};
-        size_t relocationNodeStorageSize;
-        size_t subsectionNodeStorageSize;
-        try {
-            relocationNodeStorageSize = QuerySingleLevelNodeStorageSize(relocationEntryStorageSize);
-            subsectionNodeStorageSize = QuerySingleLevelNodeStorageSize(subsectionEntryStorageSize);
-        } catch (const std::exception &e) {
-            throw loader_exception(LoaderResult::ParsingError, e.what());
+        size_t ValidatePatchTable(const BKTRHeader &info, size_t entryStorageSize, size_t backingSize) {
+            if (info.magic != util::MakeMagic<u32>("BKTR") || info.version > 1 || info.numberEntries == 0)
+                throw loader_exception(LoaderResult::ParsingError, "Invalid NCA patch BucketTree header");
+            const size_t nodeSize{QuerySingleLevelNodeStorageSize(entryStorageSize)};
+            if (!InRange(info.offset, info.size, backingSize) || !InRange(nodeSize, entryStorageSize, info.size))
+                throw loader_exception(LoaderResult::ParsingError, "NCA patch table is outside its backing");
+            return nodeSize;
         }
 
-        if (relocationNodeStorageSize > relocationInfo.size ||
-            relocationEntryStorageSize > relocationInfo.size - relocationNodeStorageSize ||
-            subsectionNodeStorageSize > subsectionInfo.size ||
-            subsectionEntryStorageSize > subsectionInfo.size - subsectionNodeStorageSize)
-            throw loader_exception(LoaderResult::ParsingError, "Invalid BKTR table extents");
+        // Each extent owns a CTR backing with its own generation and absolute counter offset.
+        // In particular, the indirect table is read THROUGH this layer, not ordinary AES-CTR.
+        class AesCtrExBacking : public Backing {
+          public:
+            struct Extent {
+                u64 start;
+                std::shared_ptr<Backing> backing;
+            };
+            std::vector<Extent> extents;
+            explicit AesCtrExBacking(size_t size) : Backing({true, false, false}, size) {}
+            size_t ReadImpl(span<u8> output, size_t offset) override {
+                if (!InRange(offset, output.size(), size))
+                    throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex read outside data range");
+                size_t done{};
+                while (done < output.size()) {
+                    const u64 position{offset + done};
+                    auto it{std::upper_bound(extents.begin(), extents.end(), position,
+                        [](u64 value, const Extent &extent) { return value < extent.start; })};
+                    if (it == extents.begin())
+                        throw loader_exception(LoaderResult::ParsingError, "Missing AES-CTR-Ex extent");
+                    --it;
+                    const size_t local{static_cast<size_t>(position - it->start)};
+                    const size_t count{std::min(output.size() - done, it->backing->size - local)};
+                    if (count == 0 || it->backing->Read(output.subspan(done, count), local) != count)
+                        throw loader_exception(LoaderResult::ParsingError, "Short AES-CTR-Ex read");
+                    done += count;
+                }
+                return done;
+            }
+        };
+    }
 
-        const size_t relocationOffset{relocationInfo.offset};
-        const size_t subsectionOffset{subsectionInfo.offset};
-        if (relocationOffset > decryptedSection->size || relocationInfo.size > decryptedSection->size - relocationOffset ||
-            subsectionOffset > decryptedSection->size || subsectionInfo.size > decryptedSection->size - subsectionOffset)
-            throw loader_exception(LoaderResult::ParsingError, "BKTR tables are outside the update section");
+    std::shared_ptr<Backing> NCA::CreateAesCtrExBacking(const NCASectionHeader &section, std::shared_ptr<Backing> raw, size_t offset) {
+        const auto &info{section.bktr.subsection};
+        const auto &indirect{section.bktr.relocation};
+        const auto encryption{section.raw.header.encryptionType};
+        if (encryption != NcaSectionEncryptionType::BKTR && encryption != NcaSectionEncryptionType::None)
+            throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex table with incompatible encryption type");
+        if (indirect.size == 0 || !InRange(indirect.offset, indirect.size, info.offset))
+            throw loader_exception(LoaderResult::ParsingError, "Indirect table overlaps AES-CTR-Ex metadata");
+        const size_t entrySize{QuerySubsectionEntryStorageSize(info.numberEntries)};
+        const size_t nodeSize{ValidatePatchTable(info, entrySize, raw->size)};
+        auto metadata{CreateBacking(section, raw, offset)};
+        auto root{ReadExact<SubsectionBlock>(metadata, info.offset)};
+        ValidateRootBlock(root, entrySize / BucketNodeSize, "AES-CTR-Ex");
+        if (root.size != info.offset)
+            throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex data size does not match its table offset");
 
-        RelocationBlock relocationBlock{decryptedSection->Read<RelocationBlock>(relocationOffset)};
-        SubsectionBlock subsectionBlock{decryptedSection->Read<SubsectionBlock>(subsectionOffset)};
-        try {
-            ValidateRootBlock(relocationBlock, relocationEntryStorageSize / BucketNodeSize, "BKTR relocation");
-            ValidateRootBlock(subsectionBlock, subsectionEntryStorageSize / BucketNodeSize, "BKTR subsection");
-        } catch (const std::exception &e) {
-            throw loader_exception(LoaderResult::ParsingError, e.what());
+        std::vector<SubsectionEntry> entries;
+        entries.reserve(info.numberEntries);
+        for (size_t i{}; i < root.numberBuckets; ++i) {
+            const auto bucket{ReadExact<SubsectionBucketRaw>(metadata, info.offset + nodeSize + i * BucketNodeSize)};
+            const u64 end{i + 1 < root.numberBuckets ? root.baseOffsets[i + 1] : root.size};
+            if (bucket.index != i || bucket.numberEntries == 0 || bucket.numberEntries > bucket.subsectionEntries.size() ||
+                bucket.endOffset != end || bucket.subsectionEntries[0].addressPatch != root.baseOffsets[i])
+                throw loader_exception(LoaderResult::ParsingError, "Invalid AES-CTR-Ex entry bucket");
+            for (size_t j{}; j < bucket.numberEntries; ++j) {
+                const auto &entry{bucket.subsectionEntries[j]};
+                if (entry.addressPatch >= end || (entry.addressPatch & 0xF) || entry._pad0_[0] > 1 ||
+                    (!entries.empty() && entries.back().addressPatch >= entry.addressPatch))
+                    throw loader_exception(LoaderResult::ParsingError, "Invalid AES-CTR-Ex entry");
+                entries.push_back(entry);
+            }
         }
+        if (entries.size() != info.numberEntries)
+            throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex entry count mismatch");
+        auto result{std::make_shared<AesCtrExBacking>(root.size)};
+        for (size_t i{}; i < entries.size(); ++i) {
+            const auto &entry{entries[i]};
+            const u64 end{i + 1 < entries.size() ? entries[i + 1].addressPatch : root.size};
+            std::shared_ptr<Backing> extent{std::make_shared<RegionBacking>(raw, entry.addressPatch, end - entry.addressPatch)};
+            if (encrypted && encryption != NcaSectionEncryptionType::None && entry._pad0_[0] == 0) {
+                auto ctrSection{section};
+                std::memcpy(ctrSection.raw.sectionCtr.data(), &entry.ctr, sizeof(entry.ctr));
+                extent = CreateBacking(ctrSection, extent, offset + entry.addressPatch);
+            }
+            result->extents.push_back({entry.addressPatch, std::move(extent)});
+        }
+        return result;
+    }
 
-        std::vector<RelocationBucketRaw> relocationBucketsRaw(relocationBlock.numberBuckets);
-        decryptedSection->Read<RelocationBucketRaw>(relocationBucketsRaw, relocationOffset + relocationNodeStorageSize);
-        std::vector<SubsectionBucketRaw> subsectionBucketsRaw(subsectionBlock.numberBuckets);
-        decryptedSection->Read<SubsectionBucketRaw>(subsectionBucketsRaw, subsectionOffset + subsectionNodeStorageSize);
+    std::shared_ptr<Backing> NCA::OpenRawSection(size_t index) {
+        if (!HasSection(index))
+            throw loader_exception(LoaderResult::ParsingError, "Missing NCA section");
+        if (rawSections[index])
+            return rawSections[index];
+        const auto &entry{header.sectionTables[index]};
+        const auto &section{sections[index]};
+        const u64 start{static_cast<u64>(entry.mediaOffset) * constant::MediaUnitSize};
+        const u64 end{static_cast<u64>(entry.mediaEndOffset) * constant::MediaUnitSize};
+        if (start < constant::SectionHeaderOffset + sizeof(sections) || end <= start ||
+            (section.raw.sparseInfo.generation == 0 && end > backing->size))
+            throw loader_exception(LoaderResult::ParsingError, "Invalid NCA section extent");
+        std::shared_ptr<Backing> raw{std::make_shared<RegionBacking>(backing, start, end - start)};
+        raw = CreateSparseBacking(section, raw);
+        if (section.bktr.subsection.size != 0)
+            raw = CreateAesCtrExBacking(section, raw, start);
+        else {
+            if (section.raw.header.encryptionType == NcaSectionEncryptionType::BKTR)
+                throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex section is missing its table");
+            raw = CreateBacking(section, raw, start);
+        }
+        if (!raw)
+            throw loader_exception(LoaderResult::ParsingError, "Unsupported NCA encryption type");
+        rawSections[index] = raw;
+        return raw;
+    }
 
-        std::vector<RelocationBucket> relocationBuckets;
-        relocationBuckets.reserve(relocationBucketsRaw.size());
-        size_t relocationEntryCount{};
-        for (size_t i{}; i < relocationBucketsRaw.size(); ++i) {
-            const auto &rawBucket{relocationBucketsRaw[i]};
-            const u64 expectedEnd{i + 1 < relocationBlock.numberBuckets ? relocationBlock.baseOffsets[i + 1] : relocationBlock.size};
-            if (rawBucket.index != i || rawBucket.numberEntries == 0 || rawBucket.numberEntries > rawBucket.relocationEntries.size() ||
-                rawBucket.endOffset != expectedEnd || rawBucket.relocationEntries[0].addressPatch != relocationBlock.baseOffsets[i])
+    std::shared_ptr<FileSystem> NCA::OpenPfs0(size_t index) {
+        if (partitionSections[index])
+            return partitionSections[index];
+        const auto &section{sections[index]};
+        if (section.raw.header.hashType != NcaSectionHashType::HierarchicalSha256 || section.bktr.relocation.size != 0)
+            throw loader_exception(LoaderResult::ParsingError, "Unsupported Program partition hash/patch type");
+        const u32 count{section.pfs0.layerCount};
+        if (count == 0 || count > 5)
+            throw loader_exception(LoaderResult::ParsingError, "Invalid PFS0 hash level count");
+        std::array<u64, 2> dataLevel{};
+        std::memcpy(dataLevel.data(), section.raw.blockData.data() + 0x28 + (count - 1) * 0x10, sizeof(dataLevel));
+        auto raw{OpenRawSection(index)};
+        if (dataLevel[1] == 0 || !InRange(dataLevel[0], dataLevel[1], raw->size))
+            throw loader_exception(LoaderResult::ParsingError, "PFS0 data level is outside the section");
+        auto data{CreateCompressedBacking(section, std::make_shared<RegionBacking>(raw, dataLevel[0], dataLevel[1]), dataLevel[1])};
+        // Validate names and file extents before PartitionFileSystem indexes the name table.
+        const auto pfsHeader{ReadExact<std::array<u32, 4>>(data)};
+        const u64 namesOffset{0x10 + static_cast<u64>(pfsHeader[1]) * 0x18};
+        if (pfsHeader[0] != util::MakeMagic<u32>("PFS0") || !InRange(namesOffset, pfsHeader[2], data->size))
+            throw loader_exception(LoaderResult::ParsingError, "Invalid NCA PFS0 table extent");
+        const u64 filesOffset{namesOffset + pfsHeader[2]};
+        std::vector<u8> names(pfsHeader[2]);
+        if (data->Read(names, namesOffset) != names.size())
+            throw loader_exception(LoaderResult::ParsingError, "Short PFS0 name table read");
+        for (u32 i{}; i < pfsHeader[1]; ++i) {
+            const auto extent{ReadExact<std::array<u64, 2>>(data, 0x10 + static_cast<u64>(i) * 0x18)};
+            const auto name{ReadExact<u32>(data, 0x20 + static_cast<u64>(i) * 0x18)};
+            if (!InRange(extent[0], extent[1], data->size - filesOffset) || name >= names.size() ||
+                std::find(names.begin() + name, names.end(), 0) == names.end())
+                throw loader_exception(LoaderResult::ParsingError, "Invalid PFS0 file/name extent");
+        }
+        auto pfs{std::make_shared<PartitionFileSystem>(data)};
+        partitionSections[index] = pfs;
+        return pfs;
+    }
+
+    std::shared_ptr<Backing> NCA::OpenRawStorageWithPatch(NCA &base, size_t index) {
+        auto patch{OpenRawSection(index)};
+        const auto &info{sections[index].bktr.relocation};
+        if (info.size == 0)
+            return patch;
+        const size_t entrySize{QuerySparseEntryStorageSize(info.numberEntries)};
+        const size_t nodeSize{ValidatePatchTable(info, entrySize, patch->size)};
+        auto root{ReadExact<RelocationBlock>(patch, info.offset)};
+        ValidateRootBlock(root, entrySize / BucketNodeSize, "BKTR indirect");
+        // Original offsets address the WHOLE corresponding decrypted section, including hash levels.
+        std::shared_ptr<Backing> original{std::make_shared<RegionBacking>(backing, 0, 0)};
+        if (base.HasSection(index)) {
+            if (base.sections[index].raw.header.fsType != sections[index].raw.header.fsType || base.sections[index].bktr.relocation.size != 0)
+                throw loader_exception(LoaderResult::ParsingError, "Incompatible base NCA section for indirect storage");
+            original = base.OpenRawSection(index);
+        }
+        std::vector<RelocationBucket> buckets;
+        size_t entries{};
+        for (size_t i{}; i < root.numberBuckets; ++i) {
+            const auto bucket{ReadExact<RelocationBucketRaw>(patch, info.offset + nodeSize + i * BucketNodeSize)};
+            const u64 end{i + 1 < root.numberBuckets ? root.baseOffsets[i + 1] : root.size};
+            if (bucket.index != i || bucket.numberEntries == 0 || bucket.numberEntries > bucket.relocationEntries.size() ||
+                bucket.endOffset != end || bucket.relocationEntries[0].addressPatch != root.baseOffsets[i])
                 throw loader_exception(LoaderResult::ParsingError, "Invalid BKTR relocation bucket");
-            for (size_t j{}; j < rawBucket.numberEntries; ++j) {
-                const auto &entry{rawBucket.relocationEntries[j]};
-                if (entry.fromPatch > 1 || entry.addressPatch >= expectedEnd ||
-                    (j != 0 && rawBucket.relocationEntries[j - 1].addressPatch >= entry.addressPatch))
-                    throw loader_exception(LoaderResult::ParsingError, "Invalid BKTR relocation entry");
+            for (size_t j{}; j < bucket.numberEntries; ++j) {
+                const auto &entry{bucket.relocationEntries[j]};
+                const u64 next{j + 1 < bucket.numberEntries ? bucket.relocationEntries[j + 1].addressPatch : end};
+                if (entry.fromPatch > 1 || entry.addressPatch >= next ||
+                    !InRange(entry.addressSource, next - entry.addressPatch, entry.fromPatch ? info.offset : original->size))
+                    throw loader_exception(LoaderResult::ParsingError, "BKTR relocation is outside its physical source");
             }
-            relocationEntryCount += rawBucket.numberEntries;
-            relocationBuckets.push_back(ConvertRelocationBucketRaw(rawBucket));
+            entries += bucket.numberEntries;
+            buckets.push_back(ConvertRelocationBucketRaw(bucket));
         }
+        if (entries != info.numberEntries)
+            throw loader_exception(LoaderResult::ParsingError, "BKTR relocation entry count mismatch");
+        return std::make_shared<BKTR>(original, std::make_shared<RegionBacking>(patch, 0, info.offset), root, std::move(buckets));
+    }
 
-        std::vector<SubsectionBucket> subsectionBuckets;
-        subsectionBuckets.reserve(subsectionBucketsRaw.size());
-        size_t subsectionEntryCount{};
-        for (size_t i{}; i < subsectionBucketsRaw.size(); ++i) {
-            const auto &rawBucket{subsectionBucketsRaw[i]};
-            const u64 expectedEnd{i + 1 < subsectionBlock.numberBuckets ? subsectionBlock.baseOffsets[i + 1] : subsectionBlock.size};
-            if (rawBucket.index != i || rawBucket.numberEntries == 0 || rawBucket.numberEntries > rawBucket.subsectionEntries.size() ||
-                rawBucket.endOffset != expectedEnd || rawBucket.subsectionEntries[0].addressPatch != subsectionBlock.baseOffsets[i])
-                throw loader_exception(LoaderResult::ParsingError, "Invalid BKTR subsection bucket");
-            for (size_t j{}; j < rawBucket.numberEntries; ++j) {
-                const auto &entry{rawBucket.subsectionEntries[j]};
-                if (entry.addressPatch >= expectedEnd ||
-                    (j != 0 && rawBucket.subsectionEntries[j - 1].addressPatch >= entry.addressPatch))
-                    throw loader_exception(LoaderResult::ParsingError, "Invalid BKTR subsection entry");
+    std::shared_ptr<Backing> NCA::BuildRomFsBacking(size_t index, NCA *base) {
+        const auto &section{sections[index]};
+        const auto &ivfc{section.romfs.ivfc};
+        if (section.raw.header.hashType != NcaSectionHashType::HierarchicalIntegrity ||
+            ivfc.magic != util::MakeMagic<u32>("IVFC") || ivfc.levelCount < 2 || ivfc.levelCount > constant::IvfcMaxLevel + 1)
+            throw loader_exception(LoaderResult::ParsingError, "Invalid IVFC header/level count (NCA fields must be little endian)");
+        auto raw{base ? OpenRawStorageWithPatch(*base, index) : OpenRawSection(index)};
+        for (size_t i{}; i < ivfc.levelCount - 1; ++i) {
+            const auto &level{ivfc.levels[i]};
+            if (level.size == 0 || level.blockSize > 32 || !InRange(level.offset, level.size, raw->size))
+                throw loader_exception(LoaderResult::ParsingError, fmt::format("IVFC level {} is outside resolved section (size=0x{:X})", i, raw->size));
+        }
+        const auto &dataLevel{ivfc.levels[ivfc.levelCount - 2]};
+        ivfcOffset = dataLevel.offset;
+        rawRomFs = std::make_shared<RegionBacking>(raw, dataLevel.offset, dataLevel.size);
+        auto result{CreateCompressedBacking(section, rawRomFs, rawRomFs->size)};
+        const auto romHeader{ReadExact<RomFileSystem::RomFsHeader>(result)};
+        if (romHeader.headerSize != sizeof(romHeader) || romHeader.dataOffset < sizeof(romHeader) || romHeader.dataOffset > result->size)
+            throw loader_exception(LoaderResult::ParsingError, "Invalid resolved RomFS header");
+        for (const auto &[offset, size] : {std::pair{romHeader.dirHashTableOffset, romHeader.dirHashTableSize},
+             std::pair{romHeader.dirMetaTableOffset, romHeader.dirMetaTableSize},
+             std::pair{romHeader.fileHashTableOffset, romHeader.fileHashTableSize},
+             std::pair{romHeader.fileMetaTableOffset, romHeader.fileMetaTableSize}})
+            if (!InRange(offset, size, result->size) || (size != 0 && offset < sizeof(romHeader)))
+                throw loader_exception(LoaderResult::ParsingError, "Resolved RomFS metadata is outside data backing");
+        LOGI("RomFS section {} resolved: IVFC data level {}, size=0x{:X}, indirectSize=0x{:X}, aesCtrExSize=0x{:X}",
+             index, ivfc.levelCount - 2, result->size, section.bktr.relocation.size, section.bktr.subsection.size);
+        return result;
+    }
+
+    std::shared_ptr<FileSystem> NCA::OpenExeFsWithPatch(NCA &base) {
+        if (contentType != NCAContentType::Program || header.titleId != base.header.titleId)
+            throw loader_exception(LoaderResult::ParsingError, "Program patch does not match base Program");
+        for (size_t i{}; i < sections.size(); ++i) {
+            if (!HasSection(i) || sections[i].raw.header.fsType != NcaSectionFsType::PFS0)
+                continue;
+            auto pfs{OpenPfs0(i)};
+            if (pfs->FileExists("main") && pfs->FileExists("main.npdm")) {
+                LOGI("Program patch ExeFS selected (section {})", i);
+                return pfs;
             }
-            subsectionEntryCount += rawBucket.numberEntries;
-            subsectionBuckets.push_back(ConvertSubsectionBucketRaw(rawBucket));
         }
+        LOGI("Program patch has no executable partition; using base ExeFS");
+        return base.exeFs;
+    }
 
-        if ((relocationInfo.numberEntries != 0 && relocationEntryCount != relocationInfo.numberEntries) ||
-            (subsectionInfo.numberEntries != 0 && subsectionEntryCount != subsectionInfo.numberEntries))
-            throw loader_exception(LoaderResult::ParsingError, "BKTR entry count does not match its FS header");
-
-        u32 ctrLow;
-        std::memcpy(&ctrLow, sectionHeader.raw.sectionCtr.data(), sizeof(ctrLow));
-        subsectionBuckets.back().entries.push_back({relocationInfo.offset, {0}, ctrLow});
-        subsectionBuckets.back().entries.push_back({sectionSize, {0}, 0});
-
-        std::array<u8, 0x10> key{};
-        if (encrypted)
-            key = !(rightsIdEmpty || useKeyArea) ? GetTitleKey() : GetKeyAreaKey(sectionHeader.raw.header.encryptionType);
-        auto bktr{std::make_shared<BKTR>(
-            bktrBaseRomfs, encryptedSection, relocationBlock, std::move(relocationBuckets), subsectionBlock,
-            std::move(subsectionBuckets), encrypted, key, baseOffset,
-            bktrBaseIvfcOffset, sectionHeader.raw.sectionCtr)};
-
-        if (ivfcOffset > relocationBlock.size || romFsSize > relocationBlock.size - ivfcOffset)
-            throw loader_exception(LoaderResult::ParsingError, "Patched RomFS IVFC layer is outside the BKTR virtual size");
-
-        rawRomFs = std::make_shared<RegionBacking>(bktr, ivfcOffset, romFsSize);
-        romFs = CreateCompressedBacking(sectionHeader, rawRomFs, rawRomFs->size);
+    std::shared_ptr<Backing> NCA::OpenRomFsWithPatch(NCA &base) {
+        if (contentType != base.contentType || header.titleId != base.header.titleId)
+            throw loader_exception(LoaderResult::ParsingError, "RomFS patch does not match base content");
+        for (size_t i{}; i < sections.size(); ++i) {
+            if (!HasSection(i) || sections[i].raw.header.fsType != NcaSectionFsType::RomFs)
+                continue;
+            auto result{BuildRomFsBacking(i, &base)};
+            if (sections[i].bktr.relocation.size != 0)
+                LOGI("BKTR Program patch RomFS constructed (section {})", i);
+            romFs = result;
+            return result;
+        }
+        return base.romFs;
     }
 
     std::shared_ptr<Backing> NCA::CreateBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> rawBacking, size_t offset) {
@@ -556,11 +658,15 @@ namespace skyline::vfs {
             case NCAKeyAreaEncryptionKeyType::System:
                 return keyArea(keyStore->areaKeySystem);
         }
+        throw loader_exception(LoaderResult::ParsingError, "Invalid NCA key-area index");
     }
 
     void NCA::ValidateNCA(const NCASectionHeader &sectionHeader) {
-        // Both Sparse and Compressed sections are now handled properly via CreateSparseBacking/
-        // CreateCompressedBacking, which fall back to throwing ErrorSparseNCA/ErrorCompressedNCA
-        // themselves if the bucket tree's magic doesn't validate - nothing left to check upfront here
+        const auto &fs{sectionHeader.raw.header};
+        if ((fs.fsType != NcaSectionFsType::RomFs && fs.fsType != NcaSectionFsType::PFS0) ||
+            (fs.fsType == NcaSectionFsType::RomFs && fs.hashType != NcaSectionHashType::HierarchicalIntegrity) ||
+            (fs.fsType == NcaSectionFsType::PFS0 && fs.hashType != NcaSectionHashType::HierarchicalSha256))
+            throw loader_exception(LoaderResult::ParsingError, "Unsupported NCA filesystem/hash type pair");
+        // Sparse/Compressed validation remains in their existing builders.
     }
 }

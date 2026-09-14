@@ -5,6 +5,44 @@
 #include "npad.h"
 
 namespace skyline::input {
+    bool NpadManager::IsSixAxisHandleValid(const NpadDeviceHandle &handle) {
+        if (!IsNpadIdValid(handle.id) || handle.padding != 0)
+            return false;
+
+        switch (handle.type) {
+            case 3: // FullKey
+            case 4: // Handheld
+                return handle.deviceIndex == 2;
+            case 5: // JoyDual
+                return handle.deviceIndex <= 1;
+            case 6: // JoyLeft
+                return handle.deviceIndex == 0;
+            case 7: // JoyRight
+                return handle.deviceIndex == 1;
+            default:
+                return false;
+        }
+    }
+
+    bool NpadManager::IsVibrationHandleValid(const NpadDeviceHandle &handle) {
+        if (!IsNpadIdValid(handle.id) || handle.padding != 0)
+            return false;
+
+        switch (handle.type) {
+            case 3: // FullKey
+            case 4: // Handheld
+            case 5: // JoyDual
+                return handle.deviceIndex <= 1;
+            case 6: // JoyLeft
+            case 8: // GameCube ERM
+                return handle.deviceIndex == 0;
+            case 7: // JoyRight
+                return handle.deviceIndex == 1;
+            default:
+                return false;
+        }
+    }
+
     NpadManager::NpadManager(const DeviceState &state, input::HidSharedMemory *hid) : state(state), npads
         {NpadDevice{*this, hid->npad[0], NpadId::Player1}, {*this, hid->npad[1], NpadId::Player2},
          {*this, hid->npad[2], NpadId::Player3}, {*this, hid->npad[3], NpadId::Player4},
@@ -36,6 +74,8 @@ namespace skyline::input {
                 if (id != NpadId::Handheld) {
                     if (controller.type == NpadControllerType::ProController)
                         style.proController = true;
+                    else if (controller.type == NpadControllerType::Gamecube)
+                        style.gamecube = true;
                     else if (controller.type == NpadControllerType::JoyconLeft)
                         style.joyconLeft = true;
                     else if (controller.type == NpadControllerType::JoyconRight)
@@ -48,7 +88,7 @@ namespace skyline::input {
                 style = NpadStyleSet{.raw = style.raw & styles.raw};
 
                 if (style.raw) {
-                    if (style.proController || style.joyconHandheld || style.joyconLeft || style.joyconRight) {
+                    if (style.proController || style.gamecube || style.joyconHandheld || style.joyconLeft || style.joyconRight) {
                         device.Connect(controller.type);
                         device.index = static_cast<i8>(&controller - controllers.data());
                         device.partnerIndex = -1;
@@ -97,6 +137,37 @@ namespace skyline::input {
 
             for (auto &controller : controllers)
                 controller.device = nullptr;
+        }
+    }
+
+    void NpadManager::Disconnect(NpadId id) {
+        std::scoped_lock guard{mutex};
+        auto &device{at(id)};
+        for (auto &controller : controllers) {
+            if (controller.device == &device)
+                controller.device = nullptr;
+        }
+        device.Disconnect();
+    }
+
+    void NpadManager::UpdateControllerSharedMemory() {
+        std::scoped_lock guard{mutex};
+        for (auto &pad : npads)
+            pad.UpdateControllerSharedMemory();
+    }
+
+    void NpadManager::UpdateSixAxisSharedMemory() {
+        std::scoped_lock guard{mutex};
+        for (auto &pad : npads)
+            pad.UpdateSixAxisSharedMemory();
+    }
+
+    void NpadManager::SetVibrationPermitted(bool permitted) {
+        std::scoped_lock guard{mutex};
+        vibrationPermitted = permitted;
+        if (!permitted) {
+            for (auto &pad : npads)
+                pad.StopVibration();
         }
     }
 }

@@ -239,6 +239,35 @@ class AppDialog : BottomSheetDialogFragment() {
             SaveManagementUtils.exportSave(requireContext(), startForResultExportSave, item.titleId, "${item.title} (v${binding.gameVersion.text}) [${item.titleId}]")
         }
 
+        binding.deleteShaderCache.isEnabled = shaderCacheFiles().any { it.exists() }
+        binding.deleteShaderCache.setOnClickListener {
+            AlertDialog.Builder(requireContext())
+                .setTitle(getString(R.string.delete_shader_cache_confirmation_message))
+                .setMessage(getString(R.string.action_irreversible))
+                .setNegativeButton(getString(R.string.no), null)
+                .setPositiveButton(getString(R.string.yes)) { _, _ ->
+                    val existingCacheFiles = shaderCacheFiles().filter { it.exists() }
+                    if (existingCacheFiles.isEmpty()) {
+                        binding.deleteShaderCache.isEnabled = false
+                        Snackbar.make(binding.root, getString(R.string.shader_cache_not_found), Snackbar.LENGTH_SHORT).show()
+                    } else {
+                        var deleted = true
+                        existingCacheFiles.forEach { cacheFile ->
+                            if (!cacheFile.deleteRecursively())
+                                deleted = false
+                        }
+
+                        val cacheStillExists = shaderCacheFiles().any { it.exists() }
+                        binding.deleteShaderCache.isEnabled = cacheStillExists
+                        val message = if (deleted && !cacheStillExists)
+                            R.string.shader_cache_deleted
+                        else
+                            R.string.shader_cache_delete_failed
+                        Snackbar.make(binding.root, getString(message), Snackbar.LENGTH_SHORT).show()
+                    }
+                }.show()
+        }
+
         binding.gameTitleId.setOnLongClickListener {
             val clipboard = requireActivity().getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
             clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Title ID", item.titleId))
@@ -268,6 +297,16 @@ class AppDialog : BottomSheetDialogFragment() {
                 false
             }
         }
+    }
+
+    private fun shaderCacheFiles(): List<java.io.File> {
+        val titleId = item.titleId ?: return emptyList()
+        val publicFilesDir = requireContext().getPublicFilesDir()
+        return listOf(
+            java.io.File(publicFilesDir, "graphics_pipeline_cache/$titleId"),
+            java.io.File(publicFilesDir, "graphics_pipeline_cache/$titleId.staging"),
+            java.io.File(publicFilesDir, "vk_graphics_pipeline_cache/$titleId")
+        )
     }
 
     private fun openManageContent() {

@@ -68,8 +68,8 @@ namespace skyline {
         };
 
         enum class NcaSectionFsType : u8 {
-            PFS0 = 0x2, //!< This section contains a PFS0 filesystem
-            RomFs = 0x3, //!< This section contains a RomFs filesystem
+            RomFs = 0x0,
+            PFS0 = 0x1,
         };
 
         enum class NcaSectionHashType : u8 {
@@ -96,10 +96,12 @@ namespace skyline {
         static_assert(sizeof(HierarchicalIntegrityLevel) == 0x18);
 
         struct NCASectionHeaderBlock {
-            u8 _pad0_[0x3];
+            u16 version;
             NcaSectionFsType fsType;
+            NcaSectionHashType hashType;
             NcaSectionEncryptionType encryptionType;
-            u8 _pad1_[0x3];
+            u8 metadataHashType;
+            u8 _pad1_[0x2];
         };
         static_assert(sizeof(NCASectionHeaderBlock) == 0x8);
 
@@ -107,7 +109,7 @@ namespace skyline {
             NCASectionHeaderBlock headerBlock;
             std::array<u8, 0x20> hash;
             u32 size;
-            u8 _pad0_[0x4];
+            u32 layerCount;
             u64 hashTableOffset;
             u64 hashTableSize;
             u64 pfs0HeaderOffset;
@@ -186,7 +188,8 @@ namespace skyline {
         struct IVFCHeader {
             u32 magic;
             u32 magicNumber;
-            u8 _pad0_[0x8];
+            u32 masterHashSize;
+            u32 levelCount; //!< Includes the master hash; levels[levelCount - 2] contains the data
             std::array<IVFCLevel, 6> levels;
             u8 _pad1_[0x40];
         };
@@ -254,7 +257,7 @@ namespace skyline {
 
         struct SubsectionEntry {
             u64 addressPatch;
-            u8 _pad0_[0x4];
+            u8 _pad0_[0x4]; //!< First byte is the AES-CTR-Ex encryption flag (0 = encrypted, 1 = clear)
             u32 ctr;
         };
         static_assert(sizeof(SubsectionEntry) == 0x10);
@@ -377,14 +380,16 @@ namespace skyline {
             bool encrypted{false};
             bool rightsIdEmpty;
             bool useKeyArea;
-            std::vector<std::shared_ptr<Backing>> files;
-            std::vector<NCASectionHeader> sections;
-            std::shared_ptr<vfs::Backing> bktrBaseRomfs;
-            u64 bktrBaseIvfcOffset;
+            std::array<NCASectionHeader, 4> sections{}; //!< Preserve physical FS indices, including holes
+            std::array<std::shared_ptr<Backing>, 4> rawSections{};
+            std::array<std::shared_ptr<FileSystem>, 4> partitionSections{};
 
-            void ReadPfs0(const NCASectionHeader &sectionHeader, const NCASectionTableEntry &entry);
+            bool HasSection(size_t index) const;
 
-            void ReadRomFs(const NCASectionHeader &sectionHeader, const NCASectionTableEntry &entry);
+            std::shared_ptr<FileSystem> OpenPfs0(size_t index);
+            std::shared_ptr<Backing> OpenRawSection(size_t index);
+            std::shared_ptr<Backing> BuildRomFsBacking(size_t index, NCA *base = nullptr);
+            std::shared_ptr<Backing> CreateAesCtrExBacking(const NCASectionHeader &section, std::shared_ptr<Backing> raw, size_t offset);
 
             std::shared_ptr<Backing> CreateBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> rawBacking, size_t offset);
 
@@ -436,8 +441,13 @@ namespace skyline {
             NCA(std::shared_ptr<vfs::Backing> backing, std::shared_ptr<crypto::KeyStore> keyStore, bool useKeyArea = false,
                 NCAParseMode parseMode = NCAParseMode::Full);
 
-            NCA(std::optional<vfs::NCA> updateNca, std::shared_ptr<crypto::KeyStore> pKeyStore, std::shared_ptr<vfs::Backing> bktrBaseRomfs,
-                u64 bktrBaseIvfcOffset, bool useKeyArea = false);
+            bool HasBktrSection() const;
+            bool HasRomFsSection() const;
+
+            // Called on the patch NCA. Base and patch section offsets are never interchanged.
+            std::shared_ptr<FileSystem> OpenExeFsWithPatch(NCA &base);
+            std::shared_ptr<Backing> OpenRomFsWithPatch(NCA &base);
+            std::shared_ptr<Backing> OpenRawStorageWithPatch(NCA &base, size_t index);
         };
     }
 }

@@ -48,10 +48,12 @@ namespace skyline::input {
         u64 globalTimestamp; //!< The global timestamp in samples
         u64 localTimestamp; //!< The local timestamp in samples
 
-        u64 touchCount; //!< The amount of active touch instances
+        i32 touchCount; //!< The amount of active touch instances
+        u32 _reserved_;
         std::array<TouchScreenStateData, 16> data;
     };
     static_assert(sizeof(TouchScreenState) == 0x298);
+    static_assert(offsetof(TouchScreenState, data) == 0x18);
 
     /**
      * @url https://switchbrew.org/wiki/HID_Shared_Memory#TouchScreen

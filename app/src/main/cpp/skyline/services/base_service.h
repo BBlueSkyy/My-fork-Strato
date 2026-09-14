@@ -73,6 +73,11 @@ namespace skyline::service {
          */
         virtual ~BaseService() = default;
 
+        /**
+         * @brief Notifies a service when the final handle for one of its IPC sessions is closed
+         */
+        virtual void OnSessionClosed(const type::KSession &) {}
+
         virtual ServiceFunctionDescriptor GetServiceFunction(u32 id, bool isTipc) {
             throw std::out_of_range("GetServiceFunction not implemented");
         }

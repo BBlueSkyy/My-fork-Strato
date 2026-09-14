@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <kernel/types/KEvent.h>
 #include <services/serviceman.h>
 
 namespace skyline::service::timesrv {
@@ -22,7 +21,6 @@ namespace skyline::service::glue {
       private:
         std::shared_ptr<timesrv::ITimeZoneService> core;
         timesrv::core::TimeServiceObject &timesrvCore;
-        std::shared_ptr<kernel::type::KEvent> locationNameUpdateEvent; //!< N uses a list here but a single event should be fine
         bool writeable; //!< If this instance is allowed to set the device timezone
 
       public:
@@ -34,10 +32,6 @@ namespace skyline::service::glue {
 
         Result GetTotalLocationNameCount(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
-        /**
-         * @brief Returns a list of available timezone location names beginning from the given index
-         * @url https://switchbrew.org/wiki/Glue_services#LoadLocationNameList
-         */
         Result LoadLocationNameList(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         Result LoadTimeZoneRule(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
@@ -70,7 +64,7 @@ namespace skyline::service::glue {
             SFUNC(0x6, ITimeZoneService, GetDeviceLocationNameAndUpdatedTime),
             SFUNC(0x7, ITimeZoneService, SetDeviceLocationNameWithTimeZoneBinary),
             SFUNC(0x8, ITimeZoneService, ParseTimeZoneBinary),
-            SFUNC(0x9, ITimeZoneService, GetDeviceLocationNameOperationEventReadableHandle),
+            SFUNC(0x14, ITimeZoneService, GetDeviceLocationNameOperationEventReadableHandle),
             SFUNC(0x64, ITimeZoneService, ToCalendarTime),
             SFUNC(0x65, ITimeZoneService, ToCalendarTimeWithMyRule),
             SFUNC(0xC9, ITimeZoneService, ToPosixTime),

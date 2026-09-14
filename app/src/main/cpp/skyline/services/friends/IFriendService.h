@@ -6,6 +6,10 @@
 #include <services/serviceman.h>
 
 namespace skyline::service::friends {
+    namespace result {
+        constexpr Result InvalidArgument(121, 2);
+    }
+
     /**
      * @brief IFriendService is used by applications to access information about a user's friends
      * @url https://switchbrew.org/wiki/Friend_services#IFriendService
@@ -18,6 +22,8 @@ namespace skyline::service::friends {
         IFriendService(const DeviceState &state, ServiceManager &manager);
 
         Result GetCompletionEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result GetFriendListIds(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         Result GetFriendList(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
@@ -35,6 +41,7 @@ namespace skyline::service::friends {
 
         SERVICE_DECL(
             SFUNC(0x0, IFriendService, GetCompletionEvent),
+            SFUNC(0x2774, IFriendService, GetFriendListIds),
             SFUNC(0x2775, IFriendService, GetFriendList),
             SFUNC(0x2788, IFriendService, CheckFriendListAvailability ),
             SFUNC(0x28A0, IFriendService, GetBlockedUserListIds),

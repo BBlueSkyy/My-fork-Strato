@@ -48,6 +48,7 @@
 #include "socket/sfdnsres/IResolver.h"
 #include "spl/IRandomInterface.h"
 #include "ssl/ISslService.h"
+#include "ssl/state.h"
 #include "prepo/IPrepoService.h"
 #include "mmnv/IRequest.h"
 #include "bt/IBluetoothUser.h"
@@ -76,11 +77,15 @@
 namespace skyline::service {
     struct GlobalServiceState {
         timesrv::core::TimeServiceObject timesrv;
+        settings::SettingsStore settingsStore;
         pl::SharedFontCore sharedFontCore;
         irs::SharedIirCore sharedIirCore;
         nvdrv::Driver nvdrv;
+        std::shared_ptr<ssl::SslSharedState> sslState;
 
-        explicit GlobalServiceState(const DeviceState &state) : timesrv(state), sharedFontCore(state), sharedIirCore(state), nvdrv(state) {}
+        explicit GlobalServiceState(const DeviceState &state)
+            : timesrv(state), settingsStore(state), sharedFontCore(state), sharedIirCore(state), nvdrv(state),
+              sslState(std::make_shared<ssl::SslSharedState>(state)) {}
     };
 
     ServiceManager::ServiceManager(const DeviceState &state) : state(state), smUserInterface(std::make_shared<sm::IUserInterface>(state, *this)), globalServiceState(std::make_shared<GlobalServiceState>(state)) {}
@@ -92,8 +97,8 @@ namespace skyline::service {
 
         switch (name) {
             SERVICE_CASE(fatalsrv::IService, "fatal:u")
-            SERVICE_CASE(settings::ISettingsServer, "set")
-            SERVICE_CASE(settings::ISystemSettingsServer, "set:sys")
+            SERVICE_CASE(settings::ISettingsServer, "set", globalServiceState->settingsStore)
+            SERVICE_CASE(settings::ISystemSettingsServer, "set:sys", globalServiceState->settingsStore, globalServiceState->timesrv)
             SERVICE_CASE(apm::IManager, "apm")
             SERVICE_CASE(am::IApplicationProxyService, "appletOE")
             SERVICE_CASE(am::IAllSystemAppletProxiesService, "appletAE")
@@ -136,9 +141,9 @@ namespace skyline::service {
             SERVICE_CASE(socket::IManager, "nsd:u")
             SERVICE_CASE(socket::IManager, "nsd:a")
             SERVICE_CASE(socket::IResolver, "sfdnsres")
-            SERVICE_CASE(ssl::ISslService, "ssl")
+            SERVICE_CASE(ssl::ISslService, "ssl", globalServiceState->sslState, ssl::ServicePermission::User)
             SERVICE_CASE(spl::IRandomInterface, "csrng")
-            SERVICE_CASE(ssl::ISslService, "ssl:s")
+            SERVICE_CASE(ssl::ISslService, "ssl:s", globalServiceState->sslState, ssl::ServicePermission::System)
             SERVICE_CASE(prepo::IPrepoService, "prepo:u")
             SERVICE_CASE(prepo::IPrepoService, "prepo:a")
             SERVICE_CASE(mmnv::IRequest, "mm:u")
@@ -199,6 +204,7 @@ namespace skyline::service {
         std::scoped_lock serviceGuard{mutex};
         auto session{state.process->GetHandle<type::KSession>(handle)};
         if (session->IsOpen() && session->handleRefCount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            session->serviceObject->OnSessionClosed(*session);
             if (session->isDomain) {
                 for (const auto &domainService : session->domains)
                     std::erase_if(serviceMap, [domainService](const auto &entry) {

@@ -61,6 +61,8 @@ set(UNSAFE_BUILD ON CACHE BOOL "Allow unsafe builds. These builds ARE NOT SECURE
 add_subdirectory("libraries/mbedtls")
 include_directories(SYSTEM "libraries/mbedtls/include")
 target_compile_options(mbedcrypto PRIVATE -Wno-everything)
+target_compile_options(mbedx509 PRIVATE -Wno-everything)
+target_compile_options(mbedtls PRIVATE -Wno-everything)
 
 # Opus
 set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "Install Opus CMake package config module" FORCE)
@@ -285,10 +287,14 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/input/npad.cpp
         ${source_DIR}/skyline/input/npad_device.cpp
         ${source_DIR}/skyline/input/gesture.cpp
+        ${source_DIR}/skyline/input/keyboard.cpp
+        ${source_DIR}/skyline/input/mouse.cpp
         ${source_DIR}/skyline/input/touch.cpp
         ${source_DIR}/skyline/crypto/aes_cipher.cpp
         ${source_DIR}/skyline/crypto/key_store.cpp
         ${source_DIR}/skyline/loader/loader.cpp
+        ${source_DIR}/skyline/loader/program_content.cpp
+        ${source_DIR}/skyline/loader/resolve_content.cpp
         ${source_DIR}/skyline/loader/nro.cpp
         ${source_DIR}/skyline/loader/nso.cpp
         ${source_DIR}/skyline/loader/nca.cpp
@@ -321,6 +327,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/audio/IAudioDevice.cpp
         ${source_DIR}/skyline/services/audio/IAudioRendererManager.cpp
         ${source_DIR}/skyline/services/audio/IAudioRenderer.cpp
+        ${source_DIR}/skyline/services/settings/settings_store.cpp
         ${source_DIR}/skyline/services/settings/ISettingsServer.cpp
         ${source_DIR}/skyline/services/settings/ISystemSettingsServer.cpp
         ${source_DIR}/skyline/services/apm/IManager.cpp
@@ -449,6 +456,9 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/spl/IRandomInterface.cpp
         ${source_DIR}/skyline/services/ssl/ISslService.cpp
         ${source_DIR}/skyline/services/ssl/ISslContext.cpp
+        ${source_DIR}/skyline/services/ssl/ISslConnection.cpp
+        ${source_DIR}/skyline/services/ssl/state.cpp
+        ${source_DIR}/skyline/services/ssl/tls_backend.cpp
         ${source_DIR}/skyline/services/prepo/IPrepoService.cpp
         ${source_DIR}/skyline/services/mmnv/IRequest.cpp
         ${source_DIR}/skyline/services/mii/IStaticService.cpp
@@ -469,4 +479,4 @@ target_compile_options(skyline PRIVATE -Wall -Wno-unknown-attributes -Wno-c++20-
 
 add_dependencies(skyline ffmpeg)
 target_link_libraries(skyline PRIVATE shader_recompiler audio_core)
-target_link_libraries_system(skyline android perfetto fmt lz4_static tzcode vkma mbedcrypto opus Boost::intrusive Boost::container Boost::preprocessor Boost::regex range-v3 adrenotools tsl::robin_map ffmpeg-avcodec ffmpeg-swscale ffmpeg-avutil)
+target_link_libraries_system(skyline android perfetto fmt lz4_static tzcode vkma mbedtls mbedx509 mbedcrypto opus Boost::intrusive Boost::container Boost::preprocessor Boost::regex range-v3 adrenotools tsl::robin_map ffmpeg-avcodec ffmpeg-swscale ffmpeg-avutil)

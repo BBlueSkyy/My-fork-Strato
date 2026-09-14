@@ -5,6 +5,12 @@
 #include "region_backing.h"
 
 namespace skyline::vfs {
+    BKTR::BKTR(std::shared_ptr<Backing> original, std::shared_ptr<Backing> patch, RelocationBlock relocation,
+               std::vector<RelocationBucket> buckets)
+        : BKTR(std::move(original), patch, relocation, std::move(buckets),
+               SubsectionBlock{0, 1, patch->size, {0}}, {{1, patch->size, {{0, {}, 0}, {patch->size, {}, 0}}}},
+               false, {}, 0, 0, {}) {}
+
     template <typename BlockType, typename BucketType>
     std::pair<u64, u64> SearchBucketEntry(u64 offset, const BlockType &block, const BucketType &buckets, bool isSubsection) {
         if (block.numberBuckets == 0 || block.numberBuckets > block.baseOffsets.size() || block.numberBuckets > buckets.size())
@@ -132,7 +138,7 @@ namespace skyline::vfs {
         const auto blockOffset{sectionOffset & 0xF};
         if (blockOffset != 0) {
             std::vector<u8> block(0x10);
-            auto regionBacking{std::make_shared<RegionBacking>(bktrRomFs, sectionOffset & static_cast<u32>(~0xF), 0x10)};
+            auto regionBacking{std::make_shared<RegionBacking>(bktrRomFs, sectionOffset & ~u64{0xF}, 0x10)};
             regionBacking->Read(block);
 
             cipher.Decrypt(block.data(), block.data(), block.size());
@@ -189,7 +195,7 @@ namespace skyline::vfs {
            throw exception("BKTR: patch read is outside the update section");
 
        if (!isEncrypted)
-           return bktrRomFs->Read(output, sectionOffset);
+           return bktrRomFs->Read(output.first(length), sectionOffset);
 
         const auto subsectionEntry{GetSubsectionEntry(sectionOffset)};
 
@@ -211,7 +217,7 @@ namespace skyline::vfs {
         const auto blockOffset{sectionOffset & 0xF};
         if (blockOffset != 0) {
             std::vector<u8> block(0x10);
-            auto regionBacking{std::make_shared<RegionBacking>(bktrRomFs, sectionOffset & static_cast<u32>(~0xF), 0x10)};
+            auto regionBacking{std::make_shared<RegionBacking>(bktrRomFs, sectionOffset & ~u64{0xF}, 0x10)};
             regionBacking->Read(block);
 
             cipher.Decrypt(block.data(), block.data(), block.size());
