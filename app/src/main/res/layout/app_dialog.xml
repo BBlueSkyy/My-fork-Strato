@@ -182,6 +182,19 @@
 
         </com.google.android.flexbox.FlexboxLayout>
 
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/delete_shader_cache"
+            style="@style/Widget.Material3.Button.TonalButton.Icon"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:contentDescription="@string/delete_shader_cache"
+            android:text="@string/delete_shader_cache"
+            app:icon="@drawable/ic_delete"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/flexboxSaves" />
+
         <TextView
             android:id="@+id/manage_content"
             style="?attr/textAppearanceLabelLarge"
@@ -190,7 +203,7 @@
             android:layout_marginTop="8dp"
             android:text="@string/manage_game_content"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@+id/flexboxSaves" />
+            app:layout_constraintTop_toBottomOf="@id/delete_shader_cache" />
 
         <com.google.android.flexbox.FlexboxLayout
             android:id="@+id/flexboxGameContent"
