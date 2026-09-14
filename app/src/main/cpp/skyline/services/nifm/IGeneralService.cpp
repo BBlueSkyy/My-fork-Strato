@@ -35,7 +35,7 @@ namespace skyline::service::nifm {
     }
 
     Result IGeneralService::CreateRequest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        [[maybe_unused]] const auto requirementPreset{request.Pop<s32>()};
+        [[maybe_unused]] const auto requirementPreset{request.Pop<i32>()};
         manager.RegisterService(SRVREG(IRequest), session, response);
         return {};
     }
