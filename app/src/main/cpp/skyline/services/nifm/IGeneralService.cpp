@@ -22,12 +22,21 @@ namespace skyline::service::nifm {
 
     IGeneralService::IGeneralService(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
 
+    Result IGeneralService::GetClientId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // nn::nifm::ClientId is a 4-byte value returned through the fixed output pointer buffer.
+        // Keep it non-zero: libnx treats zero as the fallback value when this command fails.
+        request.outputBuf.at(0).as<u32>() = 1;
+        return {};
+    }
+
     Result IGeneralService::CreateScanRequest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         manager.RegisterService(SRVREG(IScanRequest), session, response);
         return {};
     }
 
     Result IGeneralService::CreateRequest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // RequirementPreset is an s32. Official wrappers currently pass value 2.
+        [[maybe_unused]] const auto requirementPreset{request.Pop<s32>()};
         manager.RegisterService(SRVREG(IRequest), session, response);
         return {};
     }
