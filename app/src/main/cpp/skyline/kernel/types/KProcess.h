@@ -94,9 +94,9 @@ namespace skyline {
 
                 alreadyKilled.store(true);
                 for (const auto &thread : threadsToTerminate)
-                    thread->Kill(false);
+                    thread->Kill(false, true);
                 for (const auto &thread : threadsToTerminate)
-                    thread->Kill(true);
+                    thread->Kill(true, true);
             }
 
             /**
