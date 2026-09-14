@@ -25,10 +25,11 @@ namespace skyline::nce {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
-        state.thread->gracefulStopHostCallId.store(svcId, std::memory_order_relaxed);
-        state.thread->gracefulStopHostCall.store(1, std::memory_order_release);
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
+            state.thread->CaptureSvcContext();
+            if (state.thread->isPaused)
+                state.scheduler->WaitSchedule();
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
@@ -38,13 +39,11 @@ namespace skyline::nce {
             }
 
             while (kernel::Scheduler::YieldPending) [[unlikely]] {
-                state.scheduler->Rotate(false);
                 kernel::Scheduler::YieldPending = false;
+                state.scheduler->Rotate(false);
                 state.scheduler->WaitSchedule();
             }
-
-            if (state.thread->gracefulStopRequested.load(std::memory_order_acquire))
-                throw ExitException(false);
+            state.thread->LeaveContextSnapshot();
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 LOGENF("{} (SVC: {})\nStack Trace:{}", e.what(), svc.name, state.loader->GetStackTrace(e.frames));
@@ -60,7 +59,7 @@ namespace skyline::nce {
         } catch (const ExitException &e) {
             if (e.killAllThreads && state.thread->id) {
                 signal::BlockSignal({SIGINT});
-                state.process->Kill(false);
+                state.process->Kill(false, true, true);
             }
 
             abi::__cxa_end_catch();
@@ -90,16 +89,16 @@ namespace skyline::nce {
             std::longjmp(state.thread->originalCtx, true);
         }
 
-        state.thread->gracefulStopHostCall.store(0, std::memory_order_release);
         TRACE_EVENT_BEGIN("guest", "Guest");
     }
 
     void NCE::HookHandler(HookId hookId, ThreadContext *ctx) {
         const auto &state{*ctx->state};
-        state.thread->gracefulStopHostCallId.store(hookId.raw, std::memory_order_relaxed);
-        state.thread->gracefulStopHostCall.store(2, std::memory_order_release);
         auto hookedSymbol{state.nce->hookedSymbols[hookId.index]};
         try {
+            state.thread->CaptureSvcContext();
+            if (state.thread->isPaused)
+                state.scheduler->WaitSchedule();
             std::visit(VariantVisitor{
                 [&](const hle::OverrideHook &hook) {
                     TRACE_EVENT("hook", nullptr, [&](perfetto::EventContext ctx) {
@@ -121,14 +120,16 @@ namespace skyline::nce {
             }, hookedSymbol.hook);
 
             while (kernel::Scheduler::YieldPending) [[unlikely]] {
-                state.scheduler->Rotate(false);
                 kernel::Scheduler::YieldPending = false;
+                state.scheduler->Rotate(false);
                 state.scheduler->WaitSchedule();
             }
-
-            if (state.thread->gracefulStopRequested.load(std::memory_order_acquire))
-                throw ExitException(false);
-        } catch (const ExitException &) {
+            state.thread->LeaveContextSnapshot();
+        } catch (const ExitException &e) {
+            if (e.killAllThreads && state.thread->id) {
+                signal::BlockSignal({SIGINT});
+                state.process->Kill(false, true, true);
+            }
             abi::__cxa_end_catch();
             std::longjmp(state.thread->originalCtx, true);
         } catch (const signal::SignalException &e) {
@@ -156,8 +157,6 @@ namespace skyline::nce {
         } catch (const std::exception &e) {
             LOGENF("{} (Hook: {})\nStack Trace:{}", e.what(), hookedSymbol.prettyName, state.loader->GetStackTrace());
         }
-
-        state.thread->gracefulStopHostCall.store(0, std::memory_order_release);
     }
 
     void NCE::SignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
@@ -197,14 +196,6 @@ namespace skyline::nce {
     }
 
     void NCE::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
-        if (signal == SIGINT && DeviceState::thread &&
-            DeviceState::thread->gracefulStopRequested.load(std::memory_order_acquire)) {
-            DeviceState::thread->gracefulStopHostPc.store(ctx->uc_mcontext.pc, std::memory_order_relaxed);
-            DeviceState::thread->gracefulStopHostLr.store(ctx->uc_mcontext.regs[30], std::memory_order_relaxed);
-            DeviceState::thread->gracefulStopHostSp.store(ctx->uc_mcontext.sp, std::memory_order_relaxed);
-            return;
-        }
-
         if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
             return;
 
@@ -256,7 +247,6 @@ namespace skyline::nce {
     NCE::NCE(const DeviceState &state) : state(state) {
         signal::SetTlsRestorer(&NceTlsRestorer);
         signal::SetGuestSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, nce::NCE::SignalHandler);
-        signal::SetHostSignalHandler({SIGINT}, nce::NCE::HostSignalHandler, false);
         signal::SetHostSignalHandler({SIGSEGV}, nce::NCE::HostSignalHandler);
     }
 
@@ -372,7 +362,7 @@ namespace skyline::nce {
             auto instructionOffset{static_cast<size_t>(instruction - start)};
 
             if (svc.Verify()) {
-                size += 7;
+                size += 13;
                 offsets.push_back(instructionOffset);
             } else if (mrs.Verify()) {
                 if (mrs.srcReg == TpidrroEl0 || mrs.srcReg == TpidrEl0) {
@@ -430,6 +420,12 @@ namespace skyline::nce {
                 *patch++ = 0xF81F0FFE; // STR LR, [SP, #-16]!
                 *patch = instructions::BL(static_cast<i32>(startOffset())).raw;
                 patch++;
+
+                /* Record the guest resume PC, not the patch trampoline address. */
+                *patch++ = 0xD53BD041; // MRS X1, TPIDR_EL0
+                for (const auto &mov : instructions::MoveRegister(registers::X2, reinterpret_cast<u64>(end) + textOffset + (offset + 1) * sizeof(u32)))
+                    *patch++ = mov ? mov : 0xD503201F;
+                *patch++ = 0xF901A422; // STR X2, [X1, #0x348]
 
                 /* Jump to main SVC trampoline */
                 *patch++ = instructions::Movz(registers::W0, static_cast<u16>(svc.value)).raw;
