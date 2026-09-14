@@ -1,0 +1,7 @@
+<resources>
+    <string name="delete_shader_cache">Delete shader cache</string>
+    <string name="delete_shader_cache_confirmation_message">Delete shader cache?</string>
+    <string name="shader_cache_deleted">Shader cache deleted</string>
+    <string name="shader_cache_not_found">No shader cache found</string>
+    <string name="shader_cache_delete_failed">Failed to delete shader cache</string>
+</resources>
