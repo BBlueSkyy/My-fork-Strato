@@ -2,7 +2,6 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <kernel/types/KProcess.h>
-#include <common/signal.h>
 #include <common/trace.h>
 #include <common/utils.h>
 #include <os.h>
@@ -360,10 +359,9 @@ namespace skyline::service {
         }
 
         LOGV("====IPC End====");
-        if (state.os->HasProgramExecutionRequest()) {
-            signal::SignalException exitSignal;
-            exitSignal.signal = SIGINT;
-            throw exitSignal;
-        }
+        // ExecuteProgram must not unwind the IPC caller. The response is now committed, so hand
+        // the halt request to the host-side lifecycle coordinator. It will stop HOS-1 and let the
+        // normal OS/process teardown return control to the JNI relaunch loop.
+        state.os->NotifyProgramExecutionReady();
     }
 }
