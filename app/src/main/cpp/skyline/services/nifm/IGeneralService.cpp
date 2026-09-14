@@ -8,6 +8,10 @@
 #include <jvm.h>
 
 namespace skyline::service::nifm {
+    namespace {
+        constexpr u32 ClientId{1};
+    }
+
     /**
      * @brief Converts integer value to an array of bytes ordered in little-endian format
      */
@@ -23,9 +27,8 @@ namespace skyline::service::nifm {
     IGeneralService::IGeneralService(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
 
     Result IGeneralService::GetClientId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // nn::nifm::ClientId is a 4-byte value returned through the fixed output pointer buffer.
-        // Keep it non-zero: libnx treats zero as the fallback value when this command fails.
-        request.outputBuf.at(0).as<u32>() = 1;
+        // nn::nifm::ClientId is returned through a fixed type-0x1A output pointer buffer.
+        request.outputBuf.at(0).as<u32>() = ClientId;
         return {};
     }
 
@@ -35,7 +38,7 @@ namespace skyline::service::nifm {
     }
 
     Result IGeneralService::CreateRequest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // RequirementPreset is an s32. Official wrappers currently pass value 2.
+        // nn::nifm::RequirementPreset is an s32. The official wrapper uses value 2.
         [[maybe_unused]] const auto requirementPreset{request.Pop<s32>()};
         manager.RegisterService(SRVREG(IRequest), session, response);
         return {};
@@ -123,6 +126,9 @@ namespace skyline::service::nifm {
     }
 
     Result IGeneralService::GetInternetConnectionStatus(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!(*state.settings->isInternetEnabled))
+            return result::NoInternetConnection;
+
         struct Status {
             u8 type{1};
             u8 wifiStrength{3};
@@ -133,7 +139,8 @@ namespace skyline::service::nifm {
     }
 
     Result IGeneralService::IsAnyInternetRequestAccepted(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u8>(*state.settings->isInternetEnabled);
+        const auto clientId{request.inputBuf.at(0).as<u32>()};
+        response.Push<u8>(clientId == ClientId && *state.settings->isInternetEnabled);
         return {};
     }
 }
