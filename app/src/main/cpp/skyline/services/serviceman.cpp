@@ -4,6 +4,7 @@
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
 #include <common/utils.h>
+#include <os.h>
 #include "sm/IUserInterface.h"
 #include "settings/ISettingsServer.h"
 #include "settings/ISystemSettingsServer.h"
@@ -358,5 +359,7 @@ namespace skyline::service {
         }
 
         LOGV("====IPC End====");
+        if (state.os->HasProgramExecutionRequest())
+            state.process->Kill(false, true, true);
     }
 }

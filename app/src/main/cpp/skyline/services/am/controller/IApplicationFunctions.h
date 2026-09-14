@@ -48,6 +48,7 @@ namespace skyline::service::am {
         Result SetApplicationCopyrightVisibility(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result QueryApplicationPlayStatistics(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result QueryApplicationPlayStatisticsByUid(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result ExecuteProgram(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result ClearUserChannel(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result UnpopToUserChannel(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result GetPreviousProgramIndex(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
@@ -87,6 +88,7 @@ namespace skyline::service::am {
             SFUNC(102, IApplicationFunctions, SetApplicationCopyrightVisibility),
             SFUNC(110, IApplicationFunctions, QueryApplicationPlayStatistics),
             SFUNC(111, IApplicationFunctions, QueryApplicationPlayStatisticsByUid),
+            SFUNC(120, IApplicationFunctions, ExecuteProgram),
             SFUNC(121, IApplicationFunctions, ClearUserChannel),
             SFUNC(122, IApplicationFunctions, UnpopToUserChannel),
             SFUNC(123, IApplicationFunctions, GetPreviousProgramIndex),

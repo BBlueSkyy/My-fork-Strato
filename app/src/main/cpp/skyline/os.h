@@ -10,10 +10,22 @@
 #include "services/serviceman.h"
 
 namespace skyline::kernel {
+    struct ProgramExecutionRequest {
+        u8 programIndex{};
+        std::vector<std::vector<u8>> userChannel;
+    };
+
     /**
      * @brief The OS class manages the interaction between the various Skyline components
      */
     class OS {
+      private:
+        std::mutex programExecutionMutex;
+        std::optional<ProgramExecutionRequest> programExecutionRequest;
+        std::vector<std::vector<u8>> userChannelLaunchParameters;
+        u8 currentProgramIndex{};
+        i32 previousProgramIndex{-1};
+
       public:
         std::string nativeLibraryPath; //!< The full path to the app's native library directory
         std::string publicAppFilesPath; //!< The full path to the app's public files directory
@@ -47,6 +59,12 @@ namespace skyline::kernel {
          */
         void Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType);
 
-        std::shared_ptr<loader::Loader> GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType);
+        void RequestProgramExecution(u8 programIndex, std::vector<std::vector<u8>> userChannel);
+        bool HasProgramExecutionRequest();
+        u8 GetCurrentProgramIndex() const;
+        i32 GetPreviousProgramIndex() const;
+        std::vector<std::vector<u8>> TakeUserChannelLaunchParameters();
+
+        std::shared_ptr<loader::Loader> GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType, u8 programIndex = 0);
     };
 }

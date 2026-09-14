@@ -308,6 +308,53 @@ namespace skyline::service::am {
         return {};
     }
 
+    Result IApplicationFunctions::ExecuteProgram(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        enum class ProgramSpecifyKind : u32 {
+            ExecuteProgram = 0,
+            SubApplicationProgram = 1,
+            RestartProgram = 2,
+        };
+
+        const auto kind{request.Pop<ProgramSpecifyKind>()};
+        request.Skip<u32>();
+        const u64 value{request.Pop<u64>()};
+
+        u8 targetProgramIndex{};
+        switch (kind) {
+            case ProgramSpecifyKind::ExecuteProgram:
+                if (value > 0xFF)
+                    return result::InvalidParameters;
+                targetProgramIndex = static_cast<u8>(value);
+                break;
+            case ProgramSpecifyKind::RestartProgram:
+                if (value != 0)
+                    return result::InvalidParameters;
+                targetProgramIndex = state.os->GetCurrentProgramIndex();
+                break;
+            case ProgramSpecifyKind::SubApplicationProgram:
+            default:
+                // JumpToSubApplicationProgramForDevelopment is only valid with DebugMode enabled,
+                // which Strato does not expose to retail applications.
+                return result::InvalidInput;
+        }
+
+        std::vector<std::vector<u8>> userChannel;
+        {
+            std::scoped_lock lock{appletState->mutex};
+            userChannel.reserve(appletState->userChannel.size());
+            for (const auto &storage : appletState->userChannel) {
+                auto data{storage->GetSpan()};
+                userChannel.emplace_back(data.begin(), data.end());
+            }
+            appletState->userChannel.clear();
+        }
+
+        LOGI("ExecuteProgram: kind={} value={} current={} target={}", static_cast<u32>(kind), value,
+             state.os->GetCurrentProgramIndex(), targetProgramIndex);
+        state.os->RequestProgramExecution(targetProgramIndex, std::move(userChannel));
+        return {};
+    }
+
     Result IApplicationFunctions::ClearUserChannel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         std::scoped_lock lock{appletState->mutex};
         appletState->userChannel.clear();
