@@ -4,6 +4,7 @@
 
 #include <boost/preprocessor/repeat.hpp>
 #include <gpu/interconnect/command_executor.h>
+#include <gpu/interconnect/common/common.h>
 #include <soc/gm20b/channel.h>
 #include <soc.h>
 #include "maxwell/types.h"
@@ -11,6 +12,18 @@
 
 namespace skyline::soc::gm20b::engine::maxwell3d {
     #define REGTYPE(state) gpu::interconnect::maxwell3d::state::EngineRegisters
+
+    template<typename F>
+    static void RetryGpuReadback(ChannelContext &channelCtx, F &&callback) {
+        while (true) {
+            try {
+                callback();
+                return;
+            } catch (const gpu::interconnect::GpuReadbackRequired &) {
+                channelCtx.executor.Submit({}, true);
+            }
+        }
+    }
 
     static gpu::interconnect::maxwell3d::PipelineState::EngineRegisters MakePipelineStateRegisters(const Maxwell3D::Registers &registers) {
         return {
@@ -118,7 +131,9 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
         if (batchEnableState.drawActive) {
             batchEnableState.drawActive = false;
             if (CheckRenderEnable())
-                interconnect.Draw(deferredDraw.drawTopology, *registers.streamOutputEnable, deferredDraw.indexed, deferredDraw.drawCount, deferredDraw.drawFirst, deferredDraw.instanceCount, deferredDraw.drawBaseVertex, deferredDraw.drawBaseInstance);
+                RetryGpuReadback(channelCtx, [&] {
+                    interconnect.Draw(deferredDraw.drawTopology, *registers.streamOutputEnable, deferredDraw.indexed, deferredDraw.drawCount, deferredDraw.drawFirst, deferredDraw.instanceCount, deferredDraw.drawBaseVertex, deferredDraw.drawBaseInstance);
+                });
             deferredDraw.instanceCount = 1;
         }
     }
@@ -130,10 +145,12 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                batchInlineIndex.indices.resize(batchInlineIndex.totalCount);
            if (!batchInlineIndex.indices.empty()) {
                if (CheckRenderEnable())
-                   interconnect.DrawWithInlineIndex(ApplyTopologyOverride(registers.begin->op), *registers.streamOutputEnable,
-                                                     span(batchInlineIndex.indices).cast<u8>(),
-                                                     type::IndexBuffer::IndexSize::TwoBytes,
-                                                     static_cast<u32>(batchInlineIndex.indices.size()), 1);
+                   RetryGpuReadback(channelCtx, [&] {
+                       interconnect.DrawWithInlineIndex(ApplyTopologyOverride(registers.begin->op), *registers.streamOutputEnable,
+                                                        span(batchInlineIndex.indices).cast<u8>(),
+                                                        type::IndexBuffer::IndexSize::TwoBytes,
+                                                        static_cast<u32>(batchInlineIndex.indices.size()), 1);
+                   });
            }
            batchInlineIndex.Reset();
         }
@@ -577,12 +594,13 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
 
     void Maxwell3D::DrawInstanced(u32 drawTopology, u32 vertexArrayCount, u32 instanceCount, u32 vertexArrayStart, u32 globalBaseInstanceIndex) {
         FlushEngineState();
-
         auto topology{static_cast<type::DrawTopology>(drawTopology)};
         registers.globalBaseInstanceIndex = globalBaseInstanceIndex;
         registers.vertexArrayStart = vertexArrayStart;
         if (CheckRenderEnable())
-            interconnect.Draw(topology, *registers.streamOutputEnable, false, vertexArrayCount, vertexArrayStart, instanceCount, 0, globalBaseInstanceIndex);
+            RetryGpuReadback(channelCtx, [&] {
+                interconnect.Draw(topology, *registers.streamOutputEnable, false, vertexArrayCount, vertexArrayStart, instanceCount, 0, globalBaseInstanceIndex);
+            });
         registers.globalBaseInstanceIndex = 0;
     }
 
@@ -590,14 +608,18 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
         FlushEngineState();
         auto topology{static_cast<type::DrawTopology>(drawTopology)};
         if (CheckRenderEnable())
-            interconnect.Draw(topology, *registers.streamOutputEnable, true, indexBufferCount, indexBufferFirst, instanceCount, globalBaseVertexIndex, globalBaseInstanceIndex);
+            RetryGpuReadback(channelCtx, [&] {
+                interconnect.Draw(topology, *registers.streamOutputEnable, true, indexBufferCount, indexBufferFirst, instanceCount, globalBaseVertexIndex, globalBaseInstanceIndex);
+            });
     }
 
     void Maxwell3D::DrawIndexedIndirect(u32 drawTopology, span<u8> indirectBuffer, u32 count, u32 stride) {
         FlushEngineState();
         auto topology{static_cast<type::DrawTopology>(drawTopology)};
         if (CheckRenderEnable())
-            interconnect.DrawIndirect(topology, *registers.streamOutputEnable, true, indirectBuffer, count, stride);
+            RetryGpuReadback(channelCtx, [&] {
+                interconnect.DrawIndirect(topology, *registers.streamOutputEnable, true, indirectBuffer, count, stride);
+            });
     }
 
 }

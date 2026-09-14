@@ -25,6 +25,15 @@ namespace skyline::gpu::interconnect {
     namespace engine_common = skyline::soc::gm20b::engine;
 
     /**
+     * @brief Signals that a synchronous read needs pending GPU work submitted before it can be retried safely
+     */
+    struct GpuReadbackRequired {
+        std::source_location location;
+        size_t offset;
+        size_t size;
+    };
+
+    /**
      * @brief Holds GPU context for an interconnect instance
      */
     struct InterconnectContext {
@@ -74,14 +83,14 @@ namespace skyline::gpu::interconnect {
     struct ConstantBuffer {
         BufferView view;
 
-        void Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset,
+        void Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset, bool retryGpuReadback = false,
                   std::source_location location = std::source_location::current());
 
         template<typename T>
-        T Read(CommandExecutor &executor, size_t srcOffset,
+        T Read(CommandExecutor &executor, size_t srcOffset, bool retryGpuReadback = false,
                std::source_location location = std::source_location::current()) {
             T object;
-            Read(executor, span<T>{object}.template cast<u8>(), srcOffset, location);
+            Read(executor, span<T>{object}.template cast<u8>(), srcOffset, retryGpuReadback, location);
             return object;
         }
     };
