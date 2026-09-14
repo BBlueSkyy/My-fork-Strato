@@ -43,19 +43,25 @@ namespace skyline::kernel {
     }
 
     void OS::RequestProgramExecution(u8 programIndex, std::vector<std::vector<u8>> userChannel) {
+        LOGW("MP172: request enter target={}", programIndex);
         std::scoped_lock lock{programExecutionMutex};
+        LOGW("MP172: request mutex acquired");
         if (programExecutionRequest)
             throw exception("A program execution request is already pending");
         programExecutionRequest = ProgramExecutionRequest{programIndex, std::move(userChannel)};
+        LOGW("MP172: request stored target={}", programIndex);
     }
 
     void OS::NotifyProgramExecutionReady() {
+        LOGW("MP172: notify enter");
         {
             std::scoped_lock lock{programExecutionMutex};
+            LOGW("MP172: notify mutex acquired pending={} ready={}", programExecutionRequest.has_value(), programExecutionReady);
             if (!programExecutionRequest || programExecutionReady)
                 return;
             programExecutionReady = true;
         }
+        LOGW("MP172: notify signal coordinator");
         programExecutionCondition.notify_one();
     }
 
@@ -149,17 +155,21 @@ namespace skyline::kernel {
             u8 targetProgramIndex{};
             {
                 std::unique_lock lock{programExecutionMutex};
+                LOGW("MP172: coordinator waiting");
                 programExecutionCondition.wait(lock, [this, &executionFinished] {
                     return programExecutionReady || executionFinished.load(std::memory_order_acquire);
                 });
+                LOGW("MP172: coordinator woke ready={} pending={} finished={}", programExecutionReady,
+                     programExecutionRequest.has_value(), executionFinished.load(std::memory_order_acquire));
 
                 if (!programExecutionReady || !programExecutionRequest)
                     return;
                 targetProgramIndex = programExecutionRequest->programIndex;
             }
 
-            LOGI("ExecuteProgram: frontend halt requested for ProgramIndex {}", targetProgramIndex);
+            LOGW("MP172: frontend halt requested target={}", targetProgramIndex);
             process->Kill(false, false, true);
+            LOGW("MP172: frontend halt request returned target={}", targetProgramIndex);
         }};
 
         auto finishProgramHaltCoordinator{[&] {
