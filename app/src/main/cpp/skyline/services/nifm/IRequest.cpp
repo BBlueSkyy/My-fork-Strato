@@ -73,7 +73,7 @@ namespace skyline::service::nifm {
     }
 
     Result IRequest::SetConnectionConfirmationOption(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        [[maybe_unused]] const auto option{request.Pop<u32>()};
+        [[maybe_unused]] const auto option{request.Pop<u8>()};
         return {};
     }
 
