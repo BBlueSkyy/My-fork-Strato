@@ -40,6 +40,9 @@ namespace skyline::nce {
                 kernel::Scheduler::YieldPending = false;
                 state.scheduler->WaitSchedule();
             }
+
+            if (state.thread->gracefulStopRequested.load(std::memory_order_acquire))
+                throw ExitException(false);
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 LOGENF("{} (SVC: {})\nStack Trace:{}", e.what(), svc.name, state.loader->GetStackTrace(e.frames));
@@ -117,6 +120,12 @@ namespace skyline::nce {
                 kernel::Scheduler::YieldPending = false;
                 state.scheduler->WaitSchedule();
             }
+
+            if (state.thread->gracefulStopRequested.load(std::memory_order_acquire))
+                throw ExitException(false);
+        } catch (const ExitException &) {
+            abi::__cxa_end_catch();
+            std::longjmp(state.thread->originalCtx, true);
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 LOGENF("{} (Hook: {})\nStack Trace:{}", e.what(), hookedSymbol.prettyName, state.loader->GetStackTrace(e.frames));
@@ -181,6 +190,10 @@ namespace skyline::nce {
     }
 
     void NCE::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+        if (signal == SIGINT && DeviceState::thread &&
+            DeviceState::thread->gracefulStopRequested.load(std::memory_order_acquire))
+            return;
+
         if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
             return;
 
@@ -232,6 +245,7 @@ namespace skyline::nce {
     NCE::NCE(const DeviceState &state) : state(state) {
         signal::SetTlsRestorer(&NceTlsRestorer);
         signal::SetGuestSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, nce::NCE::SignalHandler);
+        signal::SetHostSignalHandler({SIGINT}, nce::NCE::HostSignalHandler, false);
         signal::SetHostSignalHandler({SIGSEGV}, nce::NCE::HostSignalHandler);
     }
 

@@ -2,8 +2,10 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <kernel/types/KProcess.h>
+#include <common/signal.h>
 #include <common/trace.h>
 #include <common/utils.h>
+#include <os.h>
 #include "sm/IUserInterface.h"
 #include "settings/ISettingsServer.h"
 #include "settings/ISystemSettingsServer.h"
@@ -358,5 +360,10 @@ namespace skyline::service {
         }
 
         LOGV("====IPC End====");
+        if (state.os->HasProgramExecutionRequest()) {
+            signal::SignalException exitSignal;
+            exitSignal.signal = SIGINT;
+            throw exitSignal;
+        }
     }
 }

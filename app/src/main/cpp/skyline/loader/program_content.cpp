@@ -3,7 +3,7 @@
 #include "program_content.h"
 
 namespace skyline::loader {
-    ProgramNcaSelection SelectProgramNcas(std::vector<ProgramNcaCandidate> candidates, const std::vector<vfs::CNMT> &metadata) {
+    ProgramNcaSelection SelectProgramNcas(std::vector<ProgramNcaCandidate> candidates, const std::vector<vfs::CNMT> &metadata, u8 programIndex) {
         ProgramNcaSelection result;
         std::array<u32, 2> versions{};
         std::array<std::string, 2> contentIds{};
@@ -21,7 +21,7 @@ namespace skyline::loader {
                 if (meta.header.contentMetaType != vfs::ContentMetaType::Application && meta.header.contentMetaType != vfs::ContentMetaType::Patch)
                     continue;
                 for (const auto &record : meta.GetContentInfos()) {
-                    if (record.contentType != vfs::ContentType::Program || record.idOffset != 0)
+                    if (record.contentType != vfs::ContentType::Program || record.idOffset != programIndex)
                         continue;
                     std::string filename;
                     for (const auto byte : record.contentId)
@@ -31,11 +31,12 @@ namespace skyline::loader {
                         continue;
                     const bool patch{meta.header.contentMetaType == vfs::ContentMetaType::Patch};
                     const u64 applicationId{patch ? meta.GetParentProgramId() : meta.header.id};
-                    if (candidate.nca.header.titleId != applicationId)
+                    const u64 programId{applicationId + record.idOffset};
+                    if (candidate.nca.header.titleId != programId)
                         throw exception("CNMT Program record disagrees with NCA Program ID");
                     auto &selected{patch ? result.patch : result.base};
                     if (selected && selected->header.titleId != candidate.nca.header.titleId)
-                        throw exception("Container contains multiple initial applications");
+                        throw exception("Container contains multiple Program NCAs for the selected ProgramIndex");
                     if (selected && meta.header.version == versions[patch] && contentIds[patch] != filename)
                         throw exception("Ambiguous Program NCA records at the same version");
                     if (!selected || meta.header.version > versions[patch]) {
@@ -47,7 +48,7 @@ namespace skyline::loader {
                     matched = true;
                 }
             }
-            if (!matched && !hasProgramRecords) {
+            if (!matched && !hasProgramRecords && programIndex == 0) {
                 auto &selected{candidate.nca.HasBktrSection() ? result.patch : result.base};
                 if (selected)
                     throw exception("Ambiguous Program NCAs without CNMT records");

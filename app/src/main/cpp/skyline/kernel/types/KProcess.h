@@ -81,6 +81,25 @@ namespace skyline {
             void Kill(bool join, bool all = false, bool disableCreation = false);
 
             /**
+             * @brief Stops every guest thread before replacing the process
+             * @note Signals all threads before joining any of them and never waits while holding threadMutex
+             */
+            void TerminateAllThreads() {
+                std::vector<std::shared_ptr<KThread>> threadsToTerminate;
+                {
+                    std::scoped_lock guard{threadMutex};
+                    disableThreadCreation = true;
+                    threadsToTerminate = threads;
+                }
+
+                alreadyKilled.store(true);
+                for (const auto &thread : threadsToTerminate)
+                    thread->Kill(false, true);
+                for (const auto &thread : threadsToTerminate)
+                    thread->Kill(true, true);
+            }
+
+            /**
              * @brief This initializes the process heap and TLS Error Context slot pointer, it should be called prior to creating the first thread
              * @note This requires VMM regions to be initialized, it will map heap at an arbitrary location otherwise
              */
