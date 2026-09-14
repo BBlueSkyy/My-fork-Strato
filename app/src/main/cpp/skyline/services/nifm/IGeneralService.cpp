@@ -50,25 +50,20 @@ namespace skyline::service::nifm {
         SfNetworkProfileData networkProfileData{
             .ipSettingData{
                 .ipAddressSetting{
-                    true,
+                    .isAutomatic{true},
                     .currentAddress{ConvertIntToByteArray(dhcpInfo.ipAddress)},
                     .subnetMask{ConvertIntToByteArray(dhcpInfo.subnet)},
                     .gateway{ConvertIntToByteArray(dhcpInfo.gateway)},
                 },
                 .dnsSetting{
-                    true,
+                    .isAutomatic{true},
                     .primaryDns{ConvertIntToByteArray(dhcpInfo.dns1)},
                     .secondaryDns{ConvertIntToByteArray(dhcpInfo.dns2)},
                 },
                 .proxySetting{
-                    false,
-                    .port{},
-                    .proxyServer{},
-                    .automaticAuthEnabled{},
-                    .user{},
-                    .password{},
+                    .enabled{false},
                 },
-                1500,
+                .mtu{1500},
             },
             .uuid{uuid},
             .networkName{"Skyline Network"},
@@ -109,13 +104,13 @@ namespace skyline::service::nifm {
 
         const IpConfigInfo ipConfigInfo{
             .ipAddressSetting{
-                true,
+                .isAutomatic{true},
                 .currentAddress{ConvertIntToByteArray(dhcpInfo.ipAddress)},
                 .subnetMask{ConvertIntToByteArray(dhcpInfo.subnet)},
                 .gateway{ConvertIntToByteArray(dhcpInfo.gateway)},
             },
             .dnsSetting{
-                true,
+                .isAutomatic{true},
                 .primaryDns{ConvertIntToByteArray(dhcpInfo.dns1)},
                 .secondaryDns{ConvertIntToByteArray(dhcpInfo.dns2)},
             },
