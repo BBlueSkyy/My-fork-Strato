@@ -31,6 +31,14 @@ namespace skyline::kernel {
           state(this, jvmManager, settings),
           serviceManager(state) {}
 
+    void OS::SetProgramLaunchContext(u8 programIndex, i32 previousIndex, std::vector<std::vector<u8>> userChannel) {
+        std::scoped_lock lock{programExecutionMutex};
+        currentProgramIndex = programIndex;
+        previousProgramIndex = previousIndex;
+        userChannelLaunchParameters = std::move(userChannel);
+        programExecutionRequest.reset();
+    }
+
     void OS::RequestProgramExecution(u8 programIndex, std::vector<std::vector<u8>> userChannel) {
         std::scoped_lock lock{programExecutionMutex};
         if (programExecutionRequest)
@@ -41,6 +49,13 @@ namespace skyline::kernel {
     bool OS::HasProgramExecutionRequest() {
         std::scoped_lock lock{programExecutionMutex};
         return programExecutionRequest.has_value();
+    }
+
+    std::optional<ProgramExecutionRequest> OS::TakeProgramExecutionRequest() {
+        std::scoped_lock lock{programExecutionMutex};
+        auto request{std::move(programExecutionRequest)};
+        programExecutionRequest.reset();
+        return request;
     }
 
     u8 OS::GetCurrentProgramIndex() const {
@@ -61,95 +76,63 @@ namespace skyline::kernel {
     void OS::Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType) {
         keyStore = std::make_shared<crypto::KeyStore>(privateAppFilesPath + "keys/");
 
-        LOGI("OS::Execute - romFd: {}, updateFd: {}, dlcFds count: {}", romFd, updateFd, dlcFds.size());
+        LOGI("OS::Execute - romFd: {}, updateFd: {}, dlcFds count: {}, ProgramIndex: {}", romFd, updateFd, dlcFds.size(), currentProgramIndex);
 
-        bool gpuInitialised{};
-        while (true) {
-            state.loader = GetLoader(romFd, keyStore, romType, currentProgramIndex);
+        state.loader = GetLoader(romFd, keyStore, romType, currentProgramIndex);
 
-            if (updateFd >= 0) {
-                LOGI("OS::Execute - Loading update from FD: {}", updateFd);
-                // ManageContentActivity imports updates/DLC via NspFilePicker, even for an XCI base.
-                state.updateLoader = GetLoader(updateFd, keyStore, loader::RomFormat::NSP, currentProgramIndex);
-                LOGI("OS::Execute - Update loader created successfully");
-            } else {
-                state.updateLoader.reset();
-                LOGI("OS::Execute - No update to load (updateFd: {})", updateFd);
-            }
-
-            state.dlcLoaders.clear();
-            for (int fd : dlcFds)
-                state.dlcLoaders.push_back(GetLoader(fd, keyStore, loader::RomFormat::NSP));
-
-            state.loader->ResolveProgramContent(state);
-
-            if (!gpuInitialised) {
-                state.gpu->Initialise();
-                gpuInitialised = true;
-            }
-
-            auto &process{state.process};
-            process = std::make_shared<kernel::type::KProcess>(state);
-
-            auto entry{state.loader->LoadProcessData(process, state)};
-            auto &nacp{state.loader->nacp};
-            if (nacp) {
-                std::string name{nacp->GetApplicationName(language::ApplicationLanguage::AmericanEnglish)}, publisher{nacp->GetApplicationPublisher(language::ApplicationLanguage::AmericanEnglish)};
-                if (name.empty())
-                    name = nacp->GetApplicationName(nacp->GetFirstSupportedTitleLanguage());
-                if (publisher.empty())
-                    publisher = nacp->GetApplicationPublisher(nacp->GetFirstSupportedTitleLanguage());
-
-                if (state.loader->programUpdateApplied && state.updateLoader && state.updateLoader->nacp)
-                    LOGINF("Applied update v{}", state.updateLoader->nacp->GetApplicationVersion());
-
-                for (auto &loader : state.dlcLoaders)
-                    if (loader->cnmt)
-                        LOGINF("Applied DLC {}", loader->cnmt->GetTitleId());
-
-                LOGINF(R"(Starting "{}" ({}) v{} by "{}" [ProgramIndex {}])", name, nacp->GetSaveDataOwnerId(),
-                       state.loader->programUpdateApplied && state.updateLoader && state.updateLoader->nacp ? state.updateLoader->nacp->GetApplicationVersion() : nacp->GetApplicationVersion(),
-                       publisher, currentProgramIndex);
-            }
-
-            process->InitializeHeapTls();
-            auto thread{process->CreateThread(entry)};
-            if (!thread)
-                break;
-
-            LOGI("Starting main HOS thread");
-            thread->Start(true);
-            if (HasProgramExecutionRequest())
-                process->Kill(false, true, true);
-            process->Kill(true, true, true);
-
-            std::optional<ProgramExecutionRequest> nextProgram;
-            {
-                std::scoped_lock lock{programExecutionMutex};
-                nextProgram = std::move(programExecutionRequest);
-                programExecutionRequest.reset();
-            }
-
-            if (!nextProgram)
-                break;
-
-            const auto oldProgramIndex{currentProgramIndex};
-            previousProgramIndex = oldProgramIndex;
-            currentProgramIndex = nextProgram->programIndex;
-            {
-                std::scoped_lock lock{programExecutionMutex};
-                userChannelLaunchParameters = std::move(nextProgram->userChannel);
-            }
-
-            LOGI("ExecuteProgram: switching ProgramIndex {} -> {}", oldProgramIndex, currentProgramIndex);
-
-            state.process.reset();
-            state.loader.reset();
+        if (updateFd >= 0) {
+            LOGI("OS::Execute - Loading update from FD: {}", updateFd);
+            // ManageContentActivity imports updates/DLC via NspFilePicker, even for an XCI base.
+            state.updateLoader = GetLoader(updateFd, keyStore, loader::RomFormat::NSP, currentProgramIndex);
+            LOGI("OS::Execute - Update loader created successfully");
+        } else {
             state.updateLoader.reset();
-            state.dlcLoaders.clear();
+            LOGI("OS::Execute - No update to load (updateFd: {})", updateFd);
         }
 
-        skyline::AsyncLogger::Finalize(true);
+        state.dlcLoaders.clear();
+        for (int fd : dlcFds)
+            state.dlcLoaders.push_back(GetLoader(fd, keyStore, loader::RomFormat::NSP));
+
+        state.loader->ResolveProgramContent(state);
+        state.gpu->Initialise();
+
+        auto &process{state.process};
+        process = std::make_shared<kernel::type::KProcess>(state);
+
+        auto entry{state.loader->LoadProcessData(process, state)};
+        auto &nacp{state.loader->nacp};
+        if (nacp) {
+            std::string name{nacp->GetApplicationName(language::ApplicationLanguage::AmericanEnglish)}, publisher{nacp->GetApplicationPublisher(language::ApplicationLanguage::AmericanEnglish)};
+            if (name.empty())
+                name = nacp->GetApplicationName(nacp->GetFirstSupportedTitleLanguage());
+            if (publisher.empty())
+                publisher = nacp->GetApplicationPublisher(nacp->GetFirstSupportedTitleLanguage());
+
+            if (state.loader->programUpdateApplied && state.updateLoader && state.updateLoader->nacp)
+                LOGINF("Applied update v{}", state.updateLoader->nacp->GetApplicationVersion());
+
+            for (auto &loader : state.dlcLoaders)
+                if (loader->cnmt)
+                    LOGINF("Applied DLC {}", loader->cnmt->GetTitleId());
+
+            LOGINF(R"(Starting "{}" ({}) v{} by "{}" [ProgramIndex {}])", name, nacp->GetSaveDataOwnerId(),
+                   state.loader->programUpdateApplied && state.updateLoader && state.updateLoader->nacp ? state.updateLoader->nacp->GetApplicationVersion() : nacp->GetApplicationVersion(),
+                   publisher, currentProgramIndex);
+        }
+
+        process->InitializeHeapTls();
+        auto thread{process->CreateThread(entry)};
+        if (!thread)
+            return;
+
+        LOGI("Starting main HOS thread");
+        thread->Start(true);
+
+        if (HasProgramExecutionRequest())
+            process->TerminateAllThreads();
+        else
+            process->Kill(true, true, true);
     }
 
     std::shared_ptr<loader::Loader> OS::GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType, u8 programIndex) {

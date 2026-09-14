@@ -59,8 +59,10 @@ namespace skyline::kernel {
          */
         void Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType);
 
+        void SetProgramLaunchContext(u8 programIndex, i32 previousIndex, std::vector<std::vector<u8>> userChannel);
         void RequestProgramExecution(u8 programIndex, std::vector<std::vector<u8>> userChannel);
         bool HasProgramExecutionRequest();
+        std::optional<ProgramExecutionRequest> TakeProgramExecutionRequest();
         u8 GetCurrentProgramIndex() const;
         i32 GetPreviousProgramIndex() const;
         std::vector<std::vector<u8>> TakeUserChannelLaunchParameters();

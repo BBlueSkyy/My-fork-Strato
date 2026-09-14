@@ -222,30 +222,17 @@ namespace skyline::kernel::type {
     }
 
     void KThread::Kill(bool join) {
-        const bool traceProgramSwitch{state.os && state.os->HasProgramExecutionRequest()};
         std::unique_lock lock(statusMutex);
-        if (traceProgramSwitch)
-            LOGI("ProgramSwitch teardown: T{} Kill(join={}) running={} ready={} killed={}", id, join, running, ready, killed);
-
         if (!killed && running) {
-            if (traceProgramSwitch)
-                LOGI("ProgramSwitch teardown: T{} waiting until signal-ready", id);
             statusCondition.wait(lock, [this]() { return ready || killed; });
             if (!killed) {
-                if (traceProgramSwitch)
-                    LOGI("ProgramSwitch teardown: signalling T{} with SIGINT", id);
                 pthread_kill(pthread, SIGINT);
                 killed = true;
                 statusCondition.notify_all();
             }
         }
-        if (join) {
-            if (traceProgramSwitch)
-                LOGI("ProgramSwitch teardown: joining T{}", id);
+        if (join)
             statusCondition.wait(lock, [this]() { return !running; });
-            if (traceProgramSwitch)
-                LOGI("ProgramSwitch teardown: joined T{}", id);
-        }
     }
 
     void KThread::SendSignal(int signal) {
