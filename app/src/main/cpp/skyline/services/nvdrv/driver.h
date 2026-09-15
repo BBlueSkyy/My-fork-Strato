@@ -45,6 +45,11 @@ namespace skyline::service::nvdrv {
         NvResult OpenDevice(std::string_view path, FileDescriptor fd, const SessionContext &ctx);
 
         /**
+         * @brief Returns the concrete nvdrv device name for a file descriptor, or a stable marker if it is invalid
+         */
+        std::string GetDeviceName(FileDescriptor fd);
+
+        /**
          * @brief Calls an IOCTL on the device specified by `fd`
          */
         NvResult Ioctl(FileDescriptor fd, IoctlDescriptor cmd, span<u8> buffer);
