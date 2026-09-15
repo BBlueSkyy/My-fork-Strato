@@ -10,7 +10,7 @@
 
 namespace skyline::service::account {
     IAccountServiceForApplication::IAccountServiceForApplication(const DeviceState &state, ServiceManager &manager)
-        : openedUsers(std::make_shared<std::vector<UserId>>()), BaseService(state, manager) {}
+        : BaseService(state, manager), openedUsers(std::make_shared<std::vector<UserId>>()) {}
 
     Result IAccountServiceForApplication::ValidateUserId(const UserId &userId) const {
         if (userId == UserId{})
@@ -21,8 +21,9 @@ namespace skyline::service::account {
     }
 
     Result IAccountServiceForApplication::InitializeApplicationInfoCommon(ipc::IpcRequest &request, bool hasPidPlaceholder) {
-        if (hasPidPlaceholder)
+        if (hasPidPlaceholder) {
             [[maybe_unused]] const auto pidPlaceholder{request.Pop<u64>()};
+        }
 
         if (applicationInfoInitialized)
             return result::ApplicationInfoAlreadyInitialized;
@@ -135,6 +136,10 @@ namespace skyline::service::account {
         if (validation)
             return validation;
 
+        const u64 currentApplicationId{applicationInfoInitialized ? applicationId : (state.process ? state.process->npdm.aci0.programId : 0)};
+        if (currentApplicationId == 0)
+            return result::InvalidArgument;
+
         span<u8> input;
         try {
             input = request.inputBuf.at(0);
@@ -185,6 +190,7 @@ namespace skyline::service::account {
     }
 
     Result IAccountServiceForApplication::InitializeApplicationInfoV2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // Switchbrew does not currently document a V2 payload. Use the current process identity without consuming unknown data.
         return InitializeApplicationInfoCommon(request, false);
     }
 }
