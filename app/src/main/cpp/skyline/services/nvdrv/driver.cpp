@@ -145,9 +145,21 @@ namespace skyline::service::nvdrv {
     }
 
     void Driver::CloseDevice(FileDescriptor fd) {
+        const bool trace{*state.settings->autoStub};
+        if (trace)
+            LOGI("[NV-CLOSE] BEFORE_LOCK fd={}", fd);
+
         try {
             std::unique_lock lock(deviceMutex);
+            if (trace) {
+                LOGI("[NV-CLOSE] AFTER_LOCK fd={}", fd);
+                LOGI("[NV-CLOSE] BEFORE_ERASE fd={}", fd);
+            }
+
             devices.erase(fd);
+
+            if (trace)
+                LOGI("[NV-CLOSE] AFTER_ERASE fd={}", fd);
         } catch (const std::out_of_range &) {
             LOGW("Trying to close invalid fd: {}", fd);
         }
