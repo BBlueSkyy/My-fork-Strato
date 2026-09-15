@@ -12,44 +12,48 @@
 #include "base_proxy.h"
 
 namespace skyline::service::am {
-    BaseProxy::BaseProxy(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
+    BaseProxy::BaseProxy(const DeviceState &state, ServiceManager &manager)
+        : BaseService(state, manager), appletState(std::make_shared<AppletState>(state)) {}
 
-    Result BaseProxy::GetCommonStateGetter(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(ICommonStateGetter), session, response);
+    BaseProxy::BaseProxy(const DeviceState &state, ServiceManager &manager, u64 appletResourceUserId)
+        : BaseService(state, manager), appletState(manager.GetOrCreateAppletState(appletResourceUserId)) {}
+
+    Result BaseProxy::GetCommonStateGetter(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        manager.RegisterService(SRVREG(ICommonStateGetter, appletState), session, response);
         return {};
     }
 
-    Result BaseProxy::GetSelfController(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(ISelfController), session, response);
+    Result BaseProxy::GetSelfController(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        manager.RegisterService(SRVREG(ISelfController, appletState), session, response);
         return {};
     }
 
-    Result BaseProxy::GetWindowController(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(IWindowController), session, response);
+    Result BaseProxy::GetWindowController(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        manager.RegisterService(SRVREG(IWindowController, appletState), session, response);
         return {};
     }
 
-    Result BaseProxy::GetAudioController(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result BaseProxy::GetAudioController(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
         manager.RegisterService(SRVREG(IAudioController), session, response);
         return {};
     }
 
-    Result BaseProxy::GetDisplayController(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result BaseProxy::GetDisplayController(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
         manager.RegisterService(SRVREG(IDisplayController), session, response);
         return {};
     }
 
-    Result BaseProxy::GetLibraryAppletCreator(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(ILibraryAppletCreator), session, response);
+    Result BaseProxy::GetLibraryAppletCreator(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        manager.RegisterService(SRVREG(ILibraryAppletCreator, appletState), session, response);
         return {};
     }
 
-    Result BaseProxy::GetDebugFunctions(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result BaseProxy::GetDebugFunctions(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
         manager.RegisterService(SRVREG(IDebugFunctions), session, response);
         return {};
     }
 
-    Result BaseProxy::GetAppletCommonFunctions(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result BaseProxy::GetAppletCommonFunctions(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
         manager.RegisterService(SRVREG(IAppletCommonFunctions), session, response);
         return {};
     }

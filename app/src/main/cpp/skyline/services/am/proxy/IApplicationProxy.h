@@ -6,19 +6,12 @@
 #include "base_proxy.h"
 
 namespace skyline::service::am {
-    /**
-     * @brief IApplicationProxy returns handles to various services
-     * @url https://switchbrew.org/wiki/Applet_Manager_services#IApplicationProxy
-     */
     class IApplicationProxy : public BaseProxy {
       public:
         IApplicationProxy(const DeviceState &state, ServiceManager &manager);
+        IApplicationProxy(const DeviceState &state, ServiceManager &manager, u64 appletResourceUserId);
 
-        /**
-         * @brief Returns #IApplicationFunctions
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#IApplicationFunctions
-         */
-        Result GetApplicationFunctions(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        Result GetApplicationFunctions(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
 
         SERVICE_DECL(
             SFUNC_BASE(0x0, IApplicationProxy, BaseProxy, GetCommonStateGetter),

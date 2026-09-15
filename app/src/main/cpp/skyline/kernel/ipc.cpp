@@ -15,7 +15,11 @@ namespace skyline::kernel::ipc {
 
         if (header->handleDesc) {
             handleDesc = reinterpret_cast<HandleDescriptor *>(pointer);
-            pointer += sizeof(HandleDescriptor) + (handleDesc->sendPid ? sizeof(u64) : 0);
+            pointer += sizeof(HandleDescriptor);
+            if (handleDesc->sendPid) {
+                pid = *reinterpret_cast<u64 *>(pointer);
+                pointer += sizeof(u64);
+            }
             for (u32 index{}; handleDesc->copyCount > index; index++) {
                 copyHandles.push_back(*reinterpret_cast<KHandle *>(pointer));
                 pointer += sizeof(KHandle);
