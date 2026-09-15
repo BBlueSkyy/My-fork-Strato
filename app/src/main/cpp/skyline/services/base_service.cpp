@@ -28,9 +28,14 @@ namespace skyline::service {
             function = GetServiceFunction(functionId, request.isTipc);
             LOGDNF("Service: {}", function.name);
 
-            if (*state.settings->autoStub && std::string_view{function.name}.find("::Unsupported") != std::string_view::npos) {
-                LOGW("[AUTOSTUB][INCOMPLETE_SERVICE] service='{}' command=0x{:X} ({}) type={} handler='{}' reason=explicit-unsupported-handler",
+            if (*state.settings->autoStub) {
+                LOGI("[IPC-TRACE] service='{}' command=0x{:X} ({}) type={} handler='{}'",
                      GetName(), functionId, functionId, request.isTipc ? "TIPC" : "HIPC", function.name);
+
+                if (std::string_view{function.name}.find("::Unsupported") != std::string_view::npos) {
+                    LOGW("[AUTOSTUB][INCOMPLETE_SERVICE] service='{}' command=0x{:X} ({}) type={} handler='{}' reason=explicit-unsupported-handler",
+                         GetName(), functionId, functionId, request.isTipc ? "TIPC" : "HIPC", function.name);
+                }
             }
         } catch (const std::out_of_range &) {
             if (*state.settings->autoStub) {
