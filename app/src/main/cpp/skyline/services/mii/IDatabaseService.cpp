@@ -84,7 +84,7 @@ namespace skyline::service::mii {
         };
 
         void SetCreateId(CharInfo &info) {
-            util::FillRandomBytes(info.createId);
+            util::FillRandomBytes(std::span<u8>{info.createId.data(), info.createId.size()});
             info.createId[8] = static_cast<u8>((info.createId[8] & 0x3FU) | 0x80U);
         }
 
