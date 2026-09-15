@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <cstring>
 #include <kernel/types/KProcess.h>
 #include <loader/loader.h>
@@ -66,6 +67,9 @@ namespace skyline::service::account {
     }
 
     Result IAccountServiceForApplication::WriteUserList(span<u8> buffer, const std::vector<UserId> &userIds) {
+        if (buffer.size() % sizeof(UserId) != 0)
+            return result::InvalidBufferSize;
+
         if (!buffer.empty())
             std::memset(buffer.data(), 0, buffer.size());
 
@@ -190,7 +194,6 @@ namespace skyline::service::account {
     }
 
     Result IAccountServiceForApplication::InitializeApplicationInfoV2(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // Switchbrew does not currently document a V2 payload. Use the current process identity without consuming unknown data.
         return InitializeApplicationInfoCommon(request, false);
     }
 }
