@@ -3,32 +3,33 @@
 
 #pragma once
 
+#include <services/am/applet_state.h>
 #include <services/serviceman.h>
 
 namespace skyline::service::am {
-    /**
-     * @brief This has functions used to retrieve the status of the application's window
-     * @url https://switchbrew.org/wiki/Applet_Manager_services#IWindowController
-     */
     class IWindowController : public BaseService {
+      private:
+        std::shared_ptr<AppletState> appletState;
+
       public:
-        IWindowController(const DeviceState &state, ServiceManager &manager);
+        IWindowController(const DeviceState &state, ServiceManager &manager, std::shared_ptr<AppletState> appletState);
 
-        /**
-         * @brief Returns the PID of the current application
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#GetAppletResourceUserId
-         */
-        Result GetAppletResourceUserId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @brief This function has no inputs or outputs (Stubbed)
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#AcquireForegroundRights
-         */
-        Result AcquireForegroundRights(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        Result GetAppletResourceUserId(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result GetAppletResourceUserIdOfCallerApplet(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result AcquireForegroundRights(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result ReleaseForegroundRights(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result RejectToChangeIntoBackground(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result SetAppletWindowVisibility(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result SetAppletGpuTimeSlice(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
 
         SERVICE_DECL(
-            SFUNC(0x1, IWindowController, GetAppletResourceUserId),
-            SFUNC(0xA, IWindowController, AcquireForegroundRights)
+            SFUNC(1, IWindowController, GetAppletResourceUserId),
+            SFUNC(2, IWindowController, GetAppletResourceUserIdOfCallerApplet),
+            SFUNC(10, IWindowController, AcquireForegroundRights),
+            SFUNC(11, IWindowController, ReleaseForegroundRights),
+            SFUNC(12, IWindowController, RejectToChangeIntoBackground),
+            SFUNC(20, IWindowController, SetAppletWindowVisibility),
+            SFUNC(21, IWindowController, SetAppletGpuTimeSlice)
         )
     };
 }

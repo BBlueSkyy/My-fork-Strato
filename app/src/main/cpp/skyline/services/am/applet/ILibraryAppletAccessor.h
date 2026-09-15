@@ -15,95 +15,68 @@ namespace skyline::service::am {
         constexpr Result NotAvailable(128, 2);
     }
 
-    /**
-     * @brief ILibraryAppletAccessor is used to communicate with the library applet
-     * @url https://switchbrew.org/wiki/Applet_Manager_services#ILibraryAppletAccessor
-     */
     class ILibraryAppletAccessor : public BaseService {
       private:
         std::shared_ptr<kernel::type::KEvent> stateChangeEvent;
         std::shared_ptr<kernel::type::KEvent> popNormalOutDataEvent;
         std::shared_ptr<kernel::type::KEvent> popInteractiveOutDataEvent;
+        std::shared_ptr<kernel::type::KEvent> unknown170Event;
 
         KHandle stateChangeEventHandle{};
         KHandle popNormalOutDataEventHandle{};
         KHandle popInteractiveOutDataEventHandle{};
 
+        skyline::applet::AppletId appletId;
+        applet::LibraryAppletMode appletMode;
         std::shared_ptr<IApplet> applet;
+        std::shared_ptr<IndirectLayerRegistry> indirectLayers;
+        u64 indirectLayerHandle{};
 
       public:
-        ILibraryAppletAccessor(const DeviceState &state, ServiceManager &manager, skyline::applet::AppletId appletId, applet::LibraryAppletMode appletMode);
+        ILibraryAppletAccessor(const DeviceState &state, ServiceManager &manager,
+                               skyline::applet::AppletId appletId, applet::LibraryAppletMode appletMode);
 
-        /**
-         * @brief Returns a handle to the library applet state change event
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#GetAppletStateChangedEvent
-         */
-        Result GetAppletStateChangedEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        ~ILibraryAppletAccessor() override;
 
-        /**
-         * @brief Starts the library applet
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#Start
-         */
-        Result Start(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        Result StartApplet();
+        bool IsAppletCompleted() const;
 
-        /**
-         * @brief Returns the exit code of the library applet
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#GetResult
-         */
-        Result GetResult(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @brief Pushes in data to the library applet
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#PushInData
-         */
-        Result PushInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @brief Receives data from the library applet
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#PopOutData
-         */
-        Result PopOutData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @brief Pushes in data to the library applet, through the interactive queue
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#PushInteractiveInData
-         */
-        Result PushInteractiveInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @brief Receives data from the library applet, from the interactive queue
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#PopInteractiveOutData
-         */
-        Result PopInteractiveOutData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @brief Gets te KEvent for when there's data to be popped by the guest on the normal queue
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#GetPopOutDataEvent
-         */
-        Result GetPopOutDataEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @brief Gets the KEvent for when there's data to be popped by the guest on the interactive queue
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#GetPopInteractiveOutDataEvent
-         */
-        Result GetPopInteractiveOutDataEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @url https://switchbrew.org/wiki/Applet_Manager_services#GetIndirectLayerConsumerHandle
-         */
-        Result GetIndirectLayerConsumerHandle(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        Result GetAppletStateChangedEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result IsCompleted(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result Start(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result RequestExit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result Terminate(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result GetResult(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result PresetLibraryAppletGpuTimeSliceZero(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result Unknown90(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result PushInData(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result PopOutData(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result PushInteractiveInData(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result PopInteractiveOutData(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result GetPopOutDataEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result GetPopInteractiveOutDataEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result GetLibraryAppletInfo(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result Unknown170(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
 
         SERVICE_DECL(
-            SFUNC(0x0, ILibraryAppletAccessor, GetAppletStateChangedEvent),
-            SFUNC(0xA, ILibraryAppletAccessor, Start),
-            SFUNC(0x1E, ILibraryAppletAccessor, GetResult),
-            SFUNC(0x64, ILibraryAppletAccessor, PushInData),
-            SFUNC(0x65, ILibraryAppletAccessor, PopOutData),
-            SFUNC(0x67, ILibraryAppletAccessor, PushInteractiveInData),
-            SFUNC(0x68, ILibraryAppletAccessor, PopInteractiveOutData),
-            SFUNC(0x69, ILibraryAppletAccessor, GetPopOutDataEvent),
-            SFUNC(0x6A, ILibraryAppletAccessor, GetPopInteractiveOutDataEvent),
-            SFUNC(0xA0, ILibraryAppletAccessor, GetIndirectLayerConsumerHandle)
+            SFUNC(0, ILibraryAppletAccessor, GetAppletStateChangedEvent),
+            SFUNC(1, ILibraryAppletAccessor, IsCompleted),
+            SFUNC(10, ILibraryAppletAccessor, Start),
+            SFUNC(20, ILibraryAppletAccessor, RequestExit),
+            SFUNC(25, ILibraryAppletAccessor, Terminate),
+            SFUNC(30, ILibraryAppletAccessor, GetResult),
+            SFUNC(60, ILibraryAppletAccessor, PresetLibraryAppletGpuTimeSliceZero),
+            SFUNC(90, ILibraryAppletAccessor, Unknown90),
+            SFUNC(100, ILibraryAppletAccessor, PushInData),
+            SFUNC(101, ILibraryAppletAccessor, PopOutData),
+            SFUNC(103, ILibraryAppletAccessor, PushInteractiveInData),
+            SFUNC(104, ILibraryAppletAccessor, PopInteractiveOutData),
+            SFUNC(105, ILibraryAppletAccessor, GetPopOutDataEvent),
+            SFUNC(106, ILibraryAppletAccessor, GetPopInteractiveOutDataEvent),
+            SFUNC(120, ILibraryAppletAccessor, GetLibraryAppletInfo),
+            SFUNC(160, ILibraryAppletAccessor, GetIndirectLayerConsumerHandle),
+            SFUNC(170, ILibraryAppletAccessor, Unknown170)
         )
     };
 }

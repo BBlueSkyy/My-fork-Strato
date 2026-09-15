@@ -50,6 +50,11 @@ namespace skyline::service::am {
         virtual Result GetResult() = 0;
 
         /**
+         * @brief Copies an RGBA8 indirect display image into a VI-validated buffer, if available
+         */
+        virtual bool GetIndirectLayerImage(span<u8>) { return false; }
+
+        /**
          * @brief Called when data is pushed to the applet by the guest through the normal queue
          */
         virtual void PushNormalDataToApplet(std::shared_ptr<IStorage> data) = 0;
@@ -94,7 +99,8 @@ namespace skyline::service::am {
         }
 
         void PushNormalInput(std::shared_ptr<service::am::IStorage> data) {
-            normalInputData.emplace(data);
+            std::scoped_lock lock{normalInputDataMutex};
+            normalInputData.emplace(std::move(data));
         }
     };
 
@@ -122,7 +128,8 @@ namespace skyline::service::am {
         }
 
         void PushInteractiveInput(std::shared_ptr<service::am::IStorage> data) {
-            interactiveInputData.emplace(data);
+            std::scoped_lock lock{interactiveInputDataMutex};
+            interactiveInputData.emplace(std::move(data));
         }
     };
 }

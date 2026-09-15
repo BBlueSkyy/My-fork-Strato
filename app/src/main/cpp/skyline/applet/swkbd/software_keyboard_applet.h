@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <future>
+#include <mutex>
 #include <services/am/applet/IApplet.h>
 #include <services/applet/common_arguments.h>
 #include <jvm.h>
@@ -32,6 +34,40 @@ namespace skyline::applet::swkbd {
             Success = 0x0,
             ShowFailureDialog = 0x1,
             ShowConfirmDialog = 0x2,
+        };
+
+        enum class InlineState : u32 {
+            Uninitialized = 0x0,
+            Hidden = 0x1,
+            Appearing = 0x2,
+            Shown = 0x3,
+            Disappearing = 0x4,
+        };
+
+        enum class InlineRequest : u32 {
+            Finalize = 0x4,
+            SetUserWordInfo = 0x6,
+            SetCustomizeDictionary = 0x7,
+            Calc = 0xA,
+            SetCustomizedDictionaries = 0xB,
+            UnsetCustomizedDictionaries = 0xC,
+            SetChangedStringV2 = 0xD,
+            SetMovedCursorV2 = 0xE,
+        };
+
+        enum class InlineReply : u32 {
+            FinishedInitialize = 0x0,
+            Default = 0x1,
+            ChangedString = 0x2,
+            DecidedEnter = 0x5,
+            DecidedCancel = 0x6,
+            ChangedStringUtf8 = 0x7,
+            DecidedEnterUtf8 = 0x9,
+            UnsetCustomizeDictionary = 0xA,
+            ReleasedUserWordInfo = 0xB,
+            UnsetCustomizedDictionaries = 0xC,
+            ChangedStringV2 = 0xD,
+            ChangedStringUtf8V2 = 0xF,
         };
 
         static constexpr u32 SwkbdTextBytes{0x7D4}; //!< Size of the returned IStorage buffer that's used to return the input text
@@ -79,16 +115,39 @@ namespace skyline::applet::swkbd {
         std::u16string currentText{};
         CloseResult currentResult{};
 
+        std::mutex inlineMutex;
+        std::future<void> inlineInputFuture;
+        JvmManager::KeyboardHandle pendingInlineWaitDialog{};
+        InlineState inlineState{InlineState::Uninitialized};
+        bool inlineStarted{};
+        bool inlineUseUtf8{};
+        bool inlineUseChangedStringV2{};
+        i32 inlineCursorPosition{};
+
         jobject dialog{};
 
         void SendResult();
+        Result StartInline();
+        void ProcessInlineRequest(span<u8> data);
+        void ProcessInlineCalc(span<u8> data);
+        void ConfigureInlineKeyboard(span<u8> calc, bool extendedLayout);
+        void ShowInlineKeyboard();
+        void HideInlineKeyboard();
+        void WaitForInlineKeyboardInput(JvmManager::KeyboardHandle waitDialog);
+        void ChangeInlineState(InlineState state);
+        void SendInlineReply(InlineReply reply);
+        void SendInlineTextReply(InlineReply reply);
 
       public:
         SoftwareKeyboardApplet(const DeviceState &state, service::ServiceManager &manager, std::shared_ptr<kernel::type::KEvent> onAppletStateChanged, std::shared_ptr<kernel::type::KEvent> onNormalDataPushFromApplet, std::shared_ptr<kernel::type::KEvent> onInteractiveDataPushFromApplet, service::applet::LibraryAppletMode appletMode);
 
+        ~SoftwareKeyboardApplet() override;
+
         Result Start() override;
 
         Result GetResult() override;
+
+        bool GetIndirectLayerImage(span<u8> image) override;
 
         void PushNormalDataToApplet(std::shared_ptr<service::am::IStorage> data) override;
 

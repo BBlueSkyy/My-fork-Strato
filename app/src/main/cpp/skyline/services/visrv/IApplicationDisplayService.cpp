@@ -3,7 +3,10 @@
 // Copyright © 2019 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #include <gpu.h>
+#include <limits>
+#include <applet/swkbd/post_vi_trace.h>
 #include <kernel/types/KProcess.h>
+#include <services/am/applet/IApplet.h>
 #include <services/serviceman.h>
 #include <services/hosbinder/IHOSBinderDriver.h>
 #include "IApplicationDisplayService.h"
@@ -12,6 +15,26 @@
 #include "results.h"
 
 namespace skyline::service::visrv {
+    namespace {
+        constexpr u64 IndirectLayerAlignment{0x1000};
+
+        bool GetIndirectLayerSize(i64 width, i64 height, u64 &pitch, u64 &size) {
+            constexpr u64 BlockSize{0x20000};
+            constexpr u64 MaxSize{std::numeric_limits<i64>::max()};
+            if (width <= 0 || height <= 0 || static_cast<u64>(width) > (MaxSize - 63) / 4 ||
+                static_cast<u64>(height) > MaxSize - 63)
+                return false;
+
+            pitch = util::AlignUpNpot<u64>(static_cast<u64>(width) * 4, 64);
+            const u64 alignedHeight{util::AlignUpNpot<u64>(static_cast<u64>(height), 64)};
+            if (alignedHeight > (MaxSize - (BlockSize - 1)) / pitch)
+                return false;
+
+            size = util::AlignUpNpot<u64>(pitch * alignedHeight, BlockSize);
+            return true;
+        }
+    }
+
     IApplicationDisplayService::IApplicationDisplayService(const DeviceState &state, ServiceManager &manager, PrivilegeLevel level) : level(level), IDisplayService(state, manager) {}
 
     Result IApplicationDisplayService::GetRelayService(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -64,13 +87,13 @@ namespace skyline::service::visrv {
 
     Result IApplicationDisplayService::CloseDisplay(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto displayId{request.Pop<hosbinder::DisplayId>()};
-        LOGD("Closing display: {}", hosbinder::ToString(displayId));
+        LOGD("Closing display: {}", hosbinder->ToString(displayId));
         hosbinder->CloseDisplay(displayId);
         return {};
     }
 
     Result IApplicationDisplayService::OpenLayer(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto displayName{request.PopString(0x40)};
+        auto displayName(request.PopString(0x40));
         auto layerId{request.Pop<u64>()};
         LOGD("Opening layer #{} on display: {}", layerId, displayName);
 
@@ -128,15 +151,42 @@ namespace skyline::service::visrv {
     Result IApplicationDisplayService::GetIndirectLayerImageMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto width{request.Pop<i64>()};
         auto height{request.Pop<i64>()};
-
-        if (!request.outputBuf.empty()) {
-            // As we don't support indirect layers, we just fill the output buffer with red
-            auto imageBuffer{request.outputBuf.at(0)};
-            std::fill(imageBuffer.begin(), imageBuffer.end(), 0xFF0000FF);
+        const auto handle{request.Pop<u64>()};
+        const auto appletResourceUserId{request.Pop<u64>()};
+        LOGI("SWKBD-TRACE VI GetIndirectLayerImageMap enter: handle=0x{:X}, aruid=0x{:X}, width={}, height={}, outBuffers={}",
+             handle, appletResourceUserId, width, height, request.outputBuf.size());
+        u64 pitch{}, size{};
+        if (!GetIndirectLayerSize(width, height, pitch, size)) {
+            LOGI("SWKBD-TRACE VI GetIndirectLayerImageMap invalid dimensions");
+            return result::InvalidDimensions;
         }
+        if (request.outputBuf.empty()) {
+            LOGI("SWKBD-TRACE VI GetIndirectLayerImageMap missing output buffer");
+            return result::InvalidArgument;
+        }
+
+        auto imageBuffer{request.outputBuf.at(0)};
+        if (imageBuffer.size() < size || reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment) {
+            LOGI("SWKBD-TRACE VI GetIndirectLayerImageMap invalid output: buffer=0x{:X}, required=0x{:X}, alignment=0x{:X}",
+                 imageBuffer.size(), size, IndirectLayerAlignment);
+            return result::InvalidArgument;
+        }
+
+        const auto applet{manager.indirectLayers->Get(handle)};
+        if (!applet) {
+            LOGW("SWKBD-TRACE VI GetIndirectLayerImageMap unknown or closed handle=0x{:X}, aruid=0x{:X}", handle, appletResourceUserId);
+            return result::InvalidValue;
+        }
+
+        const bool available{applet->GetIndirectLayerImage(imageBuffer.first(size))};
+        LOGI("SWKBD-TRACE VI GetIndirectLayerImageMap provider returned: handle=0x{:X}, size=0x{:X}, available={}",
+             handle, size, available);
+        if (!available)
+            return result::NoData;
 
         response.Push<i64>(width);
         response.Push<i64>(height);
+        LOGI("SWKBD-TRACE VI GetIndirectLayerImageMap success: width={}, height={}", width, height);
 
         return {};
     }
@@ -144,18 +194,19 @@ namespace skyline::service::visrv {
     Result IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         i64 width{request.Pop<i64>()}, height{request.Pop<i64>()};
 
-        if (width <= 0 || height <= 0)
+        u64 pitch{}, size{};
+        if (!GetIndirectLayerSize(width, height, pitch, size))
             return result::InvalidDimensions;
 
-        constexpr ssize_t A8B8G8R8Size{4}; //!< The size of a pixel in the A8B8G8R8 format, this format is used by indirect layers
-        i64 layerSize{width * height * A8B8G8R8Size};
+        LOGI("SWKBD-TRACE VI GetIndirectLayerImageRequiredMemoryInfo: width={}, height={}, pitch=0x{:X}, size=0x{:X}, alignment=0x{:X}",
+             width, height, pitch, size, IndirectLayerAlignment);
 
-        constexpr ssize_t BlockSize{0x20000}; //!< The size of an arbitrarily defined block, the layer size must be aligned to a block
-        response.Push<i64>(util::AlignUpNpot<i64>(layerSize, BlockSize));
+        response.Push<i64>(size);
+        response.Push<u64>(IndirectLayerAlignment);
 
-        constexpr size_t DefaultAlignment{0x1000}; //!< The default alignment of the buffer
-        response.Push<u64>(DefaultAlignment);
+        skyline::applet::swkbd::trace::ArmPostViSvcTrace();
+        LOGI("SWKBD-TRACE POST-VI armed: size=0x{:X}, alignment=0x{:X}, persistent=true", size, IndirectLayerAlignment);
 
-        return Result{};
+        return {};
     }
 }

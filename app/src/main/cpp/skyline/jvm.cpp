@@ -72,6 +72,12 @@ namespace skyline {
           getDhcpInfoId{environ->GetMethodID(instanceClass, "getDhcpInfo", "()Landroid/net/DhcpInfo;")} {
         env.Initialize(environ);
 
+        auto localKeyboardDialogClass{environ->FindClass("org/stratoemu/strato/applet/swkbd/SoftwareKeyboardDialog")};
+        keyboardDialogClass = reinterpret_cast<jclass>(environ->NewGlobalRef(localKeyboardDialogClass));
+        waitForInlineUpdateId = environ->GetMethodID(keyboardDialogClass, "waitForInlineUpdate", "()[Ljava/lang/Object;");
+        cancelInlineWaitId = environ->GetMethodID(keyboardDialogClass, "cancelInlineWait", "()V");
+        environ->DeleteLocalRef(localKeyboardDialogClass);
+
         auto notifierClass{environ->FindClass("org/stratoemu/strato/ShaderCompilationNotifier")};
         shaderCompilationNotifierClass = reinterpret_cast<jclass>(environ->NewGlobalRef(notifierClass));
         updateShaderCompilationStateId = environ->GetStaticMethodID(shaderCompilationNotifierClass, "update", "(Landroid/app/Activity;Z)V");
@@ -80,6 +86,7 @@ namespace skyline {
 
     JvmManager::~JvmManager() {
         env->DeleteGlobalRef(shaderCompilationNotifierClass);
+        env->DeleteGlobalRef(keyboardDialogClass);
         env->DeleteGlobalRef(instanceClass);
         env->DeleteGlobalRef(instance);
     }
@@ -121,18 +128,37 @@ namespace skyline {
     }
 
     jobject JvmManager::ShowKeyboard(KeyboardConfig &config, std::u16string initialText) {
+        LOGI("SWKBD-TRACE JNI ShowKeyboard enter: chars={}", initialText.size());
         auto buffer{env->NewDirectByteBuffer(&config, sizeof(KeyboardConfig))};
         auto str{env->NewString(reinterpret_cast<const jchar *>(initialText.data()), static_cast<int>(initialText.length()))};
         jobject localKeyboardDialog{env->CallObjectMethod(instance, showKeyboardId, buffer, str)};
+        LOGI("SWKBD-TRACE JNI ShowKeyboard returned: dialog={}, exception={}",
+             localKeyboardDialog != nullptr, env->ExceptionCheck());
         env->DeleteLocalRef(buffer);
         env->DeleteLocalRef(str);
         auto keyboardDialog{env->NewGlobalRef(localKeyboardDialog)};
 
         env->DeleteLocalRef(localKeyboardDialog);
+        LOGI("SWKBD-TRACE JNI ShowKeyboard global-ref: dialog={}", keyboardDialog != nullptr);
         return keyboardDialog;
     }
 
+    JvmManager::KeyboardHandle JvmManager::CloneKeyboardHandle(KeyboardHandle dialog) {
+        LOGI("SWKBD-TRACE JNI CloneKeyboardHandle: source={}", dialog != nullptr);
+        auto clone{env->NewGlobalRef(dialog)};
+        LOGI("SWKBD-TRACE JNI CloneKeyboardHandle returned: clone={}, exception={}",
+             clone != nullptr, env->ExceptionCheck());
+        return clone;
+    }
+
+    void JvmManager::ReleaseKeyboardHandle(KeyboardHandle dialog) {
+        LOGI("SWKBD-TRACE JNI ReleaseKeyboardHandle: dialog={}", dialog != nullptr);
+        if (dialog)
+            env->DeleteGlobalRef(dialog);
+    }
+
     std::pair<JvmManager::KeyboardCloseResult, std::u16string> JvmManager::WaitForSubmitOrCancel(jobject keyboardDialog) {
+        LOGI("SWKBD-TRACE JNI WaitForSubmitOrCancel enter: dialog={}", keyboardDialog != nullptr);
         auto returnArray{reinterpret_cast<jobjectArray>(env->CallObjectMethod(instance, waitForSubmitOrCancelId, keyboardDialog))};
         auto buttonInteger{env->GetObjectArrayElement(returnArray, 0)};
         auto inputJString{reinterpret_cast<jstring>(env->GetObjectArrayElement(returnArray, 1))};
@@ -140,7 +166,41 @@ namespace skyline {
         std::u16string input{stringChars, stringChars + env->GetStringLength(inputJString)};
         env->ReleaseStringChars(inputJString, stringChars);
 
-        return {static_cast<KeyboardCloseResult>(env->CallIntMethod(buttonInteger, getIntegerValueId)), input};
+        auto result{static_cast<KeyboardCloseResult>(env->CallIntMethod(buttonInteger, getIntegerValueId))};
+        LOGI("SWKBD-TRACE JNI WaitForSubmitOrCancel returned: result=0x{:X}, chars={}, exception={}",
+             static_cast<u32>(result), input.size(), env->ExceptionCheck());
+        env->DeleteLocalRef(inputJString);
+        env->DeleteLocalRef(buttonInteger);
+        env->DeleteLocalRef(returnArray);
+        return {result, std::move(input)};
+    }
+
+    JvmManager::KeyboardUpdate JvmManager::WaitForInlineKeyboardUpdate(KeyboardHandle keyboardDialog) {
+        LOGI("SWKBD-TRACE JNI WaitForInlineKeyboardUpdate enter: dialog={}", keyboardDialog != nullptr);
+        auto returnArray{reinterpret_cast<jobjectArray>(env->CallObjectMethod(keyboardDialog, waitForInlineUpdateId))};
+        LOGI("SWKBD-TRACE JNI WaitForInlineKeyboardUpdate Java returned: array={}, exception={}",
+             returnArray != nullptr, env->ExceptionCheck());
+        auto typeInteger{env->GetObjectArrayElement(returnArray, 0)};
+        auto inputJString{reinterpret_cast<jstring>(env->GetObjectArrayElement(returnArray, 1))};
+        auto cursorInteger{env->GetObjectArrayElement(returnArray, 2)};
+
+        auto stringChars{env->GetStringChars(inputJString, nullptr)};
+        std::u16string input{stringChars, stringChars + env->GetStringLength(inputJString)};
+        env->ReleaseStringChars(inputJString, stringChars);
+
+        KeyboardUpdate update{
+            static_cast<KeyboardUpdate::Type>(env->CallIntMethod(typeInteger, getIntegerValueId)),
+            std::move(input),
+            static_cast<i32>(env->CallIntMethod(cursorInteger, getIntegerValueId)),
+        };
+        LOGI("SWKBD-TRACE JNI WaitForInlineKeyboardUpdate decoded: type=0x{:X}, cursor={}, chars={}, exception={}",
+             static_cast<u32>(update.type), update.cursor, update.text.size(), env->ExceptionCheck());
+
+        env->DeleteLocalRef(cursorInteger);
+        env->DeleteLocalRef(inputJString);
+        env->DeleteLocalRef(typeInteger);
+        env->DeleteLocalRef(returnArray);
+        return update;
     }
 
     DhcpInfo JvmManager::GetDhcpInfo() {
@@ -161,8 +221,13 @@ namespace skyline {
     }
 
     void JvmManager::CloseKeyboard(jobject dialog) {
+        LOGI("SWKBD-TRACE JNI CloseKeyboard enter: dialog={}", dialog != nullptr);
+        env->CallVoidMethod(dialog, cancelInlineWaitId);
+        LOGI("SWKBD-TRACE JNI CloseKeyboard cancelInlineWait done: exception={}", env->ExceptionCheck());
         env->CallVoidMethod(instance, closeKeyboardId, dialog);
+        LOGI("SWKBD-TRACE JNI CloseKeyboard frontend close done: exception={}", env->ExceptionCheck());
         env->DeleteGlobalRef(dialog);
+        LOGI("SWKBD-TRACE JNI CloseKeyboard released global ref");
     }
 
     JvmManager::KeyboardCloseResult JvmManager::ShowValidationResult(jobject dialog, KeyboardTextCheckResult checkResult, std::u16string message) {
