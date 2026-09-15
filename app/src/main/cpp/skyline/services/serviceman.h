@@ -3,44 +3,30 @@
 
 #pragma once
 
+#include <mutex>
+#include <unordered_map>
 #include <kernel/types/KSession.h>
+#include <services/am/applet_state.h>
 #include "base_service.h"
 
 namespace skyline::service {
-    /**
-     * @brief Holds global service state for service data that persists across sessions
-     */
     struct GlobalServiceState;
 
-    /**
-     * @brief The ServiceManager class manages passing IPC requests to the right Service and running event loops of Services
-     */
     class ServiceManager {
       private:
         const DeviceState &state;
-        std::unordered_map<ServiceName, std::shared_ptr<BaseService>> serviceMap; //!< A mapping from a Service to the underlying object
-        std::mutex mutex; //!< Synchronizes concurrent access to services to prevent crashes
+        std::unordered_map<ServiceName, std::shared_ptr<BaseService>> serviceMap;
+        std::mutex mutex;
+        std::mutex appletStateMutex;
+        std::unordered_map<u64, std::shared_ptr<am::AppletState>> appletStates;
 
       public:
-        std::shared_ptr<BaseService> smUserInterface; //!< Used by applications to open connections to services
+        std::shared_ptr<BaseService> smUserInterface;
         std::shared_ptr<GlobalServiceState> globalServiceState;
 
         ServiceManager(const DeviceState &state);
 
-        /**
-         * @brief Creates a new service using its type enum and writes its handle or virtual handle (If it's a domain request) to IpcResponse
-         * @param name The service's name
-         * @param session The session object of the command
-         * @param response The response object to write the handle or virtual handle to
-         */
         std::shared_ptr<BaseService> NewService(ServiceName name, type::KSession &session, ipc::IpcResponse &response);
-
-        /**
-         * @brief Registers a service object in the manager and writes its handle or virtual handle (If it's a domain request) to IpcResponse
-         * @param serviceObject An instance of the service
-         * @param session The session object of the command
-         * @param response The response object to write the handle or virtual handle to
-         */
         void RegisterService(std::shared_ptr<BaseService> serviceObject, type::KSession &session, ipc::IpcResponse &response);
 
         template<typename ServiceType>
@@ -48,9 +34,6 @@ namespace skyline::service {
             RegisterService(std::static_pointer_cast<BaseService>(serviceObject), session, response);
         }
 
-        /**
-         * @brief Creates an instance of the service if it doesn't already exist, otherwise returns an existing instance
-         */
         std::shared_ptr<BaseService> CreateOrGetService(ServiceName name);
 
         template<typename Type>
@@ -58,16 +41,17 @@ namespace skyline::service {
             return std::static_pointer_cast<Type>(CreateOrGetService(util::MakeMagic<ServiceName>(name)));
         }
 
-        /**
-         * @brief Closes an existing session to a service
-         * @param service The handle of the KService object
-         */
-        void CloseSession(KHandle handle);
+        std::shared_ptr<am::AppletState> GetOrCreateAppletState(u64 appletResourceUserId) {
+            std::scoped_lock lock{appletStateMutex};
+            auto &appletState{appletStates[appletResourceUserId]};
+            if (!appletState) {
+                appletState = std::make_shared<am::AppletState>(state);
+                appletState->appletResourceUserId = appletResourceUserId;
+            }
+            return appletState;
+        }
 
-        /**
-         * @brief Handles a Synchronous IPC Request
-         * @param handle The handle of the object
-         */
+        void CloseSession(KHandle handle);
         void SyncRequestHandler(KHandle handle);
     };
 }
