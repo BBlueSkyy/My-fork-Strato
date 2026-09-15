@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="auto_stub">Auto-Stub service diagnostics</string>
+    <string name="auto_stub_disabled">Disabled. Missing services use the normal Strato error path.</string>
+    <string name="auto_stub_enabled">Debug missing services, missing IPC commands and explicit unsupported handlers. Missing services receive a diagnostic stub, but unknown commands are not reported as successful.</string>
+</resources>
