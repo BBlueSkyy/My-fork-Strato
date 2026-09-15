@@ -7,7 +7,7 @@
 namespace skyline::gpu {
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
-    std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
+    std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag, texture::RenderPassUsage usage) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
         auto guestMapping{guestTexture.mappings.front()};
@@ -39,6 +39,16 @@ namespace skyline::gpu {
         u32 matchLevel{};
         u32 matchLayer{};
 
+        auto renderTargetAspectCompatible{[&](const std::shared_ptr<Texture> &candidate) {
+            return usage != texture::RenderPassUsage::RenderTarget ||
+                   (candidate->format->vkAspect & guestTexture.aspect) == guestTexture.aspect;
+        }};
+
+        auto addMatch{[&](const std::shared_ptr<Texture> &candidate) {
+            if (std::find(matches.begin(), matches.end(), candidate) == matches.end())
+                matches.push_back(candidate);
+        }};
+
         while (hostMapping != textures.begin() && (--hostMapping)->end() > guestMapping.begin()) {
             auto &hostMappings{hostMapping->texture->guest->mappings};
             if (!hostMapping->contains(guestMapping) || hostMapping->texture->replaced)
@@ -59,6 +69,7 @@ namespace skyline::gpu {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
                 auto &matchGuestTexture{*hostMapping->texture->guest};
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
+                    renderTargetAspectCompatible(hostMapping->texture) &&
                     ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                         matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
                         matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
@@ -66,11 +77,13 @@ namespace skyline::gpu {
                     && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
                     fullMatch = hostMapping->texture;
                 } else {
-                    matches.push_back(hostMapping->texture);
+                    addMatch(hostMapping->texture);
                 }
             } else {
                 auto &matchGuestTexture{*hostMapping->texture->guest};
-                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                const bool formatAndTileCompatible{matchGuestTexture.format->IsCompatible(*guestTexture.format) && matchGuestTexture.tileConfig == guestTexture.tileConfig};
+                const bool aspectCompatible{renderTargetAspectCompatible(hostMapping->texture)};
+                if (formatAndTileCompatible && aspectCompatible &&
                         (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
                     size_t memOffset{static_cast<size_t>(guestMapping.data() - hostMapping->texture->guest->mappings.front().data())};
                     size_t layerMemOffset{};
@@ -106,6 +119,8 @@ namespace skyline::gpu {
 
                         layerMipMatch = hostMapping->texture;
                     }
+                } else if (formatAndTileCompatible && !aspectCompatible) {
+                    addMatch(hostMapping->texture);
                 }
             }
          }
