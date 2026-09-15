@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <cstring>
 #include <os.h>
 #include <vfs/os_backing.h>
@@ -28,7 +29,7 @@ namespace skyline::service::account {
         static_assert(sizeof(AccountProfileBase) == 0x38);
     }
 
-    IProfile::IProfile(const DeviceState &state, ServiceManager &manager, const UserId &userId) : userId(userId), BaseService(state, manager) {}
+    IProfile::IProfile(const DeviceState &state, ServiceManager &manager, const UserId &userId) : BaseService(state, manager), userId(userId) {}
 
     Result IProfile::Get(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         span<u8> output;
