@@ -70,6 +70,8 @@ namespace skyline::vfs {
             u8 _pad2_[0xE76];
         } nacpContents{};
         static_assert(sizeof(NacpData) == 0x4000);
+        static_assert(offsetof(NacpData, cacheStorageDataAndJournalSizeMax) == 0x3180);
+        static_assert(offsetof(NacpData, cacheStorageIndexMax) == 0x3188);
 
         u32 supportedTitleLanguages{}; //!< A bitmask containing the available title entry languages and game icons
 
