@@ -188,7 +188,7 @@ namespace skyline::service::account {
     }
 
     Result IAccountServiceForApplication::IsUserAccountSwitchLocked(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        const bool isLocked{state.loader && state.loader->nacp && state.loader->nacp->userAccountSwitchLock != 0};
+        const bool isLocked{state.loader && state.loader->nacp && state.loader->nacp->nacpContents.userAccountSwitchLock != 0};
         response.Push<u8>(isLocked);
         return {};
     }
