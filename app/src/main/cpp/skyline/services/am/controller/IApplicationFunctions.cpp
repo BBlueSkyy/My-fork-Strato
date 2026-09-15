@@ -165,6 +165,26 @@ namespace skyline::service::am {
         return {};
     }
 
+    Result IApplicationFunctions::GetCacheStorageMax(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        struct CacheStorageMaxResponse {
+            i32 indexMax;
+            u32 padding;
+            i64 dataAndJournalSizeMax;
+        };
+        static_assert(sizeof(CacheStorageMaxResponse) == 0x10);
+
+        const auto &nacp{state.loader->nacp->nacpContents};
+        const CacheStorageMaxResponse max{
+            static_cast<i32>(nacp.cacheStorageIndexMax),
+            0,
+            static_cast<i64>(nacp.cacheStorageDataAndJournalSizeMax)
+        };
+
+        LOGD("Cache storage max: index={}, data+journal=0x{:X}", max.indexMax, max.dataAndJournalSizeMax);
+        response.Push(max);
+        return {};
+    }
+
     Result IApplicationFunctions::NotifyRunning(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         response.Push<u8>(1);
         return {};

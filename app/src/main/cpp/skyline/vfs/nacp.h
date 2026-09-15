@@ -55,9 +55,23 @@ namespace skyline::vfs {
             u8 appropriateAgeForChina;
             u8 _pad1_[0x3];
             std::array<u8, 8> seedForPseudoDeviceId; //!< Seed that is combined with the device seed for generating the pseudo-device ID
-            u8 _pad2_[0xF00];
+            std::array<char, 0x41> bcatPassphrase;
+            u8 startupUserAccountOption;
+            std::array<u8, 0x6> reservedForUserAccountSaveDataOperation;
+            u64 userAccountSaveDataSizeMax;
+            u64 userAccountSaveDataJournalSizeMax;
+            u64 deviceSaveDataSizeMax;
+            u64 deviceSaveDataJournalSizeMax;
+            u64 temporaryStorageSize;
+            u64 cacheStorageSize;
+            u64 cacheStorageJournalSize;
+            u64 cacheStorageDataAndJournalSizeMax; //!< NACP offset 0x3180
+            u16 cacheStorageIndexMax; //!< NACP offset 0x3188
+            u8 _pad2_[0xE76];
         } nacpContents{};
         static_assert(sizeof(NacpData) == 0x4000);
+        static_assert(offsetof(NacpData, cacheStorageDataAndJournalSizeMax) == 0x3180);
+        static_assert(offsetof(NacpData, cacheStorageIndexMax) == 0x3188);
 
         u32 supportedTitleLanguages{}; //!< A bitmask containing the available title entry languages and game icons
 
