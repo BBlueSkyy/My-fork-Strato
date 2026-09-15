@@ -60,6 +60,14 @@ namespace skyline::service::nvdrv {
         return NvResult::FileOperationFailed;
     }
 
+    std::string Driver::GetDeviceName(FileDescriptor fd) {
+        std::shared_lock lock(deviceMutex);
+        auto it{devices.find(fd)};
+        if (it == devices.end())
+            return "<invalid-fd>";
+        return it->second->GetName();
+    }
+
     static PosixResult LogIoctlResult(PosixResult result, u32 ioctl) {
         switch (result) {
             case PosixResult::Success:
