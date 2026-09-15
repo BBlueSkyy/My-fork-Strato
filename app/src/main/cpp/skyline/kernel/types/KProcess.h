@@ -33,8 +33,8 @@ namespace skyline {
             std::vector<std::shared_ptr<KThread>> threads;
 
             using SyncWaiters = std::multimap<void *, std::shared_ptr<KThread>>;
-            std::mutex syncWaiterMutex; //!< Synchronizes all mutations to the map to prevent races
-            SyncWaiters syncWaiters; //!< All threads waiting on process-wide synchronization primitives (Atomic keys + Address Arbiter)
+            SyncWaiters conditionVariableWaiters;
+            SyncWaiters addressWaiters;
 
             /**
             * @brief The status of a single TLS page (A page is 4096 bytes on ARMv8)
@@ -56,6 +56,11 @@ namespace skyline {
             };
 
           public:
+            // Lock order: synchronizationMutex -> thread migration -> core queue.
+            // One lock protects the entire PI graph; never wait for scheduling while held.
+            std::recursive_mutex synchronizationMutex;
+            void RemoveThreadWaiter(const std::shared_ptr<KThread> &thread);
+
             u8 *tlsExceptionContext{}; //!< A pointer to the TLS exception handling context slot
             std::mutex tlsMutex; //!< A mutex to synchronize allocation of TLS pages to prevent extra pages from being created
             std::vector<std::shared_ptr<TlsPage>> tlsPages; //!< All TLS pages allocated by this process

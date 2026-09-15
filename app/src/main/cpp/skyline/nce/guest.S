@@ -39,15 +39,30 @@ SaveCtx:
     STP Q30, Q31, [LR, #(0xA0 + 16 * 30)]
 
 
+    /* Snapshot callee-saved registers and the guest stack before host code runs. */
+    ADD X0, LR, #0x2E0
+    STP X19, X20, [X0]
+    STP X21, X22, [X0, #0x10]
+    STP X23, X24, [X0, #0x20]
+    STP X25, X26, [X0, #0x30]
+    STP X27, X28, [X0, #0x40]
+    STR X29, [LR, #0x330]
+    LDR X0, [SP]
+    STR X0, [LR, #0x338]
+    STR X0, [LR, #0x348]
+    ADD X0, SP, #16
+    STR X0, [LR, #0x340]
+
     /* Store System Registers */
     STR X0, [SP, #-16]!
     MRS	X0, FPSR
-    STR	W0, [LR, #0x298]
+    STR	W0, [LR, #0x2D8]
     MRS	X0, FPCR
-    STR	W0, [LR, #0x29C]
+    STR	W0, [LR, #0x2DC]
     MRS	X0, NZCV
     STR	W0, [LR, #0x2C0]
     LDR X0, [SP], #16
+    LDR X0, [LR]
 
     /* Restore Scratch Register */
     LDR LR, [SP, #8]
@@ -78,9 +93,9 @@ LoadCtx:
     LDP Q30, Q31, [LR, #(0xA0 + 16 * 30)]
 
     /* Load System Registers */
-    LDR	W0, [LR, #0x298]
+    LDR	W0, [LR, #0x2D8]
     MSR	FPSR, X0
-    LDR	W0, [LR, #0x29C]
+    LDR	W0, [LR, #0x2DC]
     MSR	FPCR, X0
     LDR	W0, [LR, #0x2C0]
     MSR	NZCV, X0
