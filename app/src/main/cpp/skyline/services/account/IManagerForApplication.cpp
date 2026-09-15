@@ -10,7 +10,7 @@
 namespace skyline::service::account {
     IManagerForApplication::IManagerForApplication(const DeviceState &state, ServiceManager &manager, UserId userId,
                                                    std::shared_ptr<std::vector<UserId>> openedUsers)
-        : userId(userId), openedUsers(std::move(openedUsers)), BaseService(state, manager) {}
+        : BaseService(state, manager), userId(userId), openedUsers(std::move(openedUsers)) {}
 
     u64 IManagerForApplication::GetNetworkServiceAccountId() const {
         return userId.upper ^ std::rotl(userId.lower, 1);
@@ -38,7 +38,6 @@ namespace skyline::service::account {
     }
 
     Result IManagerForApplication::CheckAvailability(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // The local account exists and is usable. This command has no output value.
         return {};
     }
 
@@ -48,18 +47,15 @@ namespace skyline::service::account {
     }
 
     Result IManagerForApplication::EnsureIdTokenCacheAsync(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // Matches Eden's completed async compatibility object: no Nintendo credential is fabricated.
         manager.RegisterService(SRVREG(IAsyncContext), session, response);
         return {};
     }
 
     Result IManagerForApplication::LoadIdTokenCacheDeprecated(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // Pre-19.x compatibility path. No real Nintendo token exists in Strato.
         return WriteIdTokenCache(request, response, 0);
     }
 
     Result IManagerForApplication::LoadIdTokenCache(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // HOS 19.x split this from command 3. Eden exposes a fixed zeroed cache rather than inventing credentials.
         return WriteIdTokenCache(request, response, ModernIdTokenCacheSize);
     }
 
