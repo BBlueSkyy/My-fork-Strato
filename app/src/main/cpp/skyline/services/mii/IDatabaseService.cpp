@@ -8,7 +8,6 @@
 #include <cstring>
 #include <string_view>
 
-#include <common/uuid.h>
 #include <common/utils.h>
 
 namespace skyline::service::mii {
@@ -85,9 +84,8 @@ namespace skyline::service::mii {
         };
 
         void SetCreateId(CharInfo &info) {
-            static_assert(sizeof(UUID) == sizeof(info.createId));
-            const auto uuid{UUID::GenerateUuidV4()};
-            std::memcpy(info.createId.data(), &uuid, sizeof(uuid));
+            util::FillRandomBytes(info.createId);
+            info.createId[8] = static_cast<u8>((info.createId[8] & 0x3FU) | 0x80U);
         }
 
         void SetName(CharInfo &info, std::u16string_view name) {
@@ -156,7 +154,6 @@ namespace skyline::service::mii {
         CharInfo MakeRandomMii(u32 age, u32 gender, u32 race) {
             auto info{MakeDefaultMii(util::RandomNumber<u32>(0, DefaultMiiCount - 1))};
 
-            // The reference APK generates a fresh create ID and labels random Miis explicitly.
             SetCreateId(info);
             SetName(info, u"Random");
 
@@ -249,10 +246,10 @@ namespace skyline::service::mii {
 
     Result IDatabaseService::Get(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto sourceFlag{request.Pop<u32>()};
+        auto &output{request.outputBuf.at(0)};
         u32 count{};
 
-        if ((sourceFlag & DefaultSourceFlag) && !request.outputBuf.empty()) {
-            auto &output{request.outputBuf.at(0)};
+        if (sourceFlag & DefaultSourceFlag) {
             const auto capacity{output.size() / sizeof(CharInfoElement)};
             count = static_cast<u32>(std::min<size_t>(DefaultMiiCount, capacity));
 
@@ -271,10 +268,10 @@ namespace skyline::service::mii {
 
     Result IDatabaseService::Get1(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto sourceFlag{request.Pop<u32>()};
+        auto &output{request.outputBuf.at(0)};
         u32 count{};
 
-        if ((sourceFlag & DefaultSourceFlag) && !request.outputBuf.empty()) {
-            auto &output{request.outputBuf.at(0)};
+        if (sourceFlag & DefaultSourceFlag) {
             const auto capacity{output.size() / sizeof(CharInfo)};
             count = static_cast<u32>(std::min<size_t>(DefaultMiiCount, capacity));
 
