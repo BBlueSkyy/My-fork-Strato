@@ -373,6 +373,10 @@ namespace skyline::soc::gm20b {
             LOGW("Failed to set the thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
 
+        const bool trace{*state.settings->autoStub};
+        if (trace)
+            LOGI("[GPFIFO-RUN] ENTER");
+
         try {
             bool channelLocked{};
 
@@ -394,6 +398,9 @@ namespace skyline::soc::gm20b {
                     channelLocked = false;
                 }
             });
+
+            if (trace)
+                LOGI("[GPFIFO-RUN] PROCESS_EXIT");
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 LOGE("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
@@ -409,6 +416,9 @@ namespace skyline::soc::gm20b {
             signal::BlockSignal({SIGINT});
             state.process->Kill(false);
         }
+
+        if (trace)
+            LOGI("[GPFIFO-RUN] THREAD_EXIT");
     }
 
     void ChannelGpfifo::Push(span<GpEntry> entries) {
@@ -420,9 +430,25 @@ namespace skyline::soc::gm20b {
     }
 
     ChannelGpfifo::~ChannelGpfifo() {
+        const bool trace{*state.settings->autoStub};
+        if (trace)
+            LOGI("[GPFIFO-DTOR] ENTER joinable={}", thread.joinable());
+
         if (thread.joinable()) {
+            if (trace)
+                LOGI("[GPFIFO-DTOR] BEFORE_CLOSE");
             gpEntries.Close();
+            if (trace)
+                LOGI("[GPFIFO-DTOR] AFTER_CLOSE");
+
+            if (trace)
+                LOGI("[GPFIFO-DTOR] BEFORE_JOIN");
             thread.join();
+            if (trace)
+                LOGI("[GPFIFO-DTOR] AFTER_JOIN");
         }
+
+        if (trace)
+            LOGI("[GPFIFO-DTOR] EXIT");
     }
 }
