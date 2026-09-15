@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <common/settings.h>
 #include <soc.h>
 #include <services/nvdrv/devices/deserialisation/deserialisation.h>
 #include "gpu_channel.h"
