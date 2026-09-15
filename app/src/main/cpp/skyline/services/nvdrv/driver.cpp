@@ -139,7 +139,7 @@ namespace skyline::service::nvdrv {
             std::shared_lock lock(deviceMutex);
             LOGD("fd: {}, cmd: 0x{:X}, device: {}", fd, cmd.raw, devices.at(fd)->GetName());
             TRACE_EVENT("service", "Ioctl", "fd", fd, "cmd", cmd.raw);
-            return ConvertResult(LogIoctlResult(devices.at(fd)->Ioctl3(cmd, buffer), cmd.raw));
+            return ConvertResult(LogIoctlResult(devices.at(fd)->Ioctl3(cmd, buffer, inlineBuffer), cmd.raw));
         } catch (const std::out_of_range &) {
             throw exception("Ioctl3 was called with invalid fd: {}", fd);
         }
