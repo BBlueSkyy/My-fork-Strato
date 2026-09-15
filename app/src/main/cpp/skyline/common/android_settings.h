@@ -52,10 +52,7 @@ namespace skyline {
             disableSubgroupShuffle = ktSettings.GetBool("disableSubgroupShuffle");
             isAudioOutputDisabled = ktSettings.GetBool("isAudioOutputDisabled");
             logLevel = ktSettings.GetInt<skyline::AsyncLogger::LogLevel>("logLevel");
-            const bool autoStubEnabled{ktSettings.GetBool("autoStub")};
-            autoStub = autoStubEnabled;
-            if (autoStubEnabled)
-                LOGW("[AUTOSTUB][ENABLED] Service diagnostics enabled");
+            autoStub = ktSettings.GetBool("autoStub");
             validationLayer = ktSettings.GetBool("validationLayer");
         };
     };
