@@ -44,6 +44,17 @@ class GlobalSettingsFragment : PreferenceFragmentCompat() {
         addPreferencesFromResource(R.xml.input_preferences)
         addPreferencesFromResource(R.xml.credits_preferences)
 
+        // Auto-Stub is deliberately global: it is a service-debugging tool, not a per-game compatibility override.
+        findPreference<PreferenceCategory>("category_debug")?.addPreference(
+            SwitchPreferenceCompat(requireContext()).apply {
+                key = "auto_stub"
+                setTitle(R.string.auto_stub)
+                setSummaryOn(R.string.auto_stub_enabled)
+                setSummaryOff(R.string.auto_stub_disabled)
+                setDefaultValue(false)
+            }
+        )
+
         // Re-launch the app if Material You is toggled
         findPreference<Preference>("use_material_you")?.setOnPreferenceChangeListener { _, _ ->
             requireActivity().finishAffinity()
