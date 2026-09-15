@@ -76,11 +76,12 @@ namespace skyline::service {
                 const u32 sharedAssignment{hid ? static_cast<u32>(hid->npad[i].header.assignment) : 0};
                 const u32 sharedDeviceType{hid ? hid->npad[i].deviceType.raw : 0};
                 const u64 sharedSystemProperties{hid ? hid->npad[i].systemProperties.raw : 0};
+                const bool connected{device.connectionState.connected};
 
                 LOGI("[GRID-HID][{}][NPAD] slot={} id=0x{:X} index={} partner={} type={} connected={} conn=0x{:X} sharedType={} sharedAssignment={} sharedDeviceType=0x{:X} sharedSystemProperties=0x{:X}",
                      phase, i, static_cast<u32>(device.id), static_cast<i32>(device.index),
                      static_cast<i32>(device.partnerIndex), static_cast<u32>(device.type),
-                     device.connectionState.connected, device.connectionState.raw,
+                     connected, device.connectionState.raw,
                      sharedType, sharedAssignment, sharedDeviceType, sharedSystemProperties);
             }
         };
