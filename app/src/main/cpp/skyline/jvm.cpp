@@ -69,11 +69,18 @@ namespace skyline {
           getDhcpInfoId{environ->GetMethodID(instanceClass, "getDhcpInfo", "()Landroid/net/DhcpInfo;")} {
         env.Initialize(environ);
 
-        auto localKeyboardDialogClass{environ->FindClass("org/stratoemu/strato/applet/swkbd/SoftwareKeyboardDialog")};
-        keyboardDialogClass = reinterpret_cast<jclass>(environ->NewGlobalRef(localKeyboardDialogClass));
-        waitForInlineUpdateId = environ->GetMethodID(keyboardDialogClass, "waitForInlineUpdate", "()[Ljava/lang/Object;");
-        cancelInlineWaitId = environ->GetMethodID(keyboardDialogClass, "cancelInlineWait", "()V");
-        environ->DeleteLocalRef(localKeyboardDialogClass);
+        auto localInlineKeyboardClass{environ->FindClass("org/stratoemu/strato/applet/swkbd/InlineKeyboardInputView")};
+        inlineKeyboardClass = reinterpret_cast<jclass>(environ->NewGlobalRef(localInlineKeyboardClass));
+        showInlineKeyboardId = environ->GetStaticMethodID(
+            inlineKeyboardClass,
+            "show",
+            "(Landroid/app/Activity;Ljava/nio/ByteBuffer;Ljava/lang/String;)Lorg/stratoemu/strato/applet/swkbd/InlineKeyboardInputView;");
+        waitForInlineUpdateId = environ->GetMethodID(inlineKeyboardClass, "waitForInlineUpdate", "()[Ljava/lang/Object;");
+        closeInlineKeyboardId = environ->GetStaticMethodID(
+            inlineKeyboardClass,
+            "close",
+            "(Landroid/app/Activity;Lorg/stratoemu/strato/applet/swkbd/InlineKeyboardInputView;)V");
+        environ->DeleteLocalRef(localInlineKeyboardClass);
 
         auto notifierClass{environ->FindClass("org/stratoemu/strato/ShaderCompilationNotifier")};
         shaderCompilationNotifierClass = reinterpret_cast<jclass>(environ->NewGlobalRef(notifierClass));
@@ -83,7 +90,7 @@ namespace skyline {
 
     JvmManager::~JvmManager() {
         env->DeleteGlobalRef(shaderCompilationNotifierClass);
-        env->DeleteGlobalRef(keyboardDialogClass);
+        env->DeleteGlobalRef(inlineKeyboardClass);
         env->DeleteGlobalRef(instanceClass);
         env->DeleteGlobalRef(instance);
     }
@@ -136,13 +143,27 @@ namespace skyline {
         return keyboardDialog;
     }
 
-    JvmManager::KeyboardHandle JvmManager::CloneKeyboardHandle(KeyboardHandle dialog) {
-        return dialog ? env->NewGlobalRef(dialog) : nullptr;
+    JvmManager::KeyboardHandle JvmManager::ShowInlineKeyboard(KeyboardConfig &config, std::u16string initialText) {
+        auto buffer{env->NewDirectByteBuffer(&config, sizeof(KeyboardConfig))};
+        auto str{env->NewString(reinterpret_cast<const jchar *>(initialText.data()), static_cast<int>(initialText.length()))};
+        jobject localInlineView{env->CallStaticObjectMethod(inlineKeyboardClass, showInlineKeyboardId, instance, buffer, str)};
+        env->DeleteLocalRef(buffer);
+        env->DeleteLocalRef(str);
+        if (!localInlineView)
+            return {};
+
+        auto inlineView{env->NewGlobalRef(localInlineView)};
+        env->DeleteLocalRef(localInlineView);
+        return inlineView;
     }
 
-    void JvmManager::ReleaseKeyboardHandle(KeyboardHandle dialog) {
-        if (dialog)
-            env->DeleteGlobalRef(dialog);
+    JvmManager::KeyboardHandle JvmManager::CloneKeyboardHandle(KeyboardHandle handle) {
+        return handle ? env->NewGlobalRef(handle) : nullptr;
+    }
+
+    void JvmManager::ReleaseKeyboardHandle(KeyboardHandle handle) {
+        if (handle)
+            env->DeleteGlobalRef(handle);
     }
 
     std::pair<JvmManager::KeyboardCloseResult, std::u16string> JvmManager::WaitForSubmitOrCancel(KeyboardHandle keyboardDialog) {
@@ -159,8 +180,8 @@ namespace skyline {
         return {result, std::move(input)};
     }
 
-    JvmManager::KeyboardUpdate JvmManager::WaitForInlineKeyboardUpdate(KeyboardHandle keyboardDialog) {
-        auto returnArray{reinterpret_cast<jobjectArray>(env->CallObjectMethod(keyboardDialog, waitForInlineUpdateId))};
+    JvmManager::KeyboardUpdate JvmManager::WaitForInlineKeyboardUpdate(KeyboardHandle inlineView) {
+        auto returnArray{reinterpret_cast<jobjectArray>(env->CallObjectMethod(inlineView, waitForInlineUpdateId))};
         if (!returnArray)
             return {KeyboardUpdate::Type::Closed, {}, 0};
 
@@ -211,9 +232,15 @@ namespace skyline {
     void JvmManager::CloseKeyboard(KeyboardHandle dialog) {
         if (!dialog)
             return;
-        env->CallVoidMethod(dialog, cancelInlineWaitId);
         env->CallVoidMethod(instance, closeKeyboardId, dialog);
         env->DeleteGlobalRef(dialog);
+    }
+
+    void JvmManager::CloseInlineKeyboard(KeyboardHandle inlineView) {
+        if (!inlineView)
+            return;
+        env->CallStaticVoidMethod(inlineKeyboardClass, closeInlineKeyboardId, instance, inlineView);
+        env->DeleteGlobalRef(inlineView);
     }
 
     JvmManager::KeyboardCloseResult JvmManager::ShowValidationResult(KeyboardHandle dialog, KeyboardTextCheckResult checkResult, std::u16string message) {
