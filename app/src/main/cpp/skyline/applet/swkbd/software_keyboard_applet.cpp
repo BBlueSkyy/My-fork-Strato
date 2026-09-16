@@ -126,6 +126,10 @@ namespace skyline::applet::swkbd {
         {
             std::scoped_lock lock{inlineMutex};
             inlineStarted = false;
+            if (inlineFrontend) {
+                state.jvm->CloseInlineKeyboard(inlineFrontend);
+                inlineFrontend = {};
+            }
             if (dialog) {
                 state.jvm->CloseKeyboard(dialog);
                 dialog = {};
@@ -345,17 +349,17 @@ namespace skyline::applet::swkbd {
     }
 
     void SoftwareKeyboardApplet::ShowInlineKeyboard() {
-        if (inlineState != inline_protocol::State::InitializedIsHidden || dialog)
+        if (inlineState != inline_protocol::State::InitializedIsHidden || inlineFrontend)
             return;
 
         ChangeInlineState(inline_protocol::State::InitializedIsAppearing);
-        dialog = state.jvm->ShowKeyboard(*reinterpret_cast<JvmManager::KeyboardConfig *>(&config), currentText);
-        if (!dialog) {
+        inlineFrontend = state.jvm->ShowInlineKeyboard(*reinterpret_cast<JvmManager::KeyboardConfig *>(&config), currentText);
+        if (!inlineFrontend) {
             ChangeInlineState(inline_protocol::State::InitializedIsHidden);
             return;
         }
 
-        pendingInlineWaitDialog = state.jvm->CloneKeyboardHandle(dialog);
+        pendingInlineWaitDialog = state.jvm->CloneKeyboardHandle(inlineFrontend);
         ChangeInlineState(inline_protocol::State::InitializedIsShown);
     }
 
@@ -364,9 +368,9 @@ namespace skyline::applet::swkbd {
             return;
 
         ChangeInlineState(inline_protocol::State::InitializedIsDisappearing);
-        if (dialog) {
-            state.jvm->CloseKeyboard(dialog);
-            dialog = {};
+        if (inlineFrontend) {
+            state.jvm->CloseInlineKeyboard(inlineFrontend);
+            inlineFrontend = {};
         }
         ChangeInlineState(inline_protocol::State::InitializedIsHidden);
     }
@@ -475,9 +479,9 @@ namespace skyline::applet::swkbd {
 
         switch (request) {
             case inline_protocol::Request::Finalize:
-                if (dialog) {
-                    state.jvm->CloseKeyboard(dialog);
-                    dialog = {};
+                if (inlineFrontend) {
+                    state.jvm->CloseInlineKeyboard(inlineFrontend);
+                    inlineFrontend = {};
                 }
                 inlineStarted = false;
                 inlineDictionaryStorage.reset();
@@ -556,10 +560,6 @@ namespace skyline::applet::swkbd {
                     done = true;
                     break;
                 case JvmManager::KeyboardUpdate::Type::Closed:
-                    if (dialog) {
-                        state.jvm->ReleaseKeyboardHandle(dialog);
-                        dialog = {};
-                    }
                     done = true;
                     break;
             }
