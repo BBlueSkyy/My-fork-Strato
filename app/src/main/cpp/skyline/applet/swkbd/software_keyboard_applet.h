@@ -66,6 +66,7 @@ namespace skyline::applet::swkbd {
 
         std::mutex inlineMutex;
         std::future<void> inlineInputFuture;
+        JvmManager::KeyboardHandle inlineFrontend{};
         JvmManager::KeyboardHandle pendingInlineWaitDialog{};
         inline_protocol::InitializeArg inlineInitializeArg{};
         inline_protocol::CalcArgCommon inlineCalcCommon{};
