@@ -15,9 +15,6 @@ namespace skyline {
         i32 dns2;
     };
 
-    /**
-     * @brief A wrapper over std::string that supports construction using a JNI jstring
-     */
     class JniString : public std::string {
       private:
         static std::string GetJString(JNIEnv *env, jstring jString);
@@ -26,53 +23,33 @@ namespace skyline {
         JniString(JNIEnv *env, jstring jString) : std::string(GetJString(env, jString)) {}
     };
 
-    /**
-     * @brief A wrapper over the `Settings` Kotlin class
-     * @note The lifetime of this class must not exceed that of the JNI environment
-     * @note Copy construction of this class is disallowed to avoid issues with the JNI environment lifetime
-     */
     class KtSettings {
       private:
-        JNIEnv *env; //!< A pointer to the current jni environment
-        jclass settingsClass; //!< The settings class
-        jobject settingsInstance; //!< The settings instance
+        JNIEnv *env;
+        jclass settingsClass;
+        jobject settingsInstance;
 
       public:
         KtSettings(JNIEnv *env, jobject settingsInstance) : env(env), settingsInstance(settingsInstance), settingsClass(env->GetObjectClass(settingsInstance)) {}
-
         KtSettings(const KtSettings &) = delete;
-
         void operator=(const KtSettings &) = delete;
-
         KtSettings(KtSettings &&) = default;
 
-        /**
-         * @param key A null terminated string containing the key of the setting to get
-         */
         template<typename T>
         requires std::is_integral_v<T> || std::is_enum_v<T>
         T GetInt(const std::string_view &key) {
             return static_cast<T>(env->GetIntField(settingsInstance, env->GetFieldID(settingsClass, key.data(), "I")));
         }
 
-        /**
-         * @param key A null terminated string containing the key of the setting to get
-         */
         bool GetBool(const std::string_view &key) {
             return env->GetBooleanField(settingsInstance, env->GetFieldID(settingsClass, key.data(), "Z")) == JNI_TRUE;
         }
 
-        /**
-         * @param key A null terminated string containing the key of the setting to get
-         */
         JniString GetString(const std::string_view &key) {
             return {env, static_cast<jstring>(env->GetObjectField(settingsInstance, env->GetFieldID(settingsClass, key.data(), "Ljava/lang/String;")))};
         }
     };
 
-    /**
-     * @brief The JvmManager class is used to simplify transactions with the Java component
-     */
     class JvmManager {
       public:
         using KeyboardHandle = jobject;
@@ -80,29 +57,27 @@ namespace skyline {
         using KeyboardCloseResult = u32;
         using KeyboardTextCheckResult = u32;
 
+        struct KeyboardUpdate {
+            enum class Type : u32 {
+                Changed = 0,
+                Enter = 1,
+                Cancel = 2,
+                Closed = 3,
+            };
 
-        jobject instance; //!< A reference to the activity
-        jclass instanceClass; //!< The class of the activity
+            Type type;
+            std::u16string text;
+            i32 cursor;
+        };
 
-        /**
-         * @param env A pointer to the JNI environment
-         * @param instance A reference to the activity
-         */
+        jobject instance;
+        jclass instanceClass;
+
         JvmManager(JNIEnv *env, jobject instance);
-
         ~JvmManager();
 
-        /**
-         * @brief Returns a pointer to the JNI environment for the current thread
-         */
         static JNIEnv *GetEnv();
 
-        /**
-         * @brief Retrieves a specific field of the given type from the activity
-         * @tparam objectType The type of the object in the field
-         * @param key The name of the field in the activity class
-         * @return The contents of the field as objectType
-         */
         template<typename objectType>
         objectType GetField(const char *key) {
             JNIEnv *env{GetEnv()};
@@ -126,98 +101,28 @@ namespace skyline {
                 throw exception("GetField: Unhandled object type");
         }
 
-        /**
-         * @brief Retrieves a specific field from the activity as a jobject
-         * @param key The name of the field in the activity class
-         * @param signature The signature of the field
-         * @return A jobject of the contents of the field
-         */
         jobject GetField(const char *key, const char *signature);
-
-        /**
-         * @brief Checks if a specific field from the activity is null or not
-         * @param key The name of the field in the activity class
-         * @param signature The signature of the field
-         * @return If the field is null or not
-         */
         bool CheckNull(const char *key, const char *signature);
-
-        /**
-         * @brief Checks if a specific jobject is null or not
-         * @param object The jobject to check
-         * @return If the object is null or not
-         */
         static bool CheckNull(jobject &object);
 
-        /**
-         * @brief A call to EmulationActivity.initializeControllers in Kotlin
-         */
         void InitializeControllers();
-
-        /**
-         * @brief A call to EmulationActivity.vibrateDevice in Kotlin
-         */
         void VibrateDevice(jint index, const span<jlong> &timings, const span<jint> &amplitudes);
-
-        /**
-         * @brief A call to EmulationActivity.clearVibrationDevice in Kotlin
-         */
         void ClearVibrationDevice(jint index);
 
-        /**
-         * @brief A call to EmulationActivity.showKeyboard in Kotlin
-         */
         KeyboardHandle ShowKeyboard(KeyboardConfig &config, std::u16string initialText);
-
-        /**
-         * @brief A call to EmulationActivity.waitForSubmitOrCancel in Kotlin
-         */
+        KeyboardHandle CloneKeyboardHandle(KeyboardHandle dialog);
+        void ReleaseKeyboardHandle(KeyboardHandle dialog);
         std::pair<KeyboardCloseResult, std::u16string> WaitForSubmitOrCancel(KeyboardHandle dialog);
-
-        /**
-         * @brief A call to EmulationActivity.closeKeyboard in Kotlin
-         */
+        KeyboardUpdate WaitForInlineKeyboardUpdate(KeyboardHandle dialog);
         void CloseKeyboard(KeyboardHandle dialog);
-
-        /**
-         * @brief A call to EmulationActivity.showValidationResult in Kotlin
-         */
         KeyboardCloseResult ShowValidationResult(KeyboardHandle dialog, KeyboardTextCheckResult checkResult, std::u16string message);
 
-        /**
-         * @brief A call to EmulationActivity.reportCrash in Kotlin
-         */
         void reportCrash();
-
-        /**
-         * @brief A call to EmulationActivity.showPipelineLoadingScreen in Kotlin
-         */
         void ShowPipelineLoadingScreen(u32 totalPipelineCount);
-
-        /**
-         * @brief A call to EmulationActivity.updatePipelineLoadingProgress in Kotlin
-         */
         void UpdatePipelineLoadingProgress(u32 progress);
-
-        /**
-         * @brief A call to EmulationActivity.hidePipelineLoadingScreen in Kotlin
-         */
         void HidePipelineLoadingScreen();
-
-        /**
-         * @brief Updates the runtime shader compilation notifier on Android
-         */
         void UpdateShaderCompilationState(bool compiling);
-
-        /**
-         * @brief A call to EmulationActivity.getVersionCode in Kotlin
-         * @return A version code in Vulkan's format with 14-bit patch + 10-bit major and minor components
-         */
         i32 GetVersionCode();
-
-        /**
-         * @brief A call to EmulationActivity.getDhcpInfo in Kotlin
-         */
         DhcpInfo GetDhcpInfo();
 
       private:
@@ -225,8 +130,11 @@ namespace skyline {
         jmethodID vibrateDeviceId;
         jmethodID clearVibrationDeviceId;
 
+        jclass keyboardDialogClass{};
         jmethodID showKeyboardId;
         jmethodID waitForSubmitOrCancelId;
+        jmethodID waitForInlineUpdateId{};
+        jmethodID cancelInlineWaitId{};
         jmethodID closeKeyboardId;
         jmethodID showValidationResultId;
         jmethodID getIntegerValueId;
@@ -240,7 +148,6 @@ namespace skyline {
         jmethodID updateShaderCompilationStateId{};
 
         jmethodID getVersionCodeId;
-
         jmethodID getDhcpInfoId;
     };
 }
