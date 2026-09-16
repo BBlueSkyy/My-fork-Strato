@@ -11,9 +11,6 @@ namespace skyline {
         return string;
     }
 
-    /*
-     * @brief A thread-local wrapper over JNIEnv and JavaVM which automatically handles attaching and detaching threads
-     */
     struct JniEnvironment {
         JNIEnv *env{};
         static inline JavaVM *vm{};
@@ -72,6 +69,12 @@ namespace skyline {
           getDhcpInfoId{environ->GetMethodID(instanceClass, "getDhcpInfo", "()Landroid/net/DhcpInfo;")} {
         env.Initialize(environ);
 
+        auto localKeyboardDialogClass{environ->FindClass("org/stratoemu/strato/applet/swkbd/SoftwareKeyboardDialog")};
+        keyboardDialogClass = reinterpret_cast<jclass>(environ->NewGlobalRef(localKeyboardDialogClass));
+        waitForInlineUpdateId = environ->GetMethodID(keyboardDialogClass, "waitForInlineUpdate", "()[Ljava/lang/Object;");
+        cancelInlineWaitId = environ->GetMethodID(keyboardDialogClass, "cancelInlineWait", "()V");
+        environ->DeleteLocalRef(localKeyboardDialogClass);
+
         auto notifierClass{environ->FindClass("org/stratoemu/strato/ShaderCompilationNotifier")};
         shaderCompilationNotifierClass = reinterpret_cast<jclass>(environ->NewGlobalRef(notifierClass));
         updateShaderCompilationStateId = environ->GetStaticMethodID(shaderCompilationNotifierClass, "update", "(Landroid/app/Activity;Z)V");
@@ -80,6 +83,7 @@ namespace skyline {
 
     JvmManager::~JvmManager() {
         env->DeleteGlobalRef(shaderCompilationNotifierClass);
+        env->DeleteGlobalRef(keyboardDialogClass);
         env->DeleteGlobalRef(instanceClass);
         env->DeleteGlobalRef(instance);
     }
@@ -109,9 +113,7 @@ namespace skyline {
         env->SetLongArrayRegion(jTimings, 0, static_cast<jsize>(timings.size()), timings.data());
         auto jAmplitudes{env->NewIntArray(static_cast<jsize>(amplitudes.size()))};
         env->SetIntArrayRegion(jAmplitudes, 0, static_cast<jsize>(amplitudes.size()), amplitudes.data());
-
         env->CallVoidMethod(instance, vibrateDeviceId, index, jTimings, jAmplitudes);
-
         env->DeleteLocalRef(jTimings);
         env->DeleteLocalRef(jAmplitudes);
     }
@@ -120,27 +122,71 @@ namespace skyline {
         env->CallVoidMethod(instance, clearVibrationDeviceId, index);
     }
 
-    jobject JvmManager::ShowKeyboard(KeyboardConfig &config, std::u16string initialText) {
+    JvmManager::KeyboardHandle JvmManager::ShowKeyboard(KeyboardConfig &config, std::u16string initialText) {
         auto buffer{env->NewDirectByteBuffer(&config, sizeof(KeyboardConfig))};
         auto str{env->NewString(reinterpret_cast<const jchar *>(initialText.data()), static_cast<int>(initialText.length()))};
         jobject localKeyboardDialog{env->CallObjectMethod(instance, showKeyboardId, buffer, str)};
         env->DeleteLocalRef(buffer);
         env->DeleteLocalRef(str);
-        auto keyboardDialog{env->NewGlobalRef(localKeyboardDialog)};
+        if (!localKeyboardDialog)
+            return {};
 
+        auto keyboardDialog{env->NewGlobalRef(localKeyboardDialog)};
         env->DeleteLocalRef(localKeyboardDialog);
         return keyboardDialog;
     }
 
-    std::pair<JvmManager::KeyboardCloseResult, std::u16string> JvmManager::WaitForSubmitOrCancel(jobject keyboardDialog) {
+    JvmManager::KeyboardHandle JvmManager::CloneKeyboardHandle(KeyboardHandle dialog) {
+        return dialog ? env->NewGlobalRef(dialog) : nullptr;
+    }
+
+    void JvmManager::ReleaseKeyboardHandle(KeyboardHandle dialog) {
+        if (dialog)
+            env->DeleteGlobalRef(dialog);
+    }
+
+    std::pair<JvmManager::KeyboardCloseResult, std::u16string> JvmManager::WaitForSubmitOrCancel(KeyboardHandle keyboardDialog) {
         auto returnArray{reinterpret_cast<jobjectArray>(env->CallObjectMethod(instance, waitForSubmitOrCancelId, keyboardDialog))};
         auto buttonInteger{env->GetObjectArrayElement(returnArray, 0)};
         auto inputJString{reinterpret_cast<jstring>(env->GetObjectArrayElement(returnArray, 1))};
         auto stringChars{env->GetStringChars(inputJString, nullptr)};
         std::u16string input{stringChars, stringChars + env->GetStringLength(inputJString)};
         env->ReleaseStringChars(inputJString, stringChars);
+        auto result{static_cast<KeyboardCloseResult>(env->CallIntMethod(buttonInteger, getIntegerValueId))};
+        env->DeleteLocalRef(inputJString);
+        env->DeleteLocalRef(buttonInteger);
+        env->DeleteLocalRef(returnArray);
+        return {result, std::move(input)};
+    }
 
-        return {static_cast<KeyboardCloseResult>(env->CallIntMethod(buttonInteger, getIntegerValueId)), input};
+    JvmManager::KeyboardUpdate JvmManager::WaitForInlineKeyboardUpdate(KeyboardHandle keyboardDialog) {
+        auto returnArray{reinterpret_cast<jobjectArray>(env->CallObjectMethod(keyboardDialog, waitForInlineUpdateId))};
+        if (!returnArray)
+            return {KeyboardUpdate::Type::Closed, {}, 0};
+
+        auto typeInteger{env->GetObjectArrayElement(returnArray, 0)};
+        auto inputJString{reinterpret_cast<jstring>(env->GetObjectArrayElement(returnArray, 1))};
+        auto cursorInteger{env->GetObjectArrayElement(returnArray, 2)};
+
+        std::u16string input;
+        if (inputJString) {
+            auto stringChars{env->GetStringChars(inputJString, nullptr)};
+            input.assign(stringChars, stringChars + env->GetStringLength(inputJString));
+            env->ReleaseStringChars(inputJString, stringChars);
+        }
+
+        KeyboardUpdate update{
+            static_cast<KeyboardUpdate::Type>(env->CallIntMethod(typeInteger, getIntegerValueId)),
+            std::move(input),
+            static_cast<i32>(env->CallIntMethod(cursorInteger, getIntegerValueId)),
+        };
+
+        env->DeleteLocalRef(cursorInteger);
+        if (inputJString)
+            env->DeleteLocalRef(inputJString);
+        env->DeleteLocalRef(typeInteger);
+        env->DeleteLocalRef(returnArray);
+        return update;
     }
 
     DhcpInfo JvmManager::GetDhcpInfo() {
@@ -157,15 +203,20 @@ namespace skyline {
         jint gateway{env->GetIntField(dhcpInfo, gatewayFieldId)};
         jint dns1{env->GetIntField(dhcpInfo, dns1FieldId)};
         jint dns2{env->GetIntField(dhcpInfo, dns2FieldId)};
+        env->DeleteLocalRef(dhcpInfoClass);
+        env->DeleteLocalRef(dhcpInfo);
         return DhcpInfo{ipAddress, subnet, gateway, dns1, dns2};
     }
 
-    void JvmManager::CloseKeyboard(jobject dialog) {
+    void JvmManager::CloseKeyboard(KeyboardHandle dialog) {
+        if (!dialog)
+            return;
+        env->CallVoidMethod(dialog, cancelInlineWaitId);
         env->CallVoidMethod(instance, closeKeyboardId, dialog);
         env->DeleteGlobalRef(dialog);
     }
 
-    JvmManager::KeyboardCloseResult JvmManager::ShowValidationResult(jobject dialog, KeyboardTextCheckResult checkResult, std::u16string message) {
+    JvmManager::KeyboardCloseResult JvmManager::ShowValidationResult(KeyboardHandle dialog, KeyboardTextCheckResult checkResult, std::u16string message) {
         auto str{env->NewString(reinterpret_cast<const jchar *>(message.data()), static_cast<int>(message.length()))};
         auto result{static_cast<KeyboardCloseResult>(env->CallIntMethod(instance, showValidationResultId, dialog, checkResult, str))};
         env->DeleteLocalRef(str);
