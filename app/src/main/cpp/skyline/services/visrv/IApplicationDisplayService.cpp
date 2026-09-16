@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
-// Copyright © 2019 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
+// Copyright © 2019 Ryujinx Team and Contributors
 
 #include <gpu.h>
 #include <kernel/types/KProcess.h>
@@ -134,7 +134,7 @@ namespace skyline::service::visrv {
         if (width <= 0 || height <= 0)
             return result::InvalidDimensions;
 
-        LOGD("GetIndirectLayerImageMap: {}x{}, handle=0x{:X}, aruid=0x{:X}", width, height, consumerHandle, appletResourceUserId);
+        LOGI("GetIndirectLayerImageMap: {}x{}, handle=0x{:X}, aruid=0x{:X}", width, height, consumerHandle, appletResourceUserId);
 
         // The HLE software keyboard is presented by the Android frontend. There is no guest
         // indirect-layer image to copy, matching the frontend path used by Eden.
@@ -153,10 +153,14 @@ namespace skyline::service::visrv {
         i64 layerSize{width * height * A8B8G8R8Size};
 
         constexpr ssize_t BlockSize{0x20000};
-        response.Push<i64>(util::AlignUpNpot<i64>(layerSize, BlockSize));
+        const i64 requiredSize{util::AlignUpNpot<i64>(layerSize, BlockSize)};
+        response.Push<i64>(requiredSize);
 
         constexpr size_t DefaultAlignment{0x1000};
         response.Push<u64>(DefaultAlignment);
+
+        LOGI("GetIndirectLayerImageRequiredMemoryInfo: {}x{}, size=0x{:X}, alignment=0x{:X}",
+             width, height, requiredSize, DefaultAlignment);
 
         return Result{};
     }
