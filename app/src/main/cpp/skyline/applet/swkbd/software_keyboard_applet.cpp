@@ -223,7 +223,7 @@ namespace skyline::applet::swkbd {
         const bool v2{reply == InlineReply::ChangedStringV2 || reply == InlineReply::ChangedStringUtf8V2 ||
                       reply == InlineReply::MovedCursorV2 || reply == InlineReply::MovedCursorUtf8V2};
         const size_t textBytes{utf8 ? InlineUtf8TextBytes : InlineUtf16TextBytes};
-        const size_t argBytes{changed ? 16 : moved ? 8 : 4};
+        const size_t argBytes = changed ? 16 : moved ? 8 : 4;
         std::vector<u8> payload(textBytes + argBytes + (v2 ? 1 : 0));
         WriteStringToSpan(span<u8>{payload.data(), textBytes}, text, utf8);
 
@@ -242,8 +242,8 @@ namespace skyline::applet::swkbd {
 
     void SoftwareKeyboardApplet::ConfigureInlineKeyboard(span<u8> calc, bool extended) {
         const size_t appearOffset{0x20};
-        const size_t inputOffset{extended ? 0x90 : 0x68};
-        const size_t utf8Offset{extended ? 0x484 : 0x45C};
+        const size_t inputOffset = extended ? 0x90 : 0x68;
+        const size_t utf8Offset = extended ? 0x484 : 0x45C;
 
         config = KeyboardConfigVB{};
         auto &common{config.commonConfig};
@@ -307,8 +307,8 @@ namespace skyline::applet::swkbd {
         }
 
         const u64 flags{ReadValue<u64>(calc, 0x8)};
-        const size_t inputOffset{extended ? 0x90 : 0x68};
-        const size_t utf8Offset{extended ? 0x484 : 0x45C};
+        const size_t inputOffset = extended ? 0x90 : 0x68;
+        const size_t utf8Offset = extended ? 0x484 : 0x45C;
 
         if (flags & 0x1) {
             const std::array<u8, 1> initialized{1};
