@@ -29,6 +29,8 @@ namespace skyline::service::am {
         skyline::applet::AppletId appletId;
         applet::LibraryAppletMode appletMode;
         std::shared_ptr<IApplet> applet;
+        u64 indirectLayerHandle{};
+        u64 indirectLayerAruid{};
 
       public:
         ILibraryAppletAccessor(const DeviceState &state, ServiceManager &manager,
