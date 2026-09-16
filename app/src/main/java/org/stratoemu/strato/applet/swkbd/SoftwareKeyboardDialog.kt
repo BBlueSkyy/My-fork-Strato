@@ -6,7 +6,6 @@
 package org.stratoemu.strato.applet.swkbd
 
 import android.annotation.SuppressLint
-import android.content.DialogInterface
 import android.os.Bundle
 import android.text.InputType
 import android.view.LayoutInflater
@@ -18,7 +17,6 @@ import org.stratoemu.strato.databinding.KeyboardDialogBinding
 import org.stratoemu.strato.utils.parcelable
 import org.stratoemu.strato.utils.stringFromChars
 import java.util.concurrent.FutureTask
-import java.util.concurrent.LinkedBlockingQueue
 
 data class SoftwareKeyboardResult(val cancelled : Boolean, val text : String)
 
@@ -28,6 +26,10 @@ class SoftwareKeyboardDialog : DialogFragment() {
     private var stopped = false
 
     companion object {
+        /**
+         * @param config Holds the [SoftwareKeyboardConfig] that will be used to create the keyboard between instances of this dialog
+         * @param initialText Holds the text that was set by the guest when the dialog was created
+         */
         fun newInstance(config : SoftwareKeyboardConfig, initialText : String) : SoftwareKeyboardDialog {
             val args = Bundle()
             args.putParcelable("config", config)
@@ -39,27 +41,14 @@ class SoftwareKeyboardDialog : DialogFragment() {
 
         const val validationConfirm = 2
         const val validationError = 1
-
-        const val inlineUpdateChanged = 0
-        const val inlineUpdateEnter = 1
-        const val inlineUpdateCancel = 2
-        const val inlineUpdateClosed = 3
     }
 
     private lateinit var binding : KeyboardDialogBinding
-    private var cancelled = false
-    private var futureResult = FutureTask {
-        SoftwareKeyboardResult(cancelled, if (::binding.isInitialized) binding.textInput.text.toString() else initialText)
-    }
-    private val inlineUpdates = LinkedBlockingQueue<Array<Any?>>()
 
-    override fun onCreate(savedInstanceState : Bundle?) {
-        super.onCreate(savedInstanceState)
-        isCancelable = !config.isCancelButtonDisabled
-    }
+    private var cancelled : Boolean = false
+    private var futureResult : FutureTask<SoftwareKeyboardResult> = FutureTask<SoftwareKeyboardResult> { return@FutureTask SoftwareKeyboardResult(cancelled, binding.textInput.text.toString()) }
 
-    override fun onCreateView(inflater : LayoutInflater, container : ViewGroup?, savedInstanceState : Bundle?) =
-        if (savedInstanceState?.getBoolean("stopped") != true) KeyboardDialogBinding.inflate(inflater).also { binding = it }.root else null
+    override fun onCreateView(inflater : LayoutInflater, container : ViewGroup?, savedInstanceState : Bundle?) = if (savedInstanceState?.getBoolean("stopped") != true) KeyboardDialogBinding.inflate(inflater).also { binding = it }.root else null
 
     @SuppressLint("SetTextI18n")
     override fun onViewCreated(view : View, savedInstanceState : Bundle?) {
@@ -96,13 +85,11 @@ class SoftwareKeyboardDialog : DialogFragment() {
         binding.textInput.doOnTextChanged { text, _, _, _ ->
             binding.okButton.isEnabled = config.isValid(text!!)
             binding.lengthStatus.text = "${text.length}/${config.textMaxLength}"
-            inlineUpdates.offer(arrayOf(inlineUpdateChanged, text.toString(), binding.textInput.selectionStart.coerceAtLeast(0)))
         }
         binding.lengthStatus.text = "${initialText.length}/${config.textMaxLength}"
         binding.okButton.isEnabled = config.isValid(initialText)
         binding.okButton.setOnClickListener {
             cancelled = false
-            inlineUpdates.offer(arrayOf(inlineUpdateEnter, binding.textInput.text.toString(), binding.textInput.selectionStart.coerceAtLeast(0)))
             futureResult.run()
         }
         if (config.isCancelButtonDisabled) {
@@ -110,7 +97,6 @@ class SoftwareKeyboardDialog : DialogFragment() {
         } else {
             binding.cancelButton.setOnClickListener {
                 cancelled = true
-                inlineUpdates.offer(arrayOf(inlineUpdateCancel, binding.textInput.text.toString(), binding.textInput.selectionStart.coerceAtLeast(0)))
                 futureResult.run()
             }
         }
@@ -126,24 +112,6 @@ class SoftwareKeyboardDialog : DialogFragment() {
         super.onStop()
     }
 
-    override fun onCancel(dialog : DialogInterface) {
-        cancelled = true
-        val text = if (::binding.isInitialized) binding.textInput.text.toString() else initialText
-        val cursor = if (::binding.isInitialized) binding.textInput.selectionStart.coerceAtLeast(0) else text.length
-        inlineUpdates.offer(arrayOf(inlineUpdateCancel, text, cursor))
-        futureResult.run()
-        super.onCancel(dialog)
-    }
-
-    override fun onDismiss(dialog : DialogInterface) {
-        if (!futureResult.isDone) {
-            cancelled = true
-            futureResult.run()
-        }
-        cancelInlineWait()
-        super.onDismiss(dialog)
-    }
-
     override fun onSaveInstanceState(outState : Bundle) {
         outState.putBoolean("stopped", stopped)
         super.onSaveInstanceState(outState)
@@ -151,15 +119,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
 
     fun waitForSubmitOrCancel() : SoftwareKeyboardResult {
         val result = futureResult.get()
-        futureResult = FutureTask {
-            SoftwareKeyboardResult(cancelled, if (::binding.isInitialized) binding.textInput.text.toString() else initialText)
-        }
+        futureResult = FutureTask<SoftwareKeyboardResult> { return@FutureTask SoftwareKeyboardResult(cancelled, binding.textInput.text.toString()) }
         return result
-    }
-
-    fun waitForInlineUpdate() : Array<Any?> = inlineUpdates.take()
-
-    fun cancelInlineWait() {
-        inlineUpdates.offer(arrayOf(inlineUpdateClosed, "", 0))
     }
 }
