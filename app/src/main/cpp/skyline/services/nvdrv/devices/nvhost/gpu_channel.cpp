@@ -15,9 +15,27 @@ namespace skyline::service::nvdrv::device::nvhost {
     }
 
     GpuChannel::~GpuChannel() {
-        // Return the syncpoint allocated in the constructor back to the shared pool,
-        // otherwise every channel open permanently consumes one of the fixed slots
-        // until the process eventually crashes on FindFreeSyncpoint() exhaustion.
+        // The GPFIFO worker may still consume synthetic wait/increment commands backed by
+        // pushBufferMemory, so stop and join the channel while that backing and its syncpoint
+        // are still alive.
+        channelCtx.reset();
+
+        // Tear down the private synthetic pushbuffer mapping only after the channel worker is
+        // gone. AllocGpfifoEx2 reserves page units but maps only the exact byte size, so mirror
+        // those values here when releasing both resources.
+        if (pushBufferAddr && asCtx && asAllocator && !pushBufferMemory.empty()) {
+            const size_t pushBufferSize{pushBufferMemory.size() * sizeof(u32)};
+            const u32 pushBufferPages{(static_cast<u32>(pushBufferSize) >> AsGpu::VM::PageSizeBits) + 1};
+
+            asAllocator->Free(static_cast<u32>(pushBufferAddr >> AsGpu::VM::PageSizeBits), pushBufferPages);
+            asCtx->gmmu.Unmap(pushBufferAddr, pushBufferSize);
+
+            pushBufferAddr = 0;
+            pushBufferMemoryOffset = 0;
+            pushBufferMemory.clear();
+        }
+
+        // Return the syncpoint only after all channel work that can reference it has stopped.
         core.syncpointManager.ReleaseSyncpoint(channelSyncpoint);
     }
 
