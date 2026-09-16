@@ -126,7 +126,7 @@ namespace skyline {
     }
 
     void JvmManager::ClearVibrationDevice(jint index) {
-        env->CallVoidMethod(instance, clearVibrationDeviceId, index);
+        env->CallVoidMethod(instance, clearVibrationDeviceId);
     }
 
     JvmManager::KeyboardHandle JvmManager::ShowKeyboard(KeyboardConfig &config, std::u16string initialText) {
