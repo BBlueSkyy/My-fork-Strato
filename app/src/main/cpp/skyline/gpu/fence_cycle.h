@@ -41,12 +41,19 @@ namespace skyline::gpu {
          * @brief Destroy all the dependencies of this cycle
          */
         void DestroyDependencies() {
+            LOGI("[FENCE-DEPS] ENTER");
             if (!alreadyDestroyed.test_and_set(std::memory_order_release)) {
+                LOGI("[FENCE-DEPS] BEFORE_DEPENDENCIES_CLEAR");
                 dependencies.Clear();
+                LOGI("[FENCE-DEPS] AFTER_DEPENDENCIES_CLEAR");
                 semaphoreUnsignalCycle = {};
+                LOGI("[FENCE-DEPS] BEFORE_CHAIN_LOCK");
                 std::scoped_lock lock{chainMutex};
+                LOGI("[FENCE-DEPS] AFTER_CHAIN_LOCK");
                 chainedCycles.Clear();
+                LOGI("[FENCE-DEPS] AFTER_CHAIN_CLEAR");
             }
+            LOGI("[FENCE-DEPS] EXIT");
         }
 
       public:
@@ -67,8 +74,11 @@ namespace skyline::gpu {
          * @brief Signals this fence regardless of if the underlying fence has been signalled or not
          */
         void Cancel() {
+            LOGI("[FENCE-CANCEL] ENTER");
             signalled.test_and_set(std::memory_order_release);
+            LOGI("[FENCE-CANCEL] AFTER_SIGNAL");
             DestroyDependencies();
+            LOGI("[FENCE-CANCEL] EXIT");
         }
 
         /**
