@@ -49,7 +49,13 @@ namespace skyline::service {
         }
         TRACE_EVENT("service", perfetto::StaticString{function.name});
         try {
-            return function(session, request, response);
+            const Result result{function(session, request, response)};
+            if (*state.settings->autoStub && result.raw != 0) {
+                LOGW("[AUTOSTUB][NONZERO_RESULT] service='{}' command=0x{:X} ({}) type={} handler='{}' result=0x{:X} ({}) module={} id={}",
+                     GetName(), functionId, functionId, request.isTipc ? "TIPC" : "HIPC", function.name,
+                     result.raw, result.raw, result.module, result.id);
+            }
+            return result;
         } catch (exception &e) {
             // We need to forward any skyline::exception objects without modification even though they inherit from std::exception
             std::rethrow_exception(std::current_exception());
