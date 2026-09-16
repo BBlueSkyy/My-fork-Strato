@@ -90,5 +90,14 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
+        <org.stratoemu.strato.applet.swkbd.InlineKeyboardInputView
+            android:id="@+id/inline_keyboard_input_view"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@android:color/transparent"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:visibility="gone" />
+
     </FrameLayout>
 </FrameLayout>
