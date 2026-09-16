@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
 #include <kernel/types/KProcess.h>
 #include <applet/applet_creator.h>
 #include "ILibraryAppletAccessor.h"
 
 namespace skyline::service::am {
+    namespace {
+        std::atomic<u64> nextIndirectLayerHandle{1};
+    }
+
     ILibraryAppletAccessor::ILibraryAppletAccessor(const DeviceState &state, ServiceManager &manager,
                                                    skyline::applet::AppletId appletId,
                                                    applet::LibraryAppletMode appletMode)
@@ -48,8 +53,6 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::RequestExit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
-        // Strato frontends are in-process rather than independent HOS processes. Marking the
-        // state event completes the same observable AM contract without killing the application.
         stateChangeEvent->Signal();
         return {};
     }
@@ -113,10 +116,22 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
-        // The command has no input payload. #151 does not provide an indirect-layer backend;
-        // do not return a fabricated consumer handle.
-        return result::ObjectInvalid;
+    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const u64 appletResourceUserId{request.Pop<u64>()};
+        if (appletMode != applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay)
+            return result::ObjectInvalid;
+
+        if (!indirectLayerHandle) {
+            indirectLayerAruid = appletResourceUserId;
+            do {
+                indirectLayerHandle = nextIndirectLayerHandle.fetch_add(1, std::memory_order_relaxed);
+            } while (!indirectLayerHandle);
+        } else if (indirectLayerAruid != appletResourceUserId) {
+            return result::ObjectInvalid;
+        }
+
+        response.Push<u64>(indirectLayerHandle);
+        return {};
     }
 
     Result ILibraryAppletAccessor::Unknown170(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
