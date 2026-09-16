@@ -126,18 +126,20 @@ namespace skyline::service::visrv {
     }
 
     Result IApplicationDisplayService::GetIndirectLayerImageMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto width{request.Pop<i64>()};
-        auto height{request.Pop<i64>()};
+        const i64 width{request.Pop<i64>()};
+        const i64 height{request.Pop<i64>()};
+        const u64 consumerHandle{request.Pop<u64>()};
+        const u64 appletResourceUserId{request.Pop<u64>()};
 
-        if (!request.outputBuf.empty()) {
-            // As we don't support indirect layers, we just fill the output buffer with red
-            auto imageBuffer{request.outputBuf.at(0)};
-            std::fill(imageBuffer.begin(), imageBuffer.end(), 0xFF0000FF);
-        }
+        if (width <= 0 || height <= 0)
+            return result::InvalidDimensions;
 
-        response.Push<i64>(width);
-        response.Push<i64>(height);
+        LOGD("GetIndirectLayerImageMap: {}x{}, handle=0x{:X}, aruid=0x{:X}", width, height, consumerHandle, appletResourceUserId);
 
+        // The HLE software keyboard is presented by the Android frontend. There is no guest
+        // indirect-layer image to copy, matching the frontend path used by Eden.
+        response.Push<u64>(0);
+        response.Push<u64>(0);
         return {};
     }
 
@@ -147,13 +149,13 @@ namespace skyline::service::visrv {
         if (width <= 0 || height <= 0)
             return result::InvalidDimensions;
 
-        constexpr ssize_t A8B8G8R8Size{4}; //!< The size of a pixel in the A8B8G8R8 format, this format is used by indirect layers
+        constexpr ssize_t A8B8G8R8Size{4};
         i64 layerSize{width * height * A8B8G8R8Size};
 
-        constexpr ssize_t BlockSize{0x20000}; //!< The size of an arbitrarily defined block, the layer size must be aligned to a block
+        constexpr ssize_t BlockSize{0x20000};
         response.Push<i64>(util::AlignUpNpot<i64>(layerSize, BlockSize));
 
-        constexpr size_t DefaultAlignment{0x1000}; //!< The default alignment of the buffer
+        constexpr size_t DefaultAlignment{0x1000};
         response.Push<u64>(DefaultAlignment);
 
         return Result{};
