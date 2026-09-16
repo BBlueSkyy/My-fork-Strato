@@ -132,11 +132,19 @@ class InlineKeyboardInputView private constructor(
 
         fun activate() {
             visibility = VISIBLE
-            requestFocus()
+
+            // This mirrors Eden's Android inline frontend: focus a real text-editor View,
+            // restart the IME input connection, then explicitly force the system keyboard.
+            // SHOW_IMPLICIT can be ignored for an emulator running in immersive fullscreen,
+            // leaving the guest waiting forever for input while no Android keyboard appears.
             post {
+                if (!isAttachedToWindow)
+                    return@post
+
+                requestFocus()
                 val inputMethodManager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                 inputMethodManager.restartInput(this)
-                inputMethodManager.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+                inputMethodManager.showSoftInput(this, InputMethodManager.SHOW_FORCED)
             }
         }
 
