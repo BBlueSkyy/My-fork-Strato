@@ -116,20 +116,17 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        const u64 appletResourceUserId{request.Pop<u64>()};
+    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         if (appletMode != applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay)
             return result::ObjectInvalid;
 
         if (!indirectLayerHandle) {
-            indirectLayerAruid = appletResourceUserId;
             do {
                 indirectLayerHandle = nextIndirectLayerHandle.fetch_add(1, std::memory_order_relaxed);
             } while (!indirectLayerHandle);
-        } else if (indirectLayerAruid != appletResourceUserId) {
-            return result::ObjectInvalid;
         }
 
+        LOGI("GetIndirectLayerConsumerHandle: mode=0x{:X}, handle=0x{:X}", appletMode, indirectLayerHandle);
         response.Push<u64>(indirectLayerHandle);
         return {};
     }
