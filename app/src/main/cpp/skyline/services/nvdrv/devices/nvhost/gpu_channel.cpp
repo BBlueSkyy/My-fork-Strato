@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <common/settings.h>
 #include <soc.h>
 #include <services/nvdrv/devices/deserialisation/deserialisation.h>
 #include "gpu_channel.h"
@@ -15,10 +16,20 @@ namespace skyline::service::nvdrv::device::nvhost {
     }
 
     GpuChannel::~GpuChannel() {
+        const bool trace{*state.settings->autoStub};
+        if (trace)
+            LOGI("[NV-GPU-DTOR] ENTER syncpoint={} hasChannelCtx={} pushBufferAddr=0x{:X}",
+                 channelSyncpoint, channelCtx != nullptr, pushBufferAddr);
+
         // Return the syncpoint allocated in the constructor back to the shared pool,
         // otherwise every channel open permanently consumes one of the fixed slots
         // until the process eventually crashes on FindFreeSyncpoint() exhaustion.
+        if (trace)
+            LOGI("[NV-GPU-DTOR] BEFORE_RELEASE_SYNCPOINT syncpoint={}", channelSyncpoint);
         core.syncpointManager.ReleaseSyncpoint(channelSyncpoint);
+        if (trace)
+            LOGI("[NV-GPU-DTOR] AFTER_RELEASE_SYNCPOINT syncpoint={} hasChannelCtx={}",
+                 channelSyncpoint, channelCtx != nullptr);
     }
 
     static constexpr size_t SyncpointWaitCmdLen{4};

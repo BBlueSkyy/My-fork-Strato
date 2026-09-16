@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <common/settings.h>
 #include "driver.h"
 #include "devices/nvmap.h"
 #include "devices/nvhost/ctrl.h"
@@ -58,6 +59,14 @@ namespace skyline::service::nvdrv {
 
         // Device doesn't exist/no permissions
         return NvResult::FileOperationFailed;
+    }
+
+    std::string Driver::GetDeviceName(FileDescriptor fd) {
+        std::shared_lock lock(deviceMutex);
+        auto it{devices.find(fd)};
+        if (it == devices.end())
+            return "<invalid-fd>";
+        return it->second->GetName();
     }
 
     static PosixResult LogIoctlResult(PosixResult result, u32 ioctl) {
@@ -137,9 +146,21 @@ namespace skyline::service::nvdrv {
     }
 
     void Driver::CloseDevice(FileDescriptor fd) {
+        const bool trace{*state.settings->autoStub};
+        if (trace)
+            LOGI("[NV-CLOSE] BEFORE_LOCK fd={}", fd);
+
         try {
             std::unique_lock lock(deviceMutex);
+            if (trace) {
+                LOGI("[NV-CLOSE] AFTER_LOCK fd={}", fd);
+                LOGI("[NV-CLOSE] BEFORE_ERASE fd={}", fd);
+            }
+
             devices.erase(fd);
+
+            if (trace)
+                LOGI("[NV-CLOSE] AFTER_ERASE fd={}", fd);
         } catch (const std::out_of_range &) {
             LOGW("Trying to close invalid fd: {}", fd);
         }
