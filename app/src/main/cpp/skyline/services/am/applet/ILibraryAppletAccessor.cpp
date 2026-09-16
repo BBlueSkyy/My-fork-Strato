@@ -49,7 +49,10 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::Start(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
-        return StartApplet();
+        LOGI("ILibraryAppletAccessor::Start: applet={}, mode=0x{:X}", ToString(appletId), appletMode);
+        auto result{StartApplet()};
+        LOGI("ILibraryAppletAccessor::Start: applet={} returned", ToString(appletId));
+        return result;
     }
 
     Result ILibraryAppletAccessor::RequestExit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
@@ -75,12 +78,22 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::PushInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
-        applet->PushNormalDataToApplet(request.PopService<IStorage>(0, session));
+        auto storage{request.PopService<IStorage>(0, session)};
+        LOGI("ILibraryAppletAccessor::PushInData: applet={}, mode=0x{:X}, size=0x{:X}",
+             ToString(appletId), appletMode, storage->GetSpan().size());
+        applet->PushNormalDataToApplet(std::move(storage));
         return {};
     }
 
     Result ILibraryAppletAccessor::PushInteractiveInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
-        applet->PushInteractiveDataToApplet(request.PopService<IStorage>(0, session));
+        auto storage{request.PopService<IStorage>(0, session)};
+        auto data{storage->GetSpan()};
+        u32 rawRequest{};
+        if (data.size() >= sizeof(rawRequest))
+            std::memcpy(&rawRequest, data.data(), sizeof(rawRequest));
+        LOGI("ILibraryAppletAccessor::PushInteractiveInData: applet={}, mode=0x{:X}, size=0x{:X}, request=0x{:X}",
+             ToString(appletId), appletMode, data.size(), rawRequest);
+        applet->PushInteractiveDataToApplet(std::move(storage));
         return {};
     }
 
@@ -94,6 +107,15 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::PopInteractiveOutData(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
         if (auto outStorage{applet->PopInteractiveAndClear()}) {
+            auto data{outStorage->GetSpan()};
+            u32 rawState{};
+            u32 rawReply{};
+            if (data.size() >= sizeof(rawState))
+                std::memcpy(&rawState, data.data(), sizeof(rawState));
+            if (data.size() >= sizeof(rawState) + sizeof(rawReply))
+                std::memcpy(&rawReply, data.data() + sizeof(rawState), sizeof(rawReply));
+            LOGI("ILibraryAppletAccessor::PopInteractiveOutData: applet={}, size=0x{:X}, state=0x{:X}, reply=0x{:X}",
+                 ToString(appletId), data.size(), rawState, rawReply);
             manager.RegisterService(outStorage, session, response);
             return {};
         }
