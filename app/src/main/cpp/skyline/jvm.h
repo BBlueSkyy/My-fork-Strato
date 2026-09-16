@@ -80,6 +80,18 @@ namespace skyline {
         using KeyboardCloseResult = u32;
         using KeyboardTextCheckResult = u32;
 
+        struct KeyboardUpdate {
+            enum class Type : u32 {
+                Changed = 0,
+                Enter = 1,
+                Cancel = 2,
+                Closed = 3,
+            };
+
+            Type type;
+            std::u16string text;
+            i32 cursor;
+        };
 
         jobject instance; //!< A reference to the activity
         jclass instanceClass; //!< The class of the activity
@@ -149,75 +161,38 @@ namespace skyline {
          */
         static bool CheckNull(jobject &object);
 
-        /**
-         * @brief A call to EmulationActivity.initializeControllers in Kotlin
-         */
+        /** @brief A call to EmulationActivity.initializeControllers in Kotlin */
         void InitializeControllers();
-
-        /**
-         * @brief A call to EmulationActivity.vibrateDevice in Kotlin
-         */
+        /** @brief A call to EmulationActivity.vibrateDevice in Kotlin */
         void VibrateDevice(jint index, const span<jlong> &timings, const span<jint> &amplitudes);
-
-        /**
-         * @brief A call to EmulationActivity.clearVibrationDevice in Kotlin
-         */
+        /** @brief A call to EmulationActivity.clearVibrationDevice in Kotlin */
         void ClearVibrationDevice(jint index);
 
-        /**
-         * @brief A call to EmulationActivity.showKeyboard in Kotlin
-         */
+        /** @brief A call to EmulationActivity.showKeyboard in Kotlin */
         KeyboardHandle ShowKeyboard(KeyboardConfig &config, std::u16string initialText);
-
-        /**
-         * @brief A call to EmulationActivity.waitForSubmitOrCancel in Kotlin
-         */
+        KeyboardHandle CloneKeyboardHandle(KeyboardHandle dialog);
+        void ReleaseKeyboardHandle(KeyboardHandle dialog);
+        /** @brief A call to EmulationActivity.waitForSubmitOrCancel in Kotlin */
         std::pair<KeyboardCloseResult, std::u16string> WaitForSubmitOrCancel(KeyboardHandle dialog);
-
-        /**
-         * @brief A call to EmulationActivity.closeKeyboard in Kotlin
-         */
+        KeyboardUpdate WaitForInlineKeyboardUpdate(KeyboardHandle dialog);
+        /** @brief A call to EmulationActivity.closeKeyboard in Kotlin */
         void CloseKeyboard(KeyboardHandle dialog);
-
-        /**
-         * @brief A call to EmulationActivity.showValidationResult in Kotlin
-         */
+        /** @brief A call to EmulationActivity.showValidationResult in Kotlin */
         KeyboardCloseResult ShowValidationResult(KeyboardHandle dialog, KeyboardTextCheckResult checkResult, std::u16string message);
 
-        /**
-         * @brief A call to EmulationActivity.reportCrash in Kotlin
-         */
+        /** @brief A call to EmulationActivity.reportCrash in Kotlin */
         void reportCrash();
-
-        /**
-         * @brief A call to EmulationActivity.showPipelineLoadingScreen in Kotlin
-         */
+        /** @brief A call to EmulationActivity.showPipelineLoadingScreen in Kotlin */
         void ShowPipelineLoadingScreen(u32 totalPipelineCount);
-
-        /**
-         * @brief A call to EmulationActivity.updatePipelineLoadingProgress in Kotlin
-         */
+        /** @brief A call to EmulationActivity.updatePipelineLoadingProgress in Kotlin */
         void UpdatePipelineLoadingProgress(u32 progress);
-
-        /**
-         * @brief A call to EmulationActivity.hidePipelineLoadingScreen in Kotlin
-         */
+        /** @brief A call to EmulationActivity.hidePipelineLoadingScreen in Kotlin */
         void HidePipelineLoadingScreen();
-
-        /**
-         * @brief Updates the runtime shader compilation notifier on Android
-         */
+        /** @brief Updates the runtime shader compilation notifier on Android */
         void UpdateShaderCompilationState(bool compiling);
-
-        /**
-         * @brief A call to EmulationActivity.getVersionCode in Kotlin
-         * @return A version code in Vulkan's format with 14-bit patch + 10-bit major and minor components
-         */
+        /** @brief A call to EmulationActivity.getVersionCode in Kotlin */
         i32 GetVersionCode();
-
-        /**
-         * @brief A call to EmulationActivity.getDhcpInfo in Kotlin
-         */
+        /** @brief A call to EmulationActivity.getDhcpInfo in Kotlin */
         DhcpInfo GetDhcpInfo();
 
       private:
@@ -225,8 +200,11 @@ namespace skyline {
         jmethodID vibrateDeviceId;
         jmethodID clearVibrationDeviceId;
 
+        jclass keyboardDialogClass{};
         jmethodID showKeyboardId;
         jmethodID waitForSubmitOrCancelId;
+        jmethodID waitForInlineUpdateId{};
+        jmethodID cancelInlineWaitId{};
         jmethodID closeKeyboardId;
         jmethodID showValidationResultId;
         jmethodID getIntegerValueId;
@@ -240,7 +218,6 @@ namespace skyline {
         jmethodID updateShaderCompilationStateId{};
 
         jmethodID getVersionCodeId;
-
         jmethodID getDhcpInfoId;
     };
 }

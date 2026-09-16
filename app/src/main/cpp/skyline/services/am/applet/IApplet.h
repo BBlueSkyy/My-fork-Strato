@@ -50,6 +50,12 @@ namespace skyline::service::am {
         virtual Result GetResult() = 0;
 
         /**
+         * @brief Copies the current indirect-display image into a VI-provided buffer
+         * @return True when an image is available, false when VI should return NoData
+         */
+        virtual bool GetIndirectLayerImage(span<u8>) { return false; }
+
+        /**
          * @brief Called when data is pushed to the applet by the guest through the normal queue
          */
         virtual void PushNormalDataToApplet(std::shared_ptr<IStorage> data) = 0;

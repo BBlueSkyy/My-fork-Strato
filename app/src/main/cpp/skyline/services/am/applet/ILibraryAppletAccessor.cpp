@@ -24,6 +24,10 @@ namespace skyline::service::am {
         LOGD("Applet accessor for {} ID created with appletMode 0x{:X}", ToString(appletId), appletMode);
     }
 
+    ILibraryAppletAccessor::~ILibraryAppletAccessor() {
+        manager.indirectLayers->Unregister(indirectLayerHandle);
+    }
+
     Result ILibraryAppletAccessor::StartApplet() {
         stateChangeEvent->ResetSignal();
         return applet->Start();
@@ -113,10 +117,21 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
-        // The command has no input payload. #151 does not provide an indirect-layer backend;
-        // do not return a fabricated consumer handle.
-        return result::ObjectInvalid;
+    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const u64 appletResourceUserId{request.Pop<u64>()};
+        if (appletMode != applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay)
+            return result::ObjectInvalid;
+
+        if (!indirectLayerHandle) {
+            indirectLayerAruid = appletResourceUserId;
+            indirectLayerHandle = manager.indirectLayers->Register(applet, appletResourceUserId);
+        } else if (indirectLayerAruid != appletResourceUserId ||
+                   !manager.indirectLayers->Get(indirectLayerHandle, appletResourceUserId)) {
+            return result::ObjectInvalid;
+        }
+
+        response.Push<u64>(indirectLayerHandle);
+        return {};
     }
 
     Result ILibraryAppletAccessor::Unknown170(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {

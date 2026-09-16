@@ -3,7 +3,9 @@
 // Copyright © 2019 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #include <gpu.h>
+#include <limits>
 #include <kernel/types/KProcess.h>
+#include <services/am/applet/IApplet.h>
 #include <services/serviceman.h>
 #include <services/hosbinder/IHOSBinderDriver.h>
 #include "IApplicationDisplayService.h"
@@ -12,6 +14,34 @@
 #include "results.h"
 
 namespace skyline::service::visrv {
+    namespace {
+        constexpr u64 IndirectLayerPixelSize{4};
+        constexpr u64 IndirectLayerPitchAlignment{0x40};
+        constexpr u64 IndirectLayerHeightAlignment{0x40};
+        constexpr u64 IndirectLayerBlockSize{0x20000};
+        constexpr u64 IndirectLayerBufferAlignment{0x1000};
+
+        bool GetIndirectLayerLayout(i64 width, i64 height, u64 &pitch, u64 &size) {
+            if (width <= 0 || height <= 0)
+                return false;
+
+            constexpr u64 Max{std::numeric_limits<u64>::max()};
+            const u64 w{static_cast<u64>(width)};
+            const u64 h{static_cast<u64>(height)};
+            if (w > (Max - (IndirectLayerPitchAlignment - 1)) / IndirectLayerPixelSize ||
+                h > Max - (IndirectLayerHeightAlignment - 1))
+                return false;
+
+            pitch = util::AlignUpNpot<u64>(w * IndirectLayerPixelSize, IndirectLayerPitchAlignment);
+            const u64 alignedHeight{util::AlignUpNpot<u64>(h, IndirectLayerHeightAlignment)};
+            if (pitch && alignedHeight > (Max - (IndirectLayerBlockSize - 1)) / pitch)
+                return false;
+
+            size = util::AlignUpNpot<u64>(pitch * alignedHeight, IndirectLayerBlockSize);
+            return true;
+        }
+    }
+
     IApplicationDisplayService::IApplicationDisplayService(const DeviceState &state, ServiceManager &manager, PrivilegeLevel level) : level(level), IDisplayService(state, manager) {}
 
     Result IApplicationDisplayService::GetRelayService(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -126,36 +156,40 @@ namespace skyline::service::visrv {
     }
 
     Result IApplicationDisplayService::GetIndirectLayerImageMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto width{request.Pop<i64>()};
-        auto height{request.Pop<i64>()};
+        const i64 width{request.Pop<i64>()};
+        const i64 height{request.Pop<i64>()};
+        const u64 consumerHandle{request.Pop<u64>()};
+        const u64 appletResourceUserId{request.Pop<u64>()};
 
-        if (!request.outputBuf.empty()) {
-            // As we don't support indirect layers, we just fill the output buffer with red
-            auto imageBuffer{request.outputBuf.at(0)};
-            std::fill(imageBuffer.begin(), imageBuffer.end(), 0xFF0000FF);
-        }
+        u64 pitch{}, size{};
+        if (!GetIndirectLayerLayout(width, height, pitch, size))
+            return result::InvalidDimensions;
+        if (request.outputBuf.empty() || request.outputBuf.at(0).size() < size)
+            return result::InvalidArgument;
 
-        response.Push<i64>(width);
-        response.Push<i64>(height);
+        auto applet{manager.indirectLayers->Get(consumerHandle, appletResourceUserId)};
+        if (!applet)
+            return result::InvalidArgument;
 
+        auto image{request.outputBuf.at(0).first(size)};
+        if (!applet->GetIndirectLayerImage(image))
+            return result::NoData;
+
+        response.Push<i64>(static_cast<i64>(size));
+        response.Push<i64>(static_cast<i64>(pitch));
         return {};
     }
 
     Result IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        i64 width{request.Pop<i64>()}, height{request.Pop<i64>()};
+        const i64 width{request.Pop<i64>()};
+        const i64 height{request.Pop<i64>()};
 
-        if (width <= 0 || height <= 0)
+        u64 pitch{}, size{};
+        if (!GetIndirectLayerLayout(width, height, pitch, size))
             return result::InvalidDimensions;
 
-        constexpr ssize_t A8B8G8R8Size{4}; //!< The size of a pixel in the A8B8G8R8 format, this format is used by indirect layers
-        i64 layerSize{width * height * A8B8G8R8Size};
-
-        constexpr ssize_t BlockSize{0x20000}; //!< The size of an arbitrarily defined block, the layer size must be aligned to a block
-        response.Push<i64>(util::AlignUpNpot<i64>(layerSize, BlockSize));
-
-        constexpr size_t DefaultAlignment{0x1000}; //!< The default alignment of the buffer
-        response.Push<u64>(DefaultAlignment);
-
-        return Result{};
+        response.Push<i64>(static_cast<i64>(size));
+        response.Push<i64>(static_cast<i64>(IndirectLayerBufferAlignment));
+        return {};
     }
 }
