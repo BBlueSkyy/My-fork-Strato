@@ -97,7 +97,11 @@ Text replies use the ABI-sized text region followed by the correct argument stru
 - `MovedCursorArg`: `0x8` bytes;
 - `DecidedEnterArg`: `0x4` bytes.
 
-V2 variants use the same base text payload and the exact trailing V2 extension required by the reference behavior. The implementation must derive sizes from named protocol types/constants and static assertions rather than magic allocation sizes scattered through the applet.
+`FinishedInitialize` is the common 8-byte header plus exactly one zero byte.
+
+Each V2 ChangedString/MovedCursor reply is the corresponding non-V2 text payload plus exactly one trailing `u8` flag with value `0`, matching the reference behavior. This applies to UTF-16 and UTF-8 V2 replies.
+
+The implementation derives reply sizes from named protocol types/constants and static assertions rather than magic allocation sizes scattered through the applet.
 
 `ChangedString`, `MovedCursor`, `DecidedEnter`, and their UTF-8/V2 variants are selected only in the protocol layer.
 
@@ -105,22 +109,22 @@ V2 variants use the same base text payload and the exact trailing V2 extension r
 
 Introduce a small Strato-native inline frontend contract under `skyline/applet/swkbd`.
 
-The protocol core calls only these conceptual operations:
+The boundary exposes these data objects:
 
-- initialize inline session with immutable keyboard parameters and callbacks;
-- show with appear parameters;
-- update text/cursor from guest state;
+- `InlineKeyboardInitializeParameters`: initial text, initial cursor, OK text, optional symbol keys, max/min text length, keyboard type, key-disable flags, enable-backspace, enable-return, disable-cancel;
+- `InlineKeyboardAppearParameters`: max/min text length, key-top scale/translation values, keyboard type, key-disable flags, key-top-floating, enable-backspace, enable-return, disable-cancel;
+- `InlineKeyboardTextState`: UTF-16 text plus cursor;
+- `InlineKeyboardHostEvent`: `{ChangedString, MovedCursor, Enter, Cancel}` plus text/cursor where applicable.
+
+The protocol core calls only these operations:
+
+- initialize inline session with `InlineKeyboardInitializeParameters` and one host-event callback;
+- show with `InlineKeyboardAppearParameters`;
+- update with `InlineKeyboardTextState`;
 - hide;
 - close/exit.
 
-The frontend callback reports only host events:
-
-- text changed;
-- cursor moved;
-- enter/confirm;
-- cancel.
-
-The callback carries text and cursor where applicable. It does not expose HOS reply IDs to Android.
+The frontend callback reports only host events. It does not expose HOS reply IDs to Android.
 
 This boundary prevents `SoftwareKeyboardApplet` from directly manipulating Java views and prevents `JvmManager`/Kotlin from knowing HOS state-machine details.
 
@@ -182,7 +186,7 @@ IME composition must remain valid: `setComposingText`, `commitText`, deletion, s
 
 The inline protocol state is protected by one applet-owned mutex. JNI callbacks copy the registered callback under the JNI bridge lock, release that lock, then invoke the applet callback. The applet callback then takes the applet mutex. This lock ordering avoids calling back into the applet while holding the JVM callback mutex.
 
-Every inline session has a generation/lifetime guard so stale Android callbacks from a closed keyboard cannot affect a newly opened keyboard.
+Every inline session has a monotonically increasing generation value. The generation is captured when the frontend callback is registered and is carried through JNI host events. The applet discards any event whose generation does not match the currently active session. This prevents late Android events from a hidden/closed view from mutating a newly opened session.
 
 Destruction, `Finalize`, and applet exit all clear the registered callback and close the host frontend exactly once. Closing the host frontend must not itself synthesize Enter or Cancel.
 
