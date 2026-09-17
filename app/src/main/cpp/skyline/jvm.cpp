@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include "jvm.h"
+#include "os.h"
 
 namespace skyline {
     std::string JniString::GetJString(JNIEnv *env, jstring jString) {
@@ -72,6 +73,26 @@ namespace skyline {
           getDhcpInfoId{environ->GetMethodID(instanceClass, "getDhcpInfo", "()Landroid/net/DhcpInfo;")} {
         env.Initialize(environ);
 
+        auto localInlineKeyboardClass{environ->FindClass("org/stratoemu/strato/applet/swkbd/InlineKeyboardInputView")};
+        inlineKeyboardClass = reinterpret_cast<jclass>(environ->NewGlobalRef(localInlineKeyboardClass));
+        showInlineKeyboardId = environ->GetStaticMethodID(
+            inlineKeyboardClass,
+            "show",
+            "(Landroid/app/Activity;Ljava/nio/ByteBuffer;Ljava/lang/String;IZ)V");
+        updateInlineKeyboardId = environ->GetStaticMethodID(
+            inlineKeyboardClass,
+            "update",
+            "(Landroid/app/Activity;Ljava/lang/String;I)V");
+        hideInlineKeyboardId = environ->GetStaticMethodID(
+            inlineKeyboardClass,
+            "hide",
+            "(Landroid/app/Activity;)V");
+        closeInlineKeyboardId = environ->GetStaticMethodID(
+            inlineKeyboardClass,
+            "close",
+            "(Landroid/app/Activity;)V");
+        environ->DeleteLocalRef(localInlineKeyboardClass);
+
         auto notifierClass{environ->FindClass("org/stratoemu/strato/ShaderCompilationNotifier")};
         shaderCompilationNotifierClass = reinterpret_cast<jclass>(environ->NewGlobalRef(notifierClass));
         updateShaderCompilationStateId = environ->GetStaticMethodID(shaderCompilationNotifierClass, "update", "(Landroid/app/Activity;Z)V");
@@ -79,6 +100,8 @@ namespace skyline {
     }
 
     JvmManager::~JvmManager() {
+        ClearInlineKeyboardCallback();
+        env->DeleteGlobalRef(inlineKeyboardClass);
         env->DeleteGlobalRef(shaderCompilationNotifierClass);
         env->DeleteGlobalRef(instanceClass);
         env->DeleteGlobalRef(instance);
@@ -120,7 +143,7 @@ namespace skyline {
         env->CallVoidMethod(instance, clearVibrationDeviceId, index);
     }
 
-    jobject JvmManager::ShowKeyboard(KeyboardConfig &config, std::u16string initialText) {
+    JvmManager::KeyboardHandle JvmManager::ShowKeyboard(KeyboardConfig &config, std::u16string initialText) {
         auto buffer{env->NewDirectByteBuffer(&config, sizeof(KeyboardConfig))};
         auto str{env->NewString(reinterpret_cast<const jchar *>(initialText.data()), static_cast<int>(initialText.length()))};
         jobject localKeyboardDialog{env->CallObjectMethod(instance, showKeyboardId, buffer, str)};
@@ -132,7 +155,7 @@ namespace skyline {
         return keyboardDialog;
     }
 
-    std::pair<JvmManager::KeyboardCloseResult, std::u16string> JvmManager::WaitForSubmitOrCancel(jobject keyboardDialog) {
+    std::pair<JvmManager::KeyboardCloseResult, std::u16string> JvmManager::WaitForSubmitOrCancel(KeyboardHandle keyboardDialog) {
         auto returnArray{reinterpret_cast<jobjectArray>(env->CallObjectMethod(instance, waitForSubmitOrCancelId, keyboardDialog))};
         auto buttonInteger{env->GetObjectArrayElement(returnArray, 0)};
         auto inputJString{reinterpret_cast<jstring>(env->GetObjectArrayElement(returnArray, 1))};
@@ -141,6 +164,61 @@ namespace skyline {
         env->ReleaseStringChars(inputJString, stringChars);
 
         return {static_cast<KeyboardCloseResult>(env->CallIntMethod(buttonInteger, getIntegerValueId)), input};
+    }
+
+    void JvmManager::CloseKeyboard(KeyboardHandle dialog) {
+        env->CallVoidMethod(instance, closeKeyboardId, dialog);
+        env->DeleteGlobalRef(dialog);
+    }
+
+    JvmManager::KeyboardCloseResult JvmManager::ShowValidationResult(KeyboardHandle dialog, KeyboardTextCheckResult checkResult, std::u16string message) {
+        auto str{env->NewString(reinterpret_cast<const jchar *>(message.data()), static_cast<int>(message.length()))};
+        auto result{static_cast<KeyboardCloseResult>(env->CallIntMethod(instance, showValidationResultId, dialog, checkResult, str))};
+        env->DeleteLocalRef(str);
+        return result;
+    }
+
+    void JvmManager::ShowInlineKeyboard(KeyboardConfig &config, std::u16string_view text, i32 cursor, bool enableBackspace) {
+        auto buffer{env->NewDirectByteBuffer(&config, sizeof(KeyboardConfig))};
+        auto str{env->NewString(reinterpret_cast<const jchar *>(text.data()), static_cast<int>(text.size()))};
+        env->CallStaticVoidMethod(inlineKeyboardClass, showInlineKeyboardId, instance, buffer, str,
+                                  static_cast<jint>(cursor), static_cast<jboolean>(enableBackspace));
+        env->DeleteLocalRef(buffer);
+        env->DeleteLocalRef(str);
+    }
+
+    void JvmManager::UpdateInlineKeyboard(std::u16string_view text, i32 cursor) {
+        auto str{env->NewString(reinterpret_cast<const jchar *>(text.data()), static_cast<int>(text.size()))};
+        env->CallStaticVoidMethod(inlineKeyboardClass, updateInlineKeyboardId, instance, str, static_cast<jint>(cursor));
+        env->DeleteLocalRef(str);
+    }
+
+    void JvmManager::HideInlineKeyboard() {
+        env->CallStaticVoidMethod(inlineKeyboardClass, hideInlineKeyboardId, instance);
+    }
+
+    void JvmManager::CloseInlineKeyboard() {
+        env->CallStaticVoidMethod(inlineKeyboardClass, closeInlineKeyboardId, instance);
+    }
+
+    void JvmManager::SetInlineKeyboardCallback(InlineKeyboardCallback callback) {
+        std::scoped_lock lock{inlineKeyboardCallbackMutex};
+        inlineKeyboardCallback = std::move(callback);
+    }
+
+    void JvmManager::ClearInlineKeyboardCallback() {
+        std::scoped_lock lock{inlineKeyboardCallbackMutex};
+        inlineKeyboardCallback = {};
+    }
+
+    void JvmManager::SubmitInlineKeyboardUpdate(InlineKeyboardUpdate update) {
+        InlineKeyboardCallback callback;
+        {
+            std::scoped_lock lock{inlineKeyboardCallbackMutex};
+            callback = inlineKeyboardCallback;
+        }
+        if (callback)
+            callback(std::move(update));
     }
 
     DhcpInfo JvmManager::GetDhcpInfo() {
@@ -158,18 +236,6 @@ namespace skyline {
         jint dns1{env->GetIntField(dhcpInfo, dns1FieldId)};
         jint dns2{env->GetIntField(dhcpInfo, dns2FieldId)};
         return DhcpInfo{ipAddress, subnet, gateway, dns1, dns2};
-    }
-
-    void JvmManager::CloseKeyboard(jobject dialog) {
-        env->CallVoidMethod(instance, closeKeyboardId, dialog);
-        env->DeleteGlobalRef(dialog);
-    }
-
-    JvmManager::KeyboardCloseResult JvmManager::ShowValidationResult(jobject dialog, KeyboardTextCheckResult checkResult, std::u16string message) {
-        auto str{env->NewString(reinterpret_cast<const jchar *>(message.data()), static_cast<int>(message.length()))};
-        auto result{static_cast<KeyboardCloseResult>(env->CallIntMethod(instance, showValidationResultId, dialog, checkResult, str))};
-        env->DeleteLocalRef(str);
-        return result;
     }
 
     void JvmManager::reportCrash() {
@@ -195,4 +261,44 @@ namespace skyline {
     i32 JvmManager::GetVersionCode() {
         return env->CallIntMethod(instance, getVersionCodeId);
     }
+}
+
+extern std::weak_ptr<skyline::kernel::OS> OsWeak;
+
+namespace {
+    void SubmitInlineKeyboardEvent(JNIEnv *env, jint kind, jstring text, jint cursor) {
+        if (kind < static_cast<jint>(skyline::JvmManager::InlineKeyboardUpdate::Kind::ChangedString) ||
+            kind > static_cast<jint>(skyline::JvmManager::InlineKeyboardUpdate::Kind::Cancel))
+            return;
+
+        std::u16string input;
+        if (text) {
+            const auto chars{env->GetStringChars(text, nullptr)};
+            const auto length{env->GetStringLength(text)};
+            input.assign(reinterpret_cast<const char16_t *>(chars), static_cast<size_t>(length));
+            env->ReleaseStringChars(text, chars);
+        }
+
+        auto os{OsWeak.lock()};
+        if (!os || !os->state.jvm)
+            return;
+
+        os->state.jvm->SubmitInlineKeyboardUpdate({
+            .kind = static_cast<skyline::JvmManager::InlineKeyboardUpdate::Kind>(kind),
+            .text = std::move(input),
+            .cursor = static_cast<skyline::i32>(cursor),
+        });
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_stratoemu_strato_applet_swkbd_InlineKeyboardInputView_submitInlineKeyboardEvent(
+    JNIEnv *env, jclass, jint kind, jstring text, jint cursor) {
+    SubmitInlineKeyboardEvent(env, kind, text, cursor);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_stratoemu_strato_applet_swkbd_InlineKeyboardInputView_00024Companion_submitInlineKeyboardEvent(
+    JNIEnv *env, jobject, jint kind, jstring text, jint cursor) {
+    SubmitInlineKeyboardEvent(env, kind, text, cursor);
 }
