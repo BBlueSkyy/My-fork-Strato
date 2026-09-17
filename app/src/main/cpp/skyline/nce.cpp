@@ -9,6 +9,7 @@
 #include "os.h"
 #include "jvm.h"
 #include "kernel/types/KProcess.h"
+#include "kernel/ipc.h"
 #include "kernel/svc.h"
 #include "nce/guest.h"
 #include "nce/instructions.h"
@@ -26,13 +27,58 @@ namespace skyline::nce {
 
         const auto &state{*ctx->state};
         auto svc{kernel::svc::SvcTable[svcId]};
+        auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
+
+        // Arm a short, per-thread trace exactly when the guest asks VI for the indirect-layer
+        // allocation requirements. From that point on, log every SVC until the guest either
+        // reaches GetIndirectLayerImageMap/another IPC or blocks in a kernel wait. This keeps
+        // INFO logging narrow enough for titles that cannot run with global Debug logging.
+        static thread_local bool swkbdIndirectTrace{};
+        static thread_local u32 swkbdIndirectTraceBudget{};
+
+        if (svcId == 0x21) { // SendSyncRequest
+            try {
+                auto session{state.process->GetHandle<kernel::type::KSession>(static_cast<KHandle>(svcContext.x0))};
+                kernel::ipc::IpcRequest peek{session->isDomain, state};
+                if (!peek.isTipc && peek.payload) {
+                    const u32 commandId{peek.payload->value};
+                    if (commandId == 0x99C) { // GetIndirectLayerImageRequiredMemoryInfo
+                        swkbdIndirectTrace = true;
+                        swkbdIndirectTraceBudget = 64;
+                        LOGI("[SWKBD-PATH] armed after VI command 0x99C handle=0x{:X}", static_cast<u32>(svcContext.x0));
+                    }
+
+                    if (swkbdIndirectTrace) {
+                        LOGI("[SWKBD-PATH] IPC handle=0x{:X} command=0x{:X} in={} out={} domain={}",
+                             static_cast<u32>(svcContext.x0), commandId, peek.inputBuf.size(), peek.outputBuf.size(), session->isDomain);
+                    }
+                }
+            } catch (...) {
+                // Diagnostic-only peek. The real SVC path below remains authoritative.
+            }
+        }
+
+        const bool traceThisSvc{swkbdIndirectTrace && swkbdIndirectTraceBudget != 0};
+        if (traceThisSvc) {
+            LOGI("[SWKBD-PATH] SVC enter id=0x{:X} {} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X}",
+                 svcId, svc ? svc.name : "<unimplemented>", svcContext.x0, svcContext.x1, svcContext.x2, svcContext.x3);
+        }
+
         try {
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
-                auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
                 (svc.function)(state, svcContext);
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
+            }
+
+            if (traceThisSvc) {
+                LOGI("[SWKBD-PATH] SVC exit id=0x{:X} {} result=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X}",
+                     svcId, svc.name, svcContext.w0, svcContext.x1, svcContext.x2, svcContext.x3);
+                if (--swkbdIndirectTraceBudget == 0) {
+                    swkbdIndirectTrace = false;
+                    LOGI("[SWKBD-PATH] trace budget exhausted");
+                }
             }
 
             while (kernel::Scheduler::YieldPending) [[unlikely]] {
@@ -472,9 +518,7 @@ namespace skyline::nce {
                             patch++;
                         }
                     } else if (mrs.srcReg == CntpctEl0) {
-                        /* Physical Counter Load Emulation (Without Rescaling) */
-                        // We just convert CNTPCT_EL0 -> CNTVCT_EL0 as Linux doesn't allow access to the physical counter
-                        *instruction = instructions::Mrs(CntvctEl0, registers::X(mrs.destReg)).raw;
+                        offsets.push_back(instructionOffset);
                     }
                 }
             } else if (msr.Verify() && msr.destReg == TpidrEl0) {
