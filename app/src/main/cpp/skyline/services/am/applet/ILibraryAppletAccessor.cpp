@@ -113,9 +113,12 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
-        // The command has no input payload. #151 does not provide an indirect-layer backend;
-        // do not return a fabricated consumer handle.
+    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd) {
+            // Eden's custom SWKBD frontend only requires a non-zero token here and does not use an indirect display handle.
+            response.Push<u64>(0xDEADBEEFULL);
+            return {};
+        }
         return result::ObjectInvalid;
     }
 
