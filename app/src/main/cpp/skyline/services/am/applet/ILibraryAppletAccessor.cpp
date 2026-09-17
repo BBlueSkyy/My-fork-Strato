@@ -22,10 +22,14 @@ namespace skyline::service::am {
         popNormalOutDataEventHandle = state.process->InsertItem(popNormalOutDataEvent);
         popInteractiveOutDataEventHandle = state.process->InsertItem(popInteractiveOutDataEvent);
         LOGD("Applet accessor for {} ID created with appletMode 0x{:X}", ToString(appletId), appletMode);
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-TRACE] accessor created mode=0x{:X}", static_cast<u32>(appletMode));
     }
 
     Result ILibraryAppletAccessor::StartApplet() {
         stateChangeEvent->ResetSignal();
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-TRACE] StartApplet mode=0x{:X}", static_cast<u32>(appletMode));
         return applet->Start();
     }
 
@@ -72,28 +76,40 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::PushInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-TRACE] PushInData");
         applet->PushNormalDataToApplet(request.PopService<IStorage>(0, session));
         return {};
     }
 
     Result ILibraryAppletAccessor::PushInteractiveInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-TRACE] PushInteractiveInData");
         applet->PushInteractiveDataToApplet(request.PopService<IStorage>(0, session));
         return {};
     }
 
     Result ILibraryAppletAccessor::PopOutData(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
         if (auto outStorage{applet->PopNormalAndClear()}) {
+            if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+                LOGI("[SWKBD-TRACE] PopOutData -> storage");
             manager.RegisterService(outStorage, session, response);
             return {};
         }
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-TRACE] PopOutData -> NotAvailable");
         return result::NotAvailable;
     }
 
     Result ILibraryAppletAccessor::PopInteractiveOutData(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
         if (auto outStorage{applet->PopInteractiveAndClear()}) {
+            if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+                LOGI("[SWKBD-TRACE] PopInteractiveOutData -> storage");
             manager.RegisterService(outStorage, session, response);
             return {};
         }
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-TRACE] PopInteractiveOutData -> NotAvailable");
         return result::NotAvailable;
     }
 
@@ -103,6 +119,8 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::GetPopInteractiveOutDataEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-TRACE] GetPopInteractiveOutDataEvent");
         response.copyHandles.push_back(popInteractiveOutDataEventHandle);
         return {};
     }
@@ -116,6 +134,7 @@ namespace skyline::service::am {
     Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd) {
             // Eden's custom SWKBD frontend only requires a non-zero token here and does not use an indirect display handle.
+            LOGI("[SWKBD-TRACE] GetIndirectLayerConsumerHandle -> 0xDEADBEEF");
             response.Push<u64>(0xDEADBEEFULL);
             return {};
         }
