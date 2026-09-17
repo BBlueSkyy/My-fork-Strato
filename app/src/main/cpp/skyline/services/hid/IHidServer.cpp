@@ -13,9 +13,9 @@ namespace skyline::service::hid {
         Result ValidateSixAxisHandle(const NpadDeviceHandle &handle) {
             if (!NpadManager::IsNpadIdValid(handle.id))
                 return result::InvalidNpadId;
-            if (handle.padding != 0 || handle.GetType() == NpadControllerType::None)
+            if (handle.padding != 0)
                 return result::InvalidNpadHandle;
-            if (!NpadManager::IsSixAxisHandleValid(handle))
+            if (handle.deviceIndex >= 3)
                 return result::InvalidNpadDeviceIndex;
             return {};
         }
