@@ -10,6 +10,10 @@
 #include "software_keyboard_inline.h"
 
 namespace skyline::applet::swkbd {
+    namespace result {
+        constexpr Result NotAvailable(128, 2);
+    }
+
     static_assert(sizeof(KeyboardConfigVB) == sizeof(JvmManager::KeyboardConfig));
 
     /**
@@ -17,8 +21,7 @@ namespace skyline::applet::swkbd {
      * @brief An implementation for the Software Keyboard (swkbd) Applet which handles translating guest applet transactions to the appropriate host behavior
      */
     class SoftwareKeyboardApplet : public service::am::IApplet,
-                                   public service::am::EnableNormalQueue,
-                                   public std::enable_shared_from_this<SoftwareKeyboardApplet> {
+                                   public service::am::EnableNormalQueue {
       private:
         enum class CloseResult : u32 {
             Enter = 0x0,
@@ -77,6 +80,10 @@ namespace skyline::applet::swkbd {
         bool inlineUseMovedCursorV2{};
         bool inlineEnableBackspace{true};
         i32 inlineCursorPosition{};
+
+        std::weak_ptr<SoftwareKeyboardApplet> weak_from_this() {
+            return std::static_pointer_cast<SoftwareKeyboardApplet>(service::BaseService::shared_from_this());
+        }
 
         void SendResult();
 
