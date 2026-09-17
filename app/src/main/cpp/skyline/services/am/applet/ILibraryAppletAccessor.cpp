@@ -9,6 +9,7 @@
 namespace skyline::service::am {
     namespace {
         std::atomic<u64> nextIndirectLayerHandle{1};
+        std::atomic<u64> interactivePopMissCount{0};
     }
 
     ILibraryAppletAccessor::ILibraryAppletAccessor(const DeviceState &state, ServiceManager &manager,
@@ -107,6 +108,7 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::PopInteractiveOutData(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
         if (auto outStorage{applet->PopInteractiveAndClear()}) {
+            interactivePopMissCount.store(0, std::memory_order_relaxed);
             auto data{outStorage->GetSpan()};
             u32 rawState{};
             u32 rawReply{};
@@ -119,6 +121,12 @@ namespace skyline::service::am {
             manager.RegisterService(outStorage, session, response);
             return {};
         }
+
+        const u64 missCount{interactivePopMissCount.fetch_add(1, std::memory_order_relaxed) + 1};
+        if ((missCount & (missCount - 1)) == 0) {
+            LOGI("ILibraryAppletAccessor::PopInteractiveOutData: applet={}, no data (count={})",
+                 ToString(appletId), missCount);
+        }
         return result::NotAvailable;
     }
 
@@ -128,6 +136,8 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::GetPopInteractiveOutDataEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        LOGI("ILibraryAppletAccessor::GetPopInteractiveOutDataEvent: applet={}, handle=0x{:X}",
+             ToString(appletId), popInteractiveOutDataEventHandle);
         response.copyHandles.push_back(popInteractiveOutDataEventHandle);
         return {};
     }
