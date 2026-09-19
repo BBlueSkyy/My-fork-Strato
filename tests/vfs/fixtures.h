@@ -3,6 +3,7 @@
 #pragma once
 #include <lz4.h>
 #include <mbedtls/cipher.h>
+#include <mbedtls/sha256.h>
 #include <vfs/rom_filesystem.h>
 #include <vfs/partition_filesystem.h>
 #include <loader/program_content.h>
@@ -12,6 +13,11 @@ template<class T> void Put(std::vector<u8> &bytes, size_t offset, const T &value
     std::memcpy(bytes.data() + offset, &value, sizeof(value));
 }
 inline size_t Align(size_t n, size_t alignment = 0x200) { return (n + alignment - 1) & ~(alignment - 1); }
+inline std::array<u8, 0x20> Hash256(const void *data, size_t size) {
+    std::array<u8, 0x20> hash{};
+    Check(mbedtls_sha256_ret(static_cast<const unsigned char *>(data), size, hash.data(), 0) == 0, "Fixture SHA-256 failed");
+    return hash;
+}
 inline std::vector<u8> RomBytes(size_t size = 0x1000, u8 marker = 0x51) {
     std::vector<u8> data(size, marker);
     Put(data, 0, RomFileSystem::RomFsHeader{0x50, 0x50, 4, 0x54, 0x18, 0x6c, 4, 0x70, 0, 0x200});
@@ -90,6 +96,7 @@ struct NcaFixture {
     NCAHeader header{};
     std::array<NCASectionHeader, 4> sections{};
     std::array<std::vector<SubsectionEntry>, 4> counterEntries{};
+    std::array<u64, 4> counterDataEnds{};
     NcaFixture() {
         header.magic = util::MakeMagic<u32>("NCA3");
         header.contentType = NCAContentType::Program;
@@ -136,7 +143,9 @@ struct NcaFixture {
                 cryptRange(0, raw.size(), generation, false);
                 for (size_t i{}; i < counterEntries[index].size(); ++i) {
                     const auto &entry{counterEntries[index][i]};
-                    const size_t limit{i+1 < counterEntries[index].size() ? counterEntries[index][i+1].addressPatch : section.bktr.subsection.offset};
+                    const size_t limit{i+1 < counterEntries[index].size()
+                        ? counterEntries[index][i+1].addressPatch
+                        : static_cast<size_t>(counterDataEnds[index] != 0 ? counterDataEnds[index] : section.bktr.subsection.offset)};
                     cryptRange(entry.addressPatch, limit, entry.ctr, entry._pad0_[0] != 0);
                 }
             }
@@ -185,6 +194,57 @@ inline NcaFixture PatchFixture(bool executable = true) {
     f.counterEntries[1] = {subsection.subsectionEntries.begin(), subsection.subsectionEntries.begin() + 3};
     return f;
 }
+inline NcaFixture PatchMetaHashFixture(bool executable = true) {
+    NcaFixture f;
+    if (executable) { auto exe{ExeBytes(0x42)}; f.Add(0, ExeHeader(exe.size()), WithPrefix(exe)); }
+
+    auto section{RomHeader(0x400, 0x1000)};
+    section.raw.header.metadataHashType = 1;
+    section.bktr.relocation = {0x1000, 0x8000, util::MakeMagic<u32>("BKTR"), 1, 3, 0};
+    section.bktr.subsection = {0x9000, 0x8000, util::MakeMagic<u32>("BKTR"), 1, 2, 0};
+
+    constexpr size_t DataStart{0x1000};
+    constexpr size_t DataSize{0x10000};
+    constexpr size_t MetaHashOffset{DataStart + DataSize};
+    std::vector<u8> body(Align(MetaHashOffset + sizeof(NCAMetaDataHashData)), 0x62);
+
+    Put(body, 0x1000, RelocationBlock{0, 1, 0x1400, {0}});
+    RelocationBucketRaw reloc{};
+    reloc.numberEntries = 3;
+    reloc.endOffset = 0x1400;
+    reloc.relocationEntries[0] = {0, 0, 0};
+    reloc.relocationEntries[1] = {0x400, 0x200, 0};
+    reloc.relocationEntries[2] = {0xc00, 0x100, 1};
+    Put(body, 0x5000, reloc);
+
+    Put(body, 0x9000, SubsectionBlock{0, 1, 0x1000, {0}});
+    SubsectionBucketRaw subsection{};
+    subsection.numberEntries = 2;
+    subsection.endOffset = 0x1000;
+    subsection.subsectionEntries[0] = {0, {}, 9};
+    subsection.subsectionEntries[1] = {0x800, {}, 10};
+    Put(body, 0xd000, subsection);
+
+    NCAMetaDataHashData metadata{};
+    metadata.layerInfoOffset = MetaHashOffset;
+    metadata.integrityMetaInfo.magic = util::MakeMagic<u32>("IVFC");
+    metadata.integrityMetaInfo.version = 0x20000;
+    metadata.integrityMetaInfo.masterHashSize = 0x20;
+    metadata.integrityMetaInfo.levelHashInfo.maxLayers = 2;
+    metadata.integrityMetaInfo.levelHashInfo.levels[0] = {0, DataSize, 16, {}};
+    metadata.integrityMetaInfo.masterHash = Hash256(body.data() + DataStart, DataSize);
+    Put(body, MetaHashOffset, metadata);
+
+    section.raw.metaDataHashDataInfo.offset = MetaHashOffset;
+    section.raw.metaDataHashDataInfo.size = sizeof(metadata);
+    section.raw.metaDataHashDataInfo.hash = Hash256(&metadata, sizeof(metadata));
+
+    f.Add(1, section, body);
+    f.counterEntries[1] = {subsection.subsectionEntries.begin(), subsection.subsectionEntries.begin() + 2};
+    f.counterDataEnds[1] = section.bktr.relocation.offset;
+    return f;
+}
+
 inline std::vector<u8> ReadBytes(const std::shared_ptr<Backing> &backing) {
     Check(backing != nullptr, "Null backing");
     std::vector<u8> result(backing->size);
