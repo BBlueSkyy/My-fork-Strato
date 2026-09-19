@@ -3,6 +3,7 @@
 // Copyright © 2022 yuzu Team and Contributors (https://github.com/yuzu-emu/)
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
 #include <range/v3/algorithm/for_each.hpp>
 #include <nce.h>
 #include <kernel/memory.h>
@@ -78,6 +79,19 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 DetermineRenderTargetDimensions(guest, engine->surfaceClip);
 
             view = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
+            static std::atomic<u32> rtTraceCount{};
+            if (rtTraceCount.fetch_add(1, std::memory_order_relaxed) < 1024) {
+                LOGI("TEXMAN-RT slot={} seq={} iova=0x{:X} guest={} size=0x{:X} host={} view={} dims={}x{}x{} fmt={} mip={}/{} layer={}/{} tileMode={}",
+                     index, ctx.channelCtx.channelSequenceNumber, target.offset,
+                     static_cast<const void *>(guest.mappings.front().data()), guest.GetSize(),
+                     static_cast<const void *>(view->texture.get()),
+                     static_cast<const void *>(view.get()),
+                     guest.dimensions.width, guest.dimensions.height, guest.dimensions.depth,
+                     static_cast<u32>(guest.format->vkFormat),
+                     guest.viewMipBase, guest.viewMipCount,
+                     guest.baseArrayLayer, guest.GetViewLayerCount(),
+                     static_cast<u32>(guest.tileConfig.mode));
+            }
         } else {
             format = engine::ColorTarget::Format::Disabled;
             packedState.SetColorRenderTargetFormat(index, engine::ColorTarget::Format::Disabled);
