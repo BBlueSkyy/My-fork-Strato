@@ -34,6 +34,7 @@ namespace skyline::applet::swkbd {
             Success = 0x0,
             ShowFailureDialog = 0x1,
             ShowConfirmDialog = 0x2,
+            Silent = 0x3,
         };
 
         enum class InlineState : u32 {
