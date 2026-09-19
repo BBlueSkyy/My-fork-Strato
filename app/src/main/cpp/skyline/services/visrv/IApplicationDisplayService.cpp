@@ -162,7 +162,7 @@ namespace skyline::service::visrv {
         if (imageBuffer.size() < size || reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment)
             return result::InvalidArgument;
 
-        const auto applet{manager.indirectLayers->Get(handle)};
+        const auto applet{manager.indirectLayers->Get(handle, request.pid, appletResourceUserId)};
         if (!applet) {
             LOGW("GetIndirectLayerImageMap: unknown or closed handle=0x{:X}, aruid=0x{:X}", handle, appletResourceUserId);
             return result::InvalidValue;
@@ -174,8 +174,8 @@ namespace skyline::service::visrv {
         if (!available)
             return result::NoData;
 
-        response.Push<i64>(width);
-        response.Push<i64>(height);
+        response.Push<i64>(static_cast<i64>(size));
+        response.Push<i64>(static_cast<i64>(pitch));
 
         return {};
     }
@@ -188,7 +188,7 @@ namespace skyline::service::visrv {
             return result::InvalidDimensions;
 
         response.Push<i64>(size);
-        response.Push<u64>(IndirectLayerAlignment);
+        response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
 
         return {};
     }

@@ -8,7 +8,8 @@
 namespace skyline::service::am {
     ILibraryAppletAccessor::ILibraryAppletAccessor(const DeviceState &state, ServiceManager &manager,
                                                    skyline::applet::AppletId appletId,
-                                                   applet::LibraryAppletMode appletMode)
+                                                   applet::LibraryAppletMode appletMode,
+                                                   u64 appletResourceUserId)
         : BaseService(state, manager),
           stateChangeEvent(std::make_shared<type::KEvent>(state, false)),
           popNormalOutDataEvent(std::make_shared<type::KEvent>(state, false)),
@@ -17,9 +18,7 @@ namespace skyline::service::am {
           appletId(appletId), appletMode(appletMode),
           applet(skyline::applet::CreateApplet(state, manager, appletId, stateChangeEvent,
                                                popNormalOutDataEvent, popInteractiveOutDataEvent,
-                                               appletMode)), indirectLayers(manager.indirectLayers) {
-        if (appletMode == applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay)
-            indirectLayerHandle = indirectLayers->Register(applet);
+          appletMode)), indirectLayers(manager.indirectLayers), appletResourceUserId(appletResourceUserId) {
         stateChangeEventHandle = state.process->InsertItem(stateChangeEvent);
         popNormalOutDataEventHandle = state.process->InsertItem(popNormalOutDataEvent);
         popInteractiveOutDataEventHandle = state.process->InsertItem(popInteractiveOutDataEvent);
@@ -122,9 +121,16 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        if (!indirectLayerHandle || !indirectLayers->Get(indirectLayerHandle))
+    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto requestedAppletResourceUserId{request.Pop<u64>()};
+        if (appletMode != applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay || !request.pid ||
+            request.pid != appletResourceUserId || requestedAppletResourceUserId != appletResourceUserId)
             return result::ObjectInvalid;
+        if (!indirectLayerHandle ||
+            !indirectLayers->Get(indirectLayerHandle, request.pid, requestedAppletResourceUserId)) {
+            indirectLayers->Unregister(indirectLayerHandle);
+            indirectLayerHandle = indirectLayers->Register(applet, request.pid, requestedAppletResourceUserId);
+        }
         response.Push<u64>(indirectLayerHandle);
         return {};
     }
