@@ -205,9 +205,15 @@ namespace skyline::vfs {
         if (indirect.size == 0 || !InRange(indirect.offset, indirect.size, info.offset))
             throw loader_exception(LoaderResult::ParsingError, "Indirect table overlaps AES-CTR-Ex metadata");
         const size_t entrySize{QuerySubsectionEntryStorageSize(info.numberEntries)};
+        LOGI("NCA-BKTR TRACE AES-CTR-Ex: rawSize=0x{:X}, indirectOffset=0x{:X}, indirectSize=0x{:X}, indirectEntries={}, aesCtrExOffset=0x{:X}, aesCtrExSize=0x{:X}, aesCtrExEntries={}, entryStorageSize=0x{:X}",
+             raw->size, indirect.offset, indirect.size, indirect.numberEntries,
+             info.offset, info.size, info.numberEntries, entrySize);
         const size_t nodeSize{ValidatePatchTable(info, entrySize, raw->size)};
+        LOGI("NCA-BKTR TRACE AES-CTR-Ex: nodeStorageSize=0x{:X}", nodeSize);
         auto metadata{CreateBacking(section, raw, offset)};
         auto root{ReadExact<SubsectionBlock>(metadata, info.offset)};
+        LOGI("NCA-BKTR TRACE AES-CTR-Ex root: index={}, buckets={}, size=0x{:X}, expectedBuckets={}",
+             root.index, root.numberBuckets, root.size, entrySize / BucketNodeSize);
         ValidateRootBlock(root, entrySize / BucketNodeSize, "AES-CTR-Ex");
         if (root.size != info.offset)
             throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex data size does not match its table offset");
@@ -309,13 +315,25 @@ namespace skyline::vfs {
     }
 
     std::shared_ptr<Backing> NCA::OpenRawStorageWithPatch(NCA &base, size_t index) {
+        const auto &section{sections[index]};
+        LOGI("NCA-BKTR TRACE OpenRawStorageWithPatch begin: section={}, fsType={}, hashType={}, encryptionType={}, indirectOffset=0x{:X}, indirectSize=0x{:X}, indirectEntries={}, aesCtrExOffset=0x{:X}, aesCtrExSize=0x{:X}, aesCtrExEntries={}",
+             index,
+             static_cast<u32>(section.raw.header.fsType),
+             static_cast<u32>(section.raw.header.hashType),
+             static_cast<u32>(section.raw.header.encryptionType),
+             section.bktr.relocation.offset, section.bktr.relocation.size, section.bktr.relocation.numberEntries,
+             section.bktr.subsection.offset, section.bktr.subsection.size, section.bktr.subsection.numberEntries);
         auto patch{OpenRawSection(index)};
-        const auto &info{sections[index].bktr.relocation};
+        LOGI("NCA-BKTR TRACE OpenRawStorageWithPatch: OpenRawSection complete, size=0x{:X}", patch->size);
+        const auto &info{section.bktr.relocation};
         if (info.size == 0)
             return patch;
         const size_t entrySize{QuerySparseEntryStorageSize(info.numberEntries)};
+        LOGI("NCA-BKTR TRACE indirect: entryStorageSize=0x{:X}, expectedBuckets={}", entrySize, entrySize / BucketNodeSize);
         const size_t nodeSize{ValidatePatchTable(info, entrySize, patch->size)};
+        LOGI("NCA-BKTR TRACE indirect: nodeStorageSize=0x{:X}", nodeSize);
         auto root{ReadExact<RelocationBlock>(patch, info.offset)};
+        LOGI("NCA-BKTR TRACE indirect root: index={}, buckets={}, size=0x{:X}", root.index, root.numberBuckets, root.size);
         ValidateRootBlock(root, entrySize / BucketNodeSize, "BKTR indirect");
         // Original offsets address the WHOLE corresponding decrypted section, including hash levels.
         std::shared_ptr<Backing> original{std::make_shared<RegionBacking>(backing, 0, 0)};
@@ -353,7 +371,10 @@ namespace skyline::vfs {
         if (section.raw.header.hashType != NcaSectionHashType::HierarchicalIntegrity ||
             ivfc.magic != util::MakeMagic<u32>("IVFC") || ivfc.levelCount < 2 || ivfc.levelCount > constant::IvfcMaxLevel + 1)
             throw loader_exception(LoaderResult::ParsingError, "Invalid IVFC header/level count (NCA fields must be little endian)");
+        LOGI("NCA-BKTR TRACE BuildRomFsBacking begin: section={}, basePatch={}, ivfcLevels={}, indirectSize=0x{:X}, aesCtrExSize=0x{:X}",
+             index, base != nullptr, ivfc.levelCount, section.bktr.relocation.size, section.bktr.subsection.size);
         auto raw{base ? OpenRawStorageWithPatch(*base, index) : OpenRawSection(index)};
+        LOGI("NCA-BKTR TRACE BuildRomFsBacking: raw storage ready, size=0x{:X}", raw->size);
         for (size_t i{}; i < ivfc.levelCount - 1; ++i) {
             const auto &level{ivfc.levels[i]};
             if (level.size == 0 || level.blockSize > 32 || !InRange(level.offset, level.size, raw->size))
@@ -399,7 +420,14 @@ namespace skyline::vfs {
         for (size_t i{}; i < sections.size(); ++i) {
             if (!HasSection(i) || sections[i].raw.header.fsType != NcaSectionFsType::RomFs)
                 continue;
-            auto result{BuildRomFsBacking(i, &base)};
+            LOGI("NCA-BKTR TRACE OpenRomFsWithPatch candidate: section={}", i);
+            std::shared_ptr<Backing> result;
+            try {
+                result = BuildRomFsBacking(i, &base);
+            } catch (const std::exception &e) {
+                LOGE("NCA-BKTR TRACE OpenRomFsWithPatch failed: section={}, exception={}", i, e.what());
+                throw;
+            }
             if (sections[i].bktr.relocation.size != 0)
                 LOGI("BKTR Program patch RomFS constructed (section {})", i);
             romFs = result;
