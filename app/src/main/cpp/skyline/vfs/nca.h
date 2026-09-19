@@ -167,15 +167,24 @@ namespace skyline {
         };
         static_assert(sizeof(NCACompressionInfo) == 0x28);
 
+        struct NCAMetaDataHashDataInfo {
+            i64 offset;
+            i64 size;
+            std::array<u8, 0x20> hash;
+        };
+        static_assert(sizeof(NCAMetaDataHashDataInfo) == 0x30);
+
         struct NCASectionRaw {
             NCASectionHeaderBlock header;
             std::array<u8, 0x138> blockData;
             std::array<u8, 0x8> sectionCtr;
             NCASparseInfo sparseInfo;
             NCACompressionInfo compressionInfo;
-            u8 _pad0_[0x60];
+            NCAMetaDataHashDataInfo metaDataHashDataInfo;
+            u8 _pad0_[0x30];
         };
         static_assert(sizeof(NCASectionRaw) == 0x200);
+        static_assert(offsetof(NCASectionRaw, metaDataHashDataInfo) == 0x1A0);
 
         struct IVFCLevel {
             u64 offset;
@@ -194,6 +203,38 @@ namespace skyline {
             u8 _pad1_[0x40];
         };
         static_assert(sizeof(IVFCHeader) == 0xE0);
+
+        #pragma pack(push, 4)
+        struct NCAIntegrityLevel {
+            i64 offset;
+            i64 size;
+            i32 blockOrder;
+            std::array<u8, 4> reserved;
+        };
+        static_assert(sizeof(NCAIntegrityLevel) == 0x18);
+
+        struct NCAIntegrityLevelHashInfo {
+            u32 maxLayers;
+            std::array<NCAIntegrityLevel, 6> levels;
+            std::array<u8, 0x20> seed;
+        };
+        static_assert(sizeof(NCAIntegrityLevelHashInfo) == 0xB4);
+
+        struct NCAIntegrityMetaInfo {
+            u32 magic;
+            u32 version;
+            u32 masterHashSize;
+            NCAIntegrityLevelHashInfo levelHashInfo;
+            std::array<u8, 0x20> masterHash;
+        };
+        static_assert(sizeof(NCAIntegrityMetaInfo) == 0xE0);
+
+        struct NCAMetaDataHashData {
+            i64 layerInfoOffset;
+            NCAIntegrityMetaInfo integrityMetaInfo;
+        };
+        static_assert(sizeof(NCAMetaDataHashData) == 0xE8);
+        #pragma pack(pop)
 
         struct RomFSSuperblock {
             NCASectionHeaderBlock headerBlock;
@@ -381,15 +422,23 @@ namespace skyline {
             bool rightsIdEmpty;
             bool useKeyArea;
             std::array<NCASectionHeader, 4> sections{}; //!< Preserve physical FS indices, including holes
+            struct PatchMetaStorage {
+                std::shared_ptr<Backing> indirect;
+                std::shared_ptr<Backing> aesCtrEx;
+            };
+
             std::array<std::shared_ptr<Backing>, 4> rawSections{};
             std::array<std::shared_ptr<FileSystem>, 4> partitionSections{};
+            std::array<PatchMetaStorage, 4> patchMetaSections{};
 
             bool HasSection(size_t index) const;
 
             std::shared_ptr<FileSystem> OpenPfs0(size_t index);
             std::shared_ptr<Backing> OpenRawSection(size_t index);
             std::shared_ptr<Backing> BuildRomFsBacking(size_t index, NCA *base = nullptr);
-            std::shared_ptr<Backing> CreateAesCtrExBacking(const NCASectionHeader &section, std::shared_ptr<Backing> raw, size_t offset);
+            PatchMetaStorage CreatePatchMetaStorage(const NCASectionHeader &section, std::shared_ptr<Backing> raw, size_t offset);
+            std::shared_ptr<Backing> CreateAesCtrExBacking(const NCASectionHeader &section, std::shared_ptr<Backing> raw, size_t offset,
+                                                           const std::shared_ptr<Backing> &metadata = {});
 
             std::shared_ptr<Backing> CreateBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> rawBacking, size_t offset);
 

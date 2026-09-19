@@ -115,6 +115,24 @@ void TestBktrNca(bool encrypted) {
     Check(std::equal(unaligned.begin(), unaligned.end(), expected.begin() + 0x701), "Unaligned read crossing CTR-Ex/relocation boundary differs");
     Check(ReadBytes(patch.OpenExeFsWithPatch(base)->OpenFile("main.npdm")) == std::vector<u8>{0x42}, "Patch ExeFS not selected");
 }
+void TestPatchMetaHashNca() {
+    auto keys{std::make_shared<crypto::KeyStore>("")};
+    auto baseFixture{BaseFixture()}; baseFixture.Finalize(true, keys);
+    auto patchFixture{PatchMetaHashFixture()}; patchFixture.Finalize(true, keys);
+
+    NCA base(baseFixture.backing, keys), patch(patchFixture.backing, keys);
+    auto expected{RomBytes()}; std::fill(expected.begin() + 0x800, expected.end(), 0x62);
+    Check(ReadBytes(patch.OpenRomFsWithPatch(base)) == expected,
+          "Patch Meta Hash layering changed the resolved RomFS");
+
+    auto badFixture{PatchMetaHashFixture()};
+    badFixture.sections[1].raw.metaDataHashDataInfo.hash[0] ^= 0x80;
+    badFixture.Finalize(true, keys);
+    NCA badPatch(badFixture.backing, keys);
+    bool rejected{};
+    try { badPatch.OpenRomFsWithPatch(base); } catch (const std::exception &) { rejected = true; }
+    Check(rejected, "Corrupted Patch Meta Hash descriptor was accepted");
+}
 void TestExeFsFallback() {
     auto keys{std::make_shared<crypto::KeyStore>("")};
     auto bf{BaseFixture()}; bf.Finalize();
@@ -297,6 +315,7 @@ int main() {
     run("ordinary replacement update, coherent ExeFS", TestReplacementUpdate);
     run("decrypted NCA indirect layering", [] { TestBktrNca(false); });
     run("encrypted NCA AES-CTR-Ex and indirect metadata", [] { TestBktrNca(true); });
+    run("encrypted Patch Meta Hash layering", TestPatchMetaHashNca);
     run("RomFS-only patch, ExeFS fallback", TestExeFsFallback);
     run("sparse NCA physical mapping and zero range", TestSparseNca);
     run("compressed NCA and BKTR before compression", TestCompressedNca);
