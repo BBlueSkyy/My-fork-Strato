@@ -152,43 +152,61 @@ namespace skyline::service::visrv {
         auto height{request.Pop<i64>()};
         const auto handle{request.Pop<u64>()};
         const auto appletResourceUserId{request.Pop<u64>()};
+        LOGI("GetIndirectLayerImageMap: entered, pid=0x{:X}, handle=0x{:X}, ARUID=0x{:X}, width={}, height={}",
+             request.pid, handle, appletResourceUserId, width, height);
         u64 pitch{}, size{};
-        if (!GetIndirectLayerSize(width, height, pitch, size))
+        if (!GetIndirectLayerSize(width, height, pitch, size)) {
+            LOGI("GetIndirectLayerImageMap: return InvalidDimensions");
             return result::InvalidDimensions;
-        if (request.outputBuf.empty())
+        }
+        if (request.outputBuf.empty()) {
+            LOGI("GetIndirectLayerImageMap: return InvalidArgument, missing output buffer");
             return result::InvalidArgument;
+        }
 
         auto imageBuffer{request.outputBuf.at(0)};
-        if (imageBuffer.size() < size || reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment)
+        if (imageBuffer.size() < size || reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment) {
+            LOGI("GetIndirectLayerImageMap: return InvalidArgument, bufferSize=0x{:X}, required=0x{:X}, aligned={}",
+                 imageBuffer.size(), size, reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment == 0);
             return result::InvalidArgument;
+        }
 
         const auto applet{manager.indirectLayers->Get(handle, request.pid, appletResourceUserId)};
         if (!applet) {
             LOGW("GetIndirectLayerImageMap: unknown or closed handle=0x{:X}, aruid=0x{:X}", handle, appletResourceUserId);
+            LOGI("GetIndirectLayerImageMap: return InvalidValue");
             return result::InvalidValue;
         }
 
         const bool available{applet->GetIndirectLayerImage(imageBuffer.first(size))};
         LOGD("GetIndirectLayerImageMap: handle=0x{:X}, aruid=0x{:X}, width={}, height={}, size=0x{:X}, available={}",
              handle, appletResourceUserId, width, height, size, available);
-        if (!available)
+        if (!available) {
+            LOGI("GetIndirectLayerImageMap: return NoData");
             return result::NoData;
+        }
 
         response.Push<i64>(static_cast<i64>(size));
         response.Push<i64>(static_cast<i64>(pitch));
+        LOGI("GetIndirectLayerImageMap: return Success, size=0x{:X}, pitch=0x{:X}", size, pitch);
 
         return {};
     }
 
     Result IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         i64 width{request.Pop<i64>()}, height{request.Pop<i64>()};
+        LOGI("GetIndirectLayerImageRequiredMemoryInfo: entered, pid=0x{:X}, width={}, height={}", request.pid, width, height);
 
         u64 pitch{}, size{};
-        if (!GetIndirectLayerSize(width, height, pitch, size))
+        if (!GetIndirectLayerSize(width, height, pitch, size)) {
+            LOGI("GetIndirectLayerImageRequiredMemoryInfo: return InvalidDimensions");
             return result::InvalidDimensions;
+        }
 
         response.Push<i64>(size);
         response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
+        LOGI("GetIndirectLayerImageRequiredMemoryInfo: return Success, size=0x{:X}, alignment=0x{:X}",
+             size, IndirectLayerAlignment);
 
         return {};
     }

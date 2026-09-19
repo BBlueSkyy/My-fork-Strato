@@ -3,6 +3,8 @@
 
 #include <kernel/types/KProcess.h>
 #include <applet/applet_creator.h>
+#include <cstring>
+#include <utility>
 #include "ILibraryAppletAccessor.h"
 
 namespace skyline::service::am {
@@ -89,7 +91,16 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::PushInteractiveInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
-        applet->PushInteractiveDataToApplet(request.PopService<IStorage>(0, session));
+        auto data{request.PopService<IStorage>(0, session)};
+        const auto dataSpan{data->GetSpan()};
+        if (dataSpan.size() >= sizeof(u32)) {
+            u32 command{};
+            std::memcpy(&command, dataSpan.data(), sizeof(command));
+            LOGI("PushInteractiveInData: command=0x{:X}, size=0x{:X}", command, dataSpan.size());
+        } else {
+            LOGI("PushInteractiveInData: command=<truncated>, size=0x{:X}", dataSpan.size());
+        }
+        applet->PushInteractiveDataToApplet(std::move(data));
         return {};
     }
 
@@ -136,6 +147,8 @@ namespace skyline::service::am {
             indirectLayerHandle = indirectLayers->Register(applet, request.pid, requestedAppletResourceUserId);
         }
         response.Push<u64>(indirectLayerHandle);
+        LOGI("GetIndirectLayerConsumerHandle: success, handle=0x{:X}, pid=0x{:X}, ARUID=0x{:X}",
+             indirectLayerHandle, request.pid, requestedAppletResourceUserId);
         return {};
     }
 

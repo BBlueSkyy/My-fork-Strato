@@ -237,6 +237,7 @@ namespace skyline::applet::swkbd {
     }
 
     Result SoftwareKeyboardApplet::StartInline() {
+        LOGI("SWKBD StartInline: entered, mode=0x{:X}", static_cast<u32>(mode));
         std::shared_ptr<service::am::IStorage> commonStorage;
         std::shared_ptr<service::am::IStorage> initializeStorage;
         {
@@ -262,6 +263,7 @@ namespace skyline::applet::swkbd {
 
         auto callbacks{std::dynamic_pointer_cast<SoftwareKeyboardFrontendCallbacks>(shared_from_this())};
         const auto sessionId{state.jvm->CreateSoftwareKeyboardSession(callbacks)};
+        LOGI("SWKBD StartInline: frontend session created, sessionId={}", sessionId);
         {
             std::scoped_lock lock{inlineMutex};
             inlineSessionId = sessionId;
@@ -379,6 +381,9 @@ namespace skyline::applet::swkbd {
         }
 
         const u64 flags{ReadInlineValue<u64>(calc, 0x8)};
+        LOGI("SWKBD Calc: calcArgSize=0x{:X}, flags=0x{:X}, state=0x{:X}, Initialize={}, Appear={}",
+             calcArgSize, flags, static_cast<u32>(inlineState), (flags & InlineFlagInitialize) != 0,
+             (flags & InlineFlagAppear) != 0);
         const size_t cursorOffset{newLayout ? 0x8CU : 0x1CU};
         const size_t inputTextOffset{extendedInputLayout ? 0x90U : 0x68U};
         const size_t utf8Offset{extendedInputLayout ? 0x484U : 0x45CU};
@@ -473,7 +478,9 @@ namespace skyline::applet::swkbd {
 
         switch (action.type) {
             case InlineFrontendActionType::Show: {
+                LOGI("SWKBD inline: before ShowSoftwareKeyboard, sessionId={}", *sessionId);
                 const bool opened{state.jvm->ShowSoftwareKeyboard(*sessionId, action.config, action.text, true)};
+                LOGI("SWKBD inline: after ShowSoftwareKeyboard, sessionId={}, opened={}", *sessionId, opened);
                 bool update{};
                 {
                     std::scoped_lock lock{inlineMutex};
