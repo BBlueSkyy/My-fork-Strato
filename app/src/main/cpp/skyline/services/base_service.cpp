@@ -2,6 +2,8 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <cxxabi.h>
+#include <cstring>
+#include <common/settings.h>
 #include <common/trace.h>
 #include "base_service.h"
 
@@ -26,13 +28,45 @@ namespace skyline::service {
         try {
             function = GetServiceFunction(functionId, request.isTipc);
             LOGDNF("Service: {}", function.name);
+
+            if (*state.settings->autoStub) {
+                LOGI("[IPC-TRACE] service='{}' command=0x{:X} ({}) type={} handler='{}'",
+                     GetName(), functionId, functionId, request.isTipc ? "TIPC" : "HIPC", function.name);
+
+                if (!request.isTipc && functionId == 67 && GetName() == "hid::IHidServer" && request.cmdArg && request.cmdArgSz >= 4) {
+                    u32 handleRaw{};
+                    std::memcpy(&handleRaw, request.cmdArg, sizeof(handleRaw));
+                    u64 aruid{};
+                    if (request.cmdArgSz >= 16)
+                        std::memcpy(&aruid, request.cmdArg + 8, sizeof(aruid));
+                    LOGW("[AUTOSTUB][HID_HANDLE] command=67 handler='IHidServer::StopSixAxisSensor' raw=0x{:08X} styleIndex={} playerNumber={} deviceIndex={} reserved=0x{:02X} aruid=0x{:X} argSize=0x{:X}",
+                         handleRaw, request.cmdArg[0], request.cmdArg[1], request.cmdArg[2], request.cmdArg[3], aruid, request.cmdArgSz);
+                }
+
+                if (std::string_view{function.name}.find("::Unsupported") != std::string_view::npos) {
+                    LOGW("[AUTOSTUB][INCOMPLETE_SERVICE] service='{}' command=0x{:X} ({}) type={} handler='{}' reason=explicit-unsupported-handler",
+                         GetName(), functionId, functionId, request.isTipc ? "TIPC" : "HIPC", function.name);
+                }
+            }
         } catch (const std::out_of_range &) {
-            LOGW("Cannot find {0} function in service '{1}': 0x{2:X} ({2})", request.isTipc ? "TIPC" : "HIPC", GetName(), static_cast<u32>(functionId));
+            if (*state.settings->autoStub) {
+                LOGW("[AUTOSTUB][MISSING_COMMAND] service='{}' command=0x{:X} ({}) type={} action=legacy-success-fallback",
+                     GetName(), functionId, functionId, request.isTipc ? "TIPC" : "HIPC");
+            } else {
+                LOGW("Cannot find {0} function in service '{1}': 0x{2:X} ({2})", request.isTipc ? "TIPC" : "HIPC", GetName(), static_cast<u32>(functionId));
+            }
+            // Preserve Strato's existing fallback for unknown commands in implemented services.
             return {};
         }
         TRACE_EVENT("service", perfetto::StaticString{function.name});
         try {
-            return function(session, request, response);
+            const Result result{function(session, request, response)};
+            if (*state.settings->autoStub && result.raw != 0) {
+                LOGW("[AUTOSTUB][NONZERO_RESULT] service='{}' command=0x{:X} ({}) type={} handler='{}' result=0x{:X} ({}) module={} id={}",
+                     GetName(), functionId, functionId, request.isTipc ? "TIPC" : "HIPC", function.name,
+                     result.raw, result.raw, result.module, result.id);
+            }
+            return result;
         } catch (exception &e) {
             // We need to forward any skyline::exception objects without modification even though they inherit from std::exception
             std::rethrow_exception(std::current_exception());
