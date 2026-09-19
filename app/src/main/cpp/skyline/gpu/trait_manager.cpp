@@ -7,8 +7,7 @@
 namespace skyline::gpu {
     TraitManager::TraitManager(const DeviceFeatures2 &deviceFeatures2, DeviceFeatures2 &enabledFeatures2, const std::vector<vk::ExtensionProperties> &deviceExtensions, std::vector<std::array<char, VK_MAX_EXTENSION_NAME_SIZE>> &enabledExtensions, const DeviceProperties2 &deviceProperties2, const vk::raii::PhysicalDevice &physicalDevice) : quirks(deviceProperties2.get<vk::PhysicalDeviceProperties2>().properties, deviceProperties2.get<vk::PhysicalDeviceDriverProperties>()) {
         bool hasCustomBorderColorExt{}, hasShaderAtomicInt64Ext{}, hasShaderFloat16Int8Ext{}, has8BitStorageExt{}, hasShaderDemoteToHelperExt{}, hasVertexAttributeDivisorExt{}, hasProvokingVertexExt{}, hasPrimitiveTopologyListRestartExt{}, hasImagelessFramebuffersExt{}, hasTransformFeedbackExt{}, hasUint8IndicesExt{}, hasExtendedDynamicStateExt{}, hasRobustness2Ext{};
-        bool supportsUniformBufferStandardLayout{};
-        const u32 apiVersion{deviceProperties2.get<vk::PhysicalDeviceProperties2>().properties.apiVersion}; // We require VK_KHR_uniform_buffer_standard_layout but assume it is implicitly supported even when not present
+        bool supportsUniformBufferStandardLayout{}; // We require VK_KHR_uniform_buffer_standard_layout but assume it is implicitly supported even when not present
 
         for (auto &extension : deviceExtensions) {
             #define EXT_SET_COND(name, property, cond)                                                       \
@@ -84,7 +83,7 @@ namespace skyline::gpu {
         FEAT_SET(vk::PhysicalDeviceFeatures2, features.shaderInt64, supportsInt64)
         FEAT_SET(vk::PhysicalDevice16BitStorageFeatures, storageBuffer16BitAccess, supportsStorageBuffer16BitAccess)
         FEAT_SET(vk::PhysicalDeviceVariablePointersFeatures, variablePointersStorageBuffer, supportsVariablePointersStorageBuffer)
-        if (has8BitStorageExt || apiVersion >= VK_API_VERSION_1_2) {
+        if (has8BitStorageExt) {
             FEAT_SET(vk::PhysicalDevice8BitStorageFeatures, storageBuffer8BitAccess, supportsStorageBuffer8BitAccess)
         } else {
             enabledFeatures2.unlink<vk::PhysicalDevice8BitStorageFeatures>();
