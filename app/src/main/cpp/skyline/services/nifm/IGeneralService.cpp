@@ -8,9 +8,11 @@
 #include <jvm.h>
 
 namespace skyline::service::nifm {
-    /**
-     * @brief Converts integer value to an array of bytes ordered in little-endian format
-     */
+    namespace {
+        constexpr u32 DefaultClientId{1};
+        constexpr std::string_view DefaultNetworkName{"Skyline Network"};
+    }
+
     static std::array<u8, 4> ConvertIntToByteArray(i32 value) {
         std::array<u8, 4> result{};
         result[0] = value & 0xFF;
@@ -22,12 +24,18 @@ namespace skyline::service::nifm {
 
     IGeneralService::IGeneralService(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
 
+    Result IGeneralService::GetClientId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        request.outputBuf.at(0).as<ClientId>() = ClientId{DefaultClientId};
+        return {};
+    }
+
     Result IGeneralService::CreateScanRequest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         manager.RegisterService(SRVREG(IScanRequest), session, response);
         return {};
     }
 
     Result IGeneralService::CreateRequest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        [[maybe_unused]] const auto requirementPreset{request.Pop<i32>()};
         manager.RegisterService(SRVREG(IRequest), session, response);
         return {};
     }
@@ -37,37 +45,35 @@ namespace skyline::service::nifm {
             return result::NoInternetConnection;
 
         const UUID uuid{static_cast<u128>(0xdeadbeef) << 64};
-        auto dhcpInfo{state.jvm->GetDhcpInfo()};
+        const auto dhcpInfo{state.jvm->GetDhcpInfo()};
 
         SfNetworkProfileData networkProfileData{
             .ipSettingData{
                 .ipAddressSetting{
-                    true,
+                    .isAutomatic{true},
                     .currentAddress{ConvertIntToByteArray(dhcpInfo.ipAddress)},
                     .subnetMask{ConvertIntToByteArray(dhcpInfo.subnet)},
                     .gateway{ConvertIntToByteArray(dhcpInfo.gateway)},
                 },
                 .dnsSetting{
-                    true,
+                    .isAutomatic{true},
                     .primaryDns{ConvertIntToByteArray(dhcpInfo.dns1)},
                     .secondaryDns{ConvertIntToByteArray(dhcpInfo.dns2)},
                 },
                 .proxySetting{
-                    false,
-                    .port{},
-                    .proxyServer{},
-                    .automaticAuthEnabled{},
-                    .user{},
-                    .password{},
+                    .enabled{false},
                 },
-                1500,
+                .mtu{1500},
             },
             .uuid{uuid},
             .networkName{"Skyline Network"},
+            .profileType{static_cast<u8>(NetworkProfileType::User)},
+            .interfaceType{static_cast<u8>(NetworkInterfaceType::Wifi)},
+            .isAutoConnect{1},
+            .isLargeCapacity{0},
             .wirelessSettingData{
-                12,
+                .ssidLength{static_cast<u8>(DefaultNetworkName.size())},
                 .ssid{"Skyline Network"},
-                .passphrase{"skylinepassword"},
             },
         };
 
@@ -79,7 +85,7 @@ namespace skyline::service::nifm {
         if (!(*state.settings->isInternetEnabled))
             return result::NoInternetConnection;
 
-        auto dhcpInfo{state.jvm->GetDhcpInfo()};
+        const auto dhcpInfo{state.jvm->GetDhcpInfo()};
         response.Push(ConvertIntToByteArray(dhcpInfo.ipAddress));
         return {};
     }
@@ -88,22 +94,23 @@ namespace skyline::service::nifm {
         if (!(*state.settings->isInternetEnabled))
             return result::NoInternetConnection;
 
-        auto dhcpInfo{state.jvm->GetDhcpInfo()};
+        const auto dhcpInfo{state.jvm->GetDhcpInfo()};
 
         struct IpConfigInfo {
             IpAddressSetting ipAddressSetting;
             DnsSetting dnsSetting;
         };
+        static_assert(sizeof(IpConfigInfo) == 0x16);
 
-        IpConfigInfo ipConfigInfo{
+        const IpConfigInfo ipConfigInfo{
             .ipAddressSetting{
-                true,
+                .isAutomatic{true},
                 .currentAddress{ConvertIntToByteArray(dhcpInfo.ipAddress)},
                 .subnetMask{ConvertIntToByteArray(dhcpInfo.subnet)},
                 .gateway{ConvertIntToByteArray(dhcpInfo.gateway)},
             },
             .dnsSetting{
-                true,
+                .isAutomatic{true},
                 .primaryDns{ConvertIntToByteArray(dhcpInfo.dns1)},
                 .secondaryDns{ConvertIntToByteArray(dhcpInfo.dns2)},
             },
@@ -113,18 +120,34 @@ namespace skyline::service::nifm {
         return {};
     }
 
+    Result IGeneralService::IsWirelessCommunicationEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        response.Push<u8>(*state.settings->isInternetEnabled);
+        return {};
+    }
+
     Result IGeneralService::GetInternetConnectionStatus(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!(*state.settings->isInternetEnabled))
+            return result::NoInternetConnection;
+
         struct Status {
-            u8 type{1};
-            u8 wifiStrength{3};
-            u8 state{4};
-        } status{};
+            u8 type;
+            u8 wifiStrength;
+            u8 state;
+        };
+        static_assert(sizeof(Status) == 0x3);
+
+        const Status status{
+            .type{static_cast<u8>(NetworkInterfaceType::Wifi)},
+            .wifiStrength{3},
+            .state{4},
+        };
         response.Push(status);
         return {};
     }
 
     Result IGeneralService::IsAnyInternetRequestAccepted(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u8>(*state.settings->isInternetEnabled);
+        const auto clientId{request.inputBuf.at(0).as<ClientId>().id};
+        response.Push<u8>(clientId == DefaultClientId && *state.settings->isInternetEnabled);
         return {};
     }
 }

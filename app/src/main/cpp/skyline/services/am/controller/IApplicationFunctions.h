@@ -79,6 +79,12 @@ namespace skyline::service::am {
         Result GetSaveDataSizeMax(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @brief Returns cache storage limits declared by the application's control.nacp
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#GetCacheStorageMax
+         */
+        Result GetCacheStorageMax(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Returns if the application is running or not, always returns true
          * @url https://switchbrew.org/wiki/Applet_Manager_services#NotifyRunning
          */
@@ -175,6 +181,7 @@ namespace skyline::service::am {
             SFUNC(0x1A, IApplicationFunctions, GetSaveDataSize),
             SFUNC(0x1B, IApplicationFunctions, CreateCacheStorage),
             SFUNC(0x1C, IApplicationFunctions, GetSaveDataSizeMax),
+            SFUNC(0x1D, IApplicationFunctions, GetCacheStorageMax),
             SFUNC(0x28, IApplicationFunctions, NotifyRunning),
             SFUNC(0x32, IApplicationFunctions, GetPseudoDeviceId),
             SFUNC(0x42, IApplicationFunctions, InitializeGamePlayRecording),

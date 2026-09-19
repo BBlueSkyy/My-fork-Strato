@@ -136,6 +136,8 @@ namespace skyline::service {
             SERVICE_CASE(friends::IServiceCreator, "friend:u")
             SERVICE_CASE(nfp::IUserManager, "nfp:user")
             SERVICE_CASE(nifm::IStaticService, "nifm:u")
+            SERVICE_CASE(nifm::IStaticService, "nifm:s")
+            SERVICE_CASE(nifm::IStaticService, "nifm:a")
             SERVICE_CASE(socket::IClient, "bsd:u")
             SERVICE_CASE(socket::IClient, "bsd:s")
             SERVICE_CASE(socket::IManager, "nsd:u")
