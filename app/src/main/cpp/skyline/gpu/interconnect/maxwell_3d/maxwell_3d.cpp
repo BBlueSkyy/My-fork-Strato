@@ -276,6 +276,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
         const auto &surfaceClip{clearEngineRegisters.surfaceClip};
         vk::Rect2D renderArea{{surfaceClip.horizontal.x, surfaceClip.vertical.y}, {surfaceClip.horizontal.width, surfaceClip.vertical.height}};
 
+        static u32 clearTraceCounter{};
+        const u32 clearTraceId{clearTraceCounter++};
+        const bool traceClear{clearTraceId < 256};
+        if (traceClear) {
+            LOGI("GPU-CLEAR #{} begin mrt={} layer={} mask[r={} g={} b={} a={} z={} s={}] scissor=({},{} {}x{}) render=({},{} {}x{})",
+                 clearTraceId, clearSurface.mrtSelect, clearSurface.rtArrayIndex,
+                 clearSurface.rEnable, clearSurface.gEnable, clearSurface.bEnable, clearSurface.aEnable,
+                 clearSurface.zEnable, clearSurface.stencilEnable,
+                 scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height,
+                 renderArea.offset.x, renderArea.offset.y, renderArea.extent.width, renderArea.extent.height);
+        }
+
         auto clearRects{util::MakeFilledArray<vk::ClearRect, 2>(vk::ClearRect{.rect = scissor, .baseArrayLayer = clearSurface.rtArrayIndex, .layerCount = 1})};
         boost::container::small_vector<vk::ClearAttachment, 2> clearAttachments;
 
@@ -287,11 +299,19 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 ctx.executor.AttachTexture(&*view);
 
                 bool partialClear{!(clearSurface.rEnable && clearSurface.gEnable && clearSurface.bEnable && clearSurface.aEnable)};
+                const bool attachmentClear{needsAttachmentClearCmd(view)};
+                if (traceClear) {
+                    LOGI("GPU-CLEAR #{} color target={}x{} baseLayer={} layers={} partial={} attachmentCmd={}",
+                         clearTraceId, view->texture->dimensions.width, view->texture->dimensions.height,
+                         view->range.baseArrayLayer, view->range.layerCount, partialClear, attachmentClear);
+                }
                 if (!(view->range.aspectMask & vk::ImageAspectFlagBits::eColor))
                     LOGW("Colour RT used in clear lacks colour aspect"); // TODO: Drop this check after texman rework
 
 
                 if (partialClear) {
+                    if (traceClear)
+                        LOGI("GPU-CLEAR #{} color path=helper-shader", clearTraceId);
                     ctx.gpu.helperShaders.clearHelperShader.Clear(ctx.gpu, view->range.aspectMask,
                                                                   (clearSurface.rEnable ? vk::ColorComponentFlagBits::eR : vk::ColorComponentFlags{}) |
                                                                   (clearSurface.gEnable ? vk::ColorComponentFlagBits::eG : vk::ColorComponentFlags{}) |
@@ -302,10 +322,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         ctx.executor.AddSubpass(std::move(executionCallback), renderArea, {}, {}, span<TextureView *>{dst}, nullptr);
                     });
                     ctx.executor.NotifyPipelineChange();
-                } else if (needsAttachmentClearCmd(view)) {
+                } else if (attachmentClear) {
+                    if (traceClear)
+                        LOGI("GPU-CLEAR #{} color path=clear-attachments", clearTraceId);
                     clearAttachments.push_back({.aspectMask = view->range.aspectMask, .clearValue = {clearEngineRegisters.colorClearValue}});
                     colorView = view;
                 } else {
+                    if (traceClear)
+                        LOGI("GPU-CLEAR #{} color path=clear-color-subpass", clearTraceId);
                     ctx.executor.AddClearColorSubpass(&*view, clearEngineRegisters.colorClearValue);
                 }
             }
@@ -320,6 +344,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                      (clearSurface.stencilEnable ? vk::ImageAspectFlagBits::eStencil : vk::ImageAspectFlags{})};
                 clearAspectMask &= view->range.aspectMask;
 
+                const bool attachmentClear{needsAttachmentClearCmd(view)};
+                if (traceClear) {
+                    LOGI("GPU-CLEAR #{} depth target={}x{} baseLayer={} layers={} hasDepth={} hasStencil={} attachmentCmd={}",
+                         clearTraceId, view->texture->dimensions.width, view->texture->dimensions.height,
+                         view->range.baseArrayLayer, view->range.layerCount, viewHasDepth, viewHasStencil, attachmentClear);
+                }
+
                 vk::ClearDepthStencilValue clearValue{
                     .depth = clearEngineRegisters.depthClearValue,
                     .stencil = clearEngineRegisters.stencilClearValue
@@ -330,16 +361,22 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     return;
                 }
 
-                if (needsAttachmentClearCmd(view) || (clearAspectMask != view->range.aspectMask)) { // Subpass clears write to all aspects of the texture, so we can't use them when only one component is enabled
+                if (attachmentClear || (clearAspectMask != view->range.aspectMask)) { // Subpass clears write to all aspects of the texture, so we can't use them when only one component is enabled
+                    if (traceClear)
+                        LOGI("GPU-CLEAR #{} depth path=clear-attachments", clearTraceId);
                     clearAttachments.push_back({.aspectMask = clearAspectMask, .clearValue = clearValue});
                     depthStencilView = view;
                 } else {
+                    if (traceClear)
+                        LOGI("GPU-CLEAR #{} depth path=clear-depth-stencil-subpass", clearTraceId);
                     ctx.executor.AddClearDepthStencilSubpass(&*view, clearValue);
                 }
             }
         }
 
         if (!clearAttachments.empty()) {
+            if (traceClear)
+                LOGI("GPU-CLEAR #{} issuing vkCmdClearAttachments count={}", clearTraceId, clearAttachments.size());
             std::array<TextureView *, 1> colorAttachments{colorView ? &*colorView : nullptr};
             ctx.executor.AddSubpass([clearAttachments, clearRects](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32) {
                 commandBuffer.clearAttachments(clearAttachments, span(clearRects).first(clearAttachments.size()));
