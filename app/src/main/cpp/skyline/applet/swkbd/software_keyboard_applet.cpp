@@ -61,6 +61,12 @@ namespace skyline::applet::swkbd {
             std::memcpy(&value, data.data(), sizeof(T));
             return value;
         }
+
+        bool CanSerializeText(std::u16string_view text, TextEncoding encoding) {
+            std::array<u8, SwkbdTextBytes> output{};
+            const auto result{WriteText(output, text, encoding)};
+            return result.valid && !result.truncated;
+        }
     }
 
     SoftwareKeyboardApplet::ValidationRequest::ValidationRequest(std::u16string_view text, bool useUtf8Storage) : size{} {
@@ -508,8 +514,17 @@ namespace skyline::applet::swkbd {
         if (!inlineStarted || !inlineSessionId || event.sessionId != *inlineSessionId ||
             (inlineState != InlineState::Shown && inlineState != InlineState::Appearing))
             return;
-        inlineText = std::move(event.text);
-        inlineCursorPosition = std::clamp(event.cursor, 0, static_cast<i32>(inlineText.size()));
+        if (event.type == FrontendEventType::TextChanged || event.type == FrontendEventType::Submit) {
+            if (!CanSerializeText(event.text, inlineUseUtf8 ? TextEncoding::Utf8 : TextEncoding::Utf16)) {
+                LOGW("Ignoring inline SWKBD frontend text that does not fit the protocol buffer");
+                action.type = InlineFrontendActionType::Update;
+                action.text = inlineText;
+                action.cursor = inlineCursorPosition;
+                return;
+            }
+            inlineText = std::move(event.text);
+            inlineCursorPosition = std::clamp(event.cursor, 0, static_cast<i32>(inlineText.size()));
+        }
         switch (event.type) {
             case FrontendEventType::TextChanged: {
                 const InlineReply reply{inlineUseUtf8
@@ -554,7 +569,12 @@ namespace skyline::applet::swkbd {
                 return;
             switch (event.type) {
                 case FrontendEventType::Submit:
-                    action = normalState->Submit(std::move(event.text));
+                    if (CanSerializeText(event.text, config.commonConfig.isUseUtf8 ? TextEncoding::Utf8 : TextEncoding::Utf16)) {
+                        action = normalState->Submit(std::move(event.text));
+                    } else {
+                        LOGW("Ignoring SWKBD frontend text that does not fit the protocol buffer");
+                        action.type = NormalActionType::ResumeEditing;
+                    }
                     break;
                 case FrontendEventType::Cancel:
                 case FrontendEventType::FrontendDestroyed:

@@ -33,6 +33,8 @@ namespace {
         std::array<u8, 8> source{0, 0, 'A', 0, 'B', 0, 0, 0};
         Require(ReadUtf16Text(source, 2, 2) == std::optional<std::u16string>{u"AB"}, "bounded initial text");
         Require(!ReadUtf16Text(source, 3, 1), "reject unaligned initial text");
+        std::array<u8, 2> unpairedSurrogate{0x00, 0xD8};
+        Require(!ReadUtf16Text(unpairedSurrogate, 0, 1), "reject unpaired UTF-16 surrogate");
 
         std::array<u8, 7> utf8{'A', 0xF0, 0x9F, 0x99, 0x82, 0, 0};
         Require(ReadNullTerminatedText(utf8, TextEncoding::Utf8) == std::optional<std::u16string>{u"A\U0001F642"},

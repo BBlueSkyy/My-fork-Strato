@@ -114,6 +114,13 @@ namespace skyline::applet::swkbd {
             text.push_back(static_cast<char16_t>(static_cast<u16>(input[offset]) |
                                                  (static_cast<u16>(input[offset + 1]) << 8)));
         }
+        for (size_t offset{}; offset < text.size();) {
+            char32_t codePoint{};
+            size_t units{};
+            if (!ReadCodePoint(text, offset, codePoint, units))
+                return std::nullopt;
+            offset += units;
+        }
         return text;
     }
 

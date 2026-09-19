@@ -18,6 +18,7 @@ fun getCodepointArray(vararg chars : Char) : IntArray {
 
 val DownloadCodeCodepoints = getCodepointArray('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'L', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X')
 val OutsideOfMiiNicknameCodepoints = getCodepointArray('@', '%', '\\', 'ō', 'Ō', '₽', '₩', '♥', '♡')
+const val SoftwareKeyboardConfigTextBytes = 0x7D4
 
 /**
  * This data class matches KeyboardMode in skyline/applet/swkbd/software_keyboard_config.h
