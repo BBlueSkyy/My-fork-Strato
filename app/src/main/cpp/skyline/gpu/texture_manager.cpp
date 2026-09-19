@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
 #include <common/trace.h>
 #include "texture_manager.h"
 
@@ -39,10 +40,32 @@ namespace skyline::gpu {
         u32 matchLevel{};
         u32 matchLayer{};
 
+        size_t overlapCount{};
+        size_t skippedOverlapCount{};
+        size_t incompatibleFullCount{};
+        size_t partialNoMatchCount{};
+
+        auto takeTraceSlot{[] {
+            static std::atomic<u32> traceCount{};
+            return traceCount.fetch_add(1, std::memory_order_relaxed) < 2048;
+        }};
+
         while (hostMapping != textures.begin() && (--hostMapping)->end() > guestMapping.begin()) {
             auto &hostMappings{hostMapping->texture->guest->mappings};
-            if (!hostMapping->contains(guestMapping) || hostMapping->texture->replaced)
+            overlapCount++;
+
+            if (!hostMapping->contains(guestMapping) || hostMapping->texture->replaced) {
+                skippedOverlapCount++;
+                if (takeTraceSlot()) {
+                    LOGI("TEXMAN-MATCH overlap-skip req={} size=0x{:X} candidate={} map={} mapSize=0x{:X} contains={} replaced={} rt={}",
+                         static_cast<const void *>(guestMapping.data()), guestMapping.size(),
+                         static_cast<const void *>(hostMapping->texture.get()),
+                         static_cast<const void *>(hostMapping->data()), hostMapping->size(),
+                         hostMapping->contains(guestMapping), hostMapping->texture->replaced,
+                         hostMapping->texture->everUsedAsRt);
+                }
                 continue;
+            }
 
             // We need to check that all corresponding mappings in the candidate texture and the guest texture match up
             // Only the start of the first matched mapping and the end of the last mapping can not match up as this is the case for views
@@ -58,20 +81,57 @@ namespace skyline::gpu {
             if (firstHostMapping == hostMappings.begin() && firstHostMapping->begin() == guestMapping.begin() && mappingMatch && lastHostMapping == hostMappings.end() && lastGuestMapping.end() == std::prev(lastHostMapping)->end()) {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
                 auto &matchGuestTexture{*hostMapping->texture->guest};
-                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                    ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
-                        matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
-                        matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
-                        || matchGuestTexture.viewMipBase > 0)
-                    && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
+                const bool formatCompatible{matchGuestTexture.format->IsCompatible(*guestTexture.format)};
+                const bool dimensionsCompatible{
+                    matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
+                    matchGuestTexture.dimensions.height == guestTexture.dimensions.height
+                };
+                const bool layerSizeCompatible{matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()};
+                const bool depthCompatible{matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()};
+                const bool mipViewCompatible{matchGuestTexture.viewMipBase > 0};
+                const bool tileCompatible{matchGuestTexture.tileConfig == guestTexture.tileConfig};
+
+                if (formatCompatible &&
+                    ((((dimensionsCompatible || layerSizeCompatible) && depthCompatible) || mipViewCompatible) &&
+                     tileCompatible)) {
                     fullMatch = hostMapping->texture;
+                    if (takeTraceSlot()) {
+                        LOGI("TEXMAN-MATCH full req={} host={} fmt={} dims={}x{}x{} mip={}/{} layer={}/{} rt={}",
+                             static_cast<const void *>(guestMapping.data()),
+                             static_cast<const void *>(fullMatch.get()),
+                             static_cast<u32>(guestTexture.format->vkFormat),
+                             guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
+                             guestTexture.viewMipBase, guestTexture.viewMipCount,
+                             guestTexture.baseArrayLayer, guestTexture.GetViewLayerCount(),
+                             fullMatch->everUsedAsRt);
+                    }
                 } else {
+                    incompatibleFullCount++;
                     matches.push_back(hostMapping->texture);
+                    if (takeTraceSlot()) {
+                        LOGI("TEXMAN-MATCH full-incompatible req={} host={} fmt={} dims={} layerSize={} depth={} mipView={} tile={} old={}x{} new={}x{} oldFmt={} newFmt={} rt={}",
+                             static_cast<const void *>(guestMapping.data()),
+                             static_cast<const void *>(hostMapping->texture.get()),
+                             formatCompatible, dimensionsCompatible, layerSizeCompatible, depthCompatible,
+                             mipViewCompatible, tileCompatible,
+                             matchGuestTexture.dimensions.width, matchGuestTexture.dimensions.height,
+                             guestTexture.dimensions.width, guestTexture.dimensions.height,
+                             static_cast<u32>(matchGuestTexture.format->vkFormat),
+                             static_cast<u32>(guestTexture.format->vkFormat),
+                             hostMapping->texture->everUsedAsRt);
+                    }
                 }
             } else {
                 auto &matchGuestTexture{*hostMapping->texture->guest};
-                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
-                        (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
+                const bool formatCompatible{matchGuestTexture.format->IsCompatible(*guestTexture.format)};
+                const bool tileCompatible{matchGuestTexture.tileConfig == guestTexture.tileConfig};
+                const bool candidatePreferred{
+                    !layerMipMatch ||
+                    (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() &&
+                     matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount)
+                };
+
+                if (formatCompatible && tileCompatible && candidatePreferred) {
                     size_t memOffset{static_cast<size_t>(guestMapping.data() - hostMapping->texture->guest->mappings.front().data())};
                     size_t layerMemOffset{};
                     bool matched{};
@@ -105,7 +165,33 @@ namespace skyline::gpu {
                             fullMatch->replaced = true;
 
                         layerMipMatch = hostMapping->texture;
+                        if (takeTraceSlot()) {
+                            LOGI("TEXMAN-MATCH layer-mip req={} host={} memOff=0x{:X} level={} layer={} fmt={} rt={}",
+                                 static_cast<const void *>(guestMapping.data()),
+                                 static_cast<const void *>(layerMipMatch.get()),
+                                 memOffset, matchLevel, matchLayer,
+                                 static_cast<u32>(guestTexture.format->vkFormat),
+                                 layerMipMatch->everUsedAsRt);
+                        }
+                    } else {
+                        partialNoMatchCount++;
+                        if (takeTraceSlot()) {
+                            LOGI("TEXMAN-MATCH partial-no-subresource req={} host={} memOff=0x{:X} reqLayerSize=0x{:X} oldLayerStride=0x{:X} oldLevels={} oldLayers={} rt={}",
+                                 static_cast<const void *>(guestMapping.data()),
+                                 static_cast<const void *>(hostMapping->texture.get()),
+                                 memOffset, guestTexture.CalculateLayerSize(), matchGuestTexture.GetLayerStride(),
+                                 hostMapping->texture->levelCount, hostMapping->texture->layerCount,
+                                 hostMapping->texture->everUsedAsRt);
+                        }
                     }
+                } else if (takeTraceSlot()) {
+                    LOGI("TEXMAN-MATCH partial-incompatible req={} host={} fmt={} tile={} preferred={} oldFmt={} newFmt={} rt={}",
+                         static_cast<const void *>(guestMapping.data()),
+                         static_cast<const void *>(hostMapping->texture.get()),
+                         formatCompatible, tileCompatible, candidatePreferred,
+                         static_cast<u32>(matchGuestTexture.format->vkFormat),
+                         static_cast<u32>(guestTexture.format->vkFormat),
+                         hostMapping->texture->everUsedAsRt);
                 }
             }
          }
@@ -133,8 +219,21 @@ namespace skyline::gpu {
         for (auto &texture : matches)
             texture->SynchronizeGuest(false, true);
 
+        if (overlapCount && takeTraceSlot()) {
+            LOGI("TEXMAN-MATCH create-new-overlap req={} size=0x{:X} overlaps={} skipped={} fullBad={} partialNoMatch={} fmt={} dims={}x{}x{} mip={}/{} layer={}/{} tileMode={}",
+                 static_cast<const void *>(guestMapping.data()), guestMapping.size(),
+                 overlapCount, skippedOverlapCount, incompatibleFullCount, partialNoMatchCount,
+                 static_cast<u32>(guestTexture.format->vkFormat),
+                 guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
+                 guestTexture.viewMipBase, guestTexture.viewMipCount,
+                 guestTexture.baseArrayLayer, guestTexture.GetViewLayerCount(),
+                 static_cast<u32>(guestTexture.tileConfig.mode));
+        }
+
         // Create a texture as we cannot find one that matches
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
+        if (overlapCount && takeTraceSlot())
+            LOGI("TEXMAN-MATCH created host={} req={}", static_cast<const void *>(texture.get()), static_cast<const void *>(guestMapping.data()));
         texture->SetupGuestMappings();
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto it{texture->guest->mappings.begin()};
