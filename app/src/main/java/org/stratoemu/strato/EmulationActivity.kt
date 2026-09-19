@@ -36,7 +36,6 @@ import androidx.core.view.isGone
 import androidx.core.view.isInvisible
 import androidx.core.view.updateMargins
 import androidx.core.view.updatePadding
-import androidx.fragment.app.FragmentTransaction
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -68,7 +67,6 @@ import org.stratoemu.strato.utils.serializable
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.concurrent.FutureTask
 import javax.inject.Inject
 import kotlin.math.abs
 
@@ -175,6 +173,10 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * @param play If the audio should be playing or be stopped till it is resumed by calling this again
      */
     private external fun changeAudioStatus(play : Boolean)
+
+    private external fun nativeSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int)
+
+    private val softwareKeyboardDialogs = mutableMapOf<Long, SoftwareKeyboardDialog>()
 
     var fps : Int = 0
     var averageFrametime : Float = 0.0f
@@ -654,6 +656,10 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     override fun onDestroy() {
+        softwareKeyboardDialogs.toMap().also { softwareKeyboardDialogs.clear() }.forEach { (sessionId, dialog) ->
+            dialog.closeFromFrontend()
+            nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
+        }
         super.onDestroy()
         shouldFinish = false
 
@@ -815,25 +821,39 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     @Suppress("unused")
-    fun showKeyboard(buffer : ByteBuffer, initialText : String) : SoftwareKeyboardDialog? {
-        buffer.order(ByteOrder.LITTLE_ENDIAN)
-        val config = ByteBufferSerializable.createFromByteBuffer(SoftwareKeyboardConfig::class, buffer) as SoftwareKeyboardConfig
-
-        val keyboardDialog = SoftwareKeyboardDialog.newInstance(config, initialText)
-        runOnUiThread {
-            val transaction = supportFragmentManager.beginTransaction()
-            transaction.setTransition(FragmentTransaction.TRANSIT_FRAGMENT_OPEN)
-            transaction
-                .add(android.R.id.content, keyboardDialog)
-                .addToBackStack(null)
-                .commit()
+    fun openSoftwareKeyboard(sessionId : Long, buffer : ByteBuffer, initialText : String, inline : Boolean) : Boolean {
+        if (isFinishing || isDestroyed)
+            return false
+        val config = try {
+            buffer.order(ByteOrder.LITTLE_ENDIAN)
+            ByteBufferSerializable.createFromByteBuffer(SoftwareKeyboardConfig::class, buffer) as SoftwareKeyboardConfig
+        } catch (_ : Exception) {
+            return false
         }
-        return keyboardDialog
-    }
 
-    @Suppress("unused")
-    fun waitForSubmitOrCancel(dialog : SoftwareKeyboardDialog) : Array<Any?> {
-        return dialog.waitForSubmitOrCancel().let { arrayOf(if (it.cancelled) 1 else 0, it.text) }
+        runOnUiThread {
+            if (isFinishing || isDestroyed) {
+                nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
+                return@runOnUiThread
+            }
+            softwareKeyboardDialogs.toMap().forEach { (otherSessionId, otherDialog) ->
+                if (otherSessionId != sessionId) {
+                    softwareKeyboardDialogs.remove(otherSessionId)
+                    otherDialog.closeFromFrontend()
+                    nativeSoftwareKeyboardEvent(otherSessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
+                }
+            }
+            softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend()
+            val dialog = SoftwareKeyboardDialog.newInstance(sessionId, config, initialText, inline)
+            softwareKeyboardDialogs[sessionId] = dialog
+            try {
+                dialog.showNow(supportFragmentManager, "software-keyboard-$sessionId")
+            } catch (_ : IllegalStateException) {
+                softwareKeyboardDialogs.remove(sessionId)
+                nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
+            }
+        }
+        return true
     }
 
     @Suppress("unused")
@@ -843,25 +863,37 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     @Suppress("unused")
-    fun closeKeyboard(dialog : SoftwareKeyboardDialog) {
-        runOnUiThread { dialog.dismiss() }
+    fun closeSoftwareKeyboard(sessionId : Long) {
+        runOnUiThread { softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend() }
     }
 
     @Suppress("unused")
-    fun showValidationResult(dialog : SoftwareKeyboardDialog, validationResult : Int, message : String) : Int {
-        val confirm = validationResult == SoftwareKeyboardDialog.validationConfirm
-        var accepted = false
-        val validatorResult = FutureTask { return@FutureTask accepted }
-        runOnUiThread {
-            val builder = MaterialAlertDialogBuilder(dialog.requireContext())
-            builder.setMessage(message)
-            builder.setPositiveButton(if (confirm) getString(android.R.string.ok) else getString(android.R.string.cancel)) { _, _ -> accepted = confirm }
-            if (confirm)
-                builder.setNegativeButton(getString(android.R.string.cancel)) { _, _ -> }
-            builder.setOnDismissListener { validatorResult.run() }
-            builder.show()
-        }
-        return if (validatorResult.get()) 0 else 1
+    fun hideSoftwareKeyboard(sessionId : Long) {
+        runOnUiThread { softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend() }
+    }
+
+    @Suppress("unused")
+    fun updateSoftwareKeyboard(sessionId : Long, text : String, cursor : Int) {
+        runOnUiThread { softwareKeyboardDialogs[sessionId]?.updateFromFrontend(text, cursor) }
+    }
+
+    @Suppress("unused")
+    fun resumeSoftwareKeyboard(sessionId : Long) {
+        runOnUiThread { softwareKeyboardDialogs[sessionId]?.resumeEditing() }
+    }
+
+    @Suppress("unused")
+    fun showSoftwareKeyboardTextCheck(sessionId : Long, result : Int, message : String) {
+        runOnUiThread { softwareKeyboardDialogs[sessionId]?.showTextCheck(result, message) }
+    }
+
+    fun sendSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int) {
+        nativeSoftwareKeyboardEvent(sessionId, type, text, cursor)
+    }
+
+    fun onSoftwareKeyboardDismissed(sessionId : Long, dialog : SoftwareKeyboardDialog) {
+        if (softwareKeyboardDialogs[sessionId] === dialog)
+            softwareKeyboardDialogs.remove(sessionId)
     }
 
     /**

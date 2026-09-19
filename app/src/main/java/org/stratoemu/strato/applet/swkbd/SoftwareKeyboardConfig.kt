@@ -197,6 +197,8 @@ data class SoftwareKeyboardConfig(
             return false
         if (invalidCharsFlags.atMark && codepoint == '@'.code)
             return false
+        if (invalidCharsFlags.percent && codepoint == '%'.code)
+            return false
         if (invalidCharsFlags.slash && codepoint == '/'.code)
             return false
         if (invalidCharsFlags.backSlash && codepoint == '\\'.code)
