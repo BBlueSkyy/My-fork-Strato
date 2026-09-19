@@ -281,9 +281,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         const bool traceClear{clearTraceId < 256};
         if (traceClear) {
             LOGI("GPU-CLEAR #{} begin mrt={} layer={} mask[r={} g={} b={} a={} z={} s={}] scissor=({},{} {}x{}) render=({},{} {}x{})",
-                 clearTraceId, clearSurface.mrtSelect, clearSurface.rtArrayIndex,
-                 clearSurface.rEnable, clearSurface.gEnable, clearSurface.bEnable, clearSurface.aEnable,
-                 clearSurface.zEnable, clearSurface.stencilEnable,
+                 clearTraceId, static_cast<u32>(clearSurface.mrtSelect), static_cast<u32>(clearSurface.rtArrayIndex),
+                 static_cast<u32>(clearSurface.rEnable), static_cast<u32>(clearSurface.gEnable),
+                 static_cast<u32>(clearSurface.bEnable), static_cast<u32>(clearSurface.aEnable),
+                 static_cast<u32>(clearSurface.zEnable), static_cast<u32>(clearSurface.stencilEnable),
                  scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height,
                  renderArea.offset.x, renderArea.offset.y, renderArea.extent.width, renderArea.extent.height);
         }
