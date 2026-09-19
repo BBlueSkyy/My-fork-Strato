@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <optional>
 #include "common.h"
+#include "applet/swkbd/software_keyboard_frontend.h"
 #include <jni.h>
 
 namespace skyline {
@@ -75,24 +77,6 @@ namespace skyline {
      */
     class JvmManager {
       public:
-        using KeyboardHandle = jobject;
-        using KeyboardConfig = std::array<u8, 0x4C8>;
-        using KeyboardCloseResult = u32;
-        using KeyboardTextCheckResult = u32;
-
-        struct KeyboardUpdate {
-            enum class Type : u32 {
-                Changed = 0,
-                Enter = 1,
-                Cancel = 2,
-                Closed = 3,
-            };
-
-            Type type;
-            std::u16string text;
-            i32 cursor;
-        };
-
         jobject instance; //!< A reference to the activity
         jclass instanceClass; //!< The class of the activity
 
@@ -176,40 +160,26 @@ namespace skyline {
          */
         void ClearVibrationDevice(jint index);
 
-        /**
-         * @brief A call to EmulationActivity.showKeyboard in Kotlin
-         */
-        KeyboardHandle ShowKeyboard(KeyboardConfig &config, std::u16string initialText);
+        std::optional<applet::swkbd::FrontendSessionId> OpenNormalSoftwareKeyboard(
+            std::weak_ptr<applet::swkbd::SoftwareKeyboardFrontendCallbacks> callbacks,
+            const applet::swkbd::FrontendKeyboardConfig &config,
+            std::u16string_view initialText);
 
-        /**
-         * @brief Creates an independent global reference to a keyboard dialog
-         */
-        KeyboardHandle CloneKeyboardHandle(KeyboardHandle dialog);
+        applet::swkbd::FrontendSessionId CreateInlineSoftwareKeyboardSession(
+            std::weak_ptr<applet::swkbd::SoftwareKeyboardFrontendCallbacks> callbacks);
 
-        /**
-         * @brief Releases a keyboard dialog global reference
-         */
-        void ReleaseKeyboardHandle(KeyboardHandle dialog);
+        bool ShowInlineSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
+                                        const applet::swkbd::FrontendKeyboardConfig &config,
+                                        std::u16string_view initialText);
 
-        /**
-         * @brief A call to EmulationActivity.waitForSubmitOrCancel in Kotlin
-         */
-        std::pair<KeyboardCloseResult, std::u16string> WaitForSubmitOrCancel(KeyboardHandle dialog);
-
-        /**
-         * @brief Waits for the next inline keyboard frontend update
-         */
-        KeyboardUpdate WaitForInlineKeyboardUpdate(KeyboardHandle dialog);
-
-        /**
-         * @brief A call to EmulationActivity.closeKeyboard in Kotlin
-         */
-        void CloseKeyboard(KeyboardHandle dialog);
-
-        /**
-         * @brief A call to EmulationActivity.showValidationResult in Kotlin
-         */
-        KeyboardCloseResult ShowValidationResult(KeyboardHandle dialog, KeyboardTextCheckResult checkResult, std::u16string message);
+        void ShowSoftwareKeyboardTextCheck(applet::swkbd::FrontendSessionId sessionId, u32 result,
+                                           std::u16string_view message);
+        void ResumeSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId);
+        void UpdateSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
+                                    std::u16string_view text, i32 cursor);
+        void HideSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId);
+        void CloseSoftwareKeyboardSession(applet::swkbd::FrontendSessionId sessionId);
+        bool DispatchSoftwareKeyboardEvent(applet::swkbd::FrontendEvent event);
 
         /**
          * @brief A call to EmulationActivity.reportCrash in Kotlin
@@ -252,14 +222,13 @@ namespace skyline {
         jmethodID vibrateDeviceId;
         jmethodID clearVibrationDeviceId;
 
-        jclass keyboardDialogClass;
-        jmethodID showKeyboardId;
-        jmethodID waitForSubmitOrCancelId;
-        jmethodID waitForInlineUpdateId;
-        jmethodID cancelInlineWaitId;
-        jmethodID closeKeyboardId;
-        jmethodID showValidationResultId;
-        jmethodID getIntegerValueId;
+        applet::swkbd::FrontendSessionRegistry softwareKeyboardSessions;
+        jmethodID openSoftwareKeyboardId;
+        jmethodID showSoftwareKeyboardTextCheckId;
+        jmethodID resumeSoftwareKeyboardId;
+        jmethodID updateSoftwareKeyboardId;
+        jmethodID hideSoftwareKeyboardId;
+        jmethodID closeSoftwareKeyboardId;
         jmethodID reportCrashId;
 
         jmethodID showPipelineLoadingScreenId;
