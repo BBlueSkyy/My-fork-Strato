@@ -148,6 +148,8 @@ namespace skyline::applet::swkbd {
 
         Result GetResult() override;
 
+        void RequestExit() override;
+
         bool GetIndirectLayerImage(span<u8> image) override;
 
         void PushNormalDataToApplet(std::shared_ptr<service::am::IStorage> data) override;

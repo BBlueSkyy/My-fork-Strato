@@ -23,7 +23,7 @@ namespace skyline::service::am {
         stateChangeEventHandle = state.process->InsertItem(stateChangeEvent);
         popNormalOutDataEventHandle = state.process->InsertItem(popNormalOutDataEvent);
         popInteractiveOutDataEventHandle = state.process->InsertItem(popInteractiveOutDataEvent);
-        LOGI("Applet accessor for {} ID created with appletMode 0x{:X}", ToString(appletId), appletMode);
+        LOGD("Applet accessor for {} ID created with appletMode 0x{:X}", ToString(appletId), appletMode);
     }
 
     ILibraryAppletAccessor::~ILibraryAppletAccessor() {
@@ -31,13 +31,8 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::StartApplet() {
-        LOGI("Library applet Start: id=0x{:X}, mode=0x{:X}",
-             static_cast<u32>(appletId), static_cast<u32>(appletMode));
         stateChangeEvent->ResetSignal();
-        const auto result{applet->Start()};
-        LOGI("Library applet Start completed: id=0x{:X}, mode=0x{:X}, result=0x{:X}",
-             static_cast<u32>(appletId), static_cast<u32>(appletMode), static_cast<u32>(result));
-        return result;
+        return applet->Start();
     }
 
     bool ILibraryAppletAccessor::IsAppletCompleted() const {
@@ -46,8 +41,6 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::GetAppletStateChangedEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        LOGI("Library applet GetAppletStateChangedEvent: id=0x{:X}, handle=0x{:X}",
-             static_cast<u32>(appletId), stateChangeEventHandle);
         response.copyHandles.push_back(stateChangeEventHandle);
         return {};
     }
@@ -62,14 +55,14 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::RequestExit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
-        // Strato frontends are in-process rather than independent HOS processes. Marking the
-        // state event completes the same observable AM contract without killing the application.
+        applet->RequestExit();
         indirectLayers->Unregister(indirectLayerHandle);
         stateChangeEvent->Signal();
         return {};
     }
 
     Result ILibraryAppletAccessor::Terminate(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        applet->RequestExit();
         indirectLayers->Unregister(indirectLayerHandle);
         stateChangeEvent->Signal();
         return {};
@@ -88,29 +81,12 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::PushInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
-        auto storage{request.PopService<IStorage>(0, session)};
-        LOGI("Library applet PushInData: id=0x{:X}, mode=0x{:X}, size=0x{:X}",
-             static_cast<u32>(appletId), static_cast<u32>(appletMode),
-             storage ? storage->GetSpan().size() : 0);
-        applet->PushNormalDataToApplet(std::move(storage));
+        applet->PushNormalDataToApplet(request.PopService<IStorage>(0, session));
         return {};
     }
 
     Result ILibraryAppletAccessor::PushInteractiveInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
-        auto storage{request.PopService<IStorage>(0, session)};
-        size_t storageSize{};
-        u32 command{0xFFFFFFFFu};
-        if (storage) {
-            const auto data{storage->GetSpan()};
-            storageSize = data.size();
-            if (data.size() >= sizeof(command))
-                std::memcpy(&command, data.data(), sizeof(command));
-            else if (!data.empty())
-                command = data.front();
-        }
-        LOGI("Library applet PushInteractiveInData: id=0x{:X}, mode=0x{:X}, size=0x{:X}, command=0x{:X}",
-             static_cast<u32>(appletId), static_cast<u32>(appletMode), storageSize, command);
-        applet->PushInteractiveDataToApplet(std::move(storage));
+        applet->PushInteractiveDataToApplet(request.PopService<IStorage>(0, session));
         return {};
     }
 
@@ -124,12 +100,9 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::PopInteractiveOutData(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
         if (auto outStorage{applet->PopInteractiveAndClear()}) {
-            LOGI("Library applet PopInteractiveOutData: id=0x{:X}, size=0x{:X}",
-                 static_cast<u32>(appletId), outStorage->GetSpan().size());
             manager.RegisterService(outStorage, session, response);
             return {};
         }
-        LOGI("Library applet PopInteractiveOutData: id=0x{:X}, no data", static_cast<u32>(appletId));
         return result::NotAvailable;
     }
 
@@ -139,8 +112,6 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::GetPopInteractiveOutDataEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        LOGI("Library applet GetPopInteractiveOutDataEvent: id=0x{:X}, handle=0x{:X}",
-             static_cast<u32>(appletId), popInteractiveOutDataEventHandle);
         response.copyHandles.push_back(popInteractiveOutDataEventHandle);
         return {};
     }
@@ -154,8 +125,6 @@ namespace skyline::service::am {
     Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         if (!indirectLayerHandle || !indirectLayers->Get(indirectLayerHandle))
             return result::ObjectInvalid;
-        LOGI("Library applet GetIndirectLayerConsumerHandle: id=0x{:X}, handle=0x{:X}",
-             static_cast<u32>(appletId), indirectLayerHandle);
         response.Push<u64>(indirectLayerHandle);
         return {};
     }

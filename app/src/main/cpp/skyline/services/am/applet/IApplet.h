@@ -50,6 +50,11 @@ namespace skyline::service::am {
         virtual Result GetResult() = 0;
 
         /**
+         * @brief Requests that an in-process applet frontend stop any active work
+         */
+        virtual void RequestExit() {}
+
+        /**
          * @brief Copies an RGBA8 indirect display image into a VI-validated buffer, if available
          */
         virtual bool GetIndirectLayerImage(span<u8>) { return false; }
