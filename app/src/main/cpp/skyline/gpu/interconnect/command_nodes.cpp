@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
 #include "command_nodes.h"
 #include "gpu/texture/texture.h"
 #include <vulkan/vulkan_enums.hpp>
@@ -237,6 +238,14 @@ namespace skyline::gpu::interconnect::node {
         }
 
         if (dependencyDstStageMask && dependencySrcStageMask) {
+            static std::atomic<u32> barrierTraceCount{};
+            if (barrierTraceCount.fetch_add(1, std::memory_order_relaxed) < 4096) {
+                LOGI("TEXSYNC-RP-BARRIER src=0x{:X} dst=0x{:X} attachments={} subpasses={}",
+                     static_cast<VkPipelineStageFlags>(dependencySrcStageMask),
+                     static_cast<VkPipelineStageFlags>(dependencyDstStageMask),
+                     attachments.size(), subpassDescriptions.size());
+            }
+
             commandBuffer.pipelineBarrier(dependencySrcStageMask, dependencyDstStageMask, {}, {vk::MemoryBarrier{
                 .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
                 .dstAccessMask = vk::AccessFlagBits::eMemoryWrite | vk::AccessFlagBits::eMemoryRead,
