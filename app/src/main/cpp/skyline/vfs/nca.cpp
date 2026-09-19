@@ -209,8 +209,13 @@ namespace skyline::vfs {
         auto metadata{CreateBacking(section, raw, offset)};
         auto root{ReadExact<SubsectionBlock>(metadata, info.offset)};
         ValidateRootBlock(root, entrySize / BucketNodeSize, "AES-CTR-Ex");
-        if (root.size != info.offset)
-            throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex data size does not match its table offset");
+        // The AES-CTR-Ex tree describes the readable data range; its metadata table may
+        // start later. The indirect table must remain inside that range, while the tree
+        // itself must not extend into the AES-CTR-Ex metadata table.
+        if (root.size > info.offset)
+            throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex data range overlaps its metadata table");
+        if (!InRange(indirect.offset, indirect.size, root.size))
+            throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex data range does not contain the indirect table");
 
         std::vector<SubsectionEntry> entries;
         entries.reserve(info.numberEntries);
