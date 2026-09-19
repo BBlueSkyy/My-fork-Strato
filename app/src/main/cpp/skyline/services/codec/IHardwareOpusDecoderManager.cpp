@@ -96,6 +96,9 @@ namespace skyline::service::codec {
 
     Result IHardwareOpusDecoderManager::OpenHardwareOpusDecoderForMultiStream(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto params{request.inputBuf.at(0).as<MultiStreamParameters>()};
+        LOGI("[HWOPUS-DIAG] OpenHardwareOpusDecoderForMultiStream: rate={}, channels={}, streams={}, stereoStreams={}, copyHandles={}",
+             params.sampleRate, params.channelCount, params.streamCount, params.stereoStreamCount,
+             request.copyHandles.size());
         KHandle workBufferHandle{request.copyHandles.at(0)};
         u32 workBufferSize{static_cast<u32>(state.process->GetHandle<kernel::type::KTransferMemory>(workBufferHandle)->host.size())};
 
@@ -122,6 +125,9 @@ namespace skyline::service::codec {
     Result IHardwareOpusDecoderManager::OpenHardwareOpusDecoderForMultiStreamEx(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto params{request.inputBuf.at(0).as<MultiStreamParameters>()};
         i32 useLargerFrameSize{request.Pop<i32>()};
+        LOGI("[HWOPUS-DIAG] OpenHardwareOpusDecoderForMultiStreamEx: rate={}, channels={}, streams={}, stereoStreams={}, largeFrame={}, copyHandles={}",
+             params.sampleRate, params.channelCount, params.streamCount, params.stereoStreamCount,
+             useLargerFrameSize, request.copyHandles.size());
         KHandle workBufferHandle{request.copyHandles.at(0)};
         u32 workBufferSize{static_cast<u32>(state.process->GetHandle<kernel::type::KTransferMemory>(workBufferHandle)->host.size())};
 
