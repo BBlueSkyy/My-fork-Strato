@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
 #include <gpu.h>
 #include <kernel/memory.h>
 #include <kernel/types/KProcess.h>
@@ -1046,6 +1047,9 @@ namespace skyline::gpu {
     }
 
     void Texture::UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage) {
+        const auto previousUsage{lastRenderPassUsage};
+        const auto previousRenderPassIndex{lastRenderPassIndex};
+
         lastRenderPassUsage = renderPassUsage;
         lastRenderPassIndex = renderPassIndex;
 
@@ -1058,6 +1062,18 @@ namespace skyline::gpu {
                 vk::PipelineStageFlagBits::eFragmentShader |
                 vk::PipelineStageFlagBits::eComputeShader;
             readStageMask = {};
+
+            if (previousUsage != texture::RenderPassUsage::RenderTarget || previousRenderPassIndex != renderPassIndex) {
+                static std::atomic<u32> rtWriteTraceCount{};
+                if (rtWriteTraceCount.fetch_add(1, std::memory_order_relaxed) < 4096) {
+                    LOGI("TEXSYNC-WRITE host={} rp={} prevRp={} prevUsage={} pending=0x{:X} aspect=0x{:X} dims={}x{}x{}",
+                         static_cast<const void *>(this), renderPassIndex, previousRenderPassIndex,
+                         static_cast<u32>(previousUsage),
+                         static_cast<VkPipelineStageFlags>(pendingStageMask),
+                         static_cast<VkImageAspectFlags>(format->vkAspect),
+                         dimensions.width, dimensions.height, dimensions.depth);
+                }
+            }
         } else if (renderPassUsage == texture::RenderPassUsage::None) {
             pendingStageMask = {};
             readStageMask = {};
@@ -1076,6 +1092,11 @@ namespace skyline::gpu {
         if (!guest)
             return;
 
+        const auto pendingBefore{pendingStageMask};
+        const auto readBefore{readStageMask};
+        const auto srcBefore{srcStageMask};
+        const auto dstBefore{dstStageMask};
+
         readStageMask |= dstStage;
 
         if (!(pendingStageMask & dstStage))
@@ -1088,5 +1109,21 @@ namespace skyline::gpu {
 
         pendingStageMask &= ~dstStage;
         dstStageMask |= dstStage;
+
+        static std::atomic<u32> readBarrierTraceCount{};
+        if (readBarrierTraceCount.fetch_add(1, std::memory_order_relaxed) < 8192) {
+            LOGI("TEXSYNC-READ host={} lastRp={} lastUsage={} dstStage=0x{:X} pending=0x{:X}->0x{:X} read=0x{:X}->0x{:X} src=0x{:X}->0x{:X} dst=0x{:X}->0x{:X} aspect=0x{:X}",
+                 static_cast<const void *>(this), lastRenderPassIndex, static_cast<u32>(lastRenderPassUsage),
+                 static_cast<VkPipelineStageFlags>(dstStage),
+                 static_cast<VkPipelineStageFlags>(pendingBefore),
+                 static_cast<VkPipelineStageFlags>(pendingStageMask),
+                 static_cast<VkPipelineStageFlags>(readBefore),
+                 static_cast<VkPipelineStageFlags>(readStageMask),
+                 static_cast<VkPipelineStageFlags>(srcBefore),
+                 static_cast<VkPipelineStageFlags>(srcStageMask),
+                 static_cast<VkPipelineStageFlags>(dstBefore),
+                 static_cast<VkPipelineStageFlags>(dstStageMask),
+                 static_cast<VkImageAspectFlags>(format->vkAspect));
+        }
     }
 }
