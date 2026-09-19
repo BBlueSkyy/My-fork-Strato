@@ -260,12 +260,6 @@ namespace skyline::gpu::interconnect {
             }
 
             if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
-                if (takeTicTraceSlot()) {
-                    LOGI("TEXMAN-TIC cache-hit index={} seq={} iova=0x{:X} host={} view={}",
-                         index, ctx.channelCtx.channelSequenceNumber, textureHeaders[index].Iova(),
-                         static_cast<const void *>(cached.view->texture.get()),
-                         static_cast<const void *>(cached.view));
-                }
                 cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
                 return cached.view;
             }
@@ -376,22 +370,18 @@ namespace skyline::gpu::interconnect {
             }
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
             if (takeTicTraceSlot()) {
-                LOGI("TEXMAN-TIC resolve index={} seq={} iova=0x{:X} guest={} size=0x{:X} oldHost={} oldReplaced={} newHost={} dims={}x{}x{} fmt={} mip={}/{} layer={}/{}",
+                LOGI("TEXMAN-TIC resolve index={} seq={} iova=0x{:X} guest={} size=0x{:X} oldHost={} oldReplaced={} newHost={} newRt={} dims={}x{}x{} fmt={} mip={}/{} layer={}/{}",
                      index, ctx.channelCtx.channelSequenceNumber, textureHeader.Iova(),
                      static_cast<const void *>(guest.mappings.front().data()), guest.GetSize(),
                      static_cast<const void *>(previousTexture ? previousTexture->texture.get() : nullptr),
                      previousReplaced,
                      static_cast<const void *>(texture->texture.get()),
+                     texture->texture->everUsedAsRt,
                      guest.dimensions.width, guest.dimensions.height, guest.dimensions.depth,
                      static_cast<u32>(guest.format->vkFormat),
                      guest.viewMipBase, guest.viewMipCount,
                      guest.baseArrayLayer, guest.GetViewLayerCount());
             }
-        } else if (takeTicTraceSlot()) {
-            LOGI("TEXMAN-TIC store-hit index={} seq={} iova=0x{:X} host={} view={}",
-                 index, ctx.channelCtx.channelSequenceNumber, textureHeader.Iova(),
-                 static_cast<const void *>(texture->texture.get()),
-                 static_cast<const void *>(texture.get()));
         }
 
         textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber};
