@@ -81,19 +81,12 @@ namespace skyline::gpu {
             if (firstHostMapping == hostMappings.begin() && firstHostMapping->begin() == guestMapping.begin() && mappingMatch && lastHostMapping == hostMappings.end() && lastGuestMapping.end() == std::prev(lastHostMapping)->end()) {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
                 auto &matchGuestTexture{*hostMapping->texture->guest};
-                const bool formatCompatible{matchGuestTexture.format->IsCompatible(*guestTexture.format)};
-                const bool dimensionsCompatible{
-                    matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
-                    matchGuestTexture.dimensions.height == guestTexture.dimensions.height
-                };
-                const bool layerSizeCompatible{matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()};
-                const bool depthCompatible{matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()};
-                const bool mipViewCompatible{matchGuestTexture.viewMipBase > 0};
-                const bool tileCompatible{matchGuestTexture.tileConfig == guestTexture.tileConfig};
-
-                if (formatCompatible &&
-                    ((((dimensionsCompatible || layerSizeCompatible) && depthCompatible) || mipViewCompatible) &&
-                     tileCompatible)) {
+                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
+                    ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
+                        matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
+                        matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
+                        || matchGuestTexture.viewMipBase > 0)
+                    && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
                     fullMatch = hostMapping->texture;
                     if (takeTraceSlot()) {
                         LOGI("TEXMAN-MATCH full req={} host={} fmt={} dims={}x{}x{} mip={}/{} layer={}/{} rt={}",
@@ -108,7 +101,18 @@ namespace skyline::gpu {
                 } else {
                     incompatibleFullCount++;
                     matches.push_back(hostMapping->texture);
+
                     if (takeTraceSlot()) {
+                        const bool formatCompatible{matchGuestTexture.format->IsCompatible(*guestTexture.format)};
+                        const bool dimensionsCompatible{
+                            matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
+                            matchGuestTexture.dimensions.height == guestTexture.dimensions.height
+                        };
+                        const bool layerSizeCompatible{matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()};
+                        const bool depthCompatible{matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()};
+                        const bool mipViewCompatible{matchGuestTexture.viewMipBase > 0};
+                        const bool tileCompatible{matchGuestTexture.tileConfig == guestTexture.tileConfig};
+
                         LOGI("TEXMAN-MATCH full-incompatible req={} host={} fmt={} dims={} layerSize={} depth={} mipView={} tile={} old={}x{} new={}x{} oldFmt={} newFmt={} rt={}",
                              static_cast<const void *>(guestMapping.data()),
                              static_cast<const void *>(hostMapping->texture.get()),
@@ -123,15 +127,8 @@ namespace skyline::gpu {
                 }
             } else {
                 auto &matchGuestTexture{*hostMapping->texture->guest};
-                const bool formatCompatible{matchGuestTexture.format->IsCompatible(*guestTexture.format)};
-                const bool tileCompatible{matchGuestTexture.tileConfig == guestTexture.tileConfig};
-                const bool candidatePreferred{
-                    !layerMipMatch ||
-                    (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() &&
-                     matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount)
-                };
-
-                if (formatCompatible && tileCompatible && candidatePreferred) {
+                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                        (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
                     size_t memOffset{static_cast<size_t>(guestMapping.data() - hostMapping->texture->guest->mappings.front().data())};
                     size_t layerMemOffset{};
                     bool matched{};
@@ -185,6 +182,14 @@ namespace skyline::gpu {
                         }
                     }
                 } else if (takeTraceSlot()) {
+                    const bool formatCompatible{matchGuestTexture.format->IsCompatible(*guestTexture.format)};
+                    const bool tileCompatible{matchGuestTexture.tileConfig == guestTexture.tileConfig};
+                    const bool candidatePreferred{
+                        !layerMipMatch ||
+                        (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() &&
+                         matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount)
+                    };
+
                     LOGI("TEXMAN-MATCH partial-incompatible req={} host={} fmt={} tile={} preferred={} oldFmt={} newFmt={} rt={}",
                          static_cast<const void *>(guestMapping.data()),
                          static_cast<const void *>(hostMapping->texture.get()),
