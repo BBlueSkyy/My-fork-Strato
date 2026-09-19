@@ -9,4 +9,6 @@ namespace skyline::service::visrv::result {
     constexpr Result InvalidArgument(114, 1);
     constexpr Result InvalidDimensions(114, 4);
     constexpr Result IllegalOperation(114, 6);
+    constexpr Result InvalidValue(114, 7);
+    constexpr Result NoData(114, 11); //!< No indirect-layer image is available (libnx swkbdInlineGetImage).
 }
