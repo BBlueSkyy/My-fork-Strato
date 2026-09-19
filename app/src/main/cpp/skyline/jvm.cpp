@@ -11,6 +11,71 @@ namespace skyline {
         return string;
     }
 
+    jstring NewJString(JNIEnv *env, std::string_view utf8) {
+        std::u16string utf16;
+        utf16.reserve(utf8.size());
+
+        for (size_t offset{}; offset < utf8.size();) {
+            const auto lead{static_cast<u8>(utf8[offset])};
+            const auto continuation = [&](size_t index) {
+                return offset + index < utf8.size() &&
+                       (static_cast<u8>(utf8[offset + index]) & 0xC0) == 0x80;
+            };
+
+            u32 codepoint{};
+            size_t length{};
+
+            if (lead < 0x80) {
+                codepoint = lead;
+                length = 1;
+            } else if (lead >= 0xC2 && lead <= 0xDF && continuation(1)) {
+                codepoint = ((lead & 0x1F) << 6) |
+                            (static_cast<u8>(utf8[offset + 1]) & 0x3F);
+                length = 2;
+            } else if (lead >= 0xE0 && lead <= 0xEF &&
+                       continuation(1) && continuation(2)) {
+                const auto second{static_cast<u8>(utf8[offset + 1])};
+                if ((lead != 0xE0 || second >= 0xA0) &&
+                    (lead != 0xED || second < 0xA0)) {
+                    codepoint = ((lead & 0x0F) << 12) |
+                                ((second & 0x3F) << 6) |
+                                (static_cast<u8>(utf8[offset + 2]) & 0x3F);
+                    length = 3;
+                }
+            } else if (lead >= 0xF0 && lead <= 0xF4 &&
+                       continuation(1) && continuation(2) && continuation(3)) {
+                const auto second{static_cast<u8>(utf8[offset + 1])};
+                if ((lead != 0xF0 || second >= 0x90) &&
+                    (lead != 0xF4 || second <= 0x8F)) {
+                    codepoint = ((lead & 0x07) << 18) |
+                                ((second & 0x3F) << 12) |
+                                ((static_cast<u8>(utf8[offset + 2]) & 0x3F) << 6) |
+                                (static_cast<u8>(utf8[offset + 3]) & 0x3F);
+                    length = 4;
+                }
+            }
+
+            if (length == 0) {
+                utf16.push_back(u'\uFFFD');
+                offset++;
+                continue;
+            }
+
+            if (codepoint <= 0xFFFF) {
+                utf16.push_back(static_cast<char16_t>(codepoint));
+            } else {
+                codepoint -= 0x10000;
+                utf16.push_back(static_cast<char16_t>(0xD800 + (codepoint >> 10)));
+                utf16.push_back(static_cast<char16_t>(0xDC00 + (codepoint & 0x3FF)));
+            }
+
+            offset += length;
+        }
+
+        return env->NewString(reinterpret_cast<const jchar *>(utf16.data()),
+                              static_cast<jsize>(utf16.size()));
+    }
+
     /*
      * @brief A thread-local wrapper over JNIEnv and JavaVM which automatically handles attaching and detaching threads
      */

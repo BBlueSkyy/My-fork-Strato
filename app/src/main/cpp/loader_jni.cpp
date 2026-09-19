@@ -64,11 +64,11 @@ extern "C" JNIEXPORT jint JNICALL Java_org_stratoemu_strato_loader_RomFile_popul
         if (((1 << static_cast<skyline::u32>(language)) & loader->nacp->supportedTitleLanguages) == 0)
             language = loader->nacp->GetFirstSupportedTitleLanguage();
 
-        env->SetObjectField(thiz, applicationNameField, env->NewStringUTF(loader->nacp->GetApplicationName(language).c_str()));
-        env->SetObjectField(thiz, applicationVersionField, env->NewStringUTF(loader->nacp->GetApplicationVersion().c_str()));
-        env->SetObjectField(thiz, applicationTitleIdField, env->NewStringUTF(loader->nacp->GetSaveDataOwnerId().c_str()));
-        env->SetObjectField(thiz, addOnContentBaseIdField, env->NewStringUTF(loader->nacp->GetAddOnContentBaseId().c_str()));
-        env->SetObjectField(thiz, applicationAuthorField, env->NewStringUTF(loader->nacp->GetApplicationPublisher(language).c_str()));
+        env->SetObjectField(thiz, applicationNameField, skyline::NewJString(env, loader->nacp->GetApplicationName(language)));
+        env->SetObjectField(thiz, applicationVersionField, skyline::NewJString(env, loader->nacp->GetApplicationVersion()));
+        env->SetObjectField(thiz, applicationTitleIdField, skyline::NewJString(env, loader->nacp->GetSaveDataOwnerId()));
+        env->SetObjectField(thiz, addOnContentBaseIdField, skyline::NewJString(env, loader->nacp->GetAddOnContentBaseId()));
+        env->SetObjectField(thiz, applicationAuthorField, skyline::NewJString(env, loader->nacp->GetApplicationPublisher(language)));
 
         auto icon{loader->GetIcon(language)};
         jbyteArray iconByteArray{env->NewByteArray(static_cast<jsize>(icon.size()))};
@@ -81,7 +81,7 @@ extern "C" JNIEXPORT jint JNICALL Java_org_stratoemu_strato_loader_RomFile_popul
         env->SetIntField(thiz, romType, static_cast<skyline::u8>(contentMetaType));
 
         if (contentMetaType != skyline::vfs::ContentMetaType::Application)
-            env->SetObjectField(thiz, parentTitleId, env->NewStringUTF(loader->cnmt->GetParentTitleId().c_str()));
+            env->SetObjectField(thiz, parentTitleId, skyline::NewJString(env, loader->cnmt->GetParentTitleId()));
     }
 
     return static_cast<jint>(skyline::loader::LoaderResult::Success);

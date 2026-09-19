@@ -9,6 +9,7 @@
 #include "skyline/vfs/os_backing.h"
 #include "skyline/crypto/key_store.h"
 #include "skyline/common.h"
+#include "skyline/jvm.h"
 
 using namespace skyline;
 
@@ -97,10 +98,10 @@ Java_org_stratoemu_strato_loader_NspParser_parseNspMetadata(JNIEnv *env, jclass,
         }
 
         LOGI("NSP JNI: Creating result object");
-        jstring jName = env->NewStringUTF(name.c_str());
-        jstring jVersion = env->NewStringUTF(version.c_str());
-        jstring jTitleId = env->NewStringUTF(titleId.c_str());
-        jstring jParentTitleId = env->NewStringUTF(parentTitleId.c_str());
+        jstring jName = NewJString(env, name);
+        jstring jVersion = NewJString(env, version);
+        jstring jTitleId = NewJString(env, titleId);
+        jstring jParentTitleId = NewJString(env, parentTitleId);
 
         jobject result = env->NewObject(resultClass, constructor, jName, jVersion, jTitleId, jParentTitleId, contentType);
         LOGI("NSP JNI: parseNspMetadata completed successfully");
@@ -206,13 +207,13 @@ Java_org_stratoemu_strato_loader_NspParser_getDlcName(JNIEnv *env, jclass, jint 
             if (name.empty()) {
                 name = nspLoader->nacp->GetApplicationName(nspLoader->nacp->GetFirstSupportedTitleLanguage());
             }
-            return env->NewStringUTF(name.c_str());
+            return NewJString(env, name);
         }
 
         // Fallback: use title ID if no name available
         if (nspLoader->cnmt) {
             std::string titleId = "DLC " + nspLoader->cnmt->GetTitleId();
-            return env->NewStringUTF(titleId.c_str());
+            return NewJString(env, titleId);
         }
 
         return env->NewStringUTF("Unknown DLC");
@@ -237,7 +238,7 @@ Java_org_stratoemu_strato_loader_NspParser_getUpdateVersion(JNIEnv *env, jclass,
 
         if (nspLoader->nacp) {
             std::string version = nspLoader->nacp->GetApplicationVersion();
-            return env->NewStringUTF(version.c_str());
+            return NewJString(env, version);
         }
 
         return env->NewStringUTF("Unknown Version");
