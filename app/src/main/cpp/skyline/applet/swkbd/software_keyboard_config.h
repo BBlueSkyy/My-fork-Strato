@@ -4,7 +4,8 @@
 
 #pragma once
 
-#include <services/account/IAccountServiceForApplication.h>
+#include <optional>
+#include <common.h>
 
 namespace skyline::applet::swkbd {
     /**
@@ -184,4 +185,10 @@ namespace skyline::applet::swkbd {
         KeyboardConfigVB(const KeyboardConfigV0 &v0config);
     };
     static_assert(sizeof(KeyboardConfigVB) == 0x4C8);
+
+    constexpr size_t SwkbdTextBytes{0x7D4};
+
+    void NormalizeNormalConfig(KeyboardConfigVB &config);
+
+    std::optional<std::u16string> ReadInitialText(span<const u8> storage, size_t byteOffset, size_t codeUnits);
 }

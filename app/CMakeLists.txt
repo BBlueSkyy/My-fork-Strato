@@ -378,6 +378,9 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/applet/web_applet.cpp
         ${source_DIR}/skyline/applet/swkbd/software_keyboard_applet.cpp
         ${source_DIR}/skyline/applet/swkbd/software_keyboard_config.cpp
+        ${source_DIR}/skyline/applet/swkbd/software_keyboard_frontend.cpp
+        ${source_DIR}/skyline/applet/swkbd/software_keyboard_state.cpp
+        ${source_DIR}/skyline/applet/swkbd/software_keyboard_text.cpp
         ${source_DIR}/skyline/services/codec/IHardwareOpusDecoder.cpp
         ${source_DIR}/skyline/services/codec/IHardwareOpusDecoderManager.cpp
         ${source_DIR}/skyline/services/hid/IHidServer.cpp
