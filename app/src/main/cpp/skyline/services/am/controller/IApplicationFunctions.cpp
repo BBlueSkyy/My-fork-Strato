@@ -61,6 +61,11 @@ namespace skyline::service::am {
         auto userId{request.Pop<account::UserId>()};
         const auto &nacp{state.loader->nacp->nacpContents};
 
+        LOGI("[SAVE-DIAG] EnsureSaveData: user={:016X}{:016X}, owner={:016X}, account=0x{:X}+0x{:X}, device=0x{:X}+0x{:X}",
+             userId.upper, userId.lower, nacp.saveDataOwnerId,
+             nacp.userAccountSaveDataSize, nacp.userAccountSaveDataJournalSize,
+             nacp.deviceSaveDataSize, nacp.deviceSaveDataJournalSize);
+
         // EnsureSaveData is nn::fs::EnsureApplicationSaveData exposed through AM. The real
         // implementation creates the save-data areas declared by control.nacp if they do not
         // already exist. Strato backs save data with ordinary directories, so no block image or
@@ -77,6 +82,9 @@ namespace skyline::service::am {
                 attribute,
                 nacp.saveDataOwnerId
             )};
+
+            LOGI("[SAVE-DIAG] EnsureSaveData path: type={}, program={:016X}, path='{}'",
+                 static_cast<u32>(type), attribute.programId, saveDataPath);
 
             [[maybe_unused]] auto saveFileSystem{std::make_shared<vfs::OsFileSystem>(
                 state.os->publicAppFilesPath + "/switch" + saveDataPath
@@ -103,6 +111,7 @@ namespace skyline::service::am {
 
         // On success the returned value is the additional space required by the operation. Strato
         // does not emulate NAND quotas, so successful directory creation always requires 0 bytes.
+        LOGI("[SAVE-DIAG] EnsureSaveData -> requiredSize=0x0, result=Success");
         response.Push<u64>(0);
         return {};
     }
@@ -132,7 +141,9 @@ namespace skyline::service::am {
     Result IApplicationFunctions::GetSaveDataSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto saveDataType{request.Pop<u64>()};
         auto userId{request.Pop<account::UserId>()};
-        LOGD("Save data type: {}, UserId: {:016X}{:016X}", saveDataType, userId.upper, userId.lower);
+        LOGI("[SAVE-DIAG] GetSaveDataSize: type={}, user={:016X}{:016X} -> normal=0x{:X}, journal=0x{:X}",
+             saveDataType, userId.upper, userId.lower,
+             static_cast<u64>(SaveDataSize), static_cast<u64>(JournalSaveDataSize));
 
         response.Push(SaveDataSize);
         response.Push(JournalSaveDataSize);
@@ -146,7 +157,8 @@ namespace skyline::service::am {
         auto saveSize{request.Pop<i64>()};
         auto journalSize{request.Pop<i64>()};
 
-        LOGD("Cache storage index: {}, save size: 0x{:X}, journal size: 0x{:X}", index, saveSize, journalSize);
+        LOGI("[SAVE-DIAG] CreateCacheStorage: index={}, normal=0x{:X}, journal=0x{:X}",
+             index, static_cast<u64>(saveSize), static_cast<u64>(journalSize));
 
         // As with EnsureSaveData, we don't track real storage quotas: the actual directory is
         // created lazily by IFileSystemProxy::OpenSaveDataFileSystem when the cache storage is
@@ -154,12 +166,17 @@ namespace skyline::service::am {
         // storageTarget is nn::fs::CacheStorageTargetMedia, 1 = Nand, which is the only backing
         // we provide cache storage on; this is informational for the caller in most titles
         constexpr u64 CacheStorageTargetNand{1};
+        const auto requiredSize{static_cast<u64>(saveSize + journalSize)};
+        LOGI("[SAVE-DIAG] CreateCacheStorage -> target={}, requiredSize=0x{:X}",
+             CacheStorageTargetNand, requiredSize);
         response.Push<u64>(CacheStorageTargetNand);
-        response.Push<u64>(static_cast<u64>(saveSize + journalSize));
+        response.Push<u64>(requiredSize);
         return {};
     }
 
     Result IApplicationFunctions::GetSaveDataSizeMax(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        LOGI("[SAVE-DIAG] GetSaveDataSizeMax -> normal=0x{:X}, journal=0x{:X}",
+             static_cast<u64>(SaveDataSize), static_cast<u64>(JournalSaveDataSize));
         response.Push(SaveDataSize);
         response.Push(JournalSaveDataSize);
         return {};
@@ -180,7 +197,8 @@ namespace skyline::service::am {
             static_cast<i64>(nacp.cacheStorageDataAndJournalSizeMax)
         };
 
-        LOGD("Cache storage max: index={}, data+journal=0x{:X}", max.indexMax, max.dataAndJournalSizeMax);
+        LOGI("[SAVE-DIAG] GetCacheStorageMax -> index={}, data+journal=0x{:X}",
+             max.indexMax, static_cast<u64>(max.dataAndJournalSizeMax));
         response.Push(max);
         return {};
     }

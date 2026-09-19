@@ -57,6 +57,7 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystemProxy::GetCacheStorageSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        LOGI("[SAVE-DIAG] fsp-srv GetCacheStorageSize -> data=0x0, journal=0x0");
         response.Push<u64>(0);
         response.Push<u64>(0);
         return {};
@@ -66,6 +67,12 @@ namespace skyline::service::fssrv {
         auto spaceId{request.Pop<SaveDataSpaceId>()};
         auto attribute{request.Pop<SaveDataAttribute>()};
         auto saveDataPath{GetSaveDataPath(spaceId, attribute, state.loader->nacp->nacpContents.saveDataOwnerId)};
+
+        LOGI("[SAVE-DIAG] OpenSaveDataFileSystem: space={}, type={}, program={:016X}, saveId={:016X}, user={:016X}{:016X}, index={}, path='{}'",
+             static_cast<u64>(spaceId), static_cast<u32>(attribute.type),
+             attribute.programId, attribute.saveDataId,
+             attribute.userId.upper, attribute.userId.lower,
+             attribute.index, saveDataPath);
 
         manager.RegisterService(std::make_shared<IFileSystem>(std::make_shared<vfs::OsFileSystem>(state.os->publicAppFilesPath + "/switch" + saveDataPath), state, manager), session, response);
         return {};
