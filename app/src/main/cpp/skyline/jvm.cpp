@@ -59,11 +59,12 @@ namespace skyline {
           initializeControllersId{environ->GetMethodID(instanceClass, "initializeControllers", "()V")},
           vibrateDeviceId{environ->GetMethodID(instanceClass, "vibrateDevice", "(I[J[I)V")},
           clearVibrationDeviceId{environ->GetMethodID(instanceClass, "clearVibrationDevice", "(I)V")},
-          showKeyboardId{environ->GetMethodID(instanceClass, "showKeyboard", "(Ljava/nio/ByteBuffer;Ljava/lang/String;)Lorg/stratoemu/strato/applet/swkbd/SoftwareKeyboardDialog;")},
-          waitForSubmitOrCancelId{environ->GetMethodID(instanceClass, "waitForSubmitOrCancel", "(Lorg/stratoemu/strato/applet/swkbd/SoftwareKeyboardDialog;)[Ljava/lang/Object;")},
-          closeKeyboardId{environ->GetMethodID(instanceClass, "closeKeyboard", "(Lorg/stratoemu/strato/applet/swkbd/SoftwareKeyboardDialog;)V")},
-          showValidationResultId{environ->GetMethodID(instanceClass, "showValidationResult", "(Lorg/stratoemu/strato/applet/swkbd/SoftwareKeyboardDialog;ILjava/lang/String;)I")},
-          getIntegerValueId{environ->GetMethodID(environ->FindClass("java/lang/Integer"), "intValue", "()I")},
+          openSoftwareKeyboardId{environ->GetMethodID(instanceClass, "openSoftwareKeyboard", "(JLjava/nio/ByteBuffer;Ljava/lang/String;Z)Z")},
+          showSoftwareKeyboardTextCheckId{environ->GetMethodID(instanceClass, "showSoftwareKeyboardTextCheck", "(JILjava/lang/String;)V")},
+          resumeSoftwareKeyboardId{environ->GetMethodID(instanceClass, "resumeSoftwareKeyboard", "(J)V")},
+          updateSoftwareKeyboardId{environ->GetMethodID(instanceClass, "updateSoftwareKeyboard", "(JLjava/lang/String;I)V")},
+          hideSoftwareKeyboardId{environ->GetMethodID(instanceClass, "hideSoftwareKeyboard", "(J)V")},
+          closeSoftwareKeyboardId{environ->GetMethodID(instanceClass, "closeSoftwareKeyboard", "(J)V")},
           reportCrashId{environ->GetMethodID(instanceClass, "reportCrash", "()V")},
           showPipelineLoadingScreenId{environ->GetMethodID(instanceClass, "showPipelineLoadingScreen", "(I)V")},
           updatePipelineLoadingProgressId{environ->GetMethodID(instanceClass, "updatePipelineLoadingProgress", "(I)V")},
@@ -120,27 +121,87 @@ namespace skyline {
         env->CallVoidMethod(instance, clearVibrationDeviceId, index);
     }
 
-    jobject JvmManager::ShowKeyboard(KeyboardConfig &config, std::u16string initialText) {
-        auto buffer{env->NewDirectByteBuffer(&config, sizeof(KeyboardConfig))};
-        auto str{env->NewString(reinterpret_cast<const jchar *>(initialText.data()), static_cast<int>(initialText.length()))};
-        jobject localKeyboardDialog{env->CallObjectMethod(instance, showKeyboardId, buffer, str)};
-        env->DeleteLocalRef(buffer);
-        env->DeleteLocalRef(str);
-        auto keyboardDialog{env->NewGlobalRef(localKeyboardDialog)};
-
-        env->DeleteLocalRef(localKeyboardDialog);
-        return keyboardDialog;
+    namespace {
+        jstring NewJString(JNIEnv *environment, std::u16string_view text) {
+            return environment->NewString(reinterpret_cast<const jchar *>(text.data()), static_cast<jsize>(text.size()));
+        }
     }
 
-    std::pair<JvmManager::KeyboardCloseResult, std::u16string> JvmManager::WaitForSubmitOrCancel(jobject keyboardDialog) {
-        auto returnArray{reinterpret_cast<jobjectArray>(env->CallObjectMethod(instance, waitForSubmitOrCancelId, keyboardDialog))};
-        auto buttonInteger{env->GetObjectArrayElement(returnArray, 0)};
-        auto inputJString{reinterpret_cast<jstring>(env->GetObjectArrayElement(returnArray, 1))};
-        auto stringChars{env->GetStringChars(inputJString, nullptr)};
-        std::u16string input{stringChars, stringChars + env->GetStringLength(inputJString)};
-        env->ReleaseStringChars(inputJString, stringChars);
+    std::optional<applet::swkbd::FrontendSessionId> JvmManager::OpenNormalSoftwareKeyboard(
+        std::weak_ptr<applet::swkbd::SoftwareKeyboardFrontendCallbacks> callbacks,
+        const applet::swkbd::FrontendKeyboardConfig &config,
+        std::u16string_view initialText) {
+        const auto sessionId{softwareKeyboardSessions.Register(std::move(callbacks))};
+        auto configCopy{config};
+        auto buffer{env->NewDirectByteBuffer(configCopy.data(), configCopy.size())};
+        auto text{NewJString(env, initialText)};
+        const bool opened{env->CallBooleanMethod(instance, openSoftwareKeyboardId, static_cast<jlong>(sessionId), buffer, text,
+                                                 JNI_FALSE) == JNI_TRUE};
+        env->DeleteLocalRef(text);
+        env->DeleteLocalRef(buffer);
+        const bool failed{env->ExceptionCheck() == JNI_TRUE};
+        if (failed)
+            env->ExceptionClear();
+        if (!opened || failed) {
+            softwareKeyboardSessions.Unregister(sessionId);
+            return std::nullopt;
+        }
+        return sessionId;
+    }
 
-        return {static_cast<KeyboardCloseResult>(env->CallIntMethod(buttonInteger, getIntegerValueId)), input};
+    applet::swkbd::FrontendSessionId JvmManager::CreateInlineSoftwareKeyboardSession(
+        std::weak_ptr<applet::swkbd::SoftwareKeyboardFrontendCallbacks> callbacks) {
+        return softwareKeyboardSessions.Register(std::move(callbacks));
+    }
+
+    bool JvmManager::ShowInlineSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
+                                                const applet::swkbd::FrontendKeyboardConfig &config,
+                                                std::u16string_view initialText) {
+        auto configCopy{config};
+        auto buffer{env->NewDirectByteBuffer(configCopy.data(), configCopy.size())};
+        auto text{NewJString(env, initialText)};
+        const bool opened{env->CallBooleanMethod(instance, openSoftwareKeyboardId, static_cast<jlong>(sessionId), buffer, text,
+                                                 JNI_TRUE) == JNI_TRUE};
+        env->DeleteLocalRef(text);
+        env->DeleteLocalRef(buffer);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            return false;
+        }
+        return opened;
+    }
+
+    void JvmManager::ShowSoftwareKeyboardTextCheck(applet::swkbd::FrontendSessionId sessionId, u32 result,
+                                                   std::u16string_view message) {
+        auto text{NewJString(env, message)};
+        env->CallVoidMethod(instance, showSoftwareKeyboardTextCheckId, static_cast<jlong>(sessionId),
+                            static_cast<jint>(result), text);
+        env->DeleteLocalRef(text);
+    }
+
+    void JvmManager::ResumeSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId) {
+        env->CallVoidMethod(instance, resumeSoftwareKeyboardId, static_cast<jlong>(sessionId));
+    }
+
+    void JvmManager::UpdateSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
+                                            std::u16string_view input, i32 cursor) {
+        auto text{NewJString(env, input)};
+        env->CallVoidMethod(instance, updateSoftwareKeyboardId, static_cast<jlong>(sessionId), text,
+                            static_cast<jint>(cursor));
+        env->DeleteLocalRef(text);
+    }
+
+    void JvmManager::HideSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId) {
+        env->CallVoidMethod(instance, hideSoftwareKeyboardId, static_cast<jlong>(sessionId));
+    }
+
+    void JvmManager::CloseSoftwareKeyboardSession(applet::swkbd::FrontendSessionId sessionId) {
+        softwareKeyboardSessions.Unregister(sessionId);
+        env->CallVoidMethod(instance, closeSoftwareKeyboardId, static_cast<jlong>(sessionId));
+    }
+
+    bool JvmManager::DispatchSoftwareKeyboardEvent(applet::swkbd::FrontendEvent event) {
+        return softwareKeyboardSessions.Dispatch(std::move(event));
     }
 
     DhcpInfo JvmManager::GetDhcpInfo() {
@@ -158,18 +219,6 @@ namespace skyline {
         jint dns1{env->GetIntField(dhcpInfo, dns1FieldId)};
         jint dns2{env->GetIntField(dhcpInfo, dns2FieldId)};
         return DhcpInfo{ipAddress, subnet, gateway, dns1, dns2};
-    }
-
-    void JvmManager::CloseKeyboard(jobject dialog) {
-        env->CallVoidMethod(instance, closeKeyboardId, dialog);
-        env->DeleteGlobalRef(dialog);
-    }
-
-    JvmManager::KeyboardCloseResult JvmManager::ShowValidationResult(jobject dialog, KeyboardTextCheckResult checkResult, std::u16string message) {
-        auto str{env->NewString(reinterpret_cast<const jchar *>(message.data()), static_cast<int>(message.length()))};
-        auto result{static_cast<KeyboardCloseResult>(env->CallIntMethod(instance, showValidationResultId, dialog, checkResult, str))};
-        env->DeleteLocalRef(str);
-        return result;
     }
 
     void JvmManager::reportCrash() {
