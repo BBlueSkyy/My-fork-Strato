@@ -115,6 +115,17 @@ void TestBktrNca(bool encrypted) {
     Check(std::equal(unaligned.begin(), unaligned.end(), expected.begin() + 0x701), "Unaligned read crossing CTR-Ex/relocation boundary differs");
     Check(ReadBytes(patch.OpenExeFsWithPatch(base)->OpenFile("main.npdm")) == std::vector<u8>{0x42}, "Patch ExeFS not selected");
 }
+void TestAesCtrExMetadataGap() {
+    auto keys{std::make_shared<crypto::KeyStore>("")};
+    auto baseFixture{BaseFixture()}; baseFixture.Finalize(true, keys);
+    // The AES-CTR-Ex data tree may end before its metadata table as long as the
+    // complete indirect table remains inside the tree's readable range.
+    auto patchFixture{PatchFixture(true, 0xa000, 0x9000)}; patchFixture.Finalize(true, keys);
+    NCA base(baseFixture.backing, keys), patch(patchFixture.backing, keys);
+    auto expected{RomBytes()}; std::fill(expected.begin() + 0x800, expected.end(), 0x62);
+    Check(ReadBytes(patch.OpenRomFsWithPatch(base)) == expected,
+          "Valid AES-CTR-Ex metadata gap was rejected or changed layered RomFS data");
+}
 void TestExeFsFallback() {
     auto keys{std::make_shared<crypto::KeyStore>("")};
     auto bf{BaseFixture()}; bf.Finalize();
@@ -297,6 +308,7 @@ int main() {
     run("ordinary replacement update, coherent ExeFS", TestReplacementUpdate);
     run("decrypted NCA indirect layering", [] { TestBktrNca(false); });
     run("encrypted NCA AES-CTR-Ex and indirect metadata", [] { TestBktrNca(true); });
+    run("AES-CTR-Ex metadata gap before table", TestAesCtrExMetadataGap);
     run("RomFS-only patch, ExeFS fallback", TestExeFsFallback);
     run("sparse NCA physical mapping and zero range", TestSparseNca);
     run("compressed NCA and BKTR before compression", TestCompressedNca);
