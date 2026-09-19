@@ -6,6 +6,7 @@
 #include "skyline/applet/swkbd/software_keyboard_frontend.h"
 #include "skyline/applet/swkbd/software_keyboard_state.h"
 #include "skyline/applet/swkbd/software_keyboard_text.h"
+#include "skyline/services/am/applet/indirect_layer_registry.h"
 
 using namespace skyline;
 using namespace skyline::applet::swkbd;
@@ -94,6 +95,22 @@ namespace {
         callbacks.reset();
         Require(!registry.Dispatch({.sessionId = second, .type = {}, .text = {}, .cursor = 0}), "expired callback rejection");
     }
+
+    void TestIndirectLayers() {
+        service::am::IndirectLayerRegistry registry;
+        auto owner{std::make_shared<int>(1)};
+        auto applet{std::shared_ptr<service::am::IApplet>(owner, reinterpret_cast<service::am::IApplet *>(owner.get()))};
+        const auto handle{registry.Register(applet, 0x11, 0x22)};
+        Require(handle != 0 && registry.Get(handle, 0x11, 0x22) == applet, "indirect handle identity");
+        Require(!registry.Get(handle, 0x12, 0x22) && !registry.Get(handle, 0x11, 0x23), "PID and ARUID validation");
+        registry.Unregister(handle);
+        Require(!registry.Get(handle, 0x11, 0x22), "indirect handle lifetime");
+
+        const auto expiredHandle{registry.Register(applet, 0x11, 0x22)};
+        applet.reset();
+        owner.reset();
+        Require(!registry.Get(expiredHandle, 0x11, 0x22), "expired applet rejection");
+    }
 }
 
 int main() {
@@ -101,5 +118,6 @@ int main() {
     TestConfig();
     TestState();
     TestSessions();
-    std::cout << "PASS SWKBD serialization, normal state, and frontend sessions\n";
+    TestIndirectLayers();
+    std::cout << "PASS SWKBD serialization, normal state, frontend sessions, and indirect handles\n";
 }

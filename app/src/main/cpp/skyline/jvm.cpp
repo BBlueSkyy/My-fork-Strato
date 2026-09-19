@@ -127,41 +127,19 @@ namespace skyline {
         }
     }
 
-    std::optional<applet::swkbd::FrontendSessionId> JvmManager::OpenNormalSoftwareKeyboard(
-        std::weak_ptr<applet::swkbd::SoftwareKeyboardFrontendCallbacks> callbacks,
-        const applet::swkbd::FrontendKeyboardConfig &config,
-        std::u16string_view initialText) {
-        const auto sessionId{softwareKeyboardSessions.Register(std::move(callbacks))};
-        auto configCopy{config};
-        auto buffer{env->NewDirectByteBuffer(configCopy.data(), configCopy.size())};
-        auto text{NewJString(env, initialText)};
-        const bool opened{env->CallBooleanMethod(instance, openSoftwareKeyboardId, static_cast<jlong>(sessionId), buffer, text,
-                                                 JNI_FALSE) == JNI_TRUE};
-        env->DeleteLocalRef(text);
-        env->DeleteLocalRef(buffer);
-        const bool failed{env->ExceptionCheck() == JNI_TRUE};
-        if (failed)
-            env->ExceptionClear();
-        if (!opened || failed) {
-            softwareKeyboardSessions.Unregister(sessionId);
-            return std::nullopt;
-        }
-        return sessionId;
-    }
-
-    applet::swkbd::FrontendSessionId JvmManager::CreateInlineSoftwareKeyboardSession(
+    applet::swkbd::FrontendSessionId JvmManager::CreateSoftwareKeyboardSession(
         std::weak_ptr<applet::swkbd::SoftwareKeyboardFrontendCallbacks> callbacks) {
         return softwareKeyboardSessions.Register(std::move(callbacks));
     }
 
-    bool JvmManager::ShowInlineSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
-                                                const applet::swkbd::FrontendKeyboardConfig &config,
-                                                std::u16string_view initialText) {
+    bool JvmManager::ShowSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
+                                          const applet::swkbd::FrontendKeyboardConfig &config,
+                                          std::u16string_view initialText, bool inlineKeyboard) {
         auto configCopy{config};
         auto buffer{env->NewDirectByteBuffer(configCopy.data(), configCopy.size())};
         auto text{NewJString(env, initialText)};
         const bool opened{env->CallBooleanMethod(instance, openSoftwareKeyboardId, static_cast<jlong>(sessionId), buffer, text,
-                                                 JNI_TRUE) == JNI_TRUE};
+                                                 inlineKeyboard ? JNI_TRUE : JNI_FALSE) == JNI_TRUE};
         env->DeleteLocalRef(text);
         env->DeleteLocalRef(buffer);
         if (env->ExceptionCheck()) {

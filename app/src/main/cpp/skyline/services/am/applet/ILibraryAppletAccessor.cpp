@@ -56,6 +56,8 @@ namespace skyline::service::am {
     Result ILibraryAppletAccessor::RequestExit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
         applet->RequestExit();
         indirectLayers->Unregister(indirectLayerHandle);
+        indirectLayerHandle = 0;
+        exited = true;
         stateChangeEvent->Signal();
         return {};
     }
@@ -63,6 +65,8 @@ namespace skyline::service::am {
     Result ILibraryAppletAccessor::Terminate(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
         applet->RequestExit();
         indirectLayers->Unregister(indirectLayerHandle);
+        indirectLayerHandle = 0;
+        exited = true;
         stateChangeEvent->Signal();
         return {};
     }
@@ -123,7 +127,7 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto requestedAppletResourceUserId{request.Pop<u64>()};
-        if (appletMode != applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay || !request.pid ||
+        if (exited || appletMode != applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay || !request.pid ||
             request.pid != appletResourceUserId || requestedAppletResourceUserId != appletResourceUserId)
             return result::ObjectInvalid;
         if (!indirectLayerHandle ||

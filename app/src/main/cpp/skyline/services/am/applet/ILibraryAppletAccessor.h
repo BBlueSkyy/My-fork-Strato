@@ -32,6 +32,7 @@ namespace skyline::service::am {
         std::shared_ptr<IndirectLayerRegistry> indirectLayers;
         u64 appletResourceUserId{};
         u64 indirectLayerHandle{};
+        bool exited{};
 
       public:
         ILibraryAppletAccessor(const DeviceState &state, ServiceManager &manager,

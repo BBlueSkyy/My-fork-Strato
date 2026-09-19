@@ -157,8 +157,12 @@ namespace skyline::applet::swkbd {
         }
 
         auto callbacks{std::dynamic_pointer_cast<SoftwareKeyboardFrontendCallbacks>(shared_from_this())};
-        const auto sessionId{state.jvm->OpenNormalSoftwareKeyboard(callbacks, CopyFrontendConfig(), initialText)};
-        if (!sessionId) {
+        const auto sessionId{state.jvm->CreateSoftwareKeyboardSession(callbacks)};
+        {
+            std::scoped_lock lock{normalMutex};
+            normalSessionId = sessionId;
+        }
+        if (!state.jvm->ShowSoftwareKeyboard(sessionId, CopyFrontendConfig(), initialText, false)) {
             NormalAction action;
             {
                 std::scoped_lock lock{normalMutex};
@@ -166,10 +170,6 @@ namespace skyline::applet::swkbd {
             }
             ExecuteNormalAction(std::move(action));
             return {};
-        }
-        {
-            std::scoped_lock lock{normalMutex};
-            normalSessionId = *sessionId;
         }
         return {};
     }
@@ -255,7 +255,7 @@ namespace skyline::applet::swkbd {
             LOGW("Inline SWKBD mode mismatch: expected=0x{:X}, actual=0x{:X}", static_cast<u32>(expectedMode), static_cast<u32>(mode));
 
         auto callbacks{std::dynamic_pointer_cast<SoftwareKeyboardFrontendCallbacks>(shared_from_this())};
-        const auto sessionId{state.jvm->CreateInlineSoftwareKeyboardSession(callbacks)};
+        const auto sessionId{state.jvm->CreateSoftwareKeyboardSession(callbacks)};
         {
             std::scoped_lock lock{inlineMutex};
             inlineSessionId = sessionId;
@@ -467,7 +467,7 @@ namespace skyline::applet::swkbd {
 
         switch (action.type) {
             case InlineFrontendActionType::Show: {
-                const bool opened{state.jvm->ShowInlineSoftwareKeyboard(*sessionId, action.config, action.text)};
+                const bool opened{state.jvm->ShowSoftwareKeyboard(*sessionId, action.config, action.text, true)};
                 bool update{};
                 {
                     std::scoped_lock lock{inlineMutex};

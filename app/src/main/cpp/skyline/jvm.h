@@ -160,17 +160,12 @@ namespace skyline {
          */
         void ClearVibrationDevice(jint index);
 
-        std::optional<applet::swkbd::FrontendSessionId> OpenNormalSoftwareKeyboard(
-            std::weak_ptr<applet::swkbd::SoftwareKeyboardFrontendCallbacks> callbacks,
-            const applet::swkbd::FrontendKeyboardConfig &config,
-            std::u16string_view initialText);
-
-        applet::swkbd::FrontendSessionId CreateInlineSoftwareKeyboardSession(
+        applet::swkbd::FrontendSessionId CreateSoftwareKeyboardSession(
             std::weak_ptr<applet::swkbd::SoftwareKeyboardFrontendCallbacks> callbacks);
 
-        bool ShowInlineSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
-                                        const applet::swkbd::FrontendKeyboardConfig &config,
-                                        std::u16string_view initialText);
+        bool ShowSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
+                                  const applet::swkbd::FrontendKeyboardConfig &config,
+                                  std::u16string_view initialText, bool inlineKeyboard);
 
         void ShowSoftwareKeyboardTextCheck(applet::swkbd::FrontendSessionId sessionId, u32 result,
                                            std::u16string_view message);
