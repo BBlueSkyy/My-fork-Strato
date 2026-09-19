@@ -30,6 +30,7 @@ namespace skyline::service::am {
     }
 
     bool ILibraryAppletAccessor::IsAppletCompleted() const {
+        std::scoped_lock lock{kernel::type::KSyncObject::syncObjectMutex};
         return stateChangeEvent->signalled;
     }
 
