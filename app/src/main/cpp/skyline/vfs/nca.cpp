@@ -215,6 +215,16 @@ namespace skyline::vfs {
         LOGI("NCA-BKTR TRACE AES-CTR-Ex root: index={}, buckets={}, size=0x{:X}, expectedBuckets={}",
              root.index, root.numberBuckets, root.size, entrySize / BucketNodeSize);
         ValidateRootBlock(root, entrySize / BucketNodeSize, "AES-CTR-Ex");
+        try {
+            const auto indirectRoot{ReadExact<RelocationBlock>(metadata, indirect.offset)};
+            const size_t indirectEntrySize{QuerySparseEntryStorageSize(indirect.numberEntries)};
+            LOGI("NCA-BKTR TRACE ordinary-CTR indirect root: index={}, buckets={}, size=0x{:X}, expectedBuckets={}, tableBytes=0x{:X}",
+                 indirectRoot.index, indirectRoot.numberBuckets, indirectRoot.size,
+                 indirectEntrySize / BucketNodeSize,
+                 QuerySingleLevelNodeStorageSize(indirectEntrySize) + indirectEntrySize);
+        } catch (const std::exception &e) {
+            LOGE("NCA-BKTR TRACE ordinary-CTR indirect root read failed: {}", e.what());
+        }
         if (root.size != info.offset)
             throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex data size does not match its table offset");
 
