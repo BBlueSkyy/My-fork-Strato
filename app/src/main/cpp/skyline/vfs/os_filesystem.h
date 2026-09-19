@@ -32,6 +32,10 @@ namespace skyline::vfs {
 
         std::shared_ptr<Directory> OpenDirectoryImpl(const std::string &path, Directory::ListMode listMode) override;
 
+        u64 GetFreeSpaceSizeImpl() const override;
+
+        u64 GetTotalSpaceSizeImpl() const override;
+
       public:
         OsFileSystem(const std::string &basePath);
     };

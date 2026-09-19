@@ -111,13 +111,12 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystem::GetFreeSpaceSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        //TODO: proper implementation for GetFreeSpaceSize
-        response.Push<u64>(90000000);
+        response.Push<u64>(backing->GetFreeSpaceSize());
         return {};
     }
 
     Result IFileSystem::GetTotalSpaceSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u64>(90000000);
+        response.Push<u64>(backing->GetTotalSpaceSize());
         return {};
     }
 

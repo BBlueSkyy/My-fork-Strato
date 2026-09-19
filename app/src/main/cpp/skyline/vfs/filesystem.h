@@ -44,6 +44,14 @@ namespace skyline::vfs {
             throw exception("This filesystem does not support opening directories");
         };
 
+        virtual u64 GetFreeSpaceSizeImpl() const {
+            return 0;
+        }
+
+        virtual u64 GetTotalSpaceSizeImpl() const {
+            return 0;
+        }
+
       public:
         FileSystem() = default;
 
@@ -168,5 +176,13 @@ namespace skyline::vfs {
         std::shared_ptr<Directory> OpenDirectory(const std::string &path, Directory::ListMode listMode = {true, true}) {
             return OpenDirectoryUnchecked(path, listMode);
         };
+
+        u64 GetFreeSpaceSize() const {
+            return GetFreeSpaceSizeImpl();
+        }
+
+        u64 GetTotalSpaceSize() const {
+            return GetTotalSpaceSizeImpl();
+        }
     };
 }

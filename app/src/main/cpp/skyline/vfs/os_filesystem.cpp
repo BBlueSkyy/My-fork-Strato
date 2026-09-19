@@ -120,6 +120,28 @@ namespace skyline::vfs {
             return std::make_shared<OsFileSystemDirectory>(basePath + path, listMode);
     }
 
+    u64 OsFileSystem::GetFreeSpaceSizeImpl() const {
+        std::error_code error;
+        const auto spaceInfo{std::filesystem::space(basePath, error)};
+        if (error) {
+            LOGE("Failed to query free space for '{}': {}", basePath, error.message());
+            return 0;
+        }
+
+        return spaceInfo.free;
+    }
+
+    u64 OsFileSystem::GetTotalSpaceSizeImpl() const {
+        std::error_code error;
+        const auto spaceInfo{std::filesystem::space(basePath, error)};
+        if (error) {
+            LOGE("Failed to query total space for '{}': {}", basePath, error.message());
+            return 0;
+        }
+
+        return spaceInfo.capacity;
+    }
+
     OsFileSystemDirectory::OsFileSystemDirectory(std::string path, Directory::ListMode listMode) : Directory(listMode), path(std::move(path)) {}
 
     std::vector<Directory::Entry> OsFileSystemDirectory::Read() {
