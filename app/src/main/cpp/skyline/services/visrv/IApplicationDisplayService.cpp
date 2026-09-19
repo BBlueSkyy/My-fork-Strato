@@ -126,18 +126,18 @@ namespace skyline::service::visrv {
     }
 
     Result IApplicationDisplayService::GetIndirectLayerImageMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto width{request.Pop<i64>()};
-        auto height{request.Pop<i64>()};
+        const i64 width{request.Pop<i64>()};
+        const i64 height{request.Pop<i64>()};
+        const u64 indirectLayerConsumerHandle{request.Pop<u64>()};
+        const u64 aruid{request.Pop<u64>()};
+        const size_t outputSize{request.outputBuf.empty() ? 0 : request.outputBuf.at(0).size()};
+        LOGI("[SWKBD-TRACE] VI GetIndirectLayerImageMap width={} height={} handle=0x{:X} aruid=0x{:X} output=0x{:X}",
+             width, height, indirectLayerConsumerHandle, aruid, outputSize);
 
-        if (!request.outputBuf.empty()) {
-            // As we don't support indirect layers, we just fill the output buffer with red
-            auto imageBuffer{request.outputBuf.at(0)};
-            std::fill(imageBuffer.begin(), imageBuffer.end(), 0xFF0000FF);
-        }
-
-        response.Push<i64>(width);
-        response.Push<i64>(height);
-
+        // Eden's custom SWKBD frontend does not render an indirect image. The guest still polls
+        // this command while the Android IME is visible, so return the same zero size/stride.
+        response.Push<u64>(0);
+        response.Push<u64>(0);
         return {};
     }
 
@@ -151,10 +151,13 @@ namespace skyline::service::visrv {
         i64 layerSize{width * height * A8B8G8R8Size};
 
         constexpr ssize_t BlockSize{0x20000}; //!< The size of an arbitrarily defined block, the layer size must be aligned to a block
-        response.Push<i64>(util::AlignUpNpot<i64>(layerSize, BlockSize));
+        const i64 requiredSize{util::AlignUpNpot<i64>(layerSize, BlockSize)};
+        response.Push<i64>(requiredSize);
 
         constexpr size_t DefaultAlignment{0x1000}; //!< The default alignment of the buffer
         response.Push<u64>(DefaultAlignment);
+        LOGI("[SWKBD-TRACE] VI GetIndirectLayerImageRequiredMemoryInfo {}x{} -> size=0x{:X} align=0x{:X}",
+             width, height, requiredSize, DefaultAlignment);
 
         return Result{};
     }

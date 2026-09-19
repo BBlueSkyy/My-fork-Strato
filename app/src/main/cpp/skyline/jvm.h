@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <functional>
+#include <mutex>
 #include "common.h"
 #include <jni.h>
 
@@ -80,12 +82,26 @@ namespace skyline {
         using KeyboardCloseResult = u32;
         using KeyboardTextCheckResult = u32;
 
+        struct InlineKeyboardUpdate {
+            enum class Kind : u32 {
+                ChangedString = 0,
+                MovedCursor = 1,
+                Enter = 2,
+                Cancel = 3,
+            };
+
+            Kind kind{};
+            std::u16string text{};
+            i32 cursor{};
+        };
+
+        using InlineKeyboardCallback = std::function<void(InlineKeyboardUpdate)>;
 
         jobject instance; //!< A reference to the activity
         jclass instanceClass; //!< The class of the activity
 
         /**
-         * @param env A pointer to the JNI environment
+         * @param env A pointer to the current jni environment
          * @param instance A reference to the activity
          */
         JvmManager(JNIEnv *env, jobject instance);
@@ -184,6 +200,14 @@ namespace skyline {
          */
         KeyboardCloseResult ShowValidationResult(KeyboardHandle dialog, KeyboardTextCheckResult checkResult, std::u16string message);
 
+        void ShowInlineKeyboard(KeyboardConfig &config, std::u16string_view text, i32 cursor, bool enableBackspace);
+        void UpdateInlineKeyboard(std::u16string_view text, i32 cursor);
+        void HideInlineKeyboard();
+        void CloseInlineKeyboard();
+        void SetInlineKeyboardCallback(InlineKeyboardCallback callback);
+        void ClearInlineKeyboardCallback();
+        void SubmitInlineKeyboardUpdate(InlineKeyboardUpdate update);
+
         /**
          * @brief A call to EmulationActivity.reportCrash in Kotlin
          */
@@ -229,8 +253,18 @@ namespace skyline {
         jmethodID waitForSubmitOrCancelId;
         jmethodID closeKeyboardId;
         jmethodID showValidationResultId;
+
+        jclass inlineKeyboardClass{};
+        jmethodID showInlineKeyboardId{};
+        jmethodID updateInlineKeyboardId{};
+        jmethodID hideInlineKeyboardId{};
+        jmethodID closeInlineKeyboardId{};
+
         jmethodID getIntegerValueId;
         jmethodID reportCrashId;
+
+        std::mutex inlineKeyboardCallbackMutex;
+        InlineKeyboardCallback inlineKeyboardCallback;
 
         jmethodID showPipelineLoadingScreenId;
         jmethodID updatePipelineLoadingProgressId;
