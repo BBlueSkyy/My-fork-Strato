@@ -4,6 +4,7 @@
 #include <crypto/aes_cipher.h>
 #include <loader/loader.h>
 #include <limits>
+#include <mbedtls/sha256.h>
 
 #include "ctr_encrypted_backing.h"
 #include "region_backing.h"
@@ -155,6 +156,127 @@ namespace skyline::vfs {
             return value;
         }
 
+        std::array<u8, 0x20> Sha256(const void *data, size_t size) {
+            std::array<u8, 0x20> hash{};
+            if (mbedtls_sha256_ret(static_cast<const unsigned char *>(data), size, hash.data(), 0) != 0)
+                throw loader_exception(LoaderResult::ParsingError, "Failed to calculate NCA metadata hash");
+            return hash;
+        }
+
+        std::array<u8, 0x20> Sha256BackingBlock(const std::shared_ptr<Backing> &backing, u64 offset, u64 dataSize, u64 blockSize) {
+            mbedtls_sha256_context context;
+            mbedtls_sha256_init(&context);
+            if (mbedtls_sha256_starts_ret(&context, 0) != 0) {
+                mbedtls_sha256_free(&context);
+                throw loader_exception(LoaderResult::ParsingError, "Failed to initialize NCA integrity hash");
+            }
+
+            std::array<u8, 0x10000> buffer{};
+            u64 done{};
+            while (done < dataSize) {
+                const size_t count{static_cast<size_t>(std::min<u64>(buffer.size(), dataSize - done))};
+                if (backing->Read(span<u8>(buffer.data(), count), static_cast<size_t>(offset + done)) != count ||
+                    mbedtls_sha256_update_ret(&context, buffer.data(), count) != 0) {
+                    mbedtls_sha256_free(&context);
+                    throw loader_exception(LoaderResult::ParsingError, "Failed to hash NCA integrity data");
+                }
+                done += count;
+            }
+
+            buffer.fill(0);
+            u64 padding{blockSize - dataSize};
+            while (padding != 0) {
+                const size_t count{static_cast<size_t>(std::min<u64>(buffer.size(), padding))};
+                if (mbedtls_sha256_update_ret(&context, buffer.data(), count) != 0) {
+                    mbedtls_sha256_free(&context);
+                    throw loader_exception(LoaderResult::ParsingError, "Failed to hash NCA integrity padding");
+                }
+                padding -= count;
+            }
+
+            std::array<u8, 0x20> hash{};
+            if (mbedtls_sha256_finish_ret(&context, hash.data()) != 0) {
+                mbedtls_sha256_free(&context);
+                throw loader_exception(LoaderResult::ParsingError, "Failed to finish NCA integrity hash");
+            }
+            mbedtls_sha256_free(&context);
+            return hash;
+        }
+
+        u64 VerifyPatchMetaHierarchy(const std::shared_ptr<Backing> &decrypted, u64 dataOffset,
+                                     const NCAMetaDataHashDataInfo &info, const NCAMetaDataHashData &metadata) {
+            if (info.offset < 0 || metadata.layerInfoOffset < 0)
+                throw loader_exception(LoaderResult::ParsingError, "Negative NCA patch metadata offset");
+
+            const u64 metadataOffset{static_cast<u64>(info.offset)};
+            const u64 layerInfoOffset{static_cast<u64>(metadata.layerInfoOffset)};
+            if (dataOffset > layerInfoOffset || layerInfoOffset > metadataOffset)
+                throw loader_exception(LoaderResult::ParsingError, "Invalid NCA patch integrity layer offset");
+
+            const auto &integrity{metadata.integrityMetaInfo};
+            const auto &levels{integrity.levelHashInfo};
+            if (levels.maxLayers < 2 || levels.maxLayers > 7)
+                throw loader_exception(LoaderResult::ParsingError, "Invalid NCA patch integrity layer count");
+
+            const size_t finalLevel{levels.maxLayers - 2};
+            u64 previousOffset{};
+            u64 previousSize{};
+
+            for (size_t level{}; level <= finalLevel; ++level) {
+                const auto &entry{levels.levels[level]};
+                if (entry.size <= 0 || entry.offset < 0 || entry.blockOrder < 5 || entry.blockOrder > 32)
+                    throw loader_exception(LoaderResult::ParsingError, "Invalid NCA patch integrity level");
+
+                const u64 levelSize{static_cast<u64>(entry.size)};
+                const u64 blockSize{1ULL << entry.blockOrder};
+                u64 levelOffset{};
+
+                if (level == finalLevel) {
+                    levelOffset = dataOffset;
+                    if (levelSize > layerInfoOffset - dataOffset)
+                        throw loader_exception(LoaderResult::ParsingError, "NCA patch metadata data layer overlaps hash layers");
+                } else {
+                    const u64 relativeOffset{static_cast<u64>(entry.offset)};
+                    if (relativeOffset > metadataOffset - layerInfoOffset)
+                        throw loader_exception(LoaderResult::ParsingError, "NCA patch integrity level offset is out of range");
+                    levelOffset = layerInfoOffset + relativeOffset;
+                    if (!InRange(levelOffset, levelSize, metadataOffset))
+                        throw loader_exception(LoaderResult::ParsingError, "NCA patch integrity level is out of range");
+                }
+
+                const u64 blockCount{levelSize / blockSize + (levelSize % blockSize != 0)};
+                if (level == 0) {
+                    if (blockCount != 1)
+                        throw loader_exception(LoaderResult::ParsingError, "NCA patch master hash does not cover the first integrity layer");
+                } else if (blockCount > previousSize / 0x20) {
+                    throw loader_exception(LoaderResult::ParsingError, "NCA patch integrity hash layer is too small");
+                }
+
+                for (u64 block{}; block < blockCount; ++block) {
+                    const u64 blockOffset{block * blockSize};
+                    const u64 count{std::min(blockSize, levelSize - blockOffset)};
+                    const auto calculated{Sha256BackingBlock(decrypted, levelOffset + blockOffset, count, blockSize)};
+
+                    std::array<u8, 0x20> expected{};
+                    if (level == 0) {
+                        expected = integrity.masterHash;
+                    } else {
+                        const u64 hashOffset{previousOffset + block * expected.size()};
+                        if (decrypted->Read(expected, static_cast<size_t>(hashOffset)) != expected.size())
+                            throw loader_exception(LoaderResult::ParsingError, "Short NCA patch integrity hash read");
+                    }
+
+                    if (calculated != expected)
+                        throw loader_exception(LoaderResult::ParsingError, "NCA patch metadata integrity verification failed");
+                }
+
+                previousOffset = levelOffset;
+                previousSize = levelSize;
+            }
+
+            return static_cast<u64>(levels.levels[finalLevel].size);
+        }
+
         size_t ValidatePatchTable(const BKTRHeader &info, size_t entryStorageSize, size_t backingSize) {
             if (info.magic != util::MakeMagic<u32>("BKTR") || info.version > 1 || info.numberEntries == 0)
                 throw loader_exception(LoaderResult::ParsingError, "Invalid NCA patch BucketTree header");
@@ -165,7 +287,8 @@ namespace skyline::vfs {
         }
 
         // Each extent owns a CTR backing with its own generation and absolute counter offset.
-        // In particular, the indirect table is read THROUGH this layer, not ordinary AES-CTR.
+        // Legacy patch metadata can live inside this virtual range; newer Patch Meta Hash
+        // layouts provide the indirect and AES-CTR-Ex tables through separate verified storage.
         class AesCtrExBacking : public Backing {
           public:
             struct Extent {
@@ -196,7 +319,48 @@ namespace skyline::vfs {
         };
     }
 
-    std::shared_ptr<Backing> NCA::CreateAesCtrExBacking(const NCASectionHeader &section, std::shared_ptr<Backing> raw, size_t offset) {
+    NCA::PatchMetaStorage NCA::CreatePatchMetaStorage(const NCASectionHeader &section, std::shared_ptr<Backing> raw, size_t offset) {
+        constexpr u8 HierarchicalIntegrityMetaHash{1};
+        const auto &indirect{section.bktr.relocation};
+        const auto &aesCtrEx{section.bktr.subsection};
+        const auto &hashInfo{section.raw.metaDataHashDataInfo};
+
+        if (section.raw.header.metadataHashType != HierarchicalIntegrityMetaHash)
+            throw loader_exception(LoaderResult::ParsingError, "Unsupported NCA patch metadata hash type");
+        if (hashInfo.offset < 0 || hashInfo.size != sizeof(NCAMetaDataHashData))
+            throw loader_exception(LoaderResult::ParsingError, "Invalid NCA patch metadata hash-data extent");
+        if (indirect.size == 0 || aesCtrEx.size == 0 ||
+            !InRange(indirect.offset, indirect.size, aesCtrEx.offset) ||
+            !InRange(aesCtrEx.offset, aesCtrEx.size, static_cast<u64>(hashInfo.offset)))
+            throw loader_exception(LoaderResult::ParsingError, "Invalid NCA patch metadata layout");
+
+        const u64 hashDataOffset{static_cast<u64>(hashInfo.offset)};
+        const u64 alignedHashDataSize{(static_cast<u64>(hashInfo.size) + 0xF) & ~0xFULL};
+        if (!InRange(hashDataOffset, alignedHashDataSize, raw->size))
+            throw loader_exception(LoaderResult::ParsingError, "NCA patch metadata hash data is outside the section");
+
+        auto decrypted{CreateBacking(section, raw, offset)};
+        if (!decrypted)
+            throw loader_exception(LoaderResult::ParsingError, "Unsupported NCA patch metadata encryption");
+
+        const auto metadata{ReadExact<NCAMetaDataHashData>(decrypted, static_cast<size_t>(hashDataOffset))};
+        if (Sha256(&metadata, sizeof(metadata)) != hashInfo.hash)
+            throw loader_exception(LoaderResult::ParsingError, "NCA patch metadata hash-data digest mismatch");
+
+        const u64 dataSize{VerifyPatchMetaHierarchy(decrypted, indirect.offset, hashInfo, metadata)};
+        if (!InRange(0, indirect.size, dataSize) ||
+            aesCtrEx.offset < indirect.offset ||
+            !InRange(aesCtrEx.offset - indirect.offset, aesCtrEx.size, dataSize))
+            throw loader_exception(LoaderResult::ParsingError, "NCA patch metadata tables are outside the verified data layer");
+
+        return {
+            std::make_shared<RegionBacking>(decrypted, indirect.offset, indirect.size),
+            std::make_shared<RegionBacking>(decrypted, aesCtrEx.offset, aesCtrEx.size),
+        };
+    }
+
+    std::shared_ptr<Backing> NCA::CreateAesCtrExBacking(const NCASectionHeader &section, std::shared_ptr<Backing> raw, size_t offset,
+                                                        const std::shared_ptr<Backing> &separateMetadata) {
         const auto &info{section.bktr.subsection};
         const auto &indirect{section.bktr.relocation};
         const auto encryption{section.raw.header.encryptionType};
@@ -204,18 +368,31 @@ namespace skyline::vfs {
             throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex table with incompatible encryption type");
         if (indirect.size == 0 || !InRange(indirect.offset, indirect.size, info.offset))
             throw loader_exception(LoaderResult::ParsingError, "Indirect table overlaps AES-CTR-Ex metadata");
+
         const size_t entrySize{QuerySubsectionEntryStorageSize(info.numberEntries)};
-        const size_t nodeSize{ValidatePatchTable(info, entrySize, raw->size)};
-        auto metadata{CreateBacking(section, raw, offset)};
-        auto root{ReadExact<SubsectionBlock>(metadata, info.offset)};
+        BKTRHeader tableInfo{info};
+        std::shared_ptr<Backing> metadata;
+        size_t metadataOffset{};
+
+        if (separateMetadata) {
+            tableInfo.offset = 0;
+            tableInfo.size = separateMetadata->size;
+            metadata = separateMetadata;
+        } else {
+            metadataOffset = static_cast<size_t>(info.offset);
+            metadata = CreateBacking(section, raw, offset);
+        }
+
+        const size_t nodeSize{ValidatePatchTable(tableInfo, entrySize, metadata->size)};
+        auto root{ReadExact<SubsectionBlock>(metadata, metadataOffset)};
         ValidateRootBlock(root, entrySize / BucketNodeSize, "AES-CTR-Ex");
-        if (root.size != info.offset)
+        if (!separateMetadata && root.size != info.offset)
             throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex data size does not match its table offset");
 
         std::vector<SubsectionEntry> entries;
         entries.reserve(info.numberEntries);
         for (size_t i{}; i < root.numberBuckets; ++i) {
-            const auto bucket{ReadExact<SubsectionBucketRaw>(metadata, info.offset + nodeSize + i * BucketNodeSize)};
+            const auto bucket{ReadExact<SubsectionBucketRaw>(metadata, metadataOffset + nodeSize + i * BucketNodeSize)};
             const u64 end{i + 1 < root.numberBuckets ? root.baseOffsets[i + 1] : root.size};
             if (bucket.index != i || bucket.numberEntries == 0 || bucket.numberEntries > bucket.subsectionEntries.size() ||
                 bucket.endOffset != end || bucket.subsectionEntries[0].addressPatch != root.baseOffsets[i])
@@ -230,6 +407,7 @@ namespace skyline::vfs {
         }
         if (entries.size() != info.numberEntries)
             throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex entry count mismatch");
+
         auto result{std::make_shared<AesCtrExBacking>(root.size)};
         for (size_t i{}; i < entries.size(); ++i) {
             const auto &entry{entries[i]};
@@ -259,9 +437,14 @@ namespace skyline::vfs {
             throw loader_exception(LoaderResult::ParsingError, "Invalid NCA section extent");
         std::shared_ptr<Backing> raw{std::make_shared<RegionBacking>(backing, start, end - start)};
         raw = CreateSparseBacking(section, raw);
-        if (section.bktr.subsection.size != 0)
-            raw = CreateAesCtrExBacking(section, raw, start);
-        else {
+        if (section.bktr.subsection.size != 0) {
+            std::shared_ptr<Backing> aesCtrExMetadata;
+            if (section.bktr.relocation.size != 0 && section.raw.metaDataHashDataInfo.size != 0) {
+                patchMetaSections[index] = CreatePatchMetaStorage(section, raw, start);
+                aesCtrExMetadata = patchMetaSections[index].aesCtrEx;
+            }
+            raw = CreateAesCtrExBacking(section, raw, start, aesCtrExMetadata);
+        } else {
             if (section.raw.header.encryptionType == NcaSectionEncryptionType::BKTR)
                 throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex section is missing its table");
             raw = CreateBacking(section, raw, start);
@@ -313,10 +496,25 @@ namespace skyline::vfs {
         const auto &info{sections[index].bktr.relocation};
         if (info.size == 0)
             return patch;
+        if (patch->size < info.offset)
+            throw loader_exception(LoaderResult::ParsingError, "BKTR patch data is shorter than its indirect-data extent");
+
+        std::shared_ptr<Backing> metadata{patchMetaSections[index].indirect};
+        BKTRHeader tableInfo{info};
+        size_t metadataOffset{static_cast<size_t>(info.offset)};
+        if (metadata) {
+            tableInfo.offset = 0;
+            tableInfo.size = metadata->size;
+            metadataOffset = 0;
+        } else {
+            metadata = patch;
+        }
+
         const size_t entrySize{QuerySparseEntryStorageSize(info.numberEntries)};
-        const size_t nodeSize{ValidatePatchTable(info, entrySize, patch->size)};
-        auto root{ReadExact<RelocationBlock>(patch, info.offset)};
+        const size_t nodeSize{ValidatePatchTable(tableInfo, entrySize, metadata->size)};
+        auto root{ReadExact<RelocationBlock>(metadata, metadataOffset)};
         ValidateRootBlock(root, entrySize / BucketNodeSize, "BKTR indirect");
+
         // Original offsets address the WHOLE corresponding decrypted section, including hash levels.
         std::shared_ptr<Backing> original{std::make_shared<RegionBacking>(backing, 0, 0)};
         if (base.HasSection(index)) {
@@ -324,10 +522,11 @@ namespace skyline::vfs {
                 throw loader_exception(LoaderResult::ParsingError, "Incompatible base NCA section for indirect storage");
             original = base.OpenRawSection(index);
         }
+
         std::vector<RelocationBucket> buckets;
         size_t entries{};
         for (size_t i{}; i < root.numberBuckets; ++i) {
-            const auto bucket{ReadExact<RelocationBucketRaw>(patch, info.offset + nodeSize + i * BucketNodeSize)};
+            const auto bucket{ReadExact<RelocationBucketRaw>(metadata, metadataOffset + nodeSize + i * BucketNodeSize)};
             const u64 end{i + 1 < root.numberBuckets ? root.baseOffsets[i + 1] : root.size};
             if (bucket.index != i || bucket.numberEntries == 0 || bucket.numberEntries > bucket.relocationEntries.size() ||
                 bucket.endOffset != end || bucket.relocationEntries[0].addressPatch != root.baseOffsets[i])
@@ -342,8 +541,10 @@ namespace skyline::vfs {
             entries += bucket.numberEntries;
             buckets.push_back(ConvertRelocationBucketRaw(bucket));
         }
+
         if (entries != info.numberEntries)
             throw loader_exception(LoaderResult::ParsingError, "BKTR relocation entry count mismatch");
+
         return std::make_shared<BKTR>(original, std::make_shared<RegionBacking>(patch, 0, info.offset), root, std::move(buckets));
     }
 
