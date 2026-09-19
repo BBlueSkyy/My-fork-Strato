@@ -237,7 +237,6 @@ namespace skyline::applet::swkbd {
     }
 
     Result SoftwareKeyboardApplet::StartInline() {
-        LOGI("SWKBD StartInline: entered, mode=0x{:X}", static_cast<u32>(mode));
         std::shared_ptr<service::am::IStorage> commonStorage;
         std::shared_ptr<service::am::IStorage> initializeStorage;
         {
