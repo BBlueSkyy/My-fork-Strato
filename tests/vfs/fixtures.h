@@ -160,13 +160,16 @@ inline NcaFixture BaseFixture(bool executable = true, u32 levelCount = 2) {
     f.Add(1, RomHeader(0x200, 0x1000, levelCount), WithPrefix(RomBytes()));
     return f;
 }
-inline NcaFixture PatchFixture(bool executable = true) {
+inline NcaFixture PatchFixture(bool executable = true, u64 aesCtrExOffset = 0x9000, u64 aesCtrExDataSize = 0x9000) {
     NcaFixture f;
     if (executable) { auto exe{ExeBytes(0x42)}; f.Add(0, ExeHeader(exe.size()), WithPrefix(exe)); }
     auto section{RomHeader(0x400, 0x1000)};
     section.bktr.relocation = {0x1000, 0x8000, util::MakeMagic<u32>("BKTR"), 1, 3, 0};
-    section.bktr.subsection = {0x9000, 0x8000, util::MakeMagic<u32>("BKTR"), 1, 3, 0};
-    std::vector<u8> body(0x11000, 0x62);
+    Check(aesCtrExDataSize >= section.bktr.relocation.offset + section.bktr.relocation.size,
+          "Fixture AES-CTR-Ex range does not cover indirect metadata");
+    Check(aesCtrExDataSize <= aesCtrExOffset, "Fixture AES-CTR-Ex range overlaps its metadata table");
+    section.bktr.subsection = {aesCtrExOffset, 0x8000, util::MakeMagic<u32>("BKTR"), 1, 3, 0};
+    std::vector<u8> body(static_cast<size_t>(aesCtrExOffset + 0x8000), 0x62);
     Put(body, 0x1000, RelocationBlock{0, 1, 0x1400, {0}});
     RelocationBucketRaw reloc{};
     reloc.numberEntries = 3; reloc.endOffset = 0x1400;
@@ -174,13 +177,13 @@ inline NcaFixture PatchFixture(bool executable = true) {
     reloc.relocationEntries[1] = {0x400, 0x200, 0};
     reloc.relocationEntries[2] = {0xc00, 0x100, 1};
     Put(body, 0x5000, reloc);
-    Put(body, 0x9000, SubsectionBlock{0, 1, 0x9000, {0}});
+    Put(body, static_cast<size_t>(aesCtrExOffset), SubsectionBlock{0, 1, aesCtrExDataSize, {0}});
     SubsectionBucketRaw subsection{};
-    subsection.numberEntries = 3; subsection.endOffset = 0x9000;
+    subsection.numberEntries = 3; subsection.endOffset = aesCtrExDataSize;
     subsection.subsectionEntries[0] = {0, {}, 9};
     subsection.subsectionEntries[1] = {0x800, {}, 10};
     subsection.subsectionEntries[2] = {0x1000, {}, 42}; // Indirect metadata uses CTR-Ex, not header generation 17.
-    Put(body, 0xd000, subsection);
+    Put(body, static_cast<size_t>(aesCtrExOffset + 0x4000), subsection);
     f.Add(1, section, body);
     f.counterEntries[1] = {subsection.subsectionEntries.begin(), subsection.subsectionEntries.begin() + 3};
     return f;
