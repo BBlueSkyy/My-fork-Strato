@@ -187,9 +187,6 @@ namespace skyline::service::visrv {
         if (!GetIndirectLayerSize(width, height, pitch, size))
             return result::InvalidDimensions;
 
-        LOGI("GetIndirectLayerImageRequiredMemoryInfo: width={}, height={}, pitch=0x{:X}, size=0x{:X}, alignment=0x{:X}",
-             width, height, pitch, size, IndirectLayerAlignment);
-
         response.Push<i64>(size);
         response.Push<u64>(IndirectLayerAlignment);
 
