@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include <gpu/texture_manager.h>
@@ -237,16 +238,34 @@ namespace skyline::gpu::interconnect {
     }
 
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
+        auto takeTicTraceSlot{[] {
+            static std::atomic<u32> traceCount{};
+            return traceCount.fetch_add(1, std::memory_order_relaxed) < 2048;
+        }};
+
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
         if (textureHeaderCache.size() != textureHeaders.size()) {
             textureHeaderCache.resize(textureHeaders.size());
             std::fill(textureHeaderCache.begin(), textureHeaderCache.end(), CacheEntry{});
         } else if (textureHeaders.size() > index && textureHeaderCache[index].view) {
             auto &cached{textureHeaderCache[index]};
-            if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber)
+            if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber) {
+                if (cached.view->texture->replaced && takeTicTraceSlot()) {
+                    LOGI("TEXMAN-TIC same-seq-replaced index={} seq={} iova=0x{:X} host={} view={}",
+                         index, ctx.channelCtx.channelSequenceNumber, textureHeaders[index].Iova(),
+                         static_cast<const void *>(cached.view->texture.get()),
+                         static_cast<const void *>(cached.view));
+                }
                 return cached.view;
+            }
 
             if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
+                if (takeTicTraceSlot()) {
+                    LOGI("TEXMAN-TIC cache-hit index={} seq={} iova=0x{:X} host={} view={}",
+                         index, ctx.channelCtx.channelSequenceNumber, textureHeaders[index].Iova(),
+                         static_cast<const void *>(cached.view->texture.get()),
+                         static_cast<const void *>(cached.view));
+                }
                 cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
                 return cached.view;
             }
@@ -261,6 +280,8 @@ namespace skyline::gpu::interconnect {
 
         TextureImageControl &textureHeader{textureHeaders[index]};
         auto &texture{textureHeaderStore[textureHeader]};
+        auto previousTexture{texture};
+        const bool previousReplaced{previousTexture && previousTexture->texture->replaced};
 
         if (!texture || texture->texture->replaced) {
             // If the entry didn't exist prior then we need to convert the TIC to a GuestTexture
@@ -354,6 +375,23 @@ namespace skyline::gpu::interconnect {
                 return nullTextureView.get();
             }
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
+            if (takeTicTraceSlot()) {
+                LOGI("TEXMAN-TIC resolve index={} seq={} iova=0x{:X} guest={} size=0x{:X} oldHost={} oldReplaced={} newHost={} dims={}x{}x{} fmt={} mip={}/{} layer={}/{}",
+                     index, ctx.channelCtx.channelSequenceNumber, textureHeader.Iova(),
+                     static_cast<const void *>(guest.mappings.front().data()), guest.GetSize(),
+                     static_cast<const void *>(previousTexture ? previousTexture->texture.get() : nullptr),
+                     previousReplaced,
+                     static_cast<const void *>(texture->texture.get()),
+                     guest.dimensions.width, guest.dimensions.height, guest.dimensions.depth,
+                     static_cast<u32>(guest.format->vkFormat),
+                     guest.viewMipBase, guest.viewMipCount,
+                     guest.baseArrayLayer, guest.GetViewLayerCount());
+            }
+        } else if (takeTicTraceSlot()) {
+            LOGI("TEXMAN-TIC store-hit index={} seq={} iova=0x{:X} host={} view={}",
+                 index, ctx.channelCtx.channelSequenceNumber, textureHeader.Iova(),
+                 static_cast<const void *>(texture->texture.get()),
+                 static_cast<const void *>(texture.get()));
         }
 
         textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber};
