@@ -52,17 +52,24 @@ namespace skyline::gpu {
 
         while (hostMapping != textures.begin() && (--hostMapping)->end() > guestMapping.begin()) {
             auto &hostMappings{hostMapping->texture->guest->mappings};
-            overlapCount++;
+            const bool actualOverlap{
+                hostMapping->begin() < guestMapping.end() &&
+                guestMapping.begin() < hostMapping->end()
+            };
+            if (actualOverlap)
+                overlapCount++;
 
             if (!hostMapping->contains(guestMapping) || hostMapping->texture->replaced) {
-                skippedOverlapCount++;
-                if (takeTraceSlot()) {
-                    LOGI("TEXMAN-MATCH overlap-skip req={} size=0x{:X} candidate={} map={} mapSize=0x{:X} contains={} replaced={} rt={}",
-                         static_cast<const void *>(guestMapping.data()), guestMapping.size(),
-                         static_cast<const void *>(hostMapping->texture.get()),
-                         static_cast<const void *>(hostMapping->data()), hostMapping->size(),
-                         hostMapping->contains(guestMapping), hostMapping->texture->replaced,
-                         hostMapping->texture->everUsedAsRt);
+                if (actualOverlap) {
+                    skippedOverlapCount++;
+                    if (takeTraceSlot()) {
+                        LOGI("TEXMAN-MATCH overlap-skip req={} size=0x{:X} candidate={} map={} mapSize=0x{:X} contains={} replaced={} rt={}",
+                             static_cast<const void *>(guestMapping.data()), guestMapping.size(),
+                             static_cast<const void *>(hostMapping->texture.get()),
+                             static_cast<const void *>(hostMapping->data()), hostMapping->size(),
+                             hostMapping->contains(guestMapping), hostMapping->texture->replaced,
+                             hostMapping->texture->everUsedAsRt);
+                    }
                 }
                 continue;
             }
@@ -88,16 +95,6 @@ namespace skyline::gpu {
                         || matchGuestTexture.viewMipBase > 0)
                     && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
                     fullMatch = hostMapping->texture;
-                    if (takeTraceSlot()) {
-                        LOGI("TEXMAN-MATCH full req={} host={} fmt={} dims={}x{}x{} mip={}/{} layer={}/{} rt={}",
-                             static_cast<const void *>(guestMapping.data()),
-                             static_cast<const void *>(fullMatch.get()),
-                             static_cast<u32>(guestTexture.format->vkFormat),
-                             guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
-                             guestTexture.viewMipBase, guestTexture.viewMipCount,
-                             guestTexture.baseArrayLayer, guestTexture.GetViewLayerCount(),
-                             fullMatch->everUsedAsRt);
-                    }
                 } else {
                     incompatibleFullCount++;
                     matches.push_back(hostMapping->texture);
@@ -162,14 +159,6 @@ namespace skyline::gpu {
                             fullMatch->replaced = true;
 
                         layerMipMatch = hostMapping->texture;
-                        if (takeTraceSlot()) {
-                            LOGI("TEXMAN-MATCH layer-mip req={} host={} memOff=0x{:X} level={} layer={} fmt={} rt={}",
-                                 static_cast<const void *>(guestMapping.data()),
-                                 static_cast<const void *>(layerMipMatch.get()),
-                                 memOffset, matchLevel, matchLayer,
-                                 static_cast<u32>(guestTexture.format->vkFormat),
-                                 layerMipMatch->everUsedAsRt);
-                        }
                     } else {
                         partialNoMatchCount++;
                         if (takeTraceSlot()) {
