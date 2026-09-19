@@ -32,6 +32,7 @@ namespace skyline::applet::swkbd {
             Success = 0x0,
             ShowFailureDialog = 0x1,
             ShowConfirmDialog = 0x2,
+            Silent = 0x3,
         };
 
         static constexpr u32 SwkbdTextBytes{0x7D4}; //!< Size of the returned IStorage buffer that's used to return the input text

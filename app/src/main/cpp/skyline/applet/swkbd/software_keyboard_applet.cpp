@@ -14,26 +14,50 @@ class Utf8Utf16Converter : public std::codecvt<char16_t, char8_t, std::mbstate_t
 };
 
 namespace skyline::applet::swkbd {
-    static void WriteStringToSpan(span<u8> chars, std::u16string_view text, bool useUtf8Storage) {
+    static size_t WriteStringToSpan(span<u8> chars, std::u16string_view text, bool useUtf8Storage) {
         if (useUtf8Storage) {
             auto u8chars{chars.cast<char8_t>()};
-            Utf8Utf16Converter::state_type convert_state;
-            const char16_t *from_next;
-            char8_t *to_next;
+            Utf8Utf16Converter::state_type convert_state{};
+            const char16_t *from_next{text.data()};
+            char8_t *to_next{u8chars.data()};
             Utf8Utf16Converter().out(convert_state, text.data(), text.end(), from_next, u8chars.data(), u8chars.end().base(), to_next);
             // Null terminate the string, if it isn't out of bounds
-            if (to_next < reinterpret_cast<const char8_t *>(text.end()))
+            if (to_next < u8chars.end().base())
                 *to_next = u8'\0';
+            return static_cast<size_t>(to_next - u8chars.data());
         } else {
-            std::memcpy(chars.data(), text.data(), std::min(text.size() * sizeof(char16_t), chars.size()));
+            const auto textBytes{std::min(text.size() * sizeof(char16_t), chars.size())};
+            std::memcpy(chars.data(), text.data(), textBytes);
             // Null terminate the string, if it isn't out of bounds
-            if (text.size() * sizeof(char16_t) < chars.size())
-                *(reinterpret_cast<char16_t *>(chars.data()) + text.size()) = u'\0';
+            if (textBytes < chars.size())
+                *reinterpret_cast<char16_t *>(chars.data() + textBytes) = u'\0';
+            return textBytes;
         }
     }
 
-    SoftwareKeyboardApplet::ValidationRequest::ValidationRequest(std::u16string_view text, bool useUtf8Storage) : size{sizeof(ValidationRequest)} {
-        WriteStringToSpan(chars, text, useUtf8Storage);
+    static std::u16string ReadStringFromSpan(span<u8> chars, bool useUtf8Storage) {
+        if (!useUtf8Storage) {
+            auto utf16Chars{chars.cast<char16_t>()};
+            const auto end{std::find(utf16Chars.begin(), utf16Chars.end(), u'\0')};
+            return {utf16Chars.begin(), end};
+        }
+
+        auto utf8Chars{chars.cast<char8_t>()};
+        const auto utf8End{std::find(utf8Chars.begin(), utf8Chars.end(), u8'\0')};
+        std::u16string text(chars.size() / sizeof(char16_t), u'\0');
+        Utf8Utf16Converter::state_type convertState{};
+        const char8_t *fromNext{utf8Chars.data()};
+        char16_t *toNext{text.data()};
+        Utf8Utf16Converter().in(convertState, utf8Chars.data(), utf8End.base(), fromNext,
+                                text.data(), text.data() + text.size(), toNext);
+        text.resize(static_cast<size_t>(toNext - text.data()));
+        return text;
+    }
+
+    SoftwareKeyboardApplet::ValidationRequest::ValidationRequest(std::u16string_view text, bool useUtf8Storage) : size{} {
+        const auto textBytes{WriteStringToSpan(chars, text, useUtf8Storage)};
+        const size_t terminatorBytes{useUtf8Storage ? sizeof(char8_t) : sizeof(char16_t)};
+        size = std::min(chars.size(), textBytes + terminatorBytes);
     }
 
     SoftwareKeyboardApplet::OutputResult::OutputResult(CloseResult closeResult, std::u16string_view text, bool useUtf8Storage) : closeResult{closeResult} {
@@ -50,8 +74,10 @@ namespace skyline::applet::swkbd {
     }
 
     void SoftwareKeyboardApplet::SendResult() {
-        if (dialog)
+        if (dialog) {
             state.jvm->CloseKeyboard(dialog);
+            dialog = {};
+        }
         PushNormalDataAndSignal(std::make_shared<service::am::ObjIStorage<OutputResult>>(state, manager, OutputResult{currentResult, currentText, config.commonConfig.isUseUtf8}));
         onAppletStateChanged->Signal();
     }
@@ -112,8 +138,15 @@ namespace skyline::applet::swkbd {
         if (config.commonConfig.textMaxLength > MaxOneLineChars)
             config.commonConfig.inputFormMode = InputFormMode::MultiLine;
 
-        if (!normalInputData.empty() && config.commonConfig.initialStringLength > 0)
-            currentText = std::u16string(normalInputData.front()->GetSpan().subspan(config.commonConfig.initialStringOffset).cast<char16_t>().data(), config.commonConfig.initialStringLength);
+        if (!normalInputData.empty() && config.commonConfig.initialStringLength > 0) {
+            const auto initialData{normalInputData.front()->GetSpan()};
+            const auto offset{static_cast<size_t>(config.commonConfig.initialStringOffset)};
+            const auto length{static_cast<size_t>(config.commonConfig.initialStringLength)};
+            if (offset > initialData.size() || length > (initialData.size() - offset) / sizeof(char16_t))
+                throw exception("Software keyboard initial text is out of bounds");
+            const auto initialChars{initialData.subspan(offset).cast<char16_t>()};
+            currentText.assign(initialChars.data(), length);
+        }
 
         dialog = state.jvm->ShowKeyboard(*reinterpret_cast<JvmManager::KeyboardConfig *>(&config), currentText);
         if (!dialog) {
@@ -146,12 +179,26 @@ namespace skyline::applet::swkbd {
         if (validationPending) {
             auto dataSpan{data->GetSpan()};
             auto validationResult{dataSpan.as<ValidationResult>()};
+            const auto message{ReadStringFromSpan(
+                {reinterpret_cast<u8 *>(validationResult.chars.data()), sizeof(validationResult.chars)},
+                config.commonConfig.isUseUtf8)};
             if (validationResult.result == TextCheckResult::Success) {
                 validationPending = false;
                 SendResult();
             } else {
+                if (validationResult.result != TextCheckResult::ShowFailureDialog &&
+                    validationResult.result != TextCheckResult::ShowConfirmDialog &&
+                    validationResult.result != TextCheckResult::Silent)
+                    throw exception("Unknown software keyboard text-check result: 0x{:X}",
+                                    static_cast<u32>(validationResult.result));
+
                 if (dialog) {
-                    if (static_cast<CloseResult>(state.jvm->ShowValidationResult(dialog, static_cast<JvmManager::KeyboardTextCheckResult>(validationResult.result), std::u16string(validationResult.chars.data()))) == CloseResult::Enter) {
+                    const bool accepted{validationResult.result != TextCheckResult::Silent &&
+                                        static_cast<CloseResult>(state.jvm->ShowValidationResult(
+                                            dialog,
+                                            static_cast<JvmManager::KeyboardTextCheckResult>(validationResult.result),
+                                            message)) == CloseResult::Enter};
+                    if (accepted) {
                         // Accepted on confirmation dialog
                         validationPending = false;
                         SendResult();
@@ -163,18 +210,20 @@ namespace skyline::applet::swkbd {
                         if (currentResult == CloseResult::Enter) {
                             PushInteractiveDataAndSignal(std::make_shared<service::am::ObjIStorage<ValidationRequest>>(state, manager, ValidationRequest{currentText, config.commonConfig.isUseUtf8}));
                         } else {
+                            validationPending = false;
                             SendResult();
                         }
                     }
                 } else {
                     std::array<u8, SwkbdTextBytes> chars{};
-                    WriteStringToSpan(chars, std::u16string(validationResult.chars.data()), true);
+                    WriteStringToSpan(chars, message, true);
                     std::string message{reinterpret_cast<char *>(chars.data())};
                     if (validationResult.result == TextCheckResult::ShowFailureDialog)
                         LOGW("Sending default text despite being rejected by the guest with message: \"{}\"", message);
-                    else
+                    else if (validationResult.result == TextCheckResult::ShowConfirmDialog)
                         LOGD("Guest asked to confirm default text with message: \"{}\"", message);
-                    PushNormalDataAndSignal(std::make_shared<service::am::ObjIStorage<OutputResult>>(state, manager, OutputResult{CloseResult::Enter, currentText, config.commonConfig.isUseUtf8}));
+                    validationPending = false;
+                    SendResult();
                 }
             }
         }
