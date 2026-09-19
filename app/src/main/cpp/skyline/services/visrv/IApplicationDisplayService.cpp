@@ -152,6 +152,8 @@ namespace skyline::service::visrv {
         auto height{request.Pop<i64>()};
         const auto handle{request.Pop<u64>()};
         const auto appletResourceUserId{request.Pop<u64>()};
+        LOGI("GetIndirectLayerImageMap: entered, pid=0x{:X}, handle=0x{:X}, ARUID=0x{:X}, width={}, height={}",
+             request.pid, handle, appletResourceUserId, width, height);
         u64 pitch{}, size{};
         if (!GetIndirectLayerSize(width, height, pitch, size))
             return result::InvalidDimensions;
@@ -182,6 +184,7 @@ namespace skyline::service::visrv {
 
     Result IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         i64 width{request.Pop<i64>()}, height{request.Pop<i64>()};
+        LOGI("GetIndirectLayerImageRequiredMemoryInfo: entered, pid=0x{:X}, width={}, height={}", request.pid, width, height);
 
         u64 pitch{}, size{};
         if (!GetIndirectLayerSize(width, height, pitch, size))

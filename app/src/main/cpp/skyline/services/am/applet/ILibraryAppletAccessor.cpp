@@ -127,6 +127,20 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto requestedAppletResourceUserId{request.Pop<u64>()};
+        LOGI("GetIndirectLayerConsumerHandle: exited={}, mode=0x{:X}, request.pid=0x{:X}, stored ARUID=0x{:X}, requested ARUID=0x{:X}",
+             exited, static_cast<u32>(appletMode), request.pid, appletResourceUserId, requestedAppletResourceUserId);
+
+        if (exited)
+            LOGI("GetIndirectLayerConsumerHandle: validation failed: accessor exited");
+        if (appletMode != applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay)
+            LOGI("GetIndirectLayerConsumerHandle: validation failed: mode is not PartialForegroundWithIndirectDisplay");
+        if (!request.pid)
+            LOGI("GetIndirectLayerConsumerHandle: validation failed: missing PID descriptor");
+        if (request.pid != appletResourceUserId)
+            LOGI("GetIndirectLayerConsumerHandle: validation failed: request.pid does not match stored ARUID");
+        if (requestedAppletResourceUserId != appletResourceUserId)
+            LOGI("GetIndirectLayerConsumerHandle: validation failed: requested ARUID does not match stored ARUID");
+
         if (exited || appletMode != applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay || !request.pid ||
             request.pid != appletResourceUserId || requestedAppletResourceUserId != appletResourceUserId)
             return result::ObjectInvalid;
@@ -136,6 +150,7 @@ namespace skyline::service::am {
             indirectLayerHandle = indirectLayers->Register(applet, request.pid, requestedAppletResourceUserId);
         }
         response.Push<u64>(indirectLayerHandle);
+        LOGI("GetIndirectLayerConsumerHandle: cmd160 success, handle=0x{:X}", indirectLayerHandle);
         return {};
     }
 
