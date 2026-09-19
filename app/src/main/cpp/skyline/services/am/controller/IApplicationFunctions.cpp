@@ -148,14 +148,13 @@ namespace skyline::service::am {
 
         LOGD("Cache storage index: {}, save size: 0x{:X}, journal size: 0x{:X}", index, saveSize, journalSize);
 
-        // As with EnsureSaveData, we don't track real storage quotas: the actual directory is
-        // created lazily by IFileSystemProxy::OpenSaveDataFileSystem when the cache storage is
-        // opened. We just acknowledge the request and echo back the requested size.
-        // storageTarget is nn::fs::CacheStorageTargetMedia, 1 = Nand, which is the only backing
-        // we provide cache storage on; this is informational for the caller in most titles
+        // As with EnsureSaveData, Strato does not emulate NAND quotas. A successful
+        // CreateCacheStorage therefore requires no additional free space. The second output is
+        // the amount still required on failure due to insufficient space, not the requested size.
+        // storageTarget is nn::fs::CacheStorageTargetMedia, 1 = Nand.
         constexpr u64 CacheStorageTargetNand{1};
         response.Push<u64>(CacheStorageTargetNand);
-        response.Push<u64>(static_cast<u64>(saveSize + journalSize));
+        response.Push<u64>(0);
         return {};
     }
 
