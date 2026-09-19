@@ -80,8 +80,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             view = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
             static std::atomic<u32> rtTraceCount{};
-            if (rtTraceCount.fetch_add(1, std::memory_order_relaxed) < 1024) {
-                LOGI("TEXMAN-RT slot={} seq={} iova=0x{:X} guest={} size=0x{:X} host={} view={} dims={}x{}x{} fmt={} mip={}/{} layer={}/{} tileMode={}",
+            if (!view->texture->everUsedAsRt &&
+                rtTraceCount.fetch_add(1, std::memory_order_relaxed) < 4096) {
+                LOGI("TEXMAN-RT first-use slot={} seq={} iova=0x{:X} guest={} size=0x{:X} host={} view={} dims={}x{}x{} fmt={} mip={}/{} layer={}/{} tileMode={}",
                      index, ctx.channelCtx.channelSequenceNumber, target.offset,
                      static_cast<const void *>(guest.mappings.front().data()), guest.GetSize(),
                      static_cast<const void *>(view->texture.get()),
