@@ -10,6 +10,7 @@
 #include <services/account/IAccountServiceForApplication.h>
 #include <services/am/storage/VectorIStorage.h>
 #include <services/fssrv/IFileSystemProxy.h>
+#include <services/fssrv/results.h>
 #include <vfs/os_filesystem.h>
 #include "IApplicationFunctions.h"
 
@@ -66,7 +67,7 @@ namespace skyline::service::am {
         // already exist. Strato backs save data with ordinary directories, so no block image or
         // quota allocation is required here; creating the same directory that fsp-srv later opens
         // is sufficient.
-        auto ensureDirectory{[&](fssrv::SaveDataType type, account::UserId saveUserId) {
+        auto ensureDirectory{[&](fssrv::SaveDataType type, account::UserId saveUserId) -> Result {
             fssrv::SaveDataAttribute attribute{};
             attribute.programId = nacp.saveDataOwnerId;
             attribute.userId = saveUserId;
@@ -77,10 +78,13 @@ namespace skyline::service::am {
                 attribute,
                 nacp.saveDataOwnerId
             )};
+            if (!saveDataPath)
+                return fssrv::result::UnexpectedFailure;
 
             [[maybe_unused]] auto saveFileSystem{std::make_shared<vfs::OsFileSystem>(
-                state.os->publicAppFilesPath + "/switch" + saveDataPath
+                state.os->publicAppFilesPath + "/switch" + *saveDataPath
             )};
+            return {};
         }};
 
         if (nacp.userAccountSaveDataSize != 0 || nacp.userAccountSaveDataJournalSize != 0) {
@@ -90,7 +94,8 @@ namespace skyline::service::am {
                  userId.lower,
                  nacp.userAccountSaveDataSize,
                  nacp.userAccountSaveDataJournalSize);
-            ensureDirectory(fssrv::SaveDataType::Account, userId);
+            if (const auto result{ensureDirectory(fssrv::SaveDataType::Account, userId)}; result)
+                return result;
         }
 
         if (nacp.deviceSaveDataSize != 0 || nacp.deviceSaveDataJournalSize != 0) {
@@ -98,7 +103,8 @@ namespace skyline::service::am {
                  nacp.saveDataOwnerId,
                  nacp.deviceSaveDataSize,
                  nacp.deviceSaveDataJournalSize);
-            ensureDirectory(fssrv::SaveDataType::Device, {});
+            if (const auto result{ensureDirectory(fssrv::SaveDataType::Device, {})}; result)
+                return result;
         }
 
         // On success the returned value is the additional space required by the operation. Strato
