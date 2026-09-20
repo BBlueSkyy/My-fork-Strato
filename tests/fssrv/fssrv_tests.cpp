@@ -501,6 +501,45 @@ namespace {
         Check(!proxy.OpenSaveDataFileSystem(session, request, response), "provisioned account save did not open");
     }
 
+    void TestCacheStorageCreation() {
+        TempDirectory root;
+        constexpr u64 SaveDataOwnerId{0x0100F2200C984000};
+
+        CacheStorageTargetMedia target{CacheStorageTargetMedia::None};
+        u64 requiredSize{UINT64_MAX};
+        Check(CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x1000, 0, -1, 0, target, requiredSize) == result::InvalidArgument,
+              "negative cache size was accepted");
+        Check(CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x1000, 1, 0, 0, target, requiredSize) == result::CacheStorageIndexTooLarge,
+              "cache index above the NACP maximum was accepted");
+        Check(CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x1000, 0, 0x800, 0x801, target, requiredSize) == result::CacheStorageSizeTooLarge,
+              "cache size above the NACP maximum was accepted");
+
+        Check(!CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x1000, 0, 0x800, 0x800, target, requiredSize),
+              "valid cache storage creation failed");
+        Check(target == CacheStorageTargetMedia::Nand && requiredSize == 0, "cache storage outputs are wrong");
+        const auto cachePath{root.path / "switch/nand/user/save/cache/0100F2200C984000"};
+        Check(std::filesystem::is_directory(cachePath), "cache storage was not materialized");
+        Check(CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x1000, 0, 0x800, 0x800, target, requiredSize) == result::AlreadyExists,
+              "duplicate cache storage creation did not report AlreadyExists");
+
+        Check(CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 1, 0x1000, 1, 0x800, 0x800, target, requiredSize) == result::NotImplemented,
+              "an unrepresentable cache index aliased index zero");
+
+        kernel::OS os;
+        os.publicAppFilesPath = root.path.string();
+        DeviceState state{.os = &os};
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IFileSystemProxy proxy(state, manager);
+        OpenSaveDataInput input{};
+        input.spaceId = SaveDataSpaceId::User;
+        input.attribute.programId = SaveDataOwnerId;
+        input.attribute.type = SaveDataType::Cache;
+        auto request{RequestWith(input)};
+        ipc::IpcResponse response;
+        Check(!proxy.OpenSaveDataFileSystem(session, request, response), "created cache storage did not open");
+    }
+
 }
 
 int main() {
@@ -533,5 +572,6 @@ int main() {
     run("multi-commit order and failure", TestMultiCommitOrderAndFailure);
     run("proxy validation and state", TestProxyValidationAndState);
     run("application save provisioning", TestApplicationSaveProvisioning);
+    run("cache storage creation", TestCacheStorageCreation);
     return failures == 0 ? 0 : 1;
 }

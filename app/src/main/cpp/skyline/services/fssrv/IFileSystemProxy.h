@@ -19,6 +19,17 @@ namespace skyline::service::fssrv {
     Result EnsureApplicationSaveData(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
                                      account::UserId userId, u64 accountSaveDataSize, u64 deviceSaveDataSize);
 
+    enum class CacheStorageTargetMedia : u32 {
+        None = 0,
+        Nand = 1,
+        SdCard = 2,
+    };
+
+    Result CreateApplicationCacheStorage(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
+                                         u16 cacheStorageIndexMax, u64 cacheStorageDataAndJournalSizeMax,
+                                         u16 index, i64 saveSize, i64 journalSize,
+                                         CacheStorageTargetMedia &targetMedia, u64 &requiredSize);
+
     enum class StorageId : u8 {
         None = 0,
         Host = 1,

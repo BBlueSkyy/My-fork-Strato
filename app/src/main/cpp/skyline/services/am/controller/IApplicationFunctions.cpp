@@ -106,21 +106,36 @@ namespace skyline::service::am {
     }
 
     Result IApplicationFunctions::CreateCacheStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // CreateCacheStorage(u16 index, s64 saveSize, s64 journalSize) -> (u64 storageTarget, u64 requiredSize)
-        // Each scalar input/output is padded out to its own 8-byte slot on the wire
-        auto index{static_cast<u16>(request.Pop<u64>())};
-        auto saveSize{request.Pop<i64>()};
-        auto journalSize{request.Pop<i64>()};
+        struct CreateCacheStorageInput {
+            u64 index;
+            i64 saveSize;
+            i64 journalSize;
+        };
+        static_assert(sizeof(CreateCacheStorageInput) == 0x18);
 
-        LOGD("Cache storage index: {}, save size: 0x{:X}, journal size: 0x{:X}", index, saveSize, journalSize);
+        if (!request.cmdArg || request.cmdArgSz < sizeof(CreateCacheStorageInput))
+            return fssrv::result::InvalidArgument;
+        CreateCacheStorageInput input{};
+        std::memcpy(&input, request.cmdArg, sizeof(input));
 
-        // As with EnsureSaveData, Strato does not emulate NAND quotas. A successful
-        // CreateCacheStorage therefore requires no additional free space. The second output is
-        // the amount still required on failure due to insufficient space, not the requested size.
-        // storageTarget is nn::fs::CacheStorageTargetMedia, 1 = Nand.
-        constexpr u64 CacheStorageTargetNand{1};
-        response.Push<u64>(CacheStorageTargetNand);
-        response.Push<u64>(0);
+        const auto &nacp{state.loader->nacp->nacpContents};
+        fssrv::CacheStorageTargetMedia targetMedia{};
+        u64 requiredSize{};
+        if (const auto result{fssrv::CreateApplicationCacheStorage(
+                state.os->publicAppFilesPath,
+                nacp.saveDataOwnerId,
+                nacp.cacheStorageIndexMax,
+                nacp.cacheStorageDataAndJournalSizeMax,
+                static_cast<u16>(input.index),
+                input.saveSize,
+                input.journalSize,
+                targetMedia,
+                requiredSize)};
+            result)
+            return result;
+
+        response.Push<u64>(static_cast<u64>(targetMedia));
+        response.Push(requiredSize);
         return {};
     }
 

@@ -19,6 +19,8 @@ namespace skyline::service::fssrv::result {
     constexpr Result TooLongPath(2, 6003);
     constexpr Result InvalidOffset(2, 6061);
     constexpr Result InvalidSize(2, 6062);
+    constexpr Result CacheStorageSizeTooLarge(2, 6069);
+    constexpr Result CacheStorageIndexTooLarge(2, 6070);
     constexpr Result InvalidOpenMode(2, 6072);
     constexpr Result FileExtensionWithoutOpenModeAllowAppend(2, 6201);
     constexpr Result ReadNotPermitted(2, 6202);

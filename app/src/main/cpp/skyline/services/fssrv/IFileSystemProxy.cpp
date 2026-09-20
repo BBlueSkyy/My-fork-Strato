@@ -144,6 +144,39 @@ namespace skyline::service::fssrv {
         return {};
     }
 
+    Result CreateApplicationCacheStorage(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
+                                         u16 cacheStorageIndexMax, u64 cacheStorageDataAndJournalSizeMax,
+                                         u16 index, i64 saveSize, i64 journalSize,
+                                         CacheStorageTargetMedia &targetMedia, u64 &requiredSize) {
+        targetMedia = CacheStorageTargetMedia::None;
+        requiredSize = 0;
+        if (saveSize < 0 || journalSize < 0)
+            return result::InvalidArgument;
+        if (index > cacheStorageIndexMax)
+            return result::CacheStorageIndexTooLarge;
+
+        const u64 unsignedSaveSize{static_cast<u64>(saveSize)};
+        const u64 unsignedJournalSize{static_cast<u64>(journalSize)};
+        if (unsignedSaveSize > std::numeric_limits<u64>::max() - unsignedJournalSize ||
+            unsignedSaveSize + unsignedJournalSize > cacheStorageDataAndJournalSizeMax)
+            return result::CacheStorageSizeTooLarge;
+        if (index != 0)
+            return result::NotImplemented;
+
+        SaveDataAttribute attribute{};
+        attribute.programId = saveDataOwnerId;
+        attribute.type = SaveDataType::Cache;
+        attribute.rank = SaveDataRank::Primary;
+        attribute.index = index;
+        if (const auto creationResult{CreateSaveDataDirectory(publicAppFilesPath, SaveDataSpaceId::User,
+                                                              attribute, saveDataOwnerId, false)};
+            creationResult)
+            return creationResult;
+
+        targetMedia = CacheStorageTargetMedia::Nand;
+        return {};
+    }
+
     IFileSystemProxy::IFileSystemProxy(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
 
     Result IFileSystemProxy::SetCurrentProcess(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
