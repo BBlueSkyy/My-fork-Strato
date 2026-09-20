@@ -33,6 +33,9 @@ namespace skyline::gpu {
         bool supportsFloat16{}; //!< If 16-bit floating point integers are supported in shaders
         bool supportsInt8{}; //!< If 8-bit integers are supported in shaders
         bool supportsInt16{}; //!< If 16-bit integers are supported in shaders
+        bool supportsStorageBuffer8BitAccess{}; //!< If 8-bit integer SSBO access is supported
+        bool supportsStorageBuffer16BitAccess{}; //!< If 16-bit integer SSBO access is supported
+        bool supportsVariablePointersStorageBuffer{}; //!< If storage-buffer variable pointers are supported
         bool supportsInt64{}; //!< If 64-bit integers are supported in shaders
         bool supportsAtomicInt64{}; //!< If atomic operations on 64-bit integers are supported in shaders
         bool supportsFloatControls{}; //!< If extensive control over FP behavior is exposed (with VK_KHR_shader_float_controls)
@@ -111,6 +114,9 @@ namespace skyline::gpu {
             vk::PhysicalDeviceVertexAttributeDivisorFeaturesEXT,
             vk::PhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT,
             vk::PhysicalDeviceShaderFloat16Int8Features,
+            vk::PhysicalDevice8BitStorageFeatures,
+            vk::PhysicalDevice16BitStorageFeatures,
+            vk::PhysicalDeviceVariablePointersFeatures,
             vk::PhysicalDeviceShaderAtomicInt64Features,
             vk::PhysicalDeviceUniformBufferStandardLayoutFeatures,
             vk::PhysicalDeviceShaderDrawParametersFeatures,
