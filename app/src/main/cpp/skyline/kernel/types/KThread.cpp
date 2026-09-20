@@ -227,23 +227,26 @@ namespace skyline::kernel::type {
     void KThread::Kill(bool join) {
         std::unique_lock lock(statusMutex);
         LOGINF("[LIFECYCLE-TEST] T{} Kill enter: join={} running={} ready={} killed={}",
-               id, join, running, ready, killed);
+               id, join, running, ready, killed.load());
 
-        if (!killed && running) {
-            LOGINF("[LIFECYCLE-TEST] T{} Kill waiting for ready-or-killed", id);
-            statusCondition.wait(lock, [this]() { return ready || killed; });
+        if (!killed.exchange(true) && running) {
+            LOGINF("[LIFECYCLE-TEST] T{} Kill waiting for ready-or-stopped", id);
+            statusCondition.wait(lock, [this]() { return ready || !running; });
             LOGINF("[LIFECYCLE-TEST] T{} Kill ready wait completed: running={} ready={} killed={}",
-                   id, running, ready, killed);
+                   id, running, ready, killed.load());
 
-            if (!killed) {
+            if (ready && running) {
                 const int result{pthread_kill(pthread, SIGINT)};
                 LOGINF("[LIFECYCLE-TEST] T{} Kill sent SIGINT: result={}", id, result);
-                killed = true;
-                statusCondition.notify_all();
             }
         }
 
-        if (join) {
+        // A thread can be asleep in Scheduler::WaitSchedule without executing guest code, so SIGINT
+        // alone is not sufficient. Marking killed and waking its scheduler condition lets that wait
+        // leave through the normal ExitException path.
+        scheduleCondition.notify();
+
+        if (join && state.thread.get() != this) {
             LOGINF("[LIFECYCLE-TEST] T{} Kill waiting for running=false", id);
             statusCondition.wait(lock, [this]() { return !running; });
             LOGINF("[LIFECYCLE-TEST] T{} Kill join completed", id);
