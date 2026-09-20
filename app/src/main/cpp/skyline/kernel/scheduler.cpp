@@ -181,7 +181,7 @@ namespace skyline::kernel {
                 if (!thread->affinityMask.test(thread->coreId)) // We need to retest in case the thread was migrated while the core was unlocked
                     MigrateToCore(thread, core, &cores.at(thread->idealCore), lock);
             }
-            return !core->queue.empty() && core->queue.front() == thread;
+            return thread->killed || (!core->queue.empty() && core->queue.front() == thread);
         }};
 
         TRACE_EVENT("scheduler", "WaitSchedule");
@@ -201,6 +201,9 @@ namespace skyline::kernel {
             thread->scheduleCondition.wait(lock, wakeFunction);
         }
 
+        if (thread->killed)
+            throw nce::NCE::ExitException(false);
+
         if (thread->priority == core->preemptionPriority)
             // If the thread needs to be preempted then arm its preemption timer
             thread->ArmPreemptionTimer(PreemptiveTimeslice);
@@ -219,8 +222,11 @@ namespace skyline::kernel {
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 MigrateToCore(thread, core, &cores.at(thread->idealCore), lock);
             }
-            return !core->queue.empty() && core->queue.front() == thread;
+            return thread->killed || (!core->queue.empty() && core->queue.front() == thread);
         })) {
+            if (thread->killed)
+                throw nce::NCE::ExitException(false);
+
             if (thread->priority == core->preemptionPriority)
                 thread->ArmPreemptionTimer(PreemptiveTimeslice);
 
