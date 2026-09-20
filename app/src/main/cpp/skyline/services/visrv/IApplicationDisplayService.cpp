@@ -3,6 +3,7 @@
 // Copyright © 2019 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #include <gpu.h>
+#include <kernel/svc.h>
 #include <kernel/types/KProcess.h>
 #include <services/am/applet/IApplet.h>
 #include <services/serviceman.h>
@@ -187,6 +188,7 @@ namespace skyline::service::visrv {
         response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
         LOGI("GetIndirectLayerImageRequiredMemoryInfo: return Success, size=0x{:X}, alignment=0x{:X}",
              layout.requiredSize, IndirectLayerAlignment);
+        kernel::svc::TraceNextWaitSynchronization(state.thread->id);
 
         return {};
     }

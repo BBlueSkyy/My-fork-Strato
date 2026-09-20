@@ -43,11 +43,14 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::GetAppletStateChangedEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         response.copyHandles.push_back(stateChangeEventHandle);
+        LOGI("GetAppletStateChangedEvent: handle=0x{:X}, object={}", stateChangeEventHandle, fmt::ptr(stateChangeEvent.get()));
         return {};
     }
 
     Result ILibraryAppletAccessor::IsCompleted(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        response.Push<u8>(IsAppletCompleted());
+        const bool completed{IsAppletCompleted()};
+        response.Push<u8>(completed);
+        LOGI("IsCompleted: completed={}", completed);
         return {};
     }
 
@@ -115,8 +118,10 @@ namespace skyline::service::am {
     Result ILibraryAppletAccessor::PopInteractiveOutData(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
         if (auto outStorage{applet->PopInteractiveAndClear()}) {
             manager.RegisterService(outStorage, session, response);
+            LOGI("PopInteractiveOutData: Success");
             return {};
         }
+        LOGI("PopInteractiveOutData: NotAvailable");
         return result::NotAvailable;
     }
 
@@ -127,6 +132,8 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::GetPopInteractiveOutDataEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         response.copyHandles.push_back(popInteractiveOutDataEventHandle);
+        LOGI("GetPopInteractiveOutDataEvent: handle=0x{:X}, object={}", popInteractiveOutDataEventHandle,
+             fmt::ptr(popInteractiveOutDataEvent.get()));
         return {};
     }
 
