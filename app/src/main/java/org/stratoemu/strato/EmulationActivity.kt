@@ -318,6 +318,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             Log.d(Tag, "  - Update URI: $updateUri")
         }
         
+        Log.i(Tag, "[LIFECYCLE-146] Starting NativeEmulation in pid=${Process.myPid()}")
         emulationThread = Thread {
             executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
             returnFromEmulation()
@@ -490,6 +491,38 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         executeApplication(intent!!)
     }
 
+    /**
+     * Final lifecycle validation on the full scheduler/kernel #146 runtime.
+     * Stops the current native emulation, waits for NativeEmulation to return completely, then
+     * recreates this activity in the same Android process. No AM/ProgramIndex is involved.
+     */
+    private fun restartApplicationForLifecycleTest() {
+        val runningThread = emulationThread
+        if (runningThread == null || !runningThread.isAlive) {
+            Log.w(Tag, "[LIFECYCLE-146] No running NativeEmulation thread to restart")
+            return
+        }
+
+        Log.i(Tag, "[LIFECYCLE-146] Requesting native application stop in pid=${Process.myPid()}")
+        shouldFinish = false
+
+        Thread({
+            val stopRequested = stopEmulation(false)
+            Log.i(Tag, "[LIFECYCLE-146] stopEmulation(false) returned $stopRequested; waiting for NativeEmulation")
+            runningThread.join()
+            Log.i(Tag, "[LIFECYCLE-146] NativeEmulation joined; recreating activity in the same Android process")
+
+            runOnUiThread {
+                if (isFinishing || isDestroyed)
+                    return@runOnUiThread
+
+                val restartIntent = Intent(intent)
+                finish()
+                startActivity(restartIntent)
+            }
+        }, "ApplicationLifecycle146Test").start()
+    }
+
     @SuppressWarnings("WeakerAccess")
     fun pauseEmulator() {
         if (isEmulatorPaused) return
@@ -519,7 +552,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
         onBackPressedDispatcher.addCallback(object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                returnFromEmulation()
+                restartApplicationForLifecycleTest()
             }
         })
     }
