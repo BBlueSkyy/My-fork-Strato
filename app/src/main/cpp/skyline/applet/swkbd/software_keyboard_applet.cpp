@@ -457,6 +457,8 @@ namespace skyline::applet::swkbd {
                     inlineUseChangedStringV2 = ReadInlineValue<u8>(data, sizeof(InlineRequest)) != 0;
                 break;
             case InlineRequest::SetMovedCursorV2:
+                if (data.size() >= sizeof(InlineRequest) + sizeof(u8))
+                    inlineUseMovedCursorV2 = ReadInlineValue<u8>(data, sizeof(InlineRequest)) != 0;
                 break;
             default:
                 LOGW("Unknown software keyboard inline request: 0x{:X}", static_cast<u32>(request));

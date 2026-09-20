@@ -107,6 +107,7 @@ namespace skyline::applet::swkbd {
         bool inlineStarted{};
         bool inlineUseUtf8{};
         bool inlineUseChangedStringV2{};
+        bool inlineUseMovedCursorV2{};
         i32 inlineCursorPosition{};
         std::u16string inlineText;
 
