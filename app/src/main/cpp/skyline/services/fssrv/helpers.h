@@ -26,6 +26,20 @@ namespace skyline::service::fssrv {
         return result::UnexpectedFailure;
     }
 
+    inline Result MapBackingError(const std::error_code &error, bool writeOperation = false) {
+        if (!error)
+            return {};
+        if (error == std::errc::result_out_of_range || error == std::errc::value_too_large)
+            return result::OutOfRange;
+        if (error == std::errc::read_only_file_system)
+            return result::WriteNotPermitted;
+        if (error == std::errc::permission_denied || error == std::errc::operation_not_permitted)
+            return writeOperation ? result::WriteNotPermitted : result::ReadNotPermitted;
+        if (error == std::errc::operation_not_supported)
+            return result::NotImplemented;
+        return result::UnexpectedFailure;
+    }
+
     constexpr bool IsOpenModeValid(vfs::Backing::Mode mode) {
         constexpr u32 KnownModeMask{0x7};
         return (mode.raw & ~KnownModeMask) == 0 && (mode.read || mode.write) && (!mode.append || mode.write);

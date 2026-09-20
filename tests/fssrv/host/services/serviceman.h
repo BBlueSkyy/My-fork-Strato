@@ -20,14 +20,28 @@ namespace skyline {
             u64 pid{};
             u8 *cmdArg{};
             u64 cmdArgSz{};
+            std::vector<u8> cmdStorage;
             std::vector<span<u8>> inputBuf;
             std::vector<span<u8>> outputBuf;
         };
 
         class IpcResponse {
           public:
+            std::vector<u8> data;
+
             template<typename T>
-            void Push(const T &) {}
+            void Push(const T &value) {
+                const auto offset{data.size()};
+                data.resize(offset + sizeof(T));
+                std::memcpy(data.data() + offset, &value, sizeof(T));
+            }
+
+            template<typename T>
+            T Get(size_t offset = 0) const {
+                T value{};
+                std::memcpy(&value, data.data() + offset, sizeof(T));
+                return value;
+            }
         };
     }
 

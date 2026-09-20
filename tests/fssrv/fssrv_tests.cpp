@@ -5,6 +5,8 @@
 #include <services/fssrv/types.h>
 #include <services/fssrv/validation.h>
 #include <services/fssrv/helpers.h>
+#include <services/fssrv/IFile.h>
+#include <services/fssrv/IStorage.h>
 #include <vfs/os_filesystem.h>
 
 using namespace skyline;
@@ -178,6 +180,114 @@ namespace {
         const auto entries{fs.OpenDirectory("", noSizeMode)->Read()};
         Check(entries.size() == 1 && entries[0].size == 0, "no-file-size directory mode exposed a size");
     }
+
+    void TestBackingCapabilities() {
+        TempDirectory root;
+        vfs::OsFileSystem fs(root.path.string());
+        Check(!fs.CreateFile("data", 4), "backing fixture creation failed");
+
+        vfs::Backing::Mode writableMode{true, true, false};
+        auto writable{fs.OpenFile("data", writableMode)};
+        std::array<u8, 2> input{0x12, 0x34};
+        auto [written, writeError]{writable->WriteWithError(input, 1)};
+        Check(!writeError && written == input.size(), "bounded backing write failed");
+        Check(!writable->Flush(), "backing flush failed");
+        Check(writable->WriteWithError(input, 3).second == std::errc::result_out_of_range, "past-end backing write succeeded");
+        Check(!writable->ResizeWithError(6) && writable->size == 6, "backing resize failed");
+
+        auto readOnly{fs.OpenFile("data")};
+        Check(readOnly->WriteWithError(input, 0).second == std::errc::read_only_file_system, "read-only backing accepted a write");
+        Check(readOnly->ResizeWithError(2) == std::errc::read_only_file_system, "read-only backing accepted a resize");
+
+        std::array<u8, 2> output{};
+        auto [read, readError]{readOnly->ReadWithError(output, 1)};
+        Check(!readError && read == output.size() && output == input, "checked backing read failed");
+        Check(readOnly->ReadWithError(output, 5).second == std::errc::result_out_of_range, "past-end backing read succeeded");
+    }
+
+    struct RangeInput {
+        i64 offset;
+        i64 size;
+    };
+
+    struct FileIoInput {
+        u32 option;
+        u32 padding;
+        i64 offset;
+        i64 size;
+    };
+
+    template<typename T>
+    ipc::IpcRequest RequestWith(const T &input) {
+        ipc::IpcRequest request;
+        request.cmdStorage.resize(sizeof(T));
+        std::memcpy(request.cmdStorage.data(), &input, sizeof(T));
+        request.cmdArg = request.cmdStorage.data();
+        request.cmdArgSz = sizeof(T);
+        return request;
+    }
+
+    void TestStorageServiceBoundsAndPermissions() {
+        TempDirectory root;
+        vfs::OsFileSystem fs(root.path.string());
+        Check(!fs.CreateFile("storage", 4), "storage fixture creation failed");
+        auto writable{fs.OpenFile("storage", {true, true, false})};
+        DeviceState state;
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IStorage storage(writable, state, manager);
+
+        std::array<u8, 4> output{};
+        auto negativeOffset{RequestWith(RangeInput{-1, 1})};
+        negativeOffset.outputBuf.emplace_back(output);
+        ipc::IpcResponse response;
+        Check(storage.Read(session, negativeOffset, response) == result::InvalidOffset, "negative storage offset accepted");
+
+        auto overflow{RequestWith(RangeInput{3, 2})};
+        overflow.outputBuf.emplace_back(output);
+        Check(storage.Read(session, overflow, response) == result::OutOfRange, "past-end storage read accepted");
+
+        auto shortBuffer{RequestWith(RangeInput{0, 4})};
+        shortBuffer.outputBuf.emplace_back(output.data(), 2);
+        Check(storage.Read(session, shortBuffer, response) == result::InvalidSize, "short storage output buffer accepted");
+
+        std::array<u8, 2> input{0xA5, 0x5A};
+        auto write{RequestWith(RangeInput{1, 2})};
+        write.inputBuf.emplace_back(input);
+        Check(!storage.Write(session, write, response), "bounded storage write failed");
+        Check(!storage.Flush(session, write, response), "storage flush failed");
+
+        auto readOnly{fs.OpenFile("storage")};
+        IStorage readOnlyStorage(readOnly, state, manager);
+        Check(readOnlyStorage.Write(session, write, response) == result::WriteNotPermitted, "read-only storage accepted a write");
+        Check(readOnlyStorage.SetSize(session, write, response) == result::WriteNotPermitted, "read-only storage accepted resize");
+    }
+
+    void TestFileServiceIo() {
+        TempDirectory root;
+        vfs::OsFileSystem fs(root.path.string());
+        Check(!fs.CreateFile("file", 4), "file fixture creation failed");
+        auto backing{fs.OpenFile("file", {true, true, true})};
+        DeviceState state;
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IFile file(backing, state, manager);
+
+        std::array<u8, 2> input{0x11, 0x22};
+        auto write{RequestWith(FileIoInput{0, 0, 3, 2})};
+        write.inputBuf.emplace_back(input);
+        ipc::IpcResponse response;
+        Check(!file.Write(session, write, response) && backing->size == 5, "append-capable file was not extended");
+
+        std::array<u8, 4> output{};
+        auto read{RequestWith(FileIoInput{0, 0, 3, 4})};
+        read.outputBuf.emplace_back(output);
+        Check(!file.Read(session, read, response), "bounded file read failed");
+        Check(response.Get<u64>() == 2 && output[0] == 0x11 && output[1] == 0x22, "file read did not report the EOF-limited size");
+
+        auto badOption{RequestWith(FileIoInput{2, 0, 0, 0})};
+        Check(file.Write(session, badOption, response) == result::InvalidArgument, "unknown file write option accepted");
+    }
 }
 
 int main() {
@@ -202,5 +312,8 @@ int main() {
     run("host commit", TestHostCommit);
     run("symlink escape rejection", TestSymlinkEscapeIsRejected);
     run("host metadata capabilities", TestHostMetadataCapabilities);
+    run("backing capabilities", TestBackingCapabilities);
+    run("storage service bounds and permissions", TestStorageServiceBoundsAndPermissions);
+    run("file service IO", TestFileServiceIo);
     return failures == 0 ? 0 : 1;
 }
