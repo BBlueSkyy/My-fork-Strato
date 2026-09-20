@@ -39,29 +39,44 @@ namespace skyline::kernel::type {
 
         bool expected{false};
         if (!join && !alreadyKilled.compare_exchange_strong(expected, true))
-            // If the process has already been killed and we don't want to wait for it to join then just instantly return rather than waiting on the mutex
             return;
         else
             alreadyKilled.store(true);
 
-        std::scoped_lock guard{threadMutex};
-        if (disableCreation)
-            disableThreadCreation = true;
-        if (all) {
-            LOGINF("[LIFECYCLE-TEST] KProcess::Kill(all) begin: {} guest threads, join={}", threads.size(), join);
-            for (const auto &thread : threads) {
-                {
-                    std::scoped_lock statusLock{thread->statusMutex};
-                    LOGINF("[LIFECYCLE-TEST] KProcess::Kill -> T{} state before kill: running={} ready={} killed={}",
-                           thread->id, thread->running, thread->ready, thread->killed);
-                }
-                thread->Kill(join);
-                LOGINF("[LIFECYCLE-TEST] KProcess::Kill <- T{} completed", thread->id);
-            }
-            LOGINF("[LIFECYCLE-TEST] KProcess::Kill(all) completed");
-        } else if (!threads.empty()) {
-            threads[0]->Kill(join);
+        std::vector<std::shared_ptr<KThread>> targets;
+        {
+            std::scoped_lock guard{threadMutex};
+            if (disableCreation)
+                disableThreadCreation = true;
+
+            if (all)
+                targets = threads;
+            else if (!threads.empty())
+                targets.push_back(threads.front());
         }
+
+        LOGINF("[LIFECYCLE-TEST] KProcess::Kill begin: targets={} all={} join={}", targets.size(), all, join);
+
+        // Request every stop first. A later thread may currently be the one that can release/schedule an
+        // earlier waiter, so joining sequentially while later threads are still alive can deadlock teardown.
+        for (const auto &thread : targets) {
+            {
+                std::scoped_lock statusLock{thread->statusMutex};
+                LOGINF("[LIFECYCLE-TEST] KProcess::Kill request T{}: running={} ready={} killed={}",
+                       thread->id, thread->running, thread->ready, thread->killed.load());
+            }
+            thread->Kill(false);
+        }
+
+        if (join) {
+            for (const auto &thread : targets) {
+                LOGINF("[LIFECYCLE-TEST] KProcess::Kill join T{}", thread->id);
+                thread->Kill(true);
+                LOGINF("[LIFECYCLE-TEST] KProcess::Kill joined T{}", thread->id);
+            }
+        }
+
+        LOGINF("[LIFECYCLE-TEST] KProcess::Kill completed");
     }
 
     void KProcess::InitializeHeapTls() {
