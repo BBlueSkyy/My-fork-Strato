@@ -497,6 +497,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * recreates this activity in the same Android process. No AM/ProgramIndex is involved.
      */
     private fun restartApplicationForLifecycleTest() {
+        // Final #205 + #146 same-process restart validation.
         val runningThread = emulationThread
         if (runningThread == null || !runningThread.isAlive) {
             Log.w(Tag, "[LIFECYCLE-146] No running NativeEmulation thread to restart")
