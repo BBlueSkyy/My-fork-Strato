@@ -7,14 +7,17 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace skyline {
@@ -88,8 +91,34 @@ namespace skyline {
 #define LOGE(...) ((void)0)
 
 namespace fmt {
+    namespace detail {
+        template<typename T>
+        void AppendArgument(std::string &output, std::string_view specification, T &&value) {
+            std::ostringstream stream;
+            if (specification == ":016X")
+                stream << std::uppercase << std::hex << std::setfill('0') << std::setw(16);
+            stream << std::forward<T>(value);
+            output += stream.str();
+        }
+
+        inline void AppendFormat(std::string &output, std::string_view format) {
+            output += format;
+        }
+
+        template<typename T, typename... Args>
+        void AppendFormat(std::string &output, std::string_view format, T &&value, Args &&...args) {
+            const auto open{format.find('{')};
+            const auto close{format.find('}', open)};
+            output += format.substr(0, open);
+            AppendArgument(output, format.substr(open + 1, close - open - 1), std::forward<T>(value));
+            AppendFormat(output, format.substr(close + 1), std::forward<Args>(args)...);
+        }
+    }
+
     template<typename... Args>
-    std::string format(std::string_view value, Args &&...) {
-        return std::string(value);
+    std::string format(std::string_view value, Args &&...args) {
+        std::string output;
+        detail::AppendFormat(output, value, std::forward<Args>(args)...);
+        return output;
     }
 }

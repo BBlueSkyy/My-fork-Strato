@@ -468,6 +468,39 @@ namespace {
         Check(!proxy.OpenSaveDataFileSystem(session, primarySave, response), "existing save did not open");
         Check(!proxy.OpenReadOnlySaveDataFileSystem(session, primarySave, response), "existing read-only save did not open");
     }
+
+    void TestApplicationSaveProvisioning() {
+        TempDirectory root;
+        constexpr u64 SaveDataOwnerId{0x0100123456789000};
+        constexpr service::account::UserId UserId{1, 0};
+        Check(!EnsureApplicationSaveData(root.path.string(), SaveDataOwnerId, UserId, 0x4000, 0x4000),
+              "application save provisioning failed");
+
+        const auto accountPath{root.path / "switch/nand/user/save/0000000000000000/00000000000000000000000000000001/0100123456789000"};
+        const auto devicePath{root.path / "switch/nand/user/save/0000000000000000/00000000000000000000000000000000/0100123456789000"};
+        const auto externalPath{root.path / "switch/nand/user/save/0000000000000000/00000000000000000000000000000001/0100A280187BC000"};
+        Check(std::filesystem::is_directory(accountPath), "declared account save was not provisioned");
+        Check(std::filesystem::is_directory(devicePath), "declared device save was not provisioned");
+        Check(!std::filesystem::exists(externalPath), "an unrelated application save was provisioned");
+        Check(!EnsureApplicationSaveData(root.path.string(), SaveDataOwnerId, UserId, 0x4000, 0x4000),
+              "application save provisioning was not idempotent");
+
+        kernel::OS os;
+        os.publicAppFilesPath = root.path.string();
+        DeviceState state{.os = &os};
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IFileSystemProxy proxy(state, manager);
+        OpenSaveDataInput input{};
+        input.spaceId = SaveDataSpaceId::User;
+        input.attribute.programId = SaveDataOwnerId;
+        input.attribute.userId = UserId;
+        input.attribute.type = SaveDataType::Account;
+        auto request{RequestWith(input)};
+        ipc::IpcResponse response;
+        Check(!proxy.OpenSaveDataFileSystem(session, request, response), "provisioned account save did not open");
+    }
+
 }
 
 int main() {
@@ -499,5 +532,6 @@ int main() {
     run("save data reader state and filters", TestSaveDataInfoReaderStateAndFilters);
     run("multi-commit order and failure", TestMultiCommitOrderAndFailure);
     run("proxy validation and state", TestProxyValidationAndState);
+    run("application save provisioning", TestApplicationSaveProvisioning);
     return failures == 0 ? 0 : 1;
 }

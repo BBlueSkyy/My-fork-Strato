@@ -11,6 +11,8 @@
 #include "loader/nca.h"
 #include "loader/nsp.h"
 #include "loader/xci.h"
+#include "services/account/IAccountServiceForApplication.h"
+#include "services/fssrv/IFileSystemProxy.h"
 #include "os.h"
 #include <logger/logger.h>
 
@@ -53,6 +55,17 @@ namespace skyline::kernel {
                 state.dlcLoaders.push_back(GetLoader(fd, keyStore, loader::RomFormat::NSP));
 
         state.loader->ResolveProgramContent(state);
+
+        if (state.loader->nacp) {
+            const auto &nacp{state.loader->nacp->nacpContents};
+            if (const auto result{service::fssrv::EnsureApplicationSaveData(publicAppFilesPath,
+                                                                           nacp.saveDataOwnerId,
+                                                                           constant::DefaultUserId,
+                                                                           nacp.userAccountSaveDataSize,
+                                                                           nacp.deviceSaveDataSize)};
+                result)
+                throw exception("Failed to provision application save data: {}", result.raw);
+        }
 
         state.gpu->Initialise();
 

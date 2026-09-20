@@ -11,6 +11,7 @@ namespace skyline::service::fssrv::result {
     constexpr Result NoRomFsAvailable(2, 1001);
     constexpr Result EntityNotFound(2, 1002);
     constexpr Result NotImplemented(2, 3001);
+    constexpr Result AlreadyExists(2, 3003);
     constexpr Result OutOfRange(2, 3005);
     constexpr Result UnexpectedFailure(2, 5000);
     constexpr Result InvalidArgument(2, 6001);

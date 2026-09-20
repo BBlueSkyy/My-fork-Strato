@@ -98,6 +98,52 @@ namespace skyline::service::fssrv {
         }
     }
 
+    Result CreateSaveDataDirectory(const std::string &publicAppFilesPath, SaveDataSpaceId spaceId,
+                                   SaveDataAttribute attribute, u64 defaultProgramId, bool allowExisting) {
+        const auto saveDataPath{GetSaveDataPath(spaceId, attribute, defaultProgramId)};
+        if (!saveDataPath)
+            return result::InvalidArgument;
+
+        try {
+            vfs::OsFileSystem root{publicAppFilesPath + "/switch"};
+            const auto error{root.CreateDirectory(*saveDataPath, true)};
+            if (error == std::errc::file_exists) {
+                if (!root.DirectoryExists(*saveDataPath))
+                    return result::PathAlreadyExists;
+                return allowExisting ? Result{} : result::AlreadyExists;
+            }
+            return MapVfsError(error);
+        } catch (const std::exception &) {
+            return result::UnexpectedFailure;
+        }
+    }
+
+    Result EnsureApplicationSaveData(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
+                                     account::UserId userId, u64 accountSaveDataSize, u64 deviceSaveDataSize) {
+        if (accountSaveDataSize > 0 && userId != account::UserId{}) {
+            SaveDataAttribute attribute{};
+            attribute.programId = saveDataOwnerId;
+            attribute.userId = userId;
+            attribute.type = SaveDataType::Account;
+            if (const auto creationResult{CreateSaveDataDirectory(publicAppFilesPath, SaveDataSpaceId::User,
+                                                                  attribute, saveDataOwnerId, true)};
+                creationResult)
+                return creationResult;
+        }
+
+        if (deviceSaveDataSize > 0) {
+            SaveDataAttribute attribute{};
+            attribute.programId = saveDataOwnerId;
+            attribute.type = SaveDataType::Device;
+            if (const auto creationResult{CreateSaveDataDirectory(publicAppFilesPath, SaveDataSpaceId::User,
+                                                                  attribute, saveDataOwnerId, true)};
+                creationResult)
+                return creationResult;
+        }
+
+        return {};
+    }
+
     IFileSystemProxy::IFileSystemProxy(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
 
     Result IFileSystemProxy::SetCurrentProcess(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {

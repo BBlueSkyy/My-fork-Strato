@@ -13,6 +13,12 @@ namespace skyline::service::fssrv {
      */
     std::optional<std::string> GetSaveDataPath(SaveDataSpaceId spaceId, SaveDataAttribute attribute, u64 defaultProgramId);
 
+    Result CreateSaveDataDirectory(const std::string &publicAppFilesPath, SaveDataSpaceId spaceId,
+                                   SaveDataAttribute attribute, u64 defaultProgramId, bool allowExisting);
+
+    Result EnsureApplicationSaveData(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
+                                     account::UserId userId, u64 accountSaveDataSize, u64 deviceSaveDataSize);
+
     enum class StorageId : u8 {
         None = 0,
         Host = 1,
