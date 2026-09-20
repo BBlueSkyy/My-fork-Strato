@@ -52,7 +52,9 @@ namespace skyline::kernel::type {
         state.thread = shared_from_this();
 
         if (setjmp(originalCtx)) { // Returns 1 if it's returning from guest, 0 otherwise
+            LOGINF("[LIFECYCLE-TEST] T{} returned from guest; removing from scheduler", id);
             state.scheduler->RemoveThread();
+            LOGINF("[LIFECYCLE-TEST] T{} removed from scheduler; publishing stopped state", id);
 
             {
                 std::scoped_lock lock{statusMutex};
@@ -60,6 +62,7 @@ namespace skyline::kernel::type {
                 ready = false;
                 statusCondition.notify_all();
             }
+            LOGINF("[LIFECYCLE-TEST] T{} stopped", id);
 
             Signal();
 
@@ -223,16 +226,28 @@ namespace skyline::kernel::type {
 
     void KThread::Kill(bool join) {
         std::unique_lock lock(statusMutex);
+        LOGINF("[LIFECYCLE-TEST] T{} Kill enter: join={} running={} ready={} killed={}",
+               id, join, running, ready, killed);
+
         if (!killed && running) {
+            LOGINF("[LIFECYCLE-TEST] T{} Kill waiting for ready-or-killed", id);
             statusCondition.wait(lock, [this]() { return ready || killed; });
+            LOGINF("[LIFECYCLE-TEST] T{} Kill ready wait completed: running={} ready={} killed={}",
+                   id, running, ready, killed);
+
             if (!killed) {
-                pthread_kill(pthread, SIGINT);
+                const int result{pthread_kill(pthread, SIGINT)};
+                LOGINF("[LIFECYCLE-TEST] T{} Kill sent SIGINT: result={}", id, result);
                 killed = true;
                 statusCondition.notify_all();
             }
         }
-        if (join)
+
+        if (join) {
+            LOGINF("[LIFECYCLE-TEST] T{} Kill waiting for running=false", id);
             statusCondition.wait(lock, [this]() { return !running; });
+            LOGINF("[LIFECYCLE-TEST] T{} Kill join completed", id);
+        }
     }
 
     void KThread::SendSignal(int signal) {
