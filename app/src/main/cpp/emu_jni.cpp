@@ -123,6 +123,15 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
         LOGDNF("Launching ROM {}", skyline::JniString(env, romUriJstring));
 
         os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
+        LOGINF("[LIFECYCLE-TEST] OS::Execute returned to JNI; releasing OS/DeviceState");
+
+        OsWeak.reset();
+        GpuWeak.reset();
+        AudioWeak.reset();
+        InputWeak.reset();
+        os.reset();
+
+        LOGINF("[LIFECYCLE-TEST] OS/DeviceState destruction completed");
     } catch (std::exception &e) {
         LOGENF("An uncaught exception has occurred: {}", e.what());
     } catch (const skyline::signal::SignalException &e) {
