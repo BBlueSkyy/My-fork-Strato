@@ -34,7 +34,7 @@ namespace skyline {
             std::condition_variable statusCondition; //!< Signalled on the status of the thread changing
             bool running{false}; //!< If the host thread that corresponds to this thread is running, this doesn't reflect guest scheduling changes
             bool ready{false}; //!< If this thread is ready to recieve signals or not
-            bool killed{false}; //!< If this thread was previously running and has been killed
+            std::atomic_bool killed{false}; //!< If this thread was previously running and has been killed
 
             KHandle handle;
             size_t id; //!< Index of thread in parent process's KThread vector
