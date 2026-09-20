@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -13,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace skyline {
@@ -28,7 +30,7 @@ namespace skyline {
     class exception : public std::runtime_error {
       public:
         template<typename... Args>
-        exception(std::string_view message, Args &&...) : std::runtime_error(message) {}
+        exception(std::string_view message, Args &&...) : std::runtime_error(std::string(message)) {}
     };
 
     template<typename T, size_t Extent = std::dynamic_extent>
@@ -41,6 +43,17 @@ namespace skyline {
         constexpr std::string_view as_string(bool nullTerminated = false) const {
             const auto end{nullTerminated ? std::find(this->begin(), this->end(), 0) : this->end()};
             return {reinterpret_cast<const char *>(this->data()), static_cast<size_t>(end - this->begin())};
+        }
+
+        span<T> subspan(size_t offset, size_t count = std::dynamic_extent) const {
+            return std::span<T, Extent>::subspan(offset, count);
+        }
+
+        template<typename Container>
+        void copy_from(const Container &input) {
+            if (this->size_bytes() < input.size() * sizeof(typename Container::value_type))
+                throw exception("copy exceeds output span");
+            std::memcpy(this->data(), input.data(), input.size() * sizeof(typename Container::value_type));
         }
     };
 

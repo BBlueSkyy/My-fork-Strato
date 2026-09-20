@@ -9,5 +9,7 @@ g++ -std=c++20 -O1 -g \
     -I"$test_root/tests/fssrv/host" \
     -I"$test_root/app/src/main/cpp/skyline" \
     "$test_root/tests/fssrv/fssrv_tests.cpp" \
+    "$test_root/app/src/main/cpp/skyline/vfs/os_filesystem.cpp" \
+    "$test_root/app/src/main/cpp/skyline/vfs/os_backing.cpp" \
     -o "$test_build/fssrv_tests"
 "$test_build/fssrv_tests"

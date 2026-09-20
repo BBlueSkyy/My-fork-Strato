@@ -3,38 +3,54 @@
 
 #pragma once
 
+#include <optional>
+#include <system_error>
 #include "backing.h"
 #include "directory.h"
 
 namespace skyline::vfs {
+    struct FileTimeStamp {
+        u64 created{};
+        u64 modified{};
+        u64 accessed{};
+        bool isValid{};
+    };
+
+    struct FileSystemAttribute {
+        std::optional<i32> directoryNameLengthMax;
+        std::optional<i32> fileNameLengthMax;
+        std::optional<i32> directoryPathLengthMax;
+        std::optional<i32> filePathLengthMax;
+    };
+
     /**
      * @brief The FileSystem class represents an abstract filesystem with child files and folders
      */
     class FileSystem {
       protected:
-        virtual bool CreateFileImpl(const std::string &path, size_t size) {
-            throw exception("This filesystem does not support creating files");
-        };
+        virtual std::error_code CreateFileImpl(const std::string &path, size_t size) { return std::make_error_code(std::errc::operation_not_supported); }
 
-        virtual void DeleteFileImpl(const std::string &path) {
-            throw exception("This filesystem does not support deleting files");
-        }
+        virtual std::error_code DeleteFileImpl(const std::string &path) { return std::make_error_code(std::errc::operation_not_supported); }
 
-        virtual void DeleteDirectoryImpl(const std::string &path) {
-            throw exception("This filesystem does not support deleting directories");
-        }
+        virtual std::error_code DeleteDirectoryImpl(const std::string &path) { return std::make_error_code(std::errc::operation_not_supported); }
 
-        virtual void RenameFileImpl(const std::string &oldPath, const std::string &newPath) {
-            throw exception("This filesystem does not support renaming files");
-        }
+        virtual std::error_code DeleteDirectoryRecursivelyImpl(const std::string &path) { return std::make_error_code(std::errc::operation_not_supported); }
 
-        virtual void RenameDirectoryImpl(const std::string &oldPath, const std::string &newPath) {
-            throw exception("This filesystem does not support renaming directories");
-        }
-        
-        virtual bool CreateDirectoryImpl(const std::string &path, bool parents) {
-            throw exception("This filesystem does not support creating directories");
-        };
+        virtual std::error_code CleanDirectoryRecursivelyImpl(const std::string &path) { return std::make_error_code(std::errc::operation_not_supported); }
+
+        virtual std::error_code RenameFileImpl(const std::string &oldPath, const std::string &newPath) { return std::make_error_code(std::errc::operation_not_supported); }
+
+        virtual std::error_code RenameDirectoryImpl(const std::string &oldPath, const std::string &newPath) { return std::make_error_code(std::errc::operation_not_supported); }
+
+        virtual std::error_code CreateDirectoryImpl(const std::string &path, bool parents) { return std::make_error_code(std::errc::operation_not_supported); }
+
+        virtual std::error_code CommitImpl() { return std::make_error_code(std::errc::operation_not_supported); }
+
+        virtual std::error_code GetSpaceImpl(const std::string &path, u64 &free, u64 &total) { return std::make_error_code(std::errc::operation_not_supported); }
+
+        virtual std::error_code GetFileTimeStampImpl(const std::string &path, FileTimeStamp &timestamp) { return std::make_error_code(std::errc::operation_not_supported); }
+
+        virtual std::error_code GetFileSystemAttributeImpl(FileSystemAttribute &attribute) { return std::make_error_code(std::errc::operation_not_supported); }
 
         virtual std::shared_ptr<Backing> OpenFileImpl(const std::string &path, Backing::Mode mode) = 0;
 
@@ -60,24 +76,32 @@ namespace skyline::vfs {
          * @param size The size of the file to create
          * @return Whether creating the file succeeded
          */
-        bool CreateFile(const std::string &path, size_t size) {
+        std::error_code CreateFile(const std::string &path, size_t size) {
             return CreateFileImpl(path, size);
         }
 
-        void DeleteFile(const std::string &path) {
-            DeleteFileImpl(path);
+        std::error_code DeleteFile(const std::string &path) {
+            return DeleteFileImpl(path);
         }
 
-        void DeleteDirectory(const std::string &path) {
-            DeleteDirectoryImpl(path);
+        std::error_code DeleteDirectory(const std::string &path) {
+            return DeleteDirectoryImpl(path);
         }
 
-        void RenameFile(const std::string &oldPath, const std::string &newPath) {
-            RenameFileImpl(oldPath, newPath);
+        std::error_code DeleteDirectoryRecursively(const std::string &path) {
+            return DeleteDirectoryRecursivelyImpl(path);
         }
 
-        void RenameDirectory(const std::string &oldPath, const std::string &newPath) {
-            RenameDirectoryImpl(oldPath, newPath);
+        std::error_code CleanDirectoryRecursively(const std::string &path) {
+            return CleanDirectoryRecursivelyImpl(path);
+        }
+
+        std::error_code RenameFile(const std::string &oldPath, const std::string &newPath) {
+            return RenameFileImpl(oldPath, newPath);
+        }
+
+        std::error_code RenameDirectory(const std::string &oldPath, const std::string &newPath) {
+            return RenameDirectoryImpl(oldPath, newPath);
         }
        
          /**
@@ -86,9 +110,17 @@ namespace skyline::vfs {
          * @param parents Whether all parent directories in the given path should be created
          * @return Whether creating the directory succeeded
          */
-        bool CreateDirectory(const std::string &path, bool parents) {
+        std::error_code CreateDirectory(const std::string &path, bool parents) {
             return CreateDirectoryImpl(path, parents);
-        };
+        }
+
+        std::error_code Commit() { return CommitImpl(); }
+
+        std::error_code GetSpace(const std::string &path, u64 &free, u64 &total) { return GetSpaceImpl(path, free, total); }
+
+        std::error_code GetFileTimeStamp(const std::string &path, FileTimeStamp &timestamp) { return GetFileTimeStampImpl(path, timestamp); }
+
+        std::error_code GetFileSystemAttribute(FileSystemAttribute &attribute) { return GetFileSystemAttributeImpl(attribute); }
 
         /**
          * @brief Opens a file from the specified path in the filesystem

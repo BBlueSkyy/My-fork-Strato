@@ -7,7 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(STRATO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
 set(SKYLINE "${STRATO_ROOT}/app/src/main/cpp/skyline")
 
-add_executable(fssrv_tests fssrv_tests.cpp)
+add_executable(fssrv_tests fssrv_tests.cpp
+    "${SKYLINE}/vfs/os_filesystem.cpp"
+    "${SKYLINE}/vfs/os_backing.cpp")
 target_include_directories(fssrv_tests PRIVATE host "${SKYLINE}")
 
 enable_testing()
