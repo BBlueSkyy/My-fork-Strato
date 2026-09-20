@@ -85,7 +85,9 @@ namespace skyline::kernel {
         if (thread) {
             LOGI("Starting main HOS thread");
             thread->Start(true);
+            LOGINF("[LIFECYCLE-146] Main HOS thread returned; joining remaining guest threads");
             process->Kill(true, true, true);
+            LOGINF("[LIFECYCLE-146] All guest threads joined; OS::Execute is returning");
             skyline::AsyncLogger::Finalize(true);
         }
     }
