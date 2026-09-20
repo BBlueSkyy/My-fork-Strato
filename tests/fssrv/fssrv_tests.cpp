@@ -7,6 +7,7 @@
 #include <services/fssrv/helpers.h>
 #include <services/fssrv/IFile.h>
 #include <services/fssrv/IFileSystem.h>
+#include <services/fssrv/IFileSystemProxy.h>
 #include <services/fssrv/IStorage.h>
 #include <services/fssrv/ISaveDataInfoReader.h>
 #include <services/fssrv/IMultiCommitManager.h>
@@ -79,6 +80,8 @@ namespace {
         Check(!IsValidSaveDataSpaceId(static_cast<SaveDataSpaceId>(0xFF)), "unknown save-data space accepted");
         Check(IsValidSaveDataType(SaveDataType::Cache), "valid save-data type rejected");
         Check(!IsValidSaveDataType(static_cast<SaveDataType>(0xFF)), "unknown save-data type accepted");
+        Check(IsValidSaveDataRank(SaveDataRank::Primary), "valid save-data rank rejected");
+        Check(!IsValidSaveDataRank(static_cast<SaveDataRank>(0xFF)), "unknown save-data rank accepted");
     }
 
     void TestPaginationBounds() {
@@ -375,6 +378,60 @@ namespace {
         invalidRequest.services.push_back(std::make_shared<ISaveDataInfoReader>(state, manager));
         Check(multiCommit.Add(session, invalidRequest, response) == result::InvalidArgument, "multi-commit accepted a non-filesystem object");
     }
+
+    struct OpenSaveDataInput {
+        SaveDataSpaceId spaceId;
+        u8 padding[7];
+        SaveDataAttribute attribute;
+    };
+
+    struct OpenDataStorageInput {
+        StorageId storageId;
+        u8 padding[7];
+        u64 dataId;
+    };
+
+    void TestProxyValidationAndState() {
+        DeviceState state;
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IFileSystemProxy proxy(state, manager);
+        ipc::IpcResponse response;
+
+        ipc::IpcRequest processRequest;
+        processRequest.pid = 0x1234;
+        Check(!proxy.SetCurrentProcess(session, processRequest, response) && proxy.process == 0x1234, "SetCurrentProcess ignored the IPC PID descriptor");
+
+        auto cacheRequest{RequestWith<u16>(1)};
+        Check(proxy.GetCacheStorageSize(session, cacheRequest, response) == result::NotImplemented && response.data.empty(), "cache size returned fabricated output");
+
+        auto invalidMode{RequestWith<u32>(3)};
+        Check(proxy.SetGlobalAccessLogMode(session, invalidMode, response) == result::InvalidArgument, "invalid access-log mode accepted");
+        auto validMode{RequestWith<u32>(2)};
+        Check(!proxy.SetGlobalAccessLogMode(session, validMode, response), "valid access-log mode rejected");
+        Check(!proxy.GetGlobalAccessLogMode(session, validMode, response) && response.Get<u32>() == 2, "access-log mode was not retained");
+
+        ipc::IpcRequest emptyRequest;
+        Check(proxy.OpenDataStorageByCurrentProcess(session, emptyRequest, response) == result::NoRomFsAvailable, "missing current-process loader was dereferenced");
+        Check(proxy.OpenPatchDataStorageByCurrentProcess(session, emptyRequest, response) == result::EntityNotFound, "missing patch loader was dereferenced");
+
+        auto invalidStorage{RequestWith(OpenDataStorageInput{StorageId::None, {}, 1})};
+        Check(proxy.OpenDataStorageByDataId(session, invalidStorage, response) == result::InvalidArgument, "invalid StorageId accepted");
+        auto hostStorage{RequestWith(OpenDataStorageInput{StorageId::Host, {}, 1})};
+        Check(proxy.OpenDataStorageByDataId(session, hostStorage, response) == result::NotImplemented, "unrepresentable host storage was searched permissively");
+
+        OpenSaveDataInput saveInput{};
+        saveInput.spaceId = SaveDataSpaceId::User;
+        saveInput.attribute.programId = 1;
+        saveInput.attribute.type = SaveDataType::Account;
+        saveInput.attribute.rank = SaveDataRank::Secondary;
+        auto secondarySave{RequestWith(saveInput)};
+        Check(proxy.OpenSaveDataFileSystem(session, secondarySave, response) == result::NotImplemented, "secondary save rank aliased primary storage");
+        saveInput.attribute.rank = SaveDataRank::Primary;
+        saveInput.attribute.index = 1;
+        auto indexedSave{RequestWith(saveInput)};
+        Check(proxy.OpenSaveDataFileSystem(session, indexedSave, response) == result::NotImplemented, "indexed save aliased index-zero storage");
+    }
 }
 
 int main() {
@@ -404,5 +461,6 @@ int main() {
     run("file service IO", TestFileServiceIo);
     run("save data reader state and filters", TestSaveDataInfoReaderStateAndFilters);
     run("multi-commit order and failure", TestMultiCommitOrderAndFailure);
+    run("proxy validation and state", TestProxyValidationAndState);
     return failures == 0 ? 0 : 1;
 }

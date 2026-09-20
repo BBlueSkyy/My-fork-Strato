@@ -17,6 +17,7 @@ g++ -std=c++20 -O1 -g \
     "$test_root/app/src/main/cpp/skyline/services/fssrv/IDirectory.cpp" \
     "$test_root/app/src/main/cpp/skyline/services/fssrv/ISaveDataInfoReader.cpp" \
     "$test_root/app/src/main/cpp/skyline/services/fssrv/IMultiCommitManager.cpp" \
+    "$test_root/app/src/main/cpp/skyline/services/fssrv/IFileSystemProxy.cpp" \
     -o "$test_build/fssrv_tests"
 "$test_build/fssrv_tests"
 

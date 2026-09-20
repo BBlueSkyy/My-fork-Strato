@@ -310,7 +310,7 @@ namespace skyline::vfs {
             return error;
 
         struct statvfs info {};
-        if (statvfs(rootPath.c_str(), &info) != 0)
+        if (statvfs(resolved.c_str(), &info) != 0)
             return ErrnoError();
         if (info.f_frsize != 0 && (info.f_blocks > std::numeric_limits<u64>::max() / info.f_frsize || info.f_bavail > std::numeric_limits<u64>::max() / info.f_frsize))
             return std::make_error_code(std::errc::value_too_large);

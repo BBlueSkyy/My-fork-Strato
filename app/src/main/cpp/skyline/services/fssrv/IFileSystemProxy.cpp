@@ -118,8 +118,10 @@ namespace skyline::service::fssrv {
         const auto input{ReadArgument<OpenSaveDataInput>(request)};
         if (!input)
             return result::InvalidArgument;
-        if (!IsValidSaveDataSpaceId(input->spaceId) || !IsValidSaveDataType(input->attribute.type))
+        if (!IsValidSaveDataSpaceId(input->spaceId) || !IsValidSaveDataType(input->attribute.type) || !IsValidSaveDataRank(input->attribute.rank))
             return result::InvalidArgument;
+        if (input->attribute.rank != SaveDataRank::Primary || input->attribute.index != 0)
+            return result::NotImplemented;
         if (input->attribute.programId == 0 && (!state.loader || !state.loader->nacp))
             return result::EntityNotFound;
 
@@ -160,6 +162,8 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystemProxy::OpenDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!state.loader)
+            return result::NoRomFsAvailable;
         auto backing{state.loader->currentProcessRomFs};
         if (!backing)
             return result::NoRomFsAvailable;
@@ -172,40 +176,54 @@ namespace skyline::service::fssrv {
         const auto input{ReadArgument<OpenDataStorageInput>(request)};
         if (!input || !IsValidStorageId(input->storageId))
             return result::InvalidArgument;
+        if (input->storageId == StorageId::Host)
+            return result::NotImplemented;
+
         // DLC content has its own RomFS; it is never patched against the current Program NCA.
-        for (const auto &dlc : state.dlcLoaders) {
-            if (dlc->cnmt && dlc->cnmt->header.id == input->dataId) {
+        if (input->storageId != StorageId::NandSystem) {
+            for (const auto &dlc : state.dlcLoaders) {
+                if (!dlc || !dlc->cnmt || dlc->cnmt->header.id != input->dataId)
+                    continue;
                 auto romFs{dlc->publicNca ? dlc->publicNca->romFs : nullptr};
                 if (!romFs)
                     return result::EntityNotFound;
                 manager.RegisterService(std::make_shared<IStorage>(romFs, state, manager), session, response);
                 return {};
             }
+            return result::EntityNotFound;
         }
 
-        auto systemArchivesFileSystem{std::make_shared<vfs::OsFileSystem>(state.os->publicAppFilesPath + "/switch/nand/system/Contents/registered/")};
-        auto systemArchives{systemArchivesFileSystem->OpenDirectory("")};
-        auto keyStore{std::make_shared<skyline::crypto::KeyStore>(state.os->privateAppFilesPath + "keys")};
+        bool archiveError{};
+        try {
+            auto systemArchivesFileSystem{std::make_shared<vfs::OsFileSystem>(state.os->publicAppFilesPath + "/switch/nand/system/Contents/registered/")};
+            auto systemArchives{systemArchivesFileSystem->OpenDirectory("")};
+            auto keyStore{std::make_shared<skyline::crypto::KeyStore>(state.os->privateAppFilesPath + "keys")};
 
-        for (const auto &entry : systemArchives->Read()) {
-            if (entry.type != vfs::Directory::EntryType::File)
-                continue;
-            auto backing{systemArchivesFileSystem->OpenFileUnchecked(entry.name)};
-            if (!backing)
-                continue;
-            auto nca{vfs::NCA(backing, keyStore)};
-
-            if (nca.header.titleId == input->dataId && nca.romFs != nullptr) {
-                manager.RegisterService(std::make_shared<IStorage>(nca.romFs, state, manager), session, response);
-                return {};
+            for (const auto &entry : systemArchives->Read()) {
+                if (entry.type != vfs::Directory::EntryType::File)
+                    continue;
+                auto backing{systemArchivesFileSystem->OpenFileUnchecked(entry.name)};
+                if (!backing)
+                    continue;
+                try {
+                    auto nca{vfs::NCA(backing, keyStore)};
+                    if (nca.header.titleId == input->dataId && nca.romFs != nullptr) {
+                        manager.RegisterService(std::make_shared<IStorage>(nca.romFs, state, manager), session, response);
+                        return {};
+                    }
+                } catch (const std::exception &) {
+                    archiveError = true;
+                }
             }
+        } catch (const std::exception &) {
+            archiveError = true;
         }
 
         if (!state.os->assetFileSystem)
-            return result::EntityNotFound;
+            return archiveError ? result::UnexpectedFailure : result::EntityNotFound;
         auto assetBacking{state.os->assetFileSystem->OpenFileUnchecked(fmt::format("romfs/{:016X}", input->dataId))};
         if (!assetBacking)
-            return result::EntityNotFound;
+            return archiveError ? result::UnexpectedFailure : result::EntityNotFound;
         manager.RegisterService(std::make_shared<IStorage>(std::move(assetBacking), state, manager), session, response);
         return {};
     }
@@ -213,6 +231,8 @@ namespace skyline::service::fssrv {
     Result IFileSystemProxy::OpenPatchDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         // A base-only title (or an ExeFS-only update) has no Program patch data to open.
         // When available, this is the same persistent base+patch view used by command 200.
+        if (!state.loader)
+            return result::EntityNotFound;
         auto backing{state.loader->patchDataRomFs};
         if (!backing)
             return result::EntityNotFound;

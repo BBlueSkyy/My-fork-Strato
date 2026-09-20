@@ -47,6 +47,10 @@ namespace skyline::service::fssrv {
         return static_cast<u8>(type) <= static_cast<u8>(SaveDataType::SystemBcat);
     }
 
+    constexpr bool IsValidSaveDataRank(SaveDataRank rank) {
+        return rank == SaveDataRank::Primary || rank == SaveDataRank::Secondary;
+    }
+
     inline std::optional<std::string> ReadPath(span<u8> buffer) {
         if (buffer.empty() || buffer.size() > FspPathSize)
             return std::nullopt;
