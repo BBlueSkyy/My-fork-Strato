@@ -490,6 +490,40 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         executeApplication(intent!!)
     }
 
+    /**
+     * Diagnostic-only lifecycle test.
+     *
+     * Stops the current native emulation, waits for the NativeEmulation thread to return all the
+     * way through JNI/native destruction, then recreates the activity without terminating the
+     * Android process. This deliberately does not involve AM, ExecuteProgram or ProgramIndex.
+     */
+    private fun restartApplicationForLifecycleTest() {
+        val runningThread = emulationThread
+        if (runningThread == null || !runningThread.isAlive) {
+            Log.w(Tag, "[LIFECYCLE-TEST] No running NativeEmulation thread to restart")
+            return
+        }
+
+        Log.i(Tag, "[LIFECYCLE-TEST] Requesting native application stop")
+        shouldFinish = false
+
+        Thread({
+            val stopRequested = stopEmulation(false)
+            Log.i(Tag, "[LIFECYCLE-TEST] stopEmulation(false) returned $stopRequested; waiting for NativeEmulation")
+            runningThread.join()
+            Log.i(Tag, "[LIFECYCLE-TEST] NativeEmulation joined; recreating activity in the same Android process")
+
+            runOnUiThread {
+                if (isFinishing || isDestroyed)
+                    return@runOnUiThread
+
+                val restartIntent = Intent(intent)
+                finish()
+                startActivity(restartIntent)
+            }
+        }, "ApplicationLifecycleTest").start()
+    }
+
     @SuppressWarnings("WeakerAccess")
     fun pauseEmulator() {
         if (isEmulatorPaused) return
@@ -519,7 +553,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
         onBackPressedDispatcher.addCallback(object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                returnFromEmulation()
+                restartApplicationForLifecycleTest()
             }
         })
     }
