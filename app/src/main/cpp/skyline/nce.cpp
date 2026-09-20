@@ -27,6 +27,9 @@ namespace skyline::nce {
         const auto &state{*ctx->state};
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
+            state.thread->CaptureSvcContext();
+            if (state.thread->isPaused)
+                state.scheduler->WaitSchedule();
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
@@ -36,10 +39,11 @@ namespace skyline::nce {
             }
 
             while (kernel::Scheduler::YieldPending) [[unlikely]] {
-                state.scheduler->Rotate(false);
                 kernel::Scheduler::YieldPending = false;
+                state.scheduler->Rotate(false);
                 state.scheduler->WaitSchedule();
             }
+            state.thread->LeaveContextSnapshot();
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 LOGENF("{} (SVC: {})\nStack Trace:{}", e.what(), svc.name, state.loader->GetStackTrace(e.frames));
@@ -55,7 +59,7 @@ namespace skyline::nce {
         } catch (const ExitException &e) {
             if (e.killAllThreads && state.thread->id) {
                 signal::BlockSignal({SIGINT});
-                state.process->Kill(false);
+                state.process->Kill(false, true, true);
             }
 
             abi::__cxa_end_catch();
@@ -92,6 +96,9 @@ namespace skyline::nce {
         const auto &state{*ctx->state};
         auto hookedSymbol{state.nce->hookedSymbols[hookId.index]};
         try {
+            state.thread->CaptureSvcContext();
+            if (state.thread->isPaused)
+                state.scheduler->WaitSchedule();
             std::visit(VariantVisitor{
                 [&](const hle::OverrideHook &hook) {
                     TRACE_EVENT("hook", nullptr, [&](perfetto::EventContext ctx) {
@@ -113,10 +120,18 @@ namespace skyline::nce {
             }, hookedSymbol.hook);
 
             while (kernel::Scheduler::YieldPending) [[unlikely]] {
-                state.scheduler->Rotate(false);
                 kernel::Scheduler::YieldPending = false;
+                state.scheduler->Rotate(false);
                 state.scheduler->WaitSchedule();
             }
+            state.thread->LeaveContextSnapshot();
+        } catch (const ExitException &e) {
+            if (e.killAllThreads && state.thread->id) {
+                signal::BlockSignal({SIGINT});
+                state.process->Kill(false, true, true);
+            }
+            abi::__cxa_end_catch();
+            std::longjmp(state.thread->originalCtx, true);
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 LOGENF("{} (Hook: {})\nStack Trace:{}", e.what(), hookedSymbol.prettyName, state.loader->GetStackTrace(e.frames));
@@ -347,7 +362,7 @@ namespace skyline::nce {
             auto instructionOffset{static_cast<size_t>(instruction - start)};
 
             if (svc.Verify()) {
-                size += 7;
+                size += 13;
                 offsets.push_back(instructionOffset);
             } else if (mrs.Verify()) {
                 if (mrs.srcReg == TpidrroEl0 || mrs.srcReg == TpidrEl0) {
@@ -405,6 +420,12 @@ namespace skyline::nce {
                 *patch++ = 0xF81F0FFE; // STR LR, [SP, #-16]!
                 *patch = instructions::BL(static_cast<i32>(startOffset())).raw;
                 patch++;
+
+                /* Record the guest resume PC, not the patch trampoline address. */
+                *patch++ = 0xD53BD041; // MRS X1, TPIDR_EL0
+                for (const auto &mov : instructions::MoveRegister(registers::X2, reinterpret_cast<u64>(end) + textOffset + (offset + 1) * sizeof(u32)))
+                    *patch++ = mov ? mov : 0xD503201F;
+                *patch++ = 0xF901A422; // STR X2, [X1, #0x348]
 
                 /* Jump to main SVC trampoline */
                 *patch++ = instructions::Movz(registers::W0, static_cast<u16>(svc.value)).raw;

@@ -31,7 +31,7 @@ namespace skyline {
                 return (std::numeric_limits<u64>::max() >> ((std::numeric_limits<u64>::digits - 1 + min) - max)) << min;
             }
 
-            constexpr bool Valid(i8 value) const {
+            constexpr bool Valid(i32 value) const {
                 return (value >= min) && (value <= max);
             }
         };
@@ -74,7 +74,7 @@ namespace skyline {
             static constexpr std::chrono::milliseconds PreemptiveTimeslice{10}; //!< The duration of time a preemptive thread can run before yielding
             inline static int YieldSignal{SIGRTMIN}; //!< The signal used to cause a non-cooperative yield in running threads (41)
             inline static int PreemptionSignal{SIGRTMIN + 1}; //!< The signal used to cause a preemptive yield in running threads (42)
-            inline static thread_local bool YieldPending{}; //!< A flag denoting if a yield is pending on this thread, it's checked prior to entering guest code as signals cannot interrupt host code
+            inline static thread_local volatile sig_atomic_t YieldPending{}; //!< A flag denoting if a yield is pending on this thread, it's checked prior to entering guest code as signals cannot interrupt host code
 
             Scheduler(const DeviceState &state);
 
@@ -138,6 +138,8 @@ namespace skyline {
              * @note 'KThread::coreMigrationMutex' **must** be locked by the calling thread prior to calling this
              */
             void UpdateCore(const std::shared_ptr<type::KThread> &thread);
+
+            void SetCoreMask(const std::shared_ptr<type::KThread> &thread, i32 idealCore, CoreMask affinityMask);
 
             /**
              * @brief Parks the calling thread after removing it from its resident core's queue and inserts it on the core it's been awoken on
