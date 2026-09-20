@@ -26,6 +26,10 @@ namespace skyline {
         class KSession {};
     }
 
+    namespace service {
+        class BaseService;
+    }
+
     namespace ipc {
         class IpcRequest {
           public:
@@ -35,6 +39,12 @@ namespace skyline {
             std::vector<u8> cmdStorage;
             std::vector<span<u8>> inputBuf;
             std::vector<span<u8>> outputBuf;
+            std::vector<std::shared_ptr<service::BaseService>> services;
+
+            template<typename Service>
+            std::shared_ptr<Service> PopService(u32 id, kernel::type::KSession &) {
+                return std::dynamic_pointer_cast<Service>(services.at(id));
+            }
         };
 
         class IpcResponse {

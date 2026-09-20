@@ -6,8 +6,10 @@
 #include <services/fssrv/validation.h>
 #include <services/fssrv/helpers.h>
 #include <services/fssrv/IFile.h>
+#include <services/fssrv/IFileSystem.h>
 #include <services/fssrv/IStorage.h>
 #include <services/fssrv/ISaveDataInfoReader.h>
+#include <services/fssrv/IMultiCommitManager.h>
 #include <vfs/os_filesystem.h>
 
 using namespace skyline;
@@ -326,6 +328,53 @@ namespace {
         Check(!cacheReader.ReadSaveDataInfo(session, cacheRequest, cacheResponse), "cache-only save-info read failed");
         Check(cacheResponse.Get<i64>() == 2 && cacheOutput[0].type == SaveDataType::Cache && cacheOutput[1].type == SaveDataType::Cache, "cache-only filter emitted a non-cache record");
     }
+
+    class CommitFileSystem final : public vfs::FileSystem {
+      private:
+        std::error_code commitError;
+
+      protected:
+        std::error_code CommitImpl() override {
+            ++commitCount;
+            return commitError;
+        }
+
+        std::shared_ptr<vfs::Backing> OpenFileImpl(const std::string &, vfs::Backing::Mode) override { return nullptr; }
+        std::optional<vfs::Directory::EntryType> GetEntryTypeImpl(const std::string &) override { return std::nullopt; }
+
+      public:
+        size_t commitCount{};
+
+        explicit CommitFileSystem(std::error_code commitError = {}) : commitError(commitError) {}
+    };
+
+    void TestMultiCommitOrderAndFailure() {
+        DeviceState state;
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IMultiCommitManager multiCommit(state, manager);
+        auto firstBacking{std::make_shared<CommitFileSystem>()};
+        auto failingBacking{std::make_shared<CommitFileSystem>(std::make_error_code(std::errc::permission_denied))};
+        auto skippedBacking{std::make_shared<CommitFileSystem>()};
+        auto first{std::make_shared<IFileSystem>(firstBacking, state, manager)};
+        auto failing{std::make_shared<IFileSystem>(failingBacking, state, manager)};
+        auto skipped{std::make_shared<IFileSystem>(skippedBacking, state, manager)};
+
+        ipc::IpcResponse response;
+        for (const auto &fileSystem : {first, failing, skipped}) {
+            ipc::IpcRequest addRequest;
+            addRequest.services.push_back(fileSystem);
+            Check(!multiCommit.Add(session, addRequest, response), "valid filesystem was rejected by multi-commit Add");
+        }
+
+        ipc::IpcRequest commitRequest;
+        Check(multiCommit.Commit(session, commitRequest, response) == result::PermissionDenied, "multi-commit did not propagate the first commit failure");
+        Check(firstBacking->commitCount == 1 && failingBacking->commitCount == 1 && skippedBacking->commitCount == 0, "multi-commit did not stop at the first failure");
+
+        ipc::IpcRequest invalidRequest;
+        invalidRequest.services.push_back(std::make_shared<ISaveDataInfoReader>(state, manager));
+        Check(multiCommit.Add(session, invalidRequest, response) == result::InvalidArgument, "multi-commit accepted a non-filesystem object");
+    }
 }
 
 int main() {
@@ -354,5 +403,6 @@ int main() {
     run("storage service bounds and permissions", TestStorageServiceBoundsAndPermissions);
     run("file service IO", TestFileServiceIo);
     run("save data reader state and filters", TestSaveDataInfoReaderStateAndFilters);
+    run("multi-commit order and failure", TestMultiCommitOrderAndFailure);
     return failures == 0 ? 0 : 1;
 }
