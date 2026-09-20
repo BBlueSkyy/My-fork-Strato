@@ -318,6 +318,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             Log.d(Tag, "  - Update URI: $updateUri")
         }
         
+        Log.i(Tag, "[LIFECYCLE-TEST] Starting NativeEmulation in pid=${Process.myPid()}")
         emulationThread = Thread {
             executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
             returnFromEmulation()
@@ -504,7 +505,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             return
         }
 
-        Log.i(Tag, "[LIFECYCLE-TEST] Requesting native application stop")
+        Log.i(Tag, "[LIFECYCLE-TEST] Requesting native application stop in pid=${Process.myPid()}")
         shouldFinish = false
 
         Thread({
