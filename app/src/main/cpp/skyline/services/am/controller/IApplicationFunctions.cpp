@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/uuid.h>
+#include <filesystem>
 #include <mbedtls/sha1.h>
 #include <loader/loader.h>
 #include <common/settings.h>
@@ -82,7 +83,21 @@ namespace skyline::service::am {
                 return fssrv::result::UnexpectedFailure;
 
             const std::string hostPath{state.os->publicAppFilesPath + "/switch" + *saveDataPath};
+            std::error_code existsError;
+            const bool existedBefore{std::filesystem::exists(hostPath, existsError)};
             [[maybe_unused]] auto saveFileSystem{std::make_shared<vfs::OsFileSystem>(hostPath)};
+            if (!existsError && !existedBefore) {
+                existsError.clear();
+                const bool existsAfter{std::filesystem::exists(hostPath, existsError)};
+                if (!existsError && existsAfter) {
+                    LOGI("[FSP-SAVE-ENSURE] action=created type={} programId={:016X} userId={:016X}{:016X} path={}",
+                         static_cast<u32>(type),
+                         attribute.programId,
+                         saveUserId.upper,
+                         saveUserId.lower,
+                         hostPath);
+                }
+            }
             return {};
         }};
 

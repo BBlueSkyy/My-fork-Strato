@@ -3,6 +3,7 @@
 
 #include <os.h>
 #include <cstring>
+#include <filesystem>
 #include <vfs/os_filesystem.h>
 #include <vfs/nca.h>
 #include <loader/loader.h>
@@ -116,6 +117,7 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystemProxy::OpenSaveDataFileSystemImpl(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response, bool readOnly) {
+        const char *command{readOnly ? "OpenReadOnlySaveDataFileSystem" : "OpenSaveDataFileSystem"};
         const auto input{ReadArgument<OpenSaveDataInput>(request)};
         if (!input)
             return result::InvalidArgument;
@@ -123,18 +125,50 @@ namespace skyline::service::fssrv {
             return result::InvalidArgument;
         if (input->attribute.rank != SaveDataRank::Primary || input->attribute.index != 0)
             return result::NotImplemented;
-        if (input->attribute.programId == 0 && (!state.loader || !state.loader->nacp))
+        if (input->attribute.programId == 0 && (!state.loader || !state.loader->nacp)) {
+            LOGI("[FSP-ENTITY-NOT-FOUND] command={} reason=default_program_id_unavailable readOnly={} spaceId={} type={} programId={:016X} effectiveProgramId=<unavailable> userId={:016X}{:016X} saveDataId={:016X} rank={} index={} path=<unresolved> exists=<unknown>",
+                 command,
+                 readOnly,
+                 static_cast<u32>(input->spaceId),
+                 static_cast<u32>(input->attribute.type),
+                 input->attribute.programId,
+                 input->attribute.userId.upper,
+                 input->attribute.userId.lower,
+                 input->attribute.saveDataId,
+                 static_cast<u32>(input->attribute.rank),
+                 input->attribute.index);
             return result::EntityNotFound;
+        }
 
         const u64 defaultProgramId{input->attribute.programId == 0 ? state.loader->nacp->nacpContents.saveDataOwnerId : 0};
         const auto saveDataPath{GetSaveDataPath(input->spaceId, input->attribute, defaultProgramId)};
         if (!saveDataPath)
             return result::NotImplemented;
 
+        const u64 effectiveProgramId{input->attribute.programId == 0 ? defaultProgramId : input->attribute.programId};
         const std::string hostPath{state.os->publicAppFilesPath + "/switch" + *saveDataPath};
         auto [fileSystem, error]{vfs::OsFileSystem::OpenExisting(hostPath)};
-        if (error == std::errc::no_such_file_or_directory || error == std::errc::not_a_directory)
+        if (error == std::errc::no_such_file_or_directory || error == std::errc::not_a_directory) {
+            std::error_code existsError;
+            const bool exists{std::filesystem::exists(hostPath, existsError)};
+            LOGI("[FSP-ENTITY-NOT-FOUND] command={} reason={} readOnly={} spaceId={} type={} programId={:016X} effectiveProgramId={:016X} userId={:016X}{:016X} saveDataId={:016X} rank={} index={} path={} exists={} existsError={}",
+                 command,
+                 error == std::errc::not_a_directory ? "save_root_not_directory" : "save_root_missing",
+                 readOnly,
+                 static_cast<u32>(input->spaceId),
+                 static_cast<u32>(input->attribute.type),
+                 input->attribute.programId,
+                 effectiveProgramId,
+                 input->attribute.userId.upper,
+                 input->attribute.userId.lower,
+                 input->attribute.saveDataId,
+                 static_cast<u32>(input->attribute.rank),
+                 input->attribute.index,
+                 hostPath,
+                 exists,
+                 existsError.value());
             return result::EntityNotFound;
+        }
         if (error)
             return MapVfsError(error);
 
@@ -192,11 +226,19 @@ namespace skyline::service::fssrv {
                 if (!dlc || !dlc->cnmt || dlc->cnmt->header.id != input->dataId)
                     continue;
                 auto romFs{dlc->publicNca ? dlc->publicNca->romFs : nullptr};
-                if (!romFs)
+                if (!romFs) {
+                    LOGI("[FSP-ENTITY-NOT-FOUND] command=OpenDataStorageByDataId reason=matched_dlc_missing_romfs storageId={} dataId={:016X}",
+                         static_cast<u32>(input->storageId),
+                         input->dataId);
                     return result::EntityNotFound;
+                }
                 manager.RegisterService(std::make_shared<IStorage>(romFs, state, manager), session, response);
                 return {};
             }
+            LOGI("[FSP-ENTITY-NOT-FOUND] command=OpenDataStorageByDataId reason=data_id_not_found storageId={} dataId={:016X} dlcCount={}",
+                 static_cast<u32>(input->storageId),
+                 input->dataId,
+                 state.dlcLoaders.size());
             return result::EntityNotFound;
         }
 
@@ -226,11 +268,23 @@ namespace skyline::service::fssrv {
             archiveError = true;
         }
 
-        if (!state.os->assetFileSystem)
-            return archiveError ? result::UnexpectedFailure : result::EntityNotFound;
+        if (!state.os->assetFileSystem) {
+            if (archiveError)
+                return result::UnexpectedFailure;
+            LOGI("[FSP-ENTITY-NOT-FOUND] command=OpenDataStorageByDataId reason=system_asset_filesystem_unavailable storageId={} dataId={:016X} archiveError=false",
+                 static_cast<u32>(input->storageId),
+                 input->dataId);
+            return result::EntityNotFound;
+        }
         auto assetBacking{state.os->assetFileSystem->OpenFileUnchecked(fmt::format("romfs/{:016X}", input->dataId))};
-        if (!assetBacking)
-            return archiveError ? result::UnexpectedFailure : result::EntityNotFound;
+        if (!assetBacking) {
+            if (archiveError)
+                return result::UnexpectedFailure;
+            LOGI("[FSP-ENTITY-NOT-FOUND] command=OpenDataStorageByDataId reason=system_data_id_not_found storageId={} dataId={:016X} archiveError=false",
+                 static_cast<u32>(input->storageId),
+                 input->dataId);
+            return result::EntityNotFound;
+        }
         manager.RegisterService(std::make_shared<IStorage>(std::move(assetBacking), state, manager), session, response);
         return {};
     }
@@ -238,11 +292,15 @@ namespace skyline::service::fssrv {
     Result IFileSystemProxy::OpenPatchDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         // A base-only title (or an ExeFS-only update) has no Program patch data to open.
         // When available, this is the same persistent base+patch view used by command 200.
-        if (!state.loader)
+        if (!state.loader) {
+            LOGI("[FSP-ENTITY-NOT-FOUND] command=OpenPatchDataStorageByCurrentProcess reason=loader_unavailable loaderPresent=false patchDataRomFs=<unavailable>");
             return result::EntityNotFound;
+        }
         auto backing{state.loader->patchDataRomFs};
-        if (!backing)
+        if (!backing) {
+            LOGI("[FSP-ENTITY-NOT-FOUND] command=OpenPatchDataStorageByCurrentProcess reason=patch_backing_absent loaderPresent=true patchDataRomFs=false");
             return result::EntityNotFound;
+        }
         LOGI("OpenPatchDataStorageByCurrentProcess: resolved Program patch storage, {}", state.loader->currentProcessRomFsIdentity);
         manager.RegisterService(std::make_shared<IStorage>(backing, state, manager), session, response);
         return {};
