@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/uuid.h>
+#include <filesystem>
 #include <mbedtls/sha1.h>
 #include <loader/loader.h>
 #include <common/settings.h>
@@ -81,9 +82,30 @@ namespace skyline::service::am {
             if (!saveDataPath)
                 return fssrv::result::UnexpectedFailure;
 
-            [[maybe_unused]] auto saveFileSystem{std::make_shared<vfs::OsFileSystem>(
-                state.os->publicAppFilesPath + "/switch" + *saveDataPath
-            )};
+            const std::string hostPath{state.os->publicAppFilesPath + "/switch" + *saveDataPath};
+            std::error_code existsError;
+            const bool existedBefore{std::filesystem::exists(hostPath, existsError)};
+            LOGI("[FSP-SAVE-ENSURE] phase=before type={} programId={:016X} userId={:016X}{:016X} path={} existedBefore={} existsError={}",
+                 static_cast<u32>(type),
+                 attribute.programId,
+                 saveUserId.upper,
+                 saveUserId.lower,
+                 hostPath,
+                 existedBefore,
+                 existsError.value());
+
+            [[maybe_unused]] auto saveFileSystem{std::make_shared<vfs::OsFileSystem>(hostPath)};
+            existsError.clear();
+            const bool existedAfter{std::filesystem::exists(hostPath, existsError)};
+            LOGI("[FSP-SAVE-ENSURE] phase=after type={} programId={:016X} userId={:016X}{:016X} path={} existedBefore={} existedAfter={} existsError={}",
+                 static_cast<u32>(type),
+                 attribute.programId,
+                 saveUserId.upper,
+                 saveUserId.lower,
+                 hostPath,
+                 existedBefore,
+                 existedAfter,
+                 existsError.value());
             return {};
         }};
 

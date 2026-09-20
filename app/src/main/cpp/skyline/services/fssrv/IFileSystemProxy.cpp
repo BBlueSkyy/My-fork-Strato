@@ -3,6 +3,7 @@
 
 #include <os.h>
 #include <cstring>
+#include <filesystem>
 #include <vfs/os_filesystem.h>
 #include <vfs/nca.h>
 #include <loader/loader.h>
@@ -130,7 +131,36 @@ namespace skyline::service::fssrv {
         if (!saveDataPath)
             return result::NotImplemented;
 
-        auto fileSystem{std::make_shared<vfs::OsFileSystem>(state.os->publicAppFilesPath + "/switch" + *saveDataPath)};
+        const u64 effectiveProgramId{input->attribute.programId == 0 ? defaultProgramId : input->attribute.programId};
+        const std::string hostPath{state.os->publicAppFilesPath + "/switch" + *saveDataPath};
+        std::error_code existsError;
+        const bool existedBefore{std::filesystem::exists(hostPath, existsError)};
+        LOGI("[FSP-SAVE-OPEN] phase=before readOnly={} spaceId={} type={} programId={:016X} effectiveProgramId={:016X} userId={:016X}{:016X} saveDataId={:016X} rank={} index={} path={} existedBefore={} existsError={}",
+             readOnly,
+             static_cast<u32>(input->spaceId),
+             static_cast<u32>(input->attribute.type),
+             input->attribute.programId,
+             effectiveProgramId,
+             input->attribute.userId.upper,
+             input->attribute.userId.lower,
+             input->attribute.saveDataId,
+             static_cast<u32>(input->attribute.rank),
+             input->attribute.index,
+             hostPath,
+             existedBefore,
+             existsError.value());
+
+        auto fileSystem{std::make_shared<vfs::OsFileSystem>(hostPath)};
+        existsError.clear();
+        const bool existedAfter{std::filesystem::exists(hostPath, existsError)};
+        LOGI("[FSP-SAVE-OPEN] phase=after readOnly={} programId={:016X} effectiveProgramId={:016X} path={} existedBefore={} existedAfter={} existsError={}",
+             readOnly,
+             input->attribute.programId,
+             effectiveProgramId,
+             hostPath,
+             existedBefore,
+             existedAfter,
+             existsError.value());
         manager.RegisterService(std::make_shared<IFileSystem>(std::move(fileSystem), state, manager, readOnly), session, response);
         return {};
     }
