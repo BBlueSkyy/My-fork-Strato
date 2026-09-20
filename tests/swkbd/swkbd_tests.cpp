@@ -7,6 +7,7 @@
 #include "skyline/applet/swkbd/software_keyboard_state.h"
 #include "skyline/applet/swkbd/software_keyboard_text.h"
 #include "skyline/services/am/applet/indirect_layer_registry.h"
+#include "skyline/services/visrv/indirect_layer_layout.h"
 
 using namespace skyline;
 using namespace skyline::applet::swkbd;
@@ -113,6 +114,18 @@ namespace {
         owner.reset();
         Require(!registry.Get(expiredHandle, 0x11, 0x22), "expired applet rejection");
     }
+
+    void TestIndirectLayerLayout() {
+        service::visrv::IndirectLayerLayout layout;
+        Require(service::visrv::CalculateIndirectLayerLayout(1280, 720, layout), "indirect layout dimensions");
+        Require(layout.stride == 0x1400, "indirect image stride");
+        Require(layout.imageSize == 0x384000, "indirect image size");
+        Require(layout.requiredSize == 0x3A0000, "indirect required memory size");
+        Require(service::visrv::CalculateIndirectLayerLayout(17, 3, layout), "unaligned indirect dimensions");
+        Require(layout.stride == 68 && layout.imageSize == 204 && layout.requiredSize == 0x20000,
+                "indirect image layout remains linear");
+        Require(!service::visrv::CalculateIndirectLayerLayout(0, 720, layout), "reject invalid indirect width");
+    }
 }
 
 int main() {
@@ -121,5 +134,6 @@ int main() {
     TestState();
     TestSessions();
     TestIndirectLayers();
+    TestIndirectLayerLayout();
     std::cout << "PASS SWKBD serialization, normal state, frontend sessions, and indirect handles\n";
 }

@@ -3,7 +3,6 @@
 // Copyright © 2019 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #include <gpu.h>
-#include <limits>
 #include <kernel/types/KProcess.h>
 #include <services/am/applet/IApplet.h>
 #include <services/serviceman.h>
@@ -11,29 +10,10 @@
 #include "IApplicationDisplayService.h"
 #include "ISystemDisplayService.h"
 #include "IManagerDisplayService.h"
+#include "indirect_layer_layout.h"
 #include "results.h"
 
 namespace skyline::service::visrv {
-    namespace {
-        constexpr u64 IndirectLayerAlignment{0x1000};
-
-        bool GetIndirectLayerSize(i64 width, i64 height, u64 &pitch, u64 &size) {
-            constexpr u64 BlockSize{0x20000};
-            constexpr u64 MaxSize{std::numeric_limits<i64>::max()};
-            if (width <= 0 || height <= 0 || static_cast<u64>(width) > (MaxSize - 63) / 4 ||
-                static_cast<u64>(height) > MaxSize - 63)
-                return false;
-
-            pitch = util::AlignUpNpot<u64>(static_cast<u64>(width) * 4, 64);
-            const u64 alignedHeight{util::AlignUpNpot<u64>(static_cast<u64>(height), 64)};
-            if (alignedHeight > (MaxSize - (BlockSize - 1)) / pitch)
-                return false;
-
-            size = util::AlignUpNpot<u64>(pitch * alignedHeight, BlockSize);
-            return true;
-        }
-    }
-
     IApplicationDisplayService::IApplicationDisplayService(const DeviceState &state, ServiceManager &manager, PrivilegeLevel level) : level(level), IDisplayService(state, manager) {}
 
     Result IApplicationDisplayService::GetRelayService(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -154,8 +134,8 @@ namespace skyline::service::visrv {
         const auto appletResourceUserId{request.Pop<u64>()};
         LOGI("GetIndirectLayerImageMap: entered, pid=0x{:X}, handle=0x{:X}, ARUID=0x{:X}, width={}, height={}",
              request.pid, handle, appletResourceUserId, width, height);
-        u64 pitch{}, size{};
-        if (!GetIndirectLayerSize(width, height, pitch, size)) {
+        IndirectLayerLayout layout;
+        if (!CalculateIndirectLayerLayout(width, height, layout)) {
             LOGI("GetIndirectLayerImageMap: return InvalidDimensions");
             return result::InvalidDimensions;
         }
@@ -165,9 +145,9 @@ namespace skyline::service::visrv {
         }
 
         auto imageBuffer{request.outputBuf.at(0)};
-        if (imageBuffer.size() < size || reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment) {
+        if (imageBuffer.size() < layout.imageSize || reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment) {
             LOGI("GetIndirectLayerImageMap: return InvalidArgument, bufferSize=0x{:X}, required=0x{:X}, aligned={}",
-                 imageBuffer.size(), size, reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment == 0);
+                 imageBuffer.size(), layout.imageSize, reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment == 0);
             return result::InvalidArgument;
         }
 
@@ -178,17 +158,17 @@ namespace skyline::service::visrv {
             return result::InvalidValue;
         }
 
-        const bool available{applet->GetIndirectLayerImage(imageBuffer.first(size))};
+        const bool available{applet->GetIndirectLayerImage(imageBuffer.first(layout.imageSize))};
         LOGD("GetIndirectLayerImageMap: handle=0x{:X}, aruid=0x{:X}, width={}, height={}, size=0x{:X}, available={}",
-             handle, appletResourceUserId, width, height, size, available);
+             handle, appletResourceUserId, width, height, layout.imageSize, available);
         if (!available) {
             LOGI("GetIndirectLayerImageMap: return NoData");
             return result::NoData;
         }
 
-        response.Push<i64>(static_cast<i64>(size));
-        response.Push<i64>(static_cast<i64>(pitch));
-        LOGI("GetIndirectLayerImageMap: return Success, size=0x{:X}, pitch=0x{:X}", size, pitch);
+        response.Push<i64>(static_cast<i64>(layout.imageSize));
+        response.Push<i64>(static_cast<i64>(layout.stride));
+        LOGI("GetIndirectLayerImageMap: return Success, size=0x{:X}, pitch=0x{:X}", layout.imageSize, layout.stride);
 
         return {};
     }
@@ -197,16 +177,16 @@ namespace skyline::service::visrv {
         i64 width{request.Pop<i64>()}, height{request.Pop<i64>()};
         LOGI("GetIndirectLayerImageRequiredMemoryInfo: entered, pid=0x{:X}, width={}, height={}", request.pid, width, height);
 
-        u64 pitch{}, size{};
-        if (!GetIndirectLayerSize(width, height, pitch, size)) {
+        IndirectLayerLayout layout;
+        if (!CalculateIndirectLayerLayout(width, height, layout)) {
             LOGI("GetIndirectLayerImageRequiredMemoryInfo: return InvalidDimensions");
             return result::InvalidDimensions;
         }
 
-        response.Push<i64>(size);
+        response.Push<i64>(static_cast<i64>(layout.requiredSize));
         response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
         LOGI("GetIndirectLayerImageRequiredMemoryInfo: return Success, size=0x{:X}, alignment=0x{:X}",
-             size, IndirectLayerAlignment);
+             layout.requiredSize, IndirectLayerAlignment);
 
         return {};
     }
