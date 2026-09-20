@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <unistd.h>
+#include <nce.h>
 #include <common/signal.h>
 #include <common/trace.h>
 #include "types/KThread.h"
