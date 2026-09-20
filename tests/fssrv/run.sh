@@ -13,3 +13,9 @@ g++ -std=c++20 -O1 -g \
     "$test_root/app/src/main/cpp/skyline/vfs/os_backing.cpp" \
     -o "$test_build/fssrv_tests"
 "$test_build/fssrv_tests"
+
+g++ -std=c++20 -fsyntax-only \
+    -I"$test_root/tests/fssrv/host" \
+    -I"$test_root/app/src/main/cpp/skyline" \
+    "$test_root/app/src/main/cpp/skyline/services/fssrv/IFileSystem.cpp" \
+    "$test_root/app/src/main/cpp/skyline/services/fssrv/IDirectory.cpp"

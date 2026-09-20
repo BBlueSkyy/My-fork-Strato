@@ -1,161 +1,256 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
-#include <sys/stat.h>
-#include <os.h>
-#include "results.h"
+#include <cstring>
+#include <limits>
+#include "helpers.h"
+#include "validation.h"
 #include "IFile.h"
 #include "IDirectory.h"
 #include "IFileSystem.h"
 
 namespace skyline::service::fssrv {
-    IFileSystem::IFileSystem(std::shared_ptr<vfs::FileSystem> backing, const DeviceState &state, ServiceManager &manager) : backing(std::move(backing)), BaseService(state, manager) {}
+    namespace {
+        struct CreateFileInput {
+            u32 option;
+            u32 padding;
+            i64 size;
+        };
+        static_assert(sizeof(CreateFileInput) == 0x10);
 
-    Result IFileSystem::CreateFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::string path{request.inputBuf.at(0).as_string(true)};
-        auto mode{request.Pop<u64>()};
-        auto size{request.Pop<u32>()};
+        template<typename T>
+        std::optional<T> ReadArgument(const ipc::IpcRequest &request, size_t offset = 0) {
+            if (!request.cmdArg || offset > request.cmdArgSz || request.cmdArgSz - offset < sizeof(T))
+                return std::nullopt;
+            T value{};
+            std::memcpy(&value, request.cmdArg + offset, sizeof(T));
+            return value;
+        }
 
-        return backing->CreateFile(path, size) ? Result{} : result::PathDoesNotExist;
-    }
-
-    Result IFileSystem::CreateDirectory(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::string path{request.inputBuf.at(0).as_string(true)};
-
-        return backing->CreateDirectory(path, true) ? Result{} : result::PathDoesNotExist;
-    }
-
-    Result IFileSystem::GetEntryType(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::string path(request.inputBuf.at(0).as_string(true));
-
-        auto type{backing->GetEntryType(path)};
-
-        if (type) {
-            response.Push(static_cast<u32>(*type));
-            return {};
-        } else {
-            response.Push<u32>(0);
-            return result::PathDoesNotExist;
+        std::optional<std::string> RequestPath(ipc::IpcRequest &request, size_t index = 0) {
+            if (index >= request.inputBuf.size())
+                return std::nullopt;
+            return ReadPath(request.inputBuf[index]);
         }
     }
 
-    Result IFileSystem::OpenFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::string path(request.inputBuf.at(0).as_string(true));
-        auto mode{request.Pop<vfs::Backing::Mode>()};
+    IFileSystem::IFileSystem(std::shared_ptr<vfs::FileSystem> backing, const DeviceState &state, ServiceManager &manager, bool readOnly)
+        : BaseService(state, manager), backing(std::move(backing)), readOnly(readOnly || this->backing->IsReadOnly()) {}
 
-        if (!backing->FileExists(path))
+    Result IFileSystem::CreateFile(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        if (readOnly)
+            return result::WriteNotPermitted;
+        const auto path{RequestPath(request)};
+        const auto input{ReadArgument<CreateFileInput>(request)};
+        if (!path)
+            return result::InvalidPath;
+        if (!input)
+            return result::InvalidArgument;
+        if (input->option & ~1U)
+            return result::InvalidArgument;
+        if (input->option & 1U)
+            return result::NotImplemented;
+        const auto size{ToSize(input->size)};
+        if (!size)
+            return result::InvalidSize;
+        return MapVfsError(backing->CreateFile(*path, *size));
+    }
+
+    Result IFileSystem::CreateDirectory(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        if (readOnly)
+            return result::WriteNotPermitted;
+        const auto path{RequestPath(request)};
+        if (!path)
+            return result::InvalidPath;
+        return MapVfsError(backing->CreateDirectory(*path, false));
+    }
+
+    Result IFileSystem::GetEntryType(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto path{RequestPath(request)};
+        if (!path)
+            return result::InvalidPath;
+        const auto type{backing->GetEntryType(*path)};
+        if (!type)
             return result::PathDoesNotExist;
+        response.Push(static_cast<u32>(*type));
+        return {};
+    }
 
-        auto file{backing->OpenFileUnchecked(path, mode)};
-        if (file == nullptr)
+    Result IFileSystem::OpenFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto path{RequestPath(request)};
+        const auto mode{ReadArgument<vfs::Backing::Mode>(request)};
+        if (!path)
+            return result::InvalidPath;
+        if (!mode || !IsOpenModeValid(*mode))
+            return result::InvalidOpenMode;
+        if (!IsMutationAllowed(readOnly, *mode))
+            return result::WriteNotPermitted;
+
+        const auto type{backing->GetEntryType(*path)};
+        if (!type || *type != vfs::Directory::EntryType::File)
+            return result::PathDoesNotExist;
+        auto [file, error]{backing->OpenFileWithError(*path, *mode)};
+        if (error)
+            return MapVfsError(error);
+        if (!file)
             return result::UnexpectedFailure;
-        else
-            manager.RegisterService(std::make_shared<IFile>(std::move(file), state, manager), session, response);
-
+        manager.RegisterService(std::make_shared<IFile>(std::move(file), state, manager), session, response);
         return {};
     }
 
-    Result IFileSystem::DeleteFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::string path(request.inputBuf.at(0).as_string(true));
-
-        backing->DeleteFile(path);
-        return {};
+    Result IFileSystem::DeleteFile(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        if (readOnly)
+            return result::WriteNotPermitted;
+        const auto path{RequestPath(request)};
+        if (!path)
+            return result::InvalidPath;
+        return MapVfsError(backing->DeleteFile(*path));
     }
 
-    Result IFileSystem::DeleteDirectory(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::string path(request.inputBuf.at(0).as_string(true));
-
-        backing->DeleteDirectory(path);
-        return {};
-    }
-     
-    Result IFileSystem::DeleteDirectoryRecursively(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::string path{request.inputBuf.at(0).as_string(true)};
-        std::filesystem::remove_all(path);
-        return {};
-    }
-    
-    Result IFileSystem::RenameFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-    std::string oldPath{request.inputBuf.at(0).as_string(true)};
-    std::string newPath{request.inputBuf.at(1).as_string(true)};
-
-        backing->RenameFile(oldPath, newPath);
-        return {};
+    Result IFileSystem::DeleteDirectory(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        if (readOnly)
+            return result::WriteNotPermitted;
+        const auto path{RequestPath(request)};
+        if (!path)
+            return result::InvalidPath;
+        return MapVfsError(backing->DeleteDirectory(*path));
     }
 
-    Result IFileSystem::RenameDirectory(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-    std::string oldPath{request.inputBuf.at(0).as_string(true)};
-    std::string newPath{request.inputBuf.at(1).as_string(true)};
-
-         backing->RenameDirectory(oldPath, newPath);
-         return {};
+    Result IFileSystem::DeleteDirectoryRecursively(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        if (readOnly)
+            return result::WriteNotPermitted;
+        const auto path{RequestPath(request)};
+        if (!path)
+            return result::InvalidPath;
+        return MapVfsError(backing->DeleteDirectoryRecursively(*path));
     }
-   
+
+    Result IFileSystem::RenameFile(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        if (readOnly)
+            return result::WriteNotPermitted;
+        const auto oldPath{RequestPath(request)};
+        const auto newPath{RequestPath(request, 1)};
+        if (!oldPath || !newPath)
+            return result::InvalidPath;
+        return MapVfsError(backing->RenameFile(*oldPath, *newPath));
+    }
+
+    Result IFileSystem::RenameDirectory(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        if (readOnly)
+            return result::WriteNotPermitted;
+        const auto oldPath{RequestPath(request)};
+        const auto newPath{RequestPath(request, 1)};
+        if (!oldPath || !newPath)
+            return result::InvalidPath;
+        return MapVfsError(backing->RenameDirectory(*oldPath, *newPath));
+    }
+
     Result IFileSystem::OpenDirectory(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::string path(request.inputBuf.at(0).as_string(true));
+        const auto path{RequestPath(request)};
+        const auto rawMode{ReadArgument<u32>(request)};
+        if (!path)
+            return result::InvalidPath;
+        if (!rawMode || !IsDirectoryModeValid(*rawMode))
+            return result::InvalidOpenMode;
 
-        if (!path.ends_with("/"))
-            path += "/";
-
-        auto listMode{request.Pop<vfs::Directory::ListMode>()};
-        auto directory{backing->OpenDirectory(path, listMode)};
+        vfs::Directory::ListMode mode{};
+        mode.raw = *rawMode;
+        auto directory{backing->OpenDirectoryUnchecked(*path, mode)};
         if (!directory)
             return result::PathDoesNotExist;
-
         manager.RegisterService(std::make_shared<IDirectory>(std::move(directory), backing, state, manager), session, response);
         return {};
     }
 
-    Result IFileSystem::Commit(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+    Result IFileSystem::CommitBacking() {
+        return MapVfsError(backing->Commit());
+    }
+
+    Result IFileSystem::Commit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        return CommitBacking();
+    }
+
+    Result IFileSystem::GetFreeSpaceSize(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto path{RequestPath(request)};
+        if (!path)
+            return result::InvalidPath;
+        u64 free{}, total{};
+        if (const auto mapped{MapVfsError(backing->GetSpace(*path, free, total))}; mapped)
+            return mapped;
+        if (free > static_cast<u64>(std::numeric_limits<i64>::max()))
+            return result::UnexpectedFailure;
+        response.Push<i64>(static_cast<i64>(free));
         return {};
     }
 
-    Result IFileSystem::GetFreeSpaceSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        //TODO: proper implementation for GetFreeSpaceSize
-        response.Push<u64>(90000000);
+    Result IFileSystem::GetTotalSpaceSize(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto path{RequestPath(request)};
+        if (!path)
+            return result::InvalidPath;
+        u64 free{}, total{};
+        if (const auto mapped{MapVfsError(backing->GetSpace(*path, free, total))}; mapped)
+            return mapped;
+        if (total > static_cast<u64>(std::numeric_limits<i64>::max()))
+            return result::UnexpectedFailure;
+        response.Push<i64>(static_cast<i64>(total));
         return {};
     }
 
-    Result IFileSystem::GetTotalSpaceSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u64>(90000000);
+    Result IFileSystem::CleanDirectoryRecursively(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        if (readOnly)
+            return result::WriteNotPermitted;
+        const auto path{RequestPath(request)};
+        if (!path)
+            return result::InvalidPath;
+        return MapVfsError(backing->CleanDirectoryRecursively(*path));
+    }
+
+    Result IFileSystem::GetFileTimeStampRaw(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto path{RequestPath(request)};
+        if (!path)
+            return result::InvalidPath;
+        vfs::FileTimeStamp timestamp{};
+        if (const auto mapped{MapVfsError(backing->GetFileTimeStamp(*path, timestamp))}; mapped)
+            return mapped;
+        response.Push(FileTimeStampRaw{
+            .created = timestamp.created,
+            .modified = timestamp.modified,
+            .accessed = timestamp.accessed,
+            .isValid = static_cast<u8>(timestamp.isValid),
+        });
         return {};
     }
 
-    Result IFileSystem::CleanDirectoryRecursively(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        std::string path{request.inputBuf.at(0).as_string(true)};
-        std::filesystem::remove_all(path);
-        backing->CreateDirectory(path, true);
-        return {};
-    }
+    Result IFileSystem::GetFileSystemAttribute(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        vfs::FileSystemAttribute source{};
+        if (const auto mapped{MapVfsError(backing->GetFileSystemAttribute(source))}; mapped)
+            return mapped;
 
-    Result IFileSystem::GetFileTimeStampRaw(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        struct FileTimeStampRaw {
-            u64 created{};
-            u64 accessed{};
-            u64 modified{};
-            u64 _pad_{};
+        FileSystemAttribute attribute{};
+        const auto pathLimit = [](const std::optional<i32> &value) -> std::optional<i32> {
+            return value ? std::optional{std::min(*value, static_cast<i32>(FspPathSize - 1))} : std::nullopt;
         };
+        const auto directoryPathLimit{pathLimit(source.directoryPathLengthMax)};
+        const auto filePathLimit{pathLimit(source.filePathLengthMax)};
 
-        std::string path{request.inputBuf.at(0).as_string(true)};
-        struct stat fileStatus{};
-        const auto statResult{stat((state.os->publicAppFilesPath + "/switch/sdmc/" + path).c_str(), &fileStatus)};
-        FileTimeStampRaw fileTimeStampRaw{
-            static_cast<u64>(fileStatus.st_ctim.tv_nsec),
-            static_cast<u64>(fileStatus.st_atim.tv_nsec),
-            static_cast<u64>(fileStatus.st_mtim.tv_nsec),
-        };
-        response.Push(fileTimeStampRaw);
-        return {};
-      }
-  
-     Result IFileSystem::GetFileSystemAttribute(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-          // Stub: retorna uma estrutura zerada indicando nenhum recurso avançado
-          // (ex: renomear em lote, hashes de nível, etc.) suportado por este FS.
-       struct FileSystemAttribute {
-        u8 _unk_[0x38]{};
-     };
+        if (source.directoryNameLengthMax) {
+            attribute.directoryNameLengthMaxHasValue = true;
+            attribute.directoryNameLengthMax = *source.directoryNameLengthMax;
+        }
+        if (source.fileNameLengthMax) {
+            attribute.fileNameLengthMaxHasValue = true;
+            attribute.fileNameLengthMax = *source.fileNameLengthMax;
+        }
+        if (directoryPathLimit) {
+            attribute.directoryPathLengthMaxHasValue = true;
+            attribute.directoryPathLengthMax = *directoryPathLimit;
+        }
+        if (filePathLimit) {
+            attribute.filePathLengthMaxHasValue = true;
+            attribute.filePathLengthMax = *filePathLimit;
+        }
 
-        response.Push(FileSystemAttribute{});
+        response.Push(attribute);
         return {};
-      }
-   } 
+    }
+}

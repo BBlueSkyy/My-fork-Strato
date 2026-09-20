@@ -43,11 +43,15 @@ namespace skyline::vfs {
 
         std::error_code GetFileSystemAttributeImpl(FileSystemAttribute &attribute) override;
 
+        std::pair<std::shared_ptr<Backing>, std::error_code> OpenFileWithErrorImpl(const std::string &path, Backing::Mode mode) override;
+
         std::shared_ptr<Backing> OpenFileImpl(const std::string &path, Backing::Mode mode) override;
 
         std::optional<Directory::EntryType> GetEntryTypeImpl(const std::string &path) override;
 
         std::shared_ptr<Directory> OpenDirectoryImpl(const std::string &path, Directory::ListMode listMode) override;
+
+        bool IsReadOnlyImpl() const override { return false; }
 
       public:
         OsFileSystem(const std::string &basePath);

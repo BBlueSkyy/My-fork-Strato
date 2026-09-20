@@ -52,6 +52,11 @@ namespace skyline::vfs {
 
         virtual std::error_code GetFileSystemAttributeImpl(FileSystemAttribute &attribute) { return std::make_error_code(std::errc::operation_not_supported); }
 
+        virtual std::pair<std::shared_ptr<Backing>, std::error_code> OpenFileWithErrorImpl(const std::string &path, Backing::Mode mode) {
+            auto file{OpenFileImpl(path, mode)};
+            return {file, file ? std::error_code{} : std::make_error_code(std::errc::no_such_file_or_directory)};
+        }
+
         virtual std::shared_ptr<Backing> OpenFileImpl(const std::string &path, Backing::Mode mode) = 0;
 
         virtual std::optional<Directory::EntryType> GetEntryTypeImpl(const std::string &path) = 0;
@@ -59,6 +64,8 @@ namespace skyline::vfs {
         virtual std::shared_ptr<Directory> OpenDirectoryImpl(const std::string &path, Directory::ListMode listMode) {
             throw exception("This filesystem does not support opening directories");
         };
+
+        virtual bool IsReadOnlyImpl() const { return true; }
 
       public:
         FileSystem() = default;
@@ -121,6 +128,14 @@ namespace skyline::vfs {
         std::error_code GetFileTimeStamp(const std::string &path, FileTimeStamp &timestamp) { return GetFileTimeStampImpl(path, timestamp); }
 
         std::error_code GetFileSystemAttribute(FileSystemAttribute &attribute) { return GetFileSystemAttributeImpl(attribute); }
+
+        std::pair<std::shared_ptr<Backing>, std::error_code> OpenFileWithError(const std::string &path, Backing::Mode mode = {true, false, false}) {
+            if (!mode.read && !mode.write)
+                return {nullptr, std::make_error_code(std::errc::invalid_argument)};
+            return OpenFileWithErrorImpl(path, mode);
+        }
+
+        bool IsReadOnly() const { return IsReadOnlyImpl(); }
 
         /**
          * @brief Opens a file from the specified path in the filesystem

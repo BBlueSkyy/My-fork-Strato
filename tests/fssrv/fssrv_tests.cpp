@@ -4,6 +4,7 @@
 #include <iostream>
 #include <services/fssrv/types.h>
 #include <services/fssrv/validation.h>
+#include <services/fssrv/helpers.h>
 #include <vfs/os_filesystem.h>
 
 using namespace skyline;
@@ -46,6 +47,36 @@ namespace {
 
         std::array<u8, 0x302> oversized{};
         Check(!ReadPath(oversized), "oversized FspPath accepted");
+    }
+
+    void TestFileSystemServiceHelpers() {
+        Check(MapVfsError(std::make_error_code(std::errc::no_such_file_or_directory)) == result::PathDoesNotExist, "missing path mapped incorrectly");
+        Check(MapVfsError(std::make_error_code(std::errc::file_exists)) == result::PathAlreadyExists, "existing path mapped incorrectly");
+        Check(MapVfsError(std::make_error_code(std::errc::filename_too_long)) == result::TooLongPath, "long path mapped incorrectly");
+
+        vfs::Backing::Mode mode{};
+        Check(!IsOpenModeValid(mode), "empty open mode accepted");
+        mode.raw = 8;
+        Check(!IsOpenModeValid(mode), "unknown open-mode bit accepted");
+        mode = {true, false, false};
+        Check(IsOpenModeValid(mode), "read-only open mode rejected");
+        Check(IsMutationAllowed(false, mode), "read open rejected on writable filesystem");
+        mode = {true, true, false};
+        Check(!IsMutationAllowed(true, mode), "write open accepted on read-only filesystem");
+        Check(IsDirectoryModeValid(0x1), "directory-only mode rejected");
+        Check(IsDirectoryModeValid(0x80000002), "no-size file mode rejected");
+        Check(!IsDirectoryModeValid(0), "empty directory mode accepted");
+        Check(!IsDirectoryModeValid(0x4), "unknown directory-mode bit accepted");
+
+        Check(!ToSize(-1), "negative size converted to size_t");
+        Check(ToSize(4) && *ToSize(4) == 4, "valid size conversion failed");
+    }
+
+    void TestPaginationBounds() {
+        Check(CalculateReadCount(3, 0, 2) == 2, "first page count is wrong");
+        Check(CalculateReadCount(3, 2, 2) == 1, "second page count is wrong");
+        Check(CalculateReadCount(3, 3, 2) == 0, "exhausted page is non-zero");
+        Check(CalculateReadCount(3, 4, 2) == 0, "past-end cursor underflowed");
     }
 
     class TempDirectory {
@@ -124,6 +155,10 @@ namespace {
         TempDirectory root;
         vfs::OsFileSystem fs(root.path.string());
         Check(!fs.CreateFile("metadata", 1), "metadata fixture creation failed");
+        Check(!fs.IsReadOnly(), "host filesystem reports read-only");
+
+        auto [missingFile, missingError]{fs.OpenFileWithError("missing")};
+        Check(!missingFile && missingError == std::errc::no_such_file_or_directory, "open-file error was discarded");
 
         u64 free{}, total{};
         Check(!fs.GetSpace("/", free, total), "space query failed");
@@ -137,6 +172,11 @@ namespace {
         Check(!fs.GetFileSystemAttribute(attribute), "filesystem attribute query failed");
         Check(attribute.directoryNameLengthMax && *attribute.directoryNameLengthMax > 0, "directory-name limit unavailable");
         Check(attribute.fileNameLengthMax && *attribute.fileNameLengthMax > 0, "file-name limit unavailable");
+
+        vfs::Directory::ListMode noSizeMode{};
+        noSizeMode.raw = 0x80000002;
+        const auto entries{fs.OpenDirectory("", noSizeMode)->Read()};
+        Check(entries.size() == 1 && entries[0].size == 0, "no-file-size directory mode exposed a size");
     }
 }
 
@@ -155,6 +195,8 @@ int main() {
     run("filesystem ABI layouts", TestAbiLayouts);
     run("signed storage ranges", TestSignedRanges);
     run("guest path parsing", TestGuestPathParsing);
+    run("filesystem service helpers", TestFileSystemServiceHelpers);
+    run("pagination bounds", TestPaginationBounds);
     run("rooted host mutations", TestRootedHostMutations);
     run("host rename", TestHostRename);
     run("host commit", TestHostCommit);

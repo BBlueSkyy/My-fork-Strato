@@ -22,6 +22,12 @@ namespace skyline::service::fssrv {
         return checkedOffset <= extent && checkedSize <= extent - checkedOffset;
     }
 
+    constexpr std::optional<size_t> ToSize(i64 size) {
+        if (size < 0 || static_cast<u64>(size) > std::numeric_limits<size_t>::max())
+            return std::nullopt;
+        return static_cast<size_t>(size);
+    }
+
     inline std::optional<std::string> ReadPath(span<u8> buffer) {
         if (buffer.empty() || buffer.size() > FspPathSize)
             return std::nullopt;

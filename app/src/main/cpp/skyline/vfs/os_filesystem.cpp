@@ -253,15 +253,19 @@ namespace skyline::vfs {
     }
 
     std::shared_ptr<Backing> OsFileSystem::OpenFileImpl(const std::string &path, Backing::Mode mode) {
+        return OpenFileWithErrorImpl(path, mode).first;
+    }
+
+    std::pair<std::shared_ptr<Backing>, std::error_code> OsFileSystem::OpenFileWithErrorImpl(const std::string &path, Backing::Mode mode) {
         auto [fullPath, error]{ResolvePath(path)};
         if (error)
-            return nullptr;
+            return {nullptr, error};
 
         const int flags{(mode.read && mode.write) ? O_RDWR : (mode.write ? O_WRONLY : O_RDONLY)};
         const int fd{open(fullPath.c_str(), flags | O_CLOEXEC)};
         if (fd < 0)
-            return nullptr;
-        return std::make_shared<OsBacking>(fd, true, mode);
+            return {nullptr, ErrnoError()};
+        return {std::make_shared<OsBacking>(fd, true, mode), {}};
     }
 
     std::optional<Directory::EntryType> OsFileSystem::GetEntryTypeImpl(const std::string &path) {
@@ -375,7 +379,7 @@ namespace skyline::vfs {
                 outputEntries.push_back({
                     .name = entry.path().filename().string(),
                     .type = Directory::EntryType::File,
-                    .size = static_cast<size_t>(size),
+                    .size = listMode.noFileSize ? 0 : static_cast<size_t>(size),
                 });
             }
         }

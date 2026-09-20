@@ -14,6 +14,7 @@ namespace skyline::service::fssrv::result {
     constexpr Result UnexpectedFailure(2, 5000);
     constexpr Result InvalidArgument(2, 6001);
     constexpr Result InvalidPath(2, 6002);
+    constexpr Result TooLongPath(2, 6003);
     constexpr Result InvalidOffset(2, 6061);
     constexpr Result InvalidSize(2, 6062);
     constexpr Result InvalidOpenMode(2, 6072);
