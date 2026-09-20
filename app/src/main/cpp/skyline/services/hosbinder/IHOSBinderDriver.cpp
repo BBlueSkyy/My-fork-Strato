@@ -165,8 +165,6 @@ namespace skyline::service::hosbinder {
     void IHOSBinderDriver::DestroyLayer(u64 layerId) {
         if (layerId != DefaultLayerId || !layer)
             throw exception("Destroying non-existent layer #{}", layerId);
-        else if (layerWeakReferenceCount != 0 || layerStrongReferenceCount > 0)
-            throw exception("Destroying layer #{} which hasn't been closed: Weak References: {}, Strong References: {}", layerId, layerWeakReferenceCount, layerStrongReferenceCount);
 
         layer.reset();
         layerStrongReferenceCount = InitialStrongReferenceCount;
