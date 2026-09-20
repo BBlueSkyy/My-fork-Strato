@@ -8,7 +8,19 @@
 #define SRVREG(className, ...) std::make_shared<className>(state, manager, ##__VA_ARGS__)
 
 namespace skyline {
-    struct DeviceState {};
+    namespace loader {
+        class Loader;
+    }
+
+    namespace kernel {
+        class OS;
+    }
+
+    struct DeviceState {
+        kernel::OS *os{};
+        std::shared_ptr<loader::Loader> loader;
+        std::vector<std::shared_ptr<loader::Loader>> dlcLoaders;
+    };
 
     namespace kernel::type {
         class KSession {};

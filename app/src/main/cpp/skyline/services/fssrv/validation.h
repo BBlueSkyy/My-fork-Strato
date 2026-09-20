@@ -4,6 +4,7 @@
 #pragma once
 
 #include <common.h>
+#include "types.h"
 
 namespace skyline::service::fssrv {
     constexpr size_t FspPathSize{0x301};
@@ -26,6 +27,24 @@ namespace skyline::service::fssrv {
         if (size < 0 || static_cast<u64>(size) > std::numeric_limits<size_t>::max())
             return std::nullopt;
         return static_cast<size_t>(size);
+    }
+
+    constexpr bool IsValidSaveDataSpaceId(SaveDataSpaceId spaceId) {
+        switch (spaceId) {
+            case SaveDataSpaceId::System:
+            case SaveDataSpaceId::User:
+            case SaveDataSpaceId::SdSystem:
+            case SaveDataSpaceId::Temporary:
+            case SaveDataSpaceId::SdCache:
+            case SaveDataSpaceId::ProperSystem:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    constexpr bool IsValidSaveDataType(SaveDataType type) {
+        return static_cast<u8>(type) <= static_cast<u8>(SaveDataType::SystemBcat);
     }
 
     inline std::optional<std::string> ReadPath(span<u8> buffer) {

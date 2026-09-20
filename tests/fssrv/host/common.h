@@ -86,3 +86,10 @@ namespace skyline {
 #define LOGI(...) ((void)0)
 #define LOGW(...) ((void)0)
 #define LOGE(...) ((void)0)
+
+namespace fmt {
+    template<typename... Args>
+    std::string format(std::string_view value, Args &&...) {
+        return std::string(value);
+    }
+}

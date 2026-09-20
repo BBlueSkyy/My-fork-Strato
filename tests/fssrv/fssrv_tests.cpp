@@ -7,6 +7,7 @@
 #include <services/fssrv/helpers.h>
 #include <services/fssrv/IFile.h>
 #include <services/fssrv/IStorage.h>
+#include <services/fssrv/ISaveDataInfoReader.h>
 #include <vfs/os_filesystem.h>
 
 using namespace skyline;
@@ -72,6 +73,10 @@ namespace {
 
         Check(!ToSize(-1), "negative size converted to size_t");
         Check(ToSize(4) && *ToSize(4) == 4, "valid size conversion failed");
+        Check(IsValidSaveDataSpaceId(SaveDataSpaceId::User), "valid save-data space rejected");
+        Check(!IsValidSaveDataSpaceId(static_cast<SaveDataSpaceId>(0xFF)), "unknown save-data space accepted");
+        Check(IsValidSaveDataType(SaveDataType::Cache), "valid save-data type rejected");
+        Check(!IsValidSaveDataType(static_cast<SaveDataType>(0xFF)), "unknown save-data type accepted");
     }
 
     void TestPaginationBounds() {
@@ -288,6 +293,39 @@ namespace {
         auto badOption{RequestWith(FileIoInput{2, 0, 0, 0})};
         Check(file.Write(session, badOption, response) == result::InvalidArgument, "unknown file write option accepted");
     }
+
+    void TestSaveDataInfoReaderStateAndFilters() {
+        DeviceState state;
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        std::vector<SaveDataInfo> entries{
+            {.saveDataId = 1, .spaceId = SaveDataSpaceId::User, .type = SaveDataType::Account},
+            {.saveDataId = 2, .spaceId = SaveDataSpaceId::SdCache, .type = SaveDataType::Cache},
+            {.saveDataId = 3, .spaceId = SaveDataSpaceId::User, .type = SaveDataType::Cache},
+        };
+
+        ISaveDataInfoReader reader(state, manager, entries, SaveDataSpaceId::User, false);
+        std::array<SaveDataInfo, 1> page{};
+        ipc::IpcRequest request;
+        request.outputBuf.emplace_back(reinterpret_cast<u8 *>(page.data()), sizeof(page));
+
+        ipc::IpcResponse first;
+        Check(!reader.ReadSaveDataInfo(session, request, first), "first save-info read failed");
+        Check(first.Get<i64>() == 1 && page[0].saveDataId == 1, "first save-info page is wrong");
+        ipc::IpcResponse second;
+        Check(!reader.ReadSaveDataInfo(session, request, second), "second save-info read failed");
+        Check(second.Get<i64>() == 1 && page[0].saveDataId == 3, "save-info cursor or space filter is wrong");
+        ipc::IpcResponse exhausted;
+        Check(!reader.ReadSaveDataInfo(session, request, exhausted) && exhausted.Get<i64>() == 0, "exhausted save-info reader returned entries");
+
+        ISaveDataInfoReader cacheReader(state, manager, entries, std::nullopt, true);
+        std::array<SaveDataInfo, 3> cacheOutput{};
+        ipc::IpcRequest cacheRequest;
+        cacheRequest.outputBuf.emplace_back(reinterpret_cast<u8 *>(cacheOutput.data()), sizeof(cacheOutput));
+        ipc::IpcResponse cacheResponse;
+        Check(!cacheReader.ReadSaveDataInfo(session, cacheRequest, cacheResponse), "cache-only save-info read failed");
+        Check(cacheResponse.Get<i64>() == 2 && cacheOutput[0].type == SaveDataType::Cache && cacheOutput[1].type == SaveDataType::Cache, "cache-only filter emitted a non-cache record");
+    }
 }
 
 int main() {
@@ -315,5 +353,6 @@ int main() {
     run("backing capabilities", TestBackingCapabilities);
     run("storage service bounds and permissions", TestStorageServiceBoundsAndPermissions);
     run("file service IO", TestFileServiceIo);
+    run("save data reader state and filters", TestSaveDataInfoReaderStateAndFilters);
     return failures == 0 ? 0 : 1;
 }
