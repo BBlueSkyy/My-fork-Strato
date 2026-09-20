@@ -12,9 +12,13 @@ namespace skyline::vfs {
      */
     class OsFileSystem : public FileSystem {
       private:
+        struct ExistingRoot {};
+
         std::filesystem::path rootPath;
         std::optional<i32> nameLengthMax;
         std::optional<i32> pathLengthMax;
+
+        OsFileSystem(std::filesystem::path rootPath, ExistingRoot);
 
         std::pair<std::filesystem::path, std::error_code> ResolvePath(std::string_view guestPath) const;
 
@@ -55,6 +59,8 @@ namespace skyline::vfs {
 
       public:
         OsFileSystem(const std::string &basePath);
+
+        static std::pair<std::shared_ptr<OsFileSystem>, std::error_code> OpenExisting(const std::string &basePath);
     };
 
     /**

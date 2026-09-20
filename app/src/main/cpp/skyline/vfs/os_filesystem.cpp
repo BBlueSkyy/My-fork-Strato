@@ -48,6 +48,26 @@ namespace skyline::vfs {
         pathLengthMax = PathLimit(rootPath, _PC_PATH_MAX);
     }
 
+    OsFileSystem::OsFileSystem(std::filesystem::path rootPath, ExistingRoot) : FileSystem(), rootPath(std::move(rootPath)) {
+        nameLengthMax = PathLimit(this->rootPath, _PC_NAME_MAX);
+        pathLengthMax = PathLimit(this->rootPath, _PC_PATH_MAX);
+    }
+
+    std::pair<std::shared_ptr<OsFileSystem>, std::error_code> OsFileSystem::OpenExisting(const std::string &basePath) {
+        std::error_code error;
+        auto rootPath{std::filesystem::canonical(basePath, error)};
+        if (error)
+            return {nullptr, error};
+
+        const auto status{std::filesystem::status(rootPath, error)};
+        if (error)
+            return {nullptr, error};
+        if (!std::filesystem::is_directory(status))
+            return {nullptr, std::make_error_code(std::errc::not_a_directory)};
+
+        return {std::shared_ptr<OsFileSystem>(new OsFileSystem(std::move(rootPath), ExistingRoot{})), {}};
+    }
+
     std::pair<std::filesystem::path, std::error_code> OsFileSystem::ResolvePath(std::string_view guestPath) const {
         if (guestPath.find('\0') != std::string_view::npos || guestPath.find('\\') != std::string_view::npos || guestPath.starts_with("//"))
             return {{}, std::make_error_code(std::errc::invalid_argument)};

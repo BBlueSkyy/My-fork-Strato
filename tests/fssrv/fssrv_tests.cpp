@@ -2,6 +2,7 @@
 
 #include <climits>
 #include <iostream>
+#include <os.h>
 #include <services/fssrv/types.h>
 #include <services/fssrv/validation.h>
 #include <services/fssrv/helpers.h>
@@ -129,6 +130,24 @@ namespace {
         Check(!fs.DeleteDirectoryRecursively("inside"), "recursive delete failed");
         Check(!std::filesystem::exists(root.path / "inside"), "recursive delete retained the directory");
         Check(std::filesystem::is_directory(root.path), "recursive delete escaped the filesystem root");
+    }
+
+    void TestHostRootOpenModes() {
+        TempDirectory root;
+        const auto missing{root.path / "missing/save"};
+
+        auto [missingFileSystem, missingError]{vfs::OsFileSystem::OpenExisting(missing.string())};
+        Check(!missingFileSystem && missingError == std::errc::no_such_file_or_directory, "missing host root did not fail open");
+        Check(!std::filesystem::exists(missing), "opening a missing host root created it");
+
+        const auto existing{root.path / "existing"};
+        std::filesystem::create_directory(existing);
+        auto [existingFileSystem, existingError]{vfs::OsFileSystem::OpenExisting(existing.string())};
+        Check(existingFileSystem && !existingError, "existing host root did not open");
+
+        const auto created{root.path / "created/save"};
+        vfs::OsFileSystem createdFileSystem(created.string());
+        Check(std::filesystem::is_directory(created), "create-root host filesystem stopped creating its root");
     }
 
     void TestHostRename() {
@@ -392,7 +411,10 @@ namespace {
     };
 
     void TestProxyValidationAndState() {
-        DeviceState state;
+        TempDirectory root;
+        kernel::OS os;
+        os.publicAppFilesPath = root.path.string();
+        DeviceState state{.os = &os};
         service::ServiceManager manager;
         kernel::type::KSession session;
         IFileSystemProxy proxy(state, manager);
@@ -431,6 +453,20 @@ namespace {
         saveInput.attribute.index = 1;
         auto indexedSave{RequestWith(saveInput)};
         Check(proxy.OpenSaveDataFileSystem(session, indexedSave, response) == result::NotImplemented, "indexed save aliased index-zero storage");
+
+        saveInput.attribute.index = 0;
+        auto primarySave{RequestWith(saveInput)};
+        const auto resolvedSavePath{GetSaveDataPath(saveInput.spaceId, saveInput.attribute, 0)};
+        Check(resolvedSavePath.has_value(), "valid save path did not resolve");
+        const std::filesystem::path savePath{root.path.string() + "/switch" + *resolvedSavePath};
+        Check(proxy.OpenSaveDataFileSystem(session, primarySave, response) == result::EntityNotFound, "missing save returned the wrong result");
+        Check(!std::filesystem::exists(savePath), "opening a missing save created it");
+        Check(proxy.OpenReadOnlySaveDataFileSystem(session, primarySave, response) == result::EntityNotFound, "missing read-only save returned the wrong result");
+        Check(!std::filesystem::exists(savePath), "opening a missing read-only save created it");
+
+        std::filesystem::create_directories(savePath);
+        Check(!proxy.OpenSaveDataFileSystem(session, primarySave, response), "existing save did not open");
+        Check(!proxy.OpenReadOnlySaveDataFileSystem(session, primarySave, response), "existing read-only save did not open");
     }
 }
 
@@ -452,6 +488,7 @@ int main() {
     run("filesystem service helpers", TestFileSystemServiceHelpers);
     run("pagination bounds", TestPaginationBounds);
     run("rooted host mutations", TestRootedHostMutations);
+    run("host root open modes", TestHostRootOpenModes);
     run("host rename", TestHostRename);
     run("host commit", TestHostCommit);
     run("symlink escape rejection", TestSymlinkEscapeIsRejected);
