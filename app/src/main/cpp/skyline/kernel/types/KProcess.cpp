@@ -48,8 +48,17 @@ namespace skyline::kernel::type {
         if (disableCreation)
             disableThreadCreation = true;
         if (all) {
-            for (const auto &thread : threads)
+            LOGINF("[LIFECYCLE-TEST] KProcess::Kill(all) begin: {} guest threads, join={}", threads.size(), join);
+            for (const auto &thread : threads) {
+                {
+                    std::scoped_lock statusLock{thread->statusMutex};
+                    LOGINF("[LIFECYCLE-TEST] KProcess::Kill -> T{} state before kill: running={} ready={} killed={}",
+                           thread->id, thread->running, thread->ready, thread->killed);
+                }
                 thread->Kill(join);
+                LOGINF("[LIFECYCLE-TEST] KProcess::Kill <- T{} completed", thread->id);
+            }
+            LOGINF("[LIFECYCLE-TEST] KProcess::Kill(all) completed");
         } else if (!threads.empty()) {
             threads[0]->Kill(join);
         }
