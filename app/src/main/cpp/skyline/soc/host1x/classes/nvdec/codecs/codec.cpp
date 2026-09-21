@@ -21,12 +21,22 @@ namespace skyline::soc::host1x::nvdec {
             return;
 
         u64 surfaceKey{GetOutputLumaAddress()};
-        if (!decoder.SendPacket(packet, surfaceKey))
+        if (!decoder.SendPacket(packet, surfaceKey, hiddenFrame))
             return;
 
-        // Drain every frame the decoder has ready, a reordering decoder may hold frames across
-        // operations so each frame is pushed under the surface key its own submission carried
-        while (auto frame{decoder.ReceiveFrame()})
+        // Drain every frame the decoder has ready. Visible frames carry the target surface IOVA
+        // in PTS across decoder reordering; decode-only frames deliberately have no PTS and must
+        // never be exposed to VIC as presentation frames.
+        while (auto frame{decoder.ReceiveFrame()}) {
+            if (frame->pts == AV_NOPTS_VALUE) {
+                LOGD("NVDEC decoded a hidden frame, not queueing it for VIC");
+                continue;
+            }
+
+            LOGD("NVDEC decoded frame, surface: 0x{:X}, format: {}, dimensions: {}x{}, linesizes: [{}, {}, {}]",
+                 static_cast<u64>(frame->pts), frame->format, frame->width, frame->height,
+                 frame->linesize[0], frame->linesize[1], frame->linesize[2]);
             frameQueue.PushFrame(static_cast<u64>(frame->pts), std::move(frame));
+        }
     }
 }
