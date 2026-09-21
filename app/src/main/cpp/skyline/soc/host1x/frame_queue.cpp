@@ -23,13 +23,14 @@ namespace skyline::soc::host1x {
         std::scoped_lock lock(mutex);
 
         if (presentationFrames.empty()) {
-            LOGD("Presentation frame queue empty for VIC luma IOVA: 0x{:X}", requestedLumaIova);
+            LOGI("[NVDEC-LIFE] Presentation queue empty, queue: {}, VIC luma IOVA: 0x{:X}",
+                 fmt::ptr(this), requestedLumaIova);
             return AVFramePtr{nullptr, nullptr};
         }
 
         auto &[submittedLumaIova, queuedFrame]{presentationFrames.front()};
-        LOGD("Presentation frame dequeue, VIC luma: 0x{:X}, submitted luma: 0x{:X}, queued frames: {}",
-             requestedLumaIova, submittedLumaIova, presentationFrames.size());
+        LOGD("Presentation frame dequeue, queue: {}, VIC luma: 0x{:X}, submitted luma: 0x{:X}, queued frames: {}",
+             fmt::ptr(this), requestedLumaIova, submittedLumaIova, presentationFrames.size());
 
         auto frame{std::move(queuedFrame)};
         presentationFrames.pop_front();
