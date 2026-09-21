@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "host1x/syncpoint.h"
 #include "host1x/frame_queue.h"
 #include "host1x/command_fifo.h"
@@ -15,11 +17,18 @@ namespace skyline::soc::host1x {
      * @note This is different from the GM20B Host, it serves a similar function and has an interface for accessing host1x syncpts
      */
     class Host1x {
+      private:
+        std::atomic<u64> nextStreamId{1};
+
       public:
         SyncpointSet syncpoints;
         FrameQueue frameQueue; //!< Holds decoded frames in-flight between the NVDEC and VIC channels
         std::array<ChannelCommandFifo, ChannelCount> channels;
 
         Host1x(const DeviceState &state) : channels{util::MakeFilledArray<ChannelCommandFifo, ChannelCount>(state, syncpoints, frameQueue)} {}
+
+        u64 AllocateStreamId() {
+            return nextStreamId.fetch_add(1, std::memory_order_relaxed);
+        }
     };
 }
