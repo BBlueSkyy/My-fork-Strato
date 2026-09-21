@@ -61,6 +61,8 @@ namespace skyline::service::nvdrv::device::nvhost {
                       const SessionContext &ctx,
                       core::ChannelType channelType);
 
+        ~Host1xChannel() override;
+
         /**
          * @brief Sets the nvmap client to be used for channel submits
          * @url https://switchbrew.org/wiki/NV_services#NVGPU_IOCTL_CHANNEL_SET_NVMAP_FD
