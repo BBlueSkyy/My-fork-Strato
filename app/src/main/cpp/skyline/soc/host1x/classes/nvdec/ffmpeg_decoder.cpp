@@ -67,9 +67,9 @@ namespace skyline::soc::host1x::nvdec {
 
         packet->data = const_cast<u8 *>(data.data());
         packet->size = static_cast<int>(data.size());
-        // Visible frames carry their target luma IOVA through FFmpeg PTS so reordering cannot
-        // detach a decoded frame from the surface its NVDEC submission targeted. Decode-only
-        // frames intentionally carry no PTS so VIC can never consume them as presentation frames.
+        // Visible frames retain their submission luma IOVA in PTS as metadata across FFmpeg
+        // reordering. Presentation itself follows avcodec_receive_frame() order. Decode-only
+        // frames intentionally carry no PTS so they cannot enter the presentation queue.
         packet->pts = hidden ? AV_NOPTS_VALUE : static_cast<i64>(surfaceKey);
 
         if (int result{avcodec_send_packet(context, packet)}; result < 0) {
