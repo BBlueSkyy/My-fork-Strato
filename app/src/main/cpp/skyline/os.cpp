@@ -58,6 +58,15 @@ namespace skyline::kernel {
 
         if (state.loader->nacp) {
             const auto &nacp{state.loader->nacp->nacpContents};
+            if (const auto result{service::fssrv::EnsureApplicationCacheStorage(publicAppFilesPath,
+                                                                                nacp.saveDataOwnerId,
+                                                                                nacp.cacheStorageIndexMax,
+                                                                                nacp.cacheStorageSize,
+                                                                                nacp.cacheStorageJournalSize,
+                                                                                nacp.cacheStorageDataAndJournalSizeMax)};
+                result)
+                throw exception("Failed to provision application cache storage: {}", result.raw);
+
             if (const auto result{service::fssrv::EnsureApplicationSaveData(publicAppFilesPath,
                                                                            nacp.saveDataOwnerId,
                                                                            constant::DefaultUserId,
