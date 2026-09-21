@@ -501,37 +501,6 @@ namespace {
         Check(!proxy.OpenSaveDataFileSystem(session, request, response), "provisioned account save did not open");
     }
 
-    void TestApplicationCacheProvisioning() {
-        TempDirectory root;
-        constexpr u64 SaveDataOwnerId{0x010083A018262000};
-        const auto cachePath{root.path / "switch/nand/user/save/cache/010083A018262000"};
-
-        Check(!EnsureApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0, 0, 0),
-              "zero-sized undeclared cache provisioning failed");
-        Check(!std::filesystem::exists(cachePath), "zero-sized cache was provisioned");
-
-        Check(!EnsureApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x800, 0x800, 0x1000),
-              "declared cache provisioning failed");
-        Check(std::filesystem::is_directory(cachePath), "declared cache was not provisioned");
-        Check(!EnsureApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x800, 0x800, 0x1000),
-              "declared cache provisioning was not idempotent");
-
-        kernel::OS os;
-        os.publicAppFilesPath = root.path.string();
-        DeviceState state{.os = &os};
-        service::ServiceManager manager;
-        kernel::type::KSession session;
-        IFileSystemProxy proxy(state, manager);
-        OpenSaveDataInput input{};
-        input.spaceId = SaveDataSpaceId::User;
-        input.attribute.programId = SaveDataOwnerId;
-        input.attribute.type = SaveDataType::Cache;
-        auto request{RequestWith(input)};
-        ipc::IpcResponse response;
-        Check(!proxy.OpenSaveDataFileSystem(session, request, response),
-              "launch-provisioned cache storage did not open");
-    }
-
     void TestCacheStorageCreation() {
         TempDirectory root;
         constexpr u64 SaveDataOwnerId{0x0100F2200C984000};
@@ -603,7 +572,6 @@ int main() {
     run("multi-commit order and failure", TestMultiCommitOrderAndFailure);
     run("proxy validation and state", TestProxyValidationAndState);
     run("application save provisioning", TestApplicationSaveProvisioning);
-    run("application cache provisioning", TestApplicationCacheProvisioning);
     run("cache storage creation", TestCacheStorageCreation);
     return failures == 0 ? 0 : 1;
 }

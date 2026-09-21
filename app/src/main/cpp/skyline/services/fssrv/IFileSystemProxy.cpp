@@ -143,29 +143,6 @@ namespace skyline::service::fssrv {
         return {};
     }
 
-    Result EnsureApplicationCacheStorage(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
-                                         u16 cacheStorageIndexMax, u64 cacheStorageSize,
-                                         u64 cacheStorageJournalSize, u64 cacheStorageDataAndJournalSizeMax) {
-        if (cacheStorageSize == 0 && cacheStorageJournalSize == 0)
-            return {};
-        if (cacheStorageSize > static_cast<u64>(std::numeric_limits<i64>::max()) ||
-            cacheStorageJournalSize > static_cast<u64>(std::numeric_limits<i64>::max()))
-            return result::InvalidArgument;
-
-        CacheStorageTargetMedia targetMedia{};
-        u64 requiredSize{};
-        const auto creationResult{CreateApplicationCacheStorage(publicAppFilesPath,
-                                                                saveDataOwnerId,
-                                                                cacheStorageIndexMax,
-                                                                cacheStorageDataAndJournalSizeMax,
-                                                                0,
-                                                                static_cast<i64>(cacheStorageSize),
-                                                                static_cast<i64>(cacheStorageJournalSize),
-                                                                targetMedia,
-                                                                requiredSize)};
-        return creationResult == result::AlreadyExists ? Result{} : creationResult;
-    }
-
     Result CreateApplicationCacheStorage(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
                                          u16 cacheStorageIndexMax, u64 cacheStorageDataAndJournalSizeMax,
                                          u16 index, i64 saveSize, i64 journalSize,
