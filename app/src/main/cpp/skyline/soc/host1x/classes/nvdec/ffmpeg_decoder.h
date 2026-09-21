@@ -33,7 +33,7 @@ namespace skyline::soc::host1x::nvdec {
          * @param surfaceKey An opaque key identifying the output surface of this operation, carried onto the resulting frame's PTS across any decoder reordering
          * @return If the packet was accepted
          */
-        bool SendPacket(span<const u8> data, u64 surfaceKey);
+        bool SendPacket(span<const u8> data, u64 surfaceKey, bool hidden);
 
         /**
          * @brief Retrieves the next decoded frame from the decoder
