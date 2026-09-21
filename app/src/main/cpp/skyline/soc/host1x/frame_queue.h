@@ -6,35 +6,39 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <common.h>
 
 struct AVFrame;
 
 namespace skyline::soc::host1x {
-    using AVFramePtr = std::unique_ptr<AVFrame, void (*)(AVFrame *)>; //!< A decoded FFmpeg frame carrying its own deleter so this header doesn't depend on libavutil
+    using AVFramePtr = std::unique_ptr<AVFrame, void (*)(AVFrame *)>;
 
     /**
-     * @brief Holds frames decoded by NVDEC until they are consumed by VIC for surface conversion
-     * @note This is thread-safe as NVDEC and VIC execute on separate channel FIFO threads
+     * @brief Holds frames decoded by NVDEC until VIC consumes them, preserving presentation order independently for each nvhost stream
      */
     class FrameQueue {
       private:
-        std::mutex mutex; //!< Synchronises access to the frame list across channel threads
-        std::deque<std::pair<u64, AVFramePtr>> presentationFrames; //!< Frames in the presentation order returned by FFmpeg, retaining the submission luma IOVA as metadata
-        constexpr static size_t MaxQueueSize{32}; //!< Cap on retained presentation frames so an unconsumed stream cannot accumulate unboundedly
+        using PresentationQueue = std::deque<std::pair<u64, AVFramePtr>>;
+
+        std::mutex mutex;
+        std::unordered_map<u64, PresentationQueue> presentationStreams;
+        constexpr static size_t MaxQueueSize{32};
 
       public:
-        /**
-         * @brief Appends a decoded frame in the presentation order produced by FFmpeg
-         * @param lumaIova The submission surface associated with the frame, retained for diagnostics
-         * @note Repeated IOVAs are intentionally retained: surface reuse must not drop intermediate presentation frames
-         */
-        void PushPresentationFrame(u64 lumaIova, AVFramePtr frame);
+        void OpenStream(u64 streamId);
+
+        void CloseStream(u64 streamId);
 
         /**
-         * @brief Removes and returns the next frame in presentation order without blocking
-         * @param requestedLumaIova The VIC input surface for diagnostics; presentation order is authoritative
-         * @return The next presentation frame, or an empty pointer when no frame is available
+         * @brief Appends one visible FFmpeg output frame to the presentation queue for a specific NVDEC stream
+         * @note Repeated IOVAs are retained because every decoded frame is a distinct presentation event
+         */
+        void PushPresentationFrame(u64 streamId, u64 lumaIova, AVFramePtr frame);
+
+        /**
+         * @brief Finds the NVDEC stream owning the requested luma surface and consumes its next presentation frame
+         * @note The luma IOVA selects the stream, not the frame within that stream. Once selected, FIFO presentation order remains authoritative.
          */
         AVFramePtr PopPresentationFrame(u64 requestedLumaIova);
     };
