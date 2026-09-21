@@ -46,6 +46,13 @@ namespace skyline::soc::host1x {
                  surfaceConfig.outBlkKind == vic::BlkKind::Pitch ? "pitch" : "block-linear",
                  registers.outputSurface.luma.Address());
 
+            if (!frame) {
+                // VIC may run before the matching decode becomes available. Do not overwrite the
+                // guest surface with diagnostic pixels or with a frame belonging to another surface.
+                LOGD("VIC preserving output surface because decoded frame 0x{:X} is unavailable", inputLumaIova);
+                return;
+            }
+
             switch (surfaceConfig.outPixelFormat) {
                 case vic::VideoPixelFormat::Y8__V8U8_N420:
                 case vic::VideoPixelFormat::Y8__U8V8_N420:
