@@ -20,7 +20,15 @@ namespace skyline::service::nvdrv::device::nvhost {
                                  core::ChannelType channelType)
         : NvDevice(state, driver, core, ctx),
           channelType(channelType) {
-        state.soc->host1x.channels[static_cast<size_t>(channelType)].Start();
+        auto &hostChannel{state.soc->host1x.channels[static_cast<size_t>(channelType)]};
+        LOGI("[NVDEC-LIFE] Host1xChannel open, device: {}, channelType: {}, shared FIFO: {}",
+             fmt::ptr(this), static_cast<u32>(channelType), fmt::ptr(&hostChannel));
+        hostChannel.Start();
+    }
+
+    Host1xChannel::~Host1xChannel() {
+        LOGI("[NVDEC-LIFE] Host1xChannel close, device: {}, channelType: {}",
+             fmt::ptr(this), static_cast<u32>(channelType));
     }
 
     PosixResult Host1xChannel::SetNvmapFd(In<FileDescriptor> fd) {
@@ -93,8 +101,13 @@ namespace skyline::service::nvdrv::device::nvhost {
 
             span gather(reinterpret_cast<u32 *>(gatherAddress), cmdBuf.words);
             // Note: The gather aliases guest memory rather than copying it, correctly synchronised guests won't reuse the cmdbuf before its fence signals
-            if (channelImplemented)
-                state.soc->host1x.channels[static_cast<size_t>(channelType)].Push(gather);
+            if (channelImplemented) {
+                auto &hostChannel{state.soc->host1x.channels[static_cast<size_t>(channelType)]};
+                LOGI("[NVDEC-LIFE] Submit routing, device: {}, channelType: {}, shared FIFO: {}, gather: {}, words: 0x{:X}",
+                     fmt::ptr(this), static_cast<u32>(channelType), fmt::ptr(&hostChannel),
+                     fmt::ptr(gather.data()), gather.size());
+                hostChannel.Push(gather);
+            }
         }
 
         return PosixResult::Success;
