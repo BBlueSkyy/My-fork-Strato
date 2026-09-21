@@ -8,7 +8,8 @@
 #include <thread>
 #include <mutex>
 #include "base.h"
-#include "utils.h"
+#include <chrono>
+#include <algorithm>
 
 namespace skyline {
     /**
@@ -146,9 +147,9 @@ namespace skyline {
 
         /**
          * @brief Spins either until the condition variable is signalled or the spin wait times out (to fall back to a regular condition variable, or until the given time is reached)
-         * @param maxEndTimeNs The maximum time to spin for
+         * @param endTime The steady-clock deadline
          */
-        void SpinWait(i64 maxEndTimeNs);
+        void SpinWait(std::chrono::steady_clock::time_point endTime);
 
         std::condition_variable fallback; //<! Fallback condition variable for when the spin wait times out
         std::mutex fallbackMutex; //!< Used to allow taking in arbitrary mutex types and to synchronise access to fallbackWaiter
@@ -201,7 +202,7 @@ namespace skyline {
 
                 // The predicate has been satisfied, we're done here
                 fallbackWaiter = false;
-                fallbackMutex.unlock();
+                fallbackLock.unlock();
 
                 lock.lock();
             }
@@ -218,12 +219,15 @@ namespace skyline {
             // 'notify' calls should only wake the condition variable when called during waiting
             unsignalled.test_and_set();
 
-            auto endTimeNs{util::GetTimeNs() + std::chrono::nanoseconds(duration).count()};
+            const auto now{std::chrono::steady_clock::now()};
+            const auto remaining{std::chrono::steady_clock::time_point::max() - now};
+            const auto requested{std::chrono::duration_cast<std::chrono::steady_clock::duration>(duration)};
+            const auto endTime{now + std::min(requested, remaining)};
 
             if (!pred()) {
                 // First spin wait for a bit, to hopefully avoid the costs of condition variables under heavy thrashing
                 lock.unlock();
-                SpinWait(endTimeNs);
+                SpinWait(endTime);
                 lock.lock();
             } else {
                 return true;
@@ -232,14 +236,12 @@ namespace skyline {
             // The spin wait has either timed out (due to wanting to fallback), timed out (due to the duration being exceeded) or succeeded, check the predicate and current time to confirm which is the case
             if (pred())
                 return true;
-            else if (util::GetTimeNs() > endTimeNs)
+            else if (std::chrono::steady_clock::now() >= endTime)
                 return false;
 
 
             // If the spin wait timed out (due to wanting to fallback), then fallback to a regular condition variable
 
-            // Calculate chrono-based end time only in the fallback path to avoid polluting the fast past
-            auto endTime{std::chrono::system_clock::now() + std::chrono::nanoseconds(endTimeNs - util::GetTimeNs())};
             std::cv_status status{std::cv_status::no_timeout};
             while (status == std::cv_status::no_timeout && !pred()) {
                 std::unique_lock fallbackLock{fallbackMutex};
