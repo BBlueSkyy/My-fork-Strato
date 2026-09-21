@@ -34,7 +34,7 @@ namespace skyline::soc::host1x {
 
         /**
          * @brief Removes and returns the frame stored under the supplied luma IOVA, briefly waiting for it if a reordering decoder hasn't emitted it yet
-         * @return The stored frame, the oldest frame as a fallback when no key matches within the wait, or an empty pointer when the queue is empty
+         * @return The stored frame, or an empty pointer when no frame for the exact luma IOVA is available within the wait
          */
         AVFramePtr PopFrame(u64 lumaIova);
     };
