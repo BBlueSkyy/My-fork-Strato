@@ -10,7 +10,7 @@ extern "C" {
 namespace skyline::soc::host1x::nvdec {
     Codec::Codec(const DeviceState &state, const Registers &registers) : state(state), registers(registers) {}
 
-    void Codec::Decode(FrameQueue &frameQueue) {
+    void Codec::Decode(FrameQueue &frameQueue, u64 streamId) {
         if (!initialized) {
             LOGW("Decode without an initialised decoder");
             return;
@@ -38,7 +38,7 @@ namespace skyline::soc::host1x::nvdec {
             LOGD("NVDEC decoded presentation frame, submitted surface: 0x{:X}, format: {}, dimensions: {}x{}, linesizes: [{}, {}, {}]",
                  static_cast<u64>(frame->pts), frame->format, frame->width, frame->height,
                  frame->linesize[0], frame->linesize[1], frame->linesize[2]);
-            frameQueue.PushPresentationFrame(static_cast<u64>(frame->pts), std::move(frame));
+            frameQueue.PushPresentationFrame(streamId, static_cast<u64>(frame->pts), std::move(frame));
         }
     }
 }

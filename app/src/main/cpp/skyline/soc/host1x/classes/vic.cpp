@@ -12,7 +12,7 @@ namespace skyline::soc::host1x {
           frameQueue(frameQueue),
           opDoneCallback(std::move(opDoneCallback)) {}
 
-    void VicClass::CallMethod(u32 method, u32 argument) {
+    void VicClass::CallMethod(u32 method, u32 argument, u64 streamId) {
         constexpr u32 ExecuteMethodId{offsetof(vic::Registers, execute) / sizeof(u32)};
 
         if (method >= vic::RegisterCount) {
@@ -20,13 +20,14 @@ namespace skyline::soc::host1x {
             return;
         }
 
+        auto &registers{streamRegisters[streamId]};
         registers.raw[method] = argument;
 
         if (method == ExecuteMethodId)
-            Execute();
+            Execute(registers);
     }
 
-    void VicClass::Execute() {
+    void VicClass::Execute(vic::Registers &registers) {
         if (!registers.configStructOffset.raw) {
             LOGW("VIC execute without a config struct");
             return;
@@ -74,5 +75,9 @@ namespace skyline::soc::host1x {
         } catch (const std::exception &e) {
             LOGE("VIC execute failed: {}", e.what());
         }
+    }
+
+    void VicClass::CloseStream(u64 streamId) {
+        streamRegisters.erase(streamId);
     }
 }

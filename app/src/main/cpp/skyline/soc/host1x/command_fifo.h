@@ -16,34 +16,35 @@
 namespace skyline::soc::host1x {
     /**
      * @brief Represents the command FIFO block of the Host1x controller, with one per each channel allowing them to run asynchronously
-     * @note A "gather" is equivalent to a GpEntry except we don't need to emulate them directly as they will always be contiguous across CPU memory, hence a regular span is sufficient
      */
     class ChannelCommandFifo {
       private:
+        struct QueueEntry {
+            enum class Type : u8 {
+                Gather,
+                CloseStream,
+            };
+
+            Type type{};
+            span<u32> gather{};
+            u64 streamId{};
+        };
+
         const DeviceState &state;
 
-        static constexpr size_t GatherQueueSize{0x1000}; //!< Maximum size of the gather queue, this value is arbritary
-        CircularQueue<span<u32>> gatherQueue;
-        std::thread thread; //!< The thread that manages processing of pushbuffers within gathers
-        std::mutex threadStartMutex; //!< Protects the thread from being started multiple times
+        static constexpr size_t GatherQueueSize{0x1000};
+        CircularQueue<QueueEntry> gatherQueue;
+        std::thread thread;
+        std::mutex threadStartMutex;
 
-        Host1xClass host1XClass; //!< The internal Host1x class, used for performing syncpoint waits and other general operations
-        TegraHostInterface<NvDecClass> nvDecClass; //!< The THI wrapped NVDEC class for video decoding
-        TegraHostInterface<VicClass> vicClass; //!< The THI wrapped VIC class for acceleration of image operations
+        Host1xClass host1XClass;
+        TegraHostInterface<NvDecClass> nvDecClass;
+        TegraHostInterface<VicClass> vicClass;
 
-        /**
-         * @brief Sends a method call to the target class
-         */
-        void Send(ClassId targetClass, u32 method, u32 argument);
+        void Send(ClassId targetClass, u32 method, u32 argument, u64 streamId);
 
-        /**
-         * @brief Processes the pushbuffer contained within the given gather, calling methods as needed
-         */
-        void Process(span<u32> gather);
+        void Process(span<u32> gather, u64 streamId);
 
-        /**
-         * @brief Executes all pending gathers in the FIFO and polls for more
-         */
         void Run();
 
       public:
@@ -51,14 +52,16 @@ namespace skyline::soc::host1x {
 
         ~ChannelCommandFifo();
 
-        /**
-         * @brief Starts the pushbuffer processing thread if it hasn't already been started
-         */
         void Start();
 
         /**
-         * @brief Pushes a single gather into the FIFO to be processed asynchronously
+         * @brief Pushes one gather together with the nvhost channel identity that submitted it
          */
-        void Push(span<u32> gather);
+        void Push(span<u32> gather, u64 streamId);
+
+        /**
+         * @brief Queues stream destruction after all previously submitted gathers for that stream
+         */
+        void CloseStream(u64 streamId);
     };
 }

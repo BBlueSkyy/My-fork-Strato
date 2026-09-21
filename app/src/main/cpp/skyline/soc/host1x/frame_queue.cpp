@@ -1,38 +1,78 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright © 2026 Strato Team and Contributors (https://github.com/strato-emu/)
 
+#include <algorithm>
 #include "frame_queue.h"
 
 namespace skyline::soc::host1x {
-    void FrameQueue::PushPresentationFrame(u64 lumaIova, AVFramePtr frame) {
+    void FrameQueue::OpenStream(u64 streamId) {
+        std::scoped_lock lock(mutex);
+        presentationStreams.try_emplace(streamId);
+    }
+
+    void FrameQueue::CloseStream(u64 streamId) {
+        std::scoped_lock lock(mutex);
+        presentationStreams.erase(streamId);
+    }
+
+    void FrameQueue::PushPresentationFrame(u64 streamId, u64 lumaIova, AVFramePtr frame) {
         std::scoped_lock lock(mutex);
 
-        if (presentationFrames.size() >= MaxQueueSize) {
-            LOGW("Presentation frame queue overflow, dropping oldest frame with luma IOVA: 0x{:X}",
-                 presentationFrames.front().first);
-            presentationFrames.pop_front();
+        auto &frames{presentationStreams[streamId]};
+        if (frames.size() >= MaxQueueSize) {
+            LOGW("Presentation frame queue overflow for stream {}, dropping oldest frame with luma IOVA: 0x{:X}",
+                 streamId, frames.front().first);
+            frames.pop_front();
         }
 
-        // FFmpeg's receive order is the presentation order for this software decoder path.
-        // Do not replace an existing entry when the guest reuses the same surface: each
-        // decoded frame is a distinct presentation event and must remain in sequence.
-        presentationFrames.emplace_back(lumaIova, std::move(frame));
+        frames.emplace_back(lumaIova, std::move(frame));
     }
 
     AVFramePtr FrameQueue::PopPresentationFrame(u64 requestedLumaIova) {
         std::scoped_lock lock(mutex);
 
-        if (presentationFrames.empty()) {
-            LOGD("Presentation frame queue empty for VIC luma IOVA: 0x{:X}", requestedLumaIova);
+        PresentationQueue *selected{};
+        u64 selectedStream{};
+        PresentationQueue *onlyNonEmpty{};
+        u64 onlyNonEmptyStream{};
+        size_t nonEmptyStreams{};
+
+        for (auto &[streamId, frames] : presentationStreams) {
+            if (frames.empty())
+                continue;
+
+            nonEmptyStreams++;
+            onlyNonEmpty = &frames;
+            onlyNonEmptyStream = streamId;
+
+            if (std::any_of(frames.begin(), frames.end(),
+                            [&](const auto &entry) { return entry.first == requestedLumaIova; })) {
+                selected = &frames;
+                selectedStream = streamId;
+                break;
+            }
+        }
+
+        // Preserve the known-good single-stream presentation semantics used before stream
+        // isolation. The luma IOVA is only required to disambiguate when multiple NVDEC streams
+        // can actually provide frames at the same time.
+        if (!selected && nonEmptyStreams == 1) {
+            selected = onlyNonEmpty;
+            selectedStream = onlyNonEmptyStream;
+        }
+
+        if (!selected) {
+            LOGD("No unambiguous presentation stream for VIC luma IOVA: 0x{:X}, active streams: {}",
+                 requestedLumaIova, nonEmptyStreams);
             return AVFramePtr{nullptr, nullptr};
         }
 
-        auto &[submittedLumaIova, queuedFrame]{presentationFrames.front()};
-        LOGD("Presentation frame dequeue, VIC luma: 0x{:X}, submitted luma: 0x{:X}, queued frames: {}",
-             requestedLumaIova, submittedLumaIova, presentationFrames.size());
+        auto &[submittedLumaIova, queuedFrame]{selected->front()};
+        LOGD("Presentation frame dequeue, stream: {}, VIC luma: 0x{:X}, submitted luma: 0x{:X}, queued frames: {}",
+             selectedStream, requestedLumaIova, submittedLumaIova, selected->size());
 
         auto frame{std::move(queuedFrame)};
-        presentationFrames.pop_front();
+        selected->pop_front();
         return frame;
     }
 }
