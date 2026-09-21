@@ -42,14 +42,11 @@ namespace skyline::soc::host1x {
         }
 
         if (it == frames.end()) {
-            if (frames.empty())
-                return AVFramePtr{nullptr, nullptr};
-
-            // Fall back to the oldest frame so a mismatch degrades to a stale frame rather than no frame
-            LOGD("Frame queue miss for luma IOVA: 0x{:X}, falling back to oldest frame with: 0x{:X}", lumaIova, frames.front().first);
-            it = frames.begin();
+            LOGD("Frame queue miss for luma IOVA: 0x{:X}, queued frames: {}", lumaIova, frames.size());
+            return AVFramePtr{nullptr, nullptr};
         }
 
+        LOGD("Frame queue hit for luma IOVA: 0x{:X}", lumaIova);
         auto frame{std::move(it->second)};
         frames.erase(it);
         return frame;
