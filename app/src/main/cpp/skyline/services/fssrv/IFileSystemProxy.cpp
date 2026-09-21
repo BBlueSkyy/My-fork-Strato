@@ -169,6 +169,30 @@ namespace skyline::service::fssrv {
         return {};
     }
 
+    Result EnsureApplicationCacheStorage(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
+                                         u64 cacheStorageSize, u64 cacheStorageJournalSize) {
+        LOGI("[FSP-SAVE-TRACE] function=EnsureApplicationCacheStorage saveDataOwnerId={:016X} "
+             "cacheSize=0x{:X} cacheJournal=0x{:X}",
+             saveDataOwnerId, cacheStorageSize, cacheStorageJournalSize);
+
+        // Launch-time ensure uses the legacy NACP cache size fields directly.
+        // CacheStorageDataAndJournalSizeMax and CacheStorageIndexMax constrain the
+        // explicit CreateCacheStorage API, not the index-zero ensure path.
+        if (cacheStorageSize == 0)
+            return {};
+
+        SaveDataAttribute attribute{};
+        attribute.programId = saveDataOwnerId;
+        attribute.type = SaveDataType::Cache;
+        attribute.rank = SaveDataRank::Primary;
+        attribute.index = 0;
+
+        const auto creationResult{CreateSaveDataDirectory(publicAppFilesPath, SaveDataSpaceId::User,
+                                                          attribute, saveDataOwnerId, true)};
+        LOGI("[FSP-SAVE-TRACE] function=EnsureApplicationCacheStorage result={}", creationResult.raw);
+        return creationResult;
+    }
+
     Result CreateApplicationCacheStorage(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
                                          u16 cacheStorageIndexMax, u64 cacheStorageDataAndJournalSizeMax,
                                          u16 index, i64 saveSize, i64 journalSize,

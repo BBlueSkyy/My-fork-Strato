@@ -73,6 +73,14 @@ namespace skyline::kernel {
                  nacp.cacheStorageDataAndJournalSizeMax,
                  nacp.cacheStorageIndexMax);
 
+            const auto cacheProvisionResult{service::fssrv::EnsureApplicationCacheStorage(publicAppFilesPath,
+                                                                                           nacp.saveDataOwnerId,
+                                                                                           nacp.cacheStorageSize,
+                                                                                           nacp.cacheStorageJournalSize)};
+            LOGI("[FSP-SAVE-TRACE] phase=startup-cache-provision result={}", cacheProvisionResult.raw);
+            if (cacheProvisionResult)
+                throw exception("Failed to provision application cache storage: {}", cacheProvisionResult.raw);
+
             const auto saveProvisionResult{service::fssrv::EnsureApplicationSaveData(publicAppFilesPath,
                                                                                      nacp.saveDataOwnerId,
                                                                                      constant::DefaultUserId,
