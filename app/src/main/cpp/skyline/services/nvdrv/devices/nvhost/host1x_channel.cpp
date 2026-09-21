@@ -19,8 +19,14 @@ namespace skyline::service::nvdrv::device::nvhost {
                                  const SessionContext &ctx,
                                  core::ChannelType channelType)
         : NvDevice(state, driver, core, ctx),
-          channelType(channelType) {
+          channelType(channelType),
+          streamId(state.soc->host1x.AllocateStreamId()) {
         state.soc->host1x.channels[static_cast<size_t>(channelType)].Start();
+    }
+
+    Host1xChannel::~Host1xChannel() {
+        if (IsChannelImplemented(channelType))
+            state.soc->host1x.channels[static_cast<size_t>(channelType)].CloseStream(streamId);
     }
 
     PosixResult Host1xChannel::SetNvmapFd(In<FileDescriptor> fd) {
@@ -94,7 +100,7 @@ namespace skyline::service::nvdrv::device::nvhost {
             span gather(reinterpret_cast<u32 *>(gatherAddress), cmdBuf.words);
             // Note: The gather aliases guest memory rather than copying it, correctly synchronised guests won't reuse the cmdbuf before its fence signals
             if (channelImplemented)
-                state.soc->host1x.channels[static_cast<size_t>(channelType)].Push(gather);
+                state.soc->host1x.channels[static_cast<size_t>(channelType)].Push(gather, streamId);
         }
 
         return PosixResult::Success;
