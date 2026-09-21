@@ -42,8 +42,9 @@ namespace skyline::soc::host1x {
             u64 inputLumaIova{registers.surfaces[0][0].luma.Address()};
             auto frame{frameQueue.PopPresentationFrame(inputLumaIova)};
 
-            LOGD("VIC execute, input luma: 0x{:X}, frame: {}, format: {}, dimensions: {}x{}, layout: {}, output luma: 0x{:X}",
-                 inputLumaIova, frame ? "present" : "missing", static_cast<u32>(surfaceConfig.outPixelFormat),
+            LOGD("VIC execute, engine: {}, frame queue: {}, input luma: 0x{:X}, frame: {}, format: {}, dimensions: {}x{}, layout: {}, output luma: 0x{:X}",
+                 fmt::ptr(this), fmt::ptr(&frameQueue), inputLumaIova, frame ? "present" : "missing",
+                 static_cast<u32>(surfaceConfig.outPixelFormat),
                  u32{surfaceConfig.outLumaWidth} + 1, u32{surfaceConfig.outLumaHeight} + 1,
                  surfaceConfig.outBlkKind == vic::BlkKind::Pitch ? "pitch" : "block-linear",
                  registers.outputSurface.luma.Address());
