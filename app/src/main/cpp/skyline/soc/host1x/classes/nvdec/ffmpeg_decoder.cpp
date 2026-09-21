@@ -71,7 +71,6 @@ namespace skyline::soc::host1x::nvdec {
         // detach a decoded frame from the surface its NVDEC submission targeted. Decode-only
         // frames intentionally carry no PTS so VIC can never consume them as presentation frames.
         packet->pts = hidden ? AV_NOPTS_VALUE : static_cast<i64>(surfaceKey);
-        packet->dts = packet->pts;
 
         if (int result{avcodec_send_packet(context, packet)}; result < 0) {
             LOGW("Failed to send a packet to the decoder: {}", result);
