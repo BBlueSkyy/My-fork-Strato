@@ -61,14 +61,17 @@ namespace skyline::soc::host1x::nvdec {
         return packet != nullptr;
     }
 
-    bool FfmpegDecoder::SendPacket(span<const u8> data, u64 surfaceKey) {
+    bool FfmpegDecoder::SendPacket(span<const u8> data, u64 surfaceKey, bool hidden) {
         if (!context || !packet)
             return false;
 
         packet->data = const_cast<u8 *>(data.data());
         packet->size = static_cast<int>(data.size());
-        // The PTS is echoed onto the decoded frame even across reordering, letting frames be matched to the surface their submission targeted
-        packet->pts = static_cast<i64>(surfaceKey);
+        // Visible frames carry their target luma IOVA through FFmpeg PTS so reordering cannot
+        // detach a decoded frame from the surface its NVDEC submission targeted. Decode-only
+        // frames intentionally carry no PTS so VIC can never consume them as presentation frames.
+        packet->pts = hidden ? AV_NOPTS_VALUE : static_cast<i64>(surfaceKey);
+        packet->dts = packet->pts;
 
         if (int result{avcodec_send_packet(context, packet)}; result < 0) {
             LOGW("Failed to send a packet to the decoder: {}", result);
