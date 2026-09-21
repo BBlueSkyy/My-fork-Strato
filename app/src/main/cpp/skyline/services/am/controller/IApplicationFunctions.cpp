@@ -61,13 +61,19 @@ namespace skyline::service::am {
     Result IApplicationFunctions::EnsureSaveData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto userId{request.Pop<account::UserId>()};
         const auto &nacp{state.loader->nacp->nacpContents};
-        if (const auto result{fssrv::EnsureApplicationSaveData(state.os->publicAppFilesPath,
-                                                               nacp.saveDataOwnerId,
-                                                               userId,
-                                                               nacp.userAccountSaveDataSize,
-                                                               nacp.deviceSaveDataSize)};
-            result)
-            return result;
+        LOGI("[FSP-SAVE-TRACE] command=EnsureSaveData userId={:016X}{:016X} saveDataOwnerId={:016X} "
+             "accountSize=0x{:X} deviceSize=0x{:X}",
+             userId.upper, userId.lower, nacp.saveDataOwnerId,
+             nacp.userAccountSaveDataSize, nacp.deviceSaveDataSize);
+
+        const auto ensureResult{fssrv::EnsureApplicationSaveData(state.os->publicAppFilesPath,
+                                                                 nacp.saveDataOwnerId,
+                                                                 userId,
+                                                                 nacp.userAccountSaveDataSize,
+                                                                 nacp.deviceSaveDataSize)};
+        LOGI("[FSP-SAVE-TRACE] command=EnsureSaveData result={}", ensureResult.raw);
+        if (ensureResult)
+            return ensureResult;
 
         response.Push<u64>(0);
         return {};
@@ -76,6 +82,7 @@ namespace skyline::service::am {
     Result IApplicationFunctions::SetTerminateResult(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto result{request.Pop<Result>()};
         LOGI("App set termination result: {}", result.raw);
+        LOGI("[FSP-SAVE-TRACE] command=SetTerminateResult result={}", result.raw);
         return {};
     }
 
@@ -99,6 +106,8 @@ namespace skyline::service::am {
         auto saveDataType{request.Pop<u64>()};
         auto userId{request.Pop<account::UserId>()};
         LOGD("Save data type: {}, UserId: {:016X}{:016X}", saveDataType, userId.upper, userId.lower);
+        LOGI("[FSP-SAVE-TRACE] command=GetSaveDataSize type={} userId={:016X}{:016X} outSaveSize=0x{:X} outJournalSize=0x{:X}",
+             saveDataType, userId.upper, userId.lower, SaveDataSize, JournalSaveDataSize);
 
         response.Push(SaveDataSize);
         response.Push(JournalSaveDataSize);
@@ -119,9 +128,16 @@ namespace skyline::service::am {
         std::memcpy(&input, request.cmdArg, sizeof(input));
 
         const auto &nacp{state.loader->nacp->nacpContents};
+        LOGI("[FSP-SAVE-TRACE] command=CreateCacheStorage index={} saveSize=0x{:X} journalSize=0x{:X} "
+             "saveDataOwnerId={:016X} nacpCacheSize=0x{:X} nacpCacheJournal=0x{:X} "
+             "cacheDataAndJournalMax=0x{:X} cacheIndexMax={}",
+             input.index, input.saveSize, input.journalSize,
+             nacp.saveDataOwnerId, nacp.cacheStorageSize, nacp.cacheStorageJournalSize,
+             nacp.cacheStorageDataAndJournalSizeMax, nacp.cacheStorageIndexMax);
+
         fssrv::CacheStorageTargetMedia targetMedia{};
         u64 requiredSize{};
-        if (const auto result{fssrv::CreateApplicationCacheStorage(
+        const auto createResult{fssrv::CreateApplicationCacheStorage(
                 state.os->publicAppFilesPath,
                 nacp.saveDataOwnerId,
                 nacp.cacheStorageIndexMax,
@@ -131,8 +147,10 @@ namespace skyline::service::am {
                 input.journalSize,
                 targetMedia,
                 requiredSize)};
-            result)
-            return result;
+        LOGI("[FSP-SAVE-TRACE] command=CreateCacheStorage result={} targetMedia={} requiredSize=0x{:X}",
+             createResult.raw, static_cast<u32>(targetMedia), requiredSize);
+        if (createResult)
+            return createResult;
 
         response.Push<u64>(static_cast<u64>(targetMedia));
         response.Push(requiredSize);
@@ -140,6 +158,8 @@ namespace skyline::service::am {
     }
 
     Result IApplicationFunctions::GetSaveDataSizeMax(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        LOGI("[FSP-SAVE-TRACE] command=GetSaveDataSizeMax outSaveSize=0x{:X} outJournalSize=0x{:X}",
+             SaveDataSize, JournalSaveDataSize);
         response.Push(SaveDataSize);
         response.Push(JournalSaveDataSize);
         return {};
@@ -161,6 +181,9 @@ namespace skyline::service::am {
         };
 
         LOGD("Cache storage max: index={}, data+journal=0x{:X}", max.indexMax, max.dataAndJournalSizeMax);
+        LOGI("[FSP-SAVE-TRACE] command=GetCacheStorageMax indexMax={} dataAndJournalMax=0x{:X} "
+             "nacpCacheSize=0x{:X} nacpCacheJournal=0x{:X}",
+             max.indexMax, max.dataAndJournalSizeMax, nacp.cacheStorageSize, nacp.cacheStorageJournalSize);
         response.Push(max);
         return {};
     }

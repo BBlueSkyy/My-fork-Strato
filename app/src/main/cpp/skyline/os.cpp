@@ -58,13 +58,29 @@ namespace skyline::kernel {
 
         if (state.loader->nacp) {
             const auto &nacp{state.loader->nacp->nacpContents};
-            if (const auto result{service::fssrv::EnsureApplicationSaveData(publicAppFilesPath,
-                                                                           nacp.saveDataOwnerId,
-                                                                           constant::DefaultUserId,
-                                                                           nacp.userAccountSaveDataSize,
-                                                                           nacp.deviceSaveDataSize)};
-                result)
-                throw exception("Failed to provision application save data: {}", result.raw);
+            LOGI("[FSP-SAVE-TRACE] phase=startup-nacp saveDataOwnerId={:016X} defaultUser={:016X}{:016X} "
+                 "accountSize=0x{:X} accountJournal=0x{:X} deviceSize=0x{:X} deviceJournal=0x{:X} "
+                 "cacheSize=0x{:X} cacheJournal=0x{:X} cacheDataAndJournalMax=0x{:X} cacheIndexMax={}",
+                 nacp.saveDataOwnerId,
+                 constant::DefaultUserId.upper,
+                 constant::DefaultUserId.lower,
+                 nacp.userAccountSaveDataSize,
+                 nacp.userAccountSaveDataJournalSize,
+                 nacp.deviceSaveDataSize,
+                 nacp.deviceSaveDataJournalSize,
+                 nacp.cacheStorageSize,
+                 nacp.cacheStorageJournalSize,
+                 nacp.cacheStorageDataAndJournalSizeMax,
+                 nacp.cacheStorageIndexMax);
+
+            const auto saveProvisionResult{service::fssrv::EnsureApplicationSaveData(publicAppFilesPath,
+                                                                                     nacp.saveDataOwnerId,
+                                                                                     constant::DefaultUserId,
+                                                                                     nacp.userAccountSaveDataSize,
+                                                                                     nacp.deviceSaveDataSize)};
+            LOGI("[FSP-SAVE-TRACE] phase=startup-save-provision result={}", saveProvisionResult.raw);
+            if (saveProvisionResult)
+                throw exception("Failed to provision application save data: {}", saveProvisionResult.raw);
         }
 
         state.gpu->Initialise();
