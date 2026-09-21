@@ -21,6 +21,8 @@ namespace skyline::soc::host1x::nvdec {
             return;
 
         u64 surfaceKey{GetOutputLumaAddress()};
+        LOGD("NVDEC submit, surface: 0x{:X}, hidden: {}, packet size: 0x{:X}",
+             surfaceKey, hiddenFrame, packet.size());
         if (!decoder.SendPacket(packet, surfaceKey, hiddenFrame))
             return;
 
