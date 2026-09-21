@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <unordered_map>
 #include <common.h>
 #include "nvdec/registers.h"
 
@@ -19,29 +20,28 @@ namespace skyline::soc::host1x {
      */
     class NvDecClass {
       private:
+        struct StreamState {
+            nvdec::Registers registers{};
+            std::unique_ptr<nvdec::Codec> codec;
+            nvdec::CodecId activeCodecId{};
+        };
+
         const DeviceState &state;
-        FrameQueue &frameQueue; //!< Queue for handing off decoded frames to VIC
+        FrameQueue &frameQueue;
         std::function<void()> opDoneCallback;
-        nvdec::Registers registers{};
-        std::unique_ptr<nvdec::Codec> codec; //!< The active codec instance, created on a codec ID register write, null when the codec is unsupported
-        nvdec::CodecId activeCodecId{}; //!< The codec ID the current codec instance was created for
+        std::unordered_map<u64, std::unique_ptr<StreamState>> streams;
 
-        /**
-         * @brief Instantiates the codec implementation matching the current codec ID register
-         */
-        void CreateCodec();
-
-        /**
-         * @brief Runs one decode operation on the active codec
-         * @note Any errors are logged rather than thrown so a malformed operation can never take down the FIFO thread
-         */
-        void Execute();
+        StreamState &GetStream(u64 streamId);
+        void CreateCodec(u64 streamId, StreamState &stream);
+        void Execute(u64 streamId, StreamState &stream);
 
       public:
         NvDecClass(const DeviceState &state, FrameQueue &frameQueue, std::function<void()> opDoneCallback);
 
         ~NvDecClass();
 
-        void CallMethod(u32 method, u32 argument);
+        void CallMethod(u32 method, u32 argument, u64 streamId);
+
+        void CloseStream(u64 streamId);
     };
 }
