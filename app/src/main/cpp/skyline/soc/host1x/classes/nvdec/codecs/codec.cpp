@@ -35,10 +35,10 @@ namespace skyline::soc::host1x::nvdec {
                 continue;
             }
 
-            LOGD("NVDEC decoded frame, surface: 0x{:X}, format: {}, dimensions: {}x{}, linesizes: [{}, {}, {}]",
+            LOGD("NVDEC decoded presentation frame, submitted surface: 0x{:X}, format: {}, dimensions: {}x{}, linesizes: [{}, {}, {}]",
                  static_cast<u64>(frame->pts), frame->format, frame->width, frame->height,
                  frame->linesize[0], frame->linesize[1], frame->linesize[2]);
-            frameQueue.PushFrame(static_cast<u64>(frame->pts), std::move(frame));
+            frameQueue.PushPresentationFrame(static_cast<u64>(frame->pts), std::move(frame));
         }
     }
 }
