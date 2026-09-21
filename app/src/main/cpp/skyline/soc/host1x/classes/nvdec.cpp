@@ -57,7 +57,8 @@ namespace skyline::soc::host1x {
         }
 
         if (codec)
-            LOGD("Created NVDEC codec: {}", static_cast<u64>(registers.codecId));
+            LOGI("[NVDEC-LIFE] Created NVDEC codec: {}, engine: {}, frame queue: {}",
+                 static_cast<u64>(registers.codecId), fmt::ptr(this), fmt::ptr(&frameQueue));
     }
 
     void NvDecClass::Execute() {
