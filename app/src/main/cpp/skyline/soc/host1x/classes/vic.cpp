@@ -36,15 +36,24 @@ namespace skyline::soc::host1x {
             auto config{state.soc->smmu.Read<vic::ConfigStruct>(registers.configStructOffset.Address())};
             auto &surfaceConfig{config.outputSurfaceConfig};
 
-            // The current field of slot 0 holds the surface NVDEC decoded into, its IOVA is the key frames are queued under
+            // FFmpeg returns decoded frames in presentation order for this software path. The
+            // current slot-0 luma IOVA is retained for diagnostics, but must not be used to reorder
+            // or discard already-decoded presentation frames.
             u64 inputLumaIova{registers.surfaces[0][0].luma.Address()};
-            auto frame{frameQueue.PopFrame(inputLumaIova)};
+            auto frame{frameQueue.PopPresentationFrame(inputLumaIova)};
 
             LOGD("VIC execute, input luma: 0x{:X}, frame: {}, format: {}, dimensions: {}x{}, layout: {}, output luma: 0x{:X}",
                  inputLumaIova, frame ? "present" : "missing", static_cast<u32>(surfaceConfig.outPixelFormat),
                  u32{surfaceConfig.outLumaWidth} + 1, u32{surfaceConfig.outLumaHeight} + 1,
                  surfaceConfig.outBlkKind == vic::BlkKind::Pitch ? "pitch" : "block-linear",
                  registers.outputSurface.luma.Address());
+
+            if (!frame) {
+                // VIC may run before the matching decode becomes available. Do not overwrite the
+                // guest surface with diagnostic pixels or with a frame belonging to another surface.
+                LOGD("VIC preserving output surface because decoded frame 0x{:X} is unavailable", inputLumaIova);
+                return;
+            }
 
             switch (surfaceConfig.outPixelFormat) {
                 case vic::VideoPixelFormat::Y8__V8U8_N420:

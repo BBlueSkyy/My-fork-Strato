@@ -54,6 +54,11 @@ namespace skyline::soc::host1x::vic {
         bool planarInput{frame && (frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P)};
         bool semiPlanarInput{frame && frame->format == AV_PIX_FMT_NV12};
 
+        LOGD("VIC YUV420 write, output format: {}, decoded format: {}, dimensions: {}x{}, luma stride: {}, chroma stride: {}",
+             static_cast<u32>(surfaceConfig.outPixelFormat), frame ? frame->format : -1,
+             frame ? frame->width : 0, frame ? frame->height : 0,
+             frame ? frame->linesize[0] : 0, frame ? frame->linesize[1] : 0);
+
         if (planarInput || semiPlanarInput) {
             u32 copyWidth{std::min(static_cast<u32>(frame->width), lumaWidth)};
             u32 copyHeight{std::min(static_cast<u32>(frame->height), lumaHeight)};
@@ -81,15 +86,10 @@ namespace skyline::soc::host1x::vic {
             }
         } else {
             if (frame)
-                LOGW("Unsupported decoded frame format for NV12 write: {}", frame->format);
-
-            // A solid magenta test pattern keeps the output chain observable when no frame is available
-            constexpr u8 TestLuma{106}, TestChromaU{202}, TestChromaV{222};
-            std::memset(luma.data(), TestLuma, luma.size());
-            for (size_t i{}; i < chroma.size(); i += 2) {
-                chroma[i] = TestChromaU;
-                chroma[i + 1] = TestChromaV;
-            }
+                LOGW("Unsupported decoded frame format for YUV420 write: {}", frame->format);
+            else
+                LOGW("YUV420 write requested without a decoded frame");
+            return;
         }
 
         WritePlane(state, outputSurface.luma.Address(), span<u8>(luma), lumaWidth, lumaHeight, 1, blkKind, blkHeight);
@@ -114,23 +114,18 @@ namespace skyline::soc::host1x::vic {
                                                      static_cast<int>(width), static_cast<int>(height), destinationFormat,
                                                      SWS_FAST_BILINEAR, nullptr, nullptr, nullptr) : nullptr};
 
-        if (converter) {
-            std::array<u8 *, 1> destinationData{surface.data()};
-            std::array<int, 1> destinationStride{static_cast<int>(stride)};
-            sws_scale(converter, frame->data, frame->linesize, 0, frame->height, destinationData.data(), destinationStride.data());
-            sws_freeContext(converter);
-        } else {
+        if (!converter) {
             if (frame)
                 LOGW("Failed to create a converter for decoded frame format: {}", frame->format);
-
-            // A solid magenta test pattern, the byte pattern is magenta under both RGBA and BGRA byte orders
-            for (size_t i{}; i < surface.size(); i += 4) {
-                surface[i] = 0xFF;
-                surface[i + 1] = 0;
-                surface[i + 2] = 0xFF;
-                surface[i + 3] = 0xFF;
-            }
+            else
+                LOGW("RGBA write requested without a decoded frame");
+            return;
         }
+
+        std::array<u8 *, 1> destinationData{surface.data()};
+        std::array<int, 1> destinationStride{static_cast<int>(stride)};
+        sws_scale(converter, frame->data, frame->linesize, 0, frame->height, destinationData.data(), destinationStride.data());
+        sws_freeContext(converter);
 
         WritePlane(state, outputSurface.luma.Address(), span<u8>(surface), width, height, 4, blkKind, blkHeight);
     }
