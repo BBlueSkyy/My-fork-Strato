@@ -30,14 +30,14 @@ namespace skyline::soc::host1x::nvdec {
 
         /**
          * @brief Submits a composed bitstream packet to the decoder
-         * @param surfaceKey An opaque key identifying the output surface of this operation, carried onto the resulting frame's PTS across any decoder reordering
+         * @param surfaceKey Submission luma IOVA retained in the resulting frame's PTS as diagnostic metadata across decoder reordering
          * @return If the packet was accepted
          */
         bool SendPacket(span<const u8> data, u64 surfaceKey, bool hidden);
 
         /**
          * @brief Retrieves the next decoded frame from the decoder
-         * @return The decoded frame with its submission's surface key in the PTS, or an empty pointer when no frame is available yet
+         * @return The next decoded frame in FFmpeg presentation order, with submission metadata in PTS, or an empty pointer when no frame is available yet
          */
         AVFramePtr ReceiveFrame();
     };
