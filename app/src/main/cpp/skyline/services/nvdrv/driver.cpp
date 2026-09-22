@@ -116,7 +116,8 @@ namespace skyline::service::nvdrv {
                 if (traceSeq < 256)
                     LOGI("XV2-NVDRV ioctl-enter epoch={} seq={} kind=1 fd={} device={} raw=0x{:X} magic=0x{:X} function=0x{:X} size=0x{:X} in={} out={}",
                          diagnostics::xv2::Epoch(), traceSeq, fd, device->GetName(), cmd.raw,
-                         static_cast<u8>(cmd.magic), cmd.function, cmd.size, cmd.in, cmd.out);
+                         static_cast<u8>(cmd.magic), cmd.function, static_cast<u16>(cmd.size),
+                         static_cast<bool>(cmd.in), static_cast<bool>(cmd.out));
             }
             auto result{ConvertResult(LogIoctlResult(device->Ioctl(cmd, buffer), cmd.raw))};
             if (traceSeq < 256)
@@ -140,7 +141,8 @@ namespace skyline::service::nvdrv {
                 if (traceSeq < 256)
                     LOGI("XV2-NVDRV ioctl-enter epoch={} seq={} kind=2 fd={} device={} raw=0x{:X} magic=0x{:X} function=0x{:X} size=0x{:X} in={} out={} inline-size={}",
                          diagnostics::xv2::Epoch(), traceSeq, fd, device->GetName(), cmd.raw,
-                         static_cast<u8>(cmd.magic), cmd.function, cmd.size, cmd.in, cmd.out, inlineBuffer.size());
+                         static_cast<u8>(cmd.magic), cmd.function, static_cast<u16>(cmd.size),
+                         static_cast<bool>(cmd.in), static_cast<bool>(cmd.out), inlineBuffer.size());
             }
             auto result{ConvertResult(LogIoctlResult(device->Ioctl2(cmd, buffer, inlineBuffer), cmd.raw))};
             if (traceSeq < 256)
@@ -164,7 +166,8 @@ namespace skyline::service::nvdrv {
                 if (traceSeq < 256)
                     LOGI("XV2-NVDRV ioctl-enter epoch={} seq={} kind=3 fd={} device={} raw=0x{:X} magic=0x{:X} function=0x{:X} size=0x{:X} in={} out={} inline-size={}",
                          diagnostics::xv2::Epoch(), traceSeq, fd, device->GetName(), cmd.raw,
-                         static_cast<u8>(cmd.magic), cmd.function, cmd.size, cmd.in, cmd.out, inlineBuffer.size());
+                         static_cast<u8>(cmd.magic), cmd.function, static_cast<u16>(cmd.size),
+                         static_cast<bool>(cmd.in), static_cast<bool>(cmd.out), inlineBuffer.size());
             }
             auto result{ConvertResult(LogIoctlResult(device->Ioctl3(cmd, buffer, inlineBuffer), cmd.raw))};
             if (traceSeq < 256)
