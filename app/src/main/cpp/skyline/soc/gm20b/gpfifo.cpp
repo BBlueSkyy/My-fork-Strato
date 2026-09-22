@@ -377,20 +377,33 @@ namespace skyline::soc::gm20b {
             bool channelLocked{};
 
             gpEntries.Process([this, &channelLocked](GpEntry gpEntry) {
+                LOGI("GRID-GPFIFO consumer-received address=0x{:X} size=0x{:X}",
+                     gpEntry.Address(), +gpEntry.size);
                 LOGD("Processing pushbuffer: 0x{:X}, Size: 0x{:X}", gpEntry.Address(), +gpEntry.size);
 
                 if (!channelLocked) {
+                    LOGI("GRID-GPFIFO channel-lock-begin");
                     channelCtx.Lock();
+                    LOGI("GRID-GPFIFO channel-lock-end");
                     channelLocked = true;
                 }
 
+                LOGI("GRID-GPFIFO process-begin address=0x{:X} size=0x{:X}",
+                     gpEntry.Address(), +gpEntry.size);
                 Process(gpEntry);
+                LOGI("GRID-GPFIFO process-end address=0x{:X} size=0x{:X}",
+                     gpEntry.Address(), +gpEntry.size);
             }, [this, &channelLocked]() {
                 // If we run out of GpEntries to process ensure we submit any remaining GPU work before waiting for more to arrive
                 LOGD("Finished processing pushbuffer batch");
+                LOGI("GRID-GPFIFO batch-drained channelLocked={}", channelLocked);
                 if (channelLocked) {
+                    LOGI("GRID-GPFIFO executor-submit-begin");
                     channelCtx.executor.Submit();
+                    LOGI("GRID-GPFIFO executor-submit-end");
+                    LOGI("GRID-GPFIFO channel-unlock-begin");
                     channelCtx.Unlock();
+                    LOGI("GRID-GPFIFO channel-unlock-end");
                     channelLocked = false;
                 }
             });
