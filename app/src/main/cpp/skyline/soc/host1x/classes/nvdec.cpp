@@ -20,7 +20,7 @@ namespace skyline::soc::host1x {
         if (inserted) {
             it->second = std::make_unique<StreamState>();
             frameQueue.OpenStream(streamId);
-            LOGI("XV2-TRACE NVDEC stream created stream={}", streamId);
+            LOGD("Created NVDEC stream state: {}", streamId);
         }
         return *it->second;
     }
@@ -68,7 +68,7 @@ namespace skyline::soc::host1x {
         }
 
         if (stream.codec)
-            LOGI("XV2-TRACE NVDEC codec created codec={} stream={}",
+            LOGD("Created NVDEC codec: {} for stream: {}",
                  static_cast<u64>(stream.registers.codecId), streamId);
     }
 
@@ -88,6 +88,6 @@ namespace skyline::soc::host1x {
     void NvDecClass::CloseStream(u64 streamId) {
         streams.erase(streamId);
         frameQueue.CloseStream(streamId);
-        LOGI("XV2-TRACE NVDEC stream destroyed stream={}", streamId);
+        LOGD("Destroyed NVDEC stream state: {}", streamId);
     }
 }

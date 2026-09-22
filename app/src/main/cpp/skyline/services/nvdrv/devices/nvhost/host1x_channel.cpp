@@ -22,15 +22,11 @@ namespace skyline::service::nvdrv::device::nvhost {
           channelType(channelType),
           streamId(state.soc->host1x.AllocateStreamId()) {
         state.soc->host1x.channels[static_cast<size_t>(channelType)].Start();
-        if (IsChannelImplemented(channelType))
-            LOGI("XV2-SYNC channel-open stream={} channel={}", streamId, static_cast<u32>(channelType));
     }
 
     Host1xChannel::~Host1xChannel() {
-        if (IsChannelImplemented(channelType)) {
-            LOGI("XV2-SYNC channel-close-request stream={} channel={}", streamId, static_cast<u32>(channelType));
+        if (IsChannelImplemented(channelType))
             state.soc->host1x.channels[static_cast<size_t>(channelType)].CloseStream(streamId);
-        }
     }
 
     PosixResult Host1xChannel::SetNvmapFd(In<FileDescriptor> fd) {
@@ -81,13 +77,7 @@ namespace skyline::service::nvdrv::device::nvhost {
         for (size_t i{}; i < syncpointIncrs.size(); i++) {
             const auto &incr{syncpointIncrs[i]};
 
-            u32 minBefore{core.syncpointManager.ReadSyncpointMinValue(incr.syncpointId)};
-            u32 hwBefore{state.soc->host1x.syncpoints[incr.syncpointId].host.Load()};
             u32 max{core.syncpointManager.IncrementSyncpointMaxExt(incr.syncpointId, incr.numIncrs)};
-
-            if (channelImplemented)
-                LOGI("XV2-SYNC submit stream={} channel={} syncpoint={} incrs={} min={} hw={} max={}",
-                     streamId, static_cast<u32>(channelType), incr.syncpointId, incr.numIncrs, minBefore, hwBefore, max);
 
             if (!channelImplemented) {
                 // Increment syncpoints on the CPU for channels whose engines aren't implemented, the fence would never signal otherwise

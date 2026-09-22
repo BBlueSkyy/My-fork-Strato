@@ -11,7 +11,6 @@
 #include <gpu/shader_manager.h>
 #include <gpu.h>
 #include <jvm.h>
-#include <xv2_trace.h>
 #include <vulkan/vulkan_enums.hpp>
 #include "graphics_pipeline_state_accessor.h"
 #include "pipeline_manager.h"
@@ -1099,29 +1098,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (it != map.end())
             return it->second.get();
 
-        bool tracePostClose{diagnostics::xv2::PostCloseActive()};
-        u32 traceSequence{};
-        u64 traceEpoch{};
-        u64 traceStream{};
-        if (tracePostClose) {
-            traceSequence = diagnostics::xv2::NextPipelineSequence();
-            traceEpoch = diagnostics::xv2::Epoch();
-            traceStream = diagnostics::xv2::LastClosedStreamId();
-            tracePostClose = traceSequence < 128;
-            if (tracePostClose)
-                LOGI("XV2-TRACE pipeline begin epoch={} stream={} seq={} topology={} xfb={}",
-                     traceEpoch, traceStream, traceSequence, static_cast<u32>(packedState.topology), packedState.transformFeedbackEnable);
-        }
-
         auto bundle{std::make_unique<PipelineStateBundle>()};
         bundle->Reset(packedState);
         auto accessor{RuntimeGraphicsPipelineStateAccessor{std::move(bundle), ctx, textures, samplers, constantBuffers, shaderBinaries}};
-        auto pipelineObject{std::make_unique<Pipeline>(ctx.gpu, accessor, packedState)};
-
-        if (tracePostClose)
-            LOGI("XV2-TRACE pipeline compiled epoch={} stream={} seq={}", traceEpoch, traceStream, traceSequence);
-
-        auto *pipeline{map.emplace(packedState, std::move(pipelineObject)).first->second.get()};
+        auto *pipeline{map.emplace(packedState, std::make_unique<Pipeline>(ctx.gpu, accessor, packedState)).first->second.get()};
 
         #ifdef PIPELINE_STATS
         auto sharedIt{sharedPipelines.find(pipeline->sourcePackedState.shaderHashes)};

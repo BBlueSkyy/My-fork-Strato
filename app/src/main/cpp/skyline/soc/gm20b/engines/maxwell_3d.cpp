@@ -8,7 +8,6 @@
 #include <soc.h>
 #include "maxwell/types.h"
 #include "maxwell_3d.h"
-#include <xv2_trace.h>
 
 namespace skyline::soc::gm20b::engine::maxwell3d {
     #define REGTYPE(state) gpu::interconnect::maxwell3d::state::EngineRegisters
@@ -551,12 +550,6 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
 
     __attribute__((always_inline)) void Maxwell3D::CallMethod(u32 method, u32 argument) {
         LOGV("Called method in Maxwell 3D: 0x{:X} args: 0x{:X}", method, argument);
-        if (diagnostics::xv2::PostCloseActive()) {
-            auto seq{diagnostics::xv2::NextMaxwellMethodSequence()};
-            if (seq < 192)
-                LOGI("XV2-FLOW maxwell3d method epoch={} seq={} method=0x{:X} arg=0x{:X}",
-                     diagnostics::xv2::Epoch(), seq, method, argument);
-        }
 
         HandleMethod(method, argument);
     }

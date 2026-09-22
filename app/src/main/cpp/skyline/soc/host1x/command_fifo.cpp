@@ -124,11 +124,9 @@ namespace skyline::soc::host1x {
         try {
             gatherQueue.Process([this](QueueEntry &entry) {
                 if (entry.type == QueueEntry::Type::CloseStream) {
-                    LOGI("XV2-TRACE host1x close begin stream={}", entry.streamId);
                     nvDecClass.CloseStream(entry.streamId);
                     vicClass.CloseStream(entry.streamId);
-                    auto traceEpoch{diagnostics::xv2::MarkStreamClosed(entry.streamId)};
-                    LOGI("XV2-TRACE host1x close end epoch={} stream={}", traceEpoch, entry.streamId);
+                    diagnostics::xv2::MarkStreamClosed();
                     return;
                 }
 

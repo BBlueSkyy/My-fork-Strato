@@ -7,7 +7,6 @@
 #include <kernel/types/KTransferMemory.h>
 #include <common/trace.h>
 #include <vfs/npdm.h>
-#include <xv2_trace.h>
 #include "results.h"
 #include "svc.h"
 
@@ -776,15 +775,6 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        u32 xv2WaitSeq{128};
-        if (diagnostics::xv2::PostCloseActive()) {
-            xv2WaitSeq = diagnostics::xv2::NextSvcWaitSequence();
-            if (xv2WaitSeq < 128)
-                LOGI("XV2-FLOW svc-wait block epoch={} seq={} thread={} handles={} first-handle=0x{:X} timeout={}",
-                     diagnostics::xv2::Epoch(), xv2WaitSeq, state.thread->id, numHandles,
-                     numHandles ? waitHandles[0] : 0, timeout);
-        }
-
         auto priority{state.thread->priority.load()};
         for (const auto &object : objectTable)
             object->syncObjectWaiters.insert(std::upper_bound(object->syncObjectWaiters.begin(), object->syncObjectWaiters.end(), priority, type::KThread::IsHigherPriority), state.thread);
@@ -833,11 +823,6 @@ namespace skyline::kernel::svc {
             state.scheduler->InsertThread(state.thread);
             state.scheduler->WaitSchedule();
         }
-
-        if (xv2WaitSeq < 128)
-            LOGI("XV2-FLOW svc-wait wake epoch={} seq={} thread={} result=0x{:X} wake-index={} wake-object={}",
-                 diagnostics::xv2::Epoch(), xv2WaitSeq, state.thread->id, static_cast<u32>(ctx.w0),
-                 wakeIndex, wakeObject != nullptr);
     }
 
     void CancelSynchronization(const DeviceState &state, SvcContext &ctx) {

@@ -6,7 +6,6 @@
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
 #include <soc/gm20b/channel.h>
-#include <xv2_trace.h>
 #include "common/utils.h"
 #include "maxwell_3d.h"
 #include "common.h"
@@ -84,28 +83,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                      u32 count, u32 instanceCount) {
      TRACE_EVENT("gpu", "DrawWithInlineIndex", "count", count, "instanceCount", instanceCount);
 
-       bool tracePostClose{diagnostics::xv2::PostCloseActive()};
-       u32 traceSequence{};
-       u64 traceEpoch{};
-       u64 traceStream{};
-       if (tracePostClose) {
-           traceSequence = diagnostics::xv2::NextDrawSequence();
-           traceEpoch = diagnostics::xv2::Epoch();
-           traceStream = diagnostics::xv2::LastClosedStreamId();
-           tracePostClose = traceSequence < 256;
-           if (tracePostClose)
-               LOGI("XV2-TRACE draw-inline begin epoch={} stream={} seq={} topology={} count={} instances={} xfbRequested={} xfbSupported={}",
-                    traceEpoch, traceStream, traceSequence, static_cast<u32>(topology), count, instanceCount,
-                    transformFeedbackEnable, ctx.gpu.traits.supportsTransformFeedback);
-       }
-
        StateUpdateBuilder builder{*ctx.executor.allocator};
        vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
     PrepareDraw(builder, topology, true, false, 0, count, srcStageMask, dstStageMask);
-
-    if (tracePostClose)
-        LOGI("XV2-TRACE draw-inline prepared epoch={} stream={} seq={}", traceEpoch, traceStream, traceSequence);
 
     inlineIndexBuffer = std::make_shared<memory::Buffer>(ctx.gpu.memory.AllocateBuffer(util::AlignUp(indexData.size_bytes(), PAGE_SIZE)));
     std::memcpy(inlineIndexBuffer->cast<u8>().data(), indexData.data(), indexData.size_bytes());
@@ -137,10 +118,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
-
-    if (tracePostClose)
-        LOGI("XV2-TRACE draw-inline queued epoch={} stream={} seq={}", traceEpoch, traceStream, traceSequence);
-
           ctx.executor.AddCheckpoint("After inline index draw");
      }    
    
@@ -375,28 +352,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
     void Maxwell3D::Draw(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, u32 count, u32 first, u32 instanceCount, u32 vertexOffset, u32 firstInstance) {
         TRACE_EVENT("gpu", "Draw", "indexed", indexed, "count", count, "instanceCount", instanceCount);
 
-        bool tracePostClose{diagnostics::xv2::PostCloseActive()};
-        u32 traceSequence{};
-        u64 traceEpoch{};
-        u64 traceStream{};
-        if (tracePostClose) {
-            traceSequence = diagnostics::xv2::NextDrawSequence();
-            traceEpoch = diagnostics::xv2::Epoch();
-            traceStream = diagnostics::xv2::LastClosedStreamId();
-            tracePostClose = traceSequence < 256;
-            if (tracePostClose)
-                LOGI("XV2-TRACE draw begin epoch={} stream={} seq={} topology={} indexed={} count={} first={} instances={} xfbRequested={} xfbSupported={}",
-                     traceEpoch, traceStream, traceSequence, static_cast<u32>(topology), indexed, count, first, instanceCount,
-                     transformFeedbackEnable, ctx.gpu.traits.supportsTransformFeedback);
-        }
-
         StateUpdateBuilder builder{*ctx.executor.allocator};
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
         PrepareDraw(builder, topology, indexed, false, first, count, srcStageMask, dstStageMask);
-
-        if (tracePostClose)
-            LOGI("XV2-TRACE draw prepared epoch={} stream={} seq={}", traceEpoch, traceStream, traceSequence);
 
         if (directState.inputAssembly.NeedsQuadConversion()) {
             count = conversion::quads::GetIndexCount(count);
@@ -448,10 +407,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
-
-        if (tracePostClose)
-            LOGI("XV2-TRACE draw queued epoch={} stream={} seq={}", traceEpoch, traceStream, traceSequence);
-
         ctx.executor.AddCheckpoint("After draw");
     }
 
@@ -461,28 +416,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         TRACE_EVENT("gpu", "Indirect Draw", "buffer", reinterpret_cast<uintptr_t>(indirectBuffer.data()));
 
-        bool tracePostClose{diagnostics::xv2::PostCloseActive()};
-        u32 traceSequence{};
-        u64 traceEpoch{};
-        u64 traceStream{};
-        if (tracePostClose) {
-            traceSequence = diagnostics::xv2::NextDrawSequence();
-            traceEpoch = diagnostics::xv2::Epoch();
-            traceStream = diagnostics::xv2::LastClosedStreamId();
-            tracePostClose = traceSequence < 256;
-            if (tracePostClose)
-                LOGI("XV2-TRACE draw-indirect begin epoch={} stream={} seq={} topology={} indexed={} count={} stride={} xfbRequested={} xfbSupported={}",
-                     traceEpoch, traceStream, traceSequence, static_cast<u32>(topology), indexed, count, stride,
-                     transformFeedbackEnable, ctx.gpu.traits.supportsTransformFeedback);
-        }
-
         StateUpdateBuilder builder{*ctx.executor.allocator};
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
         PrepareDraw(builder, topology, indexed, true, 0, 0, srcStageMask, dstStageMask);
-
-        if (tracePostClose)
-            LOGI("XV2-TRACE draw-indirect prepared epoch={} stream={} seq={}", traceEpoch, traceStream, traceSequence);
 
         if (directState.inputAssembly.NeedsQuadConversion())
             throw exception("Quad conversion is not supported for indirect draws!");
@@ -533,10 +470,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
-
-        if (tracePostClose)
-            LOGI("XV2-TRACE draw-indirect queued epoch={} stream={} seq={}", traceEpoch, traceStream, traceSequence);
-
         ctx.executor.AddCheckpoint("After indirect draw");
     }
 
