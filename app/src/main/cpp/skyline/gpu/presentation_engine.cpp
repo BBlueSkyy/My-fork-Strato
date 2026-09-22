@@ -403,8 +403,11 @@ namespace skyline::gpu {
         if (diagnostics::xv2::PostCloseActive()) {
             traceSeq = diagnostics::xv2::NextPresentSequence();
             if (traceSeq < 96)
-                LOGI("XV2-FLOW present begin epoch={} seq={} frame={} timestamp={} swap={} fence-id={} fence-threshold={} surface={}",
-                     diagnostics::xv2::Epoch(), traceSeq, nextFrameId, timestamp, swapInterval, fence.id, fence.threshold, vkSurface.has_value());
+                LOGI("XV2-FLOW present begin epoch={} seq={} frame={} timestamp={} swap={} fence-count={} first-fence-id={} first-fence-threshold={} surface={}",
+                     diagnostics::xv2::Epoch(), traceSeq, nextFrameId, timestamp, swapInterval, fence.fenceCount,
+                     fence.fenceCount ? fence.fences[0].id : service::hosbinder::AndroidFence::InvalidFenceId,
+                     fence.fenceCount ? fence.fences[0].threshold : 0,
+                     vkSurface.has_value());
         }
 
         if (!vkSurface.has_value()) {
