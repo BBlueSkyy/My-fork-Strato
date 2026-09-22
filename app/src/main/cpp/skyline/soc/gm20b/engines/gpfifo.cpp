@@ -5,6 +5,7 @@
 #include <soc.h>
 #include <soc/gm20b/gmmu.h>
 #include <soc/gm20b/channel.h>
+#include <xv2_trace.h>
 #include "gpfifo.h"
 
 namespace skyline::soc::gm20b::engine {
@@ -13,24 +14,62 @@ namespace skyline::soc::gm20b::engine {
     void GPFIFO::CallMethod(u32 method, u32 argument) {
         LOGD("Called method in GPFIFO: 0x{:X} args: 0x{:X}", method, argument);
 
+        u32 traceSeq{256};
+        if (diagnostics::xv2::PostCloseActive()) {
+            traceSeq = diagnostics::xv2::NextPullerSequence();
+            if (traceSeq < 256)
+                LOGI("XV2-GPFIFO method epoch={} seq={} method=0x{:X} arg=0x{:X}",
+                     diagnostics::xv2::Epoch(), traceSeq, method, argument);
+        }
+
         registers.raw[method] = argument;
 
         switch (method) {
             ENGINE_STRUCT_CASE(syncpoint, action, {
+                auto &syncpoint{syncpoints.at(action.index)};
+                auto payload{registers.syncpoint->payload};
                 if (action.operation == Registers::Syncpoint::Operation::Incr) {
-                    LOGD("Increment syncpoint: {}", +action.index);
+                    auto guestBefore{syncpoint.guest.Load()};
+                    auto hostBefore{syncpoint.host.Load()};
+                    if (traceSeq < 256)
+                        LOGI("XV2-GPFIFO syncpoint-incr epoch={} seq={} id={} payload={} guest-before={} host-before={}",
+                             diagnostics::xv2::Epoch(), traceSeq, +action.index, payload, guestBefore, hostBefore);
+
                     channelCtx.executor.AddDeferredAction([=, syncpoints = &this->syncpoints, index = action.index]() {
-                        syncpoints->at(index).host.Increment();
+                        auto &deferredSyncpoint{syncpoints->at(index)};
+                        auto before{deferredSyncpoint.host.Load()};
+                        auto after{deferredSyncpoint.host.Increment()};
+                        if (diagnostics::xv2::PostCloseActive())
+                            LOGI("XV2-GPFIFO syncpoint-incr-host epoch={} id={} host-before={} host-after={}",
+                                 diagnostics::xv2::Epoch(), +index, before, after);
                     });
-                    syncpoints.at(action.index).guest.Increment();
+                    auto guestAfter{syncpoint.guest.Increment()};
+                    if (traceSeq < 256)
+                        LOGI("XV2-GPFIFO syncpoint-incr-guest epoch={} seq={} id={} guest-after={} host-now={}",
+                             diagnostics::xv2::Epoch(), traceSeq, +action.index, guestAfter, syncpoint.host.Load());
                 } else if (action.operation == Registers::Syncpoint::Operation::Wait) {
-                    LOGD("Wait syncpoint: {}, thresh: {}", +action.index, registers.syncpoint->payload);
+                    auto guestBefore{syncpoint.guest.Load()};
+                    auto hostBefore{syncpoint.host.Load()};
+                    if (traceSeq < 256)
+                        LOGI("XV2-GPFIFO syncpoint-wait epoch={} seq={} id={} threshold={} wait-switch={} guest={} host={}",
+                             diagnostics::xv2::Epoch(), traceSeq, +action.index, payload,
+                             static_cast<u32>(action.waitSwitch), guestBefore, hostBefore);
 
                     // Wait forever for another channel to increment
-
                     channelCtx.executor.Submit();
                     channelCtx.Unlock();
-                    syncpoints.at(action.index).host.Wait(registers.syncpoint->payload, std::chrono::steady_clock::duration::max());
+
+                    if (traceSeq < 256)
+                        LOGI("XV2-GPFIFO wait-enter epoch={} seq={} id={} threshold={} host={}",
+                             diagnostics::xv2::Epoch(), traceSeq, +action.index, payload, syncpoint.host.Load());
+
+                    bool waitResult{syncpoint.host.Wait(payload, std::chrono::steady_clock::duration::max())};
+
+                    if (traceSeq < 256)
+                        LOGI("XV2-GPFIFO wait-exit epoch={} seq={} id={} threshold={} result={} guest={} host={}",
+                             diagnostics::xv2::Epoch(), traceSeq, +action.index, payload, waitResult,
+                             syncpoint.guest.Load(), syncpoint.host.Load());
+
                     channelCtx.Lock();
                 }
             })
@@ -39,16 +78,28 @@ namespace skyline::soc::gm20b::engine {
                 u64 address{registers.semaphore->address};
 
                 switch (action.operation) {
-                    case Registers::Semaphore::Operation::Acquire:
-                        LOGD("Acquire semaphore: 0x{:X} payload: {}", address, registers.semaphore->payload);
+                    case Registers::Semaphore::Operation::Acquire: {
+                        auto payload{registers.semaphore->payload};
+                        auto initial{channelCtx.asCtx->gmmu.Read<u32>(address)};
+                        if (traceSeq < 256)
+                            LOGI("XV2-GPFIFO semaphore-acquire epoch={} seq={} address=0x{:X} payload={} initial={}",
+                                 diagnostics::xv2::Epoch(), traceSeq, address, payload, initial);
                         channelCtx.executor.Submit();
                         channelCtx.Unlock();
 
-                        while (channelCtx.asCtx->gmmu.Read<u32>(address) != registers.semaphore->payload)
+                        if (traceSeq < 256)
+                            LOGI("XV2-GPFIFO semaphore-acquire-enter epoch={} seq={} address=0x{:X}", diagnostics::xv2::Epoch(), traceSeq, address);
+
+                        while (channelCtx.asCtx->gmmu.Read<u32>(address) != payload)
                             std::this_thread::yield();
+
+                        if (traceSeq < 256)
+                            LOGI("XV2-GPFIFO semaphore-acquire-exit epoch={} seq={} address=0x{:X} value={}",
+                                 diagnostics::xv2::Epoch(), traceSeq, address, channelCtx.asCtx->gmmu.Read<u32>(address));
 
                         channelCtx.Lock();
                         break;
+                    }
                     case Registers::Semaphore::Operation::Release:
                         channelCtx.executor.AddDeferredAction([this, action, address, payload = registers.semaphore->payload] () {
                             // Write timestamp first to ensure ordering
@@ -61,17 +112,33 @@ namespace skyline::soc::gm20b::engine {
                         });
 
                         LOGD("SemaphoreRelease: address: 0x{:X} payload: {}", address, registers.semaphore->payload);
+                        if (traceSeq < 256)
+                            LOGI("XV2-GPFIFO semaphore-release epoch={} seq={} address=0x{:X} payload={} release-size={}",
+                                 diagnostics::xv2::Epoch(), traceSeq, address, registers.semaphore->payload,
+                                 static_cast<u32>(action.releaseSize));
                         break;
-                    case Registers::Semaphore::Operation::AcqGeq    :
-                        LOGD("Acquire semaphore: 0x{:X} payload: {}", address, registers.semaphore->payload);
+                    case Registers::Semaphore::Operation::AcqGeq: {
+                        auto payload{registers.semaphore->payload};
+                        auto initial{channelCtx.asCtx->gmmu.Read<u32>(address)};
+                        if (traceSeq < 256)
+                            LOGI("XV2-GPFIFO semaphore-acqgeq epoch={} seq={} address=0x{:X} payload={} initial={}",
+                                 diagnostics::xv2::Epoch(), traceSeq, address, payload, initial);
                         channelCtx.executor.Submit();
                         channelCtx.Unlock();
 
-                        while (channelCtx.asCtx->gmmu.Read<u32>(address) < registers.semaphore->payload)
+                        if (traceSeq < 256)
+                            LOGI("XV2-GPFIFO semaphore-acqgeq-enter epoch={} seq={} address=0x{:X}", diagnostics::xv2::Epoch(), traceSeq, address);
+
+                        while (channelCtx.asCtx->gmmu.Read<u32>(address) < payload)
                             std::this_thread::yield();
+
+                        if (traceSeq < 256)
+                            LOGI("XV2-GPFIFO semaphore-acqgeq-exit epoch={} seq={} address=0x{:X} value={}",
+                                 diagnostics::xv2::Epoch(), traceSeq, address, channelCtx.asCtx->gmmu.Read<u32>(address));
 
                         channelCtx.Lock();
                         break;
+                    }
                     case Registers::Semaphore::Operation::Reduction: {
                         u32 origVal{channelCtx.asCtx->gmmu.Read<u32>(address)};
                         bool isSigned{action.format == Registers::Semaphore::Format::Signed};
