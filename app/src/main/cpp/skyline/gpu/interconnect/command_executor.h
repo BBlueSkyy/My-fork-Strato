@@ -84,6 +84,13 @@ namespace skyline::gpu::interconnect {
       public:
         CommandRecordThread(const DeviceState &state);
 
+        ~CommandRecordThread();
+
+        /**
+         * @brief Stops the record worker after draining all queued slots
+         */
+        void Stop();
+
         bool IsIdle() const;
 
         /**
@@ -108,11 +115,19 @@ namespace skyline::gpu::interconnect {
         std::condition_variable_any condition;
         std::queue<std::pair<std::shared_ptr<FenceCycle>, std::function<void()>>> pendingSignalQueue; //!< Queue of callbacks to be executed when their coressponding fence is signalled
         std::atomic<bool> idle{};
+        bool stopping{}; //!< Protected by mutex, requests cooperative worker shutdown once queued waits have drained
 
         void Run();
 
       public:
         ExecutionWaiterThread(const DeviceState &state);
+
+        ~ExecutionWaiterThread();
+
+        /**
+         * @brief Stops the waiter after all already queued fence waits and callbacks have completed
+         */
+        void Stop();
 
         bool IsIdle() const;
 
