@@ -115,7 +115,11 @@ namespace skyline::service::nvdrv::device::nvhost {
             return PosixResult::InvalidArgument;
         }
 
+        LOGI("GRID-GPFIFO submit-lock-wait syncpoint={} numEntries={} fenceThreshold={}",
+             channelSyncpoint, numEntries, fence.threshold);
         std::scoped_lock lock(channelMutex);
+        LOGI("GRID-GPFIFO submit-lock-acquired syncpoint={} numEntries={} fenceThreshold={}",
+             channelSyncpoint, numEntries, fence.threshold);
 
         if (flags.fenceWait) {
             if (flags.incrementWithValue)
@@ -137,9 +141,17 @@ namespace skyline::service::nvdrv::device::nvhost {
         fence.id = channelSyncpoint;
 
         u32 increment{(flags.fenceIncrement ? 2 : 0) + (flags.incrementWithValue ? fence.threshold : 0)};
+        LOGI("GRID-GPFIFO syncpoint-update-begin syncpoint={} increment={} previousThreshold={}",
+             channelSyncpoint, increment, fence.threshold);
         fence.threshold = core.syncpointManager.IncrementSyncpointMaxExt(channelSyncpoint, increment);
+        LOGI("GRID-GPFIFO syncpoint-update-end syncpoint={} newThreshold={}",
+             channelSyncpoint, fence.threshold);
 
+        LOGI("GRID-GPFIFO queue-push-begin syncpoint={} numEntries={}",
+             channelSyncpoint, numEntries);
         channelCtx->gpfifo.Push(gpEntries.subspan(0, numEntries));
+        LOGI("GRID-GPFIFO queue-push-end syncpoint={} numEntries={}",
+             channelSyncpoint, numEntries);
 
         if (flags.fenceIncrement) {
             // Wraparound
