@@ -23,23 +23,31 @@ namespace skyline::soc::host1x {
         u32 storedMethod{}; //!< Method used by non-streamed callers
         std::unordered_map<u64, u32> streamStoredMethods; //!< THI Method0 state scoped to an individual nvhost channel instance
 
-        std::queue<u32> incrQueue; //!< Queue of syncpoint IDs to be incremented when a device operation is finished, the same syncpoint may be held multiple times within the queue
+        struct PendingIncr {
+            u32 syncpointId;
+            u64 streamId;
+        };
+
+        std::queue<PendingIncr> incrQueue; //!< Queue of syncpoint IDs to be incremented when a device operation is finished, the same syncpoint may be held multiple times within the queue
         std::mutex incrMutex;
 
-        void AddIncr(u32 syncpointId) {
+        void AddIncr(u32 syncpointId, u64 streamId) {
             std::scoped_lock lock(incrMutex);
-            incrQueue.push(syncpointId);
+            incrQueue.push({syncpointId, streamId});
         }
 
         void SubmitPendingIncrs() {
             std::scoped_lock lock(incrMutex);
 
             while (!incrQueue.empty()) {
-                u32 syncpointId{incrQueue.front()};
+                auto pending{incrQueue.front()};
                 incrQueue.pop();
 
-                LOGD("Increment syncpoint: {}", syncpointId);
-                syncpoints.at(syncpointId).Increment();
+                auto before{syncpoints.at(pending.syncpointId).host.Load()};
+                syncpoints.at(pending.syncpointId).Increment();
+                auto after{syncpoints.at(pending.syncpointId).host.Load()};
+                LOGI("XV2-SYNC THI-opdone stream={} syncpoint={} hw-before={} hw-after={}",
+                     pending.streamId, pending.syncpointId, before, after);
             }
         }
 
@@ -55,9 +63,10 @@ namespace skyline::soc::host1x {
             constexpr u32 Method1MethodId{0x11}; //!< Calls the method set by Method1 with the supplied argument, see TRM '15.5.7 NV_PVIC_THI_METHOD1"
 
             u32 *activeStoredMethod{&storedMethod};
+            u64 traceStreamId{};
             if constexpr (sizeof...(Context) == 1) {
-                u64 streamId{static_cast<u64>(std::get<0>(std::forward_as_tuple(context...)))};
-                activeStoredMethod = &streamStoredMethods[streamId];
+                traceStreamId = static_cast<u64>(std::get<0>(std::forward_as_tuple(context...)));
+                activeStoredMethod = &streamStoredMethods[traceStreamId];
             } else {
                 static_assert(sizeof...(Context) == 0, "Only one stream context value is supported");
             }
@@ -67,13 +76,18 @@ namespace skyline::soc::host1x {
                     IncrementSyncpointMethod incrSyncpoint{.raw = argument};
 
                     switch (incrSyncpoint.condition) {
-                        case IncrementSyncpointMethod::Condition::Immediate:
-                            LOGD("Increment syncpoint: {}", incrSyncpoint.index);
+                        case IncrementSyncpointMethod::Condition::Immediate: {
+                            auto before{syncpoints.at(incrSyncpoint.index).host.Load()};
                             syncpoints.at(incrSyncpoint.index).Increment();
+                            auto after{syncpoints.at(incrSyncpoint.index).host.Load()};
+                            LOGI("XV2-SYNC THI-immediate stream={} syncpoint={} hw-before={} hw-after={}",
+                                 traceStreamId, incrSyncpoint.index, before, after);
                             break;
+                        }
                         case IncrementSyncpointMethod::Condition::OpDone:
-                            LOGD("Queue syncpoint for OpDone: {}", incrSyncpoint.index);
-                            AddIncr(incrSyncpoint.index);
+                            LOGI("XV2-SYNC THI-opdone-queue stream={} syncpoint={} hw={}",
+                                 traceStreamId, incrSyncpoint.index, syncpoints.at(incrSyncpoint.index).host.Load());
+                            AddIncr(incrSyncpoint.index, traceStreamId);
                             // Submitting immediately is correct as class operations execute synchronously within the FIFO thread,
                             // by the time this method is processed any prior operation has already completed; the opDoneCallback
                             // exists for a future asynchronous execution model

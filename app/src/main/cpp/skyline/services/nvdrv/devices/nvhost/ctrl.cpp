@@ -10,8 +10,12 @@ namespace skyline::service::nvdrv::device::nvhost {
     Ctrl::SyncpointEvent::SyncpointEvent(const DeviceState &state) : event(std::make_shared<type::KEvent>(state, false)) {}
 
     void Ctrl::SyncpointEvent::Signal() {
+        auto previousState{state.exchange(State::Signalled)};
+        LOGI("XV2-SYNC event-signal syncpoint={} threshold={} previous-state={}",
+             fence.id, fence.threshold, static_cast<u32>(previousState));
+
         // We should only signal the KEvent if the event is actively being waited on
-        if (state.exchange(State::Signalled) == State::Waiting)
+        if (previousState == State::Waiting)
             event->Signal();
     }
 
@@ -23,6 +27,8 @@ namespace skyline::service::nvdrv::device::nvhost {
     void Ctrl::SyncpointEvent::RegisterWaiter(soc::host1x::Host1x &host1x, const Fence &pFence) {
         fence = pFence;
         state = State::Waiting;
+        LOGI("XV2-SYNC event-register syncpoint={} threshold={} hw={}",
+             fence.id, fence.threshold, host1x.syncpoints.at(fence.id).host.Load());
         waiterHandle = host1x.syncpoints.at(fence.id).host.RegisterWaiter(fence.threshold, [this] { Signal(); });
     }
 
@@ -102,9 +108,16 @@ namespace skyline::service::nvdrv::device::nvhost {
             return PosixResult::Success;
         }
 
+        auto maxVal{core.syncpointManager.GetSyncpointFence(fence.id).threshold};
+        auto hwVal{state.soc->host1x.syncpoints.at(fence.id).host.Load()};
+        LOGI("XV2-SYNC wait-pending syncpoint={} threshold={} timeout={} allocate={} min={} hw={} max={}",
+             fence.id, fence.threshold, timeout, allocate, minVal, hwVal, maxVal);
+
         // Don't try to register any waits if there is no timeout for them
-        if (!timeout)
+        if (!timeout) {
+            LOGI("XV2-SYNC wait-result syncpoint={} threshold={} result=TryAgain-no-timeout", fence.id, fence.threshold);
             return PosixResult::TryAgain;
+        }
 
         std::scoped_lock lock{syncpointEventMutex};
 
@@ -125,7 +138,8 @@ namespace skyline::service::nvdrv::device::nvhost {
             return PosixResult::InvalidArgument;
 
         if (!event->IsInUse()) {
-            LOGD("Waiting on syncpoint event: {} with fence: ({}, {})", slot, fence.id, fence.threshold);
+            LOGI("XV2-SYNC wait-register slot={} syncpoint={} threshold={} min={} hw={} max={}",
+                 slot, fence.id, fence.threshold, minVal, hwVal, maxVal);
             event->RegisterWaiter(state.soc->host1x, fence);
 
             value.val = 0;
@@ -140,8 +154,10 @@ namespace skyline::service::nvdrv::device::nvhost {
             // Slot will overwrite some of syncpointId here... it makes no sense for Nvidia to do this
             value.val |= slot;
 
+            LOGI("XV2-SYNC wait-result slot={} syncpoint={} threshold={} result=TryAgain-event", slot, fence.id, fence.threshold);
             return PosixResult::TryAgain;
         } else {
+            LOGI("XV2-SYNC wait-result slot={} syncpoint={} threshold={} result=InvalidArgument-event-busy", slot, fence.id, fence.threshold);
             return PosixResult::InvalidArgument;
         }
     }
@@ -176,7 +192,9 @@ namespace skyline::service::nvdrv::device::nvhost {
             return PosixResult::InvalidArgument;
 
         if (event->state.exchange(SyncpointEvent::State::Cancelling) == SyncpointEvent::State::Waiting) {
-            LOGD("Cancelling waiting syncpoint event: {}", slot);
+            LOGI("XV2-SYNC wait-cancel slot={} syncpoint={} threshold={} hw={}",
+                 slot, event->fence.id, event->fence.threshold,
+                 state.soc->host1x.syncpoints.at(event->fence.id).host.Load());
             event->Cancel(state.soc->host1x);
             core.syncpointManager.UpdateMin(event->fence.id);
         }
@@ -249,9 +267,13 @@ namespace skyline::service::nvdrv::device::nvhost {
         std::scoped_lock lock{syncpointEventMutex};
 
         auto &event{syncpointEvents[slot]};
-        if (event && event->fence.id == syncpointId)
+        if (event && event->fence.id == syncpointId) {
+            LOGI("XV2-SYNC query-event slot={} syncpoint={} threshold={} state={}",
+                 slot, syncpointId, event->fence.threshold, static_cast<u32>(event->state.load()));
             return event->event;
+        }
 
+        LOGI("XV2-SYNC query-event-miss slot={} syncpoint={} has-event={}", slot, syncpointId, static_cast<bool>(event));
         return nullptr;
     }
 
