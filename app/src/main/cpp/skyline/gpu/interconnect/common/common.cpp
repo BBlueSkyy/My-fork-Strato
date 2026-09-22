@@ -4,6 +4,7 @@
 #include <gpu/buffer_manager.h>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
+#include <xv2_trace.h>
 #include "common.h"
 
 namespace skyline::gpu::interconnect {
@@ -50,6 +51,14 @@ namespace skyline::gpu::interconnect {
     void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset, std::source_location location) {
         ContextLock lock{executor.tag, view};
         view.Read(lock.IsFirstUsage(), [location, srcOffset, size = dstBuffer.size()] {
+            if (diagnostics::xv2::PostCloseActive()) {
+                auto traceSequence{diagnostics::xv2::NextDirtyReadSequence()};
+                if (traceSequence < 128)
+                    LOGI("XV2-TRACE gpu-dirty-read epoch={} stream={} seq={} caller={}:{} function={} offset=0x{:X} size=0x{:X}",
+                         diagnostics::xv2::Epoch(), diagnostics::xv2::LastClosedStreamId(), traceSequence,
+                         location.file_name(), location.line(), location.function_name(), srcOffset, size);
+            }
+
             // TODO: here we should trigger `Execute()`, however that doesn't currently work due to Read being called mid-draw and attached objects not handling this case
             LOGW("GPU dirty buffer reads for attached buffers are unimplemented (caller: {}:{}, function: {}, offset: 0x{:X}, size: 0x{:X})",
                  location.file_name(), location.line(), location.function_name(), srcOffset, size);

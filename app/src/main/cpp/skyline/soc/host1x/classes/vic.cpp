@@ -20,7 +20,13 @@ namespace skyline::soc::host1x {
             return;
         }
 
-        auto &registers{streamRegisters[streamId]};
+        auto streamIt{streamRegisters.find(streamId)};
+        if (streamIt == streamRegisters.end()) {
+            streamIt = streamRegisters.try_emplace(streamId).first;
+            LOGI("XV2-TRACE VIC stream created stream={}", streamId);
+        }
+
+        auto &registers{streamIt->second};
         registers.raw[method] = argument;
 
         if (method == ExecuteMethodId)
@@ -79,5 +85,6 @@ namespace skyline::soc::host1x {
 
     void VicClass::CloseStream(u64 streamId) {
         streamRegisters.erase(streamId);
+        LOGI("XV2-TRACE VIC stream destroyed stream={}", streamId);
     }
 }
