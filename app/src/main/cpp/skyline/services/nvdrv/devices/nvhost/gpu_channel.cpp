@@ -16,10 +16,18 @@ namespace skyline::service::nvdrv::device::nvhost {
     }
 
     GpuChannel::~GpuChannel() {
+        if (diagnostics::xv2::PostCloseActive())
+            LOGI("XV2-TEARDOWN gpu-channel-destructor-body-begin epoch={} syncpoint={}",
+                 diagnostics::xv2::Epoch(), channelSyncpoint);
+
         // Return the syncpoint allocated in the constructor back to the shared pool,
         // otherwise every channel open permanently consumes one of the fixed slots
         // until the process eventually crashes on FindFreeSyncpoint() exhaustion.
         core.syncpointManager.ReleaseSyncpoint(channelSyncpoint);
+
+        if (diagnostics::xv2::PostCloseActive())
+            LOGI("XV2-TEARDOWN gpu-channel-destructor-body-end epoch={} syncpoint={}",
+                 diagnostics::xv2::Epoch(), channelSyncpoint);
     }
 
     static constexpr size_t SyncpointWaitCmdLen{4};

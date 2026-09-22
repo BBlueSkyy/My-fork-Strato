@@ -12,6 +12,7 @@
 #include <dlfcn.h>
 #include "command_executor.h"
 #include <nce.h>
+#include <xv2_trace.h>
 
 namespace skyline::gpu::interconnect {
     static void RecordFullBarrier(vk::raii::CommandBuffer &commandBuffer) {
@@ -327,7 +328,17 @@ namespace skyline::gpu::interconnect {
     }
 
     CommandExecutor::~CommandExecutor() {
+        if (diagnostics::xv2::PostCloseActive()) {
+            LOGI("XV2-TEARDOWN command-executor-destructor-begin epoch={}", diagnostics::xv2::Epoch());
+            LOGI("XV2-TEARDOWN fence-cycle-cancel-begin epoch={}", diagnostics::xv2::Epoch());
+        }
+
         cycle->Cancel();
+
+        if (diagnostics::xv2::PostCloseActive()) {
+            LOGI("XV2-TEARDOWN fence-cycle-cancel-end epoch={}", diagnostics::xv2::Epoch());
+            LOGI("XV2-TEARDOWN command-executor-destructor-body-end epoch={}", diagnostics::xv2::Epoch());
+        }
     }
 
     void CommandExecutor::RotateRecordSlot() {

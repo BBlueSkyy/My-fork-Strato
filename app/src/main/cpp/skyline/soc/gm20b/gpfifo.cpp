@@ -449,9 +449,24 @@ namespace skyline::soc::gm20b {
     }
 
     ChannelGpfifo::~ChannelGpfifo() {
+        if (diagnostics::xv2::PostCloseActive())
+            LOGI("XV2-TEARDOWN gpfifo-destructor-begin epoch={} joinable={}",
+                 diagnostics::xv2::Epoch(), thread.joinable());
+
         if (thread.joinable()) {
+            if (diagnostics::xv2::PostCloseActive())
+                LOGI("XV2-TEARDOWN gpfifo-queue-close-begin epoch={}", diagnostics::xv2::Epoch());
             gpEntries.Close();
+            if (diagnostics::xv2::PostCloseActive()) {
+                LOGI("XV2-TEARDOWN gpfifo-queue-close-end epoch={}", diagnostics::xv2::Epoch());
+                LOGI("XV2-TEARDOWN gpfifo-join-begin epoch={}", diagnostics::xv2::Epoch());
+            }
             thread.join();
+            if (diagnostics::xv2::PostCloseActive())
+                LOGI("XV2-TEARDOWN gpfifo-join-end epoch={}", diagnostics::xv2::Epoch());
         }
+
+        if (diagnostics::xv2::PostCloseActive())
+            LOGI("XV2-TEARDOWN gpfifo-destructor-body-end epoch={}", diagnostics::xv2::Epoch());
     }
 }

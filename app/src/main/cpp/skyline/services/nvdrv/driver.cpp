@@ -188,8 +188,11 @@ namespace skyline::service::nvdrv {
                     LOGI("XV2-NVDRV close epoch={} seq={} fd={} device={}",
                          diagnostics::xv2::Epoch(), seq, fd,
                          devices.contains(fd) ? devices.at(fd)->GetName() : "<invalid>");
+                LOGI("XV2-TEARDOWN close-device-begin epoch={} fd={}", diagnostics::xv2::Epoch(), fd);
             }
             devices.erase(fd);
+            if (diagnostics::xv2::PostCloseActive())
+                LOGI("XV2-TEARDOWN close-device-end epoch={} fd={}", diagnostics::xv2::Epoch(), fd);
         } catch (const std::out_of_range &) {
             LOGW("Trying to close invalid fd: {}", fd);
         }
