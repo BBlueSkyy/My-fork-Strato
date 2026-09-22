@@ -50,25 +50,23 @@ namespace skyline::soc::gm20b::engine {
                 } else if (action.operation == Registers::Syncpoint::Operation::Wait) {
                     auto guestBefore{syncpoint.guest.Load()};
                     auto hostBefore{syncpoint.host.Load()};
-                    if (traceSeq < 256)
-                        LOGI("XV2-GPFIFO syncpoint-wait epoch={} seq={} id={} threshold={} wait-switch={} guest={} host={}",
-                             diagnostics::xv2::Epoch(), traceSeq, +action.index, payload,
-                             static_cast<u32>(action.waitSwitch), guestBefore, hostBefore);
+                    LOGI("XV2-GPFIFO-BLOCK syncpoint-wait epoch={} id={} threshold={} wait-switch={} guest={} host={}",
+                         diagnostics::xv2::Epoch(), +action.index, payload,
+                         static_cast<u32>(action.waitSwitch), guestBefore, hostBefore);
 
                     // Wait forever for another channel to increment
                     channelCtx.executor.Submit();
                     channelCtx.Unlock();
 
-                    if (traceSeq < 256)
-                        LOGI("XV2-GPFIFO wait-enter epoch={} seq={} id={} threshold={} host={}",
-                             diagnostics::xv2::Epoch(), traceSeq, +action.index, payload, syncpoint.host.Load());
+                    LOGI("XV2-GPFIFO-BLOCK wait-enter epoch={} id={} threshold={} guest={} host={}",
+                         diagnostics::xv2::Epoch(), +action.index, payload,
+                         syncpoint.guest.Load(), syncpoint.host.Load());
 
                     bool waitResult{syncpoint.host.Wait(payload, std::chrono::steady_clock::duration::max())};
 
-                    if (traceSeq < 256)
-                        LOGI("XV2-GPFIFO wait-exit epoch={} seq={} id={} threshold={} result={} guest={} host={}",
-                             diagnostics::xv2::Epoch(), traceSeq, +action.index, payload, waitResult,
-                             syncpoint.guest.Load(), syncpoint.host.Load());
+                    LOGI("XV2-GPFIFO-BLOCK wait-exit epoch={} id={} threshold={} result={} guest={} host={}",
+                         diagnostics::xv2::Epoch(), +action.index, payload, waitResult,
+                         syncpoint.guest.Load(), syncpoint.host.Load());
 
                     channelCtx.Lock();
                 }
@@ -81,21 +79,19 @@ namespace skyline::soc::gm20b::engine {
                     case Registers::Semaphore::Operation::Acquire: {
                         auto payload{registers.semaphore->payload};
                         auto initial{channelCtx.asCtx->gmmu.Read<u32>(address)};
-                        if (traceSeq < 256)
-                            LOGI("XV2-GPFIFO semaphore-acquire epoch={} seq={} address=0x{:X} payload={} initial={}",
-                                 diagnostics::xv2::Epoch(), traceSeq, address, payload, initial);
+                        LOGI("XV2-GPFIFO-BLOCK semaphore-acquire epoch={} address=0x{:X} payload={} initial={}",
+                             diagnostics::xv2::Epoch(), address, payload, initial);
                         channelCtx.executor.Submit();
                         channelCtx.Unlock();
 
-                        if (traceSeq < 256)
-                            LOGI("XV2-GPFIFO semaphore-acquire-enter epoch={} seq={} address=0x{:X}", diagnostics::xv2::Epoch(), traceSeq, address);
+                        LOGI("XV2-GPFIFO-BLOCK semaphore-acquire-enter epoch={} address=0x{:X}",
+                             diagnostics::xv2::Epoch(), address);
 
                         while (channelCtx.asCtx->gmmu.Read<u32>(address) != payload)
                             std::this_thread::yield();
 
-                        if (traceSeq < 256)
-                            LOGI("XV2-GPFIFO semaphore-acquire-exit epoch={} seq={} address=0x{:X} value={}",
-                                 diagnostics::xv2::Epoch(), traceSeq, address, channelCtx.asCtx->gmmu.Read<u32>(address));
+                        LOGI("XV2-GPFIFO-BLOCK semaphore-acquire-exit epoch={} address=0x{:X} value={}",
+                             diagnostics::xv2::Epoch(), address, channelCtx.asCtx->gmmu.Read<u32>(address));
 
                         channelCtx.Lock();
                         break;
@@ -120,21 +116,19 @@ namespace skyline::soc::gm20b::engine {
                     case Registers::Semaphore::Operation::AcqGeq: {
                         auto payload{registers.semaphore->payload};
                         auto initial{channelCtx.asCtx->gmmu.Read<u32>(address)};
-                        if (traceSeq < 256)
-                            LOGI("XV2-GPFIFO semaphore-acqgeq epoch={} seq={} address=0x{:X} payload={} initial={}",
-                                 diagnostics::xv2::Epoch(), traceSeq, address, payload, initial);
+                        LOGI("XV2-GPFIFO-BLOCK semaphore-acqgeq epoch={} address=0x{:X} payload={} initial={}",
+                             diagnostics::xv2::Epoch(), address, payload, initial);
                         channelCtx.executor.Submit();
                         channelCtx.Unlock();
 
-                        if (traceSeq < 256)
-                            LOGI("XV2-GPFIFO semaphore-acqgeq-enter epoch={} seq={} address=0x{:X}", diagnostics::xv2::Epoch(), traceSeq, address);
+                        LOGI("XV2-GPFIFO-BLOCK semaphore-acqgeq-enter epoch={} address=0x{:X}",
+                             diagnostics::xv2::Epoch(), address);
 
                         while (channelCtx.asCtx->gmmu.Read<u32>(address) < payload)
                             std::this_thread::yield();
 
-                        if (traceSeq < 256)
-                            LOGI("XV2-GPFIFO semaphore-acqgeq-exit epoch={} seq={} address=0x{:X} value={}",
-                                 diagnostics::xv2::Epoch(), traceSeq, address, channelCtx.asCtx->gmmu.Read<u32>(address));
+                        LOGI("XV2-GPFIFO-BLOCK semaphore-acqgeq-exit epoch={} address=0x{:X} value={}",
+                             diagnostics::xv2::Epoch(), address, channelCtx.asCtx->gmmu.Read<u32>(address));
 
                         channelCtx.Lock();
                         break;

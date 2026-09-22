@@ -373,6 +373,7 @@ namespace skyline::soc::gm20b {
         if (int result{pthread_setname_np(pthread_self(), "GPFIFO")})
             LOGW("Failed to set the thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
+        LOGI("XV2-GPFIFO-THREAD start epoch={}", diagnostics::xv2::Epoch());
 
         try {
             bool channelLocked{};
@@ -407,17 +408,21 @@ namespace skyline::soc::gm20b {
                     channelLocked = false;
                 }
             });
+            LOGI("XV2-GPFIFO-THREAD process-loop-exit epoch={}", diagnostics::xv2::Epoch());
         } catch (const signal::SignalException &e) {
+            LOGI("XV2-GPFIFO-THREAD signal-exit epoch={} signal={}", diagnostics::xv2::Epoch(), e.signal);
             if (e.signal != SIGINT) {
                 LOGE("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
                 signal::BlockSignal({SIGINT});
                 state.process->Kill(false);
             }
         } catch (const exception &e) {
+            LOGI("XV2-GPFIFO-THREAD skyline-exception epoch={}", diagnostics::xv2::Epoch());
             LOGENF("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
             signal::BlockSignal({SIGINT});
             state.process->Kill(false);
         } catch (const std::exception &e) {
+            LOGI("XV2-GPFIFO-THREAD std-exception epoch={}", diagnostics::xv2::Epoch());
             LOGE("{}", e.what());
             signal::BlockSignal({SIGINT});
             state.process->Kill(false);
