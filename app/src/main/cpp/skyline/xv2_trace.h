@@ -17,6 +17,8 @@ namespace skyline::diagnostics::xv2 {
     inline std::atomic<std::uint32_t> postClosePresentSequence{};
     inline std::atomic<std::uint32_t> postCloseSvcWaitSequence{};
     inline std::atomic<std::uint32_t> postClosePullerSequence{};
+    inline std::atomic<std::uint32_t> postCloseIpcSequence{};
+    inline std::atomic<std::uint32_t> postCloseNvdrvSequence{};
 
     inline std::uint64_t MarkStreamClosed(std::uint64_t streamId) {
         lastClosedStreamId.store(streamId, std::memory_order_relaxed);
@@ -30,6 +32,8 @@ namespace skyline::diagnostics::xv2 {
         postClosePresentSequence.store(0, std::memory_order_relaxed);
         postCloseSvcWaitSequence.store(0, std::memory_order_relaxed);
         postClosePullerSequence.store(0, std::memory_order_relaxed);
+        postCloseIpcSequence.store(0, std::memory_order_relaxed);
+        postCloseNvdrvSequence.store(0, std::memory_order_relaxed);
         return postCloseEpoch.fetch_add(1, std::memory_order_relaxed) + 1;
     }
 
@@ -83,5 +87,13 @@ namespace skyline::diagnostics::xv2 {
 
     inline std::uint32_t NextPullerSequence() {
         return postClosePullerSequence.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    inline std::uint32_t NextIpcSequence() {
+        return postCloseIpcSequence.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    inline std::uint32_t NextNvdrvSequence() {
+        return postCloseNvdrvSequence.fetch_add(1, std::memory_order_relaxed);
     }
 }

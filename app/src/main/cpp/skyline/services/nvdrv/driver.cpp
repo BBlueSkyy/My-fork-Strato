@@ -8,6 +8,7 @@
 #include "devices/nvhost/gpu_channel.h"
 #include "devices/nvhost/as_gpu.h"
 #include "devices/nvhost/host1x_channel.h"
+#include <xv2_trace.h>
 
 namespace skyline::service::nvdrv {
     Driver::Driver(const DeviceState &state) : state(state), core(state) {}
@@ -106,9 +107,22 @@ namespace skyline::service::nvdrv {
     NvResult Driver::Ioctl(FileDescriptor fd, IoctlDescriptor cmd, span<u8> buffer) {
         try {
             std::shared_lock lock(deviceMutex);
-            LOGD("fd: {}, cmd: 0x{:X}, device: {}", fd, cmd.raw, devices.at(fd)->GetName());
+            auto &device{devices.at(fd)};
+            LOGD("fd: {}, cmd: 0x{:X}, device: {}", fd, cmd.raw, device->GetName());
             TRACE_EVENT("service", "Ioctl", "fd", fd, "cmd", cmd.raw);
-            return ConvertResult(LogIoctlResult(devices.at(fd)->Ioctl(cmd, buffer), cmd.raw));
+            u32 traceSeq{256};
+            if (diagnostics::xv2::PostCloseActive()) {
+                traceSeq = diagnostics::xv2::NextNvdrvSequence();
+                if (traceSeq < 256)
+                    LOGI("XV2-NVDRV ioctl-enter epoch={} seq={} kind=1 fd={} device={} raw=0x{:X} magic=0x{:X} function=0x{:X} size=0x{:X} in={} out={}",
+                         diagnostics::xv2::Epoch(), traceSeq, fd, device->GetName(), cmd.raw,
+                         static_cast<u8>(cmd.magic), cmd.function, cmd.size, cmd.in, cmd.out);
+            }
+            auto result{ConvertResult(LogIoctlResult(device->Ioctl(cmd, buffer), cmd.raw))};
+            if (traceSeq < 256)
+                LOGI("XV2-NVDRV ioctl-return epoch={} seq={} kind=1 fd={} raw=0x{:X} result=0x{:X}",
+                     diagnostics::xv2::Epoch(), traceSeq, fd, cmd.raw, static_cast<i32>(result));
+            return result;
         } catch (const std::out_of_range &) {
             throw exception("Ioctl was called with invalid fd: {}", fd);
         }
@@ -117,9 +131,22 @@ namespace skyline::service::nvdrv {
     NvResult Driver::Ioctl2(FileDescriptor fd, IoctlDescriptor cmd, span<u8> buffer, span<u8> inlineBuffer) {
         try {
             std::shared_lock lock(deviceMutex);
-            LOGD("fd: {}, cmd: 0x{:X}, device: {}", fd, cmd.raw, devices.at(fd)->GetName());
+            auto &device{devices.at(fd)};
+            LOGD("fd: {}, cmd: 0x{:X}, device: {}", fd, cmd.raw, device->GetName());
             TRACE_EVENT("service", "Ioctl", "fd", fd, "cmd", cmd.raw);
-            return ConvertResult(LogIoctlResult(devices.at(fd)->Ioctl2(cmd, buffer, inlineBuffer), cmd.raw));
+            u32 traceSeq{256};
+            if (diagnostics::xv2::PostCloseActive()) {
+                traceSeq = diagnostics::xv2::NextNvdrvSequence();
+                if (traceSeq < 256)
+                    LOGI("XV2-NVDRV ioctl-enter epoch={} seq={} kind=2 fd={} device={} raw=0x{:X} magic=0x{:X} function=0x{:X} size=0x{:X} in={} out={} inline-size={}",
+                         diagnostics::xv2::Epoch(), traceSeq, fd, device->GetName(), cmd.raw,
+                         static_cast<u8>(cmd.magic), cmd.function, cmd.size, cmd.in, cmd.out, inlineBuffer.size());
+            }
+            auto result{ConvertResult(LogIoctlResult(device->Ioctl2(cmd, buffer, inlineBuffer), cmd.raw))};
+            if (traceSeq < 256)
+                LOGI("XV2-NVDRV ioctl-return epoch={} seq={} kind=2 fd={} raw=0x{:X} result=0x{:X}",
+                     diagnostics::xv2::Epoch(), traceSeq, fd, cmd.raw, static_cast<i32>(result));
+            return result;
         } catch (const std::out_of_range &) {
             throw exception("Ioctl2 was called with invalid fd: {}", fd);
         }
@@ -128,9 +155,22 @@ namespace skyline::service::nvdrv {
     NvResult Driver::Ioctl3(FileDescriptor fd, IoctlDescriptor cmd, span<u8> buffer, span<u8> inlineBuffer) {
         try {
             std::shared_lock lock(deviceMutex);
-            LOGD("fd: {}, cmd: 0x{:X}, device: {}", fd, cmd.raw, devices.at(fd)->GetName());
+            auto &device{devices.at(fd)};
+            LOGD("fd: {}, cmd: 0x{:X}, device: {}", fd, cmd.raw, device->GetName());
             TRACE_EVENT("service", "Ioctl", "fd", fd, "cmd", cmd.raw);
-            return ConvertResult(LogIoctlResult(devices.at(fd)->Ioctl3(cmd, buffer, inlineBuffer), cmd.raw));
+            u32 traceSeq{256};
+            if (diagnostics::xv2::PostCloseActive()) {
+                traceSeq = diagnostics::xv2::NextNvdrvSequence();
+                if (traceSeq < 256)
+                    LOGI("XV2-NVDRV ioctl-enter epoch={} seq={} kind=3 fd={} device={} raw=0x{:X} magic=0x{:X} function=0x{:X} size=0x{:X} in={} out={} inline-size={}",
+                         diagnostics::xv2::Epoch(), traceSeq, fd, device->GetName(), cmd.raw,
+                         static_cast<u8>(cmd.magic), cmd.function, cmd.size, cmd.in, cmd.out, inlineBuffer.size());
+            }
+            auto result{ConvertResult(LogIoctlResult(device->Ioctl3(cmd, buffer, inlineBuffer), cmd.raw))};
+            if (traceSeq < 256)
+                LOGI("XV2-NVDRV ioctl-return epoch={} seq={} kind=3 fd={} raw=0x{:X} result=0x{:X}",
+                     diagnostics::xv2::Epoch(), traceSeq, fd, cmd.raw, static_cast<i32>(result));
+            return result;
         } catch (const std::out_of_range &) {
             throw exception("Ioctl3 was called with invalid fd: {}", fd);
         }
@@ -139,6 +179,13 @@ namespace skyline::service::nvdrv {
     void Driver::CloseDevice(FileDescriptor fd) {
         try {
             std::unique_lock lock(deviceMutex);
+            if (diagnostics::xv2::PostCloseActive()) {
+                auto seq{diagnostics::xv2::NextNvdrvSequence()};
+                if (seq < 256)
+                    LOGI("XV2-NVDRV close epoch={} seq={} fd={} device={}",
+                         diagnostics::xv2::Epoch(), seq, fd,
+                         devices.contains(fd) ? devices.at(fd)->GetName() : "<invalid>");
+            }
             devices.erase(fd);
         } catch (const std::out_of_range &) {
             LOGW("Trying to close invalid fd: {}", fd);
@@ -150,7 +197,14 @@ namespace skyline::service::nvdrv {
 
         try {
             std::shared_lock lock(deviceMutex);
-            return devices.at(fd)->QueryEvent(eventId);
+            auto &device{devices.at(fd)};
+            if (diagnostics::xv2::PostCloseActive()) {
+                auto seq{diagnostics::xv2::NextNvdrvSequence()};
+                if (seq < 256)
+                    LOGI("XV2-NVDRV query-event epoch={} seq={} fd={} device={} event-id=0x{:X}",
+                         diagnostics::xv2::Epoch(), seq, fd, device->GetName(), eventId);
+            }
+            return device->QueryEvent(eventId);
         } catch (const std::exception &) {
             throw exception("QueryEvent was called with invalid fd: {}", fd);
         }

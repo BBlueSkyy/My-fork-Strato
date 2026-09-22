@@ -3,6 +3,7 @@
 
 #include <cxxabi.h>
 #include <common/trace.h>
+#include <xv2_trace.h>
 #include "base_service.h"
 
 namespace skyline::service {
@@ -31,8 +32,19 @@ namespace skyline::service {
             return {};
         }
         TRACE_EVENT("service", perfetto::StaticString{function.name});
+        u32 traceSeq{512};
+        if (diagnostics::xv2::PostCloseActive()) {
+            traceSeq = diagnostics::xv2::NextIpcSequence();
+            if (traceSeq < 512)
+                LOGI("XV2-IPC enter epoch={} seq={} service={} function={} id=0x{:X} tipc={}",
+                     diagnostics::xv2::Epoch(), traceSeq, GetName(), function.name, functionId, request.isTipc);
+        }
         try {
-            return function(session, request, response);
+            auto result{function(session, request, response)};
+            if (traceSeq < 512)
+                LOGI("XV2-IPC return epoch={} seq={} service={} function={} id=0x{:X} result=0x{:X}",
+                     diagnostics::xv2::Epoch(), traceSeq, GetName(), function.name, functionId, result.raw);
+            return result;
         } catch (exception &e) {
             // We need to forward any skyline::exception objects without modification even though they inherit from std::exception
             std::rethrow_exception(std::current_exception());

@@ -179,9 +179,12 @@ namespace skyline::service::nvdrv::device::nvhost {
 
     PosixResult GpuChannel::SetErrorNotifier(In<u64> offset, In<u64> size, In<u32> mem) {
         LOGD("offset: 0x{:X}, size: 0x{:X}, mem: 0x{:X}", offset, size, mem);
-        if (diagnostics::xv2::PostCloseActive())
+        if (diagnostics::xv2::PostCloseActive()) {
             LOGI("XV2-FLOW set-error-notifier epoch={} offset=0x{:X} size=0x{:X} mem=0x{:X}",
                  diagnostics::xv2::Epoch(), offset, size, mem);
+            LOGI("XV2-FLOW set-error-notifier-return epoch={} result=0x{:X}",
+                 diagnostics::xv2::Epoch(), static_cast<i32>(PosixResult::Success));
+        }
         return PosixResult::Success;
     }
 
