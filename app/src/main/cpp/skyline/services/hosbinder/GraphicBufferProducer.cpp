@@ -9,6 +9,7 @@
 #include <services/nvdrv/devices/nvmap.h>
 #include <services/common/fence.h>
 #include "GraphicBufferProducer.h"
+#include <xv2_trace.h>
 
 namespace skyline::service::hosbinder {
     GraphicBufferProducer::GraphicBufferProducer(const DeviceState &state, nvdrv::core::NvMap &nvMap) : state(state), bufferEvent(std::make_shared<kernel::type::KEvent>(state, true)), nvMap(nvMap) {}
@@ -84,6 +85,14 @@ namespace skyline::service::hosbinder {
     }
 
     AndroidStatus GraphicBufferProducer::DequeueBuffer(bool async, u32 width, u32 height, AndroidPixelFormat format, u32 usage, i32 &slot, std::optional<AndroidFence> &fence) {
+        u32 traceSeq{128};
+        if (diagnostics::xv2::PostCloseActive()) {
+            traceSeq = diagnostics::xv2::NextBufferQueueSequence();
+            if (traceSeq < 128)
+                LOGI("XV2-FLOW dequeue begin epoch={} seq={} async={} size={}x{} format={} usage=0x{:X}",
+                     diagnostics::xv2::Epoch(), traceSeq, async, width, height, static_cast<u32>(format), usage);
+        }
+
         if ((width && !height) || (!width && height)) {
             LOGW("Dimensions {}x{} should be uniformly zero or non-zero", width, height);
             return AndroidStatus::BadValue;
@@ -122,6 +131,9 @@ namespace skyline::service::hosbinder {
 
         if (slot == InvalidGraphicBufferSlot) [[unlikely]]
             return AndroidStatus::InvalidOperation;
+
+        if (traceSeq < 128)
+            LOGI("XV2-FLOW dequeue selected epoch={} seq={} slot={}", diagnostics::xv2::Epoch(), traceSeq, slot);
 
         width = width ? width : defaultWidth;
         height = height ? height : defaultHeight;
@@ -252,6 +264,14 @@ namespace skyline::service::hosbinder {
     }
 
     AndroidStatus GraphicBufferProducer::QueueBuffer(i32 slot, i64 timestamp, bool isAutoTimestamp, AndroidRect crop, NativeWindowScalingMode scalingMode, NativeWindowTransform transform, NativeWindowTransform stickyTransform, bool async, u32 swapInterval, const AndroidFence &fence, u32 &width, u32 &height, NativeWindowTransform &transformHint, u32 &pendingBufferCount) {
+        u32 traceSeq{128};
+        if (diagnostics::xv2::PostCloseActive()) {
+            traceSeq = diagnostics::xv2::NextBufferQueueSequence();
+            if (traceSeq < 128)
+                LOGI("XV2-FLOW queue begin epoch={} seq={} slot={} timestamp={} auto={} swap={} fence-id={} fence-threshold={}",
+                     diagnostics::xv2::Epoch(), traceSeq, slot, timestamp, isAutoTimestamp, swapInterval, fence.id, fence.threshold);
+        }
+
         switch (scalingMode) {
             case NativeWindowScalingMode::Freeze:
             case NativeWindowScalingMode::ScaleToWindow:
@@ -398,6 +418,8 @@ namespace skyline::service::hosbinder {
         lock.unlock();
 
         std::weak_ptr<GraphicBufferProducer> weakThis{shared_from_this()};
+        if (traceSeq < 128)
+            LOGI("XV2-FLOW queue present-call epoch={} seq={} slot={}", diagnostics::xv2::Epoch(), traceSeq, slot);
         state.gpu->presentation.Present(buffer.texture, isAutoTimestamp ? 0 : timestamp, swapInterval, crop, scalingMode, transform, fence, [weakThis, &buffer] {
             if (auto gbp{weakThis.lock()}) {
                 std::scoped_lock lock{gbp->mutex};

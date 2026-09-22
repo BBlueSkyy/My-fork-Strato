@@ -8,6 +8,7 @@
 #include <kernel/types/KProcess.h>
 #include <soc.h>
 #include <os.h>
+#include <xv2_trace.h>
 #include "channel.h"
 #include "macro/macro_state.h"
 
@@ -378,6 +379,12 @@ namespace skyline::soc::gm20b {
 
             gpEntries.Process([this, &channelLocked](GpEntry gpEntry) {
                 LOGD("Processing pushbuffer: 0x{:X}, Size: 0x{:X}", gpEntry.Address(), +gpEntry.size);
+                if (diagnostics::xv2::PostCloseActive()) {
+                    auto seq{diagnostics::xv2::NextGpfifoSequence()};
+                    if (seq < 256)
+                        LOGI("XV2-FLOW gpfifo process epoch={} seq={} address=0x{:X} words={}",
+                             diagnostics::xv2::Epoch(), seq, gpEntry.Address(), +gpEntry.size);
+                }
 
                 if (!channelLocked) {
                     channelCtx.Lock();
@@ -388,6 +395,12 @@ namespace skyline::soc::gm20b {
             }, [this, &channelLocked]() {
                 // If we run out of GpEntries to process ensure we submit any remaining GPU work before waiting for more to arrive
                 LOGD("Finished processing pushbuffer batch");
+                if (diagnostics::xv2::PostCloseActive()) {
+                    auto seq{diagnostics::xv2::NextGpfifoSequence()};
+                    if (seq < 256)
+                        LOGI("XV2-FLOW gpfifo batch-end epoch={} seq={} channel-locked={}",
+                             diagnostics::xv2::Epoch(), seq, channelLocked);
+                }
                 if (channelLocked) {
                     channelCtx.executor.Submit();
                     channelCtx.Unlock();
@@ -412,10 +425,21 @@ namespace skyline::soc::gm20b {
     }
 
     void ChannelGpfifo::Push(span<GpEntry> entries) {
+        if (diagnostics::xv2::PostCloseActive()) {
+            auto seq{diagnostics::xv2::NextGpfifoSequence()};
+            if (seq < 256)
+                LOGI("XV2-FLOW gpfifo push epoch={} seq={} entries={}", diagnostics::xv2::Epoch(), seq, entries.size());
+        }
         gpEntries.Append(entries);
     }
 
     void ChannelGpfifo::Push(GpEntry entry) {
+        if (diagnostics::xv2::PostCloseActive()) {
+            auto seq{diagnostics::xv2::NextGpfifoSequence()};
+            if (seq < 256)
+                LOGI("XV2-FLOW gpfifo push-one epoch={} seq={} address=0x{:X} words={}",
+                     diagnostics::xv2::Epoch(), seq, entry.Address(), +entry.size);
+        }
         gpEntries.Push(entry);
     }
 

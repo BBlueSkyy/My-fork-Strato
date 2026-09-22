@@ -11,6 +11,7 @@
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
 #include "presentation_engine.h"
+#include <xv2_trace.h>
 #include "native_window.h"
 #include "texture/format.h"
 
@@ -94,6 +95,12 @@ namespace skyline::gpu {
     }
 
     void PresentationEngine::PresentFrame(const PresentableFrame &frame) {
+        if (diagnostics::xv2::PostCloseActive()) {
+            auto seq{diagnostics::xv2::NextPresentSequence()};
+            if (seq < 96)
+                LOGI("XV2-FLOW present-frame begin epoch={} seq={} frame={}", diagnostics::xv2::Epoch(), seq, frame.id);
+        }
+
         std::unique_lock lock(mutex);
         surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
 
@@ -392,11 +399,22 @@ namespace skyline::gpu {
     }
 
     u64 PresentationEngine::Present(const std::shared_ptr<TextureView> &texture, i64 timestamp, i64 swapInterval, AndroidRect crop, NativeWindowScalingMode scalingMode, NativeWindowTransform transform, skyline::service::hosbinder::AndroidFence fence, const std::function<void()> &presentCallback) {
+        u32 traceSeq{96};
+        if (diagnostics::xv2::PostCloseActive()) {
+            traceSeq = diagnostics::xv2::NextPresentSequence();
+            if (traceSeq < 96)
+                LOGI("XV2-FLOW present begin epoch={} seq={} frame={} timestamp={} swap={} fence-id={} fence-threshold={} surface={}",
+                     diagnostics::xv2::Epoch(), traceSeq, nextFrameId, timestamp, swapInterval, fence.id, fence.threshold, vkSurface.has_value());
+        }
+
         if (!vkSurface.has_value()) {
             // We want this function to generally (not necessarily always) block when a surface is not present to implicitly pause the game
             std::unique_lock lock{mutex};
             surfaceCondition.wait(lock, [this] { return vkSurface.has_value(); });
         }
+
+        if (traceSeq < 96)
+            LOGI("XV2-FLOW present enqueue epoch={} seq={} frame={}", diagnostics::xv2::Epoch(), traceSeq, nextFrameId);
 
         presentQueue.Push(PresentableFrame{
             texture,

@@ -3,6 +3,7 @@
 
 #include <soc.h>
 #include <services/nvdrv/devices/deserialisation/deserialisation.h>
+#include <xv2_trace.h>
 #include "gpu_channel.h"
 
 namespace skyline::service::nvdrv::device::nvhost {
@@ -98,6 +99,15 @@ namespace skyline::service::nvdrv::device::nvhost {
                             +flags.fenceWait, +flags.fenceIncrement, +flags.hwFormat, +flags.suppressWfi, +flags.incrementWithValue,
                             fence.id, fence.threshold);
 
+        u32 traceSeq{128};
+        if (diagnostics::xv2::PostCloseActive()) {
+            traceSeq = diagnostics::xv2::NextGpuSubmitSequence();
+            if (traceSeq < 128)
+                LOGI("XV2-FLOW gpu-submit begin epoch={} seq={} entries={} wait={} incr={} suppressWfi={} fence-id={} fence-threshold={}",
+                     diagnostics::xv2::Epoch(), traceSeq, numEntries, +flags.fenceWait, +flags.fenceIncrement,
+                     +flags.suppressWfi, fence.id, fence.threshold);
+        }
+
         if (numEntries > gpEntries.size()) {
             // Reject the malformed submission instead of crashing the emulator process -
             // a buggy/newer host GPU driver or a bad guest submission can trigger this,
@@ -146,6 +156,10 @@ namespace skyline::service::nvdrv::device::nvhost {
 
         flags.raw = 0;
 
+        if (traceSeq < 128)
+            LOGI("XV2-FLOW gpu-submit end epoch={} seq={} channel-syncpoint={} fence-threshold={}",
+                 diagnostics::xv2::Epoch(), traceSeq, channelSyncpoint, fence.threshold);
+
         return PosixResult::Success;
     }
 
@@ -165,6 +179,9 @@ namespace skyline::service::nvdrv::device::nvhost {
 
     PosixResult GpuChannel::SetErrorNotifier(In<u64> offset, In<u64> size, In<u32> mem) {
         LOGD("offset: 0x{:X}, size: 0x{:X}, mem: 0x{:X}", offset, size, mem);
+        if (diagnostics::xv2::PostCloseActive())
+            LOGI("XV2-FLOW set-error-notifier epoch={} offset=0x{:X} size=0x{:X} mem=0x{:X}",
+                 diagnostics::xv2::Epoch(), offset, size, mem);
         return PosixResult::Success;
     }
 
