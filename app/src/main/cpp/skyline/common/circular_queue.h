@@ -6,6 +6,7 @@
 #include <common/trace.h>
 #include <common/spin_lock.h>
 #include <common/span.h>
+#include <logger/logger.h>
 
 namespace skyline {
     /**
@@ -22,19 +23,23 @@ namespace skyline {
         SpinLock productionMutex;
         std::condition_variable_any produceCondition;
         std::atomic_bool stopped{false}; //!< Set via Close() to cooperatively wake up a blocked Process() and let it return, without needing to interrupt it via a signal
+        bool diagnosticTrace{}; //!< Enables temporary queue lifecycle logging for targeted diagnostics
 
       public:
         /**
          * @note The internal allocation is an item larger as we require a sentinel value
          */
-        CircularQueue(size_t size) : vector((size + 1) * sizeof(Type)) {}
+        CircularQueue(size_t size, bool diagnosticTrace = false) :
+            vector((size + 1) * sizeof(Type)),
+            diagnosticTrace(diagnosticTrace) {}
 
         CircularQueue(const CircularQueue &) = delete;
 
         CircularQueue &operator=(const CircularQueue &) = delete;
 
-        CircularQueue(CircularQueue &&other) : vector(std::move(other.vector)) {
-            
+        CircularQueue(CircularQueue &&other) :
+            vector(std::move(other.vector)),
+            diagnosticTrace(other.diagnosticTrace) {
             start = other.start;
             end = other.end;
             other.start = other.end = nullptr;
@@ -84,8 +89,23 @@ namespace skyline {
                 if (start == end) {
                     std::unique_lock productionLock{productionMutex};
                     TRACE_EVENT_END("containers");
+                    if (diagnosticTrace)
+                        LOGI("GRID-QUEUE pre-wait start={} end={} stopped={}",
+                             static_cast<const void *>(start.load(std::memory_order_acquire)),
+                             static_cast<const void *>(end.load(std::memory_order_acquire)),
+                             stopped.load(std::memory_order_acquire));
                     preWait();
+                    if (diagnosticTrace)
+                        LOGI("GRID-QUEUE wait-enter start={} end={} stopped={}",
+                             static_cast<const void *>(start.load(std::memory_order_acquire)),
+                             static_cast<const void *>(end.load(std::memory_order_acquire)),
+                             stopped.load(std::memory_order_acquire));
                     produceCondition.wait(productionLock, [this]() { return start != end || stopped.load(std::memory_order_acquire); });
+                    if (diagnosticTrace)
+                        LOGI("GRID-QUEUE wait-return start={} end={} stopped={}",
+                             static_cast<const void *>(start.load(std::memory_order_acquire)),
+                             static_cast<const void *>(end.load(std::memory_order_acquire)),
+                             stopped.load(std::memory_order_acquire));
                     TRACE_EVENT_BEGIN("containers", "CircularQueue::Process");
 
                     if (start == end) {
@@ -95,7 +115,15 @@ namespace skyline {
                     }
                 }
 
+                if (diagnosticTrace)
+                    LOGI("GRID-QUEUE consumption-lock-begin start={} end={}",
+                         static_cast<const void *>(start.load(std::memory_order_acquire)),
+                         static_cast<const void *>(end.load(std::memory_order_acquire)));
                 std::scoped_lock comsumptionLock{consumptionMutex};
+                if (diagnosticTrace)
+                    LOGI("GRID-QUEUE consumption-lock-end start={} end={}",
+                         static_cast<const void *>(start.load(std::memory_order_acquire)),
+                         static_cast<const void *>(end.load(std::memory_order_acquire)));
                 while (start != end) {
                     auto next{start + 1};
                     next = (next == reinterpret_cast<Type *>(vector.end().base())) ? reinterpret_cast<Type *>(vector.begin().base()) : next;
@@ -147,6 +175,10 @@ namespace skyline {
                 }
                 *next = item;
                 end = next;
+                if (diagnosticTrace)
+                    LOGI("GRID-QUEUE producer-notify start={} end={}",
+                         static_cast<const void *>(start.load(std::memory_order_acquire)),
+                         static_cast<const void *>(end.load(std::memory_order_acquire)));
                 produceCondition.notify_one();
                 break;
             }
@@ -175,6 +207,10 @@ namespace skyline {
                 }
                 *next = std::move(item);
                 end = next;
+                if (diagnosticTrace)
+                    LOGI("GRID-QUEUE producer-notify start={} end={}",
+                         static_cast<const void *>(start.load(std::memory_order_acquire)),
+                         static_cast<const void *>(end.load(std::memory_order_acquire)));
                 produceCondition.notify_one();
                 break;
             }

@@ -86,7 +86,7 @@ namespace skyline::soc::gm20b {
         state(state),
         gpfifoEngine(state.soc->host1x.syncpoints, channelCtx),
         channelCtx(channelCtx),
-        gpEntries(numEntries),
+        gpEntries(numEntries, true),
         thread(std::thread(&ChannelGpfifo::Run, this)) {}
 
     void ChannelGpfifo::SendFull(u32 method, GpfifoArgument argument, SubchannelId subChannel, bool lastCall) {
