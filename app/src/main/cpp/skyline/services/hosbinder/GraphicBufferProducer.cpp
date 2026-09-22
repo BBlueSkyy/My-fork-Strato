@@ -268,8 +268,10 @@ namespace skyline::service::hosbinder {
         if (diagnostics::xv2::PostCloseActive()) {
             traceSeq = diagnostics::xv2::NextBufferQueueSequence();
             if (traceSeq < 128)
-                LOGI("XV2-FLOW queue begin epoch={} seq={} slot={} timestamp={} auto={} swap={} fence-id={} fence-threshold={}",
-                     diagnostics::xv2::Epoch(), traceSeq, slot, timestamp, isAutoTimestamp, swapInterval, fence.id, fence.threshold);
+                LOGI("XV2-FLOW queue begin epoch={} seq={} slot={} timestamp={} auto={} swap={} fence-count={} first-fence-id={} first-fence-threshold={}",
+                     diagnostics::xv2::Epoch(), traceSeq, slot, timestamp, isAutoTimestamp, swapInterval, fence.fenceCount,
+                     fence.fenceCount ? fence.fences[0].id : AndroidFence::InvalidFenceId,
+                     fence.fenceCount ? fence.fences[0].threshold : 0);
         }
 
         switch (scalingMode) {
