@@ -364,8 +364,9 @@ namespace skyline::soc::gm20b {
                             return static_cast<u32>(methodHeader.methodAddress) + methodHeader.methodCount >
                                    engine::GPFIFO::RegisterCount;
                         case PushBufferMethodHeader::SecOp::OneInc:
-                            return static_cast<u32>(methodHeader.methodAddress) + 1 >=
-                                   engine::GPFIFO::RegisterCount;
+                            return methodHeader.methodAddress >= engine::GPFIFO::RegisterCount ||
+                                   (methodHeader.methodCount > 1 &&
+                                    static_cast<u32>(methodHeader.methodAddress) + 1 >= engine::GPFIFO::RegisterCount);
                         case PushBufferMethodHeader::SecOp::NonIncMethod:
                         case PushBufferMethodHeader::SecOp::ImmdDataMethod:
                             return methodHeader.methodAddress >= engine::GPFIFO::RegisterCount;
