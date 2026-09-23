@@ -68,6 +68,8 @@ namespace skyline::vfs {
 
     NCA::NCA(std::shared_ptr<vfs::Backing> pBacking, std::shared_ptr<crypto::KeyStore> pKeyStore, bool pUseKeyArea, NCAParseMode parseMode)
         : backing(std::move(pBacking)), keyStore(std::move(pKeyStore)), useKeyArea(pUseKeyArea) {
+        LOGI("DLC-TRACE NCA begin backing_size=0x{:X} parseMode={} useKeyArea={}",
+             backing ? backing->size : 0, static_cast<u32>(parseMode), useKeyArea);
         header = {};
         if (backing->size < sizeof(header) ||
             backing->Read(span<u8>(reinterpret_cast<u8 *>(&header), sizeof(header))) != sizeof(header))
@@ -88,6 +90,8 @@ namespace skyline::vfs {
 
         contentType = header.contentType;
         rightsIdEmpty = header.rightsId == crypto::KeyStore::Key128{};
+        LOGI("DLC-TRACE NCA header titleId=0x{:016X} contentType={} encrypted={} keyGen={} rightsIdEmpty={}",
+             header.titleId, static_cast<u32>(contentType), encrypted, GetKeyGeneration(), rightsIdEmpty);
 
         // FS indices are part of the patch contract. Counting present sections loses holes.
         if (backing->size < constant::SectionHeaderOffset + sizeof(sections))
@@ -98,21 +102,39 @@ namespace skyline::vfs {
             crypto::AesCipher cipher(*keyStore->headerKey, MBEDTLS_CIPHER_AES_128_XTS);
             cipher.XtsDecrypt({reinterpret_cast<u8 *>(sections.data()), sizeof(sections)}, 2, constant::SectionHeaderSize);
         }
+        LOGI("DLC-TRACE NCA section headers ready");
 
-        if (parseMode == NCAParseMode::MetadataOnly && contentType != NCAContentType::Meta && contentType != NCAContentType::Control)
+        if (parseMode == NCAParseMode::MetadataOnly && contentType != NCAContentType::Meta && contentType != NCAContentType::Control) {
+            LOGI("DLC-TRACE NCA metadata-only early return contentType={}", static_cast<u32>(contentType));
             return;
+        }
 
         for (size_t i{}; i < sections.size(); ++i) {
             if (!HasSection(i))
                 continue;
             const auto &section{sections[i]};
+            LOGI("DLC-TRACE NCA section={} fsType={} hashType={} encType={} sparseGen={} compTableOff=0x{:X} compTableSize=0x{:X}",
+                 i,
+                 static_cast<u32>(section.raw.header.fsType),
+                 static_cast<u32>(section.raw.header.hashType),
+                 static_cast<u32>(section.raw.header.encryptionType),
+                 section.raw.sparseInfo.generation,
+                 section.raw.compressionInfo.bucket.tableOffset,
+                 section.raw.compressionInfo.bucket.tableSize);
+            LOGI("DLC-TRACE NCA section={} ValidateNCA begin", i);
             ValidateNCA(section);
+            LOGI("DLC-TRACE NCA section={} ValidateNCA ok", i);
             if (section.raw.header.fsType == NcaSectionFsType::RomFs) {
                 // Retain the NCA itself as a candidate; a physical patch section is NOT a RomFS.
-                if (section.bktr.relocation.size == 0)
+                if (section.bktr.relocation.size == 0) {
+                    LOGI("DLC-TRACE NCA section={} BuildRomFsBacking begin", i);
                     romFs = BuildRomFsBacking(i);
+                    LOGI("DLC-TRACE NCA section={} BuildRomFsBacking ok size=0x{:X}", i, romFs ? romFs->size : 0);
+                }
             } else if (section.raw.header.fsType == NcaSectionFsType::PFS0) {
+                LOGI("DLC-TRACE NCA section={} OpenPfs0 begin", i);
                 auto pfs{OpenPfs0(i)};
+                LOGI("DLC-TRACE NCA section={} OpenPfs0 ok", i);
                 if (contentType == NCAContentType::Program) {
                     if (pfs->FileExists("main") && pfs->FileExists("main.npdm"))
                         exeFs = pfs;
@@ -123,6 +145,8 @@ namespace skyline::vfs {
                 }
             }
         }
+        LOGI("DLC-TRACE NCA complete contentType={} hasRomFs={} hasExeFs={} hasCnmt={}",
+             static_cast<u32>(contentType), romFs != nullptr, exeFs != nullptr, cnmt != nullptr);
     }
 
     bool NCA::HasSection(size_t index) const {
