@@ -149,6 +149,11 @@ namespace skyline::service::nvdrv::device::nvhost {
             pushBufferMemoryOffset += SyncpointIncrCmdLen;
         }
 
+        LOGI("GRID-FLOW enqueue-end entries={} first=0x{:X} last=0x{:X}",
+             numEntries,
+             numEntries ? gpEntries.front().Address() : 0,
+             numEntries ? gpEntries[numEntries - 1].Address() : 0);
+
         flags.raw = 0;
 
         return PosixResult::Success;
