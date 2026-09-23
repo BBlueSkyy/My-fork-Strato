@@ -77,7 +77,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (guest.tileConfig.mode == gpu::texture::TileMode::Block)
                 DetermineRenderTargetDimensions(guest, engine->surfaceClip);
 
-            view = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
+            view = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag, texture::RenderPassUsage::RenderTarget);
         } else {
             format = engine::ColorTarget::Format::Disabled;
             packedState.SetColorRenderTargetFormat(index, engine::ColorTarget::Format::Disabled);
@@ -130,7 +130,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (guest.tileConfig.mode == gpu::texture::TileMode::Block)
                 DetermineRenderTargetDimensions(guest, engine->surfaceClip);
 
-            view = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
+            view = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag, texture::RenderPassUsage::RenderTarget);
         } else {
             packedState.SetDepthRenderTargetFormat(engine->ztFormat, false);
             view = {};

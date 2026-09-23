@@ -35,6 +35,6 @@ namespace skyline::gpu {
          * @return A pre-existing or newly created Texture object which matches the specified criteria
          * @note The texture manager **must** be locked prior to calling this
          */
-        std::shared_ptr<TextureView> FindOrCreate(const GuestTexture &guestTexture, ContextTag tag = {});
+        std::shared_ptr<TextureView> FindOrCreate(const GuestTexture &guestTexture, ContextTag tag = {}, texture::RenderPassUsage usage = texture::RenderPassUsage::None);
     };
 }
