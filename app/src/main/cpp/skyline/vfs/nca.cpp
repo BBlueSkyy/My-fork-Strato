@@ -90,8 +90,9 @@ namespace skyline::vfs {
 
         contentType = header.contentType;
         rightsIdEmpty = header.rightsId == crypto::KeyStore::Key128{};
-        LOGI("DLC-TRACE NCA header titleId=0x{:016X} contentType={} encrypted={} keyGen={} rightsIdEmpty={}",
-             header.titleId, static_cast<u32>(contentType), encrypted, GetKeyGeneration(), rightsIdEmpty);
+        LOGI("DLC-TRACE NCA header titleId=0x{:016X} contentType={} encrypted={} keyGen={} keyIndex={} rightsIdEmpty={}",
+             header.titleId, static_cast<u32>(contentType), encrypted, GetKeyGeneration(),
+             static_cast<u32>(header.keyIndex), rightsIdEmpty);
 
         // FS indices are part of the patch contract. Counting present sections loses holes.
         if (backing->size < constant::SectionHeaderOffset + sizeof(sections))
@@ -113,14 +114,16 @@ namespace skyline::vfs {
             if (!HasSection(i))
                 continue;
             const auto &section{sections[i]};
-            LOGI("DLC-TRACE NCA section={} fsType={} hashType={} encType={} sparseGen={} compTableOff=0x{:X} compTableSize=0x{:X}",
+            LOGI("DLC-TRACE NCA section={} fsType={} hashType={} encType={} sparseGen={} compTableOff=0x{:X} compTableSize=0x{:X} ctr={:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
                  i,
                  static_cast<u32>(section.raw.header.fsType),
                  static_cast<u32>(section.raw.header.hashType),
                  static_cast<u32>(section.raw.header.encryptionType),
                  section.raw.sparseInfo.generation,
                  section.raw.compressionInfo.bucket.tableOffset,
-                 section.raw.compressionInfo.bucket.tableSize);
+                 section.raw.compressionInfo.bucket.tableSize,
+                 section.raw.sectionCtr[0], section.raw.sectionCtr[1], section.raw.sectionCtr[2], section.raw.sectionCtr[3],
+                 section.raw.sectionCtr[4], section.raw.sectionCtr[5], section.raw.sectionCtr[6], section.raw.sectionCtr[7]);
             LOGI("DLC-TRACE NCA section={} ValidateNCA begin", i);
             ValidateNCA(section);
             LOGI("DLC-TRACE NCA section={} ValidateNCA ok", i);
