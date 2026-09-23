@@ -396,6 +396,8 @@ namespace skyline::soc::gm20b {
 
             gpEntries.Process([this, &channelLocked](GpEntry gpEntry) {
                 LOGD("Processing pushbuffer: 0x{:X}, Size: 0x{:X}", gpEntry.Address(), +gpEntry.size);
+                LOGI("GRID-FLOW consumer-received address=0x{:X} size=0x{:X}",
+                     gpEntry.Address(), +gpEntry.size);
 
                 if (!channelLocked) {
                     channelCtx.Lock();
@@ -403,11 +405,14 @@ namespace skyline::soc::gm20b {
                 }
 
                 Process(gpEntry);
+                LOGI("GRID-FLOW process-end address=0x{:X} size=0x{:X}",
+                     gpEntry.Address(), +gpEntry.size);
             }, [this, &channelLocked]() {
                 // If we run out of GpEntries to process ensure we submit any remaining GPU work before waiting for more to arrive
                 LOGD("Finished processing pushbuffer batch");
                 if (channelLocked) {
                     channelCtx.executor.Submit();
+                    LOGI("GRID-FLOW executor-submit-end");
                     channelCtx.Unlock();
                     channelLocked = false;
                 }
