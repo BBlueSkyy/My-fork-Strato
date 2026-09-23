@@ -372,6 +372,7 @@ namespace skyline::soc::gm20b {
         if (int result{pthread_setname_np(pthread_self(), "GPFIFO")})
             LOGW("Failed to set the thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
+        LOGI("GRID-GPFIFO run-start");
 
         try {
             bool channelLocked{};
@@ -393,6 +394,8 @@ namespace skyline::soc::gm20b {
                 Process(gpEntry);
                 LOGI("GRID-POST process-end address=0x{:X} size=0x{:X}",
                      gpEntry.Address(), +gpEntry.size);
+                LOGI("GRID-GPFIFO callback-return address=0x{:X} size=0x{:X}",
+                     gpEntry.Address(), +gpEntry.size);
             }, [this, &channelLocked]() {
                 // If we run out of GpEntries to process ensure we submit any remaining GPU work before waiting for more to arrive
                 LOGD("Finished processing pushbuffer batch");
@@ -408,20 +411,25 @@ namespace skyline::soc::gm20b {
                 }
             });
         } catch (const signal::SignalException &e) {
+            LOGI("GRID-GPFIFO signal-exception signal={} isSigint={}", e.signal, e.signal == SIGINT);
             if (e.signal != SIGINT) {
                 LOGE("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
                 signal::BlockSignal({SIGINT});
                 state.process->Kill(false);
             }
         } catch (const exception &e) {
+            LOGI("GRID-GPFIFO exception type=skyline what={}", e.what());
             LOGENF("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
             signal::BlockSignal({SIGINT});
             state.process->Kill(false);
         } catch (const std::exception &e) {
+            LOGI("GRID-GPFIFO exception type=std what={}", e.what());
             LOGE("{}", e.what());
             signal::BlockSignal({SIGINT});
             state.process->Kill(false);
         }
+
+        LOGI("GRID-GPFIFO run-exit");
     }
 
     void ChannelGpfifo::Push(span<GpEntry> entries) {
