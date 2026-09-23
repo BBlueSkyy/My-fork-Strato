@@ -12,13 +12,19 @@ namespace skyline::service::nvdrv::device::nvhost {
           smExceptionBreakpointPauseReportEvent(std::make_shared<type::KEvent>(state, false)),
           errorNotifierEvent(std::make_shared<type::KEvent>(state, false)) {
         channelSyncpoint = core.syncpointManager.AllocateSyncpoint(false);
+        LOGI("GRID-LIFE GpuChannel ctor this={} syncpoint={}",
+             static_cast<const void *>(this), channelSyncpoint);
     }
 
     GpuChannel::~GpuChannel() {
+        LOGI("GRID-LIFE GpuChannel dtor-begin this={} syncpoint={} channelCtx={}",
+             static_cast<const void *>(this), channelSyncpoint, static_cast<const void *>(channelCtx.get()));
         // Return the syncpoint allocated in the constructor back to the shared pool,
         // otherwise every channel open permanently consumes one of the fixed slots
         // until the process eventually crashes on FindFreeSyncpoint() exhaustion.
         core.syncpointManager.ReleaseSyncpoint(channelSyncpoint);
+        LOGI("GRID-LIFE GpuChannel dtor-body-end this={} syncpoint={} channelCtx={}",
+             static_cast<const void *>(this), channelSyncpoint, static_cast<const void *>(channelCtx.get()));
     }
 
     static constexpr size_t SyncpointWaitCmdLen{4};
@@ -174,20 +180,29 @@ namespace skyline::service::nvdrv::device::nvhost {
     }
 
     PosixResult GpuChannel::AllocGpfifoEx2(In<u32> numEntries, In<u32> numJobs, In<u32> flags, Out<Fence> fence) {
+        LOGI("GRID-LIFE AllocGpfifoEx2 begin this={} syncpoint={} numEntries={} numJobs={} flags=0x{:X} channelCtx={}",
+             static_cast<const void *>(this), channelSyncpoint, numEntries, numJobs, flags,
+             static_cast<const void *>(channelCtx.get()));
         LOGD("numEntries: {}, numJobs: {}, flags: 0x{:X}", numEntries, numJobs, flags);
 
         std::scoped_lock lock(channelMutex);
         if (!asCtx || !asAllocator) {
+            LOGI("GRID-LIFE AllocGpfifoEx2 reject-unbound this={} syncpoint={}",
+                 static_cast<const void *>(this), channelSyncpoint);
             LOGW("Trying to allocate a channel without a bound address space");
             return PosixResult::InvalidArgument;
         }
 
         if (channelCtx) {
+            LOGI("GRID-LIFE AllocGpfifoEx2 reject-existing this={} syncpoint={} channelCtx={}",
+                 static_cast<const void *>(this), channelSyncpoint, static_cast<const void *>(channelCtx.get()));
             LOGW("Trying to allocate a channel twice!");
             return PosixResult::FileExists;
         }
 
         channelCtx = std::make_unique<soc::gm20b::ChannelContext>(state, asCtx, numEntries);
+        LOGI("GRID-LIFE AllocGpfifoEx2 context-created this={} syncpoint={} channelCtx={}",
+             static_cast<const void *>(this), channelSyncpoint, static_cast<const void *>(channelCtx.get()));
 
         fence = core.syncpointManager.GetSyncpointFence(channelSyncpoint);
 
@@ -203,6 +218,8 @@ namespace skyline::service::nvdrv::device::nvhost {
             // Out of GPU address space - undo the partial channel setup and report a
             // recoverable error instead of aborting the whole process.
             LOGE("Failed to allocate channel pushbuffer! (requested {} bytes)", pushBufferSize);
+            LOGI("GRID-LIFE AllocGpfifoEx2 pushbuffer-allocation-failed this={} syncpoint={} channelCtx={}",
+                 static_cast<const void *>(this), channelSyncpoint, static_cast<const void *>(channelCtx.get()));
             channelCtx.reset();
             pushBufferMemory.clear();
             return PosixResult::InvalidArgument; // PosixResult has no dedicated "out of memory" value
@@ -211,6 +228,9 @@ namespace skyline::service::nvdrv::device::nvhost {
         // Map onto the GPU
         asCtx->gmmu.Map(pushBufferAddr, reinterpret_cast<u8 *>(pushBufferMemory.data()), pushBufferSize);
 
+        LOGI("GRID-LIFE AllocGpfifoEx2 end this={} syncpoint={} channelCtx={} pushBufferAddr=0x{:X} pushBufferSize=0x{:X}",
+             static_cast<const void *>(this), channelSyncpoint, static_cast<const void *>(channelCtx.get()),
+             pushBufferAddr, pushBufferSize);
         return PosixResult::Success;
     }
 
