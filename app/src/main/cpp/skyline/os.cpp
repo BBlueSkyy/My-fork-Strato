@@ -48,9 +48,15 @@ namespace skyline::kernel {
             LOGI("OS::Execute - No update to load (updateFd: {})", updateFd);
         }
 
-        if (dlcFds.size() > 0)
-            for (int fd : dlcFds)
-                state.dlcLoaders.push_back(GetLoader(fd, keyStore, loader::RomFormat::NSP));
+        LOGI("DLC-TRACE total={}", dlcFds.size());
+        if (dlcFds.size() > 0) {
+            for (size_t i = 0; i < dlcFds.size(); i++) {
+                LOGI("DLC-TRACE loading index={} fd={}", i, dlcFds[i]);
+                state.dlcLoaders.push_back(GetLoader(dlcFds[i], keyStore, loader::RomFormat::NSP));
+                LOGI("DLC-TRACE loaded index={} total_loaded={}", i, state.dlcLoaders.size());
+            }
+        }
+        LOGI("DLC-TRACE loading-complete total_loaded={}", state.dlcLoaders.size());
 
         state.loader->ResolveProgramContent(state);
 
