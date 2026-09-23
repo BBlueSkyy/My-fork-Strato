@@ -27,6 +27,11 @@ namespace skyline {
     };
 
     /**
+     * @brief Creates a Java string from standard UTF-8, replacing malformed sequences
+     */
+    jstring NewJString(JNIEnv *env, std::string_view utf8);
+
+    /**
      * @brief A wrapper over the `Settings` Kotlin class
      * @note The lifetime of this class must not exceed that of the JNI environment
      * @note Copy construction of this class is disallowed to avoid issues with the JNI environment lifetime
