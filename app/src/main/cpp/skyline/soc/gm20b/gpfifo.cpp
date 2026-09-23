@@ -164,7 +164,11 @@ namespace skyline::soc::gm20b {
     }
 
     void ChannelGpfifo::Process(GpEntry gpEntry) {
-        const bool traceGridTarget{gpEntry.Address() == 0x5020324F0};
+        const bool traceGridTarget{
+            gpEntry.size <= 0x20 &&
+            gpEntry.Address() >= 0x502032400 &&
+            gpEntry.Address() < 0x502032600
+        };
 
         if (!gpEntry.size) {
             // This is a GPFIFO control entry, all control entries have a zero length and contain no pushbuffers
