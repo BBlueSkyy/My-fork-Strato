@@ -67,9 +67,6 @@ namespace skyline::service::am {
         /**
          * @brief Ensures cache storage exists for the requesting application
          * @url https://switchbrew.org/wiki/Applet_Manager_services#IApplicationFunctions
-         * @note Real hardware allocates disk space and reports back the target media (NAND/SD) and
-         * required size; since we don't track real storage quotas, this stubs success and echoes
-         * back the requested sizes, following the same pattern already used by EnsureSaveData
          */
         Result CreateCacheStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 

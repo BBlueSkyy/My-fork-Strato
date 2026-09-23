@@ -1,0 +1,613 @@
+// SPDX-License-Identifier: MPL-2.0
+
+#include <climits>
+#include <iostream>
+#include <os.h>
+#include <services/fssrv/types.h>
+#include <services/fssrv/validation.h>
+#include <services/fssrv/helpers.h>
+#include <services/fssrv/IFile.h>
+#include <services/fssrv/IFileSystem.h>
+#include <services/fssrv/IFileSystemProxy.h>
+#include <services/fssrv/IStorage.h>
+#include <services/fssrv/ISaveDataInfoReader.h>
+#include <services/fssrv/IMultiCommitManager.h>
+#include <vfs/os_filesystem.h>
+
+using namespace skyline;
+using namespace skyline::service::fssrv;
+
+namespace {
+    void Check(bool condition, const char *message) {
+        if (!condition)
+            throw std::runtime_error(message);
+    }
+
+    void TestAbiLayouts() {
+        static_assert(sizeof(SaveDataAttribute) == 0x40);
+        static_assert(sizeof(SaveDataInfo) == 0x60);
+        static_assert(sizeof(FileTimeStampRaw) == 0x20);
+        static_assert(sizeof(FileSystemAttribute) == 0xC0);
+    }
+
+    void TestSignedRanges() {
+        Check(!ValidateRange(-1, 1, 4), "negative offset accepted");
+        Check(!ValidateRange(0, -1, 4), "negative size accepted");
+        Check(ValidateRange(4, 0, 4), "zero-sized end range rejected");
+        Check(!ValidateRange(4, 1, 4), "past-end range accepted");
+        Check(!ValidateRange(INT64_MAX, 1, 16), "unrepresentable range accepted");
+    }
+
+    void TestGuestPathParsing() {
+        std::array<u8, 8> valid{'/', 'a', '/', 'b', 0, 0xCC, 0xCC, 0xCC};
+        auto path{ReadPath(valid)};
+        Check(path && *path == "/a/b", "valid guest path was not preserved");
+
+        std::array<u8, 4> traversal{'.', '.', '/', 0};
+        Check(!ReadPath(traversal), "parent traversal accepted");
+
+        std::array<u8, 4> backslash{'a', '\\', 'b', 0};
+        Check(!ReadPath(backslash), "host-style separator accepted");
+
+        std::array<u8, 4> unterminated{'a', 'b', 'c', 'd'};
+        Check(!ReadPath(unterminated), "unterminated path accepted");
+
+        std::array<u8, 0x302> oversized{};
+        Check(!ReadPath(oversized), "oversized FspPath accepted");
+    }
+
+    void TestFileSystemServiceHelpers() {
+        Check(MapVfsError(std::make_error_code(std::errc::no_such_file_or_directory)) == result::PathDoesNotExist, "missing path mapped incorrectly");
+        Check(MapVfsError(std::make_error_code(std::errc::file_exists)) == result::PathAlreadyExists, "existing path mapped incorrectly");
+        Check(MapVfsError(std::make_error_code(std::errc::filename_too_long)) == result::TooLongPath, "long path mapped incorrectly");
+
+        vfs::Backing::Mode mode{};
+        Check(!IsOpenModeValid(mode), "empty open mode accepted");
+        mode.raw = 8;
+        Check(!IsOpenModeValid(mode), "unknown open-mode bit accepted");
+        mode = {true, false, false};
+        Check(IsOpenModeValid(mode), "read-only open mode rejected");
+        Check(IsMutationAllowed(false, mode), "read open rejected on writable filesystem");
+        mode = {true, true, false};
+        Check(!IsMutationAllowed(true, mode), "write open accepted on read-only filesystem");
+        Check(IsDirectoryModeValid(0x1), "directory-only mode rejected");
+        Check(IsDirectoryModeValid(0x80000002), "no-size file mode rejected");
+        Check(!IsDirectoryModeValid(0), "empty directory mode accepted");
+        Check(!IsDirectoryModeValid(0x4), "unknown directory-mode bit accepted");
+
+        Check(!ToSize(-1), "negative size converted to size_t");
+        Check(ToSize(4) && *ToSize(4) == 4, "valid size conversion failed");
+        Check(IsValidSaveDataSpaceId(SaveDataSpaceId::User), "valid save-data space rejected");
+        Check(!IsValidSaveDataSpaceId(static_cast<SaveDataSpaceId>(0xFF)), "unknown save-data space accepted");
+        Check(IsValidSaveDataType(SaveDataType::Cache), "valid save-data type rejected");
+        Check(!IsValidSaveDataType(static_cast<SaveDataType>(0xFF)), "unknown save-data type accepted");
+        Check(IsValidSaveDataRank(SaveDataRank::Primary), "valid save-data rank rejected");
+        Check(!IsValidSaveDataRank(static_cast<SaveDataRank>(0xFF)), "unknown save-data rank accepted");
+    }
+
+    void TestPaginationBounds() {
+        Check(CalculateReadCount(3, 0, 2) == 2, "first page count is wrong");
+        Check(CalculateReadCount(3, 2, 2) == 1, "second page count is wrong");
+        Check(CalculateReadCount(3, 3, 2) == 0, "exhausted page is non-zero");
+        Check(CalculateReadCount(3, 4, 2) == 0, "past-end cursor underflowed");
+    }
+
+    class TempDirectory {
+      public:
+        std::filesystem::path path;
+
+        TempDirectory() {
+            std::array<char, 32> pattern{};
+            std::strcpy(pattern.data(), "/tmp/strato-fssrv-XXXXXX");
+            auto created{mkdtemp(pattern.data())};
+            if (!created)
+                throw std::runtime_error("failed to create temporary directory");
+            path = created;
+        }
+
+        ~TempDirectory() {
+            std::error_code error;
+            std::filesystem::remove_all(path, error);
+        }
+    };
+
+    void TestRootedHostMutations() {
+        TempDirectory root;
+        vfs::OsFileSystem fs(root.path.string());
+
+        Check(!fs.CreateDirectory("inside", false), "rooted directory create failed");
+        Check(!fs.CreateFile("inside/file", 4), "rooted file create failed");
+        Check(std::filesystem::file_size(root.path / "inside/file") == 4, "created file has wrong size");
+        Check(fs.CreateFile("../escape", 1) == std::errc::invalid_argument, "parent escape accepted");
+        Check(fs.DeleteFile("missing") == std::errc::no_such_file_or_directory, "missing delete reported success");
+        Check(fs.DeleteDirectory("inside") == std::errc::directory_not_empty, "non-empty directory delete reported success");
+
+        Check(!fs.CleanDirectoryRecursively("inside"), "recursive clean failed");
+        Check(std::filesystem::is_directory(root.path / "inside"), "recursive clean removed the directory");
+        Check(std::filesystem::is_empty(root.path / "inside"), "recursive clean retained children");
+
+        Check(!fs.CreateFile("inside/file", 1), "file recreate failed");
+        Check(!fs.DeleteDirectoryRecursively("inside"), "recursive delete failed");
+        Check(!std::filesystem::exists(root.path / "inside"), "recursive delete retained the directory");
+        Check(std::filesystem::is_directory(root.path), "recursive delete escaped the filesystem root");
+    }
+
+    void TestHostRootOpenModes() {
+        TempDirectory root;
+        const auto missing{root.path / "missing/save"};
+
+        auto [missingFileSystem, missingError]{vfs::OsFileSystem::OpenExisting(missing.string())};
+        Check(!missingFileSystem && missingError == std::errc::no_such_file_or_directory, "missing host root did not fail open");
+        Check(!std::filesystem::exists(missing), "opening a missing host root created it");
+
+        const auto existing{root.path / "existing"};
+        std::filesystem::create_directory(existing);
+        auto [existingFileSystem, existingError]{vfs::OsFileSystem::OpenExisting(existing.string())};
+        Check(existingFileSystem && !existingError, "existing host root did not open");
+
+        const auto created{root.path / "created/save"};
+        vfs::OsFileSystem createdFileSystem(created.string());
+        Check(std::filesystem::is_directory(created), "create-root host filesystem stopped creating its root");
+    }
+
+    void TestHostRename() {
+        TempDirectory root;
+        vfs::OsFileSystem fs(root.path.string());
+        Check(!fs.CreateDirectory("inside", false), "rename fixture directory failed");
+        Check(!fs.CreateFile("inside/file", 1), "rename fixture file failed");
+        Check(!fs.RenameFile("inside/file", "inside/renamed"), "file rename failed");
+        Check(std::filesystem::is_regular_file(root.path / "inside/renamed"), "file rename did not move the source");
+        Check(!fs.RenameDirectory("inside", "moved"), "directory rename failed");
+        Check(std::filesystem::is_directory(root.path / "moved"), "directory rename did not move the source");
+    }
+
+    void TestHostCommit() {
+        TempDirectory root;
+        vfs::OsFileSystem fs(root.path.string());
+        Check(!fs.Commit(), "host filesystem commit failed");
+    }
+
+    void TestSymlinkEscapeIsRejected() {
+        TempDirectory root;
+        TempDirectory outside;
+        std::filesystem::create_directory_symlink(outside.path, root.path / "escape");
+        vfs::OsFileSystem fs(root.path.string());
+
+        Check(fs.CreateFile("escape/file", 1) == std::errc::permission_denied, "create followed a symlink outside the root");
+        Check(fs.OpenFileUnchecked("escape/file") == nullptr, "open followed a symlink outside the root");
+        Check(fs.DeleteFile("escape/file") == std::errc::permission_denied, "delete followed a symlink outside the root");
+        Check(!std::filesystem::exists(outside.path / "file"), "an outside file was created");
+
+        const auto entries{fs.OpenDirectory("")->Read()};
+        Check(std::ranges::none_of(entries, [](const auto &entry) { return entry.name == "escape"; }), "directory enumeration exposed an outside symlink");
+    }
+
+    void TestHostMetadataCapabilities() {
+        TempDirectory root;
+        vfs::OsFileSystem fs(root.path.string());
+        Check(!fs.CreateFile("metadata", 1), "metadata fixture creation failed");
+        Check(!fs.IsReadOnly(), "host filesystem reports read-only");
+
+        auto [missingFile, missingError]{fs.OpenFileWithError("missing")};
+        Check(!missingFile && missingError == std::errc::no_such_file_or_directory, "open-file error was discarded");
+
+        u64 free{}, total{};
+        Check(!fs.GetSpace("/", free, total), "space query failed");
+        Check(total > 0 && free <= total, "space query returned impossible values");
+
+        vfs::FileTimeStamp timestamp{};
+        Check(!fs.GetFileTimeStamp("metadata", timestamp), "timestamp query failed");
+        Check(timestamp.modified > 0 && timestamp.accessed > 0, "timestamps are not POSIX seconds");
+
+        vfs::FileSystemAttribute attribute{};
+        Check(!fs.GetFileSystemAttribute(attribute), "filesystem attribute query failed");
+        Check(attribute.directoryNameLengthMax && *attribute.directoryNameLengthMax > 0, "directory-name limit unavailable");
+        Check(attribute.fileNameLengthMax && *attribute.fileNameLengthMax > 0, "file-name limit unavailable");
+
+        vfs::Directory::ListMode noSizeMode{};
+        noSizeMode.raw = 0x80000002;
+        const auto entries{fs.OpenDirectory("", noSizeMode)->Read()};
+        Check(entries.size() == 1 && entries[0].size == 0, "no-file-size directory mode exposed a size");
+    }
+
+    void TestBackingCapabilities() {
+        TempDirectory root;
+        vfs::OsFileSystem fs(root.path.string());
+        Check(!fs.CreateFile("data", 4), "backing fixture creation failed");
+
+        vfs::Backing::Mode writableMode{true, true, false};
+        auto writable{fs.OpenFile("data", writableMode)};
+        std::array<u8, 2> input{0x12, 0x34};
+        auto [written, writeError]{writable->WriteWithError(input, 1)};
+        Check(!writeError && written == input.size(), "bounded backing write failed");
+        Check(!writable->Flush(), "backing flush failed");
+        Check(writable->WriteWithError(input, 3).second == std::errc::result_out_of_range, "past-end backing write succeeded");
+        Check(!writable->ResizeWithError(6) && writable->size == 6, "backing resize failed");
+
+        auto readOnly{fs.OpenFile("data")};
+        Check(readOnly->WriteWithError(input, 0).second == std::errc::read_only_file_system, "read-only backing accepted a write");
+        Check(readOnly->ResizeWithError(2) == std::errc::read_only_file_system, "read-only backing accepted a resize");
+
+        std::array<u8, 2> output{};
+        auto [read, readError]{readOnly->ReadWithError(output, 1)};
+        Check(!readError && read == output.size() && output == input, "checked backing read failed");
+        Check(readOnly->ReadWithError(output, 5).second == std::errc::result_out_of_range, "past-end backing read succeeded");
+    }
+
+    struct RangeInput {
+        i64 offset;
+        i64 size;
+    };
+
+    struct FileIoInput {
+        u32 option;
+        u32 padding;
+        i64 offset;
+        i64 size;
+    };
+
+    template<typename T>
+    ipc::IpcRequest RequestWith(const T &input) {
+        ipc::IpcRequest request;
+        request.cmdStorage.resize(sizeof(T));
+        std::memcpy(request.cmdStorage.data(), &input, sizeof(T));
+        request.cmdArg = request.cmdStorage.data();
+        request.cmdArgSz = sizeof(T);
+        return request;
+    }
+
+    void TestStorageServiceBoundsAndPermissions() {
+        TempDirectory root;
+        vfs::OsFileSystem fs(root.path.string());
+        Check(!fs.CreateFile("storage", 4), "storage fixture creation failed");
+        auto writable{fs.OpenFile("storage", {true, true, false})};
+        DeviceState state;
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IStorage storage(writable, state, manager);
+
+        std::array<u8, 4> output{};
+        auto negativeOffset{RequestWith(RangeInput{-1, 1})};
+        negativeOffset.outputBuf.emplace_back(output);
+        ipc::IpcResponse response;
+        Check(storage.Read(session, negativeOffset, response) == result::InvalidOffset, "negative storage offset accepted");
+
+        auto overflow{RequestWith(RangeInput{3, 2})};
+        overflow.outputBuf.emplace_back(output);
+        Check(storage.Read(session, overflow, response) == result::OutOfRange, "past-end storage read accepted");
+
+        auto shortBuffer{RequestWith(RangeInput{0, 4})};
+        shortBuffer.outputBuf.emplace_back(output.data(), 2);
+        Check(storage.Read(session, shortBuffer, response) == result::InvalidSize, "short storage output buffer accepted");
+
+        std::array<u8, 2> input{0xA5, 0x5A};
+        auto write{RequestWith(RangeInput{1, 2})};
+        write.inputBuf.emplace_back(input);
+        Check(!storage.Write(session, write, response), "bounded storage write failed");
+        Check(!storage.Flush(session, write, response), "storage flush failed");
+
+        auto readOnly{fs.OpenFile("storage")};
+        IStorage readOnlyStorage(readOnly, state, manager);
+        Check(readOnlyStorage.Write(session, write, response) == result::WriteNotPermitted, "read-only storage accepted a write");
+        Check(readOnlyStorage.SetSize(session, write, response) == result::WriteNotPermitted, "read-only storage accepted resize");
+    }
+
+    void TestFileServiceIo() {
+        TempDirectory root;
+        vfs::OsFileSystem fs(root.path.string());
+        Check(!fs.CreateFile("file", 4), "file fixture creation failed");
+        auto backing{fs.OpenFile("file", {true, true, true})};
+        DeviceState state;
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IFile file(backing, state, manager);
+
+        std::array<u8, 2> input{0x11, 0x22};
+        auto write{RequestWith(FileIoInput{0, 0, 3, 2})};
+        write.inputBuf.emplace_back(input);
+        ipc::IpcResponse response;
+        Check(!file.Write(session, write, response) && backing->size == 5, "append-capable file was not extended");
+
+        std::array<u8, 4> output{};
+        auto read{RequestWith(FileIoInput{0, 0, 3, 4})};
+        read.outputBuf.emplace_back(output);
+        Check(!file.Read(session, read, response), "bounded file read failed");
+        Check(response.Get<u64>() == 2 && output[0] == 0x11 && output[1] == 0x22, "file read did not report the EOF-limited size");
+
+        auto badOption{RequestWith(FileIoInput{2, 0, 0, 0})};
+        Check(file.Write(session, badOption, response) == result::InvalidArgument, "unknown file write option accepted");
+    }
+
+    void TestSaveDataInfoReaderStateAndFilters() {
+        DeviceState state;
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        std::vector<SaveDataInfo> entries{
+            {.saveDataId = 1, .spaceId = SaveDataSpaceId::User, .type = SaveDataType::Account},
+            {.saveDataId = 2, .spaceId = SaveDataSpaceId::SdCache, .type = SaveDataType::Cache},
+            {.saveDataId = 3, .spaceId = SaveDataSpaceId::User, .type = SaveDataType::Cache},
+        };
+
+        ISaveDataInfoReader reader(state, manager, entries, SaveDataSpaceId::User, false);
+        std::array<SaveDataInfo, 1> page{};
+        ipc::IpcRequest request;
+        request.outputBuf.emplace_back(reinterpret_cast<u8 *>(page.data()), sizeof(page));
+
+        ipc::IpcResponse first;
+        Check(!reader.ReadSaveDataInfo(session, request, first), "first save-info read failed");
+        Check(first.Get<i64>() == 1 && page[0].saveDataId == 1, "first save-info page is wrong");
+        ipc::IpcResponse second;
+        Check(!reader.ReadSaveDataInfo(session, request, second), "second save-info read failed");
+        Check(second.Get<i64>() == 1 && page[0].saveDataId == 3, "save-info cursor or space filter is wrong");
+        ipc::IpcResponse exhausted;
+        Check(!reader.ReadSaveDataInfo(session, request, exhausted) && exhausted.Get<i64>() == 0, "exhausted save-info reader returned entries");
+
+        ISaveDataInfoReader cacheReader(state, manager, entries, std::nullopt, true);
+        std::array<SaveDataInfo, 3> cacheOutput{};
+        ipc::IpcRequest cacheRequest;
+        cacheRequest.outputBuf.emplace_back(reinterpret_cast<u8 *>(cacheOutput.data()), sizeof(cacheOutput));
+        ipc::IpcResponse cacheResponse;
+        Check(!cacheReader.ReadSaveDataInfo(session, cacheRequest, cacheResponse), "cache-only save-info read failed");
+        Check(cacheResponse.Get<i64>() == 2 && cacheOutput[0].type == SaveDataType::Cache && cacheOutput[1].type == SaveDataType::Cache, "cache-only filter emitted a non-cache record");
+    }
+
+    class CommitFileSystem final : public vfs::FileSystem {
+      private:
+        std::error_code commitError;
+
+      protected:
+        std::error_code CommitImpl() override {
+            ++commitCount;
+            return commitError;
+        }
+
+        std::shared_ptr<vfs::Backing> OpenFileImpl(const std::string &, vfs::Backing::Mode) override { return nullptr; }
+        std::optional<vfs::Directory::EntryType> GetEntryTypeImpl(const std::string &) override { return std::nullopt; }
+
+      public:
+        size_t commitCount{};
+
+        explicit CommitFileSystem(std::error_code commitError = {}) : commitError(commitError) {}
+    };
+
+    void TestMultiCommitOrderAndFailure() {
+        DeviceState state;
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IMultiCommitManager multiCommit(state, manager);
+        auto firstBacking{std::make_shared<CommitFileSystem>()};
+        auto failingBacking{std::make_shared<CommitFileSystem>(std::make_error_code(std::errc::permission_denied))};
+        auto skippedBacking{std::make_shared<CommitFileSystem>()};
+        auto first{std::make_shared<IFileSystem>(firstBacking, state, manager)};
+        auto failing{std::make_shared<IFileSystem>(failingBacking, state, manager)};
+        auto skipped{std::make_shared<IFileSystem>(skippedBacking, state, manager)};
+
+        ipc::IpcResponse response;
+        for (const auto &fileSystem : {first, failing, skipped}) {
+            ipc::IpcRequest addRequest;
+            addRequest.services.push_back(fileSystem);
+            Check(!multiCommit.Add(session, addRequest, response), "valid filesystem was rejected by multi-commit Add");
+        }
+
+        ipc::IpcRequest commitRequest;
+        Check(multiCommit.Commit(session, commitRequest, response) == result::PermissionDenied, "multi-commit did not propagate the first commit failure");
+        Check(firstBacking->commitCount == 1 && failingBacking->commitCount == 1 && skippedBacking->commitCount == 0, "multi-commit did not stop at the first failure");
+
+        ipc::IpcRequest invalidRequest;
+        invalidRequest.services.push_back(std::make_shared<ISaveDataInfoReader>(state, manager));
+        Check(multiCommit.Add(session, invalidRequest, response) == result::InvalidArgument, "multi-commit accepted a non-filesystem object");
+    }
+
+    struct OpenSaveDataInput {
+        SaveDataSpaceId spaceId;
+        u8 padding[7];
+        SaveDataAttribute attribute;
+    };
+
+    struct OpenDataStorageInput {
+        StorageId storageId;
+        u8 padding[7];
+        u64 dataId;
+    };
+
+    void TestProxyValidationAndState() {
+        TempDirectory root;
+        kernel::OS os;
+        os.publicAppFilesPath = root.path.string();
+        DeviceState state{.os = &os};
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IFileSystemProxy proxy(state, manager);
+        ipc::IpcResponse response;
+
+        ipc::IpcRequest processRequest;
+        processRequest.pid = 0x1234;
+        Check(!proxy.SetCurrentProcess(session, processRequest, response) && proxy.process == 0x1234, "SetCurrentProcess ignored the IPC PID descriptor");
+
+        auto cacheRequest{RequestWith<u16>(1)};
+        Check(proxy.GetCacheStorageSize(session, cacheRequest, response) == result::NotImplemented && response.data.empty(), "cache size returned fabricated output");
+
+        auto invalidMode{RequestWith<u32>(3)};
+        Check(proxy.SetGlobalAccessLogMode(session, invalidMode, response) == result::InvalidArgument, "invalid access-log mode accepted");
+        auto validMode{RequestWith<u32>(2)};
+        Check(!proxy.SetGlobalAccessLogMode(session, validMode, response), "valid access-log mode rejected");
+        Check(!proxy.GetGlobalAccessLogMode(session, validMode, response) && response.Get<u32>() == 2, "access-log mode was not retained");
+
+        ipc::IpcRequest emptyRequest;
+        Check(proxy.OpenDataStorageByCurrentProcess(session, emptyRequest, response) == result::NoRomFsAvailable, "missing current-process loader was dereferenced");
+        Check(proxy.OpenPatchDataStorageByCurrentProcess(session, emptyRequest, response) == result::EntityNotFound, "missing patch loader was dereferenced");
+
+        auto invalidStorage{RequestWith(OpenDataStorageInput{StorageId::None, {}, 1})};
+        Check(proxy.OpenDataStorageByDataId(session, invalidStorage, response) == result::InvalidArgument, "invalid StorageId accepted");
+        auto hostStorage{RequestWith(OpenDataStorageInput{StorageId::Host, {}, 1})};
+        Check(proxy.OpenDataStorageByDataId(session, hostStorage, response) == result::NotImplemented, "unrepresentable host storage was searched permissively");
+
+        OpenSaveDataInput saveInput{};
+        saveInput.spaceId = SaveDataSpaceId::User;
+        saveInput.attribute.programId = 1;
+        saveInput.attribute.type = SaveDataType::Account;
+        saveInput.attribute.rank = SaveDataRank::Secondary;
+        auto secondarySave{RequestWith(saveInput)};
+        Check(proxy.OpenSaveDataFileSystem(session, secondarySave, response) == result::NotImplemented, "secondary save rank aliased primary storage");
+        saveInput.attribute.rank = SaveDataRank::Primary;
+        saveInput.attribute.index = 1;
+        auto indexedSave{RequestWith(saveInput)};
+        Check(proxy.OpenSaveDataFileSystem(session, indexedSave, response) == result::NotImplemented, "indexed save aliased index-zero storage");
+
+        saveInput.attribute.index = 0;
+        auto primarySave{RequestWith(saveInput)};
+        const auto resolvedSavePath{GetSaveDataPath(saveInput.spaceId, saveInput.attribute, 0)};
+        Check(resolvedSavePath.has_value(), "valid save path did not resolve");
+        const std::filesystem::path savePath{root.path.string() + "/switch" + *resolvedSavePath};
+        Check(proxy.OpenSaveDataFileSystem(session, primarySave, response) == result::EntityNotFound, "missing save returned the wrong result");
+        Check(!std::filesystem::exists(savePath), "opening a missing save created it");
+        Check(proxy.OpenReadOnlySaveDataFileSystem(session, primarySave, response) == result::EntityNotFound, "missing read-only save returned the wrong result");
+        Check(!std::filesystem::exists(savePath), "opening a missing read-only save created it");
+
+        std::filesystem::create_directories(savePath);
+        Check(!proxy.OpenSaveDataFileSystem(session, primarySave, response), "existing save did not open");
+        Check(!proxy.OpenReadOnlySaveDataFileSystem(session, primarySave, response), "existing read-only save did not open");
+    }
+
+    void TestApplicationSaveProvisioning() {
+        TempDirectory root;
+        constexpr u64 SaveDataOwnerId{0x0100123456789000};
+        constexpr service::account::UserId UserId{1, 0};
+        Check(!EnsureApplicationSaveData(root.path.string(), SaveDataOwnerId, UserId, 0x4000, 0x4000),
+              "application save provisioning failed");
+
+        const auto accountPath{root.path / "switch/nand/user/save/0000000000000000/00000000000000000000000000000001/0100123456789000"};
+        const auto devicePath{root.path / "switch/nand/user/save/0000000000000000/00000000000000000000000000000000/0100123456789000"};
+        const auto externalPath{root.path / "switch/nand/user/save/0000000000000000/00000000000000000000000000000001/0100A280187BC000"};
+        Check(std::filesystem::is_directory(accountPath), "declared account save was not provisioned");
+        Check(std::filesystem::is_directory(devicePath), "declared device save was not provisioned");
+        Check(!std::filesystem::exists(externalPath), "an unrelated application save was provisioned");
+        Check(!EnsureApplicationSaveData(root.path.string(), SaveDataOwnerId, UserId, 0x4000, 0x4000),
+              "application save provisioning was not idempotent");
+
+        kernel::OS os;
+        os.publicAppFilesPath = root.path.string();
+        DeviceState state{.os = &os};
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IFileSystemProxy proxy(state, manager);
+        OpenSaveDataInput input{};
+        input.spaceId = SaveDataSpaceId::User;
+        input.attribute.programId = SaveDataOwnerId;
+        input.attribute.userId = UserId;
+        input.attribute.type = SaveDataType::Account;
+        auto request{RequestWith(input)};
+        ipc::IpcResponse response;
+        Check(!proxy.OpenSaveDataFileSystem(session, request, response), "provisioned account save did not open");
+    }
+
+    void TestApplicationCacheProvisioning() {
+        TempDirectory root;
+        constexpr u64 SaveDataOwnerId{0x010083A018262000};
+        const auto cachePath{root.path / "switch/nand/user/save/cache/010083A018262000"};
+
+        Check(!EnsureApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0xC00000),
+              "zero-sized cache provisioning failed");
+        Check(!std::filesystem::exists(cachePath), "zero-sized cache was provisioned");
+
+        Check(!EnsureApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0xC00000, 0xC00000),
+              "declared cache provisioning failed");
+        Check(std::filesystem::is_directory(cachePath), "declared cache was not provisioned");
+        Check(!EnsureApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0xC00000, 0xC00000),
+              "declared cache provisioning was not idempotent");
+
+        kernel::OS os;
+        os.publicAppFilesPath = root.path.string();
+        DeviceState state{.os = &os};
+        state.loader = std::make_shared<loader::Loader>();
+        state.loader->nacp.emplace();
+        state.loader->nacp->nacpContents.saveDataOwnerId = SaveDataOwnerId;
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IFileSystemProxy proxy(state, manager);
+
+        OpenSaveDataInput input{};
+        input.spaceId = SaveDataSpaceId::User;
+        input.attribute.programId = 0;
+        input.attribute.type = SaveDataType::Cache;
+        auto request{RequestWith(input)};
+        ipc::IpcResponse response;
+        Check(!proxy.OpenSaveDataFileSystem(session, request, response),
+              "launch-provisioned cache storage did not open through programId zero");
+    }
+
+    void TestCacheStorageCreation() {
+        TempDirectory root;
+        constexpr u64 SaveDataOwnerId{0x0100F2200C984000};
+
+        CacheStorageTargetMedia target{CacheStorageTargetMedia::None};
+        u64 requiredSize{UINT64_MAX};
+        Check(CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x1000, 0, -1, 0, target, requiredSize) == result::InvalidArgument,
+              "negative cache size was accepted");
+        Check(CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x1000, 1, 0, 0, target, requiredSize) == result::CacheStorageIndexTooLarge,
+              "cache index above the NACP maximum was accepted");
+        Check(CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x1000, 0, 0x800, 0x801, target, requiredSize) == result::CacheStorageSizeTooLarge,
+              "cache size above the NACP maximum was accepted");
+
+        Check(!CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x1000, 0, 0x800, 0x800, target, requiredSize),
+              "valid cache storage creation failed");
+        Check(target == CacheStorageTargetMedia::Nand && requiredSize == 0, "cache storage outputs are wrong");
+        const auto cachePath{root.path / "switch/nand/user/save/cache/0100F2200C984000"};
+        Check(std::filesystem::is_directory(cachePath), "cache storage was not materialized");
+        Check(CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x1000, 0, 0x800, 0x800, target, requiredSize) == result::AlreadyExists,
+              "duplicate cache storage creation did not report AlreadyExists");
+
+        Check(CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 1, 0x1000, 1, 0x800, 0x800, target, requiredSize) == result::NotImplemented,
+              "an unrepresentable cache index aliased index zero");
+
+        kernel::OS os;
+        os.publicAppFilesPath = root.path.string();
+        DeviceState state{.os = &os};
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IFileSystemProxy proxy(state, manager);
+        OpenSaveDataInput input{};
+        input.spaceId = SaveDataSpaceId::User;
+        input.attribute.programId = SaveDataOwnerId;
+        input.attribute.type = SaveDataType::Cache;
+        auto request{RequestWith(input)};
+        ipc::IpcResponse response;
+        Check(!proxy.OpenSaveDataFileSystem(session, request, response), "created cache storage did not open");
+    }
+
+}
+
+int main() {
+    int failures{};
+    const auto run = [&](const char *name, auto test) {
+        try {
+            test();
+            std::cout << "PASS " << name << '\n';
+        } catch (const std::exception &error) {
+            ++failures;
+            std::cout << "FAIL " << name << ": " << error.what() << '\n';
+        }
+    };
+
+    run("filesystem ABI layouts", TestAbiLayouts);
+    run("signed storage ranges", TestSignedRanges);
+    run("guest path parsing", TestGuestPathParsing);
+    run("filesystem service helpers", TestFileSystemServiceHelpers);
+    run("pagination bounds", TestPaginationBounds);
+    run("rooted host mutations", TestRootedHostMutations);
+    run("host root open modes", TestHostRootOpenModes);
+    run("host rename", TestHostRename);
+    run("host commit", TestHostCommit);
+    run("symlink escape rejection", TestSymlinkEscapeIsRejected);
+    run("host metadata capabilities", TestHostMetadataCapabilities);
+    run("backing capabilities", TestBackingCapabilities);
+    run("storage service bounds and permissions", TestStorageServiceBoundsAndPermissions);
+    run("file service IO", TestFileServiceIo);
+    run("save data reader state and filters", TestSaveDataInfoReaderStateAndFilters);
+    run("multi-commit order and failure", TestMultiCommitOrderAndFailure);
+    run("proxy validation and state", TestProxyValidationAndState);
+    run("application save provisioning", TestApplicationSaveProvisioning);
+    run("application cache provisioning", TestApplicationCacheProvisioning);
+    run("cache storage creation", TestCacheStorageCreation);
+    return failures == 0 ? 0 : 1;
+}

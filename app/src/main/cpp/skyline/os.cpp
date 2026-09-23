@@ -11,6 +11,8 @@
 #include "loader/nca.h"
 #include "loader/nsp.h"
 #include "loader/xci.h"
+#include "services/account/IAccountServiceForApplication.h"
+#include "services/fssrv/IFileSystemProxy.h"
 #include "os.h"
 #include <logger/logger.h>
 
@@ -53,6 +55,41 @@ namespace skyline::kernel {
                 state.dlcLoaders.push_back(GetLoader(fd, keyStore, loader::RomFormat::NSP));
 
         state.loader->ResolveProgramContent(state);
+
+        if (state.loader->nacp) {
+            const auto &nacp{state.loader->nacp->nacpContents};
+            LOGI("[FSP-SAVE-TRACE] phase=startup-nacp saveDataOwnerId={:016X} defaultUser={:016X}{:016X} "
+                 "accountSize=0x{:X} accountJournal=0x{:X} deviceSize=0x{:X} deviceJournal=0x{:X} "
+                 "cacheSize=0x{:X} cacheJournal=0x{:X} cacheDataAndJournalMax=0x{:X} cacheIndexMax={}",
+                 nacp.saveDataOwnerId,
+                 constant::DefaultUserId.upper,
+                 constant::DefaultUserId.lower,
+                 nacp.userAccountSaveDataSize,
+                 nacp.userAccountSaveDataJournalSize,
+                 nacp.deviceSaveDataSize,
+                 nacp.deviceSaveDataJournalSize,
+                 nacp.cacheStorageSize,
+                 nacp.cacheStorageJournalSize,
+                 nacp.cacheStorageDataAndJournalSizeMax,
+                 nacp.cacheStorageIndexMax);
+
+            const auto cacheProvisionResult{service::fssrv::EnsureApplicationCacheStorage(publicAppFilesPath,
+                                                                                           nacp.saveDataOwnerId,
+                                                                                           nacp.cacheStorageSize,
+                                                                                           nacp.cacheStorageJournalSize)};
+            LOGI("[FSP-SAVE-TRACE] phase=startup-cache-provision result={}", cacheProvisionResult.raw);
+            if (cacheProvisionResult)
+                throw exception("Failed to provision application cache storage: {}", cacheProvisionResult.raw);
+
+            const auto saveProvisionResult{service::fssrv::EnsureApplicationSaveData(publicAppFilesPath,
+                                                                                     nacp.saveDataOwnerId,
+                                                                                     constant::DefaultUserId,
+                                                                                     nacp.userAccountSaveDataSize,
+                                                                                     nacp.deviceSaveDataSize)};
+            LOGI("[FSP-SAVE-TRACE] phase=startup-save-provision result={}", saveProvisionResult.raw);
+            if (saveProvisionResult)
+                throw exception("Failed to provision application save data: {}", saveProvisionResult.raw);
+        }
 
         state.gpu->Initialise();
 

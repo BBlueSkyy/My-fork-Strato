@@ -2,6 +2,8 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <kernel/types/KProcess.h>
+#include <cstring>
+#include "helpers.h"
 #include "results.h"
 #include "IDirectory.h"
 
@@ -20,35 +22,37 @@ namespace skyline::service::fssrv {
         u8 _pad1_[3];
         u64 size;
     };
+    static_assert(sizeof(DirectoryEntry) == 0x310);
 
-    IDirectory::IDirectory(std::shared_ptr<vfs::Directory> backing, std::shared_ptr<vfs::FileSystem> backingFs, const DeviceState &state, ServiceManager &manager) : backing(std::move(backing)), backingFs(std::move(backingFs)), BaseService(state, manager) {}
+    IDirectory::IDirectory(std::shared_ptr<vfs::Directory> backing, std::shared_ptr<vfs::FileSystem> backingFs, const DeviceState &state, ServiceManager &manager)
+        : BaseService(state, manager), backing(std::move(backing)), backingFs(std::move(backingFs)), entries(this->backing->Read()) {}
 
     Result IDirectory::Read(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto entries{backing->Read()};
+        if (request.outputBuf.empty()) {
+            response.Push<u64>(0);
+            return {};
+        }
         auto outputEntries{request.outputBuf.at(0).cast<DirectoryEntry, std::dynamic_extent, true>()};
-        size_t i{};
+        const auto count{CalculateReadCount(entries.size(), cursor, outputEntries.size())};
 
-        if (!entries.empty())
-            for (; i < std::min(entries.size() - remainingReadCount, outputEntries.size()); i++) {
-                auto &entry{entries.at(i)};
+        for (size_t i{}; i < count; ++i) {
+            const auto &entry{entries.at(cursor + i)};
+            DirectoryEntry output{};
+            output.attributes.directory = (entry.type == vfs::Directory::EntryType::Directory);
+            output.type = entry.type;
+            output.size = entry.size;
+            const auto nameSize{std::min(entry.name.size(), output.name.size() - 1)};
+            std::memcpy(output.name.data(), entry.name.data(), nameSize);
+            outputEntries[i] = output;
+        }
 
-                outputEntries[i] = {
-                    .type = entry.type,
-                    .attributes.directory = (entry.type == vfs::Directory::EntryType::Directory),
-                    .size = entry.size,
-                };
-
-                span(outputEntries[i].name).copy_from(entry.name);
-            }
-
-        remainingReadCount += i;
-        response.Push<u64>(i);
+        cursor += count;
+        response.Push<u64>(count);
         return {};
     }
 
     Result IDirectory::GetEntryCount(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto entries{backing->Read()};
-        response.Push<u64>(entries.size() - remainingReadCount);
+        response.Push<u64>(entries.size());
         return {};
     }
 }
