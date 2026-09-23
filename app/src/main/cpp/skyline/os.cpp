@@ -13,6 +13,7 @@
 #include "loader/xci.h"
 #include "os.h"
 #include <logger/logger.h>
+#include <unistd.h>
 
 namespace skyline::kernel {
     OS::OS(
@@ -51,7 +52,13 @@ namespace skyline::kernel {
         LOGI("DLC-TRACE total={}", dlcFds.size());
         if (dlcFds.size() > 0) {
             for (size_t i = 0; i < dlcFds.size(); i++) {
-                LOGI("DLC-TRACE loading index={} fd={}", i, dlcFds[i]);
+                std::array<char, 512> fdTarget{};
+                const auto fdLink{fmt::format("/proc/self/fd/{}", dlcFds[i])};
+                const ssize_t fdTargetLength{::readlink(fdLink.c_str(), fdTarget.data(), fdTarget.size() - 1)};
+                if (fdTargetLength >= 0)
+                    fdTarget[static_cast<size_t>(fdTargetLength)] = '\0';
+                LOGI("DLC-TRACE loading index={} fd={} target='{}'", i, dlcFds[i],
+                     fdTargetLength >= 0 ? fdTarget.data() : "<unresolved>");
                 state.dlcLoaders.push_back(GetLoader(dlcFds[i], keyStore, loader::RomFormat::NSP));
                 LOGI("DLC-TRACE loaded index={} total_loaded={}", i, state.dlcLoaders.size());
             }
