@@ -463,7 +463,11 @@ namespace skyline::soc::gm20b {
                     channelLocked = true;
                 }
 
+                LOGI("GRID-QUEUE process-begin address=0x{:X} size=0x{:X}",
+                     gpEntry.Address(), +gpEntry.size);
                 Process(gpEntry);
+                LOGI("GRID-QUEUE process-end address=0x{:X} size=0x{:X}",
+                     gpEntry.Address(), +gpEntry.size);
                 LOGI("GRID-FLOW process-end address=0x{:X} size=0x{:X}",
                      gpEntry.Address(), +gpEntry.size);
             }, [this, &channelLocked]() {
@@ -495,11 +499,21 @@ namespace skyline::soc::gm20b {
     }
 
     void ChannelGpfifo::Push(span<GpEntry> entries) {
-        gpEntries.Append(entries);
+        for (const auto &entry : entries) {
+            LOGI("GRID-QUEUE enqueue-entry-begin address=0x{:X} size=0x{:X}",
+                 entry.Address(), +entry.size);
+            gpEntries.Push(entry);
+            LOGI("GRID-QUEUE enqueue-entry-end address=0x{:X} size=0x{:X}",
+                 entry.Address(), +entry.size);
+        }
     }
 
     void ChannelGpfifo::Push(GpEntry entry) {
+        LOGI("GRID-QUEUE enqueue-entry-begin address=0x{:X} size=0x{:X}",
+             entry.Address(), +entry.size);
         gpEntries.Push(entry);
+        LOGI("GRID-QUEUE enqueue-entry-end address=0x{:X} size=0x{:X}",
+             entry.Address(), +entry.size);
     }
 
     ChannelGpfifo::~ChannelGpfifo() {
