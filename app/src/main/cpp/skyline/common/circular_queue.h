@@ -6,6 +6,7 @@
 #include <common/trace.h>
 #include <common/spin_lock.h>
 #include <common/span.h>
+#include <logger/logger.h>
 #include <condition_variable>
 #include <mutex>
 #include <type_traits>
@@ -86,11 +87,18 @@ namespace skyline {
             TRACE_EVENT_BEGIN("containers", "CircularQueue::Process");
 
             while (true) {
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE loop-begin");
+
                 if (start == end) {
                     std::unique_lock productionLock{productionMutex};
                     TRACE_EVENT_END("containers");
                     preWait();
+                    if constexpr (StandardProducerWait)
+                        LOGI("GRID-QUEUE wait-begin");
                     produceCondition.wait(productionLock, [this]() { return start != end || stopped.load(std::memory_order_acquire); });
+                    if constexpr (StandardProducerWait)
+                        LOGI("GRID-QUEUE wait-end");
                     TRACE_EVENT_BEGIN("containers", "CircularQueue::Process");
 
                     if (start == end) {
@@ -102,13 +110,19 @@ namespace skyline {
 
                 std::scoped_lock comsumptionLock{consumptionMutex};
                 while (start != end) {
+                    if constexpr (StandardProducerWait)
+                        LOGI("GRID-QUEUE pop-begin");
                     auto next{start + 1};
                     next = (next == reinterpret_cast<Type *>(vector.end().base())) ? reinterpret_cast<Type *>(vector.begin().base()) : next;
+                    if constexpr (StandardProducerWait)
+                        LOGI("GRID-QUEUE pop-end");
                     function(*next);
                     start = next;
                 }
 
                 consumeCondition.notify_one();
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE loop-end");
             }
         }
 
@@ -152,7 +166,11 @@ namespace skyline {
                 }
                 *next = item;
                 end = next;
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE notify-begin");
                 produceCondition.notify_one();
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE notify-end");
                 break;
             }
         }
@@ -180,7 +198,11 @@ namespace skyline {
                 }
                 *next = std::move(item);
                 end = next;
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE notify-begin");
                 produceCondition.notify_one();
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE notify-end");
                 break;
             }
         }
