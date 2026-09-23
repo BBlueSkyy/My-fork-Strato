@@ -24,6 +24,8 @@ namespace skyline {
         std::condition_variable_any produceCondition;
         std::atomic_bool stopped{false}; //!< Set via Close() to cooperatively wake up a blocked Process() and let it return, without needing to interrupt it via a signal
         bool diagnosticTrace{}; //!< Enables temporary queue lifecycle logging for targeted diagnostics
+        std::atomic<u64> diagnosticPredicateChecks{}; //!< Number of wait-predicate evaluations for the targeted diagnostic queue
+        std::atomic_bool diagnosticLastReady{}; //!< Result of the most recent wait-predicate evaluation
 
       public:
         /**
@@ -100,7 +102,19 @@ namespace skyline {
                              static_cast<const void *>(start.load(std::memory_order_acquire)),
                              static_cast<const void *>(end.load(std::memory_order_acquire)),
                              stopped.load(std::memory_order_acquire));
-                    produceCondition.wait(productionLock, [this]() { return start != end || stopped.load(std::memory_order_acquire); });
+                    produceCondition.wait(productionLock, [this]() {
+                        bool ready{start != end || stopped.load(std::memory_order_acquire)};
+                        if (diagnosticTrace) {
+                            u64 checks{diagnosticPredicateChecks.fetch_add(1, std::memory_order_relaxed) + 1};
+                            diagnosticLastReady.store(ready, std::memory_order_relaxed);
+                            LOGI("GRID-QUEUE predicate-check count={} ready={} start={} end={} stopped={}",
+                                 checks, ready,
+                                 static_cast<const void *>(start.load(std::memory_order_acquire)),
+                                 static_cast<const void *>(end.load(std::memory_order_acquire)),
+                                 stopped.load(std::memory_order_acquire));
+                        }
+                        return ready;
+                    });
                     if (diagnosticTrace)
                         LOGI("GRID-QUEUE wait-return start={} end={} stopped={}",
                              static_cast<const void *>(start.load(std::memory_order_acquire)),
@@ -176,10 +190,18 @@ namespace skyline {
                 *next = item;
                 end = next;
                 if (diagnosticTrace)
-                    LOGI("GRID-QUEUE producer-notify start={} end={}",
+                    LOGI("GRID-QUEUE producer-notify-before checks={} lastReady={} start={} end={}",
+                         diagnosticPredicateChecks.load(std::memory_order_relaxed),
+                         diagnosticLastReady.load(std::memory_order_relaxed),
                          static_cast<const void *>(start.load(std::memory_order_acquire)),
                          static_cast<const void *>(end.load(std::memory_order_acquire)));
                 produceCondition.notify_one();
+                if (diagnosticTrace)
+                    LOGI("GRID-QUEUE producer-notify-after checks={} lastReady={} start={} end={}",
+                         diagnosticPredicateChecks.load(std::memory_order_relaxed),
+                         diagnosticLastReady.load(std::memory_order_relaxed),
+                         static_cast<const void *>(start.load(std::memory_order_acquire)),
+                         static_cast<const void *>(end.load(std::memory_order_acquire)));
                 break;
             }
         }
@@ -208,10 +230,18 @@ namespace skyline {
                 *next = std::move(item);
                 end = next;
                 if (diagnosticTrace)
-                    LOGI("GRID-QUEUE producer-notify start={} end={}",
+                    LOGI("GRID-QUEUE producer-notify-before checks={} lastReady={} start={} end={}",
+                         diagnosticPredicateChecks.load(std::memory_order_relaxed),
+                         diagnosticLastReady.load(std::memory_order_relaxed),
                          static_cast<const void *>(start.load(std::memory_order_acquire)),
                          static_cast<const void *>(end.load(std::memory_order_acquire)));
                 produceCondition.notify_one();
+                if (diagnosticTrace)
+                    LOGI("GRID-QUEUE producer-notify-after checks={} lastReady={} start={} end={}",
+                         diagnosticPredicateChecks.load(std::memory_order_relaxed),
+                         diagnosticLastReady.load(std::memory_order_relaxed),
+                         static_cast<const void *>(start.load(std::memory_order_acquire)),
+                         static_cast<const void *>(end.load(std::memory_order_acquire)));
                 break;
             }
         }
