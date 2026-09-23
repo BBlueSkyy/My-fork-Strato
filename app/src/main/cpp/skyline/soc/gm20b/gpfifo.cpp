@@ -267,7 +267,7 @@ namespace skyline::soc::gm20b {
             if (traceGridTarget)
                 LOGI("GRID-TARGET header offset={} raw=0x{:08X} method=0x{:X} count={} subchannel={} secOp={} tertOp={}",
                      std::distance(pushBuffer.begin(), entry), methodHeader.raw,
-                     methodHeader.methodAddress, methodHeader.methodCount,
+                     static_cast<u32>(methodHeader.methodAddress), static_cast<u32>(methodHeader.methodCount),
                      static_cast<u8>(methodHeader.methodSubChannel),
                      static_cast<u8>(methodHeader.secOp), static_cast<u8>(methodHeader.tertOp));
 
@@ -398,27 +398,27 @@ namespace skyline::soc::gm20b {
                 if (touchesEngineMethods && methodHeader.methodSubChannel != SubchannelId::ThreeD) [[unlikely]] {
                     if (traceGridTarget)
                         LOGI("GRID-TARGET flush-begin method=0x{:X} count={} subchannel={}",
-                             methodHeader.methodAddress, methodHeader.methodCount,
+                             static_cast<u32>(methodHeader.methodAddress), static_cast<u32>(methodHeader.methodCount),
                              static_cast<u8>(methodHeader.methodSubChannel));
 
                     channelCtx.maxwell3D.FlushEngineState(); // Flush 3D state only before calls to another engine, not puller/GPFIFO methods
 
                     if (traceGridTarget)
                         LOGI("GRID-TARGET flush-end method=0x{:X} count={} subchannel={}",
-                             methodHeader.methodAddress, methodHeader.methodCount,
+                             static_cast<u32>(methodHeader.methodAddress), static_cast<u32>(methodHeader.methodCount),
                              static_cast<u8>(methodHeader.methodSubChannel));
                 }
 
                 if (traceGridTarget)
                     LOGI("GRID-TARGET process-method-begin method=0x{:X} count={} subchannel={} secOp={}",
-                         methodHeader.methodAddress, methodHeader.methodCount,
+                         static_cast<u32>(methodHeader.methodAddress), static_cast<u32>(methodHeader.methodCount),
                          static_cast<u8>(methodHeader.methodSubChannel), static_cast<u8>(methodHeader.secOp));
 
                 const bool methodHitEnd{processMethod()};
 
                 if (traceGridTarget)
                     LOGI("GRID-TARGET process-method-end method=0x{:X} count={} subchannel={} secOp={} hitEnd={}",
-                         methodHeader.methodAddress, methodHeader.methodCount,
+                         static_cast<u32>(methodHeader.methodAddress), static_cast<u32>(methodHeader.methodCount),
                          static_cast<u8>(methodHeader.methodSubChannel), static_cast<u8>(methodHeader.secOp),
                          methodHitEnd);
 
