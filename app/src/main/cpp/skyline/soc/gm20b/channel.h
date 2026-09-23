@@ -35,6 +35,8 @@ namespace skyline::soc::gm20b {
 
         ChannelContext(const DeviceState &state, std::shared_ptr<AddressSpaceContext> asCtx, size_t numEntries);
 
+        ~ChannelContext();
+
         void Lock() {
             globalChannelLock.lock();
             executor.LockPreserve();
