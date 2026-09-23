@@ -536,16 +536,48 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
     }
 
     void Maxwell3D::FlushEngineState() {
+        LOGI("GRID-FLUSH begin this={} raw=0x{:X} drawActive={} inlineIndexActive={} constantBufferActive={} cbufWords={} cbufStart=0x{:X}",
+             static_cast<const void *>(this), +batchEnableState.raw,
+             +batchEnableState.drawActive, +batchEnableState.inlineIndexActive,
+             +batchEnableState.constantBufferActive, batchLoadConstantBuffer.buffer.size(),
+             batchLoadConstantBuffer.startOffset);
+
+        LOGI("GRID-FLUSH deferred-draw-begin this={} active={}",
+             static_cast<const void *>(this), +batchEnableState.drawActive);
         FlushDeferredDraw();
+        LOGI("GRID-FLUSH deferred-draw-end this={} active={}",
+             static_cast<const void *>(this), +batchEnableState.drawActive);
+
+        LOGI("GRID-FLUSH inline-index-begin this={} active={} indices={} totalCount={}",
+             static_cast<const void *>(this), +batchEnableState.inlineIndexActive,
+             batchInlineIndex.indices.size(), batchInlineIndex.totalCount);
         FlushInlineIndexDraw();
-   
-            if (batchEnableState.constantBufferActive) {
+        LOGI("GRID-FLUSH inline-index-end this={} active={} indices={} totalCount={}",
+             static_cast<const void *>(this), +batchEnableState.inlineIndexActive,
+             batchInlineIndex.indices.size(), batchInlineIndex.totalCount);
+
+        LOGI("GRID-FLUSH constant-buffer-check this={} active={} words={} startOffset=0x{:X}",
+             static_cast<const void *>(this), +batchEnableState.constantBufferActive,
+             batchLoadConstantBuffer.buffer.size(), batchLoadConstantBuffer.startOffset);
+        if (batchEnableState.constantBufferActive) {
+            LOGI("GRID-FLUSH constant-buffer-begin this={} words={} startOffset=0x{:X}",
+                 static_cast<const void *>(this), batchLoadConstantBuffer.buffer.size(),
+                 batchLoadConstantBuffer.startOffset);
             interconnect.LoadConstantBuffer(batchLoadConstantBuffer.buffer, batchLoadConstantBuffer.startOffset);
+            LOGI("GRID-FLUSH constant-buffer-load-end this={}", static_cast<const void *>(this));
+
             batchEnableState.constantBufferActive = false;
             batchLoadConstantBuffer.Reset();
+            LOGI("GRID-FLUSH constant-buffer-reset-end this={} active={} words={}",
+                 static_cast<const void *>(this), +batchEnableState.constantBufferActive,
+                 batchLoadConstantBuffer.buffer.size());
         }
 
+        LOGI("GRID-FLUSH disable-quick-cbuf-begin this={}", static_cast<const void *>(this));
         interconnect.DisableQuickConstantBufferBind();
+        LOGI("GRID-FLUSH disable-quick-cbuf-end this={}", static_cast<const void *>(this));
+
+        LOGI("GRID-FLUSH end this={} raw=0x{:X}", static_cast<const void *>(this), +batchEnableState.raw);
     }
 
     __attribute__((always_inline)) void Maxwell3D::CallMethod(u32 method, u32 argument) {
