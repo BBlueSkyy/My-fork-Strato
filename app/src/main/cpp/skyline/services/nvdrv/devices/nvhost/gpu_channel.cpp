@@ -98,11 +98,6 @@ namespace skyline::service::nvdrv::device::nvhost {
                             +flags.fenceWait, +flags.fenceIncrement, +flags.hwFormat, +flags.suppressWfi, +flags.incrementWithValue,
                             fence.id, fence.threshold);
 
-        LOGI("GRID-FLOW submit-gpfifo entries={} fenceWait={} fenceIncrement={} first=0x{:X} last=0x{:X}",
-             numEntries, +flags.fenceWait, +flags.fenceIncrement,
-             numEntries ? gpEntries.front().Address() : 0,
-             numEntries ? gpEntries[numEntries - 1].Address() : 0);
-
         if (numEntries > gpEntries.size()) {
             // Reject the malformed submission instead of crashing the emulator process -
             // a buggy/newer host GPU driver or a bad guest submission can trigger this,
@@ -110,6 +105,11 @@ namespace skyline::service::nvdrv::device::nvhost {
             LOGE("GpEntry size mismatch! numEntries: {}, available: {}", numEntries, gpEntries.size());
             return PosixResult::InvalidArgument;
         }
+
+        LOGI("GRID-FLOW submit-gpfifo entries={} fenceWait={} fenceIncrement={} first=0x{:X} last=0x{:X}",
+             numEntries, +flags.fenceWait, +flags.fenceIncrement,
+             numEntries ? gpEntries.front().Address() : 0,
+             numEntries ? gpEntries[numEntries - 1].Address() : 0);
 
         std::scoped_lock lock(channelMutex);
 
