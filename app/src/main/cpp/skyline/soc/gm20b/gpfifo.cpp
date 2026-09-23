@@ -175,7 +175,15 @@ namespace skyline::soc::gm20b {
             }
         }
 
+        const bool gridDeepTrace{gpEntry.Address() == 0x502032420 && gpEntry.size == 0x13};
+        if (gridDeepTrace)
+            LOGI("GRID-DEEP translate-range-begin address=0x{:X} size=0x{:X} bytes=0x{:X}",
+                 gpEntry.Address(), +gpEntry.size, gpEntry.size * sizeof(u32));
+
         auto pushBufferMappedRanges{channelCtx.asCtx->gmmu.TranslateRange(gpEntry.Address(), gpEntry.size * sizeof(u32))};
+
+        if (gridDeepTrace)
+            LOGI("GRID-DEEP translate-range-end ranges={}", pushBufferMappedRanges.size());
 
         bool pushBufferCopied{}; //!< Set by the below lambda in order to track if the pushbuffer is a copy of guest memory or not
         auto pushBuffer{[&]() -> span<u32> {
@@ -190,16 +198,37 @@ namespace skyline::soc::gm20b {
             }
         }()};
 
+        if (gridDeepTrace)
+            LOGI("GRID-DEEP pushbuffer-ready copied={} words={}", pushBufferCopied, pushBuffer.size());
+
         bool pushbufferDirty{false};
+        size_t dirtyRangeIndex{};
 
         for (auto range : pushBufferMappedRanges) {
-            if (channelCtx.executor.usageTracker.dirtyIntervals.Intersect(range)) {
-                if (skipDirtyFlushes)
+            bool intersectsDirty{channelCtx.executor.usageTracker.dirtyIntervals.Intersect(range)};
+            if (gridDeepTrace)
+                LOGI("GRID-DEEP dirty-check index={} intersects={} skipDirtyFlushes={}",
+                     dirtyRangeIndex, intersectsDirty, skipDirtyFlushes);
+
+            if (intersectsDirty) {
+                if (skipDirtyFlushes) {
                     pushbufferDirty = true;
-                else
+                    if (gridDeepTrace)
+                        LOGI("GRID-DEEP dirty-mark-buffer index={}", dirtyRangeIndex);
+                } else {
+                    if (gridDeepTrace)
+                        LOGI("GRID-DEEP dirty-submit-begin index={}", dirtyRangeIndex);
                     channelCtx.executor.Submit({}, true);
+                    if (gridDeepTrace)
+                        LOGI("GRID-DEEP dirty-submit-end index={}", dirtyRangeIndex);
+                }
             }
+
+            dirtyRangeIndex++;
         }
+
+        if (gridDeepTrace)
+            LOGI("GRID-DEEP dirty-scan-end pushbufferDirty={}", pushbufferDirty);
 
         // There will be at least one entry here
         auto entry{pushBuffer.begin()};
@@ -236,8 +265,16 @@ namespace skyline::soc::gm20b {
         }};
 
         // We've a method from a previous GpEntry that needs resuming
-        if (resumeState.remaining)
+        if (resumeState.remaining) {
+            if (gridDeepTrace)
+                LOGI("GRID-DEEP resume-begin remaining={} address=0x{:X} subchannel={} state={}",
+                     resumeState.remaining, resumeState.address, static_cast<u32>(resumeState.subChannel),
+                     static_cast<u32>(resumeState.state));
             resumeSplitMethod();
+            if (gridDeepTrace)
+                LOGI("GRID-DEEP resume-end remaining={} wordIndex={}",
+                     resumeState.remaining, std::distance(pushBuffer.begin(), entry));
+        }
 
         // Process more methods if the entries are still not all used up after handling resuming
         for (; entry != pushBuffer.end(); entry++) {
@@ -254,6 +291,13 @@ namespace skyline::soc::gm20b {
             // Needed in order to check for methods split across multiple GpEntries
             ssize_t remainingEntries{std::distance(entry, pushBuffer.end()) - 1};
 
+            if (gridDeepTrace)
+                LOGI("GRID-DEEP method-header wordIndex={} raw=0x{:08X} secOp={} method=0x{:X} subchannel={} count={} remainingEntries={} pure={}",
+                     std::distance(pushBuffer.begin(), entry), methodHeader.raw,
+                     static_cast<u32>(methodHeader.secOp), +methodHeader.methodAddress,
+                     static_cast<u32>(methodHeader.methodSubChannel), +methodHeader.methodCount,
+                     remainingEntries, methodHeader.Pure());
+
             // Handles storing state and initial execution for methods that are split across multiple GpEntries
             auto startSplitMethod{[&](auto methodState) {
                 resumeState = {
@@ -266,7 +310,14 @@ namespace skyline::soc::gm20b {
                 // Skip over method header as `resumeSplitMethod` doesn't expect it to be there
                 entry++;
 
+                if (gridDeepTrace)
+                    LOGI("GRID-DEEP split-resume-begin remaining={} address=0x{:X} subchannel={} state={}",
+                         resumeState.remaining, resumeState.address, static_cast<u32>(resumeState.subChannel),
+                         static_cast<u32>(resumeState.state));
                 resumeSplitMethod();
+                if (gridDeepTrace)
+                    LOGI("GRID-DEEP split-resume-end remaining={} wordIndex={}",
+                         resumeState.remaining, std::distance(pushBuffer.begin(), entry));
             }};
 
             /**
@@ -293,7 +344,13 @@ namespace skyline::soc::gm20b {
                         if constexpr (State == MethodResumeState::State::NonInc) {
                             // For pure noninc methods we can send all method calls as a span in one go
                             if (methodHeader.methodCount > BatchCutoff) [[unlikely]] {
+                                if (gridDeepTrace)
+                                    LOGI("GRID-DEEP pure-batch-begin method=0x{:X} count={} subchannel={}",
+                                         +methodHeader.methodAddress, +methodHeader.methodCount,
+                                         static_cast<u32>(methodHeader.methodSubChannel));
                                 SendPureBatchNonInc(methodHeader.methodAddress, span(&(*++entry), methodHeader.methodCount), methodHeader.methodSubChannel);
+                                if (gridDeepTrace)
+                                    LOGI("GRID-DEEP pure-batch-end method=0x{:X}", +methodHeader.methodAddress);
 
                                 entry += methodHeader.methodCount - 1;
                                 return false;
@@ -301,8 +358,20 @@ namespace skyline::soc::gm20b {
                         } else if constexpr (State == MethodResumeState::State::OneInc) {
                             // For pure oneinc methods we can send the initial method then send the rest as a span in one go
                             if (methodHeader.methodCount > (BatchCutoff + 1)) [[unlikely]] {
+                                if (gridDeepTrace)
+                                    LOGI("GRID-DEEP oneinc-first-begin method=0x{:X} subchannel={}",
+                                         +methodHeader.methodAddress, static_cast<u32>(methodHeader.methodSubChannel));
                                 SendPure(methodHeader.methodAddress, *++entry, methodHeader.methodSubChannel);
+                                if (gridDeepTrace)
+                                    LOGI("GRID-DEEP oneinc-first-end method=0x{:X}", +methodHeader.methodAddress);
+
+                                if (gridDeepTrace)
+                                    LOGI("GRID-DEEP oneinc-batch-begin method=0x{:X} count={} subchannel={}",
+                                         +methodHeader.methodAddress + 1, +methodHeader.methodCount - 1,
+                                         static_cast<u32>(methodHeader.methodSubChannel));
                                 SendPureBatchNonInc(methodHeader.methodAddress + 1, span((++entry).base(), methodHeader.methodCount - 1), methodHeader.methodSubChannel);
+                                if (gridDeepTrace)
+                                    LOGI("GRID-DEEP oneinc-batch-end method=0x{:X}", +methodHeader.methodAddress + 1);
 
                                 entry += methodHeader.methodCount - 2;
                                 return false;
@@ -310,13 +379,28 @@ namespace skyline::soc::gm20b {
                         }
 
                         #pragma unroll(2)
-                        for (u32 i{}; i < methodHeader.methodCount; i++)
-                            SendPure(methodHeader.methodAddress + methodOffset(i), *++entry, methodHeader.methodSubChannel);
+                        for (u32 i{}; i < methodHeader.methodCount; i++) {
+                            u32 dispatchedMethod{static_cast<u32>(methodHeader.methodAddress + methodOffset(i))};
+                            u32 argument{*++entry};
+                            if (gridDeepTrace)
+                                LOGI("GRID-DEEP send-pure-begin index={} method=0x{:X} arg=0x{:08X} subchannel={}",
+                                     i, dispatchedMethod, argument, static_cast<u32>(methodHeader.methodSubChannel));
+                            SendPure(dispatchedMethod, argument, methodHeader.methodSubChannel);
+                            if (gridDeepTrace)
+                                LOGI("GRID-DEEP send-pure-end index={} method=0x{:X}", i, dispatchedMethod);
+                        }
                     } else {
                         // Slow path for methods that touch GPFIFO or macros
                         for (u32 i{}; i < methodHeader.methodCount; i++) {
                             entry++;
-                            SendFull(methodHeader.methodAddress + methodOffset(i), getArgument(), methodHeader.methodSubChannel, i == methodHeader.methodCount - 1);
+                            u32 dispatchedMethod{static_cast<u32>(methodHeader.methodAddress + methodOffset(i))};
+                            if (gridDeepTrace)
+                                LOGI("GRID-DEEP send-full-begin index={} method=0x{:X} arg=0x{:08X} subchannel={} last={}",
+                                     i, dispatchedMethod, *entry, static_cast<u32>(methodHeader.methodSubChannel),
+                                     i == methodHeader.methodCount - 1);
+                            SendFull(dispatchedMethod, getArgument(), methodHeader.methodSubChannel, i == methodHeader.methodCount - 1);
+                            if (gridDeepTrace)
+                                LOGI("GRID-DEEP send-full-end index={} method=0x{:X}", i, dispatchedMethod);
                         }
                     }
                 } else {
@@ -337,10 +421,23 @@ namespace skyline::soc::gm20b {
                 } else if (methodHeader.secOp == PushBufferMethodHeader::SecOp::OneInc) [[likely]] {
                     return dispatchCalls.operator()<MethodResumeState::State::OneInc>();
                 } else if (methodHeader.secOp == PushBufferMethodHeader::SecOp::ImmdDataMethod) {
-                    if (methodHeader.Pure())
+                    if (methodHeader.Pure()) {
+                        if (gridDeepTrace)
+                            LOGI("GRID-DEEP immd-pure-begin method=0x{:X} arg=0x{:X} subchannel={}",
+                                 +methodHeader.methodAddress, +methodHeader.immdData,
+                                 static_cast<u32>(methodHeader.methodSubChannel));
                         SendPure(methodHeader.methodAddress, methodHeader.immdData, methodHeader.methodSubChannel);
-                    else
+                        if (gridDeepTrace)
+                            LOGI("GRID-DEEP immd-pure-end method=0x{:X}", +methodHeader.methodAddress);
+                    } else {
+                        if (gridDeepTrace)
+                            LOGI("GRID-DEEP immd-full-begin method=0x{:X} arg=0x{:X} subchannel={}",
+                                 +methodHeader.methodAddress, +methodHeader.immdData,
+                                 static_cast<u32>(methodHeader.methodSubChannel));
                         SendFull(methodHeader.methodAddress, GpfifoArgument{methodHeader.immdData}, methodHeader.methodSubChannel, true);
+                        if (gridDeepTrace)
+                            LOGI("GRID-DEEP immd-full-end method=0x{:X}", +methodHeader.methodAddress);
+                    }
 
                     return false;
                 } else if (methodHeader.secOp == PushBufferMethodHeader::SecOp::NonIncMethod) [[unlikely]] {
@@ -358,9 +455,24 @@ namespace skyline::soc::gm20b {
             }};
 
             bool hitEnd{[&]() {
-                if (methodHeader.methodSubChannel != SubchannelId::ThreeD) [[unlikely]]
+                if (methodHeader.methodSubChannel != SubchannelId::ThreeD) [[unlikely]] {
+                    if (gridDeepTrace)
+                        LOGI("GRID-DEEP flush-engine-state-begin subchannel={}",
+                             static_cast<u32>(methodHeader.methodSubChannel));
                     channelCtx.maxwell3D.FlushEngineState(); // Flush the 3D engine state when doing any calls to other engines
-                return processMethod();
+                    if (gridDeepTrace)
+                        LOGI("GRID-DEEP flush-engine-state-end subchannel={}",
+                             static_cast<u32>(methodHeader.methodSubChannel));
+                }
+
+                if (gridDeepTrace)
+                    LOGI("GRID-DEEP process-method-begin secOp={} method=0x{:X}",
+                         static_cast<u32>(methodHeader.secOp), +methodHeader.methodAddress);
+                bool result{processMethod()};
+                if (gridDeepTrace)
+                    LOGI("GRID-DEEP process-method-end secOp={} method=0x{:X} hitEnd={}",
+                         static_cast<u32>(methodHeader.secOp), +methodHeader.methodAddress, result);
+                return result;
             }()};
 
             if (hitEnd)
