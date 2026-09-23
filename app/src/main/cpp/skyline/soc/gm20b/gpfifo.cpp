@@ -369,6 +369,7 @@ namespace skyline::soc::gm20b {
     }
 
     void ChannelGpfifo::Run() {
+        LOGI("GRID-GPFIFO run-start");
         if (int result{pthread_setname_np(pthread_self(), "GPFIFO")})
             LOGW("Failed to set the thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
@@ -408,6 +409,8 @@ namespace skyline::soc::gm20b {
                 }
             });
         } catch (const signal::SignalException &e) {
+            LOGI("GRID-GPFIFO signal-exception signal={} isSigint={}",
+                 e.signal, e.signal == SIGINT);
             if (e.signal != SIGINT) {
                 LOGE("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
                 signal::BlockSignal({SIGINT});
@@ -422,6 +425,8 @@ namespace skyline::soc::gm20b {
             signal::BlockSignal({SIGINT});
             state.process->Kill(false);
         }
+
+        LOGI("GRID-GPFIFO run-exit");
     }
 
     void ChannelGpfifo::Push(span<GpEntry> entries) {
@@ -433,9 +438,15 @@ namespace skyline::soc::gm20b {
     }
 
     ChannelGpfifo::~ChannelGpfifo() {
+        LOGI("GRID-GPFIFO destructor-begin joinable={}", thread.joinable());
         if (thread.joinable()) {
+            LOGI("GRID-GPFIFO destructor-close-begin");
             gpEntries.Close();
+            LOGI("GRID-GPFIFO destructor-close-end");
+            LOGI("GRID-GPFIFO destructor-join-begin");
             thread.join();
+            LOGI("GRID-GPFIFO destructor-join-end");
         }
+        LOGI("GRID-GPFIFO destructor-end");
     }
 }
