@@ -448,19 +448,26 @@ namespace skyline::vfs {
     }
 
     std::shared_ptr<Backing> NCA::OpenRawSection(size_t index) {
+        LOGI("DLC-TRACE OpenRawSection begin index={}", index);
         if (!HasSection(index))
             throw loader_exception(LoaderResult::ParsingError, "Missing NCA section");
-        if (rawSections[index])
+        if (rawSections[index]) {
+            LOGI("DLC-TRACE OpenRawSection cached index={} size=0x{:X}", index, rawSections[index]->size);
             return rawSections[index];
+        }
         const auto &entry{header.sectionTables[index]};
         const auto &section{sections[index]};
         const u64 start{static_cast<u64>(entry.mediaOffset) * constant::MediaUnitSize};
         const u64 end{static_cast<u64>(entry.mediaEndOffset) * constant::MediaUnitSize};
+        LOGI("DLC-TRACE OpenRawSection extent index={} start=0x{:X} end=0x{:X} backing=0x{:X}",
+             index, start, end, backing->size);
         if (start < constant::SectionHeaderOffset + sizeof(sections) || end <= start ||
             (section.raw.sparseInfo.generation == 0 && end > backing->size))
             throw loader_exception(LoaderResult::ParsingError, "Invalid NCA section extent");
         std::shared_ptr<Backing> raw{std::make_shared<RegionBacking>(backing, start, end - start)};
+        LOGI("DLC-TRACE OpenRawSection region index={} size=0x{:X}", index, raw->size);
         raw = CreateSparseBacking(section, raw);
+        LOGI("DLC-TRACE OpenRawSection sparse index={} size=0x{:X}", index, raw ? raw->size : 0);
         if (section.bktr.subsection.size != 0) {
             std::shared_ptr<Backing> aesCtrExMetadata;
             if (section.bktr.relocation.size != 0 && section.raw.metaDataHashDataInfo.size != 0) {
@@ -471,11 +478,14 @@ namespace skyline::vfs {
         } else {
             if (section.raw.header.encryptionType == NcaSectionEncryptionType::BKTR)
                 throw loader_exception(LoaderResult::ParsingError, "AES-CTR-Ex section is missing its table");
+            LOGI("DLC-TRACE OpenRawSection CreateBacking begin index={} encType={}", index, static_cast<u32>(section.raw.header.encryptionType));
             raw = CreateBacking(section, raw, start);
+            LOGI("DLC-TRACE OpenRawSection CreateBacking ok index={} size=0x{:X}", index, raw ? raw->size : 0);
         }
         if (!raw)
             throw loader_exception(LoaderResult::ParsingError, "Unsupported NCA encryption type");
         rawSections[index] = raw;
+        LOGI("DLC-TRACE OpenRawSection complete index={} size=0x{:X}", index, raw->size);
         return raw;
     }
 
@@ -575,20 +585,33 @@ namespace skyline::vfs {
     std::shared_ptr<Backing> NCA::BuildRomFsBacking(size_t index, NCA *base) {
         const auto &section{sections[index]};
         const auto &ivfc{section.romfs.ivfc};
+        LOGI("DLC-TRACE BuildRomFsBacking index={} ivfcMagic=0x{:X} levels={} base={}",
+             index, ivfc.magic, ivfc.levelCount, base != nullptr);
         if (section.raw.header.hashType != NcaSectionHashType::HierarchicalIntegrity ||
             ivfc.magic != util::MakeMagic<u32>("IVFC") || ivfc.levelCount < 2 || ivfc.levelCount > constant::IvfcMaxLevel + 1)
             throw loader_exception(LoaderResult::ParsingError, "Invalid IVFC header/level count (NCA fields must be little endian)");
+        LOGI("DLC-TRACE BuildRomFsBacking OpenRaw begin index={}", index);
         auto raw{base ? OpenRawStorageWithPatch(*base, index) : OpenRawSection(index)};
+        LOGI("DLC-TRACE BuildRomFsBacking OpenRaw ok index={} size=0x{:X}", index, raw ? raw->size : 0);
         for (size_t i{}; i < ivfc.levelCount - 1; ++i) {
             const auto &level{ivfc.levels[i]};
+            LOGI("DLC-TRACE BuildRomFsBacking level={} offset=0x{:X} size=0x{:X} block={}",
+                 i, level.offset, level.size, level.blockSize);
             if (level.size == 0 || level.blockSize > 32 || !InRange(level.offset, level.size, raw->size))
                 throw loader_exception(LoaderResult::ParsingError, fmt::format("IVFC level {} is outside resolved section (size=0x{:X})", i, raw->size));
         }
         const auto &dataLevel{ivfc.levels[ivfc.levelCount - 2]};
         ivfcOffset = dataLevel.offset;
+        LOGI("DLC-TRACE BuildRomFsBacking dataLevel offset=0x{:X} size=0x{:X}", dataLevel.offset, dataLevel.size);
         rawRomFs = std::make_shared<RegionBacking>(raw, dataLevel.offset, dataLevel.size);
+        LOGI("DLC-TRACE BuildRomFsBacking rawRomFs size=0x{:X}", rawRomFs->size);
+        LOGI("DLC-TRACE BuildRomFsBacking CreateCompressed begin");
         auto result{CreateCompressedBacking(section, rawRomFs, rawRomFs->size)};
+        LOGI("DLC-TRACE BuildRomFsBacking CreateCompressed ok size=0x{:X}", result ? result->size : 0);
+        LOGI("DLC-TRACE BuildRomFsBacking RomFsHeader read begin");
         const auto romHeader{ReadExact<RomFileSystem::RomFsHeader>(result)};
+        LOGI("DLC-TRACE BuildRomFsBacking RomFsHeader read ok headerSize=0x{:X} dataOffset=0x{:X}",
+             romHeader.headerSize, romHeader.dataOffset);
         if (romHeader.headerSize != sizeof(romHeader) || romHeader.dataOffset < sizeof(romHeader) || romHeader.dataOffset > result->size)
             throw loader_exception(LoaderResult::ParsingError, "Invalid resolved RomFS header");
         for (const auto &[offset, size] : {std::pair{romHeader.dirHashTableOffset, romHeader.dirHashTableSize},
