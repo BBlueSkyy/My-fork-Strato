@@ -67,8 +67,11 @@ namespace skyline::service::nifm {
     }
 
     Result IRequest::Submit(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        if (requestState == RequestState::Free)
+        if (requestState == RequestState::Free) {
             UpdateState(RequestState::OnHold);
+            UpdateState(*state.settings->isInternetEnabled ? RequestState::Accepted : RequestState::Invalid);
+        }
+
         return {};
     }
 
