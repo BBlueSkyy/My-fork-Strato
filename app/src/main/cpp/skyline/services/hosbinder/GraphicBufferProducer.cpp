@@ -3,6 +3,7 @@
 // Copyright © 2005 The Android Open Source Project
 // Copyright © 2019-2020 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
+#include <unistd.h>
 #include <gpu.h>
 #include <gpu/texture/format.h>
 #include <soc.h>
@@ -345,8 +346,20 @@ namespace skyline::service::hosbinder {
             gpu::GuestTexture guestTexture(span<u8>{}, dimensions, format, tileConfig, vk::ImageViewType::e2D);
             guestTexture.mappings[0] = span<u8>(nvMapHandleObj->GetPointer() + surface.offset, guestTexture.GetLayerStride());
 
-            std::scoped_lock channelLock{state.gpu->channelLock};
+            std::unique_lock<std::mutex> channelLock{state.gpu->channelLock, std::defer_lock};
+            LOGI("GRID-LOCK GraphicBufferProducer global-begin tid={} this={}",
+                 gettid(), static_cast<const void *>(this));
+            channelLock.lock();
+            LOGI("GRID-LOCK GraphicBufferProducer global-acquired tid={} this={}",
+                 gettid(), static_cast<const void *>(this));
+
             buffer.texture = state.gpu->texture.FindOrCreate(guestTexture);
+
+            LOGI("GRID-LOCK GraphicBufferProducer global-release-begin tid={} this={}",
+                 gettid(), static_cast<const void *>(this));
+            channelLock.unlock();
+            LOGI("GRID-LOCK GraphicBufferProducer global-release-end tid={} this={}",
+                 gettid(), static_cast<const void *>(this));
         }
 
         switch (transform) {
