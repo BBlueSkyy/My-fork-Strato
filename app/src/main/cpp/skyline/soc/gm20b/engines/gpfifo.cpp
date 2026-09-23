@@ -25,29 +25,13 @@ namespace skyline::soc::gm20b::engine {
                     syncpoints.at(action.index).guest.Increment();
                 } else if (action.operation == Registers::Syncpoint::Operation::Wait) {
                     LOGD("Wait syncpoint: {}, thresh: {}", +action.index, registers.syncpoint->payload);
-                    LOGI("GRID-WAIT syncpoint-begin id={} threshold={} host={} guest={}",
-                         +action.index, registers.syncpoint->payload,
-                         syncpoints.at(action.index).host.Load(), syncpoints.at(action.index).guest.Load());
 
                     // Wait forever for another channel to increment
 
-                    LOGI("GRID-WAIT syncpoint-submit-begin id={}", +action.index);
                     channelCtx.executor.Submit();
-                    LOGI("GRID-WAIT syncpoint-submit-end id={}", +action.index);
-
-                    LOGI("GRID-WAIT syncpoint-unlock-begin id={}", +action.index);
                     channelCtx.Unlock();
-                    LOGI("GRID-WAIT syncpoint-unlock-end id={}", +action.index);
-
-                    LOGI("GRID-WAIT syncpoint-host-wait-begin id={} threshold={} host={}",
-                         +action.index, registers.syncpoint->payload, syncpoints.at(action.index).host.Load());
                     syncpoints.at(action.index).host.Wait(registers.syncpoint->payload, std::chrono::steady_clock::duration::max());
-                    LOGI("GRID-WAIT syncpoint-host-wait-end id={} threshold={} host={}",
-                         +action.index, registers.syncpoint->payload, syncpoints.at(action.index).host.Load());
-
-                    LOGI("GRID-WAIT syncpoint-relock-begin id={}", +action.index);
                     channelCtx.Lock();
-                    LOGI("GRID-WAIT syncpoint-relock-end id={}", +action.index);
                 }
             })
 
@@ -55,34 +39,16 @@ namespace skyline::soc::gm20b::engine {
                 u64 address{registers.semaphore->address};
 
                 switch (action.operation) {
-                    case Registers::Semaphore::Operation::Acquire: {
+                    case Registers::Semaphore::Operation::Acquire:
                         LOGD("Acquire semaphore: 0x{:X} payload: {}", address, registers.semaphore->payload);
-                        LOGI("GRID-WAIT semaphore-eq-begin address=0x{:X} payload={}",
-                             address, registers.semaphore->payload);
-
-                        LOGI("GRID-WAIT semaphore-eq-submit-begin address=0x{:X}", address);
                         channelCtx.executor.Submit();
-                        LOGI("GRID-WAIT semaphore-eq-submit-end address=0x{:X}", address);
-
-                        LOGI("GRID-WAIT semaphore-eq-unlock-begin address=0x{:X}", address);
                         channelCtx.Unlock();
-                        LOGI("GRID-WAIT semaphore-eq-unlock-end address=0x{:X}", address);
 
-                        u32 current{channelCtx.asCtx->gmmu.Read<u32>(address)};
-                        LOGI("GRID-WAIT semaphore-eq-spin-begin address=0x{:X} payload={} current={}",
-                             address, registers.semaphore->payload, current);
-                        while (current != registers.semaphore->payload) {
+                        while (channelCtx.asCtx->gmmu.Read<u32>(address) != registers.semaphore->payload)
                             std::this_thread::yield();
-                            current = channelCtx.asCtx->gmmu.Read<u32>(address);
-                        }
-                        LOGI("GRID-WAIT semaphore-eq-spin-end address=0x{:X} payload={} current={}",
-                             address, registers.semaphore->payload, current);
 
-                        LOGI("GRID-WAIT semaphore-eq-relock-begin address=0x{:X}", address);
                         channelCtx.Lock();
-                        LOGI("GRID-WAIT semaphore-eq-relock-end address=0x{:X}", address);
                         break;
-                    }
                     case Registers::Semaphore::Operation::Release:
                         channelCtx.executor.AddDeferredAction([this, action, address, payload = registers.semaphore->payload] () {
                             // Write timestamp first to ensure ordering
@@ -96,34 +62,16 @@ namespace skyline::soc::gm20b::engine {
 
                         LOGD("SemaphoreRelease: address: 0x{:X} payload: {}", address, registers.semaphore->payload);
                         break;
-                    case Registers::Semaphore::Operation::AcqGeq: {
+                    case Registers::Semaphore::Operation::AcqGeq    :
                         LOGD("Acquire semaphore: 0x{:X} payload: {}", address, registers.semaphore->payload);
-                        LOGI("GRID-WAIT semaphore-geq-begin address=0x{:X} payload={}",
-                             address, registers.semaphore->payload);
-
-                        LOGI("GRID-WAIT semaphore-geq-submit-begin address=0x{:X}", address);
                         channelCtx.executor.Submit();
-                        LOGI("GRID-WAIT semaphore-geq-submit-end address=0x{:X}", address);
-
-                        LOGI("GRID-WAIT semaphore-geq-unlock-begin address=0x{:X}", address);
                         channelCtx.Unlock();
-                        LOGI("GRID-WAIT semaphore-geq-unlock-end address=0x{:X}", address);
 
-                        u32 current{channelCtx.asCtx->gmmu.Read<u32>(address)};
-                        LOGI("GRID-WAIT semaphore-geq-spin-begin address=0x{:X} payload={} current={}",
-                             address, registers.semaphore->payload, current);
-                        while (current < registers.semaphore->payload) {
+                        while (channelCtx.asCtx->gmmu.Read<u32>(address) < registers.semaphore->payload)
                             std::this_thread::yield();
-                            current = channelCtx.asCtx->gmmu.Read<u32>(address);
-                        }
-                        LOGI("GRID-WAIT semaphore-geq-spin-end address=0x{:X} payload={} current={}",
-                             address, registers.semaphore->payload, current);
 
-                        LOGI("GRID-WAIT semaphore-geq-relock-begin address=0x{:X}", address);
                         channelCtx.Lock();
-                        LOGI("GRID-WAIT semaphore-geq-relock-end address=0x{:X}", address);
                         break;
-                    }
                     case Registers::Semaphore::Operation::Reduction: {
                         u32 origVal{channelCtx.asCtx->gmmu.Read<u32>(address)};
                         bool isSigned{action.format == Registers::Semaphore::Format::Signed};
