@@ -411,6 +411,7 @@ namespace skyline::soc::gm20b {
                 // If we run out of GpEntries to process ensure we submit any remaining GPU work before waiting for more to arrive
                 LOGD("Finished processing pushbuffer batch");
                 if (channelLocked) {
+                    LOGI("GRID-FLOW executor-submit-begin");
                     channelCtx.executor.Submit();
                     LOGI("GRID-FLOW executor-submit-end");
                     channelCtx.Unlock();
