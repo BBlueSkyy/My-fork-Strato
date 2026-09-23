@@ -553,9 +553,16 @@ namespace skyline::soc::gm20b {
     }
 
     ChannelGpfifo::~ChannelGpfifo() {
+        LOGI("GRID-LIFE ChannelGpfifo dtor-begin this={} joinable={}",
+             static_cast<const void *>(this), thread.joinable());
         if (thread.joinable()) {
+            LOGI("GRID-LIFE ChannelGpfifo close-begin this={}", static_cast<const void *>(this));
             gpEntries.Close();
+            LOGI("GRID-LIFE ChannelGpfifo close-end this={}", static_cast<const void *>(this));
+            LOGI("GRID-LIFE ChannelGpfifo join-begin this={}", static_cast<const void *>(this));
             thread.join();
+            LOGI("GRID-LIFE ChannelGpfifo join-end this={}", static_cast<const void *>(this));
         }
+        LOGI("GRID-LIFE ChannelGpfifo dtor-end this={}", static_cast<const void *>(this));
     }
 }
