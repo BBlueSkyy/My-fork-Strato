@@ -30,6 +30,7 @@ namespace skyline {
             std::mutex threadMutex; //!< Synchronizes thread creation to prevent a race between thread creation and thread killing
             bool disableThreadCreation{}; //!< Whether to disable thread creation, we use this to prevent thread creation after all threads have been killed
             std::atomic_bool alreadyKilled{}; //!< If the process has already been killed prior so there's no need to redundantly kill it again
+            std::atomic_bool diagnosticSnapshotTaken{}; //!< Ensures hang diagnostics are emitted only once per process
             std::vector<std::shared_ptr<KThread>> threads;
 
             using SyncWaiters = std::multimap<void *, std::shared_ptr<KThread>>;
