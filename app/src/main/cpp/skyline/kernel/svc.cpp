@@ -69,6 +69,10 @@ namespace skyline::kernel::svc {
                svcTraceRemaining.load(std::memory_order_acquire) != 0;
     }
 
+    bool IsSvcTraceWindowActive() {
+        return svcTraceRemaining.load(std::memory_order_acquire) != 0;
+    }
+
     u32 BeginSvcTrace(size_t threadId, u16 svcId, const char *svcName, const SvcContext &ctx) {
         if (!IsSvcTraceActive(threadId))
             return 0;
