@@ -272,6 +272,24 @@ namespace skyline::service {
         };
     }
 
+    void ServiceManager::ArmPreCalcIpcTrace(size_t threadId) {
+        preCalcTraceThreadId.store(threadId, std::memory_order_relaxed);
+        preCalcTraceActive.store(true, std::memory_order_release);
+        LOGI("PRECALC trace armed: thread={}", threadId);
+    }
+
+    bool ServiceManager::IsPreCalcIpcTraceActive(size_t threadId) const {
+        return preCalcTraceActive.load(std::memory_order_acquire) &&
+               preCalcTraceThreadId.load(std::memory_order_relaxed) == threadId;
+    }
+
+    void ServiceManager::StopPreCalcIpcTrace(size_t threadId) {
+        if (IsPreCalcIpcTraceActive(threadId)) {
+            preCalcTraceActive.store(false, std::memory_order_release);
+            LOGI("PRECALC trace complete: thread={}", threadId);
+        }
+    }
+
     void ServiceManager::SyncRequestHandler(KHandle handle) {
         TRACE_EVENT("kernel", "ServiceManager::SyncRequestHandler");
         auto session{state.process->GetHandle<type::KSession>(handle)};
@@ -282,13 +300,16 @@ namespace skyline::service {
         if (session->IsOpen()) {
             ipc::IpcRequest request(session->isDomain, state);
             ipc::IpcResponse response(state);
-            const bool traceIpc{kernel::svc::IsSvcTraceWindowActive()};
+            const bool tracePreCalc{IsPreCalcIpcTraceActive(state.thread->id)};
+            const bool tracePost2460{kernel::svc::IsSvcTraceWindowActive()};
+            const bool traceIpc{tracePreCalc || tracePost2460};
+            const char *tracePhase{tracePreCalc ? "PRECALC" : "POST2460"};
             const u32 traceCommand{request.isTipc ? static_cast<u32>(request.header->type)
                                                   : (request.payload ? request.payload->value : 0)};
 
             if (traceIpc)
-                LOGI("POST2460 IPC begin: thread={}, handle=0x{:X}, type=0x{:X}, command=0x{:X}, domain={}, tipc={}",
-                     state.thread->id, handle, static_cast<u32>(request.header->type), traceCommand,
+                LOGI("{} IPC begin: thread={}, handle=0x{:X}, type=0x{:X}, command=0x{:X}, domain={}, tipc={}",
+                     tracePhase, state.thread->id, handle, static_cast<u32>(request.header->type), traceCommand,
                      session->isDomain, request.isTipc);
 
             // Marks every fully-covered page of input/output buffers as IPC-locked for the request.
@@ -307,12 +328,12 @@ namespace skyline::service {
                             switch (request.domain->command) {
                                 case ipc::DomainCommand::SendMessage:
                                     if (traceIpc)
-                                        LOGI("POST2460 IPC dispatch: thread={}, handle=0x{:X}, objectId=0x{:X}, service={}, command=0x{:X}",
-                                             state.thread->id, handle, request.domain->objectId, service->GetName(), traceCommand);
+                                        LOGI("{} IPC dispatch: thread={}, handle=0x{:X}, objectId=0x{:X}, service={}, command=0x{:X}",
+                                             tracePhase, state.thread->id, handle, request.domain->objectId, service->GetName(), traceCommand);
                                     response.errorCode = service->HandleRequest(*session, request, response);
                                     if (traceIpc)
-                                        LOGI("POST2460 IPC return: thread={}, handle=0x{:X}, service={}, command=0x{:X}, result=0x{:X}",
-                                             state.thread->id, handle, service->GetName(), traceCommand, response.errorCode.raw);
+                                        LOGI("{} IPC return: thread={}, handle=0x{:X}, service={}, command=0x{:X}, result=0x{:X}",
+                                             tracePhase, state.thread->id, handle, service->GetName(), traceCommand, response.errorCode.raw);
                                     break;
 
                                 case ipc::DomainCommand::CloseVHandle:
@@ -327,12 +348,12 @@ namespace skyline::service {
                         }
                     } else {
                         if (traceIpc)
-                            LOGI("POST2460 IPC dispatch: thread={}, handle=0x{:X}, service={}, command=0x{:X}",
-                                 state.thread->id, handle, session->serviceObject->GetName(), traceCommand);
+                            LOGI("{} IPC dispatch: thread={}, handle=0x{:X}, service={}, command=0x{:X}",
+                                 tracePhase, state.thread->id, handle, session->serviceObject->GetName(), traceCommand);
                         response.errorCode = session->serviceObject->HandleRequest(*session, request, response);
                         if (traceIpc)
-                            LOGI("POST2460 IPC return: thread={}, handle=0x{:X}, service={}, command=0x{:X}, result=0x{:X}",
-                                 state.thread->id, handle, session->serviceObject->GetName(), traceCommand, response.errorCode.raw);
+                            LOGI("{} IPC return: thread={}, handle=0x{:X}, service={}, command=0x{:X}, result=0x{:X}",
+                                 tracePhase, state.thread->id, handle, session->serviceObject->GetName(), traceCommand, response.errorCode.raw);
                     }
                     response.WriteResponse(session->isDomain);
 
@@ -344,11 +365,16 @@ namespace skyline::service {
                              tlsWords[4], tlsWords[5], tlsWords[6], tlsWords[7],
                              tlsWords[8], tlsWords[9], tlsWords[10], tlsWords[11],
                              tlsWords[12], tlsWords[13], tlsWords[14], tlsWords[15]);
+                        if (tracePreCalc)
+                            StopPreCalcIpcTrace(state.thread->id);
                     }
                     break;
 
                 case ipc::CommandType::Control:
                 case ipc::CommandType::ControlWithContext:
+                    if (traceIpc)
+                        LOGI("{} IPC control: thread={}, handle=0x{:X}, command=0x{:X}",
+                             tracePhase, state.thread->id, handle, request.payload->value);
                     LOGD("Control IPC Message: 0x{:X}", request.payload->value);
                     switch (static_cast<ipc::ControlCommand>(request.payload->value)) {
                         case ipc::ControlCommand::ConvertCurrentObjectToDomain:
@@ -381,12 +407,12 @@ namespace skyline::service {
                     // TIPC command ID is encoded in the request type
                     if (request.isTipc) {
                         if (traceIpc)
-                            LOGI("POST2460 IPC dispatch: thread={}, handle=0x{:X}, service={}, command=0x{:X}, tipc=true",
-                                 state.thread->id, handle, session->serviceObject->GetName(), traceCommand);
+                            LOGI("{} IPC dispatch: thread={}, handle=0x{:X}, service={}, command=0x{:X}, tipc=true",
+                                 tracePhase, state.thread->id, handle, session->serviceObject->GetName(), traceCommand);
                         response.errorCode = session->serviceObject->HandleRequest(*session, request, response);
                         if (traceIpc)
-                            LOGI("POST2460 IPC return: thread={}, handle=0x{:X}, service={}, command=0x{:X}, result=0x{:X}, tipc=true",
-                                 state.thread->id, handle, session->serviceObject->GetName(), traceCommand, response.errorCode.raw);
+                            LOGI("{} IPC return: thread={}, handle=0x{:X}, service={}, command=0x{:X}, result=0x{:X}, tipc=true",
+                                 tracePhase, state.thread->id, handle, session->serviceObject->GetName(), traceCommand, response.errorCode.raw);
                         response.WriteResponse(session->isDomain, true);
                     } else {
                         throw exception("Unimplemented IPC message type: {}", static_cast<u16>(request.header->type));
