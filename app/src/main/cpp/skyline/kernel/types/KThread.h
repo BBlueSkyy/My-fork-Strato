@@ -55,6 +55,10 @@ namespace skyline {
             std::atomic<u64> diagnosticTarget2{};
             std::atomic<u32> diagnosticIpcCommand{};
             std::atomic_bool diagnosticSchedulerWait{};
+            std::atomic_bool diagnosticGuestContextValid{};
+            std::atomic<u64> diagnosticGuestPc{};
+            std::atomic<u64> diagnosticGuestLr{};
+            std::atomic<u64> diagnosticGuestSp{};
 
             nce::ThreadContext ctx{}; //!< The context of the guest thread during the last SVC
             jmp_buf originalCtx; //!< The context of the host thread prior to jumping into guest code
