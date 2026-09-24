@@ -59,6 +59,7 @@ namespace skyline::kernel::type {
             const u32 lastSvc{thread->diagnosticLastSvc.load(std::memory_order_relaxed)};
             const u32 ipcCommand{thread->diagnosticIpcCommand.load(std::memory_order_relaxed)};
             const i32 hostTid{thread->diagnosticHostTid.load(std::memory_order_relaxed)};
+            const bool schedulerWait{thread->diagnosticSchedulerWait.load(std::memory_order_acquire)};
 
             const char *waitName{[&]() {
                 switch (waitKind) {
@@ -92,6 +93,14 @@ namespace skyline::kernel::type {
                 }
             }
 
+            const char *classification{
+                waitKind == KThread::DiagnosticWaitKind::Ipc ? "ipc" :
+                waitKind != KThread::DiagnosticWaitKind::None ? "guest-sync" :
+                schedulerWait ? "kernel-scheduler" :
+                (!wchan.empty() && wchan != "0" && wchan != "unavailable") ? "host-wait" :
+                "running-or-unknown"
+            };
+
             std::string serviceName{"-"};
             u32 objectType{std::numeric_limits<u32>::max()};
             if (target0) {
@@ -108,9 +117,9 @@ namespace skyline::kernel::type {
                 }
             }
 
-            LOGI("THREAD-SNAPSHOT tid={} hostTid={} prio={} wait={} lastSvc=0x{:X} target0=0x{:X} target1=0x{:X} target2=0x{:X} ipcCmd=0x{:X} service={} objectType={} wchan={} statusKnown={} running={} ready={} killed={}",
-                 thread->id, hostTid, +thread->priority.load(std::memory_order_relaxed),
-                 waitName, lastSvc, target0, target1, target2, ipcCommand,
+            LOGI("THREAD-SNAPSHOT tid={} hostTid={} class={} prio={} wait={} schedulerWait={} lastSvc=0x{:X} target0=0x{:X} target1=0x{:X} target2=0x{:X} ipcCmd=0x{:X} service={} objectType={} wchan={} statusKnown={} running={} ready={} killed={}",
+                 thread->id, hostTid, classification, +thread->priority.load(std::memory_order_relaxed),
+                 waitName, schedulerWait, lastSvc, target0, target1, target2, ipcCommand,
                  serviceName, objectType, wchan, statusKnown, running, ready, killed);
         }
 
