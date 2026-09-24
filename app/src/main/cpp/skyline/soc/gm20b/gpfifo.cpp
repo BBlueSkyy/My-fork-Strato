@@ -92,9 +92,9 @@ namespace skyline::soc::gm20b {
     void ChannelGpfifo::SendFull(u32 method, GpfifoArgument argument, SubchannelId subChannel, bool lastCall) {
         if (method < engine::GPFIFO::RegisterCount) {
             if (method == 0xB) {
-                LOGI("GRID-MEMOPB sendfull-begin subchannel={} lastCall={} dirty={}",
-                     static_cast<u8>(subChannel), lastCall, argument.dirty);
-                LOGI("GRID-MEMOPB argument-read-begin");
+                LOGI("GRID-MEMOPB sendfull-begin subchannel={} lastCall={} dirty={} argumentPtr=0x{:X} inline=0x{:X}",
+                     static_cast<u8>(subChannel), lastCall, argument.dirty,
+                     reinterpret_cast<uintptr_t>(argument.argumentPtr), argument.argument);
                 const u32 value{*argument};
                 LOGI("GRID-MEMOPB argument-read-end value=0x{:X}", value);
                 LOGI("GRID-MEMOPB callmethod-begin");
