@@ -106,13 +106,6 @@ namespace skyline::kernel::type {
                 return "unknown";
             }()};
 
-            std::string wchan{"unavailable"};
-            if (hostTid > 0) {
-                std::ifstream wchanFile{fmt::format("/proc/self/task/{}/wchan", hostTid)};
-                if (wchanFile)
-                    std::getline(wchanFile, wchan);
-            }
-
             bool statusKnown{};
             bool running{};
             bool ready{};
