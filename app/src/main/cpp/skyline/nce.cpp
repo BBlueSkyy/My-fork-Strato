@@ -21,7 +21,7 @@ namespace skyline::nce {
         return killAllThreads ? "ExitProcess" : "ExitThread";
     }
 
-    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx) {
+    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, u64 guestSp) {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
@@ -60,6 +60,21 @@ namespace skyline::nce {
                 }
 
                 (svc.function)(state, svcContext);
+
+                if (svcId == 0x21 && kernel::svc::ConsumeGuestReturnCapture(state.thread->id)) {
+                    const u64 postSvcPc{*reinterpret_cast<const u64 *>(guestSp)};
+                    const u64 originalSp{guestSp + 0x10};
+                    const auto *nextInstructions{reinterpret_cast<const u32 *>(postSvcPc)};
+                    LOGI("POST2460 guest return snapshot: thread={}, svc_pc=0x{:X}, pc=0x{:X}, sp=0x{:X}, x0=0x{:X}, x1=0x{:X}, x2=0x{:X}, x3=0x{:X}, x4=0x{:X}, x5=0x{:X}, x6=0x{:X}, x7=0x{:X}",
+                         state.thread->id, postSvcPc - sizeof(u32), postSvcPc, originalSp,
+                         ctx->gpr.x0, ctx->gpr.x1, ctx->gpr.x2, ctx->gpr.x3,
+                         ctx->gpr.x4, ctx->gpr.x5, ctx->gpr.x6, ctx->gpr.x7);
+                    LOGI("POST2460 guest next instructions: pc=0x{:X}, insn={:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
+                         postSvcPc,
+                         nextInstructions[0], nextInstructions[1], nextInstructions[2], nextInstructions[3],
+                         nextInstructions[4], nextInstructions[5], nextInstructions[6], nextInstructions[7]);
+                }
+
                 kernel::svc::EndSvcTrace(state.thread->id, traceSequence, svcId, svc.name, svcContext);
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
@@ -288,14 +303,15 @@ namespace skyline::nce {
         /* Store Skyline TLS + guest SP on stack */
         *code++ = 0xA9BF0BE1; // STP X1, X2, [SP, #-16]!
 
-        /* Jump to SvcHandler */
-        for (const auto &mov : instructions::MoveRegister(registers::X2, target)) {
+        /* Jump to SvcHandler.
+         * X2 intentionally keeps the guest SP as the third handler argument. */
+        for (const auto &mov : instructions::MoveRegister(registers::X3, target)) {
             if (mov)
                 *code++ = mov;
             else
                 *code++ = 0xD503201F; // NOP
         }
-        *code++ = 0xD63F0040; // BLR X2
+        *code++ = 0xD63F0060; // BLR X3
 
         /* Restore Skyline TLS + guest SP */
         *code++ = 0xA8C10BE1; // LDP X1, X2, [SP], #16
