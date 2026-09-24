@@ -799,7 +799,8 @@ namespace skyline::kernel::svc {
     void WaitSynchronization(const DeviceState &state, SvcContext &ctx) {
         constexpr u8 MaxSyncHandles{0x40}; // The total amount of handles that can be passed to WaitSynchronization
         const bool traceWait{ConsumeWaitSynchronizationTrace(state.thread->id) ||
-                             IsSvcTraceActive(state.thread->id)};
+                             IsSvcTraceActive(state.thread->id) ||
+                             svcTraceRemaining.load(std::memory_order_acquire) != 0};
 
         u32 numHandles{ctx.w2};
         if (numHandles > MaxSyncHandles) {
@@ -911,6 +912,9 @@ namespace skyline::kernel::svc {
 
         if (wakeObject) {
             LOGD("Signalled 0x{:X}", waitHandles[wakeIndex]);
+            if (traceWait)
+                LOGI("WaitSynchronization after cmd2460: thread={} woke, index={}, handle=0x{:X}, object={}",
+                     state.thread->id, wakeIndex, waitHandles[wakeIndex], fmt::ptr(wakeObject));
             ctx.w0 = Result{};
             ctx.w1 = wakeIndex;
         } else if (state.thread->cancelSync) {
