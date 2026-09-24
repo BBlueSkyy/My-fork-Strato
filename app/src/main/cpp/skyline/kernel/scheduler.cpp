@@ -185,6 +185,7 @@ namespace skyline::kernel {
         }};
 
         TRACE_EVENT("scheduler", "WaitSchedule");
+        thread->diagnosticSchedulerWait.store(true, std::memory_order_release);
         if (loadBalance) {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
@@ -201,6 +202,8 @@ namespace skyline::kernel {
             thread->scheduleCondition.wait(lock, wakeFunction);
         }
 
+        thread->diagnosticSchedulerWait.store(false, std::memory_order_release);
+
         if (thread->priority == core->preemptionPriority)
             // If the thread needs to be preempted then arm its preemption timer
             thread->ArmPreemptionTimer(PreemptiveTimeslice);
@@ -214,13 +217,17 @@ namespace skyline::kernel {
 
         TRACE_EVENT("scheduler", "TimedWaitSchedule");
         std::unique_lock lock(core->mutex);
-        if (thread->scheduleCondition.wait_for(lock, timeout, [&]() {
+        thread->diagnosticSchedulerWait.store(true, std::memory_order_release);
+        const bool scheduled{thread->scheduleCondition.wait_for(lock, timeout, [&]() {
             if (!thread->affinityMask.test(thread->coreId)) [[unlikely]] {
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 MigrateToCore(thread, core, &cores.at(thread->idealCore), lock);
             }
             return !core->queue.empty() && core->queue.front() == thread;
-        })) {
+        })};
+        thread->diagnosticSchedulerWait.store(false, std::memory_order_release);
+
+        if (scheduled) {
             if (thread->priority == core->preemptionPriority)
                 thread->ArmPreemptionTimer(PreemptiveTimeslice);
 
