@@ -13,13 +13,7 @@ namespace skyline::soc::gm20b::engine {
     void GPFIFO::CallMethod(u32 method, u32 argument) {
         LOGD("Called method in GPFIFO: 0x{:X} args: 0x{:X}", method, argument);
 
-        if (method == 0xB)
-            LOGI("GRID-MEMOPB gpfifo-call-begin argument=0x{:X}", argument);
-
         registers.raw[method] = argument;
-
-        if (method == 0xB)
-            LOGI("GRID-MEMOPB register-write-end");
 
         switch (method) {
             ENGINE_STRUCT_CASE(syncpoint, action, {
@@ -131,7 +125,5 @@ namespace skyline::soc::gm20b::engine {
             })
         }
 
-        if (method == 0xB)
-            LOGI("GRID-MEMOPB gpfifo-call-end");
     };
 }
