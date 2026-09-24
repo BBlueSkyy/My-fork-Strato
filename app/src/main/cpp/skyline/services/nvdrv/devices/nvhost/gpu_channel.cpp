@@ -106,11 +106,6 @@ namespace skyline::service::nvdrv::device::nvhost {
             return PosixResult::InvalidArgument;
         }
 
-        LOGI("GRID-FLOW submit-gpfifo entries={} fenceWait={} fenceIncrement={} first=0x{:X} last=0x{:X}",
-             numEntries, +flags.fenceWait, +flags.fenceIncrement,
-             numEntries ? gpEntries.front().Address() : 0,
-             numEntries ? gpEntries[numEntries - 1].Address() : 0);
-
         std::scoped_lock lock(channelMutex);
 
         if (flags.fenceWait) {
@@ -148,11 +143,6 @@ namespace skyline::service::nvdrv::device::nvhost {
             // Increment offset
             pushBufferMemoryOffset += SyncpointIncrCmdLen;
         }
-
-        LOGI("GRID-FLOW enqueue-end entries={} first=0x{:X} last=0x{:X}",
-             numEntries,
-             numEntries ? gpEntries.front().Address() : 0,
-             numEntries ? gpEntries[numEntries - 1].Address() : 0);
 
         flags.raw = 0;
 
