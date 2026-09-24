@@ -31,6 +31,33 @@ namespace skyline::nce {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
                 const u32 traceSequence{kernel::svc::BeginSvcTrace(state.thread->id, svcId, svc.name, svcContext)};
+
+                if (traceSequence) {
+                    static thread_local u64 lastWaitKey{};
+                    static thread_local u32 sameWaitKeyCount{};
+                    if (traceSequence == 1) {
+                        lastWaitKey = 0;
+                        sameWaitKeyCount = 0;
+                    }
+
+                    if (svcId == 0x1C) {
+                        if (lastWaitKey != svcContext.x1) {
+                            lastWaitKey = svcContext.x1;
+                            sameWaitKeyCount = 1;
+                            LOGI("POST2460 guest wait site: seq={}, thread={}, key=0x{:X}, occurrence={}\nStack Trace:{}",
+                                 traceSequence, state.thread->id, svcContext.x1, sameWaitKeyCount, state.loader->GetStackTrace());
+                        } else {
+                            sameWaitKeyCount++;
+                            if (sameWaitKeyCount == 16 || sameWaitKeyCount == 128 || sameWaitKeyCount == 512)
+                                LOGI("POST2460 guest wait site: seq={}, thread={}, key=0x{:X}, occurrence={}\nStack Trace:{}",
+                                     traceSequence, state.thread->id, svcContext.x1, sameWaitKeyCount, state.loader->GetStackTrace());
+                        }
+                    } else if (svcId == 0x21) {
+                        LOGI("POST2460 reached next IPC: seq={}, thread={}, handle=0x{:X}\nStack Trace:{}",
+                             traceSequence, state.thread->id, svcContext.x0, state.loader->GetStackTrace());
+                    }
+                }
+
                 (svc.function)(state, svcContext);
                 kernel::svc::EndSvcTrace(state.thread->id, traceSequence, svcId, svc.name, svcContext);
             } else {
