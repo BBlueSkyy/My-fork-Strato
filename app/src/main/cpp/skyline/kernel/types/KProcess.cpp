@@ -8,6 +8,7 @@
 #include <kernel/results.h>
 #include <services/base_service.h>
 #include <fstream>
+#include <limits>
 #include "KProcess.h"
 
 namespace skyline::kernel::type {
@@ -35,6 +36,10 @@ namespace skyline::kernel::type {
     }
 
     void KProcess::DumpThreadDiagnosticSnapshot() {
+        bool expected{};
+        if (!diagnosticSnapshotTaken.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+            return;
+
         std::vector<std::shared_ptr<KThread>> snapshotThreads;
         {
             std::scoped_lock guard{threadMutex};
