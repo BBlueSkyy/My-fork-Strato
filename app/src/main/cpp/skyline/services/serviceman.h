@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <mutex>
 #include <unordered_map>
 #include <kernel/types/KSession.h>
@@ -20,6 +21,8 @@ namespace skyline::service {
         std::mutex mutex;
         std::mutex appletStateMutex;
         std::unordered_map<u64, std::shared_ptr<am::AppletState>> appletStates;
+        std::atomic_size_t preCalcTraceThreadId{};
+        std::atomic_bool preCalcTraceActive{false};
 
       public:
         std::shared_ptr<BaseService> smUserInterface;
@@ -52,6 +55,10 @@ namespace skyline::service {
             }
             return appletState;
         }
+
+        void ArmPreCalcIpcTrace(size_t threadId);
+        bool IsPreCalcIpcTraceActive(size_t threadId) const;
+        void StopPreCalcIpcTrace(size_t threadId);
 
         void CloseSession(KHandle handle);
         void SyncRequestHandler(KHandle handle);
