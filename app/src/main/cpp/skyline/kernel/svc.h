@@ -171,6 +171,11 @@ namespace skyline::kernel::svc {
     bool IsSvcTraceActive(size_t threadId);
 
     /**
+     * @return Whether the post-cmd2460 diagnostic window is active for the process
+     */
+    bool IsSvcTraceWindowActive();
+
+    /**
      * @brief If the referenced thread is currently in a synchronization call, that call will be interrupted
      * @url https://switchbrew.org/wiki/SVC#CancelSynchronization
      */
