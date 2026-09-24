@@ -465,7 +465,9 @@ namespace skyline::soc::gm20b {
             LOGW("Failed to set the diagnostic thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
 
+        u64 lastSubmitted{diagnosticSubmitted.load(std::memory_order_relaxed)};
         u64 lastProgress{diagnosticProgress.load(std::memory_order_relaxed)};
+        u64 reportedSubmitted{std::numeric_limits<u64>::max()};
         u64 reportedProgress{std::numeric_limits<u64>::max()};
         u32 stagnantTicks{};
 
@@ -475,24 +477,27 @@ namespace skyline::soc::gm20b {
             if (diagnosticStop.load(std::memory_order_acquire))
                 break;
 
+            const u64 submitted{diagnosticSubmitted.load(std::memory_order_relaxed)};
             const u64 progress{diagnosticProgress.load(std::memory_order_relaxed)};
             const auto stateValue{diagnosticState.load(std::memory_order_relaxed)};
             const bool queueEmpty{gpEntries.Empty()};
 
-            if (progress != lastProgress) {
+            if (submitted != lastSubmitted || progress != lastProgress) {
+                lastSubmitted = submitted;
                 lastProgress = progress;
                 stagnantTicks = 0;
+                reportedSubmitted = std::numeric_limits<u64>::max();
                 reportedProgress = std::numeric_limits<u64>::max();
                 continue;
             }
 
-            if (stateValue == DiagnosticState::Stopped ||
-                ((stateValue == DiagnosticState::Starting || stateValue == DiagnosticState::Waiting) && queueEmpty)) {
+            if (stateValue == DiagnosticState::Stopped || (submitted == 0 && progress == 0)) {
                 stagnantTicks = 0;
                 continue;
             }
 
-            if (++stagnantTicks < 8 || reportedProgress == progress)
+            if (++stagnantTicks < 8 ||
+                (reportedSubmitted == submitted && reportedProgress == progress))
                 continue;
 
             const char *stateName{[&]() {
@@ -511,21 +516,30 @@ namespace skyline::soc::gm20b {
                 return "unknown";
             }()};
 
-            LOGI("GRID-STALL state={} progress={} address=0x{:X} method=0x{:X} queueEmpty={}",
-                 stateName, progress,
+            const u64 pending{submitted >= progress ? submitted - progress : 0};
+            LOGI("GRID-SNAPSHOT state={} submitted={} processed={} pending={} lastSubmitted=0x{:X} lastProcessed=0x{:X} method=0x{:X} queueEmpty={}",
+                 stateName, submitted, progress, pending,
+                 diagnosticLastSubmittedAddress.load(std::memory_order_relaxed),
                  diagnosticAddress.load(std::memory_order_relaxed),
                  diagnosticMethod.load(std::memory_order_relaxed),
                  queueEmpty);
+            reportedSubmitted = submitted;
             reportedProgress = progress;
         }
     }
 
     void ChannelGpfifo::Push(span<GpEntry> entries) {
-        gpEntries.Append(entries);
+        for (const auto &entry : entries) {
+            gpEntries.Push(entry);
+            diagnosticLastSubmittedAddress.store(entry.Address(), std::memory_order_relaxed);
+            diagnosticSubmitted.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     void ChannelGpfifo::Push(GpEntry entry) {
         gpEntries.Push(entry);
+        diagnosticLastSubmittedAddress.store(entry.Address(), std::memory_order_relaxed);
+        diagnosticSubmitted.fetch_add(1, std::memory_order_relaxed);
     }
 
     ChannelGpfifo::~ChannelGpfifo() {
