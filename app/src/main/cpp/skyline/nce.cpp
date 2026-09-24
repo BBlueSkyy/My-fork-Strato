@@ -181,7 +181,7 @@ namespace skyline::nce {
     }
 
     void NCE::DiagnosticSignalHandler(int, siginfo *, ucontext *ctx, void **) {
-        auto thread{DeviceState::thread};
+        auto *thread{DeviceState::thread.get()};
         if (!thread)
             return;
 
