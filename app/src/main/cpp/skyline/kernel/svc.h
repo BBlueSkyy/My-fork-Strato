@@ -176,6 +176,16 @@ namespace skyline::kernel::svc {
     bool IsSvcTraceWindowActive();
 
     /**
+     * @brief Arms a one-shot NCE snapshot when the current SendSyncRequest returns to guest code
+     */
+    void ArmGuestReturnCapture(size_t threadId);
+
+    /**
+     * @return Whether this thread owns and consumed the pending one-shot guest-return snapshot
+     */
+    bool ConsumeGuestReturnCapture(size_t threadId);
+
+    /**
      * @brief If the referenced thread is currently in a synchronization call, that call will be interrupted
      * @url https://switchbrew.org/wiki/SVC#CancelSynchronization
      */
