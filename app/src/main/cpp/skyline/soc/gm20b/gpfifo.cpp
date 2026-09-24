@@ -8,6 +8,8 @@
 #include <kernel/types/KProcess.h>
 #include <soc.h>
 #include <os.h>
+#include <chrono>
+#include <limits>
 #include "channel.h"
 #include "macro/macro_state.h"
 
@@ -86,23 +88,24 @@ namespace skyline::soc::gm20b {
         state(state),
         gpfifoEngine(state.soc->host1x.syncpoints, channelCtx),
         channelCtx(channelCtx),
-        gpEntries(numEntries),
-        thread(std::thread(&ChannelGpfifo::Run, this)) {}
+        gpEntries(numEntries) {
+        thread = std::thread(&ChannelGpfifo::Run, this);
+        diagnosticThread = std::thread(&ChannelGpfifo::DiagnosticWatchdog, this);
+    }
 
     void ChannelGpfifo::SendFull(u32 method, GpfifoArgument argument, SubchannelId subChannel, bool lastCall) {
         if (method < engine::GPFIFO::RegisterCount) {
-            if (method == 0xB) {
-                LOGI("GRID-MEMOPB sendfull-begin subchannel={} lastCall={} dirty={} argumentPtr=0x{:X} inline=0x{:X}",
-                     static_cast<u8>(subChannel), lastCall, argument.dirty,
-                     reinterpret_cast<uintptr_t>(argument.argumentPtr), argument.argument);
-                const u32 value{*argument};
-                LOGI("GRID-MEMOPB argument-read-end value=0x{:X}", value);
-                LOGI("GRID-MEMOPB callmethod-begin");
-                gpfifoEngine.CallMethod(method, value);
-                LOGI("GRID-MEMOPB callmethod-end");
-            } else {
-                gpfifoEngine.CallMethod(method, *argument);
-            }
+            diagnosticMethod.store(method, std::memory_order_relaxed);
+            if (method == 0xB)
+                diagnosticState.store(DiagnosticState::ArgumentRead, std::memory_order_relaxed);
+
+            const u32 value{*argument};
+
+            if (method == 0xB)
+                diagnosticState.store(DiagnosticState::GpfifoCall, std::memory_order_relaxed);
+
+            gpfifoEngine.CallMethod(method, value);
+            diagnosticState.store(DiagnosticState::Processing, std::memory_order_relaxed);
         } else if (method < engine::EngineMethodsEnd) { [[likely]]
             SendPure(method, *argument, subChannel);
         } else {
@@ -175,12 +178,6 @@ namespace skyline::soc::gm20b {
     }
 
     void ChannelGpfifo::Process(GpEntry gpEntry) {
-        const bool traceGridTarget{
-            gpEntry.size <= 0x20 &&
-            gpEntry.Address() >= 0x502032400 &&
-            gpEntry.Address() < 0x502032600
-        };
-
         if (!gpEntry.size) {
             // This is a GPFIFO control entry, all control entries have a zero length and contain no pushbuffers
             switch (gpEntry.opcode) {
@@ -253,19 +250,8 @@ namespace skyline::soc::gm20b {
         }};
 
         // We've a method from a previous GpEntry that needs resuming
-        if (resumeState.remaining) {
-            if (traceGridTarget)
-                LOGI("GRID-TARGET resume-begin remaining={} method=0x{:X} subchannel={} state={}",
-                     resumeState.remaining, resumeState.address,
-                     static_cast<u8>(resumeState.subChannel), static_cast<u8>(resumeState.state));
-
+        if (resumeState.remaining)
             resumeSplitMethod();
-
-            if (traceGridTarget)
-                LOGI("GRID-TARGET resume-end remaining={} method=0x{:X} subchannel={} state={}",
-                     resumeState.remaining, resumeState.address,
-                     static_cast<u8>(resumeState.subChannel), static_cast<u8>(resumeState.state));
-        }
 
         // Process more methods if the entries are still not all used up after handling resuming
         for (; entry != pushBuffer.end(); entry++) {
@@ -279,12 +265,7 @@ namespace skyline::soc::gm20b {
 
             PushBufferMethodHeader methodHeader{.raw = *entry};
 
-            if (traceGridTarget)
-                LOGI("GRID-TARGET header offset={} raw=0x{:08X} method=0x{:X} count={} subchannel={} secOp={} tertOp={}",
-                     std::distance(pushBuffer.begin(), entry), methodHeader.raw,
-                     static_cast<u32>(methodHeader.methodAddress), static_cast<u32>(methodHeader.methodCount),
-                     static_cast<u8>(methodHeader.methodSubChannel),
-                     static_cast<u8>(methodHeader.secOp), static_cast<u8>(methodHeader.tertOp));
+            diagnosticMethod.store(methodHeader.methodAddress, std::memory_order_relaxed);
 
             // Needed in order to check for methods split across multiple GpEntries
             ssize_t remainingEntries{std::distance(entry, pushBuffer.end()) - 1};
@@ -411,32 +392,13 @@ namespace skyline::soc::gm20b {
                 }()};
 
                 if (touchesEngineMethods && methodHeader.methodSubChannel != SubchannelId::ThreeD) [[unlikely]] {
-                    if (traceGridTarget)
-                        LOGI("GRID-TARGET flush-begin method=0x{:X} count={} subchannel={}",
-                             static_cast<u32>(methodHeader.methodAddress), static_cast<u32>(methodHeader.methodCount),
-                             static_cast<u8>(methodHeader.methodSubChannel));
-
+                    diagnosticState.store(DiagnosticState::FlushEngineState, std::memory_order_relaxed);
                     channelCtx.maxwell3D.FlushEngineState(); // Flush 3D state only before calls to another engine, not puller/GPFIFO methods
-
-                    if (traceGridTarget)
-                        LOGI("GRID-TARGET flush-end method=0x{:X} count={} subchannel={}",
-                             static_cast<u32>(methodHeader.methodAddress), static_cast<u32>(methodHeader.methodCount),
-                             static_cast<u8>(methodHeader.methodSubChannel));
                 }
 
-                if (traceGridTarget)
-                    LOGI("GRID-TARGET process-method-begin method=0x{:X} count={} subchannel={} secOp={}",
-                         static_cast<u32>(methodHeader.methodAddress), static_cast<u32>(methodHeader.methodCount),
-                         static_cast<u8>(methodHeader.methodSubChannel), static_cast<u8>(methodHeader.secOp));
-
+                diagnosticState.store(DiagnosticState::ProcessMethod, std::memory_order_relaxed);
                 const bool methodHitEnd{processMethod()};
-
-                if (traceGridTarget)
-                    LOGI("GRID-TARGET process-method-end method=0x{:X} count={} subchannel={} secOp={} hitEnd={}",
-                         static_cast<u32>(methodHeader.methodAddress), static_cast<u32>(methodHeader.methodCount),
-                         static_cast<u8>(methodHeader.methodSubChannel), static_cast<u8>(methodHeader.secOp),
-                         methodHitEnd);
-
+                diagnosticState.store(DiagnosticState::Processing, std::memory_order_relaxed);
                 return methodHitEnd;
             }()};
 
@@ -455,32 +417,30 @@ namespace skyline::soc::gm20b {
 
             gpEntries.Process([this, &channelLocked](GpEntry gpEntry) {
                 LOGD("Processing pushbuffer: 0x{:X}, Size: 0x{:X}", gpEntry.Address(), +gpEntry.size);
-                LOGI("GRID-FLOW consumer-received address=0x{:X} size=0x{:X}",
-                     gpEntry.Address(), +gpEntry.size);
+                diagnosticAddress.store(gpEntry.Address(), std::memory_order_relaxed);
+                diagnosticMethod.store(0, std::memory_order_relaxed);
 
                 if (!channelLocked) {
+                    diagnosticState.store(DiagnosticState::ChannelLock, std::memory_order_relaxed);
                     channelCtx.Lock();
                     channelLocked = true;
                 }
 
-                LOGI("GRID-QUEUE process-begin address=0x{:X} size=0x{:X}",
-                     gpEntry.Address(), +gpEntry.size);
+                diagnosticState.store(DiagnosticState::Processing, std::memory_order_relaxed);
                 Process(gpEntry);
-                LOGI("GRID-QUEUE process-end address=0x{:X} size=0x{:X}",
-                     gpEntry.Address(), +gpEntry.size);
-                LOGI("GRID-FLOW process-end address=0x{:X} size=0x{:X}",
-                     gpEntry.Address(), +gpEntry.size);
+                diagnosticProgress.fetch_add(1, std::memory_order_relaxed);
             }, [this, &channelLocked]() {
                 // If we run out of GpEntries to process ensure we submit any remaining GPU work before waiting for more to arrive
                 LOGD("Finished processing pushbuffer batch");
                 if (channelLocked) {
-                    LOGI("GRID-FLOW executor-submit-begin");
+                    diagnosticState.store(DiagnosticState::ExecutorSubmit, std::memory_order_relaxed);
                     channelCtx.executor.Submit();
-                    LOGI("GRID-FLOW executor-submit-end");
                     channelCtx.Unlock();
                     channelLocked = false;
                 }
+                diagnosticState.store(DiagnosticState::Waiting, std::memory_order_relaxed);
             });
+            diagnosticState.store(DiagnosticState::Stopped, std::memory_order_relaxed);
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 LOGE("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
@@ -498,25 +458,78 @@ namespace skyline::soc::gm20b {
         }
     }
 
-    void ChannelGpfifo::Push(span<GpEntry> entries) {
-        for (const auto &entry : entries) {
-            LOGI("GRID-QUEUE enqueue-entry-begin address=0x{:X} size=0x{:X}",
-                 entry.Address(), +entry.size);
-            gpEntries.Push(entry);
-            LOGI("GRID-QUEUE enqueue-entry-end address=0x{:X} size=0x{:X}",
-                 entry.Address(), +entry.size);
+    void ChannelGpfifo::DiagnosticWatchdog() {
+        if (int result{pthread_setname_np(pthread_self(), "GPFIFO-Watch")})
+            LOGW("Failed to set the diagnostic thread name: {}", strerror(result));
+        AsyncLogger::UpdateTag();
+
+        u64 lastProgress{diagnosticProgress.load(std::memory_order_relaxed)};
+        u64 reportedProgress{std::numeric_limits<u64>::max()};
+        u32 stagnantTicks{};
+
+        while (!diagnosticStop.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+            if (diagnosticStop.load(std::memory_order_acquire))
+                break;
+
+            const u64 progress{diagnosticProgress.load(std::memory_order_relaxed)};
+            const auto stateValue{diagnosticState.load(std::memory_order_relaxed)};
+            const bool queueEmpty{gpEntries.Empty()};
+
+            if (progress != lastProgress) {
+                lastProgress = progress;
+                stagnantTicks = 0;
+                reportedProgress = std::numeric_limits<u64>::max();
+                continue;
+            }
+
+            if (stateValue == DiagnosticState::Waiting && queueEmpty) {
+                stagnantTicks = 0;
+                continue;
+            }
+
+            if (++stagnantTicks < 8 || reportedProgress == progress)
+                continue;
+
+            const char *stateName{[&]() {
+                switch (stateValue) {
+                    case DiagnosticState::Starting: return "starting";
+                    case DiagnosticState::Waiting: return "waiting";
+                    case DiagnosticState::ChannelLock: return "channel-lock";
+                    case DiagnosticState::Processing: return "processing";
+                    case DiagnosticState::FlushEngineState: return "flush-engine-state";
+                    case DiagnosticState::ProcessMethod: return "process-method";
+                    case DiagnosticState::ArgumentRead: return "argument-read";
+                    case DiagnosticState::GpfifoCall: return "gpfifo-call";
+                    case DiagnosticState::ExecutorSubmit: return "executor-submit";
+                    case DiagnosticState::Stopped: return "stopped";
+                }
+                return "unknown";
+            }()};
+
+            LOGI("GRID-STALL state={} progress={} address=0x{:X} method=0x{:X} queueEmpty={}",
+                 stateName, progress,
+                 diagnosticAddress.load(std::memory_order_relaxed),
+                 diagnosticMethod.load(std::memory_order_relaxed),
+                 queueEmpty);
+            reportedProgress = progress;
         }
     }
 
+    void ChannelGpfifo::Push(span<GpEntry> entries) {
+        gpEntries.Append(entries);
+    }
+
     void ChannelGpfifo::Push(GpEntry entry) {
-        LOGI("GRID-QUEUE enqueue-entry-begin address=0x{:X} size=0x{:X}",
-             entry.Address(), +entry.size);
         gpEntries.Push(entry);
-        LOGI("GRID-QUEUE enqueue-entry-end address=0x{:X} size=0x{:X}",
-             entry.Address(), +entry.size);
     }
 
     ChannelGpfifo::~ChannelGpfifo() {
+        diagnosticStop.store(true, std::memory_order_release);
+        if (diagnosticThread.joinable())
+            diagnosticThread.join();
+
         if (thread.joinable()) {
             gpEntries.Close();
             thread.join();
