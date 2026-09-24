@@ -523,6 +523,10 @@ namespace skyline::soc::gm20b {
                  diagnosticAddress.load(std::memory_order_relaxed),
                  diagnosticMethod.load(std::memory_order_relaxed),
                  queueEmpty);
+
+            if (pending == 0 && queueEmpty && stateValue == DiagnosticState::Waiting && state.process)
+                state.process->DumpThreadDiagnosticSnapshot();
+
             reportedSubmitted = submitted;
             reportedProgress = progress;
         }
