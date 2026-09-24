@@ -151,6 +151,26 @@ namespace skyline::kernel::svc {
     void TraceNextWaitSynchronization(size_t threadId);
 
     /**
+     * @brief Arms a bounded diagnostic trace for the next SVCs issued by a guest thread
+     */
+    void TraceNextSvcs(size_t threadId, u32 count);
+
+    /**
+     * @return A non-zero trace sequence when this SVC belongs to the active diagnostic window
+     */
+    u32 BeginSvcTrace(size_t threadId, u16 svcId, const char *svcName, const SvcContext &ctx);
+
+    /**
+     * @brief Completes a traced SVC and records its return registers
+     */
+    void EndSvcTrace(size_t threadId, u32 sequence, u16 svcId, const char *svcName, const SvcContext &ctx);
+
+    /**
+     * @return Whether the current guest thread is inside the active SVC diagnostic window
+     */
+    bool IsSvcTraceActive(size_t threadId);
+
+    /**
      * @brief If the referenced thread is currently in a synchronization call, that call will be interrupted
      * @url https://switchbrew.org/wiki/SVC#CancelSynchronization
      */
