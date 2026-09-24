@@ -189,7 +189,7 @@ namespace skyline::service::visrv {
         LOGI("GetIndirectLayerImageRequiredMemoryInfo: return Success, size=0x{:X}, alignment=0x{:X}",
              layout.requiredSize, IndirectLayerAlignment);
         // Diagnostic branch: capture the immediate guest-kernel activity after cmd2460.
-        kernel::svc::TraceNextSvcs(state.thread->id, 8);
+        kernel::svc::TraceNextSvcs(state.thread->id, 32);
 
         return {};
     }
