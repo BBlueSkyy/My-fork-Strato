@@ -13,7 +13,6 @@
 #include <signal.h>
 #include <sys/syscall.h>
 #include <unistd.h>
-#include <algorithm>
 #include "KProcess.h"
 
 namespace skyline::kernel::type {
@@ -135,15 +134,6 @@ namespace skyline::kernel::type {
                 "running-or-unknown"
             };
 
-            std::string guestTrace{"-"};
-            if (guestContextValid && state.loader) {
-                guestTrace = state.loader->GetStackTrace(std::vector<void *>{
-                    reinterpret_cast<void *>(guestPc),
-                    reinterpret_cast<void *>(guestLr),
-                });
-                std::replace(guestTrace.begin(), guestTrace.end(), '\n', ';');
-            }
-
             std::string serviceName{"-"};
             u32 objectType{std::numeric_limits<u32>::max()};
             if (target0) {
@@ -180,10 +170,10 @@ namespace skyline::kernel::type {
                 }
             }
 
-            LOGI("THREAD-SNAPSHOT tid={} hostTid={} class={} prio={} wait={} schedulerWait={} lastSvc=0x{:X} target0=0x{:X} target1=0x{:X} target2=0x{:X} ipcCmd=0x{:X} service={} objectType={} wchan={} guestCtx={} pc=0x{:X} lr=0x{:X} sp=0x{:X} guestTrace={} mutexRaw=0x{:X} mutexOwner=0x{:X} mutexOwnerTid={} mutexWaiters={} statusKnown={} running={} ready={} killed={}",
+            LOGI("THREAD-SNAPSHOT tid={} hostTid={} class={} prio={} wait={} schedulerWait={} lastSvc=0x{:X} target0=0x{:X} target1=0x{:X} target2=0x{:X} ipcCmd=0x{:X} service={} objectType={} wchan={} guestCtx={} pc=0x{:X} lr=0x{:X} sp=0x{:X} mutexRaw=0x{:X} mutexOwner=0x{:X} mutexOwnerTid={} mutexWaiters={} statusKnown={} running={} ready={} killed={}",
                  thread->id, hostTid, classification, +thread->priority.load(std::memory_order_relaxed),
                  waitName, schedulerWait, lastSvc, target0, target1, target2, ipcCommand,
-                 serviceName, objectType, wchan, guestContextValid, guestPc, guestLr, guestSp, guestTrace,
+                 serviceName, objectType, wchan, guestContextValid, guestPc, guestLr, guestSp,
                  mutexRaw, mutexOwnerHandle, mutexOwnerTid, mutexHasWaiters,
                  statusKnown, running, ready, killed);
         }
