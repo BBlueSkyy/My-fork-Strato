@@ -125,7 +125,9 @@ namespace skyline::soc::gm20b {
 
         std::atomic<DiagnosticState> diagnosticState{DiagnosticState::Starting};
         std::atomic<u64> diagnosticAddress{};
+        std::atomic<u64> diagnosticLastSubmittedAddress{};
         std::atomic<u32> diagnosticMethod{};
+        std::atomic<u64> diagnosticSubmitted{};
         std::atomic<u64> diagnosticProgress{};
         std::atomic_bool diagnosticStop{};
         std::thread diagnosticThread;
