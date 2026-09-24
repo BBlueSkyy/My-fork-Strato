@@ -456,6 +456,8 @@ namespace skyline::soc::gm20b {
             signal::BlockSignal({SIGINT});
             state.process->Kill(false);
         }
+
+        diagnosticState.store(DiagnosticState::Stopped, std::memory_order_relaxed);
     }
 
     void ChannelGpfifo::DiagnosticWatchdog() {
@@ -484,7 +486,8 @@ namespace skyline::soc::gm20b {
                 continue;
             }
 
-            if (stateValue == DiagnosticState::Waiting && queueEmpty) {
+            if (stateValue == DiagnosticState::Stopped ||
+                ((stateValue == DiagnosticState::Starting || stateValue == DiagnosticState::Waiting) && queueEmpty)) {
                 stagnantTicks = 0;
                 continue;
             }
