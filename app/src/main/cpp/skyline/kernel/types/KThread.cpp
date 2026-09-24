@@ -36,6 +36,7 @@ namespace skyline::kernel::type {
 
     void KThread::StartThread() {
         pthread = pthread_self();
+        diagnosticHostTid.store(gettid(), std::memory_order_relaxed);
         std::array<char, 16> threadName{};
         if (int result{pthread_getname_np(pthread, threadName.data(), threadName.size())})
             LOGW("Failed to get the thread name: {}", strerror(result));
