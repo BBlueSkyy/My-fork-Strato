@@ -44,17 +44,18 @@ namespace skyline::nce {
                         if (lastWaitKey != svcContext.x1) {
                             lastWaitKey = svcContext.x1;
                             sameWaitKeyCount = 1;
-                            LOGI("POST2460 guest wait site: seq={}, thread={}, key=0x{:X}, occurrence={}\nStack Trace:{}",
-                                 traceSequence, state.thread->id, svcContext.x1, sameWaitKeyCount, state.loader->GetStackTrace());
+                            LOGI("POST2460 guest wait key: seq={}, thread={}, key=0x{:X}, occurrence={}",
+                                 traceSequence, state.thread->id, svcContext.x1, sameWaitKeyCount);
                         } else {
                             sameWaitKeyCount++;
-                            if (sameWaitKeyCount == 16 || sameWaitKeyCount == 128 || sameWaitKeyCount == 512)
-                                LOGI("POST2460 guest wait site: seq={}, thread={}, key=0x{:X}, occurrence={}\nStack Trace:{}",
-                                     traceSequence, state.thread->id, svcContext.x1, sameWaitKeyCount, state.loader->GetStackTrace());
+                            if (sameWaitKeyCount == 16 || sameWaitKeyCount == 128 || sameWaitKeyCount == 512 ||
+                                sameWaitKeyCount == 1024)
+                                LOGI("POST2460 guest wait key: seq={}, thread={}, key=0x{:X}, occurrence={}",
+                                     traceSequence, state.thread->id, svcContext.x1, sameWaitKeyCount);
                         }
                     } else if (svcId == 0x21) {
-                        LOGI("POST2460 reached next IPC: seq={}, thread={}, handle=0x{:X}\nStack Trace:{}",
-                             traceSequence, state.thread->id, svcContext.x0, state.loader->GetStackTrace());
+                        LOGI("POST2460 reached next IPC: seq={}, thread={}, handle=0x{:X}",
+                             traceSequence, state.thread->id, svcContext.x0);
                     }
                 }
 
