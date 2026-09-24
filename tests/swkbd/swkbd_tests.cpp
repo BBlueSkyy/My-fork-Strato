@@ -55,6 +55,23 @@ namespace {
         config.commonConfig.isUseUtf8 = true;
         NormalizeNormalConfig(config);
         Require(config.commonConfig.textMaxLength == 2004, "UTF-8 bounds");
+
+        config = {};
+        NormalizeInlineConfig(config, 14, -1);
+        Require(config.commonConfig.textMaxLength == 14 && config.commonConfig.textMinLength == 0,
+                "inline negative minimum is unset");
+        Require(config.commonConfig.inputFormMode == InputFormMode::OneLine, "inline short input is one-line");
+
+        config = {};
+        NormalizeInlineConfig(config, -1, -1);
+        Require(config.commonConfig.textMaxLength == 500 && config.commonConfig.textMinLength == 0,
+                "inline negative limits use protocol defaults");
+        Require(config.commonConfig.inputFormMode == InputFormMode::MultiLine, "inline default input is multiline");
+
+        config = {};
+        NormalizeInlineConfig(config, 10, 20);
+        Require(config.commonConfig.textMaxLength == 10 && config.commonConfig.textMinLength == 10,
+                "inline minimum is clamped to maximum");
     }
 
     void TestState() {
