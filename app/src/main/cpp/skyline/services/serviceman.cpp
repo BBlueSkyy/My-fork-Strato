@@ -282,7 +282,7 @@ namespace skyline::service {
         if (session->IsOpen()) {
             ipc::IpcRequest request(session->isDomain, state);
             ipc::IpcResponse response(state);
-            const bool traceIpc{kernel::svc::IsSvcTraceActive(state.thread->id)};
+            const bool traceIpc{kernel::svc::IsSvcTraceWindowActive()};
             const u32 traceCommand{request.isTipc ? static_cast<u32>(request.header->type)
                                                   : (request.payload ? request.payload->value : 0)};
 
