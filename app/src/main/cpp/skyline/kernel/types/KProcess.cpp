@@ -51,11 +51,12 @@ namespace skyline::kernel::type {
         }
 
         auto readWchan{[](i32 hostTid) {
-            const std::string wchan{readWchan(hostTid)};
-            const bool guestContextValid{thread->diagnosticGuestContextValid.load(std::memory_order_acquire)};
-            const u64 guestPc{thread->diagnosticGuestPc.load(std::memory_order_relaxed)};
-            const u64 guestLr{thread->diagnosticGuestLr.load(std::memory_order_relaxed)};
-            const u64 guestSp{thread->diagnosticGuestSp.load(std::memory_order_relaxed)};
+            std::string wchan{"unavailable"};
+            if (hostTid > 0) {
+                std::ifstream wchanFile{fmt::format("/proc/self/task/{}/wchan", hostTid)};
+                if (wchanFile)
+                    std::getline(wchanFile, wchan);
+            }
             return wchan;
         }};
 
@@ -125,6 +126,12 @@ namespace skyline::kernel::type {
                     killed = thread->killed;
                 }
             }
+
+            const std::string wchan{readWchan(hostTid)};
+            const bool guestContextValid{thread->diagnosticGuestContextValid.load(std::memory_order_acquire)};
+            const u64 guestPc{thread->diagnosticGuestPc.load(std::memory_order_relaxed)};
+            const u64 guestLr{thread->diagnosticGuestLr.load(std::memory_order_relaxed)};
+            const u64 guestSp{thread->diagnosticGuestSp.load(std::memory_order_relaxed)};
 
             const char *classification{
                 waitKind == KThread::DiagnosticWaitKind::Ipc ? "ipc" :
