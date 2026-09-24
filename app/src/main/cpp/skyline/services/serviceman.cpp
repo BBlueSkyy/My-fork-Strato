@@ -365,6 +365,7 @@ namespace skyline::service {
                              tlsWords[4], tlsWords[5], tlsWords[6], tlsWords[7],
                              tlsWords[8], tlsWords[9], tlsWords[10], tlsWords[11],
                              tlsWords[12], tlsWords[13], tlsWords[14], tlsWords[15]);
+                        kernel::svc::ArmGuestReturnCapture(state.thread->id);
                         if (tracePreCalc)
                             StopPreCalcIpcTrace(state.thread->id);
                     }
