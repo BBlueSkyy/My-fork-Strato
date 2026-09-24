@@ -9,6 +9,10 @@
 #include <services/base_service.h>
 #include <fstream>
 #include <limits>
+#include <chrono>
+#include <signal.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #include "KProcess.h"
 
 namespace skyline::kernel::type {
@@ -45,6 +49,35 @@ namespace skyline::kernel::type {
             std::scoped_lock guard{threadMutex};
             snapshotThreads = threads;
         }
+
+        auto readWchan{[](i32 hostTid) {
+            const std::string wchan{readWchan(hostTid)};
+            const bool guestContextValid{thread->diagnosticGuestContextValid.load(std::memory_order_acquire)};
+            const u64 guestPc{thread->diagnosticGuestPc.load(std::memory_order_relaxed)};
+            const u64 guestLr{thread->diagnosticGuestLr.load(std::memory_order_relaxed)};
+            const u64 guestSp{thread->diagnosticGuestSp.load(std::memory_order_relaxed)};
+            return wchan;
+        }};
+
+        for (const auto &thread : snapshotThreads) {
+            if (!thread)
+                continue;
+
+            const auto waitKind{thread->diagnosticWaitKind.load(std::memory_order_relaxed)};
+            const bool schedulerWait{thread->diagnosticSchedulerWait.load(std::memory_order_acquire)};
+            const i32 hostTid{thread->diagnosticHostTid.load(std::memory_order_relaxed)};
+            if (waitKind != KThread::DiagnosticWaitKind::None || schedulerWait || hostTid <= 0)
+                continue;
+
+            const std::string wchan{readWchan(hostTid)};
+            if (wchan != "0")
+                continue;
+
+            thread->diagnosticGuestContextValid.store(false, std::memory_order_release);
+            syscall(SYS_tgkill, getpid(), hostTid, SIGUSR2);
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
         LOGI("THREAD-SNAPSHOT begin count={}", snapshotThreads.size());
 
@@ -117,10 +150,32 @@ namespace skyline::kernel::type {
                 }
             }
 
-            LOGI("THREAD-SNAPSHOT tid={} hostTid={} class={} prio={} wait={} schedulerWait={} lastSvc=0x{:X} target0=0x{:X} target1=0x{:X} target2=0x{:X} ipcCmd=0x{:X} service={} objectType={} wchan={} statusKnown={} running={} ready={} killed={}",
+            u32 mutexRaw{};
+            KHandle mutexOwnerHandle{};
+            size_t mutexOwnerTid{std::numeric_limits<size_t>::max()};
+            bool mutexHasWaiters{};
+            if (waitKind == KThread::DiagnosticWaitKind::ProcessWideKey && target1) {
+                auto *mutex{reinterpret_cast<u32 *>(target1)};
+                if (memory.AddressSpaceContains(span<u8>{reinterpret_cast<u8 *>(mutex), sizeof(u32)})) {
+                    constexpr u32 DiagnosticHandleWaitersBit{1UL << 30};
+                    mutexRaw = __atomic_load_n(mutex, __ATOMIC_SEQ_CST);
+                    mutexHasWaiters = (mutexRaw & DiagnosticHandleWaitersBit) != 0;
+                    mutexOwnerHandle = mutexRaw & ~DiagnosticHandleWaitersBit;
+                    if (mutexOwnerHandle) {
+                        try {
+                            mutexOwnerTid = GetHandle<KThread>(mutexOwnerHandle)->id;
+                        } catch (const std::exception &) {
+                        }
+                    }
+                }
+            }
+
+            LOGI("THREAD-SNAPSHOT tid={} hostTid={} class={} prio={} wait={} schedulerWait={} lastSvc=0x{:X} target0=0x{:X} target1=0x{:X} target2=0x{:X} ipcCmd=0x{:X} service={} objectType={} wchan={} guestCtx={} pc=0x{:X} lr=0x{:X} sp=0x{:X} mutexRaw=0x{:X} mutexOwner=0x{:X} mutexOwnerTid={} mutexWaiters={} statusKnown={} running={} ready={} killed={}",
                  thread->id, hostTid, classification, +thread->priority.load(std::memory_order_relaxed),
                  waitName, schedulerWait, lastSvc, target0, target1, target2, ipcCommand,
-                 serviceName, objectType, wchan, statusKnown, running, ready, killed);
+                 serviceName, objectType, wchan, guestContextValid, guestPc, guestLr, guestSp,
+                 mutexRaw, mutexOwnerHandle, mutexOwnerTid, mutexHasWaiters,
+                 statusKnown, running, ready, killed);
         }
 
         LOGI("THREAD-SNAPSHOT end");
