@@ -330,16 +330,12 @@ namespace skyline::applet::swkbd {
         config.commonConfig.isPredictionEnabled = ReadInlineValue<u8>(calc, appearOffset + 0x1A) != 0;
         config.isCancelButtonDisabled = ReadInlineValue<u8>(calc, appearOffset + 0x1B) != 0;
         config.commonConfig.invalidCharFlags = ReadInlineValue<InvalidCharFlags>(calc, appearOffset + 0x1C);
-        config.commonConfig.textMaxLength = ReadInlineValue<u32>(calc, appearOffset + 0x20);
-        config.commonConfig.textMinLength = ReadInlineValue<u32>(calc, appearOffset + 0x24);
+        const auto textMaxLength{ReadInlineValue<i32>(calc, appearOffset + 0x20)};
+        const auto textMinLength{ReadInlineValue<i32>(calc, appearOffset + 0x24)};
         config.commonConfig.isUseNewLine = ReadInlineValue<u8>(calc, appearOffset + 0x28) != 0;
 
-        constexpr u32 InlineMaxTextLength{500};
-        if (config.commonConfig.textMaxLength == 0 || config.commonConfig.textMaxLength > InlineMaxTextLength)
-            config.commonConfig.textMaxLength = InlineMaxTextLength;
-        config.commonConfig.textMinLength = std::min(config.commonConfig.textMinLength, config.commonConfig.textMaxLength);
+        NormalizeInlineConfig(config, textMaxLength, textMinLength);
         config.commonConfig.passwordMode = PasswordMode::Show;
-        config.commonConfig.inputFormMode = config.commonConfig.textMaxLength > 32 ? InputFormMode::MultiLine : InputFormMode::OneLine;
         config.commonConfig.initialCursorPos = inlineCursorPosition > 0 ? InitialCursorPos::Last : InitialCursorPos::First;
         config.commonConfig.isUseUtf8 = inlineUseUtf8;
     }
