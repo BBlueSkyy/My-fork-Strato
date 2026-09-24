@@ -17,7 +17,11 @@ namespace skyline::kernel::ipc {
             handleDesc = reinterpret_cast<HandleDescriptor *>(pointer);
             pointer += sizeof(HandleDescriptor);
             if (handleDesc->sendPid) {
-                pid = *reinterpret_cast<u64 *>(pointer);
+                // On Horizon the PID descriptor identifies the sending process. Strato handles
+                // HLE IPC directly from the client's TLS, so no kernel transfer exists to replace
+                // this transport slot for us. Use the current guest process identity instead of
+                // trusting stale bytes left in the TLS request buffer.
+                pid = state.process->id;
                 pointer += sizeof(u64);
             }
             for (u32 index{}; handleDesc->copyCount > index; index++) {
