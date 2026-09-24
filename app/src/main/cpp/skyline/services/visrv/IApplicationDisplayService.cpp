@@ -188,10 +188,6 @@ namespace skyline::service::visrv {
         response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
         LOGI("GetIndirectLayerImageRequiredMemoryInfo: return Success, size=0x{:X}, alignment=0x{:X}",
              layout.requiredSize, IndirectLayerAlignment);
-        // Diagnostic branch: follow the guest synchronization path until it either reaches
-        // the next IPC or demonstrates a sustained userspace wait loop.
-        kernel::svc::TraceNextSvcs(state.thread->id, 2048);
-
         return {};
     }
 }
