@@ -108,7 +108,11 @@ namespace skyline {
                     }
                 }
 
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE consume-lock-begin");
                 std::scoped_lock comsumptionLock{consumptionMutex};
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE consume-lock-end");
                 while (start != end) {
                     if constexpr (StandardProducerWait)
                         LOGI("GRID-QUEUE pop-begin");
@@ -156,7 +160,11 @@ namespace skyline {
                     waitEnd = nullptr;
                 }
 
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE production-lock-begin");
                 std::scoped_lock lock{productionMutex};
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE production-lock-end");
                 auto next{end + 1};
                 next = (next == reinterpret_cast<Type *>(vector.end().base())) ? reinterpret_cast<Type *>(vector.begin().base()) : next;
                 if (next == start) {
@@ -188,7 +196,11 @@ namespace skyline {
                     waitEnd = nullptr;
                 }
 
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE production-lock-begin");
                 std::scoped_lock lock{productionMutex};
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE production-lock-end");
                 auto next{end + 1};
                 next = (next == reinterpret_cast<Type *>(vector.end().base())) ? reinterpret_cast<Type *>(vector.begin().base()) : next;
                 if (next == start) {
