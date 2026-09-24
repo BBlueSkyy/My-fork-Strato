@@ -88,7 +88,7 @@ namespace skyline::nce {
                         LOGI("POST2460 guest code: addr=0x{:X}, words={}", codeStart + index * sizeof(u32), words);
                     }
 
-                    // Raw stack window only; no frame walking or symbol lookup in the SVC path.
+                    // Keep a small raw stack window for manual verification.
                     constexpr size_t StackDumpSize{0x100};
                     auto stackSpan{span<u8>{reinterpret_cast<u8 *>(originalSp), StackDumpSize}};
                     if (state.process->memory.AddressSpaceContains(stackSpan)) {
@@ -100,6 +100,49 @@ namespace skyline::nce {
                                  stackWords[index], stackWords[index + 1], stackWords[index + 2], stackWords[index + 3]);
                     } else {
                         LOGI("POST2460 guest stack: 0x100-byte window not fully mapped at sp=0x{:X}", originalSp);
+                    }
+
+                    // The captured wrapper has a standard AArch64 frame record at originalSp.
+                    // Follow only a few validated, monotonically increasing frame records. This
+                    // deliberately avoids loader symbolization and the generic stack tracer.
+                    u64 frameAddress{originalSp};
+                    constexpr size_t MaxFrameDepth{8};
+                    for (size_t depth{}; depth < MaxFrameDepth; depth++) {
+                        auto frameSpan{span<u8>{reinterpret_cast<u8 *>(frameAddress), 2 * sizeof(u64)}};
+                        if (!state.process->memory.AddressSpaceContains(frameSpan)) {
+                            LOGI("POST2460 guest frame: depth={}, frame=0x{:X}, invalid-frame-memory", depth, frameAddress);
+                            break;
+                        }
+
+                        const auto *frameWords{reinterpret_cast<const u64 *>(frameAddress)};
+                        const u64 previousFrame{frameWords[0]};
+                        const u64 returnPc{frameWords[1]};
+                        LOGI("POST2460 guest frame: depth={}, frame=0x{:X}, prev_fp=0x{:X}, lr=0x{:X}",
+                             depth, frameAddress, previousFrame, returnPc);
+
+                        if (returnPc >= 0x20) {
+                            const u64 codePageBase{returnPc & ~(static_cast<u64>(constant::PageSize) - 1)};
+                            const u64 codeStart{std::max(codePageBase, returnPc - 0x20)};
+                            const u64 codeEnd{std::min(codePageBase + constant::PageSize, returnPc + 0x20)};
+                            auto codeSpan{span<u8>{reinterpret_cast<u8 *>(codeStart), static_cast<size_t>(codeEnd - codeStart)}};
+                            if (state.process->memory.AddressSpaceContains(codeSpan)) {
+                                const auto *frameCodeWords{reinterpret_cast<const u32 *>(codeStart)};
+                                const size_t frameCodeWordCount{(codeEnd - codeStart) / sizeof(u32)};
+                                std::string words;
+                                for (size_t index{}; index < frameCodeWordCount; index++)
+                                    words += fmt::format("{}{:08X}", index ? " " : "", frameCodeWords[index]);
+                                LOGI("POST2460 guest frame code: depth={}, addr=0x{:X}, lr_offset=0x{:X}, words={}",
+                                     depth, codeStart, returnPc - codeStart, words);
+                            }
+                        }
+
+                        if (!previousFrame || previousFrame <= frameAddress ||
+                            (previousFrame & 0xF) || previousFrame - frameAddress > 0x100000) {
+                            LOGI("POST2460 guest frame stop: depth={}, frame=0x{:X}, prev_fp=0x{:X}",
+                                 depth, frameAddress, previousFrame);
+                            break;
+                        }
+                        frameAddress = previousFrame;
                     }
                 }
 
