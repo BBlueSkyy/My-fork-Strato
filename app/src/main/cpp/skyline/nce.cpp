@@ -62,18 +62,45 @@ namespace skyline::nce {
                 (svc.function)(state, svcContext);
 
                 if (svcId == 0x21 && kernel::svc::ConsumeGuestReturnCapture(state.thread->id)) {
-                    const u64 postSvcPc{*reinterpret_cast<const u64 *>(guestSp)};
+                    // The per-SVC trampoline preserves the guest LR at guestSp[0].
+                    // For svcSendSyncRequest this is the caller continuation after the BL to
+                    // the nnSdk SVC stub, not the SVC instruction itself.
+                    const u64 callerPc{*reinterpret_cast<const u64 *>(guestSp)};
                     const u64 originalSp{guestSp + 0x10};
-                    const auto *nextInstructions{reinterpret_cast<const u32 *>(postSvcPc)};
-                    LOGI("POST2460 guest return snapshot: thread={}, svc_pc=0x{:X}, pc=0x{:X}, sp=0x{:X}, x0=0x{:X}, x1=0x{:X}, x2=0x{:X}, x3=0x{:X}, x4=0x{:X}, x5=0x{:X}, x6=0x{:X}, x7=0x{:X}",
-                         state.thread->id, postSvcPc - sizeof(u32), postSvcPc, originalSp,
+                    LOGI("POST2460 guest return snapshot: thread={}, caller_pc=0x{:X}, sp=0x{:X}, x0=0x{:X}, x1=0x{:X}, x2=0x{:X}, x3=0x{:X}, x4=0x{:X}, x5=0x{:X}, x6=0x{:X}, x7=0x{:X}",
+                         state.thread->id, callerPc, originalSp,
                          ctx->gpr.x0, ctx->gpr.x1, ctx->gpr.x2, ctx->gpr.x3,
                          ctx->gpr.x4, ctx->gpr.x5, ctx->gpr.x6, ctx->gpr.x7);
 
-                    const size_t bytesToPageEnd{constant::PageSize - (postSvcPc & (constant::PageSize - 1))};
-                    const size_t instructionCount{std::min<size_t>(8, bytesToPageEnd / sizeof(u32))};
-                    for (size_t index{}; index < instructionCount; index++)
-                        LOGI("POST2460 guest insn: pc+0x{:X}=0x{:08X}", index * sizeof(u32), nextInstructions[index]);
+                    // Dump a compact 0x100-byte code window around the nnSdk caller without
+                    // crossing its current mapped page.
+                    const u64 pageBase{callerPc & ~(static_cast<u64>(constant::PageSize) - 1)};
+                    const u64 requestedCodeStart{callerPc >= 0x40 ? callerPc - 0x40 : callerPc};
+                    const u64 codeStart{std::max(pageBase, requestedCodeStart)};
+                    const u64 codeEnd{std::min(pageBase + constant::PageSize, callerPc + 0xC0)};
+                    const auto *codeWords{reinterpret_cast<const u32 *>(codeStart)};
+                    const size_t codeWordCount{(codeEnd - codeStart) / sizeof(u32)};
+                    for (size_t index{}; index < codeWordCount; index += 8) {
+                        const size_t count{std::min<size_t>(8, codeWordCount - index)};
+                        std::string words;
+                        for (size_t word{}; word < count; word++)
+                            words += fmt::format("{}{:08X}", word ? " " : "", codeWords[index + word]);
+                        LOGI("POST2460 guest code: addr=0x{:X}, words={}", codeStart + index * sizeof(u32), words);
+                    }
+
+                    // Raw stack window only; no frame walking or symbol lookup in the SVC path.
+                    constexpr size_t StackDumpSize{0x100};
+                    auto stackSpan{span<u8>{reinterpret_cast<u8 *>(originalSp), StackDumpSize}};
+                    if (state.process->memory.AddressSpaceContains(stackSpan)) {
+                        const auto *stackWords{reinterpret_cast<const u64 *>(originalSp)};
+                        constexpr size_t StackWordCount{StackDumpSize / sizeof(u64)};
+                        for (size_t index{}; index < StackWordCount; index += 4)
+                            LOGI("POST2460 guest stack: sp+0x{:X}={:016X} {:016X} {:016X} {:016X}",
+                                 index * sizeof(u64),
+                                 stackWords[index], stackWords[index + 1], stackWords[index + 2], stackWords[index + 3]);
+                    } else {
+                        LOGI("POST2460 guest stack: 0x100-byte window not fully mapped at sp=0x{:X}", originalSp);
+                    }
                 }
 
                 kernel::svc::EndSvcTrace(state.thread->id, traceSequence, svcId, svc.name, svcContext);
