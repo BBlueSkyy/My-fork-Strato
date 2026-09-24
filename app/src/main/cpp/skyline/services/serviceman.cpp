@@ -395,6 +395,9 @@ namespace skyline::service {
                             throw exception("Unknown Control Command: {}", request.payload->value);
                     }
                     response.WriteResponse(false);
+                    if (traceIpc)
+                        LOGI("{} IPC control return: thread={}, handle=0x{:X}, command=0x{:X}, result=0x0",
+                             tracePhase, state.thread->id, handle, request.payload->value);
                     break;
 
                 case ipc::CommandType::Close:
