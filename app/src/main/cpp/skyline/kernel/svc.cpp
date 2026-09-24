@@ -16,6 +16,7 @@ namespace skyline::kernel::svc {
     namespace {
         constexpr size_t NoWaitSynchronizationTrace{std::numeric_limits<size_t>::max()};
         constexpr size_t NoSvcTrace{std::numeric_limits<size_t>::max()};
+        std::atomic_size_t guestReturnCaptureThreadId{NoSvcTrace};
         std::atomic_size_t waitSynchronizationTraceThreadId{NoWaitSynchronizationTrace};
         std::atomic_size_t svcTraceThreadId{NoSvcTrace};
         std::atomic_uint svcTraceRemaining{};
@@ -71,6 +72,17 @@ namespace skyline::kernel::svc {
 
     bool IsSvcTraceWindowActive() {
         return svcTraceRemaining.load(std::memory_order_acquire) != 0;
+    }
+
+    void ArmGuestReturnCapture(size_t threadId) {
+        guestReturnCaptureThreadId.store(threadId, std::memory_order_release);
+        LOGI("POST2460 guest return capture armed: thread={}", threadId);
+    }
+
+    bool ConsumeGuestReturnCapture(size_t threadId) {
+        auto expected{threadId};
+        return guestReturnCaptureThreadId.compare_exchange_strong(
+            expected, NoSvcTrace, std::memory_order_acq_rel);
     }
 
     u32 BeginSvcTrace(size_t threadId, u16 svcId, const char *svcName, const SvcContext &ctx) {
