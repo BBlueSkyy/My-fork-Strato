@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <kernel/types/KProcess.h>
+#include <kernel/svc.h>
 #include <common/trace.h>
 #include <common/utils.h>
 #include "sm/IUserInterface.h"
@@ -281,6 +282,14 @@ namespace skyline::service {
         if (session->IsOpen()) {
             ipc::IpcRequest request(session->isDomain, state);
             ipc::IpcResponse response(state);
+            const bool traceIpc{kernel::svc::IsSvcTraceActive(state.thread->id)};
+            const u32 traceCommand{request.isTipc ? static_cast<u32>(request.header->type)
+                                                  : (request.payload ? request.payload->value : 0)};
+
+            if (traceIpc)
+                LOGI("POST2460 IPC begin: thread={}, handle=0x{:X}, type=0x{:X}, command=0x{:X}, domain={}, tipc={}",
+                     state.thread->id, handle, static_cast<u32>(request.header->type), traceCommand,
+                     session->isDomain, request.isTipc);
 
             // Marks every fully-covered page of input/output buffers as IPC-locked for the request.
             // Unaligned edge fragments are not allowed to split the guest memory block map.
@@ -297,7 +306,13 @@ namespace skyline::service {
 
                             switch (request.domain->command) {
                                 case ipc::DomainCommand::SendMessage:
+                                    if (traceIpc)
+                                        LOGI("POST2460 IPC dispatch: thread={}, handle=0x{:X}, objectId=0x{:X}, service={}, command=0x{:X}",
+                                             state.thread->id, handle, request.domain->objectId, service->GetName(), traceCommand);
                                     response.errorCode = service->HandleRequest(*session, request, response);
+                                    if (traceIpc)
+                                        LOGI("POST2460 IPC return: thread={}, handle=0x{:X}, service={}, command=0x{:X}, result=0x{:X}",
+                                             state.thread->id, handle, service->GetName(), traceCommand, response.errorCode.raw);
                                     break;
 
                                 case ipc::DomainCommand::CloseVHandle:
@@ -311,7 +326,13 @@ namespace skyline::service {
                             throw exception("Invalid object ID was used with domain request");
                         }
                     } else {
+                        if (traceIpc)
+                            LOGI("POST2460 IPC dispatch: thread={}, handle=0x{:X}, service={}, command=0x{:X}",
+                                 state.thread->id, handle, session->serviceObject->GetName(), traceCommand);
                         response.errorCode = session->serviceObject->HandleRequest(*session, request, response);
+                        if (traceIpc)
+                            LOGI("POST2460 IPC return: thread={}, handle=0x{:X}, service={}, command=0x{:X}, result=0x{:X}",
+                                 state.thread->id, handle, session->serviceObject->GetName(), traceCommand, response.errorCode.raw);
                     }
                     response.WriteResponse(session->isDomain);
                     break;
@@ -349,7 +370,13 @@ namespace skyline::service {
                 default:
                     // TIPC command ID is encoded in the request type
                     if (request.isTipc) {
+                        if (traceIpc)
+                            LOGI("POST2460 IPC dispatch: thread={}, handle=0x{:X}, service={}, command=0x{:X}, tipc=true",
+                                 state.thread->id, handle, session->serviceObject->GetName(), traceCommand);
                         response.errorCode = session->serviceObject->HandleRequest(*session, request, response);
+                        if (traceIpc)
+                            LOGI("POST2460 IPC return: thread={}, handle=0x{:X}, service={}, command=0x{:X}, result=0x{:X}, tipc=true",
+                                 state.thread->id, handle, session->serviceObject->GetName(), traceCommand, response.errorCode.raw);
                         response.WriteResponse(session->isDomain, true);
                     } else {
                         throw exception("Unimplemented IPC message type: {}", static_cast<u16>(request.header->type));
