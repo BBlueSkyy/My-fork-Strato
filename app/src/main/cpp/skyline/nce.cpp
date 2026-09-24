@@ -69,10 +69,11 @@ namespace skyline::nce {
                          state.thread->id, postSvcPc - sizeof(u32), postSvcPc, originalSp,
                          ctx->gpr.x0, ctx->gpr.x1, ctx->gpr.x2, ctx->gpr.x3,
                          ctx->gpr.x4, ctx->gpr.x5, ctx->gpr.x6, ctx->gpr.x7);
-                    LOGI("POST2460 guest next instructions: pc=0x{:X}, insn={:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
-                         postSvcPc,
-                         nextInstructions[0], nextInstructions[1], nextInstructions[2], nextInstructions[3],
-                         nextInstructions[4], nextInstructions[5], nextInstructions[6], nextInstructions[7]);
+
+                    const size_t bytesToPageEnd{constant::PageSize - (postSvcPc & (constant::PageSize - 1))};
+                    const size_t instructionCount{std::min<size_t>(8, bytesToPageEnd / sizeof(u32))};
+                    for (size_t index{}; index < instructionCount; index++)
+                        LOGI("POST2460 guest insn: pc+0x{:X}=0x{:08X}", index * sizeof(u32), nextInstructions[index]);
                 }
 
                 kernel::svc::EndSvcTrace(state.thread->id, traceSequence, svcId, svc.name, svcContext);
