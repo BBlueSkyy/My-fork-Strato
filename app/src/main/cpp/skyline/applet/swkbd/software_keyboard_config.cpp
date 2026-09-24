@@ -24,6 +24,20 @@ namespace skyline::applet::swkbd {
             config.commonConfig.inputFormMode = InputFormMode::MultiLine;
     }
 
+    void NormalizeInlineConfig(KeyboardConfigVB &config, i32 textMaxLength, i32 textMinLength) {
+        constexpr u32 InlineMaxTextLength{500};
+        constexpr u32 MaxOneLineChars{32};
+
+        config.commonConfig.textMaxLength =
+            textMaxLength > 0 ? std::min(static_cast<u32>(textMaxLength), InlineMaxTextLength)
+                              : InlineMaxTextLength;
+        config.commonConfig.textMinLength =
+            textMinLength > 0 ? std::min(static_cast<u32>(textMinLength), config.commonConfig.textMaxLength)
+                              : 0;
+        config.commonConfig.inputFormMode =
+            config.commonConfig.textMaxLength > MaxOneLineChars ? InputFormMode::MultiLine : InputFormMode::OneLine;
+    }
+
     std::optional<std::u16string> ReadInitialText(span<const u8> storage, size_t byteOffset, size_t codeUnits) {
         return ReadUtf16Text(storage, byteOffset, codeUnits);
     }
