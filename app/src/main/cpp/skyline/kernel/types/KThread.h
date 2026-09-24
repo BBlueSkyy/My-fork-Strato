@@ -47,7 +47,7 @@ namespace skyline {
             KHandle handle;
             size_t id; //!< Index of thread in parent process's KThread vector
 
-            std::atomic<pid_t> diagnosticHostTid{};
+            std::atomic<i32> diagnosticHostTid{};
             std::atomic<u32> diagnosticLastSvc{};
             std::atomic<DiagnosticWaitKind> diagnosticWaitKind{DiagnosticWaitKind::None};
             std::atomic<u64> diagnosticTarget0{};
