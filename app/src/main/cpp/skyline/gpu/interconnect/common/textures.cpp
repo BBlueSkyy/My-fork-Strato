@@ -348,15 +348,6 @@ namespace skyline::gpu::interconnect {
             auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
             guest.mappings.assign(mappings.begin(), mappings.end());
             if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
-                if (kernel::svc::IsSvcTraceWindowActive()) {
-                    const auto validMappings{std::count_if(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); })};
-                    const auto firstMappingSize{guest.mappings.empty() ? size_t{} : guest.mappings.front().size()};
-                    LOGW("POST2460 unmapped texture: index={}, iova=0x{:X}, width={}, height={}, depth={}, guestSize=0x{:X}, mappings={}, validMappings={}, firstMappingSize=0x{:X}, headerType={}, textureType={}, format=0x{:X}",
-                         index, textureHeader.Iova(), textureHeader.widthMinusOne + 1, textureHeader.heightMinusOne + 1,
-                         depth, guest.GetSize(), guest.mappings.size(), validMappings, firstMappingSize,
-                         static_cast<u32>(textureHeader.headerType), static_cast<u32>(textureHeader.textureType),
-                         static_cast<u32>(textureHeader.formatWord.format));
-                }
                 LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
