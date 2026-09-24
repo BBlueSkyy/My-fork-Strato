@@ -81,6 +81,11 @@ namespace skyline {
             void Kill(bool join, bool all = false, bool disableCreation = false);
 
             /**
+             * @brief Emits a one-shot diagnostic snapshot of all guest threads and their host wait channels
+             */
+            void DumpThreadDiagnosticSnapshot();
+
+            /**
              * @brief This initializes the process heap and TLS Error Context slot pointer, it should be called prior to creating the first thread
              * @note This requires VMM regions to be initialized, it will map heap at an arbitrary location otherwise
              */
