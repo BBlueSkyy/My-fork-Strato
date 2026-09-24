@@ -20,6 +20,8 @@ namespace skyline::kernel::svc {
         std::atomic_size_t svcTraceThreadId{NoSvcTrace};
         std::atomic_uint svcTraceRemaining{};
         std::atomic_uint svcTraceSequence{};
+        std::atomic_uintptr_t svcTraceConditionVariable{};
+        std::atomic_uintptr_t svcTraceMutex{};
 
         bool ConsumeWaitSynchronizationTrace(size_t threadId) {
             auto expected{threadId};
@@ -49,6 +51,8 @@ namespace skyline::kernel::svc {
 
     void TraceNextSvcs(size_t threadId, u32 count) {
         svcTraceSequence.store(0, std::memory_order_relaxed);
+        svcTraceConditionVariable.store(0, std::memory_order_relaxed);
+        svcTraceMutex.store(0, std::memory_order_relaxed);
         svcTraceRemaining.store(count, std::memory_order_release);
         svcTraceThreadId.store(count ? threadId : NoSvcTrace, std::memory_order_release);
         LOGI("POST2460 trace armed: thread={}, count={}", threadId, count);
@@ -980,7 +984,21 @@ namespace skyline::kernel::svc {
         i64 timeout{static_cast<i64>(ctx.x3)};
         LOGD("Waiting on {} with {} for {}ns", fmt::ptr(conditional), fmt::ptr(mutex), timeout);
 
+        const bool traceCv{IsSvcTraceActive(state.thread->id)};
+        if (traceCv) {
+            svcTraceConditionVariable.store(reinterpret_cast<uintptr_t>(conditional), std::memory_order_release);
+            svcTraceMutex.store(reinterpret_cast<uintptr_t>(mutex), std::memory_order_release);
+            LOGI("POST2460 CV wait enter: thread={}, mutex={}, mutexValue=0x{:X}, key={}, keyValue=0x{:X}, tag=0x{:X}, timeout={}ns",
+                 state.thread->id, fmt::ptr(mutex), __atomic_load_n(mutex, __ATOMIC_SEQ_CST),
+                 fmt::ptr(conditional), __atomic_load_n(conditional, __ATOMIC_SEQ_CST), requesterHandle, timeout);
+        }
+
         auto result{state.process->ConditionVariableWait(conditional, mutex, requesterHandle, timeout)};
+        if (traceCv)
+            LOGI("POST2460 CV wait return: thread={}, mutex={}, mutexValue=0x{:X}, key={}, keyValue=0x{:X}, result=0x{:X}",
+                 state.thread->id, fmt::ptr(mutex), __atomic_load_n(mutex, __ATOMIC_SEQ_CST),
+                 fmt::ptr(conditional), __atomic_load_n(conditional, __ATOMIC_SEQ_CST), result.raw);
+
         if (result == Result{})
             LOGD("Waited for {} and reacquired {}", fmt::ptr(conditional), fmt::ptr(mutex));
         else if (result == result::TimedOut)
@@ -992,8 +1010,18 @@ namespace skyline::kernel::svc {
         auto conditional{reinterpret_cast<u32 *>(ctx.x0)};
         i32 count{static_cast<i32>(ctx.w1)};
 
+        const auto tracedConditional{svcTraceConditionVariable.load(std::memory_order_acquire)};
+        if (tracedConditional && tracedConditional == reinterpret_cast<uintptr_t>(conditional))
+            LOGI("POST2460 CV signal enter: signalThread={}, key={}, keyValue=0x{:X}, count={}",
+                 state.thread->id, fmt::ptr(conditional), __atomic_load_n(conditional, __ATOMIC_SEQ_CST), count);
+
         LOGD("Signalling {} for {} waiters", fmt::ptr(conditional), count);
         state.process->ConditionVariableSignal(conditional, count);
+
+        if (tracedConditional && tracedConditional == reinterpret_cast<uintptr_t>(conditional))
+            LOGI("POST2460 CV signal return: signalThread={}, key={}, keyValue=0x{:X}, count={}",
+                 state.thread->id, fmt::ptr(conditional), __atomic_load_n(conditional, __ATOMIC_SEQ_CST), count);
+
         ctx.w0 = Result{};
     }
 
