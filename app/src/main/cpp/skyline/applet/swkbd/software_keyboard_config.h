@@ -190,5 +190,7 @@ namespace skyline::applet::swkbd {
 
     void NormalizeNormalConfig(KeyboardConfigVB &config);
 
+    void NormalizeInlineConfig(KeyboardConfigVB &config, i32 textMaxLength, i32 textMinLength);
+
     std::optional<std::u16string> ReadInitialText(span<const u8> storage, size_t byteOffset, size_t codeUnits);
 }
