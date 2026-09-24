@@ -156,7 +156,7 @@ namespace skyline::service::am {
         response.Push<u64>(indirectLayerHandle);
         LOGI("GetIndirectLayerConsumerHandle: success, handle=0x{:X}, pid=0x{:X}, ARUID=0x{:X}",
              indirectLayerHandle, request.pid, requestedAppletResourceUserId);
-        if (appletId == skyline::applet::AppletId::SoftwareKeyboard &&
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd &&
             appletMode == applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay) {
             LOGI("PRECALC IPC seed: thread={}, service=am::ILibraryAppletAccessor, command=0xA0, result=0x0",
                  state.thread->id);
