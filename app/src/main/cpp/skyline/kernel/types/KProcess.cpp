@@ -6,6 +6,8 @@
 #include <jvm.h>
 #include <common/trace.h>
 #include <kernel/results.h>
+#include <services/base_service.h>
+#include <fstream>
 #include "KProcess.h"
 
 namespace skyline::kernel::type {
@@ -30,6 +32,84 @@ namespace skyline::kernel::type {
         // Must happen after all threads have been killed/joined so no host thread can fault into
         // this process' trap map while (or after) it's being torn down
         trap.UninstallStaticInstance();
+    }
+
+    void KProcess::DumpThreadDiagnosticSnapshot() {
+        std::vector<std::shared_ptr<KThread>> snapshotThreads;
+        {
+            std::scoped_lock guard{threadMutex};
+            snapshotThreads = threads;
+        }
+
+        LOGI("THREAD-SNAPSHOT begin count={}", snapshotThreads.size());
+
+        for (const auto &thread : snapshotThreads) {
+            if (!thread)
+                continue;
+
+            const auto waitKind{thread->diagnosticWaitKind.load(std::memory_order_relaxed)};
+            const u64 target0{thread->diagnosticTarget0.load(std::memory_order_relaxed)};
+            const u64 target1{thread->diagnosticTarget1.load(std::memory_order_relaxed)};
+            const u64 target2{thread->diagnosticTarget2.load(std::memory_order_relaxed)};
+            const u32 lastSvc{thread->diagnosticLastSvc.load(std::memory_order_relaxed)};
+            const u32 ipcCommand{thread->diagnosticIpcCommand.load(std::memory_order_relaxed)};
+            const pid_t hostTid{thread->diagnosticHostTid.load(std::memory_order_relaxed)};
+
+            const char *waitName{[&]() {
+                switch (waitKind) {
+                    case KThread::DiagnosticWaitKind::None: return "none";
+                    case KThread::DiagnosticWaitKind::SyncObject: return "sync-object";
+                    case KThread::DiagnosticWaitKind::ProcessWideKey: return "process-wide-key";
+                    case KThread::DiagnosticWaitKind::AddressArbiter: return "address-arbiter";
+                    case KThread::DiagnosticWaitKind::Ipc: return "ipc";
+                }
+                return "unknown";
+            }()};
+
+            std::string wchan{"unavailable"};
+            if (hostTid > 0) {
+                std::ifstream wchanFile{fmt::format("/proc/self/task/{}/wchan", hostTid)};
+                if (wchanFile)
+                    std::getline(wchanFile, wchan);
+            }
+
+            bool statusKnown{};
+            bool running{};
+            bool ready{};
+            bool killed{};
+            {
+                std::unique_lock statusLock{thread->statusMutex, std::try_to_lock};
+                if (statusLock.owns_lock()) {
+                    statusKnown = true;
+                    running = thread->running;
+                    ready = thread->ready;
+                    killed = thread->killed;
+                }
+            }
+
+            std::string serviceName{"-"};
+            u32 objectType{std::numeric_limits<u32>::max()};
+            if (target0) {
+                try {
+                    auto object{GetHandle(static_cast<KHandle>(target0))};
+                    objectType = static_cast<u32>(object->objectType);
+                    if (waitKind == KThread::DiagnosticWaitKind::Ipc &&
+                        object->objectType == KType::KSession) {
+                        auto session{std::static_pointer_cast<KSession>(object)};
+                        if (session->serviceObject)
+                            serviceName = session->serviceObject->GetName();
+                    }
+                } catch (const std::exception &) {
+                }
+            }
+
+            LOGI("THREAD-SNAPSHOT tid={} hostTid={} prio={} wait={} lastSvc=0x{:X} target0=0x{:X} target1=0x{:X} target2=0x{:X} ipcCmd=0x{:X} service={} objectType={} wchan={} statusKnown={} running={} ready={} killed={}",
+                 thread->id, hostTid, +thread->priority.load(std::memory_order_relaxed),
+                 waitName, lastSvc, target0, target1, target2, ipcCommand,
+                 serviceName, objectType, wchan, statusKnown, running, ready, killed);
+        }
+
+        LOGI("THREAD-SNAPSHOT end");
     }
 
     void KProcess::Kill(bool join, bool all, bool disableCreation) {
