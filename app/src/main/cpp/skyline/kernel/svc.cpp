@@ -25,7 +25,7 @@ namespace skyline::kernel::svc {
         std::atomic_uintptr_t svcTraceMutex{};
 
         bool ShouldLogSvcTrace(u32 sequence, u16 svcId) {
-            return sequence <= 32 || (sequence % 128) == 0 || svcId == 0x21;
+            return sequence <= 32 || (sequence % 128) == 0 || svcId == 0x18 || svcId == 0x21;
         }
 
         bool ConsumeWaitSynchronizationTrace(size_t threadId) {
@@ -798,7 +798,8 @@ namespace skyline::kernel::svc {
 
     void WaitSynchronization(const DeviceState &state, SvcContext &ctx) {
         constexpr u8 MaxSyncHandles{0x40}; // The total amount of handles that can be passed to WaitSynchronization
-        const bool traceWait{ConsumeWaitSynchronizationTrace(state.thread->id)};
+        const bool traceWait{ConsumeWaitSynchronizationTrace(state.thread->id) ||
+                             IsSvcTraceActive(state.thread->id)};
 
         u32 numHandles{ctx.w2};
         if (numHandles > MaxSyncHandles) {
