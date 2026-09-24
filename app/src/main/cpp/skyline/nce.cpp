@@ -30,7 +30,9 @@ namespace skyline::nce {
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
+                const u32 traceSequence{kernel::svc::BeginSvcTrace(state.thread->id, svcId, svc.name, svcContext)};
                 (svc.function)(state, svcContext);
+                kernel::svc::EndSvcTrace(state.thread->id, traceSequence, svcId, svc.name, svcContext);
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
             }
