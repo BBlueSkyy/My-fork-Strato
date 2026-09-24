@@ -15,7 +15,11 @@
 namespace skyline::kernel::svc {
     namespace {
         constexpr size_t NoWaitSynchronizationTrace{std::numeric_limits<size_t>::max()};
+        constexpr size_t NoSvcTrace{std::numeric_limits<size_t>::max()};
         std::atomic_size_t waitSynchronizationTraceThreadId{NoWaitSynchronizationTrace};
+        std::atomic_size_t svcTraceThreadId{NoSvcTrace};
+        std::atomic_uint svcTraceRemaining{};
+        std::atomic_uint svcTraceSequence{};
 
         bool ConsumeWaitSynchronizationTrace(size_t threadId) {
             auto expected{threadId};
@@ -41,6 +45,44 @@ namespace skyline::kernel::svc {
 
     void TraceNextWaitSynchronization(size_t threadId) {
         waitSynchronizationTraceThreadId.store(threadId, std::memory_order_release);
+    }
+
+    void TraceNextSvcs(size_t threadId, u32 count) {
+        svcTraceSequence.store(0, std::memory_order_relaxed);
+        svcTraceRemaining.store(count, std::memory_order_release);
+        svcTraceThreadId.store(count ? threadId : NoSvcTrace, std::memory_order_release);
+        LOGI("POST2460 trace armed: thread={}, count={}", threadId, count);
+    }
+
+    bool IsSvcTraceActive(size_t threadId) {
+        return svcTraceThreadId.load(std::memory_order_acquire) == threadId &&
+               svcTraceRemaining.load(std::memory_order_acquire) != 0;
+    }
+
+    u32 BeginSvcTrace(size_t threadId, u16 svcId, const char *svcName, const SvcContext &ctx) {
+        if (!IsSvcTraceActive(threadId))
+            return 0;
+
+        const u32 sequence{svcTraceSequence.fetch_add(1, std::memory_order_relaxed) + 1};
+        LOGI("POST2460 SVC begin: seq={}, thread={}, id=0x{:X}, name={}, x0=0x{:X}, x1=0x{:X}, x2=0x{:X}, x3=0x{:X}",
+             sequence, threadId, svcId, svcName ? svcName : "<unimplemented>", ctx.x0, ctx.x1, ctx.x2, ctx.x3);
+        return sequence;
+    }
+
+    void EndSvcTrace(size_t threadId, u32 sequence, u16 svcId, const char *svcName, const SvcContext &ctx) {
+        if (!sequence)
+            return;
+
+        LOGI("POST2460 SVC end: seq={}, thread={}, id=0x{:X}, name={}, x0=0x{:X}, x1=0x{:X}, x2=0x{:X}, x3=0x{:X}",
+             sequence, threadId, svcId, svcName ? svcName : "<unimplemented>", ctx.x0, ctx.x1, ctx.x2, ctx.x3);
+
+        const u32 previous{svcTraceRemaining.fetch_sub(1, std::memory_order_acq_rel)};
+        if (previous <= 1) {
+            svcTraceRemaining.store(0, std::memory_order_release);
+            auto expected{threadId};
+            svcTraceThreadId.compare_exchange_strong(expected, NoSvcTrace, std::memory_order_acq_rel);
+            LOGI("POST2460 trace complete: thread={}, captured={}", threadId, sequence);
+        }
     }
 
     void SetHeapSize(const DeviceState &state, SvcContext &ctx) {
