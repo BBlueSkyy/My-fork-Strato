@@ -188,7 +188,7 @@ namespace skyline::service::visrv {
         response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
         LOGI("GetIndirectLayerImageRequiredMemoryInfo: return Success, size=0x{:X}, alignment=0x{:X}",
              layout.requiredSize, IndirectLayerAlignment);
-        kernel::svc::TraceNextWaitSynchronization(state.thread->id);
+        kernel::svc::TraceNextSvcs(state.thread->id, 8);
 
         return {};
     }
