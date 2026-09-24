@@ -58,7 +58,7 @@ namespace skyline::kernel::type {
             const u64 target2{thread->diagnosticTarget2.load(std::memory_order_relaxed)};
             const u32 lastSvc{thread->diagnosticLastSvc.load(std::memory_order_relaxed)};
             const u32 ipcCommand{thread->diagnosticIpcCommand.load(std::memory_order_relaxed)};
-            const pid_t hostTid{thread->diagnosticHostTid.load(std::memory_order_relaxed)};
+            const i32 hostTid{thread->diagnosticHostTid.load(std::memory_order_relaxed)};
 
             const char *waitName{[&]() {
                 switch (waitKind) {
