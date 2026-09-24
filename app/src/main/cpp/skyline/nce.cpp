@@ -32,6 +32,27 @@ namespace skyline::nce {
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
                 const u32 traceSequence{kernel::svc::BeginSvcTrace(state.thread->id, svcId, svc.name, svcContext)};
 
+                const bool tracePost2460Memory{
+                    kernel::svc::IsSvcTraceWindowActive() &&
+                    (svcId == 0x01 || // SetHeapSize
+                     svcId == 0x02 || // SetMemoryPermission
+                     svcId == 0x03 || // SetMemoryAttribute
+                     svcId == 0x04 || // MapMemory
+                     svcId == 0x05 || // UnmapMemory
+                     svcId == 0x06 || // QueryMemory
+                     svcId == 0x13 || // MapSharedMemory
+                     svcId == 0x14 || // UnmapSharedMemory
+                     svcId == 0x15 || // CreateTransferMemory
+                     svcId == 0x29 || // GetInfo
+                     svcId == 0x2C || // MapPhysicalMemory
+                     svcId == 0x2D)}; // UnmapPhysicalMemory
+
+                if (tracePost2460Memory)
+                    LOGI("POST2460 MEM begin: thread={}, id=0x{:X}, name={}, x0=0x{:X}, x1=0x{:X}, x2=0x{:X}, x3=0x{:X}, x4=0x{:X}, x5=0x{:X}",
+                         state.thread->id, svcId, svc.name ? svc.name : "<unimplemented>",
+                         svcContext.x0, svcContext.x1, svcContext.x2, svcContext.x3,
+                         svcContext.x4, svcContext.x5);
+
                 if (traceSequence) {
                     static thread_local u64 lastWaitKey{};
                     static thread_local u32 sameWaitKeyCount{};
@@ -60,6 +81,13 @@ namespace skyline::nce {
                 }
 
                 (svc.function)(state, svcContext);
+
+                if (tracePost2460Memory)
+                    LOGI("POST2460 MEM end: thread={}, id=0x{:X}, name={}, result=0x{:X}, x1=0x{:X}, x2=0x{:X}, x3=0x{:X}, x4=0x{:X}, x5=0x{:X}",
+                         state.thread->id, svcId, svc.name ? svc.name : "<unimplemented>",
+                         svcContext.x0, svcContext.x1, svcContext.x2, svcContext.x3,
+                         svcContext.x4, svcContext.x5);
+
                 kernel::svc::EndSvcTrace(state.thread->id, traceSequence, svcId, svc.name, svcContext);
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
