@@ -26,6 +26,15 @@ namespace skyline::service::am {
         popNormalOutDataEventHandle = state.process->InsertItem(popNormalOutDataEvent);
         popInteractiveOutDataEventHandle = state.process->InsertItem(popInteractiveOutDataEvent);
         LOGD("Applet accessor for {} ID created with appletMode 0x{:X}", ToString(appletId), appletMode);
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd &&
+            appletMode == applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay) {
+            LOGI("SWKBD accessor events: stateChanged handle=0x{:X} object={}, "
+                 "normalOut handle=0x{:X} object={}, "
+                 "interactiveOut handle=0x{:X} object={}",
+                 stateChangeEventHandle, fmt::ptr(stateChangeEvent.get()),
+                 popNormalOutDataEventHandle, fmt::ptr(popNormalOutDataEvent.get()),
+                 popInteractiveOutDataEventHandle, fmt::ptr(popInteractiveOutDataEvent.get()));
+        }
     }
 
     ILibraryAppletAccessor::~ILibraryAppletAccessor() {
@@ -154,6 +163,8 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::GetPopOutDataEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         response.copyHandles.push_back(popNormalOutDataEventHandle);
+        LOGI("GetPopOutDataEvent: handle=0x{:X}, object={}", popNormalOutDataEventHandle,
+             fmt::ptr(popNormalOutDataEvent.get()));
         return {};
     }
 
