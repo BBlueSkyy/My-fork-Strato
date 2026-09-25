@@ -7,6 +7,8 @@ package org.stratoemu.strato.applet.swkbd
 
 import android.annotation.SuppressLint
 import android.content.DialogInterface
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.text.InputType
 import android.view.KeyEvent
@@ -101,6 +103,20 @@ class SoftwareKeyboardDialog : DialogFragment() {
         if (guideText.isNotBlank())
             binding.inputLayout.hint = guideText
 
+        if (inline) {
+            // Inline SWKBD renders its text through the game/indirect layer. Keep the
+            // EditText alive only as an Android InputConnection host so the IME can
+            // remain fully functional without drawing a second frontend over the game.
+            binding.inputDialog.setBackgroundColor(Color.TRANSPARENT)
+            binding.header.visibility = View.GONE
+            binding.sub.visibility = View.GONE
+            binding.inputLayout.hint = null
+            binding.inputLayout.alpha = 0f
+            binding.lengthStatus.visibility = View.GONE
+            binding.cancelButton.visibility = View.GONE
+            binding.okButton.visibility = View.GONE
+        }
+
         binding.textInput.filters = arrayOf(SoftwareKeyboardFilter(config))
         suppressTextEvent = true
         val text = pendingText ?: savedInstanceState?.getString(argumentInitialText) ?: initialText
@@ -137,6 +153,13 @@ class SoftwareKeyboardDialog : DialogFragment() {
     override fun onStart() {
         super.onStart()
         if (::binding.isInitialized) {
+            if (inline) {
+                dialog?.window?.apply {
+                    clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                    setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                    setDimAmount(0f)
+                }
+            }
             binding.textInput.requestFocus()
             dialog?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
         }
