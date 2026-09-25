@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <kernel/svc.h>
 #include <kernel/types/KProcess.h>
 #include <applet/applet_creator.h>
 #include <cstring>
@@ -139,6 +140,8 @@ namespace skyline::service::am {
                  popNormalOutDataEventHandle, normalOutSignalled,
                  popInteractiveOutDataEventHandle, interactiveOutSignalled,
                  request.pid, appletResourceUserId, indirectLayerHandle);
+            kernel::svc::TraceNextWaitSynchronization(state.thread->id);
+            LOGI("PRECALC ACCESSOR: armed next WaitSynchronization for thread={}", state.thread->id);
         }
         return {};
     }
