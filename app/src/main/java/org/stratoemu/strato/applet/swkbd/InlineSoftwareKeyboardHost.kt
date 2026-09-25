@@ -5,18 +5,16 @@
 
 package org.stratoemu.strato.applet.swkbd
 
-import android.app.Dialog
 import android.content.Context
 import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
 import android.view.KeyEvent
-import android.view.Window
 import android.view.WindowInsets
 import android.view.WindowManager
-import android.view.ViewTreeObserver
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -39,8 +37,8 @@ class InlineSoftwareKeyboardHost(
     initialText : String
 ) {
     private val textInput = EditText(activity)
-    private val container = FrameLayout(activity)
-    private val dialog = Dialog(activity)
+    private val contentRoot = activity.findViewById<ViewGroup>(android.R.id.content)
+    private val originalSoftInputMode = activity.window.attributes.softInputMode
 
     private var config = initialConfig
     private var multiline = false
@@ -48,30 +46,16 @@ class InlineSoftwareKeyboardHost(
     private var suppressTextEvent = false
     private var visible = false
     private var closed = false
-    private var imeWindowFocusListener : ViewTreeObserver.OnWindowFocusChangeListener? = null
 
     init {
         applyConfig(initialConfig)
 
-        // Give the IME its own focused Android window without drawing an emulator text-entry UI.
-        // A plain transparent Dialog is intentionally used instead of a Material dialog: the only
-        // child is the 1x1 editor that provides InputConnection to the Android IME.
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
-        container.setBackgroundColor(Color.TRANSPARENT)
-        container.addView(textInput, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START))
-        dialog.setContentView(container)
-        dialog.setCancelable(false)
-        dialog.setCanceledOnTouchOutside(false)
-        dialog.window?.apply {
-            clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            setDimAmount(0f)
-            setGravity(Gravity.TOP or Gravity.START)
-            setSoftInputMode(
-                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
-                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
-            )
-        }
+        // Inline SWKBD must use the activity's real window. A transparent Dialog can own focus
+        // without becoming a reliable IME target on some Android devices, leaving the guest SWKBD
+        // fully active while no keyboard is shown. Keep a real 1x1 editor attached directly to
+        // android.R.id.content instead: it provides InputConnection without drawing a second UI.
+        contentRoot.addView(textInput, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START))
+        textInput.visibility = View.GONE
 
         // Keep the editor genuinely visible/focusable to Android while making its single pixel
         // impossible to notice over the game.
@@ -143,23 +127,11 @@ class InlineSoftwareKeyboardHost(
 
         waitingForTextCheck = false
         textInput.isEnabled = true
-
-        // Dialog.hide() keeps the window alive and isShowing can remain true, so keep a separate
-        // visibility bit. The window itself must stay large enough to be a normal focused IME
-        // target; only the transparent editor is 1x1.
-        if (!visible || !dialog.isShowing)
-            dialog.show()
         visible = true
+        textInput.visibility = View.VISIBLE
 
-        dialog.window?.apply {
-            clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            setDimAmount(0f)
-            setGravity(Gravity.CENTER)
-            setLayout(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.MATCH_PARENT
-            )
+        activity.window.apply {
+            clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
             setSoftInputMode(
                 WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
                     WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
@@ -173,32 +145,19 @@ class InlineSoftwareKeyboardHost(
         if (closed || !visible)
             return
 
-        removeImeWindowFocusListener()
         val inputMethod = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         inputMethod.hideSoftInputFromWindow(textInput.windowToken, 0)
         textInput.clearFocus()
-        dialog.hide()
+        textInput.visibility = View.GONE
         visible = false
     }
 
-    private fun removeImeWindowFocusListener() {
-        val decorView = dialog.window?.decorView ?: return
-        imeWindowFocusListener?.let { listener ->
-            if (decorView.viewTreeObserver.isAlive)
-                decorView.viewTreeObserver.removeOnWindowFocusChangeListener(listener)
-        }
-        imeWindowFocusListener = null
-    }
-
     private fun showIme() {
-        if (closed || !visible || !dialog.isShowing)
+        if (closed || !visible)
             return
 
-        val window = dialog.window ?: return
-        val decorView = window.decorView
-
         fun requestIme() {
-            if (closed || !visible || !dialog.isShowing)
+            if (closed || !visible || !textInput.isAttachedToWindow)
                 return
 
             textInput.isEnabled = true
@@ -206,40 +165,23 @@ class InlineSoftwareKeyboardHost(
             textInput.isFocusableInTouchMode = true
             if (!textInput.hasFocus())
                 textInput.requestFocus()
-            if (!textInput.hasFocus() || !decorView.hasWindowFocus())
+            if (!textInput.hasFocus() || !activity.window.decorView.hasWindowFocus())
                 return
 
             val inputMethod = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             inputMethod.restartInput(textInput)
             inputMethod.showSoftInput(textInput, InputMethodManager.SHOW_IMPLICIT)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-                window.insetsController?.show(WindowInsets.Type.ime())
+                activity.window.insetsController?.show(WindowInsets.Type.ime())
         }
 
-        removeImeWindowFocusListener()
-
-        if (!decorView.hasWindowFocus()) {
-            val listener = object : ViewTreeObserver.OnWindowFocusChangeListener {
-                override fun onWindowFocusChanged(hasFocus : Boolean) {
-                    if (!hasFocus)
-                        return
-                    removeImeWindowFocusListener()
-                    decorView.post {
-                        requestIme()
-                        decorView.postDelayed({ requestIme() }, 100)
-                    }
-                }
-            }
-            imeWindowFocusListener = listener
-            decorView.viewTreeObserver.addOnWindowFocusChangeListener(listener)
-        }
-
-        // Also cover the common case where the dialog already owns focus. A second bounded request
-        // handles devices where InputMethodManager attaches one frame after window focus.
-        decorView.post {
+        // The editor is already attached to the activity window. Retry a few bounded times because
+        // some IMEs attach one or two frames after focus changes.
+        textInput.post {
             requestIme()
-            decorView.postDelayed({ requestIme() }, 100)
-            decorView.postDelayed({ requestIme() }, 250)
+            textInput.postDelayed({ requestIme() }, 50)
+            textInput.postDelayed({ requestIme() }, 150)
+            textInput.postDelayed({ requestIme() }, 300)
         }
     }
 
@@ -307,13 +249,12 @@ class InlineSoftwareKeyboardHost(
         if (closed)
             return
 
-        removeImeWindowFocusListener()
-        if (dialog.isShowing) {
-            val inputMethod = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-            inputMethod.hideSoftInputFromWindow(textInput.windowToken, 0)
-            textInput.clearFocus()
-            dialog.dismiss()
-        }
+        val inputMethod = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        inputMethod.hideSoftInputFromWindow(textInput.windowToken, 0)
+        textInput.clearFocus()
+        textInput.visibility = View.GONE
+        (textInput.parent as? ViewGroup)?.removeView(textInput)
+        activity.window.setSoftInputMode(originalSoftInputMode)
         visible = false
         closed = true
     }
