@@ -73,4 +73,27 @@ namespace skyline::loader {
         programContentResolved = true;
         LOGI("Resolved current-process RomFS: {}", identity);
     }
+    void Loader::ResolveStandaloneProgramContent() {
+        if (programContentResolved)
+            return;
+        if (!programNca)
+            throw exception("Standalone Program content requires a Program NCA");
+        if (programPatchNca)
+            throw exception("Standalone Program content does not accept an unresolved patch NCA");
+
+        auto exeFs{programNca->exeFs};
+        auto data{programNca->romFs};
+        if (!exeFs || !exeFs->FileExists("main") || !exeFs->FileExists("main.npdm"))
+            throw exception("Standalone Program ExeFS lacks main or main.npdm");
+
+        processExeFs = std::move(exeFs);
+        currentProcessRomFs = data;
+        patchDataRomFs = nullptr;
+        romFs = std::move(data);
+        currentProcessRomFsIdentity = DescribeRomFs(currentProcessRomFs);
+        programUpdateApplied = false;
+        programContentResolved = true;
+        LOGI("Resolved standalone Program 0x{:016X}: {}", programNca->header.titleId, currentProcessRomFsIdentity);
+    }
+
 }

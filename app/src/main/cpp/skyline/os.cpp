@@ -6,6 +6,8 @@
 #include "nce/guest.h"
 #include "kernel/types/KProcess.h"
 #include "vfs/os_backing.h"
+#include "vfs/os_filesystem.h"
+#include "vfs/nca.h"
 #include "loader/nro.h"
 #include "loader/nso.h"
 #include "loader/nca.h"
@@ -107,4 +109,41 @@ namespace skyline::kernel {
                 throw exception("Unsupported ROM extension.");
         }
     }
+    std::shared_ptr<loader::Loader> OS::GetSystemProgramLoader(u64 programId) {
+        if (!keyStore)
+            throw exception("Cannot resolve a system Program before keys are initialized");
+
+        const std::filesystem::path registeredPath{
+            publicAppFilesPath + "/switch/nand/system/Contents/registered/"};
+        std::error_code error;
+        if (!std::filesystem::is_directory(registeredPath, error) || error)
+            return nullptr;
+
+        auto systemArchives{std::make_shared<vfs::OsFileSystem>(registeredPath.string())};
+        auto directory{systemArchives->OpenDirectory("", {false, true})};
+        if (!directory)
+            return nullptr;
+
+        std::vector<std::string> matches;
+        for (const auto &entry : directory->Read()) {
+            if (entry.type != vfs::Directory::EntryType::File || !entry.name.ends_with(".nca"))
+                continue;
+
+            auto backing{systemArchives->OpenFile(entry.name)};
+            vfs::NCA metadata{backing, keyStore, false, vfs::NCAParseMode::MetadataOnly};
+            if (metadata.contentType == vfs::NCAContentType::Program && metadata.header.titleId == programId)
+                matches.push_back(entry.name);
+        }
+
+        if (matches.empty())
+            return nullptr;
+        if (matches.size() != 1)
+            throw exception("Installed firmware has {} Program NCAs for system title 0x{:016X}", matches.size(), programId);
+
+        auto loader{std::make_shared<loader::NcaLoader>(systemArchives->OpenFile(matches.front()), keyStore)};
+        loader->ResolveStandaloneProgramContent();
+        LOGI("Resolved system Program 0x{:016X} from '{}'", programId, matches.front());
+        return loader;
+    }
+
 }

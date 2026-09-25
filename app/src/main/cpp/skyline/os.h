@@ -48,5 +48,11 @@ namespace skyline::kernel {
         void Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType);
 
         std::shared_ptr<loader::Loader> GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType);
+
+        /**
+         * @brief Finds a Program NCA for a system title in the installed firmware and returns a standalone loader.
+         * @return nullptr when the title is not installed; throws if the installed firmware is ambiguous.
+         */
+        std::shared_ptr<loader::Loader> GetSystemProgramLoader(u64 programId);
     };
 }

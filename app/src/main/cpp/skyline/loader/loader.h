@@ -120,6 +120,12 @@ namespace skyline::loader {
         /** @brief Resolve base/update and mods once, before NPDM or any NSO is loaded. */
         void ResolveProgramContent(const DeviceState &state);
 
+        /**
+         * @brief Resolve a standalone Program NCA without inheriting the application's selected update.
+         * @note Used for firmware system titles launched as independent guest processes.
+         */
+        void ResolveStandaloneProgramContent();
+
         virtual ~Loader() = default;
 
         virtual std::vector<u8> GetIcon(language::ApplicationLanguage language) {
