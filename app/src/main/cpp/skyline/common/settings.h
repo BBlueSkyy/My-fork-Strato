@@ -67,6 +67,7 @@ namespace skyline {
         Setting<language::SystemLanguage> systemLanguage; //!< The system language
         Setting<region::RegionCode> systemRegion; //!< The system region
         Setting<bool> isInternetEnabled; //!< If emulator uses internet
+        Setting<u32> softwareKeyboardMode; //!< Software keyboard implementation: 0 = HLE, 1 = installed firmware applet
 
         // Display
         Setting<bool> forceTripleBuffering; //!< If the presentation engine should always triple buffer even if the swapchain supports double buffering

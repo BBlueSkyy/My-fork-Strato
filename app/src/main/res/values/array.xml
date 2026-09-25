@@ -62,6 +62,14 @@
         <item>7</item>  <!-- Korean -->
         <item>11</item> <!-- Taiwanese -->
     </integer-array>
+    <string-array name="software_keyboard_modes">
+        <item>HLE</item>
+        <item>Native (Firmware)</item>
+    </string-array>
+    <integer-array name="software_keyboard_mode_values">
+        <item>0</item>
+        <item>1</item>
+    </integer-array>
     <string-array name="system_region">
         <item>Auto</item>
         <item>Japan</item>

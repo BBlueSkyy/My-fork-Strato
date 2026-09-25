@@ -123,6 +123,8 @@
     <string name="system_language">System Language</string>
     <string name="system_region">System Region</string>
     <string name="internet">The system will be able to use internet</string>
+    <string name="software_keyboard_mode">Software Keyboard</string>
+    <string name="software_keyboard_mode_desc">Choose the HLE frontend or the software keyboard applet from installed firmware</string>
     <!-- Settings - Display -->
     <string name="display">Display</string>
     <string name="perf_stats">Show Performance Statistics</string>

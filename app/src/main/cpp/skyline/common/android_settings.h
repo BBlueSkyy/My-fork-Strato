@@ -37,6 +37,7 @@ namespace skyline {
             systemLanguage = ktSettings.GetInt<skyline::language::SystemLanguage>("systemLanguage");
             systemRegion = ktSettings.GetInt<skyline::region::RegionCode>("systemRegion");
             isInternetEnabled = ktSettings.GetBool("isInternetEnabled");
+            softwareKeyboardMode = ktSettings.GetInt<u32>("softwareKeyboardMode");
             forceTripleBuffering = ktSettings.GetBool("forceTripleBuffering");
             disableFrameThrottling = ktSettings.GetBool("disableFrameThrottling");
             gpuDriver = ktSettings.GetString("gpuDriver");

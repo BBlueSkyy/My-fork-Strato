@@ -37,6 +37,14 @@
             android:summary="@string/internet"
             app:key="is_internet_enabled"
             app:title="Enable Internet" />
+        <org.stratoemu.strato.preference.IntegerListPreference
+            android:defaultValue="0"
+            android:entries="@array/software_keyboard_modes"
+            android:entryValues="@array/software_keyboard_mode_values"
+            android:summary="@string/software_keyboard_mode_desc"
+            app:key="software_keyboard_mode"
+            app:title="@string/software_keyboard_mode"
+            app:useSimpleSummaryProvider="true" />
     </PreferenceCategory>
     <PreferenceCategory
         android:key="category_presentation"
