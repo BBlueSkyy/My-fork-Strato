@@ -46,7 +46,7 @@ namespace skyline::nce {
 
                 if (state.thread->id) {
                     signal::BlockSignal({SIGINT});
-                    state.process->Kill(false);
+                    state.GetCurrentProcessPtr()->Kill(false);
                 }
             }
 
@@ -55,7 +55,7 @@ namespace skyline::nce {
         } catch (const ExitException &e) {
             if (e.killAllThreads && state.thread->id) {
                 signal::BlockSignal({SIGINT});
-                state.process->Kill(false);
+                state.GetCurrentProcessPtr()->Kill(false);
             }
 
             abi::__cxa_end_catch();
@@ -65,7 +65,7 @@ namespace skyline::nce {
 
             if (state.thread->id) {
                 signal::BlockSignal({SIGINT});
-                state.process->Kill(false);
+                state.GetCurrentProcessPtr()->Kill(false);
             }
 
             abi::__cxa_end_catch();
@@ -78,7 +78,7 @@ namespace skyline::nce {
 
             if (state.thread->id) {
                 signal::BlockSignal({SIGINT});
-                state.process->Kill(false);
+                state.GetCurrentProcessPtr()->Kill(false);
             }
 
             abi::__cxa_end_catch();
@@ -123,7 +123,7 @@ namespace skyline::nce {
 
                 if (state.thread->id) {
                     signal::BlockSignal({SIGINT});
-                    state.process->Kill(false);
+                    state.GetCurrentProcessPtr()->Kill(false);
                 }
             }
 
@@ -134,7 +134,7 @@ namespace skyline::nce {
 
             if (state.thread->id) {
                 signal::BlockSignal({SIGINT});
-                state.process->Kill(false);
+                state.GetCurrentProcessPtr()->Kill(false);
             }
 
             abi::__cxa_end_catch();
@@ -169,7 +169,7 @@ namespace skyline::nce {
 
             if (state.thread->id) {
                 signal::BlockSignal({SIGINT});
-                state.process->Kill(false);
+                state.GetCurrentProcessPtr()->Kill(false);
             }
         }
 

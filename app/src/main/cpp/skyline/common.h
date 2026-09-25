@@ -75,6 +75,10 @@ namespace skyline {
         static thread_local inline std::shared_ptr<kernel::type::KThread> thread{}; //!< The KThread of the thread which accesses this object
         static thread_local inline nce::ThreadContext *ctx{}; //!< The context of the guest thread for the corresponding host thread
 
+        kernel::type::KProcess *GetCurrentProcessPtr() const {
+            return currentProcess ? currentProcess.get() : process.get();
+        }
+
         std::shared_ptr<kernel::type::KProcess> GetCurrentProcess() const {
             return currentProcess ? currentProcess : process;
         }

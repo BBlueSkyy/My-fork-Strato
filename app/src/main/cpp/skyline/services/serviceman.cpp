@@ -181,7 +181,7 @@ namespace skyline::service {
             response.domainObjects.push_back(session.handleIndex);
             handle = session.handleIndex++;
         } else {
-            handle = state.process->NewHandle<type::KSession>(serviceObject).handle;
+            handle = state.GetCurrentProcessPtr()->NewHandle<type::KSession>(serviceObject).handle;
             response.moveHandles.push_back(handle);
         }
         LOGD("Service has been created: \"{}\" (0x{:X})", serviceObject->GetName(), handle);
@@ -196,7 +196,7 @@ namespace skyline::service {
             response.domainObjects.push_back(session.handleIndex);
             handle = session.handleIndex++;
         } else {
-            handle = state.process->NewHandle<type::KSession>(serviceObject).handle;
+            handle = state.GetCurrentProcessPtr()->NewHandle<type::KSession>(serviceObject).handle;
             response.moveHandles.push_back(handle);
         }
         LOGD("Service has been registered: \"{}\" (0x{:X})", serviceObject->GetName(), handle);
@@ -204,7 +204,7 @@ namespace skyline::service {
 
     void ServiceManager::CloseSession(KHandle handle) {
         std::scoped_lock serviceGuard{mutex};
-        auto session{state.process->GetHandle<type::KSession>(handle)};
+        auto session{state.GetCurrentProcessPtr()->GetHandle<type::KSession>(handle)};
         if (session->IsOpen() && session->handleRefCount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             session->serviceObject->OnSessionClosed(*session);
             if (session->isDomain) {
@@ -273,7 +273,7 @@ namespace skyline::service {
 
     void ServiceManager::SyncRequestHandler(KHandle handle) {
         TRACE_EVENT("kernel", "ServiceManager::SyncRequestHandler");
-        auto session{state.process->GetHandle<type::KSession>(handle)};
+        auto session{state.GetCurrentProcessPtr()->GetHandle<type::KSession>(handle)};
 
         LOGV("----IPC Start----");
         LOGV("Handle is 0x{:X}", handle);
@@ -284,7 +284,7 @@ namespace skyline::service {
 
             // Marks every fully-covered page of input/output buffers as IPC-locked for the request.
             // Unaligned edge fragments are not allowed to split the guest memory block map.
-            IpcBufferLockGuard bufferLock{state.process->memory, request};
+            IpcBufferLockGuard bufferLock{state.GetCurrentProcessPtr()->memory, request};
 
             switch (request.header->type) {
                 case ipc::CommandType::Request:
@@ -327,7 +327,7 @@ namespace skyline::service {
                         case ipc::ControlCommand::CloneCurrentObject:
                         case ipc::ControlCommand::CloneCurrentObjectEx:
                             session->handleRefCount.fetch_add(1, std::memory_order_relaxed);
-                            response.moveHandles.push_back(state.process->InsertItem(session));
+                            response.moveHandles.push_back(state.GetCurrentProcessPtr()->InsertItem(session));
                             break;
 
                         case ipc::ControlCommand::QueryPointerBufferSize:

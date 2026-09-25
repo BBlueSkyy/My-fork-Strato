@@ -58,7 +58,7 @@ namespace skyline::kernel::svc {
 
             LOGW("'size' not divisible by 2MB: 0x{:X}", size);
             return;
-        } else if (state.process->memory.heap.size() < size) [[unlikely]] {
+        } else if (state.GetCurrentProcessPtr()->memory.heap.size() < size) [[unlikely]] {
             ctx.w0 = result::InvalidSize;
             ctx.x1 = 0;
 
@@ -66,13 +66,13 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        size_t heapCurrSize{state.process->memory.processHeapSize};
-        u8 *heapBaseAddr{state.process->memory.heap.guest.data()};
+        size_t heapCurrSize{state.GetCurrentProcessPtr()->memory.processHeapSize};
+        u8 *heapBaseAddr{state.GetCurrentProcessPtr()->memory.heap.guest.data()};
 
         if (heapCurrSize < size) {
-            state.process->memory.MapHeapMemory(span<u8>{heapBaseAddr + heapCurrSize, size - heapCurrSize});
+            state.GetCurrentProcessPtr()->memory.MapHeapMemory(span<u8>{heapBaseAddr + heapCurrSize, size - heapCurrSize});
         } else if (size < heapCurrSize) {
-            if (!state.process->memory.UnmapMemory(span<u8>{heapBaseAddr + size, heapCurrSize - size})) [[unlikely]] {
+            if (!state.GetCurrentProcessPtr()->memory.UnmapMemory(span<u8>{heapBaseAddr + size, heapCurrSize - size})) [[unlikely]] {
                 ctx.w0 = result::InvalidState;
                 ctx.x1 = 0;
 
@@ -81,7 +81,7 @@ namespace skyline::kernel::svc {
             }
         }
 
-        state.process->memory.processHeapSize = size;
+        state.GetCurrentProcessPtr()->memory.processHeapSize = size;
 
         ctx.w0 = Result{};
         ctx.x1 = reinterpret_cast<u64>(heapBaseAddr);
@@ -104,7 +104,7 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        if (address >= (address + size) || !state.process->memory.AddressSpaceContains(span<u8>{address, size})) [[unlikely]] {
+        if (address >= (address + size) || !state.GetCurrentProcessPtr()->memory.AddressSpaceContains(span<u8>{address, size})) [[unlikely]] {
             ctx.w0 = result::InvalidCurrentMemory;
             LOGW("Invalid address and size combination: 'address': {}, 'size': 0x{:X} ", fmt::ptr(address), size);
             return;
@@ -119,7 +119,7 @@ namespace skyline::kernel::svc {
 
         // Validates every chunk in the range (not just the first) and applies the new permission atomically
         // under a single lock; also rejects chunks currently IPC-locked so permissions can't change mid-transfer
-        if (!state.process->memory.SetRegionPermissionIfAllowed(span<u8>(address, size), newPermission)) [[unlikely]] {
+        if (!state.GetCurrentProcessPtr()->memory.SetRegionPermissionIfAllowed(span<u8>(address, size), newPermission)) [[unlikely]] {
             ctx.w0 = result::InvalidState;
             LOGW("Permission change not allowed for one or more chunks in range: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
             return;
@@ -144,7 +144,7 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        if (address >= (address + size) || !state.process->memory.AddressSpaceContains(span<u8>{address, size})) [[unlikely]] {
+        if (address >= (address + size) || !state.GetCurrentProcessPtr()->memory.AddressSpaceContains(span<u8>{address, size})) [[unlikely]] {
             ctx.w0 = result::InvalidCurrentMemory;
             LOGW("Invalid address and size combination: 'address': {}, 'size': 0x{:X} ", fmt::ptr(address), size);
             return;
@@ -177,7 +177,7 @@ namespace skyline::kernel::svc {
         if (mask.isUncached) {
             // Validates every chunk in the range and applies the new CPU caching state atomically under a
             // single lock, so no other thread can unmap/remap the region between the check and the write.
-            if (!state.process->memory.SetRegionCpuCachingIfAllowed(span<u8>{address, size}, value.isUncached)) [[unlikely]] {
+            if (!state.GetCurrentProcessPtr()->memory.SetRegionCpuCachingIfAllowed(span<u8>{address, size}, value.isUncached)) [[unlikely]] {
                 ctx.w0 = result::InvalidState;
                 LOGW("Attribute change not allowed for one or more chunks in range: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
                 return;
@@ -188,7 +188,7 @@ namespace skyline::kernel::svc {
 
         if (mask.isPermissionLocked) {
             // Only reached when value.isPermissionLocked is also true (enforced above), so this always locks.
-            if (!state.process->memory.SetRegionPermissionLockedIfAllowed(span<u8>{address, size})) [[unlikely]] {
+            if (!state.GetCurrentProcessPtr()->memory.SetRegionPermissionLockedIfAllowed(span<u8>{address, size})) [[unlikely]] {
                 ctx.w0 = result::InvalidState;
                 LOGW("Permission lock not allowed for one or more chunks in range: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
                 return;
@@ -223,32 +223,32 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        if (destination >= (destination + size) || !state.process->memory.AddressSpaceContains(span<u8>{destination, size})) [[unlikely]] {
+        if (destination >= (destination + size) || !state.GetCurrentProcessPtr()->memory.AddressSpaceContains(span<u8>{destination, size})) [[unlikely]] {
             ctx.w0 = result::InvalidCurrentMemory;
             LOGW("Invalid address and size combination: 'destination': {}, 'size': 0x{:X} bytes", fmt::ptr(destination), size);
             return;
         }
 
-        if (source >= (source + size) || !state.process->memory.AddressSpaceContains(span<u8>{source, size})) [[unlikely]] {
+        if (source >= (source + size) || !state.GetCurrentProcessPtr()->memory.AddressSpaceContains(span<u8>{source, size})) [[unlikely]] {
             ctx.w0 = result::InvalidCurrentMemory;
             LOGW("Invalid address and size combination: 'source': {}, 'size': 0x{:X} bytes", fmt::ptr(source), size);
             return;
         }
 
-        if (!state.process->memory.stack.guest.contains(span<u8>{destination, size})) [[unlikely]] {
+        if (!state.GetCurrentProcessPtr()->memory.stack.guest.contains(span<u8>{destination, size})) [[unlikely]] {
             ctx.w0 = result::InvalidMemoryRegion;
             LOGW("Destination not within stack region: 'source': {}, 'destination': {}, 'size': 0x{:X} bytes", fmt::ptr(source), fmt::ptr(destination), size);
             return;
         }
 
-        auto chunk{state.process->memory.GetChunk(source)};
+        auto chunk{state.GetCurrentProcessPtr()->memory.GetChunk(source)};
         if (!chunk->second.state.mapAllowed) [[unlikely]] {
             ctx.w0 = result::InvalidState;
             LOGW("Source doesn't allow usage of svcMapMemory: 'source': {}, 'size': {}, MemoryState: 0x{:X}", fmt::ptr(source), size, chunk->second.state.value);
             return;
         }
 
-        state.process->memory.SvcMapMemory(span<u8>{source, size}, span<u8>{destination, size});
+        state.GetCurrentProcessPtr()->memory.SvcMapMemory(span<u8>{source, size}, span<u8>{destination, size});
 
         LOGD("Mapped range {} - {} to {} - {} (Size: 0x{:X} bytes)", fmt::ptr(source), fmt::ptr(source + size), fmt::ptr(destination), fmt::ptr(destination + size), size);
         ctx.w0 = Result{};
@@ -271,19 +271,19 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        if (!state.process->memory.stack.guest.contains(span<u8>{destination, size})) [[unlikely]] {
+        if (!state.GetCurrentProcessPtr()->memory.stack.guest.contains(span<u8>{destination, size})) [[unlikely]] {
             ctx.w0 = result::InvalidMemoryRegion;
             LOGW("Source not within stack region: 'source': {}, 'destination': {}, 'size': 0x{:X} bytes", fmt::ptr(source), fmt::ptr(destination), size);
             return;
         }
 
-        if (!state.process->memory.SvcUnmapMemory(span<u8>{source, size}, span<u8>{destination, size})) [[unlikely]] {
+        if (!state.GetCurrentProcessPtr()->memory.SvcUnmapMemory(span<u8>{source, size}, span<u8>{destination, size})) [[unlikely]] {
             ctx.w0 = result::InvalidState;
             LOGW("Cannot unmap while destination range is IPC-locked: {} - {} (0x{:X} bytes)", fmt::ptr(destination), fmt::ptr(destination + size), size);
             return;
         }
 
-        if (!state.process->memory.UnmapMemory(span<u8>{destination, size})) [[unlikely]] {
+        if (!state.GetCurrentProcessPtr()->memory.UnmapMemory(span<u8>{destination, size})) [[unlikely]] {
             ctx.w0 = result::InvalidState;
             LOGW("Cannot finish unmap while destination range is IPC-locked: {} - {} (0x{:X} bytes)", fmt::ptr(destination), fmt::ptr(destination + size), size);
             return;
@@ -297,7 +297,7 @@ namespace skyline::kernel::svc {
         memory::MemoryInfo memInfo{};
 
         u8 *address{reinterpret_cast<u8 *>(ctx.x2)};
-        auto chunk{state.process->memory.GetChunk(address)};
+        auto chunk{state.GetCurrentProcessPtr()->memory.GetChunk(address)};
 
         if (chunk) {
             memInfo = {
@@ -312,7 +312,7 @@ namespace skyline::kernel::svc {
 
             fmt::format("Address: {}, Region Start: 0x{:X}, Size: 0x{:X}, Type: 0x{:X}, Attributes: 0x{:X}, Permissions: {}", fmt::ptr(address), memInfo.address, memInfo.size, memInfo.type, memInfo.attributes, chunk->second.permission);
         } else {
-            u64 addressSpaceEnd{reinterpret_cast<u64>(state.process->memory.addressSpace.end().base())};
+            u64 addressSpaceEnd{reinterpret_cast<u64>(state.GetCurrentProcessPtr()->memory.addressSpace.end().base())};
 
             memInfo = {
                 .address = addressSpaceEnd,
@@ -346,20 +346,20 @@ namespace skyline::kernel::svc {
         auto priority{static_cast<i8>(ctx.w4)};
         auto idealCore{static_cast<i32>(ctx.w5)};
 
-        idealCore = (idealCore == IdealCoreUseProcessValue) ? static_cast<i32>(state.process->npdm.meta.idealCore) : idealCore;
+        idealCore = (idealCore == IdealCoreUseProcessValue) ? static_cast<i32>(state.GetCurrentProcessPtr()->npdm.meta.idealCore) : idealCore;
         if (idealCore < 0 || idealCore >= constant::CoreCount) {
             ctx.w0 = result::InvalidCoreId;
             LOGW("'idealCore' invalid: {}", idealCore);
             return;
         }
 
-        if (!state.process->npdm.threadInfo.priority.Valid(priority)) {
+        if (!state.GetCurrentProcessPtr()->npdm.threadInfo.priority.Valid(priority)) {
             ctx.w0 = result::InvalidPriority;
             LOGW("'priority' invalid: {}", priority);
             return;
         }
 
-        auto thread{state.process->CreateThread(entry, entryArgument, stackTop, priority, static_cast<u8>(idealCore))};
+        auto thread{state.GetCurrentProcessPtr()->CreateThread(entry, entryArgument, stackTop, priority, static_cast<u8>(idealCore))};
         if (thread) {
             LOGD("Created thread #{} with handle 0x{:X} (Entry Point: {}, Argument: 0x{:X}, Stack Pointer: {}, Priority: {}, Ideal Core: {})", thread->id, thread->handle, entry, entryArgument, fmt::ptr(stackTop), priority, idealCore);
 
@@ -375,7 +375,7 @@ namespace skyline::kernel::svc {
     void StartThread(const DeviceState &state, SvcContext &ctx) {
         KHandle handle{ctx.w0};
         try {
-            auto thread{state.process->GetHandle<type::KThread>(handle)};
+            auto thread{state.GetCurrentProcessPtr()->GetHandle<type::KThread>(handle)};
             LOGD("Starting thread #{}: 0x{:X}", thread->id, handle);
             thread->Start();
             ctx.w0 = Result{};
@@ -443,7 +443,7 @@ namespace skyline::kernel::svc {
     void GetThreadPriority(const DeviceState &state, SvcContext &ctx) {
         KHandle handle{ctx.w1};
         try {
-            auto thread{state.process->GetHandle<type::KThread>(handle)};
+            auto thread{state.GetCurrentProcessPtr()->GetHandle<type::KThread>(handle)};
             i8 priority{thread->priority};
             LOGD("Retrieving thread #{}'s priority: {}", thread->id, priority);
 
@@ -458,13 +458,13 @@ namespace skyline::kernel::svc {
     void SetThreadPriority(const DeviceState &state, SvcContext &ctx) {
         KHandle handle{ctx.w0};
         i8 priority{static_cast<i8>(ctx.w1)};
-        if (!state.process->npdm.threadInfo.priority.Valid(priority)) {
+        if (!state.GetCurrentProcessPtr()->npdm.threadInfo.priority.Valid(priority)) {
             LOGW("'priority' invalid: 0x{:X}", priority);
             ctx.w0 = result::InvalidPriority;
             return;
         }
         try {
-            auto thread{state.process->GetHandle<type::KThread>(handle)};
+            auto thread{state.GetCurrentProcessPtr()->GetHandle<type::KThread>(handle)};
             LOGD("Setting thread #{}'s priority to {}", thread->id, priority);
             if (thread->priority != priority) {
                 thread->basePriority = priority;
@@ -488,7 +488,7 @@ namespace skyline::kernel::svc {
     void GetThreadCoreMask(const DeviceState &state, SvcContext &ctx) {
         KHandle handle{ctx.w2};
         try {
-            auto thread{state.process->GetHandle<type::KThread>(handle)};
+            auto thread{state.GetCurrentProcessPtr()->GetHandle<type::KThread>(handle)};
             auto idealCore{thread->idealCore};
             auto affinityMask{thread->affinityMask};
             LOGD("Getting thread #{}'s Ideal Core ({}) + Affinity Mask ({})", thread->id, idealCore, affinityMask);
@@ -507,10 +507,10 @@ namespace skyline::kernel::svc {
         i32 idealCore{static_cast<i32>(ctx.w1)};
         CoreMask affinityMask{ctx.x2};
         try {
-            auto thread{state.process->GetHandle<type::KThread>(handle)};
+            auto thread{state.GetCurrentProcessPtr()->GetHandle<type::KThread>(handle)};
 
             if (idealCore == IdealCoreUseProcessValue) {
-                idealCore = state.process->npdm.meta.idealCore;
+                idealCore = state.GetCurrentProcessPtr()->npdm.meta.idealCore;
                 affinityMask.reset().set(static_cast<size_t>(idealCore));
             } else if (idealCore == IdealCoreNoUpdate) {
                 idealCore = thread->idealCore;
@@ -518,7 +518,7 @@ namespace skyline::kernel::svc {
                 idealCore = std::countr_zero(affinityMask.to_ullong()); // The first enabled core in the affinity mask
             }
 
-            auto processMask{state.process->npdm.threadInfo.coreMask};
+            auto processMask{state.GetCurrentProcessPtr()->npdm.threadInfo.coreMask};
             if ((processMask | affinityMask) != processMask) {
                 LOGW("'affinityMask' invalid: {} (Process Mask: {})", affinityMask, processMask);
                 ctx.w0 = result::InvalidCoreId;
@@ -570,7 +570,7 @@ namespace skyline::kernel::svc {
         KHandle handle{ctx.w0};
         TRACE_EVENT_FMT("kernel", "ClearEvent 0x{:X}", handle);
         try {
-            std::static_pointer_cast<type::KEvent>(state.process->GetHandle(handle))->ResetSignal();
+            std::static_pointer_cast<type::KEvent>(state.GetCurrentProcessPtr()->GetHandle(handle))->ResetSignal();
             LOGD("Clearing 0x{:X}", handle);
             ctx.w0 = Result{};
         } catch (const std::out_of_range &) {
@@ -583,7 +583,7 @@ namespace skyline::kernel::svc {
     void MapSharedMemory(const DeviceState &state, SvcContext &ctx) {
         try {
             KHandle handle{ctx.w0};
-            auto object{state.process->GetHandle<type::KSharedMemory>(handle)};
+            auto object{state.GetCurrentProcessPtr()->GetHandle<type::KSharedMemory>(handle)};
             u8 *address{reinterpret_cast<u8 *>(ctx.x1)};
 
             if (!util::IsPageAligned(address)) [[unlikely]] {
@@ -599,7 +599,7 @@ namespace skyline::kernel::svc {
                 return;
             }
 
-            if (address >= (address + size) || !state.process->memory.AddressSpaceContains(span<u8>{address, size})) [[unlikely]] {
+            if (address >= (address + size) || !state.GetCurrentProcessPtr()->memory.AddressSpaceContains(span<u8>{address, size})) [[unlikely]] {
                 ctx.w0 = result::InvalidCurrentMemory;
                 LOGW("Invalid address and size combination: 'address': {}, 'size': 0x{:X}", fmt::ptr(address), size);
                 return;
@@ -615,7 +615,7 @@ namespace skyline::kernel::svc {
             LOGD("Mapping shared memory (0x{:X}) at {} - {} (0x{:X} bytes), with permissions: ({}{}{})", handle, fmt::ptr(address), fmt::ptr(address + size), size, permission.r ? 'R' : '-', permission.w ? 'W' : '-', permission.x ? 'X' : '-');
 
             object->Map(span<u8>{address, size}, permission);
-            state.process->memory.AddRef(object);
+            state.GetCurrentProcessPtr()->memory.AddRef(object);
 
             ctx.w0 = Result{};
         } catch (const std::out_of_range &) {
@@ -627,7 +627,7 @@ namespace skyline::kernel::svc {
     void UnmapSharedMemory(const DeviceState &state, SvcContext &ctx) {
         try {
             KHandle handle{ctx.w0};
-            auto object{state.process->GetHandle<type::KSharedMemory>(handle)};
+            auto object{state.GetCurrentProcessPtr()->GetHandle<type::KSharedMemory>(handle)};
             u8 *address{reinterpret_cast<u8 *>(ctx.x1)};
 
             if (!util::IsPageAligned(address)) [[unlikely]] {
@@ -643,7 +643,7 @@ namespace skyline::kernel::svc {
                 return;
             }
 
-            if (address >= (address + size) || !state.process->memory.AddressSpaceContains(span<u8>{address, size})) [[unlikely]] {
+            if (address >= (address + size) || !state.GetCurrentProcessPtr()->memory.AddressSpaceContains(span<u8>{address, size})) [[unlikely]] {
                 ctx.w0 = result::InvalidCurrentMemory;
                 LOGW("Invalid address and size combination: 'address': {}, 'size': 0x{:X}", fmt::ptr(address), size);
                 return;
@@ -652,7 +652,7 @@ namespace skyline::kernel::svc {
             LOGD("Unmapping shared memory (0x{:X}) at {} - {} (0x{:X} bytes)", handle, fmt::ptr(address), fmt::ptr(address + size), size);
 
             object->Unmap(span<u8>{address, size});
-            state.process->memory.RemoveRef(object);
+            state.GetCurrentProcessPtr()->memory.RemoveRef(object);
 
             ctx.w0 = Result{};
         } catch (const std::out_of_range &) {
@@ -676,7 +676,7 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        if (address >= (address + size) || !state.process->memory.AddressSpaceContains(span<u8>{address, size})) [[unlikely]] {
+        if (address >= (address + size) || !state.GetCurrentProcessPtr()->memory.AddressSpaceContains(span<u8>{address, size})) [[unlikely]] {
             ctx.w0 = result::InvalidCurrentMemory;
             LOGW("Invalid address and size combination: 'address': {}, 'size': 0x{:X}", fmt::ptr(address), size);
             return;
@@ -689,7 +689,7 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        auto tmem{state.process->NewHandle<kernel::type::KTransferMemory>(size)};
+        auto tmem{state.GetCurrentProcessPtr()->NewHandle<kernel::type::KTransferMemory>(size)};
         if (!tmem.item->Map(span<u8>{address, size}, permission)) [[unlikely]] {
             ctx.w0 = result::InvalidState;
             return;
@@ -704,7 +704,7 @@ namespace skyline::kernel::svc {
     void CloseHandle(const DeviceState &state, SvcContext &ctx) {
         KHandle handle{static_cast<KHandle>(ctx.w0)};
         try {
-            state.process->CloseHandle(handle);
+            state.GetCurrentProcessPtr()->CloseHandle(handle);
             LOGD("Closing 0x{:X}", handle);
             ctx.w0 = Result{};
         } catch (const std::out_of_range &) {
@@ -717,7 +717,7 @@ namespace skyline::kernel::svc {
         KHandle handle{ctx.w0};
         TRACE_EVENT_FMT("kernel", "ResetSignal 0x{:X}", handle);
         try {
-            auto object{state.process->GetHandle(handle)};
+            auto object{state.GetCurrentProcessPtr()->GetHandle(handle)};
             switch (object->objectType) {
                 case type::KType::KEvent:
                 case type::KType::KProcess:
@@ -757,7 +757,7 @@ namespace skyline::kernel::svc {
         objectTable.reserve(numHandles);
 
         for (const auto &handle : waitHandles) {
-            auto object{state.process->GetHandle(handle)};
+            auto object{state.GetCurrentProcessPtr()->GetHandle(handle)};
             switch (object->objectType) {
                 case type::KType::KProcess:
                 case type::KType::KThread:
@@ -872,7 +872,7 @@ namespace skyline::kernel::svc {
     void CancelSynchronization(const DeviceState &state, SvcContext &ctx) {
         try {
             std::unique_lock lock(type::KSyncObject::syncObjectMutex);
-            auto thread{state.process->GetHandle<type::KThread>(ctx.w0)};
+            auto thread{state.GetCurrentProcessPtr()->GetHandle<type::KThread>(ctx.w0)};
             LOGD("Cancelling Synchronization {}", thread->id);
             thread->cancelSync = true;
             if (thread->isCancellable) {
@@ -898,7 +898,7 @@ namespace skyline::kernel::svc {
 
         KHandle ownerHandle{ctx.w0};
         KHandle requesterHandle{ctx.w2};
-        auto result{state.process->MutexLock(state.thread, mutex, ownerHandle, requesterHandle)};
+        auto result{state.GetCurrentProcessPtr()->MutexLock(state.thread, mutex, ownerHandle, requesterHandle)};
         if (result == Result{})
             LOGD("Locked {}", fmt::ptr(mutex));
         else if (result == result::InvalidCurrentMemory)
@@ -918,7 +918,7 @@ namespace skyline::kernel::svc {
         }
 
         LOGD("Unlocking {}", fmt::ptr(mutex));
-        state.process->MutexUnlock(mutex);
+        state.GetCurrentProcessPtr()->MutexUnlock(mutex);
         LOGD("Unlocked {}", fmt::ptr(mutex));
 
         ctx.w0 = Result{};
@@ -938,7 +938,7 @@ namespace skyline::kernel::svc {
         i64 timeout{static_cast<i64>(ctx.x3)};
         LOGD("Waiting on {} with {} for {}ns", fmt::ptr(conditional), fmt::ptr(mutex), timeout);
 
-        auto result{state.process->ConditionVariableWait(conditional, mutex, requesterHandle, timeout)};
+        auto result{state.GetCurrentProcessPtr()->ConditionVariableWait(conditional, mutex, requesterHandle, timeout)};
         if (result == Result{})
             LOGD("Waited for {} and reacquired {}", fmt::ptr(conditional), fmt::ptr(mutex));
         else if (result == result::TimedOut)
@@ -951,7 +951,7 @@ namespace skyline::kernel::svc {
         i32 count{static_cast<i32>(ctx.w1)};
 
         LOGD("Signalling {} for {} waiters", fmt::ptr(conditional), count);
-        state.process->ConditionVariableSignal(conditional, count);
+        state.GetCurrentProcessPtr()->ConditionVariableSignal(conditional, count);
         ctx.w0 = Result{};
     }
 
@@ -974,7 +974,7 @@ namespace skyline::kernel::svc {
 
         KHandle handle{};
         if (port.compare("sm:") >= 0) {
-            handle = state.process->NewHandle<type::KSession>(std::static_pointer_cast<service::BaseService>(state.os->serviceManager.smUserInterface)).handle;
+            handle = state.GetCurrentProcessPtr()->NewHandle<type::KSession>(std::static_pointer_cast<service::BaseService>(state.os->serviceManager.smUserInterface)).handle;
         } else {
             LOGW("Connecting to invalid port: '{}'", port);
             ctx.w0 = result::NotFound;
@@ -995,7 +995,7 @@ namespace skyline::kernel::svc {
 
     void GetThreadId(const DeviceState &state, SvcContext &ctx) {
         KHandle handle{ctx.w1};
-        size_t tid{state.process->GetHandle<type::KThread>(handle)->id};
+        size_t tid{state.GetCurrentProcessPtr()->GetHandle<type::KThread>(handle)->id};
 
         LOGD("0x{:X} -> #{}", handle, tid);
 
@@ -1011,7 +1011,7 @@ namespace skyline::kernel::svc {
         }
 
         if (state.thread->id)
-            state.process->Kill(false);
+            state.GetCurrentProcessPtr()->Kill(false);
         std::longjmp(state.thread->originalCtx, true);
     }
 
@@ -1086,23 +1086,23 @@ namespace skyline::kernel::svc {
                 break;
 
             case InfoState::AllowedCpuIdBitmask:
-                out = state.process->npdm.threadInfo.coreMask.to_ullong();
+                out = state.GetCurrentProcessPtr()->npdm.threadInfo.coreMask.to_ullong();
                 break;
 
             case InfoState::AllowedThreadPriorityMask:
-                out = state.process->npdm.threadInfo.priority.Mask();
+                out = state.GetCurrentProcessPtr()->npdm.threadInfo.priority.Mask();
                 break;
 
             case InfoState::AliasRegionBaseAddr:
-                out = reinterpret_cast<u64>(state.process->memory.alias.guest.data());
+                out = reinterpret_cast<u64>(state.GetCurrentProcessPtr()->memory.alias.guest.data());
                 break;
              
             case InfoState::AliasRegionSize:
-                out = state.process->memory.alias.size();
+                out = state.GetCurrentProcessPtr()->memory.alias.size();
                 break;
         
             case InfoState::AliasRegionExtraSize:
-                out = state.process->memory.aliasRegionExtraSize; // NPDM META flags bit6, 18.0.0+
+                out = state.GetCurrentProcessPtr()->memory.aliasRegionExtraSize; // NPDM META flags bit6, 18.0.0+
                 break;
 
             case InfoState::TransferMemoryHint: {
@@ -1113,7 +1113,7 @@ namespace skyline::kernel::svc {
                 }
 
                 try {
-                    auto object{state.process->GetHandle(handle)};
+                    auto object{state.GetCurrentProcessPtr()->GetHandle(handle)};
                     if (object->objectType != type::KType::KTransferMemory) [[unlikely]] {
                         LOGW("TransferMemoryHint handle has invalid type: 0x{:X} ({})", handle, object->objectType);
                         ctx.w0 = result::InvalidHandle;
@@ -1149,11 +1149,11 @@ namespace skyline::kernel::svc {
                 break;
             
             case InfoState::HeapRegionBaseAddr:
-                out = reinterpret_cast<u64>(state.process->memory.heap.guest.data());
+                out = reinterpret_cast<u64>(state.GetCurrentProcessPtr()->memory.heap.guest.data());
                 break;
 
             case InfoState::HeapRegionSize:
-                out = state.process->memory.heap.size();
+                out = state.GetCurrentProcessPtr()->memory.heap.size();
                 break;
 
             case InfoState::TotalMemoryAvailable:
@@ -1168,11 +1168,11 @@ namespace skyline::kernel::svc {
                 // SetTerminateResult. TotalMemoryAvailable represents the process's total memory
                 // *budget*, not how much of it has been requested so far, so heap.size() (the full
                 // reserved region) is the correct value here.
-                out = std::min(totalPhysicalMemory, state.process->memory.heap.size());
+                out = std::min(totalPhysicalMemory, state.GetCurrentProcessPtr()->memory.heap.size());
                 break;
 
             case InfoState::TotalMemoryUsage:
-                out = state.process->memory.GetUserMemoryUsage() + state.process->memory.GetSystemResourceUsage();
+                out = state.GetCurrentProcessPtr()->memory.GetUserMemoryUsage() + state.GetCurrentProcessPtr()->memory.GetSystemResourceUsage();
                 break;
 
             case InfoState::IdleTickCount:
@@ -1188,46 +1188,46 @@ namespace skyline::kernel::svc {
                 break;
 
             case InfoState::AslrRegionBaseAddr:
-                out = reinterpret_cast<u64>(state.process->memory.base.data());
+                out = reinterpret_cast<u64>(state.GetCurrentProcessPtr()->memory.base.data());
                 break;
 
             case InfoState::AslrRegionSize:
-                out = state.process->memory.base.size();
+                out = state.GetCurrentProcessPtr()->memory.base.size();
                 break;
 
             case InfoState::StackRegionBaseAddr:
-                out = reinterpret_cast<u64>(state.process->memory.stack.guest.data());
+                out = reinterpret_cast<u64>(state.GetCurrentProcessPtr()->memory.stack.guest.data());
                 break;
 
             case InfoState::StackRegionSize:
-                out = state.process->memory.stack.size();
+                out = state.GetCurrentProcessPtr()->memory.stack.size();
                 break;
 
             case InfoState::TotalSystemResourceAvailable:
-                out = state.process->npdm.meta.systemResourceSize;
+                out = state.GetCurrentProcessPtr()->npdm.meta.systemResourceSize;
                 break;
 
             case InfoState::TotalSystemResourceUsage:
                 // A very rough approximation of what this should be on the Switch, the amount of memory allocated for storing the memory blocks (https://switchbrew.org/wiki/Kernel_objects#KMemoryBlockManager)
-                out = state.process->memory.GetSystemResourceUsage();
+                out = state.GetCurrentProcessPtr()->memory.GetSystemResourceUsage();
                 break;
 
             case InfoState::ProgramId:
-                out = state.process->npdm.aci0.programId;
+                out = state.GetCurrentProcessPtr()->npdm.aci0.programId;
                 break;
 
             case InfoState::TotalMemoryAvailableWithoutSystemResource:
                 // REVERTED: same reasoning as TotalMemoryAvailable above -- use the full reserved
                 // Heap Region (heap.size()), not the committed-so-far processHeapSize.
-                out = std::min(totalPhysicalMemory, state.process->memory.heap.size()) - state.process->npdm.meta.systemResourceSize;
+                out = std::min(totalPhysicalMemory, state.GetCurrentProcessPtr()->memory.heap.size()) - state.GetCurrentProcessPtr()->npdm.meta.systemResourceSize;
                 break;
 
             case InfoState::TotalMemoryUsageWithoutSystemResource:
-                out = state.process->memory.GetUserMemoryUsage();
+                out = state.GetCurrentProcessPtr()->memory.GetUserMemoryUsage();
                 break;
 
             case InfoState::UserExceptionContextAddr:
-                out = reinterpret_cast<u64>(state.process->tlsExceptionContext);
+                out = reinterpret_cast<u64>(state.GetCurrentProcessPtr()->tlsExceptionContext);
                 break;
 
             default:
@@ -1264,7 +1264,7 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        if (!state.process->memory.alias.guest.contains(span<u8>{address, size})) [[unlikely]] {
+        if (!state.GetCurrentProcessPtr()->memory.alias.guest.contains(span<u8>{address, size})) [[unlikely]] {
             ctx.w0 = result::InvalidMemoryRegion;
             LOGW("Tried to map physical memory outside of alias region: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
             return;
@@ -1278,7 +1278,7 @@ namespace skyline::kernel::svc {
         // failing, letting the guest's own physical memory pool bookkeeping (used by titles that recycle
         // alias-region chunks for asset streaming, e.g. DKCR HD) silently desync from our actual chunk
         // state until its internal accounting underflows and it self-aborts.
-        if (!state.process->memory.MapPhysicalMemoryIfAllowed(span<u8>{address, size})) [[unlikely]] {
+        if (!state.GetCurrentProcessPtr()->memory.MapPhysicalMemoryIfAllowed(span<u8>{address, size})) [[unlikely]] {
             ctx.w0 = result::InvalidState;
             LOGW("Cannot map physical memory over a region that isn't entirely Unmapped: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
             return;
@@ -1304,13 +1304,13 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        if (!state.process->memory.alias.guest.contains(span<u8>{address, size})) [[unlikely]] {
+        if (!state.GetCurrentProcessPtr()->memory.alias.guest.contains(span<u8>{address, size})) [[unlikely]] {
             ctx.w0 = result::InvalidMemoryRegion;
             LOGW("Tried to unmap physical memory outside of alias region: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
             return;
         }
 
-        if (!state.process->memory.UnmapMemory(span<u8>{address, size})) [[unlikely]] {
+        if (!state.GetCurrentProcessPtr()->memory.UnmapMemory(span<u8>{address, size})) [[unlikely]] {
             ctx.w0 = result::InvalidState;
             LOGW("Cannot unmap physical memory while it is IPC-locked: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
             return;
@@ -1340,7 +1340,7 @@ namespace skyline::kernel::svc {
 
         KHandle threadHandle{ctx.w0};
         try {
-            auto thread{state.process->GetHandle<type::KThread>(threadHandle)};
+            auto thread{state.GetCurrentProcessPtr()->GetHandle<type::KThread>(threadHandle)};
             if (thread == state.thread) {
                 LOGW("Thread setting own activity: {} (Thread: 0x{:X})", static_cast<u32>(activity), threadHandle);
                 ctx.w0 = result::Busy;
@@ -1378,7 +1378,7 @@ namespace skyline::kernel::svc {
     void GetThreadContext3(const DeviceState &state, SvcContext &ctx) {
         KHandle threadHandle{ctx.w1};
         try {
-            auto thread{state.process->GetHandle<type::KThread>(threadHandle)};
+            auto thread{state.GetCurrentProcessPtr()->GetHandle<type::KThread>(threadHandle)};
             if (thread == state.thread) {
                 LOGW("Thread attempting to retrieve own context");
                 ctx.w0 = result::Busy;
@@ -1449,17 +1449,17 @@ namespace skyline::kernel::svc {
         switch (arbitrationType) {
             case ArbitrationType::WaitIfLessThan:
                 LOGD("Waiting on {} if less than {} for {}ns", fmt::ptr(address), value, timeout);
-                result = state.process->WaitForAddress(address, value, timeout, ArbitrationType::WaitIfLessThan);
+                result = state.GetCurrentProcessPtr()->WaitForAddress(address, value, timeout, ArbitrationType::WaitIfLessThan);
                 break;
 
             case ArbitrationType::DecrementAndWaitIfLessThan:
                 LOGD("Waiting on and decrementing {} if less than {} for {}ns", fmt::ptr(address), value, timeout);
-                result = state.process->WaitForAddress(address, value, timeout, ArbitrationType::DecrementAndWaitIfLessThan);
+                result = state.GetCurrentProcessPtr()->WaitForAddress(address, value, timeout, ArbitrationType::DecrementAndWaitIfLessThan);
                 break;
 
             case ArbitrationType::WaitIfEqual:
                 LOGD("Waiting on {} if equal to {} for {}ns", fmt::ptr(address), value, timeout);
-                result = state.process->WaitForAddress(address, value, timeout, ArbitrationType::WaitIfEqual);
+                result = state.GetCurrentProcessPtr()->WaitForAddress(address, value, timeout, ArbitrationType::WaitIfEqual);
                 break;
 
             default:
@@ -1497,17 +1497,17 @@ namespace skyline::kernel::svc {
         switch (signalType) {
             case SignalType::Signal:
                 LOGD("Signalling {} for {} waiters", fmt::ptr(address), count);
-                result = state.process->SignalToAddress(address, value, count, SignalType::Signal);
+                result = state.GetCurrentProcessPtr()->SignalToAddress(address, value, count, SignalType::Signal);
                 break;
 
             case SignalType::SignalAndIncrementIfEqual:
                 LOGD("Signalling {} and incrementing if equal to {} for {} waiters", fmt::ptr(address), value, count);
-                result = state.process->SignalToAddress(address, value, count, SignalType::SignalAndIncrementIfEqual);
+                result = state.GetCurrentProcessPtr()->SignalToAddress(address, value, count, SignalType::SignalAndIncrementIfEqual);
                 break;
 
             case SignalType::SignalAndModifyBasedOnWaitingThreadCountIfEqual:
                 LOGD("Signalling {} and setting to waiting thread count if equal to {} for {} waiters", fmt::ptr(address), value, count);
-                result = state.process->SignalToAddress(address, value, count, SignalType::SignalAndModifyBasedOnWaitingThreadCountIfEqual);
+                result = state.GetCurrentProcessPtr()->SignalToAddress(address, value, count, SignalType::SignalAndModifyBasedOnWaitingThreadCountIfEqual);
                 break;
 
             default:

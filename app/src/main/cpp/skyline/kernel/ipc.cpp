@@ -21,7 +21,7 @@ namespace skyline::kernel::ipc {
                 // HLE IPC directly from the client's TLS, so no kernel transfer exists to replace
                 // this transport slot for us. Use the current guest process identity instead of
                 // trusting stale bytes left in the TLS request buffer.
-                pid = state.process->id;
+                pid = state.GetCurrentProcessPtr()->id;
                 pointer += sizeof(u64);
             }
             for (u32 index{}; handleDesc->copyCount > index; index++) {
