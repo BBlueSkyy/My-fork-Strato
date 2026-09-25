@@ -866,12 +866,20 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             }
 
             softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend()
-            inlineSoftwareKeyboardHosts.remove(sessionId)?.close()
 
             if (inline) {
                 try {
-                    val host = InlineSoftwareKeyboardHost(this, sessionId, config, initialText)
-                    inlineSoftwareKeyboardHosts[sessionId] = host
+                    val host = inlineSoftwareKeyboardHosts[sessionId] ?: InlineSoftwareKeyboardHost(
+                        this, sessionId, config, initialText
+                    ).also { inlineSoftwareKeyboardHosts[sessionId] = it }
+
+                    host.reconfigure(config)
+                    val initialCursor =
+                        if (config.initialCursorPos == org.stratoemu.strato.applet.swkbd.InitialCursorPos.First)
+                            0
+                        else
+                            initialText.length
+                    host.updateFromFrontend(initialText, initialCursor)
                     host.show()
                     Log.i(Tag, "SWKBD openSoftwareKeyboard: inline IME host shown, sessionId=$sessionId")
                 } catch (exception : Exception) {
@@ -882,6 +890,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                 return@runOnUiThread
             }
 
+            inlineSoftwareKeyboardHosts.remove(sessionId)?.close()
             val dialog = SoftwareKeyboardDialog.newInstance(sessionId, config, initialText, false)
             softwareKeyboardDialogs[sessionId] = dialog
             try {
@@ -914,7 +923,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     fun hideSoftwareKeyboard(sessionId : Long) {
         runOnUiThread {
             softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend()
-            inlineSoftwareKeyboardHosts.remove(sessionId)?.close()
+            inlineSoftwareKeyboardHosts[sessionId]?.hide()
         }
     }
 

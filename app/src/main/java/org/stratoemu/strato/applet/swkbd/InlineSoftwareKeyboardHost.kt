@@ -31,39 +31,21 @@ import org.stratoemu.strato.EmulationActivity
 class InlineSoftwareKeyboardHost(
     private val activity : EmulationActivity,
     private val sessionId : Long,
-    private val config : SoftwareKeyboardConfig,
+    initialConfig : SoftwareKeyboardConfig,
     initialText : String
 ) {
     private val root = activity.findViewById<ViewGroup>(android.R.id.content)
     private val textInput = EditText(activity)
 
+    private var config = initialConfig
+    private var multiline = false
     private var waitingForTextCheck = false
     private var suppressTextEvent = false
     private var attached = false
     private var closed = false
 
     init {
-        val multiline = config.inputFormMode == InputFormMode.MultiLine && config.isUseNewLine
-
-        textInput.inputType = when {
-            config.keyboardMode == KeyboardMode.Numeric && config.passwordMode == PasswordMode.Hide ->
-                InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
-            config.keyboardMode == KeyboardMode.Numeric -> InputType.TYPE_CLASS_NUMBER
-            config.passwordMode == PasswordMode.Hide ->
-                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            config.keyboardMode == KeyboardMode.ASCII ->
-                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            else -> InputType.TYPE_CLASS_TEXT
-        }.let { type ->
-            if (multiline)
-                type or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            else
-                type and InputType.TYPE_TEXT_FLAG_MULTI_LINE.inv()
-        }
-        textInput.isSingleLine = !multiline
-        textInput.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN or
-            (if (multiline) EditorInfo.IME_ACTION_NONE else EditorInfo.IME_ACTION_DONE)
-        textInput.filters = arrayOf(SoftwareKeyboardFilter(config))
+        applyConfig(initialConfig)
 
         // Keep the editor genuinely visible/focusable to Android while making its single pixel
         // impossible to notice over the game.
@@ -99,14 +81,58 @@ class InlineSoftwareKeyboardHost(
         }
     }
 
+    private fun applyConfig(newConfig : SoftwareKeyboardConfig) {
+        config = newConfig
+        multiline = config.inputFormMode == InputFormMode.MultiLine && config.isUseNewLine
+
+        textInput.inputType = when {
+            config.keyboardMode == KeyboardMode.Numeric && config.passwordMode == PasswordMode.Hide ->
+                InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            config.keyboardMode == KeyboardMode.Numeric -> InputType.TYPE_CLASS_NUMBER
+            config.passwordMode == PasswordMode.Hide ->
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            config.keyboardMode == KeyboardMode.ASCII ->
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            else -> InputType.TYPE_CLASS_TEXT
+        }.let { type ->
+            if (multiline)
+                type or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            else
+                type and InputType.TYPE_TEXT_FLAG_MULTI_LINE.inv()
+        }
+        textInput.isSingleLine = !multiline
+        textInput.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN or
+            (if (multiline) EditorInfo.IME_ACTION_NONE else EditorInfo.IME_ACTION_DONE)
+        textInput.filters = arrayOf(SoftwareKeyboardFilter(config))
+    }
+
+    fun reconfigure(newConfig : SoftwareKeyboardConfig) {
+        if (!closed)
+            applyConfig(newConfig)
+    }
+
     fun show() {
-        if (closed || attached)
+        if (closed)
             return
 
-        val params = FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START)
-        root.addView(textInput, params)
-        attached = true
+        if (!attached) {
+            val params = FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START)
+            root.addView(textInput, params)
+            attached = true
+        }
+
+        waitingForTextCheck = false
+        textInput.isEnabled = true
         showIme()
+    }
+
+    fun hide() {
+        if (closed || !attached)
+            return
+
+        val inputMethod = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        inputMethod.hideSoftInputFromWindow(textInput.windowToken, 0)
+        textInput.clearFocus()
     }
 
     private fun showIme() {
@@ -197,14 +223,15 @@ class InlineSoftwareKeyboardHost(
     fun close() {
         if (closed)
             return
-        closed = true
 
         if (attached) {
             val inputMethod = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             inputMethod.hideSoftInputFromWindow(textInput.windowToken, 0)
+            textInput.clearFocus()
             root.removeView(textInput)
             attached = false
         }
+        closed = true
     }
 
     private fun sendEvent(type : Int, text : String, cursor : Int) {
