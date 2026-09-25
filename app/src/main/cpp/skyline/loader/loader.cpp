@@ -34,8 +34,13 @@ namespace skyline::loader {
         if (!util::IsPageAligned(executable.text.offset) || !util::IsPageAligned(executable.ro.offset) || !util::IsPageAligned(executable.data.offset))
             throw exception("Section offsets are not aligned with page size: 0x{:X}, 0x{:X}, 0x{:X}", executable.text.offset, executable.ro.offset, executable.data.offset);
 
+        const bool traceSwkbd{process->npdm.aci0.programId == 0x0100000000001008ULL};
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: LoadExecutable '{}' GetPatchData begin", name);
         // Use an empty PatchData if we don't need to patch
         auto patch{needsNcePatching ? state.nce->GetPatchData(executable.text.contents) : nce::NCE::PatchData{}};
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: LoadExecutable '{}' GetPatchData end, patchSize=0x{:X}", name, patch.size);
 
         span dynsym{reinterpret_cast<u8 *>(executable.ro.contents.data() + executable.dynsym.offset), executable.dynsym.size};
         span dynstr{reinterpret_cast<char *>(executable.ro.contents.data() + executable.dynstr.offset), executable.dynstr.size};
@@ -65,6 +70,8 @@ namespace skyline::loader {
         // The base executable address in the guest address space
         u8 *executableGuestBase{guestBase + patch.size + hookSize};
 
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: LoadExecutable '{}' mapping sections begin", name);
         process->memory.MapCodeMemory(span<u8>{executableGuestBase + executable.text.offset, textSize}, memory::Permission{true, false, true}); // R-X
         LOGD("Successfully mapped section .text @ {}, Size = 0x{:X}", fmt::ptr(executableGuestBase), textSize);
 
@@ -102,6 +109,8 @@ namespace skyline::loader {
         std::memcpy(executableBase, executable.text.contents.data(), executable.text.contents.size());
         std::memcpy(executableBase + executable.ro.offset, executable.ro.contents.data(), roSize);
         std::memcpy(executableBase + executable.data.offset, executable.data.contents.data(), dataSize - executable.bssSize);
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: LoadExecutable '{}' mapping/copy end", name);
 
         return {guestBase, size, executableGuestBase + executable.text.offset};
     }

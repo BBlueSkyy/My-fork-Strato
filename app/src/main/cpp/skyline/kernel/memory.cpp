@@ -243,7 +243,10 @@ namespace skyline::kernel {
         // Qualcomm KGSL (Kernel Graphic Support Layer/Kernel GPU driver) maps below 35-bits, reserving it causes KGSL to go OOM
         static constexpr size_t KgslReservedRegionSize{1ULL << 35};
 
+        LOGI("InitializeVmm: allocating guest carveout, type={}, size=0x{:X}, range=0x{:X}-0x{:X}",
+             to_string(addressSpaceType), baseSize, KgslReservedRegionSize, maxAddress);
         base = AllocateMappedRange(baseSize, RegionAlignment, KgslReservedRegionSize, maxAddress, false);
+        LOGI("InitializeVmm: guest carveout allocated at {} size=0x{:X}", fmt::ptr(base.data()), base.size());
 
         switch (type) {
             case memory::AddressSpaceType::AddressSpace36Bit: {

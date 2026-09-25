@@ -23,7 +23,12 @@ namespace skyline::loader {
 
         auto nsoFile{exeFs->OpenFile("rtld")};
 
+        const bool traceSwkbd{process->npdm.aci0.programId == 0x0100000000001008ULL};
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: InitializeVmm begin");
         process->memory.InitializeVmm(process->npdm.meta.flags.type, process->npdm.meta.flags.enableAliasRegionExtraSize);
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: InitializeVmm end; rtld load begin");
 
         auto loadInfo{NsoLoader::LoadNso(loader, nsoFile, process, state, 0, "rtld.nso")};
         u64 offset{loadInfo.size};

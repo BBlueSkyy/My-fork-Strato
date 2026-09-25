@@ -34,6 +34,9 @@ namespace skyline::loader {
     }
 
     Loader::ExecutableLoadInfo NsoLoader::LoadNso(Loader *loader, const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state, size_t offset, const std::string &name, bool dynamicallyLinked) {
+        const bool traceSwkbd{process->npdm.aci0.programId == 0x0100000000001008ULL};
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: LoadNso '{}' header begin", name);
         auto header{backing->Read<NsoHeader>()};
 
         if (header.magic != util::MakeMagic<u32>("NSO0"))
@@ -51,6 +54,8 @@ namespace skyline::loader {
 
         executable.data.contents = GetSegment(backing, header.data, header.flags.dataCompressed ? header.dataCompressedSize : 0);
         executable.data.offset = header.data.memoryOffset;
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: LoadNso '{}' segments decoded", name);
 
         // Data and BSS are aligned together
         executable.bssSize = util::AlignUp(executable.data.contents.size() + header.bssSize, constant::PageSize) - executable.data.contents.size();
@@ -123,9 +128,16 @@ namespace skyline::loader {
             }
         }
 
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: LoadNso '{}' metadata scan begin", name);
         PrintRoContentsInfo(executable.ro.contents);
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: LoadNso '{}' LoadExecutable begin", name);
 
-        return loader->LoadExecutable(process, state, executable, offset, name, dynamicallyLinked);
+        auto loadInfo{loader->LoadExecutable(process, state, executable, offset, name, dynamicallyLinked)};
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: LoadNso '{}' LoadExecutable end", name);
+        return loadInfo;
     }
 
     void *NsoLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
