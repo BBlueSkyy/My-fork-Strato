@@ -83,6 +83,12 @@ namespace skyline::service::am {
         return {};
     }
 
+    Result ILibraryAppletSelfAccessor::CanUseApplicationCore(
+        type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.Push<bool>(false);
+        return {};
+    }
+
     Result ILibraryAppletSelfAccessor::GetCallerAppletIdentityInfo(
         type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         response.Push(AppletIdentityInfo{context->callerAppletId, 0, context->callerApplicationId});

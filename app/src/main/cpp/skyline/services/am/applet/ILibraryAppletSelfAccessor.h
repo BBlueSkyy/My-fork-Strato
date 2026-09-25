@@ -30,6 +30,7 @@ namespace skyline::service::am {
         Result ExitProcessAndReturn(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result GetLibraryAppletInfo(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result GetMainAppletIdentityInfo(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result CanUseApplicationCore(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result GetCallerAppletIdentityInfo(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result GetDesirableKeyboardLayout(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
 
@@ -47,6 +48,7 @@ namespace skyline::service::am {
             SFUNC(10, ILibraryAppletSelfAccessor, ExitProcessAndReturn),
             SFUNC(11, ILibraryAppletSelfAccessor, GetLibraryAppletInfo),
             SFUNC(12, ILibraryAppletSelfAccessor, GetMainAppletIdentityInfo),
+            SFUNC(13, ILibraryAppletSelfAccessor, CanUseApplicationCore),
             SFUNC(14, ILibraryAppletSelfAccessor, GetCallerAppletIdentityInfo),
             SFUNC(19, ILibraryAppletSelfAccessor, GetDesirableKeyboardLayout)
         )
