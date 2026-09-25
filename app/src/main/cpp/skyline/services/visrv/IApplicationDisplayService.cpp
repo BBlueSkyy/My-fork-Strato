@@ -188,6 +188,8 @@ namespace skyline::service::visrv {
         response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
         LOGI("GetIndirectLayerImageRequiredMemoryInfo: return Success, size=0x{:X}, alignment=0x{:X}",
              layout.requiredSize, IndirectLayerAlignment);
+        LOGI("PRECALC VI: pid=0x{:X}, width={}, height={}, result=0x0, size=0x{:X}, alignment=0x{:X}",
+             request.pid, width, height, layout.requiredSize, IndirectLayerAlignment);
         return {};
     }
 }
