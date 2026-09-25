@@ -27,16 +27,6 @@
         android:layout_height="match_parent"
         android:layout_gravity="bottom">
 
-        <org.stratoemu.strato.applet.swkbd.InlineSoftwareKeyboardInputView
-            android:id="@+id/inline_software_keyboard_input"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="@android:color/transparent"
-            android:clickable="false"
-            android:focusable="true"
-            android:focusableInTouchMode="true"
-            android:importantForAccessibility="no" />
-
         <org.stratoemu.strato.input.onscreen.OnScreenControllerView
             android:id="@+id/on_screen_controller_view"
             android:layout_width="match_parent"
