@@ -90,17 +90,6 @@
 
             </com.google.android.material.textfield.TextInputLayout>
 
-            <View
-                android:id="@+id/inline_underline"
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:alpha="0.7"
-                android:background="?android:attr/textColorSecondary"
-                android:visibility="gone"
-                app:layout_constraintEnd_toEndOf="@+id/input_layout"
-                app:layout_constraintStart_toStartOf="@+id/input_layout"
-                app:layout_constraintTop_toBottomOf="@+id/input_layout" />
-
             <com.google.android.material.textview.MaterialTextView
                 android:id="@+id/length_status"
                 android:layout_width="wrap_content"

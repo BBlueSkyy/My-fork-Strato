@@ -6,24 +6,18 @@
 package org.stratoemu.strato.applet.swkbd
 
 import android.annotation.SuppressLint
-import android.content.Context
 import android.content.DialogInterface
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.text.InputType
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputMethodManager
 import androidx.core.widget.doOnTextChanged
 import androidx.fragment.app.DialogFragment
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputLayout
 import org.stratoemu.strato.EmulationActivity
 import org.stratoemu.strato.databinding.KeyboardDialogBinding
 import org.stratoemu.strato.utils.parcelable
@@ -41,7 +35,6 @@ class SoftwareKeyboardDialog : DialogFragment() {
     private var terminalEventSent = false
     private var waitingForTextCheck = false
     private var suppressTextEvent = false
-    private var imeWindowFocusListener : ViewTreeObserver.OnWindowFocusChangeListener? = null
 
     companion object {
         private const val argumentSessionId = "sessionId"
@@ -108,25 +101,6 @@ class SoftwareKeyboardDialog : DialogFragment() {
         if (guideText.isNotBlank())
             binding.inputLayout.hint = guideText
 
-        if (inline) {
-            // Keep inline SWKBD lightweight: the game stays visible while Android's IME
-            // edits a single visible text line. The EditText remains the InputConnection
-            // host, but the full dialog chrome is hidden.
-            binding.inputDialog.setBackgroundColor(Color.TRANSPARENT)
-            binding.header.visibility = View.GONE
-            binding.sub.visibility = View.GONE
-            binding.inputLayout.hint = null
-            binding.inputLayout.boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_NONE
-            binding.inputLayout.setBackgroundColor(Color.TRANSPARENT)
-            binding.textInput.background = null
-            binding.textInput.isCursorVisible = true
-            binding.textInput.setPadding(0, binding.textInput.paddingTop, 0, binding.textInput.paddingBottom)
-            binding.inlineUnderline.visibility = View.VISIBLE
-            binding.lengthStatus.visibility = View.GONE
-            binding.cancelButton.visibility = View.GONE
-            binding.okButton.visibility = View.GONE
-        }
-
         binding.textInput.filters = arrayOf(SoftwareKeyboardFilter(config))
         suppressTextEvent = true
         val text = pendingText ?: savedInstanceState?.getString(argumentInitialText) ?: initialText
@@ -144,8 +118,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
         updateValidity(text)
 
         binding.okButton.setOnClickListener { submit() }
-        binding.cancelButton.visibility =
-            if (inline || config.isCancelButtonDisabled) View.GONE else View.VISIBLE
+        binding.cancelButton.visibility = if (config.isCancelButtonDisabled) View.GONE else View.VISIBLE
         binding.cancelButton.setOnClickListener { cancelFromUser() }
         binding.textInput.setOnEditorActionListener { _, actionId, event ->
             val done = actionId == EditorInfo.IME_ACTION_DONE ||
@@ -164,71 +137,9 @@ class SoftwareKeyboardDialog : DialogFragment() {
     override fun onStart() {
         super.onStart()
         if (::binding.isInitialized) {
-            val window = dialog?.window
-            if (inline) {
-                window?.apply {
-                    clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                    setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-                    setDimAmount(0f)
-                }
-            }
-            window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
-            showImeWhenWindowIsFocused()
-        }
-    }
-
-    private fun showImeWhenWindowIsFocused() {
-        if (!::binding.isInitialized)
-            return
-
-        val window = dialog?.window ?: return
-        val decorView = window.decorView
-
-        fun showIme() {
-            if (!isAdded || !::binding.isInitialized)
-                return
             binding.textInput.requestFocus()
-            binding.textInput.post {
-                if (!isAdded || !::binding.isInitialized || !binding.textInput.hasFocus())
-                    return@post
-                val inputMethod = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                inputMethod.showSoftInput(binding.textInput, InputMethodManager.SHOW_IMPLICIT)
-            }
+            dialog?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
         }
-
-        if (decorView.hasWindowFocus()) {
-            showIme()
-            return
-        }
-
-        imeWindowFocusListener?.let {
-            if (decorView.viewTreeObserver.isAlive)
-                decorView.viewTreeObserver.removeOnWindowFocusChangeListener(it)
-        }
-
-        val listener = object : ViewTreeObserver.OnWindowFocusChangeListener {
-            override fun onWindowFocusChanged(hasFocus : Boolean) {
-                if (!hasFocus)
-                    return
-                if (decorView.viewTreeObserver.isAlive)
-                    decorView.viewTreeObserver.removeOnWindowFocusChangeListener(this)
-                imeWindowFocusListener = null
-                decorView.post { showIme() }
-            }
-        }
-        imeWindowFocusListener = listener
-        decorView.viewTreeObserver.addOnWindowFocusChangeListener(listener)
-    }
-
-    override fun onStop() {
-        dialog?.window?.decorView?.let { decorView ->
-            imeWindowFocusListener?.let { listener ->
-                if (decorView.viewTreeObserver.isAlive)
-                    decorView.viewTreeObserver.removeOnWindowFocusChangeListener(listener)
-            }
-        }
-        imeWindowFocusListener = null
-        super.onStop()
     }
 
     private fun submit() {

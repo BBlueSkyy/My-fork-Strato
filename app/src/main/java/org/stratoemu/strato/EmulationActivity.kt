@@ -47,7 +47,6 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import org.stratoemu.strato.applet.swkbd.InlineSoftwareKeyboardHost
 import org.stratoemu.strato.applet.swkbd.SoftwareKeyboardConfig
 import org.stratoemu.strato.applet.swkbd.SoftwareKeyboardDialog
 import org.stratoemu.strato.data.AppItem
@@ -178,7 +177,6 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private external fun nativeSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int)
 
     private val softwareKeyboardDialogs = mutableMapOf<Long, SoftwareKeyboardDialog>()
-    private val inlineSoftwareKeyboardHosts = mutableMapOf<Long, InlineSoftwareKeyboardHost>()
 
     var fps : Int = 0
     var averageFrametime : Float = 0.0f
@@ -662,10 +660,6 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             dialog.closeFromFrontend()
             nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
         }
-        inlineSoftwareKeyboardHosts.toMap().also { inlineSoftwareKeyboardHosts.clear() }.forEach { (sessionId, host) ->
-            host.close()
-            nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
-        }
         super.onDestroy()
         shouldFinish = false
 
@@ -849,7 +843,6 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                 nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
                 return@runOnUiThread
             }
-
             softwareKeyboardDialogs.toMap().forEach { (otherSessionId, otherDialog) ->
                 if (otherSessionId != sessionId) {
                     softwareKeyboardDialogs.remove(otherSessionId)
@@ -857,44 +850,8 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                     nativeSoftwareKeyboardEvent(otherSessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
                 }
             }
-            inlineSoftwareKeyboardHosts.toMap().forEach { (otherSessionId, otherHost) ->
-                if (otherSessionId != sessionId) {
-                    inlineSoftwareKeyboardHosts.remove(otherSessionId)
-                    otherHost.close()
-                    nativeSoftwareKeyboardEvent(otherSessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
-                }
-            }
-
             softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend()
-
-            if (inline) {
-                try {
-                    // An Android IME can keep a stale InputConnection after a hide/show cycle,
-                    // especially when the editor is a tiny transparent host over a SurfaceView.
-                    // The HOS frontend session is still alive, so recreate only the Android
-                    // editor host for every Appear while keeping the same native sessionId.
-                    inlineSoftwareKeyboardHosts.remove(sessionId)?.close()
-                    val host = InlineSoftwareKeyboardHost(this, sessionId, config, initialText)
-                    inlineSoftwareKeyboardHosts[sessionId] = host
-
-                    val initialCursor =
-                        if (config.initialCursorPos == org.stratoemu.strato.applet.swkbd.InitialCursorPos.First)
-                            0
-                        else
-                            initialText.length
-                    host.updateFromFrontend(initialText, initialCursor)
-                    host.show()
-                    Log.i(Tag, "SWKBD openSoftwareKeyboard: fresh inline IME host shown, sessionId=$sessionId")
-                } catch (exception : Exception) {
-                    Log.i(Tag, "SWKBD openSoftwareKeyboard: inline host failed, sessionId=$sessionId, exception=${exception.javaClass.simpleName}")
-                    inlineSoftwareKeyboardHosts.remove(sessionId)?.close()
-                    nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
-                }
-                return@runOnUiThread
-            }
-
-            inlineSoftwareKeyboardHosts.remove(sessionId)?.close()
-            val dialog = SoftwareKeyboardDialog.newInstance(sessionId, config, initialText, false)
+            val dialog = SoftwareKeyboardDialog.newInstance(sessionId, config, initialText, inline)
             softwareKeyboardDialogs[sessionId] = dialog
             try {
                 dialog.showNow(supportFragmentManager, "software-keyboard-$sessionId")
@@ -916,44 +873,27 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     @Suppress("unused")
     fun closeSoftwareKeyboard(sessionId : Long) {
-        runOnUiThread {
-            softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend()
-            inlineSoftwareKeyboardHosts.remove(sessionId)?.close()
-        }
+        runOnUiThread { softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend() }
     }
 
     @Suppress("unused")
     fun hideSoftwareKeyboard(sessionId : Long) {
-        runOnUiThread {
-            softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend()
-            // Keep the native SWKBD session alive, but drop the Android editor/InputConnection.
-            // A later Appear creates a fresh host and can reliably reopen the IME.
-            inlineSoftwareKeyboardHosts.remove(sessionId)?.close()
-        }
+        runOnUiThread { softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend() }
     }
 
     @Suppress("unused")
     fun updateSoftwareKeyboard(sessionId : Long, text : String, cursor : Int) {
-        runOnUiThread {
-            softwareKeyboardDialogs[sessionId]?.updateFromFrontend(text, cursor)
-            inlineSoftwareKeyboardHosts[sessionId]?.updateFromFrontend(text, cursor)
-        }
+        runOnUiThread { softwareKeyboardDialogs[sessionId]?.updateFromFrontend(text, cursor) }
     }
 
     @Suppress("unused")
     fun resumeSoftwareKeyboard(sessionId : Long) {
-        runOnUiThread {
-            softwareKeyboardDialogs[sessionId]?.resumeEditing()
-            inlineSoftwareKeyboardHosts[sessionId]?.resumeEditing()
-        }
+        runOnUiThread { softwareKeyboardDialogs[sessionId]?.resumeEditing() }
     }
 
     @Suppress("unused")
     fun showSoftwareKeyboardTextCheck(sessionId : Long, result : Int, message : String) {
-        runOnUiThread {
-            softwareKeyboardDialogs[sessionId]?.showTextCheck(result, message)
-            inlineSoftwareKeyboardHosts[sessionId]?.showTextCheck(result, message)
-        }
+        runOnUiThread { softwareKeyboardDialogs[sessionId]?.showTextCheck(result, message) }
     }
 
     fun sendSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int) {
