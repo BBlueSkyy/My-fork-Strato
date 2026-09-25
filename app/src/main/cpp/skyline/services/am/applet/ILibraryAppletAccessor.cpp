@@ -96,14 +96,41 @@ namespace skyline::service::am {
     Result ILibraryAppletAccessor::PushInteractiveInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
         auto data{request.PopService<IStorage>(0, session)};
         const auto dataSpan{data->GetSpan()};
-        if (dataSpan.size() >= sizeof(u32)) {
-            u32 command{};
+        u32 command{};
+        const bool hasCommand{dataSpan.size() >= sizeof(command)};
+        if (hasCommand) {
             std::memcpy(&command, dataSpan.data(), sizeof(command));
             LOGI("PushInteractiveInData: command=0x{:X}, size=0x{:X}", command, dataSpan.size());
         } else {
             LOGI("PushInteractiveInData: command=<truncated>, size=0x{:X}", dataSpan.size());
         }
+
         applet->PushInteractiveDataToApplet(std::move(data));
+
+        if (hasCommand && command == 0xE &&
+            appletId == skyline::applet::AppletId::LibraryAppletSwkbd &&
+            appletMode == applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay) {
+            bool stateChangedSignalled{};
+            bool normalOutSignalled{};
+            bool interactiveOutSignalled{};
+            {
+                std::scoped_lock lock{kernel::type::KSyncObject::syncObjectMutex};
+                stateChangedSignalled = stateChangeEvent->signalled;
+                normalOutSignalled = popNormalOutDataEvent->signalled;
+                interactiveOutSignalled = popInteractiveOutDataEvent->signalled;
+            }
+
+            LOGI("PRECALC ACCESSOR: applet=0x{:X}, mode=0x{:X}, exited={}, completed={}, "
+                 "stateChangedHandle=0x{:X}, stateChangedSignalled={}, "
+                 "normalOutHandle=0x{:X}, normalOutSignalled={}, "
+                 "interactiveOutHandle=0x{:X}, interactiveOutSignalled={}, "
+                 "pid=0x{:X}, aruid=0x{:X}, consumerHandle=0x{:X}",
+                 static_cast<u32>(appletId), static_cast<u32>(appletMode), exited, stateChangedSignalled,
+                 stateChangeEventHandle, stateChangedSignalled,
+                 popNormalOutDataEventHandle, normalOutSignalled,
+                 popInteractiveOutDataEventHandle, interactiveOutSignalled,
+                 request.pid, appletResourceUserId, indirectLayerHandle);
+        }
         return {};
     }
 
@@ -156,12 +183,6 @@ namespace skyline::service::am {
         response.Push<u64>(indirectLayerHandle);
         LOGI("GetIndirectLayerConsumerHandle: success, handle=0x{:X}, pid=0x{:X}, ARUID=0x{:X}",
              indirectLayerHandle, request.pid, requestedAppletResourceUserId);
-        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd &&
-            appletMode == applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay) {
-            LOGI("PRECALC IPC seed: thread={}, service=am::ILibraryAppletAccessor, command=0xA0, result=0x0",
-                 state.thread->id);
-            manager.ArmPreCalcIpcTrace(state.thread->id);
-        }
         return {};
     }
 
