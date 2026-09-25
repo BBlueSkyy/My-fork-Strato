@@ -869,11 +869,14 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
             if (inline) {
                 try {
-                    val host = inlineSoftwareKeyboardHosts[sessionId] ?: InlineSoftwareKeyboardHost(
-                        this, sessionId, config, initialText
-                    ).also { inlineSoftwareKeyboardHosts[sessionId] = it }
+                    // An Android IME can keep a stale InputConnection after a hide/show cycle,
+                    // especially when the editor is a tiny transparent host over a SurfaceView.
+                    // The HOS frontend session is still alive, so recreate only the Android
+                    // editor host for every Appear while keeping the same native sessionId.
+                    inlineSoftwareKeyboardHosts.remove(sessionId)?.close()
+                    val host = InlineSoftwareKeyboardHost(this, sessionId, config, initialText)
+                    inlineSoftwareKeyboardHosts[sessionId] = host
 
-                    host.reconfigure(config)
                     val initialCursor =
                         if (config.initialCursorPos == org.stratoemu.strato.applet.swkbd.InitialCursorPos.First)
                             0
@@ -881,7 +884,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                             initialText.length
                     host.updateFromFrontend(initialText, initialCursor)
                     host.show()
-                    Log.i(Tag, "SWKBD openSoftwareKeyboard: inline IME host shown, sessionId=$sessionId")
+                    Log.i(Tag, "SWKBD openSoftwareKeyboard: fresh inline IME host shown, sessionId=$sessionId")
                 } catch (exception : Exception) {
                     Log.i(Tag, "SWKBD openSoftwareKeyboard: inline host failed, sessionId=$sessionId, exception=${exception.javaClass.simpleName}")
                     inlineSoftwareKeyboardHosts.remove(sessionId)?.close()
@@ -923,7 +926,9 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     fun hideSoftwareKeyboard(sessionId : Long) {
         runOnUiThread {
             softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend()
-            inlineSoftwareKeyboardHosts[sessionId]?.hide()
+            // Keep the native SWKBD session alive, but drop the Android editor/InputConnection.
+            // A later Appear creates a fresh host and can reliably reopen the IME.
+            inlineSoftwareKeyboardHosts.remove(sessionId)?.close()
         }
     }
 
