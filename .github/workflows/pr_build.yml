@@ -46,12 +46,32 @@ jobs:
           ln -s /usr/bin/ninja .
 
       - name: Android Assemble
+        timeout-minutes: 30
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand assembleDevRelease assembleDevReldebug
+        run: |
+          (
+            while sleep 60; do
+              echo "===== BUILD PROCESSES $(date -Iseconds) ====="
+              ps -eo pid,ppid,etime,%cpu,%mem,cmd \
+                | grep -E 'gradle|java|ninja|clang|cmake' \
+                | grep -v grep || true
+            done
+          ) &
+          MONITOR_PID=$!
+          trap 'kill "$MONITOR_PID" 2>/dev/null || true' EXIT
+
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            --parallel \
+            --configure-on-demand \
+            --console=plain \
+            assembleDevRelease \
+            assembleDevReldebug
       - name: Rename APKs
         if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
         run: |
