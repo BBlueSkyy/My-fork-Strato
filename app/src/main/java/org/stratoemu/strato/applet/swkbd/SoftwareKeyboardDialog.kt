@@ -134,7 +134,8 @@ class SoftwareKeyboardDialog : DialogFragment() {
         updateValidity(text)
 
         binding.okButton.setOnClickListener { submit() }
-        binding.cancelButton.visibility = if (config.isCancelButtonDisabled) View.GONE else View.VISIBLE
+        binding.cancelButton.visibility =
+            if (inline || config.isCancelButtonDisabled) View.GONE else View.VISIBLE
         binding.cancelButton.setOnClickListener { cancelFromUser() }
         binding.textInput.setOnEditorActionListener { _, actionId, event ->
             val done = actionId == EditorInfo.IME_ACTION_DONE ||
