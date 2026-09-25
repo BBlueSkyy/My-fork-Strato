@@ -117,22 +117,79 @@ namespace skyline::nce {
                         const auto *frameWords{reinterpret_cast<const u64 *>(frameAddress)};
                         const u64 previousFrame{frameWords[0]};
                         const u64 returnPc{frameWords[1]};
-                        LOGI("POST2460 guest frame: depth={}, frame=0x{:X}, prev_fp=0x{:X}, lr=0x{:X}",
-                             depth, frameAddress, previousFrame, returnPc);
+                        const auto symbol{state.loader->ResolveSymbol64(reinterpret_cast<void *>(returnPc))};
+                        LOGI("POST2460 guest frame: depth={}, frame=0x{:X}, prev_fp=0x{:X}, lr=0x{:X}, module={}, symbol={}",
+                             depth, frameAddress, previousFrame, returnPc,
+                             symbol.executableName.empty() ? "<unknown>" : symbol.executableName,
+                             symbol.name ? symbol.name : "<none>");
 
                         if (returnPc >= 0x20) {
+                            const bool mainFrame{symbol.executableName == "main.nso"};
+                            const u64 beforeBytes{mainFrame ? 0x100ULL : 0x20ULL};
+                            const u64 afterBytes{mainFrame ? 0x180ULL : 0x20ULL};
                             const u64 codePageBase{returnPc & ~(static_cast<u64>(constant::PageSize) - 1)};
-                            const u64 codeStart{std::max(codePageBase, returnPc - 0x20)};
-                            const u64 codeEnd{std::min(codePageBase + constant::PageSize, returnPc + 0x20)};
+                            const u64 requestedStart{returnPc > beforeBytes ? returnPc - beforeBytes : returnPc};
+                            const u64 codeStart{std::max(codePageBase, requestedStart)};
+                            const u64 codeEnd{std::min(codePageBase + constant::PageSize, returnPc + afterBytes)};
                             auto codeSpan{span<u8>{reinterpret_cast<u8 *>(codeStart), static_cast<size_t>(codeEnd - codeStart)}};
                             if (state.process->memory.AddressSpaceContains(codeSpan)) {
                                 const auto *frameCodeWords{reinterpret_cast<const u32 *>(codeStart)};
                                 const size_t frameCodeWordCount{(codeEnd - codeStart) / sizeof(u32)};
-                                std::string words;
-                                for (size_t index{}; index < frameCodeWordCount; index++)
-                                    words += fmt::format("{}{:08X}", index ? " " : "", frameCodeWords[index]);
-                                LOGI("POST2460 guest frame code: depth={}, addr=0x{:X}, lr_offset=0x{:X}, words={}",
-                                     depth, codeStart, returnPc - codeStart, words);
+                                for (size_t index{}; index < frameCodeWordCount; index += 8) {
+                                    const size_t count{std::min<size_t>(8, frameCodeWordCount - index)};
+                                    std::string words;
+                                    for (size_t word{}; word < count; word++)
+                                        words += fmt::format("{}{:08X}", word ? " " : "", frameCodeWords[index + word]);
+                                    LOGI("POST2460 guest frame code: depth={}, addr=0x{:X}, lr_offset=0x{:X}, words={}",
+                                         depth, codeStart + index * sizeof(u32),
+                                         returnPc - (codeStart + index * sizeof(u32)), words);
+                                }
+
+                                if (mainFrame) {
+                                    // Resolve direct BL targets in the first main.nso caller. This identifies
+                                    // the imports/thunks immediately surrounding the nnSdk return without
+                                    // executing or patching guest code.
+                                    for (size_t index{}; index < frameCodeWordCount; index++) {
+                                        const u32 instruction{frameCodeWords[index]};
+                                        if ((instruction & 0xFC000000U) != 0x94000000U)
+                                            continue;
+
+                                        i64 immediate{static_cast<i64>(instruction & 0x03FFFFFFU)};
+                                        if (immediate & (1LL << 25))
+                                            immediate -= (1LL << 26);
+                                        const u64 instructionPc{codeStart + index * sizeof(u32)};
+                                        const u64 targetPc{static_cast<u64>(static_cast<i64>(instructionPc) + (immediate << 2))};
+                                        const auto targetSymbol{state.loader->ResolveSymbol64(reinterpret_cast<void *>(targetPc))};
+                                        LOGI("POST2460 main BL: call=0x{:X}, target=0x{:X}, module={}, symbol={}",
+                                             instructionPc, targetPc,
+                                             targetSymbol.executableName.empty() ? "<unknown>" : targetSymbol.executableName,
+                                             targetSymbol.name ? targetSymbol.name : "<none>");
+
+                                        const u64 targetPageBase{targetPc & ~(static_cast<u64>(constant::PageSize) - 1)};
+                                        const u64 targetEnd{std::min(targetPageBase + constant::PageSize, targetPc + 0x20)};
+                                        auto targetSpan{span<u8>{reinterpret_cast<u8 *>(targetPc), static_cast<size_t>(targetEnd - targetPc)}};
+                                        if (state.process->memory.AddressSpaceContains(targetSpan)) {
+                                            const auto *targetWords{reinterpret_cast<const u32 *>(targetPc)};
+                                            const size_t targetWordCount{(targetEnd - targetPc) / sizeof(u32)};
+                                            std::string words;
+                                            for (size_t word{}; word < targetWordCount; word++)
+                                                words += fmt::format("{}{:08X}", word ? " " : "", targetWords[word]);
+                                            LOGI("POST2460 main BL target code: target=0x{:X}, words={}", targetPc, words);
+                                        }
+                                    }
+
+                                    constexpr size_t MainFrameDumpSize{0x180};
+                                    auto mainFrameSpan{span<u8>{reinterpret_cast<u8 *>(frameAddress), MainFrameDumpSize}};
+                                    if (state.process->memory.AddressSpaceContains(mainFrameSpan)) {
+                                        const auto *mainFrameWords{reinterpret_cast<const u64 *>(frameAddress)};
+                                        constexpr size_t MainFrameWordCount{MainFrameDumpSize / sizeof(u64)};
+                                        for (size_t index{}; index < MainFrameWordCount; index += 4)
+                                            LOGI("POST2460 main frame data: fp+0x{:X}={:016X} {:016X} {:016X} {:016X}",
+                                                 index * sizeof(u64),
+                                                 mainFrameWords[index], mainFrameWords[index + 1],
+                                                 mainFrameWords[index + 2], mainFrameWords[index + 3]);
+                                    }
+                                }
                             }
                         }
 
