@@ -218,7 +218,7 @@ class InlineSoftwareKeyboardInputView @JvmOverloads constructor(
 
         // Do NOT restart the InputConnection here. Eden keeps the same IME session
         // alive while the guest changes inline text/cursor state.
-        if (hasFocus) {
+        if (hasFocus()) {
             val position = currentCursor()
             inputMethodManager.updateSelection(this, position, position, -1, -1)
         }
