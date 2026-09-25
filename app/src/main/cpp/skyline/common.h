@@ -68,9 +68,14 @@ namespace skyline {
         std::vector<std::shared_ptr<loader::Loader>> dlcLoaders;
         std::shared_ptr<loader::Loader> updateLoader;
         std::shared_ptr<nce::NCE> nce;
-        std::shared_ptr<kernel::type::KProcess> process{};
+        std::shared_ptr<kernel::type::KProcess> process{}; //!< The primary application process
+        static thread_local inline std::shared_ptr<kernel::type::KProcess> currentProcess{}; //!< The process owning the current guest thread
         static thread_local inline std::shared_ptr<kernel::type::KThread> thread{}; //!< The KThread of the thread which accesses this object
         static thread_local inline nce::ThreadContext *ctx{}; //!< The context of the guest thread for the corresponding host thread
+
+        std::shared_ptr<kernel::type::KProcess> GetCurrentProcess() const {
+            return currentProcess ? currentProcess : process;
+        }
         std::shared_ptr<gpu::GPU> gpu;
         std::shared_ptr<soc::SOC> soc;
         std::shared_ptr<audio::Audio> audio;

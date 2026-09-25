@@ -57,7 +57,7 @@ namespace skyline::kernel::type {
 
     void KProcess::InitializeHeapTls() {
         constexpr size_t DefaultHeapSize{0x200000};
-        memory.MapHeapMemory(span<u8>{state.process->memory.heap.guest.data(), DefaultHeapSize});
+        memory.MapHeapMemory(span<u8>{memory.heap.guest.data(), DefaultHeapSize});
         memory.processHeapSize = DefaultHeapSize;
         tlsExceptionContext = AllocateTlsSlot();
     }
@@ -71,8 +71,8 @@ namespace skyline::kernel::type {
 
         bool isAllocated{};
 
-        u8 *pageCandidate{state.process->memory.tlsIo.guest.data()};
-        while (state.process->memory.tlsIo.guest.contains(span<u8>(pageCandidate, constant::PageSize))) {
+        u8 *pageCandidate{memory.tlsIo.guest.data()};
+        while (memory.tlsIo.guest.contains(span<u8>(pageCandidate, constant::PageSize))) {
             auto chunk = memory.GetChunk(pageCandidate);
             if (!chunk)
                 break;
@@ -102,13 +102,13 @@ namespace skyline::kernel::type {
             bool isAllocated{};
 
             u8 *pageCandidate{memory.stack.guest.data()};
-            while (state.process->memory.stack.guest.contains(span<u8>(pageCandidate, state.process->npdm.meta.mainThreadStackSize))) {
+            while (memory.stack.guest.contains(span<u8>(pageCandidate, npdm.meta.mainThreadStackSize))) {
                 auto chunk{memory.GetChunk(pageCandidate)};
                 if (!chunk)
                     break;
 
-                if (chunk->second.state == memory::states::Unmapped && chunk->second.size >= state.process->npdm.meta.mainThreadStackSize) {
-                    memory.MapStackMemory(span<u8>{pageCandidate, state.process->npdm.meta.mainThreadStackSize});
+                if (chunk->second.state == memory::states::Unmapped && chunk->second.size >= npdm.meta.mainThreadStackSize) {
+                    memory.MapStackMemory(span<u8>{pageCandidate, npdm.meta.mainThreadStackSize});
                     isAllocated = true;
                     break;
                 } else {
@@ -119,11 +119,11 @@ namespace skyline::kernel::type {
             if (!isAllocated)
                 throw exception("Failed to map main thread stack!");
 
-            stackTop = pageCandidate + state.process->npdm.meta.mainThreadStackSize;
-            mainThreadStack = span<u8>(pageCandidate, state.process->npdm.meta.mainThreadStackSize);
+            stackTop = pageCandidate + npdm.meta.mainThreadStackSize;
+            mainThreadStack = span<u8>(pageCandidate, npdm.meta.mainThreadStackSize);
         }
         size_t tid{threads.size() + 1}; //!< The first thread is HOS-1 rather than HOS-0, this is to match the HOS kernel's behaviour
-        auto thread{NewHandle<KThread>(this, tid, entry, argument, stackTop, priority ? *priority : state.process->npdm.meta.mainThreadPriority, idealCore ? *idealCore : state.process->npdm.meta.idealCore).item};
+        auto thread{NewHandle<KThread>(this, tid, entry, argument, stackTop, priority ? *priority : npdm.meta.mainThreadPriority, idealCore ? *idealCore : npdm.meta.idealCore).item};
         threads.push_back(thread);
         return thread;
     }

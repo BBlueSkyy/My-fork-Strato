@@ -23,7 +23,7 @@ namespace skyline::loader {
 
         auto nsoFile{exeFs->OpenFile("rtld")};
 
-        state.process->memory.InitializeVmm(process->npdm.meta.flags.type, process->npdm.meta.flags.enableAliasRegionExtraSize);
+        process->memory.InitializeVmm(process->npdm.meta.flags.type, process->npdm.meta.flags.enableAliasRegionExtraSize);
 
         auto loadInfo{NsoLoader::LoadNso(loader, nsoFile, process, state, 0, "rtld.nso")};
         u64 offset{loadInfo.size};
@@ -43,7 +43,7 @@ namespace skyline::loader {
             offset += loadInfo.size;
         }
 
-        state.process->memory.InitializeRegions(span<u8>{base, offset});
+        process->memory.InitializeRegions(span<u8>{base, offset});
 
         return entry;
     }

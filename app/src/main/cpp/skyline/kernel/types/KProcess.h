@@ -21,7 +21,7 @@ namespace skyline {
         /**
          * @brief KProcess manages process-global state such as memory, kernel handles allocated to the process and synchronization primitives
          */
-        class KProcess : public KSyncObject {
+        class KProcess : public KSyncObject, public std::enable_shared_from_this<KProcess> {
           private:
             inline static std::atomic<u64> nextProcessId{1};
 
@@ -154,7 +154,7 @@ namespace skyline {
                 } else if constexpr(std::is_same<objectClass, KProcess>()) {
                     constexpr KHandle processSelf{0xFFFF8001}; // The handle used by threads in a process to refer to the process
                     if (handle == processSelf)
-                        return state.process;
+                        return state.GetCurrentProcess();
                     objectType = KType::KProcess;
                 } else if constexpr(std::is_same<objectClass, KSharedMemory>()) {
                     objectType = KType::KSharedMemory;

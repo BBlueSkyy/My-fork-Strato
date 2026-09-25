@@ -63,10 +63,10 @@ namespace skyline::loader {
             executable.dynstr = {header.dynstr.offset, header.dynstr.size};
         }
 
-        state.process->memory.InitializeVmm(memory::AddressSpaceType::AddressSpace39Bit);
+        process->memory.InitializeVmm(memory::AddressSpaceType::AddressSpace39Bit);
         auto applicationName{nacp ? nacp->GetApplicationName(nacp->GetFirstSupportedTitleLanguage()) : ""};
         auto loadInfo{LoadExecutable(process, state, executable, 0, applicationName.empty() ? "main.nro" : applicationName + ".nro")};
-        state.process->memory.InitializeRegions(span<u8>{loadInfo.base, loadInfo.size});
+        process->memory.InitializeRegions(span<u8>{loadInfo.base, loadInfo.size});
 
         return loadInfo.entry;
     }

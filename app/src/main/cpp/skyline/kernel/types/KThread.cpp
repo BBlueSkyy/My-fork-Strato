@@ -50,6 +50,7 @@ namespace skyline::kernel::type {
         ctx.state = &state;
         state.ctx = &ctx;
         state.thread = shared_from_this();
+        state.currentProcess = parent->shared_from_this();
 
         if (setjmp(originalCtx)) { // Returns 1 if it's returning from guest, 0 otherwise
             state.scheduler->RemoveThread();
@@ -62,6 +63,7 @@ namespace skyline::kernel::type {
             }
 
             Signal();
+            state.currentProcess.reset();
 
             if (threadName[0] != 'H' || threadName[1] != 'O' || threadName[2] != 'S' || threadName[3] != '-') {
                 if (int result{pthread_setname_np(pthread, threadName.data())})
@@ -182,7 +184,7 @@ namespace skyline::kernel::type {
             LOGE("{}", e.what());
             if (id) {
                 signal::BlockSignal({SIGINT});
-                state.process->Kill(false);
+                parent->Kill(false);
             }
             abi::__cxa_end_catch();
             std::longjmp(originalCtx, true);
@@ -191,7 +193,7 @@ namespace skyline::kernel::type {
                 LOGE("{}", e.what());
                 if (id) {
                     signal::BlockSignal({SIGINT});
-                    state.process->Kill(false);
+                    parent->Kill(false);
                 }
             }
             abi::__cxa_end_catch();
