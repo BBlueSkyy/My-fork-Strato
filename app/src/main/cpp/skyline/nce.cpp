@@ -106,6 +106,7 @@ namespace skyline::nce {
                     // Follow only a few validated, monotonically increasing frame records. This
                     // deliberately avoids loader symbolization and the generic stack tracer.
                     u64 frameAddress{originalSp};
+                    bool capturedMainFrame{};
                     constexpr size_t MaxFrameDepth{8};
                     for (size_t depth{}; depth < MaxFrameDepth; depth++) {
                         auto frameSpan{span<u8>{reinterpret_cast<u8 *>(frameAddress), 2 * sizeof(u64)}};
@@ -124,7 +125,9 @@ namespace skyline::nce {
                              symbol.name ? symbol.name : "<none>");
 
                         if (returnPc >= 0x20) {
-                            const bool mainFrame{symbol.executableName == "main.nso"};
+                            const bool mainFrame{!capturedMainFrame && symbol.executableName == "main.nso"};
+                            if (mainFrame)
+                                capturedMainFrame = true;
                             const u64 beforeBytes{mainFrame ? 0x100ULL : 0x20ULL};
                             const u64 afterBytes{mainFrame ? 0x180ULL : 0x20ULL};
                             const u64 codePageBase{returnPc & ~(static_cast<u64>(constant::PageSize) - 1)};
@@ -158,7 +161,7 @@ namespace skyline::nce {
                                         if (immediate & (1LL << 25))
                                             immediate -= (1LL << 26);
                                         const u64 instructionPc{codeStart + index * sizeof(u32)};
-                                        const u64 targetPc{static_cast<u64>(static_cast<i64>(instructionPc) + (immediate << 2))};
+                                        const u64 targetPc{static_cast<u64>(static_cast<i64>(instructionPc) + immediate * 4)};
                                         const auto targetSymbol{state.loader->ResolveSymbol64(reinterpret_cast<void *>(targetPc))};
                                         LOGI("POST2460 main BL: call=0x{:X}, target=0x{:X}, module={}, symbol={}",
                                              instructionPc, targetPc,
