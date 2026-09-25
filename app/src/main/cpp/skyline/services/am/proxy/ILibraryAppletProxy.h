@@ -10,6 +10,8 @@ namespace skyline::service::am {
         ILibraryAppletProxy(const DeviceState &state, ServiceManager &manager);
         ILibraryAppletProxy(const DeviceState &state, ServiceManager &manager, u64 appletResourceUserId);
 
+        Result OpenLibraryAppletSelfAccessor(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+
         SERVICE_DECL(
             SFUNC(0x0, BaseProxy, GetCommonStateGetter),
             SFUNC(0x1, BaseProxy, GetSelfController),
@@ -17,6 +19,8 @@ namespace skyline::service::am {
             SFUNC(0x3, BaseProxy, GetAudioController),
             SFUNC(0x4, BaseProxy, GetDisplayController),
             SFUNC(0xB, BaseProxy, GetLibraryAppletCreator),
+            SFUNC(0x14, ILibraryAppletProxy, OpenLibraryAppletSelfAccessor),
+            SFUNC(0x15, BaseProxy, GetAppletCommonFunctions),
             SFUNC(0x3E8, BaseProxy, GetDebugFunctions)
         )
     };

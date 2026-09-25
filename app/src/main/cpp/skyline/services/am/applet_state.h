@@ -12,6 +12,7 @@
 namespace skyline::service::am {
     class IStorage;
     class ILibraryAppletAccessor;
+    struct NativeAppletContext;
 
     struct AppletState {
         static constexpr u32 FocusStateChangedMessage{0xF};
@@ -74,6 +75,7 @@ namespace skyline::service::am {
         std::deque<std::shared_ptr<IStorage>> processWindingContext;
         std::shared_ptr<ILibraryAppletAccessor> reservedLibraryApplet;
         std::shared_ptr<ILibraryAppletAccessor> callingLibraryApplet;
+        std::shared_ptr<NativeAppletContext> nativeAppletContext;
 
         Result terminateResult{};
         i32 previousProgramIndex{-1};
