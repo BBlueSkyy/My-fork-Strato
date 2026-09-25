@@ -11,6 +11,10 @@
 #include "KEvent.h"
 
 namespace skyline {
+    namespace loader {
+        class Loader;
+    }
+
     namespace constant {
         constexpr u16 TlsSlotSize{0x200}; //!< The size of a single TLS slot
         constexpr u8 TlsSlots{constant::PageSize / TlsSlotSize}; //!< The amount of TLS slots in a single page
@@ -27,6 +31,7 @@ namespace skyline {
 
           public: // We have intermittent public/private members to ensure proper construction/destruction order
             const u64 id{nextProcessId.fetch_add(1, std::memory_order_relaxed)};
+            std::shared_ptr<loader::Loader> loader; //!< Executable/content loader owned by this process
             MemoryManager memory;
             TrapManager &trap;
 

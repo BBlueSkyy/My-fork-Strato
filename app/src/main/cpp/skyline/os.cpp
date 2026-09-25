@@ -60,8 +60,9 @@ namespace skyline::kernel {
 
         auto &process{state.process};
         process = std::make_shared<kernel::type::KProcess>(state);
+        process->loader = state.loader;
 
-        auto entry{state.loader->LoadProcessData(process, state)};
+        auto entry{process->loader->LoadProcessData(process, state)};
         auto &nacp{state.loader->nacp};
         if (nacp) {
             std::string name{nacp->GetApplicationName(language::ApplicationLanguage::AmericanEnglish)}, publisher{nacp->GetApplicationPublisher(language::ApplicationLanguage::AmericanEnglish)};

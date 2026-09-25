@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <os.h>
+#include <kernel/types/KProcess.h>
 #include <vfs/os_filesystem.h>
 #include <vfs/nca.h>
 #include <loader/loader.h>
@@ -65,7 +66,12 @@ namespace skyline::service::fssrv {
     Result IFileSystemProxy::OpenSaveDataFileSystem(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto spaceId{request.Pop<SaveDataSpaceId>()};
         auto attribute{request.Pop<SaveDataAttribute>()};
-        auto saveDataPath{GetSaveDataPath(spaceId, attribute, state.loader->nacp->nacpContents.saveDataOwnerId)};
+        auto *process{state.GetCurrentProcessPtr()};
+        auto processLoader{process && process->loader ? process->loader : state.loader};
+        const u64 defaultProgramId{processLoader && processLoader->nacp
+                                       ? processLoader->nacp->nacpContents.saveDataOwnerId
+                                       : process ? process->npdm.aci0.programId : 0};
+        auto saveDataPath{GetSaveDataPath(spaceId, attribute, defaultProgramId)};
 
         manager.RegisterService(std::make_shared<IFileSystem>(std::make_shared<vfs::OsFileSystem>(state.os->publicAppFilesPath + "/switch" + saveDataPath), state, manager), session, response);
         return {};
@@ -93,10 +99,12 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystemProxy::OpenDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto backing{state.loader->currentProcessRomFs};
+        auto *process{state.GetCurrentProcessPtr()};
+        auto processLoader{process && process->loader ? process->loader : state.loader};
+        auto backing{processLoader ? processLoader->currentProcessRomFs : nullptr};
         if (!backing)
             return result::NoRomFsAvailable;
-        LOGI("OpenDataStorageByCurrentProcess: resolved Program storage, {}", state.loader->currentProcessRomFsIdentity);
+        LOGI("OpenDataStorageByCurrentProcess: resolved Program storage, {}", processLoader->currentProcessRomFsIdentity);
         manager.RegisterService(std::make_shared<IStorage>(backing, state, manager), session, response);
         return {};
     }
@@ -139,10 +147,12 @@ namespace skyline::service::fssrv {
     Result IFileSystemProxy::OpenPatchDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         // A base-only title (or an ExeFS-only update) has no Program patch data to open.
         // When available, this is the same persistent base+patch view used by command 200.
-        auto backing{state.loader->patchDataRomFs};
+        auto *process{state.GetCurrentProcessPtr()};
+        auto processLoader{process && process->loader ? process->loader : state.loader};
+        auto backing{processLoader ? processLoader->patchDataRomFs : nullptr};
         if (!backing)
             return result::EntityNotFound;
-        LOGI("OpenPatchDataStorageByCurrentProcess: resolved Program patch storage, {}", state.loader->currentProcessRomFsIdentity);
+        LOGI("OpenPatchDataStorageByCurrentProcess: resolved Program patch storage, {}", processLoader->currentProcessRomFsIdentity);
         manager.RegisterService(std::make_shared<IStorage>(backing, state, manager), session, response);
         return {};
     }

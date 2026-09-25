@@ -15,6 +15,15 @@
 #include "nce.h"
 
 namespace skyline::nce {
+    namespace {
+        loader::Loader *GetCurrentLoader(const DeviceState &state) {
+            auto *process{state.GetCurrentProcessPtr()};
+            if (process && process->loader)
+                return process->loader.get();
+            return state.loader.get();
+        }
+    }
+
     NCE::ExitException::ExitException(bool killAllThreads) : killAllThreads(killAllThreads) {}
 
     const char *NCE::ExitException::what() const noexcept {
@@ -42,7 +51,7 @@ namespace skyline::nce {
             }
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
-                LOGENF("{} (SVC: {})\nStack Trace:{}", e.what(), svc.name, state.loader->GetStackTrace(e.frames));
+                LOGENF("{} (SVC: {})\nStack Trace:{}", e.what(), svc.name, GetCurrentLoader(state)->GetStackTrace(e.frames));
 
                 if (state.thread->id) {
                     signal::BlockSignal({SIGINT});
@@ -61,7 +70,7 @@ namespace skyline::nce {
             abi::__cxa_end_catch();
             std::longjmp(state.thread->originalCtx, true);
         } catch (const exception &e) {
-            LOGENF("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
+            LOGENF("{}\nStack Trace:{}", e.what(), GetCurrentLoader(state)->GetStackTrace(e.frames));
 
             if (state.thread->id) {
                 signal::BlockSignal({SIGINT});
@@ -72,9 +81,9 @@ namespace skyline::nce {
             std::longjmp(state.thread->originalCtx, true);
         } catch (const std::exception &e) {
             if (svc)
-                LOGENF("{} (SVC: {})\nStack Trace:{}", e.what(), svc.name, state.loader->GetStackTrace());
+                LOGENF("{} (SVC: {})\nStack Trace:{}", e.what(), svc.name, GetCurrentLoader(state)->GetStackTrace());
             else
-                LOGENF("{} (SVC: 0x{:X})\nStack Trace:{}", e.what(), svcId, state.loader->GetStackTrace());
+                LOGENF("{} (SVC: 0x{:X})\nStack Trace:{}", e.what(), svcId, GetCurrentLoader(state)->GetStackTrace());
 
             if (state.thread->id) {
                 signal::BlockSignal({SIGINT});
@@ -119,7 +128,7 @@ namespace skyline::nce {
             }
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
-                LOGENF("{} (Hook: {})\nStack Trace:{}", e.what(), hookedSymbol.prettyName, state.loader->GetStackTrace(e.frames));
+                LOGENF("{} (Hook: {})\nStack Trace:{}", e.what(), hookedSymbol.prettyName, GetCurrentLoader(state)->GetStackTrace(e.frames));
 
                 if (state.thread->id) {
                     signal::BlockSignal({SIGINT});
@@ -130,7 +139,7 @@ namespace skyline::nce {
             abi::__cxa_end_catch();
             std::longjmp(state.thread->originalCtx, true);
         } catch (const exception &e) {
-            LOGENF("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
+            LOGENF("{}\nStack Trace:{}", e.what(), GetCurrentLoader(state)->GetStackTrace(e.frames));
 
             if (state.thread->id) {
                 signal::BlockSignal({SIGINT});
@@ -140,7 +149,7 @@ namespace skyline::nce {
             abi::__cxa_end_catch();
             std::longjmp(state.thread->originalCtx, true);
         } catch (const std::exception &e) {
-            LOGENF("{} (Hook: {})\nStack Trace:{}", e.what(), hookedSymbol.prettyName, state.loader->GetStackTrace());
+            LOGENF("{} (Hook: {})\nStack Trace:{}", e.what(), hookedSymbol.prettyName, GetCurrentLoader(state)->GetStackTrace());
         }
     }
 
@@ -155,7 +164,7 @@ namespace skyline::nce {
 
         if (signal != SIGINT) {
             signal::StackFrame topFrame{.lr = reinterpret_cast<void *>(ctx->uc_mcontext.pc), .next = reinterpret_cast<signal::StackFrame *>(ctx->uc_mcontext.regs[29])};
-            std::string trace{state.loader->GetStackTrace(&topFrame)};
+            std::string trace{GetCurrentLoader(state)->GetStackTrace(&topFrame)};
 
             std::string cpuContext;
             if (mctx.fault_address)
