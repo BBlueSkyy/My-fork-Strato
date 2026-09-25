@@ -257,6 +257,7 @@ namespace skyline::applet::swkbd {
         if (initializeArgument.size() != sizeof(u64))
             throw exception("Software keyboard inline InitializeArg has an invalid size");
 
+        const auto initializeRaw{ReadInlineValue<u64>(initializeArgument, 0)};
         const bool partialForeground{ReadInlineValue<u8>(initializeArgument, sizeof(u32)) != 0};
         const auto expectedMode{partialForeground ? service::applet::LibraryAppletMode::PartialForeground
                                                   : service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay};
@@ -265,6 +266,7 @@ namespace skyline::applet::swkbd {
              commonArgs.version, commonArgs.size, commonArgs.apiVersion, commonArgs.themeColor,
              commonArgs.playStartupSound, commonArgs.systemTick, partialForeground,
              static_cast<u32>(mode));
+        LOGI("PRECALC SWKBD INIT RAW: initializeArg=0x{:016X}", initializeRaw);
         if (mode != expectedMode)
             LOGW("Inline SWKBD mode mismatch: expected=0x{:X}, actual=0x{:X}", static_cast<u32>(expectedMode), static_cast<u32>(mode));
 
