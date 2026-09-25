@@ -22,11 +22,12 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
 /**
- * Invisible InputConnection host for inline SWKBD.
+ * Full-screen, transparent InputConnection host for inline SWKBD.
  *
- * This follows Eden's Android design: inline SWKBD does not create a dialog or EditText.
- * A normal View becomes the active text editor and the Android IME is shown directly over
- * the emulation surface. The game renders the actual text through its indirect layer.
+ * Eden attaches the Android IME to its emulation input overlay rather than creating
+ * an EditText/dialog for inline mode. Keep this view permanently attached to the
+ * emulation overlay for the same reason: it is only an IME/InputConnection host;
+ * the game renders the visible text itself.
  */
 class InlineSoftwareKeyboardInputView @JvmOverloads constructor(
     context : Context,
@@ -38,7 +39,6 @@ class InlineSoftwareKeyboardInputView @JvmOverloads constructor(
     private val inputMethodManager =
         context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
 
-    private var config : SoftwareKeyboardConfig? = null
     private var eventSink : ((type : Int, text : String, cursor : Int) -> Unit)? = null
     private var imeWasVisible = false
     private var submitOnDismiss = false
@@ -59,7 +59,6 @@ class InlineSoftwareKeyboardInputView @JvmOverloads constructor(
                 return
             }
 
-            // Same lifecycle rule used by Eden: dismissing the Android IME means Enter.
             if (imeWasVisible && submitOnDismiss) {
                 submitOnDismiss = false
                 sendSubmit()
@@ -75,36 +74,21 @@ class InlineSoftwareKeyboardInputView @JvmOverloads constructor(
         isFocusableInTouchMode = true
     }
 
-    override fun onCheckIsTextEditor() : Boolean = activeSessionId != null
+    // Eden keeps its emulation input overlay as a text editor all the time.
+    override fun onCheckIsTextEditor() : Boolean = true
 
     override fun onCreateInputConnection(outAttrs : EditorInfo) : InputConnection {
-        val currentConfig = config
-        val multiline = currentConfig?.let {
-            it.inputFormMode == InputFormMode.MultiLine && it.isUseNewLine
-        } == true
-
-        outAttrs.inputType = when {
-            currentConfig?.keyboardMode == KeyboardMode.Numeric &&
-                currentConfig.passwordMode == PasswordMode.Hide ->
-                InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
-            currentConfig?.keyboardMode == KeyboardMode.Numeric ->
-                InputType.TYPE_CLASS_NUMBER
-            currentConfig?.passwordMode == PasswordMode.Hide ->
-                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            currentConfig?.keyboardMode == KeyboardMode.ASCII ->
-                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
-                    InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            else ->
-                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-        }.let { type ->
-            if (multiline)
-                type or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            else
-                type and InputType.TYPE_TEXT_FLAG_MULTI_LINE.inv()
-        }
+        // Match Eden's inline Android IME contract: plain text, no suggestions,
+        // visible-password variation and a Done action. Inline games render the
+        // actual text themselves.
+        outAttrs.inputType =
+            InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
+                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
         outAttrs.imeOptions =
-            EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN or
-                (if (multiline) EditorInfo.IME_ACTION_NONE else EditorInfo.IME_ACTION_DONE)
+            EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+                EditorInfo.IME_FLAG_NO_FULLSCREEN or
+                EditorInfo.IME_ACTION_DONE
 
         val cursor = currentCursor()
         outAttrs.initialSelStart = cursor
@@ -130,13 +114,10 @@ class InlineSoftwareKeyboardInputView @JvmOverloads constructor(
                     return true
 
                 return when (event.keyCode) {
+                    KeyEvent.KEYCODE_BACK,
                     KeyEvent.KEYCODE_ENTER -> {
+                        // Eden treats dismiss/Back and Enter as DecidedEnter for inline SWKBD.
                         sendSubmit()
-                        true
-                    }
-                    KeyEvent.KEYCODE_BACK -> {
-                        if (config?.isCancelButtonDisabled != true)
-                            sendCancel()
                         true
                     }
                     KeyEvent.KEYCODE_DEL -> {
@@ -169,17 +150,20 @@ class InlineSoftwareKeyboardInputView @JvmOverloads constructor(
         sink : (type : Int, text : String, cursor : Int) -> Unit
     ) {
         activeSessionId = sessionId
-        config = keyboardConfig
         eventSink = sink
-        replaceText(initialText, if (keyboardConfig.initialCursorPos == InitialCursorPos.First) 0 else initialText.length)
+
+        val initialCursor =
+            if (keyboardConfig.initialCursorPos == InitialCursorPos.First) 0 else initialText.length
+        replaceText(initialText, initialCursor)
 
         imeWasVisible = false
         submitOnDismiss = true
         handler.removeCallbacks(imeVisibilityPoll)
 
         post {
-            if (activeSessionId != sessionId)
+            if (activeSessionId != sessionId || !isAttachedToWindow)
                 return@post
+
             requestFocus()
             inputMethodManager.restartInput(this)
             inputMethodManager.showSoftInput(this, InputMethodManager.SHOW_FORCED)
@@ -190,18 +174,26 @@ class InlineSoftwareKeyboardInputView @JvmOverloads constructor(
     fun showSession(sessionId : Long) {
         if (activeSessionId != sessionId)
             return
+
         imeWasVisible = false
         submitOnDismiss = true
         handler.removeCallbacks(imeVisibilityPoll)
-        requestFocus()
-        inputMethodManager.restartInput(this)
-        inputMethodManager.showSoftInput(this, InputMethodManager.SHOW_FORCED)
-        handler.postDelayed(imeVisibilityPoll, 500)
+
+        post {
+            if (activeSessionId != sessionId || !isAttachedToWindow)
+                return@post
+
+            requestFocus()
+            inputMethodManager.restartInput(this)
+            inputMethodManager.showSoftInput(this, InputMethodManager.SHOW_FORCED)
+            handler.postDelayed(imeVisibilityPoll, 500)
+        }
     }
 
     fun hideSession(sessionId : Long) {
         if (activeSessionId != sessionId)
             return
+
         submitOnDismiss = false
         handler.removeCallbacks(imeVisibilityPoll)
         inputMethodManager.hideSoftInputFromWindow(windowToken, 0)
@@ -211,9 +203,9 @@ class InlineSoftwareKeyboardInputView @JvmOverloads constructor(
     fun closeSession(sessionId : Long) {
         if (activeSessionId != sessionId)
             return
+
         hideSession(sessionId)
         activeSessionId = null
-        config = null
         eventSink = null
         editable.clear()
     }
@@ -221,8 +213,15 @@ class InlineSoftwareKeyboardInputView @JvmOverloads constructor(
     fun updateSession(sessionId : Long, text : String, cursor : Int) {
         if (activeSessionId != sessionId)
             return
+
         replaceText(text, cursor)
-        inputMethodManager.restartInput(this)
+
+        // Do NOT restart the InputConnection here. Eden keeps the same IME session
+        // alive while the guest changes inline text/cursor state.
+        if (hasFocus) {
+            val position = currentCursor()
+            inputMethodManager.updateSelection(this, position, position, -1, -1)
+        }
     }
 
     private fun replaceText(text : String, cursor : Int) {
@@ -236,6 +235,8 @@ class InlineSoftwareKeyboardInputView @JvmOverloads constructor(
     }
 
     private fun sendChanged() {
+        if (activeSessionId == null)
+            return
         eventSink?.invoke(
             SoftwareKeyboardDialog.eventTextChanged,
             editable.toString(),
@@ -244,16 +245,10 @@ class InlineSoftwareKeyboardInputView @JvmOverloads constructor(
     }
 
     private fun sendSubmit() {
+        if (activeSessionId == null)
+            return
         eventSink?.invoke(
             SoftwareKeyboardDialog.eventSubmit,
-            editable.toString(),
-            currentCursor()
-        )
-    }
-
-    private fun sendCancel() {
-        eventSink?.invoke(
-            SoftwareKeyboardDialog.eventCancel,
             editable.toString(),
             currentCursor()
         )
@@ -262,7 +257,6 @@ class InlineSoftwareKeyboardInputView @JvmOverloads constructor(
     override fun onDetachedFromWindow() {
         handler.removeCallbacks(imeVisibilityPoll)
         activeSessionId = null
-        config = null
         eventSink = null
         super.onDetachedFromWindow()
     }
