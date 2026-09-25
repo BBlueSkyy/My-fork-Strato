@@ -7,12 +7,15 @@
 #include "gpu.h"
 #include "audio.h"
 #include "input.h"
+#include "common/trap_manager.h"
 #include "kernel/types/KProcess.h"
 
 namespace skyline {
     DeviceState::DeviceState(kernel::OS *os, std::shared_ptr<JvmManager> jvmManager, std::shared_ptr<Settings> settings)
         : os(os), jvm(std::move(jvmManager)), settings(std::move(settings)) {
         // We assign these later as they use the state in their constructor and we don't want null pointers
+        trapManager = std::make_shared<TrapManager>();
+        trapManager->InstallStaticInstance();
         gpu = std::make_shared<gpu::GPU>(*this);
         soc = std::make_shared<soc::SOC>(*this);
         audio = std::make_shared<audio::Audio>(*this);
@@ -24,5 +27,7 @@ namespace skyline {
     DeviceState::~DeviceState() {
         if (process)
             process->ClearHandleTable();
+        if (trapManager)
+            trapManager->UninstallStaticInstance();
     }
 }

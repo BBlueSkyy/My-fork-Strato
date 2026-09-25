@@ -28,7 +28,7 @@ namespace skyline {
           public: // We have intermittent public/private members to ensure proper construction/destruction order
             const u64 id{nextProcessId.fetch_add(1, std::memory_order_relaxed)};
             MemoryManager memory;
-            TrapManager trap;
+            TrapManager &trap;
 
           private:
             std::mutex threadMutex; //!< Synchronizes thread creation to prevent a race between thread creation and thread killing

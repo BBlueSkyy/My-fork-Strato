@@ -17,9 +17,8 @@ namespace skyline::kernel::type {
         return memory + (constant::TlsSlotSize * index++);
     }
 
-    KProcess::KProcess(const DeviceState &state) : memory(state), KSyncObject(state, KType::KProcess) {
-        trap.InstallStaticInstance();
-    }
+    KProcess::KProcess(const DeviceState &state)
+        : memory(state), trap(*state.trapManager), KSyncObject(state, KType::KProcess) {}
 
     KProcess::~KProcess() {
         std::scoped_lock guard{threadMutex};
@@ -27,9 +26,6 @@ namespace skyline::kernel::type {
         for (const auto &thread : threads)
             thread->Kill(true);
 
-        // Must happen after all threads have been killed/joined so no host thread can fault into
-        // this process' trap map while (or after) it's being torn down
-        trap.UninstallStaticInstance();
     }
 
     void KProcess::Kill(bool join, bool all, bool disableCreation) {
