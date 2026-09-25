@@ -174,7 +174,7 @@ namespace skyline::kernel {
         if (!region.valid()) [[unlikely]]
             throw exception("Allocation failed");
 
-        auto result{mmap(reinterpret_cast<void *>(region.data()), size, PROT_WRITE, MAP_FIXED | MAP_ANONYMOUS | MAP_SHARED, -1, 0)};
+        auto result{mmap(reinterpret_cast<void *>(region.data()), size, PROT_WRITE, MAP_FIXED | MAP_ANONYMOUS | MAP_SHARED | MAP_NORESERVE, -1, 0)};
         if (result == MAP_FAILED) [[unlikely]]
             throw exception("Failed to mmap guest address space: {}", strerror(errno));
 
@@ -311,8 +311,14 @@ namespace skyline::kernel {
                 if (newSize > base.size()) [[unlikely]]
                     throw exception("Guest VMM size has exceeded host carveout size: 0x{:X}/0x{:X} (Code: 0x{:X}/0x{:X})", newSize, base.size(), code.size(), AS39bit::MaxCodeRegionSize);
 
-                if (newSize != base.size()) [[likely]]
-                    munmap(base.end().base(), newSize - base.size());
+                if (newSize < base.size()) [[likely]] {
+                    const size_t unusedSize{base.size() - newSize};
+                    auto *unusedBase{base.data() + newSize};
+                    if (munmap(unusedBase, unusedSize) != 0)
+                        LOGW("Failed to release unused guest VMM tail: {}", strerror(errno));
+                    else
+                        base = span<u8>{base.data(), newSize};
+                }
 
                 break;
             }
