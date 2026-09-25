@@ -25,5 +25,6 @@ namespace skyline::service::am {
         u64 callerApplicationId{};
         std::atomic_bool started{};
         std::atomic_bool exited{};
+        std::atomic_bool terminated{};
     };
 }

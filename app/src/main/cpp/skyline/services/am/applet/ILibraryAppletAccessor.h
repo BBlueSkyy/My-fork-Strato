@@ -13,7 +13,11 @@ namespace skyline::service::am {
         constexpr Result ObjectInvalid(128, 500);
         constexpr Result OutOfBounds(128, 503);
         constexpr Result NotAvailable(128, 2);
+        constexpr Result LibraryAppletTerminated(128, 22);
+        constexpr Result AppletLaunchFailed(128, 35);
     }
+
+    struct NativeAppletContext;
 
     class ILibraryAppletAccessor : public BaseService {
       private:
@@ -29,10 +33,17 @@ namespace skyline::service::am {
         skyline::applet::AppletId appletId;
         applet::LibraryAppletMode appletMode;
         std::shared_ptr<IApplet> applet;
+        std::shared_ptr<NativeAppletContext> nativeContext;
+        std::shared_ptr<AppletState> nativeAppletState;
         std::shared_ptr<IndirectLayerRegistry> indirectLayers;
         u64 appletResourceUserId{};
         u64 indirectLayerHandle{};
         bool exited{};
+
+        ILibraryAppletAccessor(const DeviceState &state, ServiceManager &manager,
+                               skyline::applet::AppletId appletId, applet::LibraryAppletMode appletMode,
+                               u64 appletResourceUserId, std::shared_ptr<NativeAppletContext> nativeContext,
+                               std::shared_ptr<AppletState> nativeAppletState);
 
       public:
         ILibraryAppletAccessor(const DeviceState &state, ServiceManager &manager,
@@ -40,6 +51,11 @@ namespace skyline::service::am {
                                u64 appletResourceUserId);
 
         ~ILibraryAppletAccessor() override;
+
+        static Result CreateNative(const DeviceState &state, ServiceManager &manager,
+                                   skyline::applet::AppletId appletId, applet::LibraryAppletMode appletMode,
+                                   const std::shared_ptr<AppletState> &callerAppletState,
+                                   std::shared_ptr<ILibraryAppletAccessor> &accessor);
 
         Result StartApplet();
         bool IsAppletCompleted() const;

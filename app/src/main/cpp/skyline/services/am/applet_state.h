@@ -15,6 +15,7 @@ namespace skyline::service::am {
     struct NativeAppletContext;
 
     struct AppletState {
+        static constexpr u32 ExitRequestedMessage{0x4};
         static constexpr u32 FocusStateChangedMessage{0xF};
 
         explicit AppletState(const DeviceState &state)

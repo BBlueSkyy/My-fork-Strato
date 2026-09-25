@@ -3,8 +3,11 @@
 
 #include <kernel/types/KProcess.h>
 #include <applet/applet_creator.h>
+#include <os.h>
 #include <cstring>
 #include <utility>
+#include "AppletDataBroker.h"
+#include "NativeAppletContext.h"
 #include "ILibraryAppletAccessor.h"
 
 namespace skyline::service::am {
@@ -28,15 +31,94 @@ namespace skyline::service::am {
         LOGD("Applet accessor for {} ID created with appletMode 0x{:X}", ToString(appletId), appletMode);
     }
 
+    ILibraryAppletAccessor::ILibraryAppletAccessor(
+        const DeviceState &state, ServiceManager &manager, skyline::applet::AppletId appletId,
+        applet::LibraryAppletMode appletMode, u64 appletResourceUserId,
+        std::shared_ptr<NativeAppletContext> nativeContext, std::shared_ptr<AppletState> nativeAppletState)
+        : BaseService(state, manager), unknown170Event(std::make_shared<type::KEvent>(state, false)),
+          appletId(appletId), appletMode(appletMode), nativeContext(std::move(nativeContext)),
+          nativeAppletState(std::move(nativeAppletState)), indirectLayers(manager.indirectLayers),
+          appletResourceUserId(appletResourceUserId) {
+        if (!this->nativeContext || !this->nativeContext->broker || !this->nativeContext->process ||
+            !this->nativeContext->mainThread || !this->nativeAppletState)
+            throw exception("Native library applet accessor requires a complete process context");
+
+        stateChangeEvent = this->nativeContext->broker->stateChangedEvent;
+        popNormalOutDataEvent = this->nativeContext->broker->NormalOutEvent();
+        popInteractiveOutDataEvent = this->nativeContext->broker->InteractiveOutEvent();
+
+        auto *callerProcess{state.GetCurrentProcessPtr()};
+        stateChangeEventHandle = callerProcess->InsertItem(stateChangeEvent);
+        popNormalOutDataEventHandle = callerProcess->InsertItem(popNormalOutDataEvent);
+        popInteractiveOutDataEventHandle = callerProcess->InsertItem(popInteractiveOutDataEvent);
+        LOGI("Native applet accessor for {} prepared in guest process {}", ToString(appletId),
+             this->nativeContext->process->id);
+    }
+
+    Result ILibraryAppletAccessor::CreateNative(
+        const DeviceState &state, ServiceManager &manager, skyline::applet::AppletId appletId,
+        applet::LibraryAppletMode appletMode, const std::shared_ptr<AppletState> &callerAppletState,
+        std::shared_ptr<ILibraryAppletAccessor> &accessor) {
+        if (!callerAppletState)
+            return result::ObjectInvalid;
+
+        constexpr u64 SwkbdProgramId{0x0100000000001008ULL};
+        if (appletId != skyline::applet::AppletId::LibraryAppletSwkbd)
+            return result::AppletLaunchFailed;
+
+        auto loaded{state.os->LoadSystemProgram(SwkbdProgramId)};
+        if (!loaded)
+            return result::AppletLaunchFailed;
+
+        auto context{std::make_shared<NativeAppletContext>()};
+        context->broker = std::make_shared<AppletDataBroker>(state);
+        context->process = std::move(loaded->process);
+        context->mainThread = std::move(loaded->mainThread);
+        context->appletId = static_cast<u32>(appletId);
+        context->appletMode = static_cast<u32>(appletMode);
+        context->desirableKeyboardLayout = callerAppletState->desirableKeyboardLayout;
+
+        if (callerAppletState->nativeAppletContext) {
+            context->callerAppletId = callerAppletState->nativeAppletContext->appletId;
+            context->callerApplicationId = callerAppletState->nativeAppletContext->callerApplicationId;
+        } else {
+            context->callerAppletId = static_cast<u32>(skyline::applet::AppletId::Application);
+            auto *callerProcess{state.GetCurrentProcessPtr()};
+            if (!callerProcess)
+                return result::AppletLaunchFailed;
+            context->callerApplicationId = callerProcess->npdm.aci0.programId;
+        }
+
+        auto nativeAppletState{manager.GetOrCreateAppletState(context->process->id)};
+        nativeAppletState->nativeAppletContext = context;
+        nativeAppletState->desirableKeyboardLayout = context->desirableKeyboardLayout;
+
+        accessor = std::shared_ptr<ILibraryAppletAccessor>(new ILibraryAppletAccessor(
+            state, manager, appletId, appletMode, callerAppletState->appletResourceUserId,
+            std::move(context), std::move(nativeAppletState)));
+        return {};
+    }
+
     ILibraryAppletAccessor::~ILibraryAppletAccessor() {
         indirectLayers->Unregister(indirectLayerHandle);
+        if (nativeContext && nativeContext->started.load(std::memory_order_acquire) &&
+            !nativeContext->exited.load(std::memory_order_acquire))
+            nativeContext->process->Kill(false, true, true);
     }
+
     Result ILibraryAppletAccessor::StartApplet() {
         stateChangeEvent->ResetSignal();
+        if (nativeContext) {
+            if (!nativeContext->started.exchange(true, std::memory_order_acq_rel))
+                nativeContext->mainThread->Start(false);
+            return {};
+        }
         return applet->Start();
     }
 
     bool ILibraryAppletAccessor::IsAppletCompleted() const {
+        if (nativeContext)
+            return nativeContext->exited.load(std::memory_order_acquire);
         std::scoped_lock lock{kernel::type::KSyncObject::syncObjectMutex};
         return stateChangeEvent->signalled;
     }
@@ -59,6 +141,10 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::RequestExit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        if (nativeContext) {
+            nativeAppletState->QueueMessage(AppletState::ExitRequestedMessage);
+            return {};
+        }
         applet->RequestExit();
         indirectLayers->Unregister(indirectLayerHandle);
         indirectLayerHandle = 0;
@@ -68,6 +154,13 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::Terminate(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        if (nativeContext) {
+            nativeContext->terminated.store(true, std::memory_order_release);
+            nativeContext->process->Kill(false, true, true);
+            nativeContext->exited.store(true, std::memory_order_release);
+            stateChangeEvent->Signal();
+            return {};
+        }
         applet->RequestExit();
         indirectLayers->Unregister(indirectLayerHandle);
         indirectLayerHandle = 0;
@@ -77,6 +170,12 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::GetResult(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        if (nativeContext) {
+            if (!nativeContext->started.load(std::memory_order_acquire) ||
+                nativeContext->terminated.load(std::memory_order_acquire))
+                return result::LibraryAppletTerminated;
+            return {};
+        }
         return applet->GetResult();
     }
 
@@ -89,7 +188,11 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::PushInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
-        applet->PushNormalDataToApplet(request.PopService<IStorage>(0, session));
+        auto storage{request.PopService<IStorage>(0, session)};
+        if (nativeContext)
+            nativeContext->broker->PushNormalIn(std::move(storage));
+        else
+            applet->PushNormalDataToApplet(std::move(storage));
         return {};
     }
 
@@ -103,12 +206,16 @@ namespace skyline::service::am {
         } else {
             LOGI("PushInteractiveInData: command=<truncated>, size=0x{:X}", dataSpan.size());
         }
-        applet->PushInteractiveDataToApplet(std::move(data));
+        if (nativeContext)
+            nativeContext->broker->PushInteractiveIn(std::move(data));
+        else
+            applet->PushInteractiveDataToApplet(std::move(data));
         return {};
     }
 
     Result ILibraryAppletAccessor::PopOutData(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        if (auto outStorage{applet->PopNormalAndClear()}) {
+        auto outStorage{nativeContext ? nativeContext->broker->PopNormalOut() : applet->PopNormalAndClear()};
+        if (outStorage) {
             manager.RegisterService(outStorage, session, response);
             return {};
         }
@@ -116,7 +223,8 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::PopInteractiveOutData(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        if (auto outStorage{applet->PopInteractiveAndClear()}) {
+        auto outStorage{nativeContext ? nativeContext->broker->PopInteractiveOut() : applet->PopInteractiveAndClear()};
+        if (outStorage) {
             manager.RegisterService(outStorage, session, response);
             LOGI("PopInteractiveOutData: Success");
             return {};
@@ -144,6 +252,8 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (nativeContext)
+            return result::ObjectInvalid;
         const auto requestedAppletResourceUserId{request.Pop<u64>()};
         if (exited || appletMode != applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay || !request.pid ||
             requestedAppletResourceUserId != appletResourceUserId)
@@ -160,7 +270,8 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::Unknown170(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        response.copyHandles.push_back(state.process->InsertItem(unknown170Event));
+        auto *process{nativeContext ? state.GetCurrentProcessPtr() : state.process.get()};
+        response.copyHandles.push_back(process->InsertItem(unknown170Event));
         return {};
     }
 }
