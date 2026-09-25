@@ -16,6 +16,7 @@ import android.view.KeyEvent
 import android.view.Window
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.ViewTreeObserver
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -45,7 +46,9 @@ class InlineSoftwareKeyboardHost(
     private var multiline = false
     private var waitingForTextCheck = false
     private var suppressTextEvent = false
+    private var visible = false
     private var closed = false
+    private var imeWindowFocusListener : ViewTreeObserver.OnWindowFocusChangeListener? = null
 
     init {
         applyConfig(initialConfig)
@@ -141,16 +144,22 @@ class InlineSoftwareKeyboardHost(
         waitingForTextCheck = false
         textInput.isEnabled = true
 
-        // Dialog.hide() intentionally keeps the Dialog instance alive and isShowing remains
-        // true. Calling show() again is what makes its decor visible after a previous hide(), so
-        // this must not be gated on isShowing or inline SWKBD only works the first time.
-        dialog.show()
+        // Dialog.hide() keeps the window alive and isShowing can remain true, so keep a separate
+        // visibility bit. The window itself must stay large enough to be a normal focused IME
+        // target; only the transparent editor is 1x1.
+        if (!visible || !dialog.isShowing)
+            dialog.show()
+        visible = true
+
         dialog.window?.apply {
             clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             setDimAmount(0f)
-            setGravity(Gravity.TOP or Gravity.START)
-            setLayout(1, 1)
+            setGravity(Gravity.CENTER)
+            setLayout(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT
+            )
             setSoftInputMode(
                 WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
                     WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
@@ -161,27 +170,39 @@ class InlineSoftwareKeyboardHost(
     }
 
     fun hide() {
-        if (closed || !dialog.isShowing)
+        if (closed || !visible)
             return
 
+        removeImeWindowFocusListener()
         val inputMethod = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         inputMethod.hideSoftInputFromWindow(textInput.windowToken, 0)
         textInput.clearFocus()
         dialog.hide()
+        visible = false
+    }
+
+    private fun removeImeWindowFocusListener() {
+        val decorView = dialog.window?.decorView ?: return
+        imeWindowFocusListener?.let { listener ->
+            if (decorView.viewTreeObserver.isAlive)
+                decorView.viewTreeObserver.removeOnWindowFocusChangeListener(listener)
+        }
+        imeWindowFocusListener = null
     }
 
     private fun showIme() {
-        if (closed || !dialog.isShowing)
+        if (closed || !visible || !dialog.isShowing)
             return
 
         val window = dialog.window ?: return
         val decorView = window.decorView
 
         fun requestIme() {
-            if (closed || !dialog.isShowing)
+            if (closed || !visible || !dialog.isShowing)
                 return
 
             textInput.isEnabled = true
+            textInput.isFocusable = true
             textInput.isFocusableInTouchMode = true
             if (!textInput.hasFocus())
                 textInput.requestFocus()
@@ -195,8 +216,26 @@ class InlineSoftwareKeyboardHost(
                 window.insetsController?.show(WindowInsets.Type.ime())
         }
 
-        // The dialog supplies a real focused window to the IME. Request once when that window has
-        // focus and keep only two bounded retries for devices where IMM attachment lags a frame.
+        removeImeWindowFocusListener()
+
+        if (!decorView.hasWindowFocus()) {
+            val listener = object : ViewTreeObserver.OnWindowFocusChangeListener {
+                override fun onWindowFocusChanged(hasFocus : Boolean) {
+                    if (!hasFocus)
+                        return
+                    removeImeWindowFocusListener()
+                    decorView.post {
+                        requestIme()
+                        decorView.postDelayed({ requestIme() }, 100)
+                    }
+                }
+            }
+            imeWindowFocusListener = listener
+            decorView.viewTreeObserver.addOnWindowFocusChangeListener(listener)
+        }
+
+        // Also cover the common case where the dialog already owns focus. A second bounded request
+        // handles devices where InputMethodManager attaches one frame after window focus.
         decorView.post {
             requestIme()
             decorView.postDelayed({ requestIme() }, 100)
@@ -268,12 +307,14 @@ class InlineSoftwareKeyboardHost(
         if (closed)
             return
 
+        removeImeWindowFocusListener()
         if (dialog.isShowing) {
             val inputMethod = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             inputMethod.hideSoftInputFromWindow(textInput.windowToken, 0)
             textInput.clearFocus()
             dialog.dismiss()
         }
+        visible = false
         closed = true
     }
 
