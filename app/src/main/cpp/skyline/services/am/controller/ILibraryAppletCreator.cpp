@@ -6,6 +6,7 @@
 #include <services/am/applet/ILibraryAppletAccessor.h>
 #include <kernel/types/KTransferMemory.h>
 #include <kernel/types/KProcess.h>
+#include <common/settings.h>
 #include "ILibraryAppletCreator.h"
 
 namespace skyline::service::am {
@@ -17,23 +18,34 @@ namespace skyline::service::am {
                                                  std::shared_ptr<AppletState> appletState)
         : BaseService(state, manager), appletState(std::move(appletState)) {}
 
-    Result ILibraryAppletCreator::CreateLibraryApplet(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        const auto appletId{request.Pop<skyline::applet::AppletId>()};
-        const auto appletMode{request.Pop<applet::LibraryAppletMode>()};
-        auto accessor{SRVREG(ILibraryAppletAccessor, appletId, appletMode, appletState->appletResourceUserId)};
+    Result ILibraryAppletCreator::RegisterLibraryAppletAccessor(
+        type::KSession &session, ipc::IpcResponse &response, skyline::applet::AppletId appletId,
+        applet::LibraryAppletMode appletMode) {
+        std::shared_ptr<ILibraryAppletAccessor> accessor;
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd && *state.settings->softwareKeyboardMode == 1) {
+            auto result{ILibraryAppletAccessor::CreateNative(state, manager, appletId, appletMode, appletState, accessor)};
+            if (result != Result{})
+                return result;
+        } else {
+            accessor = SRVREG(ILibraryAppletAccessor, appletId, appletMode, appletState->appletResourceUserId);
+        }
+
         manager.RegisterService(accessor, session, response);
         appletState->libraryAppletLaunchableEvent->Signal();
         return {};
+    }
+
+    Result ILibraryAppletCreator::CreateLibraryApplet(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto appletId{request.Pop<skyline::applet::AppletId>()};
+        const auto appletMode{request.Pop<applet::LibraryAppletMode>()};
+        return RegisterLibraryAppletAccessor(session, response, appletId, appletMode);
     }
 
     Result ILibraryAppletCreator::CreateLibraryAppletEx(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto appletId{request.Pop<skyline::applet::AppletId>()};
         const auto appletMode{request.Pop<applet::LibraryAppletMode>()};
         [[maybe_unused]] const u64 threadId{request.Pop<u64>()};
-        auto accessor{SRVREG(ILibraryAppletAccessor, appletId, appletMode, appletState->appletResourceUserId)};
-        manager.RegisterService(accessor, session, response);
-        appletState->libraryAppletLaunchableEvent->Signal();
-        return {};
+        return RegisterLibraryAppletAccessor(session, response, appletId, appletMode);
     }
 
     Result ILibraryAppletCreator::CreateStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {

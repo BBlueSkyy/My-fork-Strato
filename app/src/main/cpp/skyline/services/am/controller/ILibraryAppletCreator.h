@@ -11,6 +11,10 @@ namespace skyline::service::am {
       private:
         std::shared_ptr<AppletState> appletState;
 
+        Result RegisterLibraryAppletAccessor(type::KSession &session, ipc::IpcResponse &response,
+                                             skyline::applet::AppletId appletId,
+                                             applet::LibraryAppletMode appletMode);
+
       public:
         ILibraryAppletCreator(const DeviceState &state, ServiceManager &manager,
                               std::shared_ptr<AppletState> appletState);
