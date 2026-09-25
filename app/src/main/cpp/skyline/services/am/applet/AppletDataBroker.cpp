@@ -15,6 +15,12 @@ namespace skyline::service::am {
         channel.event->Signal();
     }
 
+    void AppletDataBroker::PushFront(Channel &channel, std::shared_ptr<IStorage> storage) {
+        std::scoped_lock lock{channel.mutex};
+        channel.queue.emplace_front(std::move(storage));
+        channel.event->Signal();
+    }
+
     std::shared_ptr<IStorage> AppletDataBroker::Pop(Channel &channel) {
         std::scoped_lock lock{channel.mutex};
         if (channel.queue.empty())
@@ -27,6 +33,7 @@ namespace skyline::service::am {
     }
 
     void AppletDataBroker::PushNormalIn(std::shared_ptr<IStorage> storage) { Push(normalIn, std::move(storage)); }
+    void AppletDataBroker::PushFrontNormalIn(std::shared_ptr<IStorage> storage) { PushFront(normalIn, std::move(storage)); }
     void AppletDataBroker::PushInteractiveIn(std::shared_ptr<IStorage> storage) { Push(interactiveIn, std::move(storage)); }
     void AppletDataBroker::PushNormalOut(std::shared_ptr<IStorage> storage) { Push(normalOut, std::move(storage)); }
     void AppletDataBroker::PushInteractiveOut(std::shared_ptr<IStorage> storage) { Push(interactiveOut, std::move(storage)); }

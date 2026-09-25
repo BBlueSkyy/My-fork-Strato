@@ -100,4 +100,10 @@ namespace skyline::service::am {
         response.Push<u32>(context->desirableKeyboardLayout);
         return {};
     }
+
+    Result ILibraryAppletSelfAccessor::UnpopInData(
+        type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        context->broker->PushFrontNormalIn(request.PopService<IStorage>(0, session));
+        return {};
+    }
 }

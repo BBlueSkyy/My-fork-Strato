@@ -33,6 +33,7 @@ namespace skyline::service::am {
         Result CanUseApplicationCore(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result GetCallerAppletIdentityInfo(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result GetDesirableKeyboardLayout(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
+        Result UnpopInData(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
 
       public:
         ILibraryAppletSelfAccessor(const DeviceState &state, ServiceManager &manager,
@@ -50,7 +51,8 @@ namespace skyline::service::am {
             SFUNC(12, ILibraryAppletSelfAccessor, GetMainAppletIdentityInfo),
             SFUNC(13, ILibraryAppletSelfAccessor, CanUseApplicationCore),
             SFUNC(14, ILibraryAppletSelfAccessor, GetCallerAppletIdentityInfo),
-            SFUNC(19, ILibraryAppletSelfAccessor, GetDesirableKeyboardLayout)
+            SFUNC(19, ILibraryAppletSelfAccessor, GetDesirableKeyboardLayout),
+            SFUNC(30, ILibraryAppletSelfAccessor, UnpopInData)
         )
     };
 }

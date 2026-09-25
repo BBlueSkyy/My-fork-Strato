@@ -31,6 +31,7 @@ namespace skyline::service::am {
         Channel interactiveOut;
 
         static void Push(Channel &channel, std::shared_ptr<IStorage> storage);
+        static void PushFront(Channel &channel, std::shared_ptr<IStorage> storage);
         static std::shared_ptr<IStorage> Pop(Channel &channel);
 
       public:
@@ -39,6 +40,7 @@ namespace skyline::service::am {
         std::shared_ptr<kernel::type::KEvent> stateChangedEvent;
 
         void PushNormalIn(std::shared_ptr<IStorage> storage);
+        void PushFrontNormalIn(std::shared_ptr<IStorage> storage);
         void PushInteractiveIn(std::shared_ptr<IStorage> storage);
         void PushNormalOut(std::shared_ptr<IStorage> storage);
         void PushInteractiveOut(std::shared_ptr<IStorage> storage);
