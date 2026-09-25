@@ -18,12 +18,20 @@ namespace skyline::loader {
         if (exeFs == nullptr)
             throw exception("Cannot load a null ExeFS");
 
-        if (!exeFs->FileExists("rtld"))
+        const bool traceSwkbd{process->npdm.aci0.programId == 0x0100000000001008ULL};
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: FileExists('rtld') begin, exeFs={}", fmt::ptr(exeFs.get()));
+        const bool hasRtld{exeFs->FileExists("rtld")};
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: FileExists('rtld') end, exists={}", hasRtld);
+        if (!hasRtld)
             throw exception("Cannot load an ExeFS that doesn't contain rtld");
 
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: OpenFile('rtld') begin");
         auto nsoFile{exeFs->OpenFile("rtld")};
-
-        const bool traceSwkbd{process->npdm.aci0.programId == 0x0100000000001008ULL};
+        if (traceSwkbd)
+            LOGI("SWKBD-LLE: OpenFile('rtld') end, backing={}", fmt::ptr(nsoFile.get()));
         if (traceSwkbd)
             LOGI("SWKBD-LLE: InitializeVmm begin");
         process->memory.InitializeVmm(process->npdm.meta.flags.type, process->npdm.meta.flags.enableAliasRegionExtraSize);
