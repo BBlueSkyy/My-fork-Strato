@@ -141,19 +141,20 @@ class InlineSoftwareKeyboardHost(
         waitingForTextCheck = false
         textInput.isEnabled = true
 
-        if (!dialog.isShowing) {
-            dialog.show()
-            dialog.window?.apply {
-                clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-                setDimAmount(0f)
-                setGravity(Gravity.TOP or Gravity.START)
-                setLayout(1, 1)
-                setSoftInputMode(
-                    WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
-                        WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
-                )
-            }
+        // Dialog.hide() intentionally keeps the Dialog instance alive and isShowing remains
+        // true. Calling show() again is what makes its decor visible after a previous hide(), so
+        // this must not be gated on isShowing or inline SWKBD only works the first time.
+        dialog.show()
+        dialog.window?.apply {
+            clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setDimAmount(0f)
+            setGravity(Gravity.TOP or Gravity.START)
+            setLayout(1, 1)
+            setSoftInputMode(
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
+                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+            )
         }
 
         showIme()
