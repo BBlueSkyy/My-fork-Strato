@@ -251,6 +251,8 @@ namespace skyline::applet::swkbd {
         }
         if (commonStorage->GetSpan().size() < sizeof(service::applet::CommonArguments))
             throw exception("Software keyboard common arguments are truncated");
+        const auto commonArgs{ReadStruct<service::applet::CommonArguments>(
+            commonStorage->GetSpan(), "Software keyboard common arguments are truncated")};
         const auto initializeArgument{initializeStorage->GetSpan()};
         if (initializeArgument.size() != sizeof(u64))
             throw exception("Software keyboard inline InitializeArg has an invalid size");
@@ -258,6 +260,11 @@ namespace skyline::applet::swkbd {
         const bool partialForeground{ReadInlineValue<u8>(initializeArgument, sizeof(u32)) != 0};
         const auto expectedMode{partialForeground ? service::applet::LibraryAppletMode::PartialForeground
                                                   : service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay};
+        LOGI("PRECALC SWKBD INIT: commonVersion=0x{:X}, commonSize=0x{:X}, apiVersion=0x{:X}, "
+             "themeColor=0x{:X}, startupSound=0x{:X}, systemTick=0x{:X}, initModeFlag={}, mode=0x{:X}",
+             commonArgs.version, commonArgs.size, commonArgs.apiVersion, commonArgs.themeColor,
+             commonArgs.playStartupSound, commonArgs.systemTick, partialForeground,
+             static_cast<u32>(mode));
         if (mode != expectedMode)
             LOGW("Inline SWKBD mode mismatch: expected=0x{:X}, actual=0x{:X}", static_cast<u32>(expectedMode), static_cast<u32>(mode));
 
@@ -455,6 +462,11 @@ namespace skyline::applet::swkbd {
             case InlineRequest::SetMovedCursorV2:
                 if (data.size() >= sizeof(InlineRequest) + sizeof(u8))
                     inlineUseMovedCursorV2 = ReadInlineValue<u8>(data, sizeof(InlineRequest)) != 0;
+                LOGI("PRECALC SWKBD: started={}, state=0x{:X}, changedV2={}, movedV2={}, utf8={}, "
+                     "cursor={}, textChars={}, sessionPresent={}",
+                     inlineStarted, static_cast<u32>(inlineState), inlineUseChangedStringV2,
+                     inlineUseMovedCursorV2, inlineUseUtf8, inlineCursorPosition, inlineText.size(),
+                     inlineSessionId.has_value());
                 break;
             default:
                 LOGW("Unknown software keyboard inline request: 0x{:X}", static_cast<u32>(request));
