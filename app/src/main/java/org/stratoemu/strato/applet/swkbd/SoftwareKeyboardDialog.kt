@@ -16,6 +16,7 @@ import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -40,6 +41,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
     private var terminalEventSent = false
     private var waitingForTextCheck = false
     private var suppressTextEvent = false
+    private var imeWindowFocusListener : ViewTreeObserver.OnWindowFocusChangeListener? = null
 
     companion object {
         private const val argumentSessionId = "sessionId"
@@ -162,22 +164,71 @@ class SoftwareKeyboardDialog : DialogFragment() {
     override fun onStart() {
         super.onStart()
         if (::binding.isInitialized) {
+            val window = dialog?.window
             if (inline) {
-                dialog?.window?.apply {
+                window?.apply {
                     clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
                     setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
                     setDimAmount(0f)
                 }
             }
-            dialog?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+            window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+            showImeWhenWindowIsFocused()
+        }
+    }
+
+    private fun showImeWhenWindowIsFocused() {
+        if (!::binding.isInitialized)
+            return
+
+        val window = dialog?.window ?: return
+        val decorView = window.decorView
+
+        fun showIme() {
+            if (!isAdded || !::binding.isInitialized)
+                return
+            binding.textInput.requestFocus()
             binding.textInput.post {
-                if (!isAdded || !::binding.isInitialized)
+                if (!isAdded || !::binding.isInitialized || !binding.textInput.hasFocus())
                     return@post
-                binding.textInput.requestFocus()
                 val inputMethod = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                 inputMethod.showSoftInput(binding.textInput, InputMethodManager.SHOW_IMPLICIT)
             }
         }
+
+        if (decorView.hasWindowFocus()) {
+            showIme()
+            return
+        }
+
+        imeWindowFocusListener?.let {
+            if (decorView.viewTreeObserver.isAlive)
+                decorView.viewTreeObserver.removeOnWindowFocusChangeListener(it)
+        }
+
+        val listener = object : ViewTreeObserver.OnWindowFocusChangeListener {
+            override fun onWindowFocusChanged(hasFocus : Boolean) {
+                if (!hasFocus)
+                    return
+                if (decorView.viewTreeObserver.isAlive)
+                    decorView.viewTreeObserver.removeOnWindowFocusChangeListener(this)
+                imeWindowFocusListener = null
+                decorView.post { showIme() }
+            }
+        }
+        imeWindowFocusListener = listener
+        decorView.viewTreeObserver.addOnWindowFocusChangeListener(listener)
+    }
+
+    override fun onStop() {
+        dialog?.window?.decorView?.let { decorView ->
+            imeWindowFocusListener?.let { listener ->
+                if (decorView.viewTreeObserver.isAlive)
+                    decorView.viewTreeObserver.removeOnWindowFocusChangeListener(listener)
+            }
+        }
+        imeWindowFocusListener = null
+        super.onStop()
     }
 
     private fun submit() {
