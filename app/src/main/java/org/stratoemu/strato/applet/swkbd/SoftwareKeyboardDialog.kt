@@ -6,6 +6,7 @@
 package org.stratoemu.strato.applet.swkbd
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.DialogInterface
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
@@ -17,9 +18,11 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import androidx.core.widget.doOnTextChanged
 import androidx.fragment.app.DialogFragment
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.textfield.TextInputLayout
 import org.stratoemu.strato.EmulationActivity
 import org.stratoemu.strato.databinding.KeyboardDialogBinding
 import org.stratoemu.strato.utils.parcelable
@@ -111,7 +114,12 @@ class SoftwareKeyboardDialog : DialogFragment() {
             binding.header.visibility = View.GONE
             binding.sub.visibility = View.GONE
             binding.inputLayout.hint = null
-            binding.inputLayout.alpha = 0f
+            binding.inputLayout.boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_NONE
+            binding.inputLayout.setBackgroundColor(Color.TRANSPARENT)
+            binding.textInput.setTextColor(Color.TRANSPARENT)
+            binding.textInput.setHintTextColor(Color.TRANSPARENT)
+            binding.textInput.setBackgroundColor(Color.TRANSPARENT)
+            binding.textInput.isCursorVisible = false
             binding.lengthStatus.visibility = View.GONE
             binding.cancelButton.visibility = View.GONE
             binding.okButton.visibility = View.GONE
@@ -161,8 +169,14 @@ class SoftwareKeyboardDialog : DialogFragment() {
                     setDimAmount(0f)
                 }
             }
-            binding.textInput.requestFocus()
             dialog?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+            binding.textInput.post {
+                if (!isAdded || !::binding.isInitialized)
+                    return@post
+                binding.textInput.requestFocus()
+                val inputMethod = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                inputMethod.showSoftInput(binding.textInput, InputMethodManager.SHOW_IMPLICIT)
+            }
         }
     }
 
