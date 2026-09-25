@@ -13,15 +13,15 @@ namespace skyline::service::am {
         Result OpenLibraryAppletSelfAccessor(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
 
         SERVICE_DECL(
-            SFUNC(0x0, BaseProxy, GetCommonStateGetter),
-            SFUNC(0x1, BaseProxy, GetSelfController),
-            SFUNC(0x2, BaseProxy, GetWindowController),
-            SFUNC(0x3, BaseProxy, GetAudioController),
-            SFUNC(0x4, BaseProxy, GetDisplayController),
-            SFUNC(0xB, BaseProxy, GetLibraryAppletCreator),
+            SFUNC_BASE(0x0, ILibraryAppletProxy, BaseProxy, GetCommonStateGetter),
+            SFUNC_BASE(0x1, ILibraryAppletProxy, BaseProxy, GetSelfController),
+            SFUNC_BASE(0x2, ILibraryAppletProxy, BaseProxy, GetWindowController),
+            SFUNC_BASE(0x3, ILibraryAppletProxy, BaseProxy, GetAudioController),
+            SFUNC_BASE(0x4, ILibraryAppletProxy, BaseProxy, GetDisplayController),
+            SFUNC_BASE(0xB, ILibraryAppletProxy, BaseProxy, GetLibraryAppletCreator),
             SFUNC(0x14, ILibraryAppletProxy, OpenLibraryAppletSelfAccessor),
-            SFUNC(0x15, BaseProxy, GetAppletCommonFunctions),
-            SFUNC(0x3E8, BaseProxy, GetDebugFunctions)
+            SFUNC_BASE(0x15, ILibraryAppletProxy, BaseProxy, GetAppletCommonFunctions),
+            SFUNC_BASE(0x3E8, ILibraryAppletProxy, BaseProxy, GetDebugFunctions)
         )
     };
 }
