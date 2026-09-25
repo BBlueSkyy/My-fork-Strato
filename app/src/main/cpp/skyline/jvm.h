@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <optional>
 #include "common.h"
+#include "applet/swkbd/software_keyboard_frontend.h"
 #include <jni.h>
 
 namespace skyline {
@@ -38,7 +40,7 @@ namespace skyline {
         jobject settingsInstance; //!< The settings instance
 
       public:
-        KtSettings(JNIEnv *env, jobject settingsInstance) : env(env), settingsInstance(settingsInstance), settingsClass(env->GetObjectClass(settingsInstance)) {}
+        KtSettings(JNIEnv *env, jobject settingsInstance) : env{env}, settingsInstance{settingsInstance}, settingsClass{env->GetObjectClass(settingsInstance)} {}
 
         KtSettings(const KtSettings &) = delete;
 
@@ -75,17 +77,11 @@ namespace skyline {
      */
     class JvmManager {
       public:
-        using KeyboardHandle = jobject;
-        using KeyboardConfig = std::array<u8, 0x4C8>;
-        using KeyboardCloseResult = u32;
-        using KeyboardTextCheckResult = u32;
-
-
         jobject instance; //!< A reference to the activity
         jclass instanceClass; //!< The class of the activity
 
         /**
-         * @param env A pointer to the JNI environment
+         * @param env A pointer to the current jni environment
          * @param instance A reference to the activity
          */
         JvmManager(JNIEnv *env, jobject instance);
@@ -164,25 +160,21 @@ namespace skyline {
          */
         void ClearVibrationDevice(jint index);
 
-        /**
-         * @brief A call to EmulationActivity.showKeyboard in Kotlin
-         */
-        KeyboardHandle ShowKeyboard(KeyboardConfig &config, std::u16string initialText);
+        applet::swkbd::FrontendSessionId CreateSoftwareKeyboardSession(
+            std::weak_ptr<applet::swkbd::SoftwareKeyboardFrontendCallbacks> callbacks);
 
-        /**
-         * @brief A call to EmulationActivity.waitForSubmitOrCancel in Kotlin
-         */
-        std::pair<KeyboardCloseResult, std::u16string> WaitForSubmitOrCancel(KeyboardHandle dialog);
+        bool ShowSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
+                                  const applet::swkbd::FrontendKeyboardConfig &config,
+                                  std::u16string_view initialText, bool inlineKeyboard);
 
-        /**
-         * @brief A call to EmulationActivity.closeKeyboard in Kotlin
-         */
-        void CloseKeyboard(KeyboardHandle dialog);
-
-        /**
-         * @brief A call to EmulationActivity.showValidationResult in Kotlin
-         */
-        KeyboardCloseResult ShowValidationResult(KeyboardHandle dialog, KeyboardTextCheckResult checkResult, std::u16string message);
+        void ShowSoftwareKeyboardTextCheck(applet::swkbd::FrontendSessionId sessionId, u32 result,
+                                           std::u16string_view message);
+        void ResumeSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId);
+        void UpdateSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
+                                    std::u16string_view text, i32 cursor);
+        void HideSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId);
+        void CloseSoftwareKeyboardSession(applet::swkbd::FrontendSessionId sessionId);
+        bool DispatchSoftwareKeyboardEvent(applet::swkbd::FrontendEvent event);
 
         /**
          * @brief A call to EmulationActivity.reportCrash in Kotlin
@@ -225,11 +217,13 @@ namespace skyline {
         jmethodID vibrateDeviceId;
         jmethodID clearVibrationDeviceId;
 
-        jmethodID showKeyboardId;
-        jmethodID waitForSubmitOrCancelId;
-        jmethodID closeKeyboardId;
-        jmethodID showValidationResultId;
-        jmethodID getIntegerValueId;
+        applet::swkbd::FrontendSessionRegistry softwareKeyboardSessions;
+        jmethodID openSoftwareKeyboardId;
+        jmethodID showSoftwareKeyboardTextCheckId;
+        jmethodID resumeSoftwareKeyboardId;
+        jmethodID updateSoftwareKeyboardId;
+        jmethodID hideSoftwareKeyboardId;
+        jmethodID closeSoftwareKeyboardId;
         jmethodID reportCrashId;
 
         jmethodID showPipelineLoadingScreenId;

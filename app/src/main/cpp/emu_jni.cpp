@@ -198,6 +198,33 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_updatePerf
     env->SetFloatField(thiz, averageFrametimeDeviationField, AverageFrametimeDeviationMs);
 }
 
+extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_nativeSoftwareKeyboardEvent(
+    JNIEnv *env, jobject, jlong sessionId, jint type, jstring text, jint cursor) {
+    if (type < static_cast<jint>(skyline::applet::swkbd::FrontendEventType::TextChanged) ||
+        type > static_cast<jint>(skyline::applet::swkbd::FrontendEventType::FrontendDestroyed))
+        return;
+
+    std::u16string input;
+    if (text) {
+        const jsize length{env->GetStringLength(text)};
+        const jchar *characters{env->GetStringChars(text, nullptr)};
+        if (characters) {
+            input.assign(reinterpret_cast<const char16_t *>(characters), static_cast<size_t>(length));
+            env->ReleaseStringChars(text, characters);
+        }
+    }
+
+    auto os{OsWeak.lock()};
+    if (!os || !os->state.jvm)
+        return;
+    os->state.jvm->DispatchSoftwareKeyboardEvent({
+        .sessionId = static_cast<skyline::u64>(sessionId),
+        .type = static_cast<skyline::applet::swkbd::FrontendEventType>(type),
+        .text = std::move(input),
+        .cursor = static_cast<skyline::i32>(cursor),
+    });
+}
+
 extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_00024Companion_setController(JNIEnv *, jobject, jint index, jint type, jint partnerIndex) {
     auto input{InputWeak.lock()};
     std::lock_guard guard(input->npad.mutex);

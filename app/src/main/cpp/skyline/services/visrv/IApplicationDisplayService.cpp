@@ -3,12 +3,15 @@
 // Copyright © 2019 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #include <gpu.h>
+#include <kernel/svc.h>
 #include <kernel/types/KProcess.h>
+#include <services/am/applet/IApplet.h>
 #include <services/serviceman.h>
 #include <services/hosbinder/IHOSBinderDriver.h>
 #include "IApplicationDisplayService.h"
 #include "ISystemDisplayService.h"
 #include "IManagerDisplayService.h"
+#include "indirect_layer_layout.h"
 #include "results.h"
 
 namespace skyline::service::visrv {
@@ -70,7 +73,7 @@ namespace skyline::service::visrv {
     }
 
     Result IApplicationDisplayService::OpenLayer(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto displayName{request.PopString(0x40)};
+        auto displayName(request.PopString(0x40));
         auto layerId{request.Pop<u64>()};
         LOGD("Opening layer #{} on display: {}", layerId, displayName);
 
@@ -128,34 +131,65 @@ namespace skyline::service::visrv {
     Result IApplicationDisplayService::GetIndirectLayerImageMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto width{request.Pop<i64>()};
         auto height{request.Pop<i64>()};
-
-        if (!request.outputBuf.empty()) {
-            // As we don't support indirect layers, we just fill the output buffer with red
-            auto imageBuffer{request.outputBuf.at(0)};
-            std::fill(imageBuffer.begin(), imageBuffer.end(), 0xFF0000FF);
+        const auto handle{request.Pop<u64>()};
+        const auto appletResourceUserId{request.Pop<u64>()};
+        LOGI("GetIndirectLayerImageMap: entered, pid=0x{:X}, handle=0x{:X}, ARUID=0x{:X}, width={}, height={}",
+             request.pid, handle, appletResourceUserId, width, height);
+        IndirectLayerLayout layout;
+        if (!CalculateIndirectLayerLayout(width, height, layout)) {
+            LOGI("GetIndirectLayerImageMap: return InvalidDimensions");
+            return result::InvalidDimensions;
+        }
+        if (request.outputBuf.empty()) {
+            LOGI("GetIndirectLayerImageMap: return InvalidArgument, missing output buffer");
+            return result::InvalidArgument;
         }
 
-        response.Push<i64>(width);
-        response.Push<i64>(height);
+        auto imageBuffer{request.outputBuf.at(0)};
+        if (imageBuffer.size() < layout.imageSize || reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment) {
+            LOGI("GetIndirectLayerImageMap: return InvalidArgument, bufferSize=0x{:X}, required=0x{:X}, aligned={}",
+                 imageBuffer.size(), layout.imageSize, reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment == 0);
+            return result::InvalidArgument;
+        }
+
+        const auto applet{manager.indirectLayers->Get(handle, request.pid, appletResourceUserId)};
+        if (!applet) {
+            LOGW("GetIndirectLayerImageMap: unknown or closed handle=0x{:X}, aruid=0x{:X}", handle, appletResourceUserId);
+            LOGI("GetIndirectLayerImageMap: return InvalidValue");
+            return result::InvalidValue;
+        }
+
+        const bool available{applet->GetIndirectLayerImage(imageBuffer.first(layout.imageSize))};
+        LOGD("GetIndirectLayerImageMap: handle=0x{:X}, aruid=0x{:X}, width={}, height={}, size=0x{:X}, available={}",
+             handle, appletResourceUserId, width, height, layout.imageSize, available);
+        if (!available) {
+            LOGI("GetIndirectLayerImageMap: return NoData");
+            return result::NoData;
+        }
+
+        response.Push<i64>(static_cast<i64>(layout.imageSize));
+        response.Push<i64>(static_cast<i64>(layout.stride));
+        LOGI("GetIndirectLayerImageMap: return Success, size=0x{:X}, pitch=0x{:X}", layout.imageSize, layout.stride);
 
         return {};
     }
 
     Result IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         i64 width{request.Pop<i64>()}, height{request.Pop<i64>()};
+        LOGI("GetIndirectLayerImageRequiredMemoryInfo: entered, pid=0x{:X}, width={}, height={}", request.pid, width, height);
 
-        if (width <= 0 || height <= 0)
+        IndirectLayerLayout layout;
+        if (!CalculateIndirectLayerLayout(width, height, layout)) {
+            LOGI("GetIndirectLayerImageRequiredMemoryInfo: return InvalidDimensions");
             return result::InvalidDimensions;
+        }
 
-        constexpr ssize_t A8B8G8R8Size{4}; //!< The size of a pixel in the A8B8G8R8 format, this format is used by indirect layers
-        i64 layerSize{width * height * A8B8G8R8Size};
+        response.Push<i64>(static_cast<i64>(layout.requiredSize));
+        response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
+        LOGI("GetIndirectLayerImageRequiredMemoryInfo: return Success, size=0x{:X}, alignment=0x{:X}",
+             layout.requiredSize, IndirectLayerAlignment);
+        kernel::svc::TraceNextWaitSynchronization(state.thread->id);
 
-        constexpr ssize_t BlockSize{0x20000}; //!< The size of an arbitrarily defined block, the layer size must be aligned to a block
-        response.Push<i64>(util::AlignUpNpot<i64>(layerSize, BlockSize));
-
-        constexpr size_t DefaultAlignment{0x1000}; //!< The default alignment of the buffer
-        response.Push<u64>(DefaultAlignment);
-
-        return Result{};
+        return {};
     }
 }

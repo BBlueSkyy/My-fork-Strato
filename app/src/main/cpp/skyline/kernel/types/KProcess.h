@@ -22,7 +22,11 @@ namespace skyline {
          * @brief KProcess manages process-global state such as memory, kernel handles allocated to the process and synchronization primitives
          */
         class KProcess : public KSyncObject {
+          private:
+            inline static std::atomic<u64> nextProcessId{1};
+
           public: // We have intermittent public/private members to ensure proper construction/destruction order
+            const u64 id{nextProcessId.fetch_add(1, std::memory_order_relaxed)};
             MemoryManager memory;
             TrapManager trap;
 
