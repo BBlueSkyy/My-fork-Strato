@@ -109,19 +109,19 @@ class SoftwareKeyboardDialog : DialogFragment() {
             binding.inputLayout.hint = guideText
 
         if (inline) {
-            // Inline SWKBD renders its text through the game/indirect layer. Keep the
-            // EditText alive only as an Android InputConnection host so the IME can
-            // remain fully functional without drawing a second frontend over the game.
+            // Keep inline SWKBD lightweight: the game stays visible while Android's IME
+            // edits a single visible text line. The EditText remains the InputConnection
+            // host, but the full dialog chrome is hidden.
             binding.inputDialog.setBackgroundColor(Color.TRANSPARENT)
             binding.header.visibility = View.GONE
             binding.sub.visibility = View.GONE
             binding.inputLayout.hint = null
             binding.inputLayout.boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_NONE
             binding.inputLayout.setBackgroundColor(Color.TRANSPARENT)
-            binding.textInput.setTextColor(Color.TRANSPARENT)
-            binding.textInput.setHintTextColor(Color.TRANSPARENT)
-            binding.textInput.setBackgroundColor(Color.TRANSPARENT)
-            binding.textInput.isCursorVisible = false
+            binding.textInput.background = null
+            binding.textInput.isCursorVisible = true
+            binding.textInput.setPadding(0, binding.textInput.paddingTop, 0, binding.textInput.paddingBottom)
+            binding.inlineUnderline.visibility = View.VISIBLE
             binding.lengthStatus.visibility = View.GONE
             binding.cancelButton.visibility = View.GONE
             binding.okButton.visibility = View.GONE
