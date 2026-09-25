@@ -10,16 +10,13 @@ import android.content.Context
 import android.content.DialogInterface
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
-import android.os.Build
 import android.os.Bundle
 import android.text.InputType
-import android.view.Gravity
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
-import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -80,7 +77,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
     override fun onViewCreated(view : View, savedInstanceState : Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         isCancelable = !config.isCancelButtonDisabled
-        dialog?.setCanceledOnTouchOutside(!inline && !config.isCancelButtonDisabled)
+        dialog?.setCanceledOnTouchOutside(!config.isCancelButtonDisabled)
 
         val header = stringFromChars(config.headerText)
         binding.header.text = header
@@ -121,16 +118,10 @@ class SoftwareKeyboardDialog : DialogFragment() {
             binding.inputLayout.hint = null
             binding.inputLayout.boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_NONE
             binding.inputLayout.setBackgroundColor(Color.TRANSPARENT)
-            binding.inputLayout.minimumWidth = 1
-            binding.inputLayout.minimumHeight = 1
             binding.textInput.setTextColor(Color.TRANSPARENT)
             binding.textInput.setHintTextColor(Color.TRANSPARENT)
             binding.textInput.setBackgroundColor(Color.TRANSPARENT)
             binding.textInput.isCursorVisible = false
-            binding.textInput.isFocusableInTouchMode = true
-            binding.textInput.minimumWidth = 1
-            binding.textInput.minimumHeight = 1
-            binding.textInput.setPadding(0, 0, 0, 0)
             binding.lengthStatus.visibility = View.GONE
             binding.cancelButton.visibility = View.GONE
             binding.okButton.visibility = View.GONE
@@ -179,14 +170,9 @@ class SoftwareKeyboardDialog : DialogFragment() {
                     clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
                     setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
                     setDimAmount(0f)
-                    setGravity(Gravity.TOP or Gravity.START)
-                    setLayout(1, 1)
                 }
             }
-            window?.setSoftInputMode(
-                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
-                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
-            )
+            window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
             showImeWhenWindowIsFocused()
         }
     }
@@ -201,22 +187,12 @@ class SoftwareKeyboardDialog : DialogFragment() {
         fun showIme() {
             if (!isAdded || !::binding.isInitialized)
                 return
-            binding.textInput.isEnabled = true
-            binding.textInput.isFocusableInTouchMode = true
             binding.textInput.requestFocus()
-
-            fun requestIme() {
+            binding.textInput.post {
                 if (!isAdded || !::binding.isInitialized || !binding.textInput.hasFocus())
-                    return
+                    return@post
                 val inputMethod = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                 inputMethod.showSoftInput(binding.textInput, InputMethodManager.SHOW_IMPLICIT)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-                    window.insetsController?.show(WindowInsets.Type.ime())
-            }
-
-            binding.textInput.post {
-                requestIme()
-                binding.textInput.postDelayed({ requestIme() }, 100)
             }
         }
 
