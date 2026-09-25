@@ -261,12 +261,9 @@ namespace skyline::applet::swkbd {
         if (mode != expectedMode)
             LOGW("Inline SWKBD mode mismatch: expected=0x{:X}, actual=0x{:X}", static_cast<u32>(expectedMode), static_cast<u32>(mode));
 
-        auto callbacks{std::dynamic_pointer_cast<SoftwareKeyboardFrontendCallbacks>(shared_from_this())};
-        const auto sessionId{state.jvm->CreateSoftwareKeyboardSession(callbacks)};
-        LOGI("SWKBD StartInline: frontend session created, sessionId={}", sessionId);
         {
             std::scoped_lock lock{inlineMutex};
-            inlineSessionId = sessionId;
+            inlineSessionId.reset();
             inlineState = InlineState::Uninitialized;
             inlineStarted = true;
         }
@@ -396,6 +393,10 @@ namespace skyline::applet::swkbd {
             SendInlineReplyLocked(InlineReply::ReleasedUserWordInfo);
 
         if ((flags & InlineFlagInitialize) && inlineState == InlineState::Uninitialized) {
+            if (!inlineSessionId) {
+                auto callbacks{std::dynamic_pointer_cast<SoftwareKeyboardFrontendCallbacks>(shared_from_this())};
+                inlineSessionId = state.jvm->CreateSoftwareKeyboardSession(callbacks);
+            }
             ConfigureInlineKeyboardLocked(calc, newLayout);
             ChangeInlineStateLocked(InlineState::Hidden);
             SendInlineReplyLocked(InlineReply::FinishedInitialize);
