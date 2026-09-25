@@ -5,14 +5,17 @@
 
 package org.stratoemu.strato.applet.swkbd
 
+import android.app.Dialog
 import android.content.Context
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.text.InputType
 import android.view.Gravity
 import android.view.KeyEvent
-import android.view.ViewGroup
+import android.view.Window
 import android.view.WindowInsets
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -34,18 +37,38 @@ class InlineSoftwareKeyboardHost(
     initialConfig : SoftwareKeyboardConfig,
     initialText : String
 ) {
-    private val root = activity.findViewById<ViewGroup>(android.R.id.content)
     private val textInput = EditText(activity)
+    private val container = FrameLayout(activity)
+    private val dialog = Dialog(activity)
 
     private var config = initialConfig
     private var multiline = false
     private var waitingForTextCheck = false
     private var suppressTextEvent = false
-    private var attached = false
     private var closed = false
 
     init {
         applyConfig(initialConfig)
+
+        // Give the IME its own focused Android window without drawing an emulator text-entry UI.
+        // A plain transparent Dialog is intentionally used instead of a Material dialog: the only
+        // child is the 1x1 editor that provides InputConnection to the Android IME.
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        container.setBackgroundColor(Color.TRANSPARENT)
+        container.addView(textInput, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START))
+        dialog.setContentView(container)
+        dialog.setCancelable(false)
+        dialog.setCanceledOnTouchOutside(false)
+        dialog.window?.apply {
+            clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setDimAmount(0f)
+            setGravity(Gravity.TOP or Gravity.START)
+            setSoftInputMode(
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
+                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+            )
+        }
 
         // Keep the editor genuinely visible/focusable to Android while making its single pixel
         // impossible to notice over the game.
@@ -115,48 +138,68 @@ class InlineSoftwareKeyboardHost(
         if (closed)
             return
 
-        if (!attached) {
-            val params = FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START)
-            root.addView(textInput, params)
-            attached = true
-        }
-
         waitingForTextCheck = false
         textInput.isEnabled = true
+
+        if (!dialog.isShowing) {
+            dialog.show()
+            dialog.window?.apply {
+                clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                setDimAmount(0f)
+                setGravity(Gravity.TOP or Gravity.START)
+                setLayout(1, 1)
+                setSoftInputMode(
+                    WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
+                        WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+                )
+            }
+        }
+
         showIme()
     }
 
     fun hide() {
-        if (closed || !attached)
+        if (closed || !dialog.isShowing)
             return
 
         val inputMethod = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         inputMethod.hideSoftInputFromWindow(textInput.windowToken, 0)
         textInput.clearFocus()
+        dialog.hide()
     }
 
     private fun showIme() {
-        if (closed || !attached)
+        if (closed || !dialog.isShowing)
             return
 
-        textInput.isEnabled = true
-        textInput.isFocusableInTouchMode = true
-        textInput.requestFocus()
+        val window = dialog.window ?: return
+        val decorView = window.decorView
 
         fun requestIme() {
-            if (closed || !attached || !textInput.hasFocus())
+            if (closed || !dialog.isShowing)
                 return
+
+            textInput.isEnabled = true
+            textInput.isFocusableInTouchMode = true
+            if (!textInput.hasFocus())
+                textInput.requestFocus()
+            if (!textInput.hasFocus() || !decorView.hasWindowFocus())
+                return
+
             val inputMethod = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            inputMethod.restartInput(textInput)
             inputMethod.showSoftInput(textInput, InputMethodManager.SHOW_IMPLICIT)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-                textInput.windowInsetsController?.show(WindowInsets.Type.ime())
+                window.insetsController?.show(WindowInsets.Type.ime())
         }
 
-        // First request after the editor is attached, then one bounded retry for devices whose
-        // window focus arrives a frame later.
-        textInput.post {
+        // The dialog supplies a real focused window to the IME. Request once when that window has
+        // focus and keep only two bounded retries for devices where IMM attachment lags a frame.
+        decorView.post {
             requestIme()
-            textInput.postDelayed({ requestIme() }, 100)
+            decorView.postDelayed({ requestIme() }, 100)
+            decorView.postDelayed({ requestIme() }, 250)
         }
     }
 
@@ -224,12 +267,11 @@ class InlineSoftwareKeyboardHost(
         if (closed)
             return
 
-        if (attached) {
+        if (dialog.isShowing) {
             val inputMethod = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             inputMethod.hideSoftInputFromWindow(textInput.windowToken, 0)
             textInput.clearFocus()
-            root.removeView(textInput)
-            attached = false
+            dialog.dismiss()
         }
         closed = true
     }
