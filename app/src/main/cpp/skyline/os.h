@@ -54,5 +54,17 @@ namespace skyline::kernel {
          * @return nullptr when the title is not installed; throws if the installed firmware is ambiguous.
          */
         std::shared_ptr<loader::Loader> GetSystemProgramLoader(u64 programId);
+
+        struct LoadedSystemProgram {
+            std::shared_ptr<loader::Loader> loader;
+            std::shared_ptr<type::KProcess> process;
+            std::shared_ptr<type::KThread> mainThread;
+        };
+
+        /**
+         * @brief Resolves and loads an installed system Program into its own guest process.
+         * @note The returned main thread is initialized but intentionally not started.
+         */
+        std::optional<LoadedSystemProgram> LoadSystemProgram(u64 programId);
     };
 }

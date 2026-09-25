@@ -147,4 +147,21 @@ namespace skyline::kernel {
         return loader;
     }
 
+    std::optional<OS::LoadedSystemProgram> OS::LoadSystemProgram(u64 programId) {
+        auto loader{GetSystemProgramLoader(programId)};
+        if (!loader)
+            return std::nullopt;
+
+        auto process{std::make_shared<kernel::type::KProcess>(state)};
+        process->loader = loader;
+        auto entry{process->loader->LoadProcessData(process, state)};
+        process->InitializeHeapTls();
+        auto mainThread{process->CreateThread(entry)};
+        if (!mainThread)
+            throw exception("Failed to create main thread for system Program 0x{:016X}", programId);
+
+        LOGI("Loaded system Program 0x{:016X} into guest process {}", programId, process->id);
+        return LoadedSystemProgram{std::move(loader), std::move(process), std::move(mainThread)};
+    }
+
 }
