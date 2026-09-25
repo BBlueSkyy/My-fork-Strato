@@ -4,6 +4,7 @@
 #pragma once
 
 #include <services/am/applet_state.h>
+#include <applet/applet_creator.h>
 #include <services/serviceman.h>
 
 namespace skyline::service::am {
