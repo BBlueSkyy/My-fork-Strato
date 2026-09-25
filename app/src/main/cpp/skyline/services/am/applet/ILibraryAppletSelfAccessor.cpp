@@ -53,13 +53,15 @@ namespace skyline::service::am {
 
     Result ILibraryAppletSelfAccessor::GetPopInDataEvent(
         type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        response.copyHandles.push_back(state.GetCurrentProcessPtr()->InsertItem(context->broker->NormalInEvent()));
+        auto event{context->broker->NormalInEvent()};
+        response.copyHandles.push_back(state.GetCurrentProcessPtr()->InsertItem(event));
         return {};
     }
 
     Result ILibraryAppletSelfAccessor::GetPopInteractiveInDataEvent(
         type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        response.copyHandles.push_back(state.GetCurrentProcessPtr()->InsertItem(context->broker->InteractiveInEvent()));
+        auto event{context->broker->InteractiveInEvent()};
+        response.copyHandles.push_back(state.GetCurrentProcessPtr()->InsertItem(event));
         return {};
     }
 

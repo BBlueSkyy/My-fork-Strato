@@ -7,7 +7,7 @@
 #include <services/am/applet_state.h>
 
 namespace skyline::service::am {
-    class NativeAppletContext;
+    struct NativeAppletContext;
 
     class ILibraryAppletSelfAccessor : public BaseService {
       private:
