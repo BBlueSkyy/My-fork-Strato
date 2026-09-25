@@ -21,7 +21,7 @@ namespace skyline::nce {
         return killAllThreads ? "ExitProcess" : "ExitThread";
     }
 
-    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, u64 guestSp) {
+    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx) {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
@@ -60,151 +60,6 @@ namespace skyline::nce {
                 }
 
                 (svc.function)(state, svcContext);
-
-                if (svcId == 0x21 && kernel::svc::ConsumeGuestReturnCapture(state.thread->id)) {
-                    // The per-SVC trampoline preserves the guest LR at guestSp[0].
-                    // For svcSendSyncRequest this is the caller continuation after the BL to
-                    // the nnSdk SVC stub, not the SVC instruction itself.
-                    const u64 callerPc{*reinterpret_cast<const u64 *>(guestSp)};
-                    const u64 originalSp{guestSp + 0x10};
-                    LOGI("POST2460 guest return snapshot: thread={}, caller_pc=0x{:X}, sp=0x{:X}, x0=0x{:X}, x1=0x{:X}, x2=0x{:X}, x3=0x{:X}, x4=0x{:X}, x5=0x{:X}, x6=0x{:X}, x7=0x{:X}",
-                         state.thread->id, callerPc, originalSp,
-                         ctx->gpr.x0, ctx->gpr.x1, ctx->gpr.x2, ctx->gpr.x3,
-                         ctx->gpr.x4, ctx->gpr.x5, ctx->gpr.x6, ctx->gpr.x7);
-
-                    // Dump a compact 0x100-byte code window around the nnSdk caller without
-                    // crossing its current mapped page.
-                    const u64 pageBase{callerPc & ~(static_cast<u64>(constant::PageSize) - 1)};
-                    const u64 requestedCodeStart{callerPc >= 0x40 ? callerPc - 0x40 : callerPc};
-                    const u64 codeStart{std::max(pageBase, requestedCodeStart)};
-                    const u64 codeEnd{std::min(pageBase + constant::PageSize, callerPc + 0xC0)};
-                    const auto *codeWords{reinterpret_cast<const u32 *>(codeStart)};
-                    const size_t codeWordCount{(codeEnd - codeStart) / sizeof(u32)};
-                    for (size_t index{}; index < codeWordCount; index += 8) {
-                        const size_t count{std::min<size_t>(8, codeWordCount - index)};
-                        std::string words;
-                        for (size_t word{}; word < count; word++)
-                            words += fmt::format("{}{:08X}", word ? " " : "", codeWords[index + word]);
-                        LOGI("POST2460 guest code: addr=0x{:X}, words={}", codeStart + index * sizeof(u32), words);
-                    }
-
-                    // Keep a small raw stack window for manual verification.
-                    constexpr size_t StackDumpSize{0x100};
-                    auto stackSpan{span<u8>{reinterpret_cast<u8 *>(originalSp), StackDumpSize}};
-                    if (state.process->memory.AddressSpaceContains(stackSpan)) {
-                        const auto *stackWords{reinterpret_cast<const u64 *>(originalSp)};
-                        constexpr size_t StackWordCount{StackDumpSize / sizeof(u64)};
-                        for (size_t index{}; index < StackWordCount; index += 4)
-                            LOGI("POST2460 guest stack: sp+0x{:X}={:016X} {:016X} {:016X} {:016X}",
-                                 index * sizeof(u64),
-                                 stackWords[index], stackWords[index + 1], stackWords[index + 2], stackWords[index + 3]);
-                    } else {
-                        LOGI("POST2460 guest stack: 0x100-byte window not fully mapped at sp=0x{:X}", originalSp);
-                    }
-
-                    // The captured wrapper has a standard AArch64 frame record at originalSp.
-                    // Follow only a few validated, monotonically increasing frame records. This
-                    // deliberately avoids loader symbolization and the generic stack tracer.
-                    u64 frameAddress{originalSp};
-                    bool capturedMainFrame{};
-                    constexpr size_t MaxFrameDepth{8};
-                    for (size_t depth{}; depth < MaxFrameDepth; depth++) {
-                        auto frameSpan{span<u8>{reinterpret_cast<u8 *>(frameAddress), 2 * sizeof(u64)}};
-                        if (!state.process->memory.AddressSpaceContains(frameSpan)) {
-                            LOGI("POST2460 guest frame: depth={}, frame=0x{:X}, invalid-frame-memory", depth, frameAddress);
-                            break;
-                        }
-
-                        const auto *frameWords{reinterpret_cast<const u64 *>(frameAddress)};
-                        const u64 previousFrame{frameWords[0]};
-                        const u64 returnPc{frameWords[1]};
-                        const auto symbol{state.loader->ResolveSymbol64(reinterpret_cast<void *>(returnPc))};
-                        LOGI("POST2460 guest frame: depth={}, frame=0x{:X}, prev_fp=0x{:X}, lr=0x{:X}, module={}, symbol={}",
-                             depth, frameAddress, previousFrame, returnPc,
-                             symbol.executableName.empty() ? "<unknown>" : symbol.executableName,
-                             symbol.name ? symbol.name : "<none>");
-
-                        if (returnPc >= 0x20) {
-                            const bool mainFrame{!capturedMainFrame && symbol.executableName == "main.nso"};
-                            if (mainFrame)
-                                capturedMainFrame = true;
-                            const u64 beforeBytes{mainFrame ? 0x100ULL : 0x20ULL};
-                            const u64 afterBytes{mainFrame ? 0x180ULL : 0x20ULL};
-                            const u64 codePageBase{returnPc & ~(static_cast<u64>(constant::PageSize) - 1)};
-                            const u64 requestedStart{returnPc > beforeBytes ? returnPc - beforeBytes : returnPc};
-                            const u64 codeStart{std::max(codePageBase, requestedStart)};
-                            const u64 codeEnd{std::min(codePageBase + constant::PageSize, returnPc + afterBytes)};
-                            auto codeSpan{span<u8>{reinterpret_cast<u8 *>(codeStart), static_cast<size_t>(codeEnd - codeStart)}};
-                            if (state.process->memory.AddressSpaceContains(codeSpan)) {
-                                const auto *frameCodeWords{reinterpret_cast<const u32 *>(codeStart)};
-                                const size_t frameCodeWordCount{(codeEnd - codeStart) / sizeof(u32)};
-                                for (size_t index{}; index < frameCodeWordCount; index += 8) {
-                                    const size_t count{std::min<size_t>(8, frameCodeWordCount - index)};
-                                    std::string words;
-                                    for (size_t word{}; word < count; word++)
-                                        words += fmt::format("{}{:08X}", word ? " " : "", frameCodeWords[index + word]);
-                                    LOGI("POST2460 guest frame code: depth={}, addr=0x{:X}, lr_offset=0x{:X}, words={}",
-                                         depth, codeStart + index * sizeof(u32),
-                                         returnPc - (codeStart + index * sizeof(u32)), words);
-                                }
-
-                                if (mainFrame) {
-                                    // Resolve direct BL targets in the first main.nso caller. This identifies
-                                    // the imports/thunks immediately surrounding the nnSdk return without
-                                    // executing or patching guest code.
-                                    for (size_t index{}; index < frameCodeWordCount; index++) {
-                                        const u32 instruction{frameCodeWords[index]};
-                                        if ((instruction & 0xFC000000U) != 0x94000000U)
-                                            continue;
-
-                                        i64 immediate{static_cast<i64>(instruction & 0x03FFFFFFU)};
-                                        if (immediate & (1LL << 25))
-                                            immediate -= (1LL << 26);
-                                        const u64 instructionPc{codeStart + index * sizeof(u32)};
-                                        const u64 targetPc{static_cast<u64>(static_cast<i64>(instructionPc) + immediate * 4)};
-                                        const auto targetSymbol{state.loader->ResolveSymbol64(reinterpret_cast<void *>(targetPc))};
-                                        LOGI("POST2460 main BL: call=0x{:X}, target=0x{:X}, module={}, symbol={}",
-                                             instructionPc, targetPc,
-                                             targetSymbol.executableName.empty() ? "<unknown>" : targetSymbol.executableName,
-                                             targetSymbol.name ? targetSymbol.name : "<none>");
-
-                                        const u64 targetPageBase{targetPc & ~(static_cast<u64>(constant::PageSize) - 1)};
-                                        const u64 targetEnd{std::min(targetPageBase + constant::PageSize, targetPc + 0x20)};
-                                        auto targetSpan{span<u8>{reinterpret_cast<u8 *>(targetPc), static_cast<size_t>(targetEnd - targetPc)}};
-                                        if (state.process->memory.AddressSpaceContains(targetSpan)) {
-                                            const auto *targetWords{reinterpret_cast<const u32 *>(targetPc)};
-                                            const size_t targetWordCount{(targetEnd - targetPc) / sizeof(u32)};
-                                            std::string words;
-                                            for (size_t word{}; word < targetWordCount; word++)
-                                                words += fmt::format("{}{:08X}", word ? " " : "", targetWords[word]);
-                                            LOGI("POST2460 main BL target code: target=0x{:X}, words={}", targetPc, words);
-                                        }
-                                    }
-
-                                    constexpr size_t MainFrameDumpSize{0x180};
-                                    auto mainFrameSpan{span<u8>{reinterpret_cast<u8 *>(frameAddress), MainFrameDumpSize}};
-                                    if (state.process->memory.AddressSpaceContains(mainFrameSpan)) {
-                                        const auto *mainFrameWords{reinterpret_cast<const u64 *>(frameAddress)};
-                                        constexpr size_t MainFrameWordCount{MainFrameDumpSize / sizeof(u64)};
-                                        for (size_t index{}; index < MainFrameWordCount; index += 4)
-                                            LOGI("POST2460 main frame data: fp+0x{:X}={:016X} {:016X} {:016X} {:016X}",
-                                                 index * sizeof(u64),
-                                                 mainFrameWords[index], mainFrameWords[index + 1],
-                                                 mainFrameWords[index + 2], mainFrameWords[index + 3]);
-                                    }
-                                }
-                            }
-                        }
-
-                        if (!previousFrame || previousFrame <= frameAddress ||
-                            (previousFrame & 0xF) || previousFrame - frameAddress > 0x100000) {
-                            LOGI("POST2460 guest frame stop: depth={}, frame=0x{:X}, prev_fp=0x{:X}",
-                                 depth, frameAddress, previousFrame);
-                            break;
-                        }
-                        frameAddress = previousFrame;
-                    }
-                }
 
                 kernel::svc::EndSvcTrace(state.thread->id, traceSequence, svcId, svc.name, svcContext);
             } else {
@@ -434,15 +289,14 @@ namespace skyline::nce {
         /* Store Skyline TLS + guest SP on stack */
         *code++ = 0xA9BF0BE1; // STP X1, X2, [SP, #-16]!
 
-        /* Jump to SvcHandler.
-         * X2 intentionally keeps the guest SP as the third handler argument. */
-        for (const auto &mov : instructions::MoveRegister(registers::X3, target)) {
+        /* Jump to SvcHandler */
+        for (const auto &mov : instructions::MoveRegister(registers::X2, target)) {
             if (mov)
                 *code++ = mov;
             else
                 *code++ = 0xD503201F; // NOP
         }
-        *code++ = 0xD63F0060; // BLR X3
+        *code++ = 0xD63F0040; // BLR X2
 
         /* Restore Skyline TLS + guest SP */
         *code++ = 0xA8C10BE1; // LDP X1, X2, [SP], #16
