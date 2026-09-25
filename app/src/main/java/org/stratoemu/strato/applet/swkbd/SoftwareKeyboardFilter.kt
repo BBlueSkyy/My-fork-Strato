@@ -11,6 +11,13 @@ import android.text.Spanned
 
 class SoftwareKeyboardFilter(val config : SoftwareKeyboardConfig) : InputFilter {
     override fun filter(source : CharSequence, start : Int, end : Int, dest : Spanned, dstart : Int, dend : Int) : CharSequence? {
+        // Android represents Backspace/deletion as replacing the selected range with an empty
+        // source. Always accept that operation unchanged. Besides being the expected SWKBD
+        // behaviour (textMinLength only controls whether submission is valid), this avoids
+        // attempting to remap composing spans from a zero-length IME edit.
+        if (start == end)
+            return null
+
         val filteredStringBuilder = SpannableStringBuilder()
         val newCharacterIndex = arrayOfNulls<Int>(end - start)
         var currentIndex : Int
