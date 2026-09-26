@@ -107,6 +107,15 @@ namespace skyline::kernel::type {
                 // Run the guest code
                 Run();
             }
+        } catch (const nce::NCE::ExitException &e) {
+            // NCE handles guest exits in its SVC handler; JIT exits reach this thread boundary.
+            jit = nullptr;
+            if (e.killAllThreads && id) {
+                signal::BlockSignal({SIGINT});
+                state.process->Kill(false);
+            }
+            abi::__cxa_end_catch();
+            std::longjmp(originalCtx, true);
         } catch (const std::exception &e) {
             LOGE("{}", e.what());
             if (id) {
