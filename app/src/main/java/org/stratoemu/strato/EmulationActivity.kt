@@ -770,8 +770,12 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private fun onButtonStateChanged(buttonId : ButtonId, state : ButtonState) = InputHandler.setButtonState(0, buttonId.value, state.state)
 
     private fun onStickStateChanged(stickId : StickId, position : PointF) {
-        InputHandler.setAxisValue(0, stickId.xAxis.ordinal, (position.x * Short.MAX_VALUE).toInt())
-        InputHandler.setAxisValue(0, stickId.yAxis.ordinal, (-position.y * Short.MAX_VALUE).toInt()) // Y is inverted, since drawing starts from top left
+        val xValue = (position.x * Short.MAX_VALUE).toInt()
+        val yValue = (-position.y * Short.MAX_VALUE).toInt() // Y is inverted, since drawing starts from top left
+        InputHandler.traceAxisSource(0, 0, stickId.xAxis.ordinal, xValue)
+        InputHandler.setAxisValue(0, stickId.xAxis.ordinal, xValue)
+        InputHandler.traceAxisSource(0, 0, stickId.yAxis.ordinal, yValue)
+        InputHandler.setAxisValue(0, stickId.yAxis.ordinal, yValue)
     }
 
     @SuppressLint("WrongConstant")
