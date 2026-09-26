@@ -76,6 +76,12 @@ namespace skyline::service::hid {
         const auto handle{request.Pop<NpadDeviceHandle>()};
         request.Skip<u32>();
         const auto aruid{request.Pop<u64>()};
+        LOGI("DSR-SIXAXIS start raw=0x{:08X} type={} id=0x{:X} deviceIndex={} aruid=0x{:X}",
+             handle.raw,
+             handle.type,
+             static_cast<u32>(handle.id),
+             handle.deviceIndex,
+             aruid);
         if (!state.input->IsAppletResourceRegistered(aruid))
             return result::AruidNotRegistered;
         if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
