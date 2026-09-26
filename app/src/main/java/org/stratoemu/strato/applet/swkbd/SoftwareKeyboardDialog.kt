@@ -20,6 +20,8 @@ import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.doOnTextChanged
 import androidx.fragment.app.DialogFragment
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -163,18 +165,32 @@ class SoftwareKeyboardDialog : DialogFragment() {
 
     override fun onStart() {
         super.onStart()
-        if (::binding.isInitialized) {
-            val window = dialog?.window
-            if (inline) {
-                window?.apply {
-                    clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                    setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-                    setDimAmount(0f)
-                }
+        if (!::binding.isInitialized)
+            return
+
+        val window = dialog?.window ?: return
+        if (inline) {
+            window.apply {
+                clearFlags(
+                    WindowManager.LayoutParams.FLAG_DIM_BEHIND or
+                        WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM or
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                )
+                setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                setDimAmount(0f)
+                setSoftInputMode(
+                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or
+                        WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+                )
             }
-            window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
-            showImeWhenWindowIsFocused()
+        } else {
+            window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
         }
+
+        binding.textInput.isFocusable = true
+        binding.textInput.isFocusableInTouchMode = true
+        binding.textInput.requestFocus()
+        showImeWhenWindowIsFocused()
     }
 
     private fun showImeWhenWindowIsFocused() {
@@ -187,12 +203,35 @@ class SoftwareKeyboardDialog : DialogFragment() {
         fun showIme() {
             if (!isAdded || !::binding.isInitialized)
                 return
-            binding.textInput.requestFocus()
-            binding.textInput.post {
-                if (!isAdded || !::binding.isInitialized || !binding.textInput.hasFocus())
+
+            val input = binding.textInput
+            input.isFocusable = true
+            input.isFocusableInTouchMode = true
+            if (!input.requestFocus())
+                return
+
+            input.post {
+                if (!isAdded || !::binding.isInitialized || !input.hasFocus() || !input.isAttachedToWindow)
                     return@post
+
                 val inputMethod = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                inputMethod.showSoftInput(binding.textInput, InputMethodManager.SHOW_IMPLICIT)
+                inputMethod.restartInput(input)
+                inputMethod.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+                ViewCompat.getWindowInsetsController(input)?.show(WindowInsetsCompat.Type.ime())
+
+                // A Dialog window can gain focus one frame before its InputConnection is accepted.
+                // Retry once only when the IME is still not visible.
+                input.postDelayed({
+                    if (!isAdded || !::binding.isInitialized || !input.hasFocus())
+                        return@postDelayed
+                    val imeVisible = ViewCompat.getRootWindowInsets(input)
+                        ?.isVisible(WindowInsetsCompat.Type.ime()) == true
+                    if (!imeVisible) {
+                        inputMethod.restartInput(input)
+                        inputMethod.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+                        ViewCompat.getWindowInsetsController(input)?.show(WindowInsetsCompat.Type.ime())
+                    }
+                }, 120)
             }
         }
 
