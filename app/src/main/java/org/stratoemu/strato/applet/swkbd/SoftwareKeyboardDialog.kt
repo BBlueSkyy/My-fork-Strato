@@ -6,7 +6,6 @@
 package org.stratoemu.strato.applet.swkbd
 
 import android.annotation.SuppressLint
-import android.content.Context
 import android.content.DialogInterface
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
@@ -16,16 +15,11 @@ import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputMethodManager
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.doOnTextChanged
 import androidx.fragment.app.DialogFragment
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputLayout
 import org.stratoemu.strato.EmulationActivity
 import org.stratoemu.strato.databinding.KeyboardDialogBinding
 import org.stratoemu.strato.utils.parcelable
@@ -43,7 +37,6 @@ class SoftwareKeyboardDialog : DialogFragment() {
     private var terminalEventSent = false
     private var waitingForTextCheck = false
     private var suppressTextEvent = false
-    private var imeWindowFocusListener : ViewTreeObserver.OnWindowFocusChangeListener? = null
 
     companion object {
         private const val argumentSessionId = "sessionId"
@@ -118,12 +111,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
             binding.header.visibility = View.GONE
             binding.sub.visibility = View.GONE
             binding.inputLayout.hint = null
-            binding.inputLayout.boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_NONE
-            binding.inputLayout.setBackgroundColor(Color.TRANSPARENT)
-            binding.textInput.setTextColor(Color.TRANSPARENT)
-            binding.textInput.setHintTextColor(Color.TRANSPARENT)
-            binding.textInput.setBackgroundColor(Color.TRANSPARENT)
-            binding.textInput.isCursorVisible = false
+            binding.inputLayout.alpha = 0f
             binding.lengthStatus.visibility = View.GONE
             binding.cancelButton.visibility = View.GONE
             binding.okButton.visibility = View.GONE
@@ -165,109 +153,17 @@ class SoftwareKeyboardDialog : DialogFragment() {
 
     override fun onStart() {
         super.onStart()
-        if (!::binding.isInitialized)
-            return
-
-        val window = dialog?.window ?: return
-        if (inline) {
-            window.apply {
-                clearFlags(
-                    WindowManager.LayoutParams.FLAG_DIM_BEHIND or
-                        WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM or
-                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                )
-                setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-                setDimAmount(0f)
-                setSoftInputMode(
-                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or
-                        WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
-                )
+        if (::binding.isInitialized) {
+            if (inline) {
+                dialog?.window?.apply {
+                    clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                    setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                    setDimAmount(0f)
+                }
             }
-        } else {
-            window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+            binding.textInput.requestFocus()
+            dialog?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
         }
-
-        binding.textInput.isFocusable = true
-        binding.textInput.isFocusableInTouchMode = true
-        binding.textInput.requestFocus()
-        showImeWhenWindowIsFocused()
-    }
-
-    private fun showImeWhenWindowIsFocused() {
-        if (!::binding.isInitialized)
-            return
-
-        val window = dialog?.window ?: return
-        val decorView = window.decorView
-
-        fun showIme() {
-            if (!isAdded || !::binding.isInitialized)
-                return
-
-            val input = binding.textInput
-            input.isFocusable = true
-            input.isFocusableInTouchMode = true
-            if (!input.requestFocus())
-                return
-
-            input.post {
-                if (!isAdded || !::binding.isInitialized || !input.hasFocus() || !input.isAttachedToWindow)
-                    return@post
-
-                val inputMethod = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                inputMethod.restartInput(input)
-                inputMethod.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
-                ViewCompat.getWindowInsetsController(input)?.show(WindowInsetsCompat.Type.ime())
-
-                // A Dialog window can gain focus one frame before its InputConnection is accepted.
-                // Retry once only when the IME is still not visible.
-                input.postDelayed({
-                    if (!isAdded || !::binding.isInitialized || !input.hasFocus())
-                        return@postDelayed
-                    val imeVisible = ViewCompat.getRootWindowInsets(input)
-                        ?.isVisible(WindowInsetsCompat.Type.ime()) == true
-                    if (!imeVisible) {
-                        inputMethod.restartInput(input)
-                        inputMethod.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
-                        ViewCompat.getWindowInsetsController(input)?.show(WindowInsetsCompat.Type.ime())
-                    }
-                }, 120)
-            }
-        }
-
-        if (decorView.hasWindowFocus()) {
-            showIme()
-            return
-        }
-
-        imeWindowFocusListener?.let {
-            if (decorView.viewTreeObserver.isAlive)
-                decorView.viewTreeObserver.removeOnWindowFocusChangeListener(it)
-        }
-
-        val listener = object : ViewTreeObserver.OnWindowFocusChangeListener {
-            override fun onWindowFocusChanged(hasFocus : Boolean) {
-                if (!hasFocus)
-                    return
-                if (decorView.viewTreeObserver.isAlive)
-                    decorView.viewTreeObserver.removeOnWindowFocusChangeListener(this)
-                imeWindowFocusListener = null
-                decorView.post { showIme() }
-            }
-        }
-        imeWindowFocusListener = listener
-        decorView.viewTreeObserver.addOnWindowFocusChangeListener(listener)
-    }
-
-    override fun onStop() {
-        dialog?.window?.decorView?.let { decorView ->
-            imeWindowFocusListener?.let { listener ->
-                if (decorView.viewTreeObserver.isAlive)
-                    decorView.viewTreeObserver.removeOnWindowFocusChangeListener(listener)
-            }
-        }
-        imeWindowFocusListener = null
-        super.onStop()
     }
 
     private fun submit() {
