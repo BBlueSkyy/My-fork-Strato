@@ -210,6 +210,8 @@ namespace skyline::input {
         NpadSixAxisInfo *sixAxisInfoRight{}; //!< The NpadSixAxisInfo for the right side of this controller's type
         u64 globalTimestamp{}; //!< An incrementing timestamp that's common across all sections
         NpadControllerState controllerState{}, defaultState{}; //!< The current state of the controller (normal and default)
+        NpadControllerState tracedControllerState{}, tracedDefaultState{}; //!< Last producer states emitted by temporary NPAD diagnostics
+        bool traceStateInitialized{}; //!< Whether an NPAD state snapshot has already been emitted
         NpadSixAxisState sixAxisStateLeft{}, sixAxisStateRight{}; //!< The current state of the sixaxis (left and right)
         std::array<SixAxisSensorConfig, 3> sixAxisConfigs{}; //!< State for left, right and single-unit handles
 
