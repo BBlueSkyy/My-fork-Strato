@@ -147,6 +147,14 @@ namespace skyline {
         }
 
         /**
+         * @return If the block containing the supplied virtual address is a sparse mapping
+         */
+        bool IsSparseMapped(VaType virt) {
+            std::shared_lock lock{this->blockMutex};
+            return this->blockSegmentTable[virt].extraInfo.sparseMapped;
+        }
+
+        /**
          * @brief Translates a region in the VA space to a corresponding set of regions in the PA space
          */
         TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}) {
