@@ -710,7 +710,6 @@ namespace skyline::kernel::svc {
 
     void WaitSynchronization(const DeviceState &state, SvcContext &ctx) {
         constexpr u8 MaxSyncHandles{0x40}; // The total amount of handles that can be passed to WaitSynchronization
-
         u32 numHandles{ctx.w2};
         if (numHandles > MaxSyncHandles) {
             ctx.w0 = result::OutOfRange;

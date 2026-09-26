@@ -146,6 +146,10 @@ namespace skyline::kernel::svc {
     void WaitSynchronization(const DeviceState &state, SvcContext &ctx);
 
     /**
+     * @brief Arms a one-shot diagnostic trace for the next wait made by a guest thread
+     */
+
+    /**
      * @brief If the referenced thread is currently in a synchronization call, that call will be interrupted
      * @url https://switchbrew.org/wiki/SVC#CancelSynchronization
      */
