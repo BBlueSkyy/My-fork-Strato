@@ -240,6 +240,8 @@ namespace skyline::gpu {
         using Mappings = boost::container::small_vector<span<u8>, 3>;
 
         Mappings mappings; //!< Spans to CPU memory for the underlying data backing this texture
+        bool hasSparseMappings{}; //!< If any translated range is a sparse GMMU mapping that reads as zero
+        bool hasUnmappedMappings{}; //!< If any translated range is genuinely unmapped
         texture::Dimensions dimensions{};
         texture::Format format{};
         texture::TileConfig tileConfig{};
@@ -305,6 +307,25 @@ namespace skyline::gpu {
         u32 GetViewDepth() const;
 
         size_t GetSize();
+
+        template<typename AddressSpace>
+        void SetMappings(AddressSpace &addressSpace, u64 address) {
+            auto translated{addressSpace.TranslateRange(address, GetSize())};
+            mappings.assign(translated.begin(), translated.end());
+            hasSparseMappings = false;
+            hasUnmappedMappings = false;
+
+            u64 currentAddress{address};
+            for (auto mapping : mappings) {
+                if (!mapping.valid()) {
+                    if (addressSpace.IsSparseMapped(currentAddress))
+                        hasSparseMappings = true;
+                    else
+                        hasUnmappedMappings = true;
+                }
+                currentAddress += mapping.size();
+            }
+        }
 
         bool MappingsValid() const;
     };
@@ -423,6 +444,16 @@ namespace skyline::gpu {
          * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid
          */
         void SetupGuestMappings();
+
+        /**
+         * @brief Refreshes sparse holes in the mirror to their guest-visible zero value
+         */
+        void ClearSparseMappings();
+
+        /**
+         * @brief Copies the writable portions of a sparse texture mirror back into guest memory
+         */
+        void FlushSparseMappings();
 
         /**
          * @brief An implementation function for guest -> host texture synchronization, it allocates and copies data into a staging buffer or directly into a linear host texture
