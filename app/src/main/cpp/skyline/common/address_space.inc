@@ -235,11 +235,13 @@ namespace skyline {
 
         auto predecessor{std::prev(successor)};
 
-        u8 *blockPhys{predecessor->phys + (virt - predecessor->virt)};
+        u8 *blockPhys{predecessor->phys && !predecessor->extraInfo.sparseMapped
+                          ? predecessor->phys + (virt - predecessor->virt) : nullptr};
         VaType blockSize{std::min(successor->virt - virt, size)};
 
         while (size) {
-            if (predecessor->phys) {
+            // Sparse blocks carry a non-null sentinel, but have no physical mapping to translate.
+            if (predecessor->phys && !predecessor->extraInfo.sparseMapped) {
                 span cpuBlock{blockPhys, blockSize};
                 if (cpuAccessCallback)
                     cpuAccessCallback(cpuBlock);
@@ -257,7 +259,7 @@ namespace skyline {
 
             if (size) {
                 predecessor = successor++;
-                blockPhys = predecessor->phys;
+                blockPhys = predecessor->extraInfo.sparseMapped ? nullptr : predecessor->phys;
                 blockSize = std::min(successor->virt - predecessor->virt, size);
             }
         }
