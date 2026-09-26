@@ -822,24 +822,18 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     @Suppress("unused")
     fun openSoftwareKeyboard(sessionId : Long, buffer : ByteBuffer, initialText : String, inline : Boolean) : Boolean {
-        Log.i(Tag, "SWKBD openSoftwareKeyboard: entered, sessionId=$sessionId, inline=$inline")
         if (isFinishing || isDestroyed) {
-            Log.i(Tag, "SWKBD openSoftwareKeyboard: activity unavailable before config parse, sessionId=$sessionId")
             return false
         }
         val config = try {
             buffer.order(ByteOrder.LITTLE_ENDIAN)
             ByteBufferSerializable.createFromByteBuffer(SoftwareKeyboardConfig::class, buffer) as SoftwareKeyboardConfig
         } catch (exception : Exception) {
-            Log.i(Tag, "SWKBD openSoftwareKeyboard: config parse failed, sessionId=$sessionId, exception=${exception.javaClass.simpleName}")
             return false
         }
-        Log.i(Tag, "SWKBD openSoftwareKeyboard: config parse OK, sessionId=$sessionId")
 
         runOnUiThread {
-            Log.i(Tag, "SWKBD openSoftwareKeyboard: entered runOnUiThread, sessionId=$sessionId, inline=$inline")
             if (isFinishing || isDestroyed) {
-                Log.i(Tag, "SWKBD openSoftwareKeyboard: activity unavailable on UI thread, sessionId=$sessionId")
                 nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
                 return@runOnUiThread
             }
@@ -857,9 +851,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             softwareKeyboardDialogs[sessionId] = dialog
             try {
                 dialog.showNow(supportFragmentManager, "software-keyboard-$sessionId")
-                Log.i(Tag, "SWKBD openSoftwareKeyboard: showNow success, sessionId=$sessionId, inline=$inline")
             } catch (exception : IllegalStateException) {
-                Log.i(Tag, "SWKBD openSoftwareKeyboard: showNow IllegalStateException, sessionId=$sessionId, exception=${exception.javaClass.simpleName}")
                 softwareKeyboardDialogs.remove(sessionId)
                 nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
             }

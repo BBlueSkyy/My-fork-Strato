@@ -3,7 +3,6 @@
 // Copyright © 2019 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
 #include <gpu.h>
-#include <kernel/svc.h>
 #include <kernel/types/KProcess.h>
 #include <services/am/applet/IApplet.h>
 #include <services/serviceman.h>
@@ -133,62 +132,46 @@ namespace skyline::service::visrv {
         auto height{request.Pop<i64>()};
         const auto handle{request.Pop<u64>()};
         const auto appletResourceUserId{request.Pop<u64>()};
-        LOGI("GetIndirectLayerImageMap: entered, pid=0x{:X}, handle=0x{:X}, ARUID=0x{:X}, width={}, height={}",
-             request.pid, handle, appletResourceUserId, width, height);
         IndirectLayerLayout layout;
         if (!CalculateIndirectLayerLayout(width, height, layout)) {
-            LOGI("GetIndirectLayerImageMap: return InvalidDimensions");
             return result::InvalidDimensions;
         }
         if (request.outputBuf.empty()) {
-            LOGI("GetIndirectLayerImageMap: return InvalidArgument, missing output buffer");
             return result::InvalidArgument;
         }
 
         auto imageBuffer{request.outputBuf.at(0)};
         if (imageBuffer.size() < layout.imageSize || reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment) {
-            LOGI("GetIndirectLayerImageMap: return InvalidArgument, bufferSize=0x{:X}, required=0x{:X}, aligned={}",
-                 imageBuffer.size(), layout.imageSize, reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment == 0);
             return result::InvalidArgument;
         }
 
         const auto applet{manager.indirectLayers->Get(handle, request.pid, appletResourceUserId)};
         if (!applet) {
             LOGW("GetIndirectLayerImageMap: unknown or closed handle=0x{:X}, aruid=0x{:X}", handle, appletResourceUserId);
-            LOGI("GetIndirectLayerImageMap: return InvalidValue");
             return result::InvalidValue;
         }
 
         const bool available{applet->GetIndirectLayerImage(imageBuffer.first(layout.imageSize))};
-        LOGD("GetIndirectLayerImageMap: handle=0x{:X}, aruid=0x{:X}, width={}, height={}, size=0x{:X}, available={}",
-             handle, appletResourceUserId, width, height, layout.imageSize, available);
         if (!available) {
-            LOGI("GetIndirectLayerImageMap: return NoData");
             return result::NoData;
         }
 
         response.Push<i64>(static_cast<i64>(layout.imageSize));
         response.Push<i64>(static_cast<i64>(layout.stride));
-        LOGI("GetIndirectLayerImageMap: return Success, size=0x{:X}, pitch=0x{:X}", layout.imageSize, layout.stride);
 
         return {};
     }
 
     Result IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         i64 width{request.Pop<i64>()}, height{request.Pop<i64>()};
-        LOGI("GetIndirectLayerImageRequiredMemoryInfo: entered, pid=0x{:X}, width={}, height={}", request.pid, width, height);
 
         IndirectLayerLayout layout;
         if (!CalculateIndirectLayerLayout(width, height, layout)) {
-            LOGI("GetIndirectLayerImageRequiredMemoryInfo: return InvalidDimensions");
             return result::InvalidDimensions;
         }
 
         response.Push<i64>(static_cast<i64>(layout.requiredSize));
         response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
-        LOGI("GetIndirectLayerImageRequiredMemoryInfo: return Success, size=0x{:X}, alignment=0x{:X}",
-             layout.requiredSize, IndirectLayerAlignment);
-        kernel::svc::TraceNextWaitSynchronization(state.thread->id);
 
         return {};
     }

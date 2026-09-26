@@ -148,7 +148,6 @@ namespace skyline::kernel::svc {
     /**
      * @brief Arms a one-shot diagnostic trace for the next wait made by a guest thread
      */
-    void TraceNextWaitSynchronization(size_t threadId);
 
     /**
      * @brief If the referenced thread is currently in a synchronization call, that call will be interrupted

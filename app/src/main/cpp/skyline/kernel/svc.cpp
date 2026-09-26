@@ -3,8 +3,6 @@
 
 #include <os.h>
 #include <nce.h>
-#include <atomic>
-#include <limits>
 #include <kernel/types/KProcess.h>
 #include <kernel/types/KTransferMemory.h>
 #include <common/trace.h>
@@ -13,36 +11,6 @@
 #include "svc.h"
 
 namespace skyline::kernel::svc {
-    namespace {
-        constexpr size_t NoWaitSynchronizationTrace{std::numeric_limits<size_t>::max()};
-        std::atomic_size_t waitSynchronizationTraceThreadId{NoWaitSynchronizationTrace};
-
-        bool ConsumeWaitSynchronizationTrace(size_t threadId) {
-            auto expected{threadId};
-            return waitSynchronizationTraceThreadId.compare_exchange_strong(expected, NoWaitSynchronizationTrace,
-                                                                              std::memory_order_acq_rel);
-        }
-
-        const char *GetSyncObjectTypeName(type::KType objectType) {
-            switch (objectType) {
-                case type::KType::KThread:
-                    return "KThread";
-                case type::KType::KProcess:
-                    return "KProcess";
-                case type::KType::KSession:
-                    return "KSession";
-                case type::KType::KEvent:
-                    return "KEvent";
-                default:
-                    return "other KSyncObject";
-            }
-        }
-    }
-
-    void TraceNextWaitSynchronization(size_t threadId) {
-        waitSynchronizationTraceThreadId.store(threadId, std::memory_order_release);
-    }
-
     void SetHeapSize(const DeviceState &state, SvcContext &ctx) {
         // FIX: 'size' used to be read as `u32 size{ctx.w1}`, truncating to the low 32 bits of the
         // register. On real hardware svcSetHeapSize takes a 64-bit size_t passed in the full X1
@@ -742,12 +710,8 @@ namespace skyline::kernel::svc {
 
     void WaitSynchronization(const DeviceState &state, SvcContext &ctx) {
         constexpr u8 MaxSyncHandles{0x40}; // The total amount of handles that can be passed to WaitSynchronization
-        const bool traceWait{ConsumeWaitSynchronizationTrace(state.thread->id)};
-
         u32 numHandles{ctx.w2};
         if (numHandles > MaxSyncHandles) {
-            if (traceWait)
-                LOGI("WaitSynchronization after cmd2460: thread={}, invalid handle count={}", state.thread->id, numHandles);
             ctx.w0 = result::OutOfRange;
             return;
         }
@@ -787,15 +751,6 @@ namespace skyline::kernel::svc {
         TRACE_EVENT_FMT("kernel", fmt::runtime(waitHandles.size() == 1 ? "WaitSynchronization 0x{:X}" : "WaitSynchronizationMultiple 0x{:X}"), waitHandles[0]);
 
         std::unique_lock lock(type::KSyncObject::syncObjectMutex);
-        if (traceWait) {
-            LOGI("WaitSynchronization after cmd2460: thread={}, handleCount={}, timeout={}ns",
-                 state.thread->id, waitHandles.size(), timeout);
-            for (size_t index{}; index < objectTable.size(); index++) {
-                const auto &object{objectTable[index]};
-                LOGI("WaitSynchronization after cmd2460: index={}, handle=0x{:X}, type={}, object={}, signalled={}",
-                     index, waitHandles[index], GetSyncObjectTypeName(object->objectType), fmt::ptr(object.get()), object->signalled);
-            }
-        }
         if (state.thread->cancelSync) {
             state.thread->cancelSync = false;
             ctx.w0 = result::Cancelled;
