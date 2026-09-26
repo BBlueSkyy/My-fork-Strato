@@ -218,6 +218,12 @@ namespace skyline::kernel::svc {
     void GetInfo(const DeviceState &state, SvcContext &ctx);
 
     /**
+     * @brief Flushes the data cache for a range of process memory
+     * @url https://switchbrew.org/wiki/SVC#FlushProcessDataCache
+     */
+    void FlushProcessDataCache(const DeviceState &state, SvcContext &ctx);
+
+    /**
      * @brief Maps physical memory to a part of virtual memory
      * @url https://switchbrew.org/wiki/SVC#MapPhysicalMemory
      */

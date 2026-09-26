@@ -566,6 +566,16 @@ namespace skyline::kernel {
         return std::make_optional(*chunkBase);
     }
 
+    bool MemoryManager::IsRangeMapped(span<u8> region) {
+        std::shared_lock lock{mutex};
+        bool mapped{true};
+        ForeachChunkInRange(region, [&](const std::pair<u8 *, ChunkDescriptor> &chunk) {
+            if (chunk.second.state == memory::states::Unmapped || chunk.second.state == memory::states::Reserved)
+                mapped = false;
+        });
+        return mapped;
+    }
+
     bool MemoryManager::MapPhysicalMemoryIfAllowed(span<u8> memory) {
     std::unique_lock lock{mutex};
 

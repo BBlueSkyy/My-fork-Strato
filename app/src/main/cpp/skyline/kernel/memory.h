@@ -371,6 +371,12 @@ namespace skyline {
             std::optional<std::pair<u8 *, ChunkDescriptor>> GetChunk(u8 *addr);
 
             /**
+             * @brief Checks whether every memory block in a guest range has a backing mapping
+             * @note The caller must first verify that the range lies inside the guest address space
+             */
+            bool IsRangeMapped(span<u8> region);
+
+            /**
              * @brief Atomically validates that the entire range is currently Unmapped (Free) and, if so,
              * maps it as Heap-backed physical memory (mirrors MapHeapMemory's ChunkDescriptor)
              * @return False if any chunk within the range - including gaps, which are surfaced as explicit

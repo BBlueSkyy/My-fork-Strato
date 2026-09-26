@@ -3,6 +3,7 @@
 
 #include <os.h>
 #include <nce.h>
+#include <atomic>
 #include <kernel/types/KProcess.h>
 #include <kernel/types/KTransferMemory.h>
 #include <common/trace.h>
@@ -1199,6 +1200,41 @@ namespace skyline::kernel::svc {
         ctx.w0 = Result{};
     }
 
+    void FlushProcessDataCache(const DeviceState &state, SvcContext &ctx) {
+        KHandle handle{ctx.w0};
+        // Horizon's 32-bit ABI passes the two 64-bit arguments in R2/R3 and R1/R4.
+        u64 address{state.process->is64bit() ? ctx.x1 : (static_cast<u64>(ctx.w3) << 32) | static_cast<u32>(ctx.w2)};
+        u64 size{state.process->is64bit() ? ctx.x2 : (static_cast<u64>(ctx.w4) << 32) | static_cast<u32>(ctx.w1)};
+
+        if (!size) [[unlikely]] {
+            ctx.w0 = result::InvalidSize;
+            return;
+        }
+
+        if (address > std::numeric_limits<u64>::max() - size) [[unlikely]] {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        std::shared_ptr<type::KProcess> process;
+        try {
+            process = state.process->GetHandle<type::KProcess>(handle);
+        } catch (const std::exception &) {
+            ctx.w0 = result::InvalidHandle;
+            return;
+        }
+
+        auto region{span<u8>{reinterpret_cast<u8 *>(address), static_cast<size_t>(size)}};
+        if (!process->memory.AddressSpaceContains(region) || !process->memory.IsRangeMapped(region)) [[unlikely]] {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        // Guest CPU memory is host-coherent; GPU writes to these pages are tracked by memory traps.
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        ctx.w0 = Result{};
+    }
+
     void MapPhysicalMemory(const DeviceState &state, SvcContext &ctx) {
         u8 *address{reinterpret_cast<u8 *>(ctx.x0)};
         size_t size{ctx.x1};
@@ -1606,7 +1642,7 @@ namespace skyline::kernel::svc {
         SVC_NONE, // 0x5C
         SVC_NONE, // 0x5D
         SVC_NONE, // 0x5E
-        SVC_NONE, // 0x5F
+        SVC_ENTRY(FlushProcessDataCache), // 0x5F
         SVC_NONE, // 0x60
         SVC_NONE, // 0x61
         SVC_NONE, // 0x62
