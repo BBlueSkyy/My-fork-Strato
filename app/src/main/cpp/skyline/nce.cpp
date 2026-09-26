@@ -7,6 +7,7 @@
 #include "common/signal.h"
 #include "common/trace.h"
 #include "os.h"
+#include "input.h"
 #include "jvm.h"
 #include "kernel/types/KProcess.h"
 #include "kernel/svc.h"
@@ -150,8 +151,49 @@ namespace skyline::nce {
 
         if (signal == SIGSEGV)
             // If we get a guest access violation then we want to handle any accesses that may be from a trapped region
-            if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
+            if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true)) {
+                if (state.input && state.input->kHid->guest.valid()) {
+                    const auto &hidMemory{*state.input->kHid};
+                    const auto fault{reinterpret_cast<uintptr_t>(info->si_addr)};
+                    const auto guestBase{reinterpret_cast<uintptr_t>(hidMemory.guest.data())};
+                    constexpr size_t npadOffset{offsetof(input::HidSharedMemory, npad)};
+                    constexpr std::array<size_t, 2> offsets{
+                        npadOffset + offsetof(input::NpadSection, fullKeyController),
+                        npadOffset + offsetof(input::NpadSection, defaultController) +
+                            offsetof(input::NpadControllerInfo, state) + 11 * sizeof(input::NpadControllerState),
+                    };
+                    for (size_t index{}; index < offsets.size(); ++index) {
+                        const auto probePage{util::AlignDown(guestBase + offsets[index], constant::PageSize)};
+                        if (fault < probePage || fault >= probePage + constant::PageSize)
+                            continue;
+
+                        const auto &hostSection{state.input->hid->npad[0]};
+                        const auto &guestSection{reinterpret_cast<const input::HidSharedMemory *>(hidMemory.guest.data())->npad[0]};
+                        const auto &hostInfo{index == 0 ? hostSection.fullKeyController : hostSection.defaultController};
+                        const auto &guestInfo{index == 0 ? guestSection.fullKeyController : guestSection.defaultController};
+                        const auto stateStart{guestBase + npadOffset + (index == 0 ?
+                            offsetof(input::NpadSection, fullKeyController) : offsetof(input::NpadSection, defaultController)) +
+                            offsetof(input::NpadControllerInfo, state)};
+                        const bool isSample{fault >= stateStart && fault < stateStart + sizeof(hostInfo.state)};
+                        const auto sampleIndex{isSample ? static_cast<int>((fault - stateStart) / sizeof(input::NpadControllerState)) : -1};
+                        const auto fieldOffset{isSample ? (fault - stateStart) % sizeof(input::NpadControllerState) : 0};
+                        const auto hostTail{hostInfo.header.currentEntry % constant::HidEntryCount};
+                        const auto guestTail{guestInfo.header.currentEntry % constant::HidEntryCount};
+                        const auto &hostEntry{hostInfo.state[hostTail]};
+                        const auto &guestEntry{guestInfo.state[guestTail]};
+                        LOGI("DSR-GUEST-ACCESS pc=0x{:X} faultOffset=0x{:X} sampleIndex={} fieldOffset=0x{:X} snapshot={} host=(tail={}, count={}, sample={}, marker={}, buttons=0x{:X}, LX={}, LY={}, RX={}, RY={}, status=0x{:X}) guest=(tail={}, count={}, sample={}, marker={}, buttons=0x{:X}, LX={}, LY={}, RX={}, RY={}, status=0x{:X})",
+                             mctx.pc, fault - guestBase, sampleIndex, fieldOffset, index == 0 ? "FullKey" : "SystemExt",
+                             hostInfo.header.currentEntry, hostInfo.header.maxEntry,
+                             hostEntry.localTimestamp, hostEntry.globalTimestamp, hostEntry.buttons.raw,
+                             hostEntry.leftX, hostEntry.leftY, hostEntry.rightX, hostEntry.rightY, hostEntry.status.raw,
+                             guestInfo.header.currentEntry, guestInfo.header.maxEntry,
+                             guestEntry.localTimestamp, guestEntry.globalTimestamp, guestEntry.buttons.raw,
+                             guestEntry.leftX, guestEntry.leftY, guestEntry.rightX, guestEntry.rightY, guestEntry.status.raw);
+                        break;
+                    }
+                }
                 return;
+            }
 
         if (signal != SIGINT) {
             signal::StackFrame topFrame{.lr = reinterpret_cast<void *>(ctx->uc_mcontext.pc), .next = reinterpret_cast<signal::StackFrame *>(ctx->uc_mcontext.regs[29])};

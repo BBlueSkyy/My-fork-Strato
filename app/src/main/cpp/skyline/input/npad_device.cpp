@@ -185,6 +185,9 @@ namespace skyline::input {
         connectionState = {};
         controllerState = {};
         defaultState = {};
+        tracedControllerState = {};
+        tracedDefaultState = {};
+        traceStateInitialized = false;
         sixAxisStateLeft = {};
         sixAxisStateRight = {};
 
@@ -317,9 +320,58 @@ namespace skyline::input {
         if (!connectionState.connected)
             return;
 
+        const auto stateChanged = [](const NpadControllerState &lhs, const NpadControllerState &rhs) {
+            return lhs.buttons.raw != rhs.buttons.raw ||
+                   lhs.leftX != rhs.leftX || lhs.leftY != rhs.leftY ||
+                   lhs.rightX != rhs.rightX || lhs.rightY != rhs.rightY ||
+                   lhs.status.raw != rhs.status.raw;
+        };
+        const bool shouldTrace{
+            !traceStateInitialized ||
+            stateChanged(controllerState, tracedControllerState) ||
+            stateChanged(defaultState, tracedDefaultState)};
+
         if (controllerInfo)
             WriteNextEntry(*controllerInfo, controllerState);
         WriteNextEntry(section.defaultController, defaultState);
+
+        if (shouldTrace) {
+            if (controllerInfo) {
+                const auto &activeEntry{controllerInfo->state.at(controllerInfo->header.currentEntry)};
+                LOGI("DSR-NPAD active id=0x{:X} type=0x{:X} tail={} count={} sample={} marker={} buttons=0x{:016X} LX={} LY={} RX={} RY={} status=0x{:X}",
+                     static_cast<u32>(id),
+                     static_cast<u32>(type),
+                     controllerInfo->header.currentEntry,
+                     controllerInfo->header.maxEntry,
+                     activeEntry.localTimestamp,
+                     activeEntry.globalTimestamp,
+                     activeEntry.buttons.raw,
+                     activeEntry.leftX,
+                     activeEntry.leftY,
+                     activeEntry.rightX,
+                     activeEntry.rightY,
+                     activeEntry.status.raw);
+            }
+
+            const auto &defaultEntry{section.defaultController.state.at(section.defaultController.header.currentEntry)};
+            LOGI("DSR-NPAD systemExt id=0x{:X} type=0x{:X} tail={} count={} sample={} marker={} buttons=0x{:016X} LX={} LY={} RX={} RY={} status=0x{:X}",
+                 static_cast<u32>(id),
+                 static_cast<u32>(type),
+                 section.defaultController.header.currentEntry,
+                 section.defaultController.header.maxEntry,
+                 defaultEntry.localTimestamp,
+                 defaultEntry.globalTimestamp,
+                 defaultEntry.buttons.raw,
+                 defaultEntry.leftX,
+                 defaultEntry.leftY,
+                 defaultEntry.rightX,
+                 defaultEntry.rightY,
+                 defaultEntry.status.raw);
+
+            tracedControllerState = controllerState;
+            tracedDefaultState = defaultState;
+            traceStateInitialized = true;
+        }
 
         globalTimestamp++;
     }
@@ -398,6 +450,8 @@ namespace skyline::input {
 
     void NpadDevice::SetAxisValue(NpadAxisId axis, i32 value) {
         std::scoped_lock lock{manager.mutex};
+        const auto previousControllerState{controllerState};
+        const auto previousDefaultState{defaultState};
         constexpr i16 threshold{std::numeric_limits<i16>::max() / 2}; // A 50% deadzone for the stick buttons
 
         if (manager.orientation == NpadJoyOrientation::Vertical || (type != NpadControllerType::JoyconLeft && type != NpadControllerType::JoyconRight)) {
@@ -483,12 +537,37 @@ namespace skyline::input {
                     break;
             }
         }
+
+        LOGI("DSR-AXIS id=0x{:X} type=0x{:X} axis={} value={} beforeL=({}, {}) afterL=({}, {}) beforeButtons=0x{:016X} afterButtons=0x{:016X} systemExtL=({}, {}) systemExtButtons=0x{:016X}",
+             static_cast<u32>(id),
+             static_cast<u32>(type),
+             static_cast<u32>(axis),
+             value,
+             previousControllerState.leftX,
+             previousControllerState.leftY,
+             controllerState.leftX,
+             controllerState.leftY,
+             previousControllerState.buttons.raw,
+             controllerState.buttons.raw,
+             defaultState.leftX,
+             defaultState.leftY,
+             defaultState.buttons.raw);
     }
 
     void NpadDevice::SetMotionValue(MotionId sensor, MotionSensorState *value) {
         std::scoped_lock lock{manager.mutex};
         if (!connectionState.connected)
             return;
+
+        if (sensor == MotionId::Left) {
+            static u32 dsrMotionLogCounter{};
+            if ((dsrMotionLogCounter++ % 30) == 0) {
+                LOGI("DSR-SIXAXIS motion id=0x{:X} gyro=({:.5f},{:.5f},{:.5f}) accel=({:.5f},{:.5f},{:.5f})",
+                     static_cast<u32>(id),
+                     value->gyroscope[0], value->gyroscope[1], value->gyroscope[2],
+                     value->accelerometer[0], value->accelerometer[1], value->accelerometer[2]);
+            }
+        }
 
         NpadSixAxisState *sixAxisState{sensor == MotionId::Right? &sixAxisStateRight : &sixAxisStateLeft};
 

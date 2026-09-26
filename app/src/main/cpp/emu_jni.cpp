@@ -212,9 +212,19 @@ extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_0
     auto input{InputWeak.lock()};
     if (!input)
         return; // We don't mind if we miss button updates while input hasn't been initialized
+
+    LOGI("DSR-BUTTON frontend index={} mask=0x{:016X} pressed={}",
+         index,
+         static_cast<skyline::u64>(mask),
+         static_cast<bool>(pressed));
+
     auto device{input->npad.controllers[static_cast<size_t>(index)].device};
     if (device)
         device->SetButtonState(skyline::input::NpadButton{.raw = static_cast<skyline::u64>(mask)}, pressed);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_00024Companion_traceAxisSource(JNIEnv *, jobject, jint source, jint index, jint axis, jint value) {
+    LOGI("DSR-AXIS-SOURCE source={} index={} axis={} value={}", source, index, axis, value);
 }
 
 extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_00024Companion_setAxisValue(JNIEnv *, jobject, jint index, jint axis, jint value) {
