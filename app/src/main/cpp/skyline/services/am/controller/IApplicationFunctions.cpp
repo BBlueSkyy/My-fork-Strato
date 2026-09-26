@@ -31,6 +31,8 @@ namespace skyline::service::am {
             Unknown = 3,
         } launchParameterKind{request.Pop<LaunchParameterKind>()};
 
+        LOGI("PopLaunchParameter: kind={}", static_cast<u32>(launchParameterKind));
+
         std::shared_ptr<IStorage> storageService;
         switch (launchParameterKind) {
             case LaunchParameterKind::UserChannel:
