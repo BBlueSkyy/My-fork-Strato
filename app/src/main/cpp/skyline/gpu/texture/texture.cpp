@@ -740,6 +740,9 @@ namespace skyline::gpu {
     }
 
     void Texture::MarkGpuDirty(UsageTracker &usageTracker) {
+        if (!guest)
+            return;
+
         for (auto mapping : guest->mappings)
             if (mapping.valid())
                 usageTracker.dirtyIntervals.Insert(mapping);
