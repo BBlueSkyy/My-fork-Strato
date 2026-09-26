@@ -12,6 +12,14 @@
 #include "svc.h"
 
 namespace skyline::kernel::svc {
+    static u64 ReadSvc64(const DeviceState &state, const SvcContext &ctx, size_t register64, size_t register32Low, size_t register32High) {
+        if (state.process->is64bit())
+            return ctx.regs[register64];
+
+        return static_cast<u32>(ctx.regs[register32Low]) |
+               (static_cast<u64>(static_cast<u32>(ctx.regs[register32High])) << 32);
+    }
+
     void SetHeapSize(const DeviceState &state, SvcContext &ctx) {
         // FIX: 'size' used to be read as `u32 size{ctx.w1}`, truncating to the low 32 bits of the
         // register. On real hardware svcSetHeapSize takes a 64-bit size_t passed in the full X1
@@ -319,8 +327,8 @@ namespace skyline::kernel::svc {
 
         idealCore = (idealCore == IdealCoreUseProcessValue) ? static_cast<i32>(state.process->npdm.meta.idealCore) : idealCore;
         if (idealCore < 0 || idealCore >= constant::CoreCount) {
+            LOGW("'idealCore' invalid: {} (priority: {}, register0: 0x{:X}, register4: 0x{:X})", idealCore, priority, static_cast<u32>(ctx.w0), static_cast<u32>(ctx.w4));
             ctx.w0 = result::InvalidCoreId;
-            LOGW("'idealCore' invalid: {}", idealCore);
             return;
         }
 
@@ -366,7 +374,8 @@ namespace skyline::kernel::svc {
         constexpr i64 yieldWithCoreMigration{-1};
         constexpr i64 yieldToAnyThread{-2};
 
-        i64 in{static_cast<i64>(ctx.x0)};
+        // AArch32 passes the 64-bit duration in R0/R1.
+        i64 in{static_cast<i64>(ReadSvc64(state, ctx, 0, 0, 1))};
         if (in > 0) {
             LOGD("Sleeping for {}ns", in);
             TRACE_EVENT("kernel", "SleepThread", "duration", in);
@@ -464,7 +473,13 @@ namespace skyline::kernel::svc {
             auto affinityMask{thread->affinityMask};
             LOGD("Getting thread #{}'s Ideal Core ({}) + Affinity Mask ({})", thread->id, idealCore, affinityMask);
 
-            ctx.x2 = affinityMask.to_ullong();
+            auto mask{affinityMask.to_ullong()};
+            if (state.process->is64bit()) {
+                ctx.x2 = mask;
+            } else {
+                ctx.w2 = static_cast<u32>(mask);
+                ctx.w3 = static_cast<u32>(mask >> 32);
+            }
             ctx.w1 = static_cast<u32>(idealCore);
             ctx.w0 = Result{};
         } catch (const std::out_of_range &) {
@@ -742,7 +757,8 @@ namespace skyline::kernel::svc {
             }
         }
 
-        i64 timeout{static_cast<i64>(ctx.x3)};
+        // AArch32 passes the 64-bit timeout in R0/R3.
+        i64 timeout{static_cast<i64>(ReadSvc64(state, ctx, 3, 0, 3))};
         if (waitHandles.size() == 1) {
             LOGD("Waiting on 0x{:X} for {}ns", waitHandles[0], timeout);
         } else if (AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Debug)) {
@@ -894,7 +910,8 @@ namespace skyline::kernel::svc {
         auto conditional{state.process->memory.TranslateVirtualPointer<u32 *>(ctx.x1)};
         KHandle requesterHandle{ctx.w2};
 
-        i64 timeout{static_cast<i64>(ctx.x3)};
+        // AArch32 passes the 64-bit timeout in R3/R4.
+        i64 timeout{static_cast<i64>(ReadSvc64(state, ctx, 3, 3, 4))};
         LOGD("Waiting on {} with {} for {}ns", fmt::ptr(conditional), fmt::ptr(mutex), timeout);
 
         auto result{state.process->ConditionVariableWait(conditional, mutex, requesterHandle, timeout)};
@@ -924,7 +941,12 @@ namespace skyline::kernel::svc {
             "MRS X1, CNTFRQ_EL0\n\t"
             "UDIV %0, %0, X1\n\t"
             "LDR X1, [SP], #16" : "=r"(tick));
-        ctx.x0 = tick;
+        if (state.process->is64bit()) {
+            ctx.x0 = tick;
+        } else {
+            ctx.w0 = static_cast<u32>(tick);
+            ctx.w1 = static_cast<u32>(tick >> 32);
+        }
     }
 
     void ConnectToNamedPort(const DeviceState &state, SvcContext &ctx) {
@@ -969,6 +991,7 @@ namespace skyline::kernel::svc {
             return;
         }
 
+        LOGE("Guest svcBreak: reason=0x{:X}, arg=0x{:X}, size=0x{:X}", reason, ctx.x1, ctx.x2);
         if (state.thread->id)
             state.process->Kill(false);
         std::longjmp(state.thread->originalCtx, true);
@@ -1147,11 +1170,11 @@ namespace skyline::kernel::svc {
                 break;
 
             case InfoState::AslrRegionBaseAddr:
-                out = reinterpret_cast<u64>(state.process->memory.base.data());
+                out = reinterpret_cast<u64>(state.process->is64bit() ? state.process->memory.base.data() : state.process->memory.code.guest.data());
                 break;
 
             case InfoState::AslrRegionSize:
-                out = state.process->memory.base.size();
+                out = state.process->is64bit() ? state.process->memory.base.size() : state.process->memory.code.size();
                 break;
 
             case InfoState::StackRegionBaseAddr:
@@ -1197,7 +1220,13 @@ namespace skyline::kernel::svc {
 
         LOGD("ID0: {}, ID1: {}, Out: 0x{:X}", static_cast<u32>(info), id1, out);
 
-        ctx.x1 = out;
+        if (state.process->is64bit()) {
+            ctx.x1 = out;
+        } else {
+            // GetInfo returns the 64-bit value in R1/R2 for AArch32 callers.
+            ctx.w1 = static_cast<u32>(out);
+            ctx.w2 = static_cast<u32>(out >> 32);
+        }
         ctx.w0 = Result{};
     }
 
@@ -1461,7 +1490,8 @@ namespace skyline::kernel::svc {
         using ArbitrationType = type::KProcess::ArbitrationType;
         auto arbitrationType{static_cast<ArbitrationType>(static_cast<u32>(ctx.w1))};
         u32 value{ctx.w2};
-        i64 timeout{static_cast<i64>(ctx.x3)};
+        // AArch32 passes the 64-bit timeout in R3/R4.
+        i64 timeout{static_cast<i64>(ReadSvc64(state, ctx, 3, 3, 4))};
 
         Result result;
         switch (arbitrationType) {

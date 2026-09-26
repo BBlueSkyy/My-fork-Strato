@@ -11,8 +11,11 @@ namespace skyline::service::fssrv {
         auto offset{request.Pop<u64>()};
         auto size{request.Pop<u64>()};
 
-        if (request.outputBuf.empty())
+        if (request.outputBuf.empty()) {
+            if (size)
+                LOGW("Read requested 0x{:X} bytes at offset 0x{:X} without an output buffer", size, offset);
             return {};
+        }
 
         auto &output{request.outputBuf.at(0)};
 
