@@ -34,10 +34,11 @@ namespace skyline::kernel::ipc {
             }
         }
 
+        // IPC descriptors contain guest addresses; services access the corresponding host mappings.
         for (u8 index{}; header->xNo > index; index++) {
             auto bufX{reinterpret_cast<BufferDescriptorX *>(pointer)};
             if (bufX->Pointer()) {
-                inputBuf.emplace_back(bufX->Pointer(), static_cast<u16>(bufX->size));
+                inputBuf.push_back(state.process->memory.GetHostSpan({bufX->Pointer(), static_cast<u16>(bufX->size)}));
                 LOGV("Buf X #{}: {}, 0x{:X}, #{}", index, fmt::ptr(bufX->Pointer()), static_cast<u16>(bufX->size), static_cast<u16>(bufX->Counter()));
             }
             pointer += sizeof(BufferDescriptorX);
@@ -46,7 +47,7 @@ namespace skyline::kernel::ipc {
         for (u8 index{}; header->aNo > index; index++) {
             auto bufA{reinterpret_cast<BufferDescriptorABW *>(pointer)};
             if (bufA->Pointer()) {
-                inputBuf.emplace_back(bufA->Pointer(), bufA->Size());
+                inputBuf.push_back(state.process->memory.GetHostSpan({bufA->Pointer(), bufA->Size()}));
                 LOGV("Buf A #{}: {}, 0x{:X}", index, fmt::ptr(bufA->Pointer()), static_cast<u64>(bufA->Size()));
             }
             pointer += sizeof(BufferDescriptorABW);
@@ -55,7 +56,7 @@ namespace skyline::kernel::ipc {
         for (u8 index{}; header->bNo > index; index++) {
             auto bufB{reinterpret_cast<BufferDescriptorABW *>(pointer)};
             if (bufB->Pointer()) {
-                outputBuf.emplace_back(bufB->Pointer(), bufB->Size());
+                outputBuf.push_back(state.process->memory.GetHostSpan({bufB->Pointer(), bufB->Size()}));
                 LOGV("Buf B #{}: {}, 0x{:X}", index, fmt::ptr(bufB->Pointer()), static_cast<u64>(bufB->Size()));
             }
             pointer += sizeof(BufferDescriptorABW);
@@ -64,8 +65,8 @@ namespace skyline::kernel::ipc {
         for (u8 index{}; header->wNo > index; index++) {
             auto bufW{reinterpret_cast<BufferDescriptorABW *>(pointer)};
             if (bufW->Pointer()) {
-                outputBuf.emplace_back(bufW->Pointer(), bufW->Size());
-                outputBuf.emplace_back(bufW->Pointer(), bufW->Size());
+                outputBuf.push_back(state.process->memory.GetHostSpan({bufW->Pointer(), bufW->Size()}));
+                outputBuf.push_back(state.process->memory.GetHostSpan({bufW->Pointer(), bufW->Size()}));
                 LOGV("Buf W #{}: {}, 0x{:X}", index, fmt::ptr(bufW->Pointer()), static_cast<u16>(bufW->Size()));
             }
             pointer += sizeof(BufferDescriptorABW);
@@ -113,14 +114,14 @@ namespace skyline::kernel::ipc {
         if (header->cFlag == BufferCFlag::SingleDescriptor) {
             auto bufC{reinterpret_cast<BufferDescriptorC *>(bufCPointer)};
             if (bufC->address) {
-                outputBuf.emplace_back(bufC->Pointer(), static_cast<u16>(bufC->size));
+                outputBuf.push_back(state.process->memory.GetHostSpan({bufC->Pointer(), static_cast<u16>(bufC->size)}));
                 LOGV("Buf C: {}, 0x{:X}", fmt::ptr(bufC->Pointer()), static_cast<u16>(bufC->size));
             }
         } else if (header->cFlag > BufferCFlag::SingleDescriptor) {
             for (u8 index{}; (static_cast<u8>(header->cFlag) - 2) > index; index++) { // (cFlag - 2) C descriptors are present
                 auto bufC{reinterpret_cast<BufferDescriptorC *>(bufCPointer)};
                 if (bufC->address) {
-                    outputBuf.emplace_back(bufC->Pointer(), static_cast<u16>(bufC->size));
+                    outputBuf.push_back(state.process->memory.GetHostSpan({bufC->Pointer(), static_cast<u16>(bufC->size)}));
                     LOGV("Buf C #{}: {}, 0x{:X}", index, fmt::ptr(bufC->Pointer()), static_cast<u16>(bufC->size));
                 }
                 bufCPointer += sizeof(BufferDescriptorC);
