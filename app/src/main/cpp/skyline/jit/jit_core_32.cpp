@@ -26,7 +26,7 @@ namespace skyline::jit {
         config.optimizations |= Dynarmic::OptimizationFlag::Unsafe_UnfuseFMA;
         config.optimizations |= Dynarmic::OptimizationFlag::Unsafe_IgnoreStandardFPCRValue;
         config.optimizations |= Dynarmic::OptimizationFlag::Unsafe_InaccurateNaN;
-        config.optimizations |= Dynarmic::OptimizationFlag::Unsafe_IgnoreGlobalMonitor;
+        // Keep the global monitor enabled: 32-bit guest threads use exclusive accesses to synchronize.
         config.unsafe_optimizations = true;
 
         config.fastmem_pointer = reinterpret_cast<uintptr_t>(state.process->memory.base.data());
@@ -72,6 +72,7 @@ namespace skyline::jit {
         context.fpr = jit.ExtRegs();
         context.cpsr = jit.Cpsr();
         context.fpscr = jit.Fpscr();
+        context.tpidr = GetThreadPointer();
     }
 
     void JitCore32::RestoreContext(const ThreadContext32 &context) {
@@ -100,6 +101,10 @@ namespace skyline::jit {
 
     void JitCore32::SetThreadPointer(u32 threadPtr) {
         coproc15->tpidrurw = threadPtr;
+    }
+
+    u32 JitCore32::GetThreadPointer() const {
+        return coproc15->tpidrurw;
     }
 
     void JitCore32::SetTlsPointer(u32 tlsPtr) {

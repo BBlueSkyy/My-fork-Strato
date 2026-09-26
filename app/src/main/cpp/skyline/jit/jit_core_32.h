@@ -72,13 +72,18 @@ namespace skyline::jit {
 
         /**
          * @brief Sets the Thread Pointer register to the specified value
-         * @details Thread pointer is stored in TPIDRURO
+         * @details The guest-writable pointer is stored in TPIDRURW.
          */
         void SetThreadPointer(u32 threadPtr);
 
         /**
+         * @return The current value of the user-writable AArch32 thread pointer.
+         */
+        u32 GetThreadPointer() const;
+
+        /**
          * @brief Sets the Thread Local Storage Pointer register to the specified value
-         * @details TLS is stored in TPIDRURW
+         * @details The kernel-provided TLS address is stored in TPIDRURO.
          */
         void SetTlsPointer(u32 tlsPtr);
 
