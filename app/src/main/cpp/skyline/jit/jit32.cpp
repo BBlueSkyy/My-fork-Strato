@@ -36,6 +36,10 @@ namespace skyline::jit {
 
         auto &mctx{ctx->uc_mcontext};
         auto thread{kernel::this_thread};
+        if (!thread) {
+            signal::ExceptionalSignalHandler(signal, info, ctx);
+            return;
+        }
         bool isGuest{thread->jit != nullptr}; // Whether the signal happened while running guest code
 
         if (isGuest) {

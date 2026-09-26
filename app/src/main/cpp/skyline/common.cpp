@@ -16,6 +16,8 @@ namespace skyline {
         gpu = std::make_shared<gpu::GPU>(*this);
         soc = std::make_shared<soc::SOC>(*this);
         audio = std::make_shared<audio::Audio>(*this);
+        // The loader uses NCE to patch 64-bit executables before the scheduler and guest threads exist.
+        nce = std::make_shared<nce::NCE>(*this);
         input = std::make_shared<input::Input>(*this);
     }
 

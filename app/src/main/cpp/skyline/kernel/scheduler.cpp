@@ -42,12 +42,10 @@ namespace skyline::kernel {
     }
 
     void Scheduler::JitSignalHandler(int signal, siginfo *info, ucontext *ctx) {
-        if (kernel::this_thread->jit)
-            // The thread is running on a JIT core, preempt it
+        // A halted JIT returns to KThread::ThreadEntrypoint, which processes this pending yield.
+        YieldPending = true;
+        if (kernel::this_thread && kernel::this_thread->jit)
             kernel::this_thread->jit->HaltExecution(jit::HaltReason::Preempted);
-        else
-            // The thread is running host code
-            YieldPending = true;
     }
 
     Scheduler::CoreContext &Scheduler::GetOptimalCoreForThread(const std::shared_ptr<type::KThread> &thread) {

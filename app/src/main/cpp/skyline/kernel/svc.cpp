@@ -1393,8 +1393,8 @@ namespace skyline::kernel::svc {
                 for (size_t i{}; i < targetContext.gpr.size() - 1; i++)
                     context.gpr[i] = targetContext.gpr[i];
 
-                // TODO: Check if this is correct
-                for (size_t i{}; i < targetContext.fpr.size(); i++) {
+                // AArch32 stores 32 doubleword VFP registers in the low halves of the 32 output vector registers.
+                for (size_t i{}; i < targetContext.fpr_d.size(); i++) {
                     context.vreg[i] = targetContext.fpr_d[i];
                 }
 
