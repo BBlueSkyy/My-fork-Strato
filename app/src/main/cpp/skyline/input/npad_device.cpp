@@ -240,7 +240,9 @@ namespace skyline::input {
     void NpadDevice::WriteNextEntry(NpadControllerInfo &info, NpadControllerState entry) {
         auto &lastEntry{info.state.at(info.header.currentEntry)};
 
-        info.header.timestamp = util::GetTimeTicks();
+        // The first RingLifo header word is unused by nn::hid's Npad state reader.
+        // Keep it zero like the hardware-facing layout used by Yuzu/Eden/Ryujinx.
+        info.header.timestamp = 0;
         info.header.entryCount = constant::HidEntryCount;
         info.header.maxEntry = std::min<u64>(info.header.maxEntry + 1, constant::HidEntryCount - 1);
         info.header.currentEntry = (info.header.currentEntry + 1) % constant::HidEntryCount;
@@ -263,7 +265,9 @@ namespace skyline::input {
     void NpadDevice::WriteNextEntry(NpadSixAxisInfo &info, NpadSixAxisState entry) {
         auto &lastEntry{info.state.at(info.header.currentEntry)};
 
-        info.header.timestamp = util::GetTimeTicks();
+        // The first RingLifo header word is unused by nn::hid's Npad state reader.
+        // Keep it zero like the hardware-facing layout used by Yuzu/Eden/Ryujinx.
+        info.header.timestamp = 0;
         info.header.entryCount = constant::HidEntryCount;
         info.header.maxEntry = std::min<u64>(info.header.maxEntry + 1, constant::HidEntryCount - 1);
         info.header.currentEntry = (info.header.currentEntry + 1) % constant::HidEntryCount;
