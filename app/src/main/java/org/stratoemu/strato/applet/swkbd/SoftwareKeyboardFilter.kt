@@ -17,6 +17,10 @@ class SoftwareKeyboardFilter(val config : SoftwareKeyboardConfig) : InputFilter 
 
         val sourceCodepoints = source.subSequence(start, end).codePoints().iterator()
         val replacedLength = dest.subSequence(dstart, dend).length
+        var encodedLength = if (config.isUseUtf8) {
+            dest.toString().toByteArray(Charsets.UTF_8).size -
+                dest.subSequence(dstart, dend).toString().toByteArray(Charsets.UTF_8).size
+        } else 0
 
         var nextIndex = start
         while (sourceCodepoints.hasNext()) {
@@ -31,10 +35,17 @@ class SoftwareKeyboardFilter(val config : SoftwareKeyboardConfig) : InputFilter 
             // Check if the string would be over the maximum length after adding this character
             if (dest.length - replacedLength + filteredStringBuilder.length + Character.charCount(codepoint) > config.textMaxLength.toInt())
                 break
-            else
-                // Keep track where in the new string each character ended up
-                newCharacterIndex[currentIndex - start] = filteredStringBuilder.length
-            filteredStringBuilder.append(String(Character.toChars(codepoint)))
+            val character = String(Character.toChars(codepoint))
+            if (config.isUseUtf8) {
+                val encodedCharacterLength = character.toByteArray(Charsets.UTF_8).size
+                if (encodedLength + encodedCharacterLength > SoftwareKeyboardConfigTextBytes)
+                    break
+                encodedLength += encodedCharacterLength
+            }
+
+            // Keep track where in the new string each character ended up
+            newCharacterIndex[currentIndex - start] = filteredStringBuilder.length
+            filteredStringBuilder.append(character)
         }
 
         if (source is Spanned) {
