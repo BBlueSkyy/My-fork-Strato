@@ -7,6 +7,7 @@ package org.stratoemu.strato.applet.swkbd
 
 import android.annotation.SuppressLint
 import android.content.DialogInterface
+import android.graphics.Color
 import android.os.Bundle
 import android.text.InputType
 import android.view.KeyEvent
@@ -118,9 +119,27 @@ class SoftwareKeyboardDialog : DialogFragment() {
         updateValidity(text)
 
         binding.okButton.setOnClickListener { submit() }
-        binding.okButton.visibility = if (inline) View.GONE else View.VISIBLE
-        binding.cancelButton.visibility = if (inline || config.isCancelButtonDisabled) View.GONE else View.VISIBLE
-        binding.lengthStatus.visibility = if (inline) View.GONE else View.VISIBLE
+        if (inline) {
+            // Preserve the working dialog geometry and focused TextInputEditText so Android
+            // keeps a valid InputConnection. Inline mode only hides the frontend chrome;
+            // the guest renders the actual text through its indirect layer.
+            binding.inputDialog.setBackgroundColor(Color.TRANSPARENT)
+            binding.header.visibility = View.INVISIBLE
+            binding.sub.visibility = View.INVISIBLE
+            binding.okButton.visibility = View.INVISIBLE
+            binding.cancelButton.visibility = View.INVISIBLE
+            binding.lengthStatus.visibility = View.INVISIBLE
+            binding.inputLayout.hint = null
+            binding.inputLayout.boxStrokeWidth = 0
+            binding.inputLayout.boxStrokeWidthFocused = 0
+            binding.inputLayout.setBoxBackgroundColor(Color.TRANSPARENT)
+            binding.textInput.setTextColor(Color.TRANSPARENT)
+            binding.textInput.setHintTextColor(Color.TRANSPARENT)
+        } else {
+            binding.okButton.visibility = View.VISIBLE
+            binding.cancelButton.visibility = if (config.isCancelButtonDisabled) View.GONE else View.VISIBLE
+            binding.lengthStatus.visibility = View.VISIBLE
+        }
         binding.cancelButton.setOnClickListener { cancelFromUser() }
         binding.textInput.setOnEditorActionListener { _, actionId, event ->
             val done = actionId == EditorInfo.IME_ACTION_DONE ||
@@ -140,13 +159,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
         super.onStart()
         if (::binding.isInitialized) {
             binding.textInput.requestFocus()
-            dialog?.window?.apply {
-                if (inline) {
-                    clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                    setDimAmount(0f)
-                }
-                setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
-            }
+            dialog?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
         }
     }
 
