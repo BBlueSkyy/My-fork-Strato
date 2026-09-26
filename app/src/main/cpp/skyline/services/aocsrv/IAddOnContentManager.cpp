@@ -12,6 +12,7 @@ namespace skyline::service::aocsrv {
           addOnContentListChangedEvent(std::make_shared<type::KEvent>(state, false)) {}
 
     Result IAddOnContentManager::CountAddOnContent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        LOGI("AOC-TRACE CountAddOnContent loaders={}", state.dlcLoaders.size());
         response.Push<u32>(static_cast<u32>(state.dlcLoaders.size()));
         return {};
     }
@@ -24,6 +25,10 @@ namespace skyline::service::aocsrv {
         };
         auto params{request.Pop<Parameters>()};
 
+        const size_t outputBufferSize{request.outputBuf.empty() ? 0 : request.outputBuf.at(0).size()};
+        LOGI("AOC-TRACE ListAddOnContent offset={} count={} loaders={} outbuf={}",
+             params.offset, params.count, state.dlcLoaders.size(), outputBufferSize);
+
         std::vector<u32> out;
         std::vector<u64> aocTitleIds;
 
@@ -33,11 +38,15 @@ namespace skyline::service::aocsrv {
         for (u64 contentId : aocTitleIds)
             out.push_back(static_cast<u32>(contentId & constant::AOCTitleIdMask));
 
+        LOGI("AOC-TRACE ListAddOnContent built={} offset={} count={} outbuf={}",
+             out.size(), params.offset, params.count, outputBufferSize);
+
         const auto outCount{static_cast<u32>(std::min<size_t>(out.size() - params.offset, params.count))};
         std::rotate(out.begin(), out.begin() + params.offset, out.end());
         out.resize(outCount);
 
         request.outputBuf.at(0).copy_from(out);
+        LOGI("AOC-TRACE ListAddOnContent returning outCount={}", outCount);
         response.Push<u32>(outCount);
         return {};
     }

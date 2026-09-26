@@ -27,19 +27,25 @@ namespace skyline::loader {
     NspLoader::NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore,
                          const std::string &diagnosticsPath, NspLoadMode loadMode)
         : nsp(std::make_shared<vfs::PartitionFileSystem>(backing)) {
+        LOGI("DLC-TRACE NspLoader constructed PFS backing_size=0x{:X}", backing ? backing->size : 0);
         ExtractTickets(nsp, keyStore);
+        LOGI("DLC-TRACE NspLoader tickets extracted");
 
         const auto ncaParseMode{loadMode == NspLoadMode::MetadataOnly ? vfs::NCAParseMode::MetadataOnly : vfs::NCAParseMode::Full};
         std::vector<ProgramNcaCandidate> programs;
         std::vector<vfs::CNMT> metadata;
 
         auto root{nsp->OpenDirectory("", {false, true})};
-        for (const auto &entry : root->Read()) {
+        auto entries{root->Read()};
+        LOGI("DLC-TRACE NspLoader root entries={}", entries.size());
+        for (const auto &entry : entries) {
             if (entry.name.substr(entry.name.find_last_of('.') + 1) != "nca")
                 continue;
 
+            LOGI("DLC-TRACE NspLoader parsing NCA '{}'", entry.name);
             try {
                 auto nca{vfs::NCA(nsp->OpenFile(entry.name), keyStore, false, ncaParseMode)};
+                LOGI("DLC-TRACE NspLoader parsed NCA '{}' contentType={}", entry.name, static_cast<u32>(nca.contentType));
 
                 if (nca.contentType == vfs::NCAContentType::Program)
                     programs.push_back({entry.name, std::move(nca)});
@@ -66,7 +72,10 @@ namespace skyline::loader {
             }
         }
 
+        LOGI("DLC-TRACE NspLoader selecting program NCAs programs={} metadata={}", programs.size(), metadata.size());
         auto selection{SelectProgramNcas(std::move(programs), metadata)};
+        LOGI("DLC-TRACE NspLoader selection complete base={} patch={} metadata={}",
+             selection.base.has_value(), selection.patch.has_value(), selection.metadata.has_value());
         programNca = std::move(selection.base);
         programPatchNca = std::move(selection.patch);
         if (programNca)
@@ -81,6 +90,10 @@ namespace skyline::loader {
             cnmt = vfs::CNMT(metaNca->cnmt);
         if (selection.metadata)
             cnmt = std::move(selection.metadata);
+
+        LOGI("DLC-TRACE NspLoader complete has_program={} has_patch={} has_control={} has_meta={} has_public={} has_cnmt={}",
+             programNca.has_value(), programPatchNca.has_value(), controlNca.has_value(), metaNca.has_value(),
+             publicNca.has_value(), cnmt.has_value());
     }
 
     void *NspLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {

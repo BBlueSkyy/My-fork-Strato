@@ -267,9 +267,12 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
         var dlcFds : IntArray? = null
         if (dlcUris.isNotEmpty()) {
-            val validDlcs = dlcUris.mapNotNull { uri ->
+            val validDlcs = dlcUris.mapIndexedNotNull { index, uri ->
                 try {
-                    contentResolver.openFileDescriptor(uri, "r")?.detachFd()
+                    Log.i(Tag, "DLC-TRACE Android opening index=$index uri=$uri")
+                    val fd = contentResolver.openFileDescriptor(uri, "r")?.detachFd()
+                    Log.i(Tag, "DLC-TRACE Android opened index=$index fd=$fd uri=$uri")
+                    fd
                 } catch (e: Exception) {
                     Log.w(Tag, "Failed to access DLC file: $uri", e)
                     // Clear invalid DLC from preferences
