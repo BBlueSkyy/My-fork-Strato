@@ -297,17 +297,16 @@ namespace skyline {
             void InitializeRegions(span<u8> codeRegion);
 
             /**
-             * @brief Mirrors a page-aligned mapping in the guest address space to the host address space
+             * @brief Mirrors a page-aligned host mapping of guest memory
              * @return A span to the host address space mirror mapped as RW, unmapping it is the responsibility of the caller
-             * @note The supplied mapping **must** be page-aligned and inside the guest address space
+             * @note The supplied mapping **must** be page-aligned and inside the host VMM base
              */
             span<u8> CreateMirror(span<u8> mapping);
 
             /**
-             * @brief Mirrors multiple page-aligned mapping in the guest address space to the host address space
-             * @param totalSize The total size of all the regions to be mirrored combined
+             * @brief Mirrors multiple page-aligned host mappings of guest memory
              * @return A span to the host address space mirror mapped as RW, unmapping it is the responsibility of the caller
-             * @note The supplied mapping **must** be page-aligned and inside the guest address space
+             * @note The supplied mappings **must** be page-aligned and inside the host VMM base
              * @note If a single mapping is mirrored, it is recommended to use CreateMirror instead
              */
             span<u8> CreateMirrors(const std::vector<span<u8>> &regions);

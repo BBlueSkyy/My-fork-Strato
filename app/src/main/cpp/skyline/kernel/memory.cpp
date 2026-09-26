@@ -376,9 +376,6 @@ namespace skyline::kernel {
     }
 
     span<u8> MemoryManager::CreateMirror(span<u8> mapping) {
-        // Get the host address of the mapping
-        mapping = GetHostSpan(mapping);
-
         if (!base.contains(mapping)) [[unlikely]]
             throw exception("Mapping is outside of VMM base: {} - {}", fmt::ptr(mapping.data()), fmt::ptr(mapping.end().base()));
 
@@ -406,23 +403,20 @@ namespace skyline::kernel {
 
         size_t mirrorOffset{};
         for (const auto &region : regions) {
-            // Get the host address of the region
-            auto hostRegion{GetHostSpan(region)};
+            if (!base.contains(region)) [[unlikely]]
+                throw exception("Mapping is outside of VMM base: {} - {}", fmt::ptr(region.data()), fmt::ptr(region.end().base()));
 
-            if (!base.contains(hostRegion)) [[unlikely]]
-                throw exception("Mapping is outside of VMM base: {} - {}", fmt::ptr(hostRegion.data()), fmt::ptr(hostRegion.end().base()));
+            auto offset{static_cast<size_t>(region.data() - base.data())};
+            if (!util::IsPageAligned(offset) || !util::IsPageAligned(region.size())) [[unlikely]]
+                throw exception("Mapping is not aligned to a page: {} - {} (0x{:X})", fmt::ptr(region.data()), fmt::ptr(region.end().base()), offset);
 
-            auto offset{static_cast<size_t>(hostRegion.data() - base.data())};
-            if (!util::IsPageAligned(offset) || !util::IsPageAligned(hostRegion.size())) [[unlikely]]
-                throw exception("Mapping is not aligned to a page: {} - {} (0x{:X})", fmt::ptr(hostRegion.data()), fmt::ptr(hostRegion.end().base()), offset);
-
-            auto mirror{mremap(hostRegion.data(), 0, hostRegion.size(), MREMAP_FIXED | MREMAP_MAYMOVE, reinterpret_cast<u8 *>(mirrorBase) + mirrorOffset)};
+            auto mirror{mremap(region.data(), 0, region.size(), MREMAP_FIXED | MREMAP_MAYMOVE, reinterpret_cast<u8 *>(mirrorBase) + mirrorOffset)};
             if (mirror == MAP_FAILED) [[unlikely]]
-                throw exception("Failed to create mirror mapping at {} - {} (0x{:X}): {}", fmt::ptr(hostRegion.data()), fmt::ptr(hostRegion.end().base()), offset, strerror(errno));
+                throw exception("Failed to create mirror mapping at {} - {} (0x{:X}): {}", fmt::ptr(region.data()), fmt::ptr(region.end().base()), offset, strerror(errno));
 
-            mprotect(mirror, hostRegion.size(), PROT_READ | PROT_WRITE);
+            mprotect(mirror, region.size(), PROT_READ | PROT_WRITE);
 
-            mirrorOffset += hostRegion.size();
+            mirrorOffset += region.size();
         }
 
         if (mirrorOffset != totalSize) [[unlikely]]
