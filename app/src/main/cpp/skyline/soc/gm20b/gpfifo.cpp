@@ -86,7 +86,7 @@ namespace skyline::soc::gm20b {
         state(state),
         gpfifoEngine(state.soc->host1x.syncpoints, channelCtx),
         channelCtx(channelCtx),
-        gpEntries(numEntries),
+        gpEntries(numEntries, true),
         thread(std::thread(&ChannelGpfifo::Run, this)) {}
 
     void ChannelGpfifo::SendFull(u32 method, GpfifoArgument argument, SubchannelId subChannel, bool lastCall) {
@@ -369,6 +369,7 @@ namespace skyline::soc::gm20b {
     }
 
     void ChannelGpfifo::Run() {
+        LOGI("GRID-GPFIFO run-start");
         if (int result{pthread_setname_np(pthread_self(), "GPFIFO")})
             LOGW("Failed to set the thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
@@ -377,24 +378,39 @@ namespace skyline::soc::gm20b {
             bool channelLocked{};
 
             gpEntries.Process([this, &channelLocked](GpEntry gpEntry) {
+                LOGI("GRID-GPFIFO consumer-received address=0x{:X} size=0x{:X}",
+                     gpEntry.Address(), +gpEntry.size);
                 LOGD("Processing pushbuffer: 0x{:X}, Size: 0x{:X}", gpEntry.Address(), +gpEntry.size);
 
                 if (!channelLocked) {
+                    LOGI("GRID-GPFIFO channel-lock-begin");
                     channelCtx.Lock();
+                    LOGI("GRID-GPFIFO channel-lock-end");
                     channelLocked = true;
                 }
 
+                LOGI("GRID-GPFIFO process-begin address=0x{:X} size=0x{:X}",
+                     gpEntry.Address(), +gpEntry.size);
                 Process(gpEntry);
+                LOGI("GRID-GPFIFO process-end address=0x{:X} size=0x{:X}",
+                     gpEntry.Address(), +gpEntry.size);
             }, [this, &channelLocked]() {
                 // If we run out of GpEntries to process ensure we submit any remaining GPU work before waiting for more to arrive
                 LOGD("Finished processing pushbuffer batch");
+                LOGI("GRID-GPFIFO batch-drained channelLocked={}", channelLocked);
                 if (channelLocked) {
+                    LOGI("GRID-GPFIFO executor-submit-begin");
                     channelCtx.executor.Submit();
+                    LOGI("GRID-GPFIFO executor-submit-end");
+                    LOGI("GRID-GPFIFO channel-unlock-begin");
                     channelCtx.Unlock();
+                    LOGI("GRID-GPFIFO channel-unlock-end");
                     channelLocked = false;
                 }
             });
         } catch (const signal::SignalException &e) {
+            LOGI("GRID-GPFIFO signal-exception signal={} isSigint={}",
+                 e.signal, e.signal == SIGINT);
             if (e.signal != SIGINT) {
                 LOGE("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
                 signal::BlockSignal({SIGINT});
@@ -409,6 +425,8 @@ namespace skyline::soc::gm20b {
             signal::BlockSignal({SIGINT});
             state.process->Kill(false);
         }
+
+        LOGI("GRID-GPFIFO run-exit");
     }
 
     void ChannelGpfifo::Push(span<GpEntry> entries) {
@@ -420,9 +438,15 @@ namespace skyline::soc::gm20b {
     }
 
     ChannelGpfifo::~ChannelGpfifo() {
+        LOGI("GRID-GPFIFO destructor-begin joinable={}", thread.joinable());
         if (thread.joinable()) {
+            LOGI("GRID-GPFIFO destructor-close-begin");
             gpEntries.Close();
+            LOGI("GRID-GPFIFO destructor-close-end");
+            LOGI("GRID-GPFIFO destructor-join-begin");
             thread.join();
+            LOGI("GRID-GPFIFO destructor-join-end");
         }
+        LOGI("GRID-GPFIFO destructor-end");
     }
 }
