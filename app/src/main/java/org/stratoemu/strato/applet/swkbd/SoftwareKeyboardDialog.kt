@@ -118,7 +118,9 @@ class SoftwareKeyboardDialog : DialogFragment() {
         updateValidity(text)
 
         binding.okButton.setOnClickListener { submit() }
-        binding.cancelButton.visibility = if (config.isCancelButtonDisabled) View.GONE else View.VISIBLE
+        binding.okButton.visibility = if (inline) View.GONE else View.VISIBLE
+        binding.cancelButton.visibility = if (inline || config.isCancelButtonDisabled) View.GONE else View.VISIBLE
+        binding.lengthStatus.visibility = if (inline) View.GONE else View.VISIBLE
         binding.cancelButton.setOnClickListener { cancelFromUser() }
         binding.textInput.setOnEditorActionListener { _, actionId, event ->
             val done = actionId == EditorInfo.IME_ACTION_DONE ||
@@ -138,7 +140,13 @@ class SoftwareKeyboardDialog : DialogFragment() {
         super.onStart()
         if (::binding.isInitialized) {
             binding.textInput.requestFocus()
-            dialog?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+            dialog?.window?.apply {
+                if (inline) {
+                    clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                    setDimAmount(0f)
+                }
+                setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+            }
         }
     }
 
