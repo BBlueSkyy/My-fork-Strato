@@ -159,7 +159,8 @@ namespace skyline::nce {
                     constexpr size_t npadOffset{offsetof(input::HidSharedMemory, npad)};
                     constexpr std::array<size_t, 2> offsets{
                         npadOffset + offsetof(input::NpadSection, fullKeyController),
-                        npadOffset + offsetof(input::NpadSection, defaultController),
+                        npadOffset + offsetof(input::NpadSection, defaultController) +
+                            offsetof(input::NpadControllerInfo, state) + 11 * sizeof(input::NpadControllerState),
                     };
                     for (size_t index{}; index < offsets.size(); ++index) {
                         const auto probePage{util::AlignDown(guestBase + offsets[index], constant::PageSize)};
@@ -170,12 +171,18 @@ namespace skyline::nce {
                         const auto &guestSection{reinterpret_cast<const input::HidSharedMemory *>(hidMemory.guest.data())->npad[0]};
                         const auto &hostInfo{index == 0 ? hostSection.fullKeyController : hostSection.defaultController};
                         const auto &guestInfo{index == 0 ? guestSection.fullKeyController : guestSection.defaultController};
+                        const auto stateStart{guestBase + npadOffset + (index == 0 ?
+                            offsetof(input::NpadSection, fullKeyController) : offsetof(input::NpadSection, defaultController)) +
+                            offsetof(input::NpadControllerInfo, state)};
+                        const bool isSample{fault >= stateStart && fault < stateStart + sizeof(hostInfo.state)};
+                        const auto sampleIndex{isSample ? static_cast<int>((fault - stateStart) / sizeof(input::NpadControllerState)) : -1};
+                        const auto fieldOffset{isSample ? (fault - stateStart) % sizeof(input::NpadControllerState) : 0};
                         const auto hostTail{hostInfo.header.currentEntry % constant::HidEntryCount};
                         const auto guestTail{guestInfo.header.currentEntry % constant::HidEntryCount};
                         const auto &hostEntry{hostInfo.state[hostTail]};
                         const auto &guestEntry{guestInfo.state[guestTail]};
-                        LOGI("DSR-GUEST-ACCESS pc=0x{:X} faultOffset=0x{:X} snapshot={} host=(tail={}, count={}, sample={}, marker={}, buttons=0x{:X}, LX={}, LY={}, RX={}, RY={}, status=0x{:X}) guest=(tail={}, count={}, sample={}, marker={}, buttons=0x{:X}, LX={}, LY={}, RX={}, RY={}, status=0x{:X})",
-                             mctx.pc, fault - guestBase, index == 0 ? "FullKey" : "SystemExt",
+                        LOGI("DSR-GUEST-ACCESS pc=0x{:X} faultOffset=0x{:X} sampleIndex={} fieldOffset=0x{:X} snapshot={} host=(tail={}, count={}, sample={}, marker={}, buttons=0x{:X}, LX={}, LY={}, RX={}, RY={}, status=0x{:X}) guest=(tail={}, count={}, sample={}, marker={}, buttons=0x{:X}, LX={}, LY={}, RX={}, RY={}, status=0x{:X})",
+                             mctx.pc, fault - guestBase, sampleIndex, fieldOffset, index == 0 ? "FullKey" : "SystemExt",
                              hostInfo.header.currentEntry, hostInfo.header.maxEntry,
                              hostEntry.localTimestamp, hostEntry.globalTimestamp, hostEntry.buttons.raw,
                              hostEntry.leftX, hostEntry.leftY, hostEntry.rightX, hostEntry.rightY, hostEntry.status.raw,
