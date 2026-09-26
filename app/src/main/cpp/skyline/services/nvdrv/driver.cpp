@@ -13,6 +13,7 @@ namespace skyline::service::nvdrv {
     Driver::Driver(const DeviceState &state) : state(state), core(state) {}
 
     NvResult Driver::OpenDevice(std::string_view path, FileDescriptor fd, const SessionContext &ctx) {
+        LOGI("GRID-LIFE Driver::OpenDevice begin fd={} path={}", fd, path);
         LOGD("Opening NvDrv device ({}): {}", fd, path);
         auto pathHash{util::Hash(path)};
 
@@ -28,6 +29,8 @@ namespace skyline::service::nvdrv {
                 {                                                                                                  \
                     std::unique_lock lock(deviceMutex);                                                            \
                     devices.emplace(fd, std::make_unique<device::object>(state, *this, core, ctx, ##__VA_ARGS__)); \
+                    LOGI("GRID-LIFE Driver::OpenDevice success fd={} path={} object={}",                         \
+                         fd, path, static_cast<const void *>(devices.at(fd).get()));                               \
                     return NvResult::Success;                                                                      \
                 }
 
@@ -139,7 +142,11 @@ namespace skyline::service::nvdrv {
     void Driver::CloseDevice(FileDescriptor fd) {
         try {
             std::unique_lock lock(deviceMutex);
+            auto it{devices.find(fd)};
+            const void *object{it != devices.end() ? static_cast<const void *>(it->second.get()) : nullptr};
+            LOGI("GRID-LIFE Driver::CloseDevice begin fd={} object={} devices={}", fd, object, devices.size());
             devices.erase(fd);
+            LOGI("GRID-LIFE Driver::CloseDevice end fd={} object={} devices={}", fd, object, devices.size());
         } catch (const std::out_of_range &) {
             LOGW("Trying to close invalid fd: {}", fd);
         }

@@ -6,21 +6,27 @@
 #include <common/trace.h>
 #include <common/spin_lock.h>
 #include <common/span.h>
+#include <logger/logger.h>
+#include <condition_variable>
+#include <mutex>
+#include <type_traits>
 
 namespace skyline {
     /**
      * @brief An efficient consumer-producer oriented queue with internal synchronization
      */
-    template<typename Type>
+    template<typename Type, bool StandardProducerWait = false>
     class CircularQueue {
       private:
+        using ProductionMutex = std::conditional_t<StandardProducerWait, std::mutex, SpinLock>;
+        using ProduceCondition = std::conditional_t<StandardProducerWait, std::condition_variable, std::condition_variable_any>;
         std::vector<u8> vector; //!< The internal vector holding the circular queue's data, we use a byte vector due to the default item construction/destruction semantics not being appropriate for a circular buffer
         std::atomic<Type *> start{reinterpret_cast<Type *>(vector.begin().base())}; //!< The start/oldest element of the queue
         std::atomic<Type *> end{reinterpret_cast<Type *>(vector.begin().base())}; //!< The end/newest element of the queue
         SpinLock consumptionMutex;
         std::condition_variable_any consumeCondition;
-        SpinLock productionMutex;
-        std::condition_variable_any produceCondition;
+        ProductionMutex productionMutex;
+        ProduceCondition produceCondition;
         std::atomic_bool stopped{false}; //!< Set via Close() to cooperatively wake up a blocked Process() and let it return, without needing to interrupt it via a signal
 
       public:
@@ -82,7 +88,16 @@ namespace skyline {
 
             while (true) {
                 if (start == end) {
-                    std::unique_lock productionLock{productionMutex};
+                    std::unique_lock<ProductionMutex> productionLock{productionMutex, std::defer_lock};
+                    if constexpr (StandardProducerWait)
+                        LOGI("GRID-QUEUE production-lock-begin start={} end={}",
+                             static_cast<const void *>(start.load(std::memory_order_acquire)),
+                             static_cast<const void *>(end.load(std::memory_order_acquire)));
+                    productionLock.lock();
+                    if constexpr (StandardProducerWait)
+                        LOGI("GRID-QUEUE production-lock-acquired start={} end={}",
+                             static_cast<const void *>(start.load(std::memory_order_acquire)),
+                             static_cast<const void *>(end.load(std::memory_order_acquire)));
                     TRACE_EVENT_END("containers");
                     preWait();
                     produceCondition.wait(productionLock, [this]() { return start != end || stopped.load(std::memory_order_acquire); });
@@ -100,10 +115,27 @@ namespace skyline {
                     auto next{start + 1};
                     next = (next == reinterpret_cast<Type *>(vector.end().base())) ? reinterpret_cast<Type *>(vector.begin().base()) : next;
                     function(*next);
+                    if constexpr (StandardProducerWait)
+                        LOGI("GRID-QUEUE start-advance-before start={} next={} end={}",
+                             static_cast<const void *>(start.load(std::memory_order_acquire)),
+                             static_cast<const void *>(next),
+                             static_cast<const void *>(end.load(std::memory_order_acquire)));
                     start = next;
+                    if constexpr (StandardProducerWait)
+                        LOGI("GRID-QUEUE start-advance-after start={} end={}",
+                             static_cast<const void *>(start.load(std::memory_order_acquire)),
+                             static_cast<const void *>(end.load(std::memory_order_acquire)));
                 }
 
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE consume-notify-before start={} end={}",
+                         static_cast<const void *>(start.load(std::memory_order_acquire)),
+                         static_cast<const void *>(end.load(std::memory_order_acquire)));
                 consumeCondition.notify_one();
+                if constexpr (StandardProducerWait)
+                    LOGI("GRID-QUEUE consume-notify-after start={} end={}",
+                         static_cast<const void *>(start.load(std::memory_order_acquire)),
+                         static_cast<const void *>(end.load(std::memory_order_acquire)));
             }
         }
 

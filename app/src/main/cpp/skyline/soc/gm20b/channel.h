@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <unistd.h>
+#include <logger/logger.h>
 #include <gpu/interconnect/command_executor.h>
 #include "macro/macro_state.h"
 #include "engines/engine.h"
@@ -35,14 +37,34 @@ namespace skyline::soc::gm20b {
 
         ChannelContext(const DeviceState &state, std::shared_ptr<AddressSpaceContext> asCtx, size_t numEntries);
 
+        ~ChannelContext();
+
         void Lock() {
+            LOGI("GRID-LOCK ChannelContext::Lock global-begin tid={} this={}",
+                 gettid(), static_cast<const void *>(this));
             globalChannelLock.lock();
+            LOGI("GRID-LOCK ChannelContext::Lock global-acquired tid={} this={}",
+                 gettid(), static_cast<const void *>(this));
+
+            LOGI("GRID-LOCK ChannelContext::Lock executor-begin tid={} this={}",
+                 gettid(), static_cast<const void *>(this));
             executor.LockPreserve();
+            LOGI("GRID-LOCK ChannelContext::Lock executor-acquired tid={} this={}",
+                 gettid(), static_cast<const void *>(this));
         }
 
         void Unlock() {
+            LOGI("GRID-LOCK ChannelContext::Unlock executor-begin tid={} this={}",
+                 gettid(), static_cast<const void *>(this));
             executor.UnlockPreserve();
+            LOGI("GRID-LOCK ChannelContext::Unlock executor-end tid={} this={}",
+                 gettid(), static_cast<const void *>(this));
+
+            LOGI("GRID-LOCK ChannelContext::Unlock global-begin tid={} this={}",
+                 gettid(), static_cast<const void *>(this));
             globalChannelLock.unlock();
+            LOGI("GRID-LOCK ChannelContext::Unlock global-end tid={} this={}",
+                 gettid(), static_cast<const void *>(this));
         }
     };
 }

@@ -19,10 +19,16 @@ namespace skyline::soc::gm20b::engine {
             ENGINE_STRUCT_CASE(syncpoint, action, {
                 if (action.operation == Registers::Syncpoint::Operation::Incr) {
                     LOGD("Increment syncpoint: {}", +action.index);
+                    LOGI("GRID-POST syncpoint-incr-queued id={}", +action.index);
                     channelCtx.executor.AddDeferredAction([=, syncpoints = &this->syncpoints, index = action.index]() {
+                        LOGI("GRID-POST syncpoint-incr-host-begin id={}", +index);
                         syncpoints->at(index).host.Increment();
+                        LOGI("GRID-POST syncpoint-incr-host-end id={} value={}",
+                             +index, syncpoints->at(index).host.Load());
                     });
                     syncpoints.at(action.index).guest.Increment();
+                    LOGI("GRID-POST syncpoint-incr-guest id={} value={}",
+                         +action.index, syncpoints.at(action.index).guest.Load());
                 } else if (action.operation == Registers::Syncpoint::Operation::Wait) {
                     LOGD("Wait syncpoint: {}, thresh: {}", +action.index, registers.syncpoint->payload);
 
