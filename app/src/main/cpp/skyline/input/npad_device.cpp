@@ -559,6 +559,16 @@ namespace skyline::input {
         if (!connectionState.connected)
             return;
 
+        if (sensor == MotionId::Left) {
+            static u32 dsrMotionLogCounter{};
+            if ((dsrMotionLogCounter++ % 30) == 0) {
+                LOGI("DSR-SIXAXIS motion id=0x{:X} gyro=({:.5f},{:.5f},{:.5f}) accel=({:.5f},{:.5f},{:.5f})",
+                     static_cast<u32>(id),
+                     value->gyroscope[0], value->gyroscope[1], value->gyroscope[2],
+                     value->accelerometer[0], value->accelerometer[1], value->accelerometer[2]);
+            }
+        }
+
         NpadSixAxisState *sixAxisState{sensor == MotionId::Right? &sixAxisStateRight : &sixAxisStateLeft};
 
         sixAxisState->accelerometer.x = value->accelerometer[0];
