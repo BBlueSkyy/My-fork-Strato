@@ -26,6 +26,13 @@ namespace skyline::service {
         try {
             function = GetServiceFunction(functionId, request.isTipc);
             LOGDNF("Service: {}", function.name);
+            if (std::string_view{function.name}.starts_with("IHidServer::")) {
+                LOGI("DSR-CMD id={} name={} cmdArgSz={} isTipc={}",
+                     functionId,
+                     function.name,
+                     request.cmdArgSz,
+                     request.isTipc);
+            }
         } catch (const std::out_of_range &) {
             LOGW("Cannot find {0} function in service '{1}': 0x{2:X} ({2})", request.isTipc ? "TIPC" : "HIPC", GetName(), static_cast<u32>(functionId));
             return {};
