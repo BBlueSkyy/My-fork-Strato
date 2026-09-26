@@ -238,14 +238,15 @@ namespace skyline::input {
     }
 
     void NpadDevice::WriteNextEntry(NpadControllerInfo &info, NpadControllerState entry) {
-        auto &lastEntry{info.state.at(info.header.currentEntry)};
+        const auto currentEntry{__atomic_load_n(&info.header.currentEntry, __ATOMIC_ACQUIRE)};
+        auto &lastEntry{info.state.at(currentEntry)};
+        const auto nextEntryIndex{(currentEntry + 1) % constant::HidEntryCount};
+        auto &nextEntry{info.state.at(nextEntryIndex)};
 
         info.header.timestamp = util::GetTimeTicks();
         info.header.entryCount = constant::HidEntryCount;
-        info.header.maxEntry = std::min<u64>(info.header.maxEntry + 1, constant::HidEntryCount - 1);
-        info.header.currentEntry = (info.header.currentEntry + 1) % constant::HidEntryCount;
-
-        auto &nextEntry{info.state.at(info.header.currentEntry)};
+        const auto nextMaxEntry{
+            std::min<u64>(__atomic_load_n(&info.header.maxEntry, __ATOMIC_RELAXED) + 1, constant::HidEntryCount - 1)};
 
         const auto nextSamplingNumber{lastEntry.localTimestamp + 1};
         const auto completedMarker{nextSamplingNumber << 1};
@@ -258,17 +259,23 @@ namespace skyline::input {
         nextEntry.rightY = entry.rightY;
         nextEntry.status.raw = connectionState.raw;
         __atomic_store_n(&nextEntry.globalTimestamp, completedMarker, __ATOMIC_RELEASE);
+
+        // Publish RingLifo metadata only after the new sample is complete. Older
+        // nn::hid readers may consume the tail immediately after observing it.
+        __atomic_store_n(&info.header.currentEntry, nextEntryIndex, __ATOMIC_RELEASE);
+        __atomic_store_n(&info.header.maxEntry, nextMaxEntry, __ATOMIC_RELEASE);
     }
 
     void NpadDevice::WriteNextEntry(NpadSixAxisInfo &info, NpadSixAxisState entry) {
-        auto &lastEntry{info.state.at(info.header.currentEntry)};
+        const auto currentEntry{__atomic_load_n(&info.header.currentEntry, __ATOMIC_ACQUIRE)};
+        auto &lastEntry{info.state.at(currentEntry)};
+        const auto nextEntryIndex{(currentEntry + 1) % constant::HidEntryCount};
+        auto &nextEntry{info.state.at(nextEntryIndex)};
 
         info.header.timestamp = util::GetTimeTicks();
         info.header.entryCount = constant::HidEntryCount;
-        info.header.maxEntry = std::min<u64>(info.header.maxEntry + 1, constant::HidEntryCount - 1);
-        info.header.currentEntry = (info.header.currentEntry + 1) % constant::HidEntryCount;
-
-        auto &nextEntry{info.state.at(info.header.currentEntry)};
+        const auto nextMaxEntry{
+            std::min<u64>(__atomic_load_n(&info.header.maxEntry, __ATOMIC_RELAXED) + 1, constant::HidEntryCount - 1)};
 
         const auto nextSamplingNumber{lastEntry.localTimestamp + 1};
         const auto completedMarker{nextSamplingNumber << 1};
@@ -281,6 +288,9 @@ namespace skyline::input {
         nextEntry.orientation = entry.orientation;
         nextEntry.attribute = entry.attribute;
         __atomic_store_n(&nextEntry.globalTimestamp, completedMarker, __ATOMIC_RELEASE);
+
+        __atomic_store_n(&info.header.currentEntry, nextEntryIndex, __ATOMIC_RELEASE);
+        __atomic_store_n(&info.header.maxEntry, nextMaxEntry, __ATOMIC_RELEASE);
     }
 
     void NpadDevice::WriteEmptyEntries() {
