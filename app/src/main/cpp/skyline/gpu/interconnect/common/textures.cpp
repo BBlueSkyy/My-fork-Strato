@@ -344,9 +344,8 @@ namespace skyline::gpu::interconnect {
                 throw exception("Unsupported TIC Header Type: {}", static_cast<u32>(textureHeader.headerType));
             }
 
-            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
-            guest.mappings.assign(mappings.begin(), mappings.end());
-            if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
+            guest.SetMappings(ctx.channelCtx.asCtx->gmmu, textureHeader.Iova());
+            if (!guest.MappingsValid() || guest.mappings.front().empty()) {
                 LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
