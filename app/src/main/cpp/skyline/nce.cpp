@@ -180,6 +180,17 @@ namespace skyline::nce {
         *tls = nullptr;
     }
 
+    void NCE::DiagnosticSignalHandler(int, siginfo *, ucontext *ctx, void **) {
+        auto *thread{DeviceState::thread.get()};
+        if (!thread)
+            return;
+
+        thread->diagnosticGuestPc.store(ctx->uc_mcontext.pc, std::memory_order_relaxed);
+        thread->diagnosticGuestLr.store(ctx->uc_mcontext.regs[30], std::memory_order_relaxed);
+        thread->diagnosticGuestSp.store(ctx->uc_mcontext.sp, std::memory_order_relaxed);
+        thread->diagnosticGuestContextValid.store(true, std::memory_order_release);
+    }
+
     void NCE::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
         if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
             return;
@@ -232,6 +243,7 @@ namespace skyline::nce {
     NCE::NCE(const DeviceState &state) : state(state) {
         signal::SetTlsRestorer(&NceTlsRestorer);
         signal::SetGuestSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, nce::NCE::SignalHandler);
+        signal::SetGuestSignalHandler({SIGUSR2}, nce::NCE::DiagnosticSignalHandler);
         signal::SetHostSignalHandler({SIGSEGV}, nce::NCE::HostSignalHandler);
     }
 

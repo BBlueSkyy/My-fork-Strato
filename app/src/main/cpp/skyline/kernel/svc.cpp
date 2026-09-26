@@ -11,6 +11,39 @@
 #include "svc.h"
 
 namespace skyline::kernel::svc {
+    namespace {
+        class DiagnosticWaitScope {
+          private:
+            std::shared_ptr<type::KThread> thread;
+
+          public:
+            DiagnosticWaitScope(const DeviceState &state, u32 svc,
+                                type::KThread::DiagnosticWaitKind kind,
+                                u64 target0 = 0, u64 target1 = 0, u64 target2 = 0)
+                : thread(state.thread) {
+                if (!thread)
+                    return;
+
+                thread->diagnosticLastSvc.store(svc, std::memory_order_relaxed);
+                thread->diagnosticTarget0.store(target0, std::memory_order_relaxed);
+                thread->diagnosticTarget1.store(target1, std::memory_order_relaxed);
+                thread->diagnosticTarget2.store(target2, std::memory_order_relaxed);
+                thread->diagnosticIpcCommand.store(0, std::memory_order_relaxed);
+                thread->diagnosticWaitKind.store(kind, std::memory_order_release);
+            }
+
+            ~DiagnosticWaitScope() {
+                if (!thread)
+                    return;
+
+                thread->diagnosticWaitKind.store(type::KThread::DiagnosticWaitKind::None, std::memory_order_release);
+                thread->diagnosticTarget0.store(0, std::memory_order_relaxed);
+                thread->diagnosticTarget1.store(0, std::memory_order_relaxed);
+                thread->diagnosticTarget2.store(0, std::memory_order_relaxed);
+                thread->diagnosticIpcCommand.store(0, std::memory_order_relaxed);
+            }
+        };
+    }
     void SetHeapSize(const DeviceState &state, SvcContext &ctx) {
         // FIX: 'size' used to be read as `u32 size{ctx.w1}`, truncating to the low 32 bits of the
         // register. On real hardware svcSetHeapSize takes a 64-bit size_t passed in the full X1
@@ -751,6 +784,13 @@ namespace skyline::kernel::svc {
 
         TRACE_EVENT_FMT("kernel", fmt::runtime(waitHandles.size() == 1 ? "WaitSynchronization 0x{:X}" : "WaitSynchronizationMultiple 0x{:X}"), waitHandles[0]);
 
+        DiagnosticWaitScope diagnosticWait{
+            state, 0x18, type::KThread::DiagnosticWaitKind::SyncObject,
+            waitHandles.empty() ? 0 : waitHandles[0],
+            waitHandles.size(),
+            static_cast<u64>(timeout)
+        };
+
         std::unique_lock lock(type::KSyncObject::syncObjectMutex);
         if (state.thread->cancelSync) {
             state.thread->cancelSync = false;
@@ -894,6 +934,13 @@ namespace skyline::kernel::svc {
         i64 timeout{static_cast<i64>(ctx.x3)};
         LOGD("Waiting on {} with {} for {}ns", fmt::ptr(conditional), fmt::ptr(mutex), timeout);
 
+        DiagnosticWaitScope diagnosticWait{
+            state, 0x1C, type::KThread::DiagnosticWaitKind::ProcessWideKey,
+            reinterpret_cast<u64>(conditional),
+            reinterpret_cast<u64>(mutex),
+            requesterHandle
+        };
+
         auto result{state.process->ConditionVariableWait(conditional, mutex, requesterHandle, timeout)};
         if (result == Result{})
             LOGD("Waited for {} and reacquired {}", fmt::ptr(conditional), fmt::ptr(mutex));
@@ -944,8 +991,14 @@ namespace skyline::kernel::svc {
     }
 
     void SendSyncRequest(const DeviceState &state, SvcContext &ctx) {
+        const KHandle sessionHandle{static_cast<KHandle>(ctx.x0)};
+        DiagnosticWaitScope diagnosticWait{
+            state, 0x21, type::KThread::DiagnosticWaitKind::Ipc,
+            sessionHandle
+        };
+
         SchedulerScopedLock schedulerLock(state);
-        state.os->serviceManager.SyncRequestHandler(static_cast<KHandle>(ctx.x0));
+        state.os->serviceManager.SyncRequestHandler(sessionHandle);
         ctx.w0 = Result{};
     }
 
@@ -1400,6 +1453,13 @@ namespace skyline::kernel::svc {
         auto arbitrationType{static_cast<ArbitrationType>(static_cast<u32>(ctx.w1))};
         u32 value{ctx.w2};
         i64 timeout{static_cast<i64>(ctx.x3)};
+
+        DiagnosticWaitScope diagnosticWait{
+            state, 0x34, type::KThread::DiagnosticWaitKind::AddressArbiter,
+            reinterpret_cast<u64>(address),
+            static_cast<u32>(arbitrationType),
+            value
+        };
 
         Result result;
         switch (arbitrationType) {

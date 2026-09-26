@@ -54,6 +54,11 @@ namespace skyline::nce {
         static void SignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls);
 
         /**
+         * @brief Captures a guest thread execution context for one-shot hang diagnostics
+         */
+        static void DiagnosticSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls);
+
+        /**
          * @brief Handles signals for any host threads which may access NCE trapped memory
          * @note Any untrapped SIGSEGVs will emit SIGTRAP when a debugger is attached rather than throwing an exception
          */

@@ -34,6 +34,7 @@ namespace skyline {
             std::mutex threadMutex; //!< Synchronizes thread creation to prevent a race between thread creation and thread killing
             bool disableThreadCreation{}; //!< Whether to disable thread creation, we use this to prevent thread creation after all threads have been killed
             std::atomic_bool alreadyKilled{}; //!< If the process has already been killed prior so there's no need to redundantly kill it again
+            std::atomic_bool diagnosticSnapshotTaken{}; //!< Ensures hang diagnostics are emitted only once per process
             std::vector<std::shared_ptr<KThread>> threads;
 
             using SyncWaiters = std::multimap<void *, std::shared_ptr<KThread>>;
@@ -83,6 +84,11 @@ namespace skyline {
              * @note The main thread should eventually kill the rest of the threads itself
              */
             void Kill(bool join, bool all = false, bool disableCreation = false);
+
+            /**
+             * @brief Emits a one-shot diagnostic snapshot of all guest threads and their host wait channels
+             */
+            void DumpThreadDiagnosticSnapshot();
 
             /**
              * @brief This initializes the process heap and TLS Error Context slot pointer, it should be called prior to creating the first thread

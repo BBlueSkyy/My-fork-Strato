@@ -6,21 +6,26 @@
 #include <common/trace.h>
 #include <common/spin_lock.h>
 #include <common/span.h>
+#include <condition_variable>
+#include <mutex>
+#include <type_traits>
 
 namespace skyline {
     /**
      * @brief An efficient consumer-producer oriented queue with internal synchronization
      */
-    template<typename Type>
+    template<typename Type, bool StandardProducerWait = false>
     class CircularQueue {
       private:
+        using ProductionMutex = std::conditional_t<StandardProducerWait, std::mutex, SpinLock>;
+        using ProduceCondition = std::conditional_t<StandardProducerWait, std::condition_variable, std::condition_variable_any>;
         std::vector<u8> vector; //!< The internal vector holding the circular queue's data, we use a byte vector due to the default item construction/destruction semantics not being appropriate for a circular buffer
         std::atomic<Type *> start{reinterpret_cast<Type *>(vector.begin().base())}; //!< The start/oldest element of the queue
         std::atomic<Type *> end{reinterpret_cast<Type *>(vector.begin().base())}; //!< The end/newest element of the queue
         SpinLock consumptionMutex;
         std::condition_variable_any consumeCondition;
-        SpinLock productionMutex;
-        std::condition_variable_any produceCondition;
+        ProductionMutex productionMutex;
+        ProduceCondition produceCondition;
         std::atomic_bool stopped{false}; //!< Set via Close() to cooperatively wake up a blocked Process() and let it return, without needing to interrupt it via a signal
 
       public:

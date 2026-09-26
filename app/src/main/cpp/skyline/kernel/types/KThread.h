@@ -36,8 +36,29 @@ namespace skyline {
             bool ready{false}; //!< If this thread is ready to recieve signals or not
             bool killed{false}; //!< If this thread was previously running and has been killed
 
+            enum class DiagnosticWaitKind : u8 {
+                None,
+                SyncObject,
+                ProcessWideKey,
+                AddressArbiter,
+                Ipc,
+            };
+
             KHandle handle;
             size_t id; //!< Index of thread in parent process's KThread vector
+
+            std::atomic<i32> diagnosticHostTid{};
+            std::atomic<u32> diagnosticLastSvc{};
+            std::atomic<DiagnosticWaitKind> diagnosticWaitKind{DiagnosticWaitKind::None};
+            std::atomic<u64> diagnosticTarget0{};
+            std::atomic<u64> diagnosticTarget1{};
+            std::atomic<u64> diagnosticTarget2{};
+            std::atomic<u32> diagnosticIpcCommand{};
+            std::atomic_bool diagnosticSchedulerWait{};
+            std::atomic_bool diagnosticGuestContextValid{};
+            std::atomic<u64> diagnosticGuestPc{};
+            std::atomic<u64> diagnosticGuestLr{};
+            std::atomic<u64> diagnosticGuestSp{};
 
             nce::ThreadContext ctx{}; //!< The context of the guest thread during the last SVC
             jmp_buf originalCtx; //!< The context of the host thread prior to jumping into guest code

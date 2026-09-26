@@ -66,6 +66,7 @@
 #include "ntc/IEnsureNetworkClockAvailabilityService.h"
 #include "ngc/INgcServiceForApplication.h"
 #include "serviceman.h"
+#include <limits>
 
 #define SERVICE_CASE(class, name, ...) \
     case util::MakeMagic<ServiceName>(name): { \
@@ -281,6 +282,16 @@ namespace skyline::service {
         if (session->IsOpen()) {
             ipc::IpcRequest request(session->isDomain, state);
             ipc::IpcResponse response(state);
+
+            if (state.thread &&
+                state.thread->diagnosticWaitKind.load(std::memory_order_acquire) == type::KThread::DiagnosticWaitKind::Ipc) {
+                const u32 commandId{
+                    request.isTipc
+                        ? static_cast<u32>(request.header->type)
+                        : (request.payload ? request.payload->value : std::numeric_limits<u32>::max())
+                };
+                state.thread->diagnosticIpcCommand.store(commandId, std::memory_order_relaxed);
+            }
 
             // Marks every fully-covered page of input/output buffers as IPC-locked for the request.
             // Unaligned edge fragments are not allowed to split the guest memory block map.
