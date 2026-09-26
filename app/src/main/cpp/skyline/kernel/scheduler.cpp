@@ -4,7 +4,10 @@
 #include <unistd.h>
 #include <common/signal.h>
 #include <common/trace.h>
+#include <jit/halt_reason.h>
+#include <jit/jit_core_32.h>
 #include "types/KThread.h"
+#include "types/KProcess.h"
 #include "scheduler.h"
 
 namespace skyline::kernel {
@@ -12,8 +15,12 @@ namespace skyline::kernel {
 
     Scheduler::Scheduler(const DeviceState &state) : state(state) {
         // Don't restart syscalls: we want futexes to fail and their predicates rechecked
-        signal::SetGuestSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::GuestSignalHandler, false);
-        signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::HostSignalHandler, false);
+        if (state.process->is64bit()) {
+            signal::SetGuestSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::GuestSignalHandler, false);
+            signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::HostSignalHandler, false);
+        } else {
+            signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::JitSignalHandler, false);
+        }
     }
 
     void Scheduler::GuestSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
@@ -23,7 +30,7 @@ namespace skyline::kernel {
             const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
             if (signal == PreemptionSignal)
                 state.thread->isPreempted = false;
-            state.scheduler->Rotate(false);
+            state.scheduler->Rotate();
             YieldPending = false;
             state.scheduler->WaitSchedule();
         }
@@ -32,6 +39,13 @@ namespace skyline::kernel {
 
     void Scheduler::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
         YieldPending = true;
+    }
+
+    void Scheduler::JitSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+        // A halted JIT returns to KThread::ThreadEntrypoint, which processes this pending yield.
+        YieldPending = true;
+        if (kernel::this_thread && kernel::this_thread->jit)
+            kernel::this_thread->jit->HaltExecution(jit::HaltReason::Preempted);
     }
 
     Scheduler::CoreContext &Scheduler::GetOptimalCoreForThread(const std::shared_ptr<type::KThread> &thread) {
@@ -232,7 +246,7 @@ namespace skyline::kernel {
         }
     }
 
-    void Scheduler::Rotate(bool cooperative) {
+    void Scheduler::Rotate() {
         auto &thread{state.thread};
         auto &core{cores.at(thread->coreId)};
 
