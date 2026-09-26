@@ -17,7 +17,8 @@ namespace skyline::kernel::type {
         if (state.input && state.input->kHid.get() == this && map.size() == sizeof(input::HidSharedMemory)) {
             constexpr std::array<size_t, 2> offsets{
                 offsetof(input::HidSharedMemory, npad) + offsetof(input::NpadSection, fullKeyController),
-                offsetof(input::HidSharedMemory, npad) + offsetof(input::NpadSection, defaultController),
+                offsetof(input::HidSharedMemory, npad) + offsetof(input::NpadSection, defaultController) +
+                    offsetof(input::NpadControllerInfo, state) + 11 * sizeof(input::NpadControllerState),
             };
             for (size_t index{}; index < offsets.size(); ++index) {
                 span<u8> page{util::AlignDown(result + offsets[index], constant::PageSize), constant::PageSize};
