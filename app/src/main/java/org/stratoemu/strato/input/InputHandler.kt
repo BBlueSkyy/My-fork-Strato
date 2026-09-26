@@ -59,6 +59,9 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
          */
         external fun setAxisValue(index : Int, axis : Int, value : Int)
 
+        /** Diagnostic-only tracing for the origin of axis updates. */
+        external fun traceAxisSource(source : Int, index : Int, axis : Int, value : Int)
+
         /**
          * This sets the values of the motion sensor on a specific controller
          *
@@ -240,7 +243,9 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
             }
 
             is AxisGuestEvent -> {
-                setAxisValue(guestEvent.id, guestEvent.axis.ordinal, (if (action == ButtonState.Pressed) if (guestEvent.polarity) Short.MAX_VALUE else Short.MIN_VALUE else 0).toInt())
+                val axisValue = (if (action == ButtonState.Pressed) if (guestEvent.polarity) Short.MAX_VALUE else Short.MIN_VALUE else 0).toInt()
+                traceAxisSource(1, guestEvent.id, guestEvent.axis.ordinal, axisValue)
+                setAxisValue(guestEvent.id, guestEvent.axis.ordinal, axisValue)
                 return true
             }
 
@@ -376,7 +381,9 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
                             value = guestEvent.value(value)
                             value = if (polarity) abs(value) else -abs(value)
                             value = if (guestEvent.axis == AxisId.LX || guestEvent.axis == AxisId.RX) value else -value
-                            setAxisValue(guestEvent.id, guestEvent.axis.ordinal, (value * Short.MAX_VALUE).toInt())
+                            val axisValue = (value * Short.MAX_VALUE).toInt()
+                            traceAxisSource(2, guestEvent.id, guestEvent.axis.ordinal, axisValue)
+                            setAxisValue(guestEvent.id, guestEvent.axis.ordinal, axisValue)
                         }
                     }
                 }
