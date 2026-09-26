@@ -8,6 +8,7 @@ package org.stratoemu.strato.applet.swkbd
 import android.annotation.SuppressLint
 import android.content.DialogInterface
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.text.InputType
 import android.view.KeyEvent
@@ -133,6 +134,8 @@ class SoftwareKeyboardDialog : DialogFragment() {
             binding.inputLayout.boxStrokeWidth = 0
             binding.inputLayout.boxStrokeWidthFocused = 0
             binding.inputLayout.setBoxBackgroundColor(Color.TRANSPARENT)
+            binding.textInput.background = null
+            binding.textInput.isCursorVisible = false
             binding.textInput.setTextColor(Color.TRANSPARENT)
             binding.textInput.setHintTextColor(Color.TRANSPARENT)
         } else {
@@ -158,8 +161,15 @@ class SoftwareKeyboardDialog : DialogFragment() {
     override fun onStart() {
         super.onStart()
         if (::binding.isInitialized) {
+            dialog?.window?.apply {
+                if (inline) {
+                    clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                    setDimAmount(0f)
+                    setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                }
+                setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+            }
             binding.textInput.requestFocus()
-            dialog?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
         }
     }
 
