@@ -194,6 +194,8 @@ namespace skyline::service::hid {
         auto supportedIds{request.inputBuf.at(0).cast<NpadId>()};
         std::scoped_lock lock{state.input->npad.mutex};
         state.input->npad.supportedIds.assign(supportedIds.begin(), supportedIds.end());
+        for (size_t i{}; i < supportedIds.size(); ++i)
+            LOGI("DSR-HID supportedId[{}]=0x{:X}", i, static_cast<u32>(supportedIds[i]));
         state.input->npad.Update();
         return {};
     }
@@ -261,14 +263,19 @@ namespace skyline::service::hid {
     }
 
     Result IHidServer::ActivateNpadWithRevision(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto revision{request.Pop<u64>()};
+        const auto aruid{request.Pop<u64>()};
+        LOGI("DSR-HID ActivateNpadWithRevision revision={} aruid=0x{:X}", revision, aruid);
         state.input->npad.Activate();
         return {};
     }
 
     Result IHidServer::SetNpadJoyHoldType(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         std::scoped_lock lock{state.input->npad.mutex};
-        request.Skip<u64>();
-        state.input->npad.orientation = request.Pop<NpadJoyOrientation>();
+        const auto aruid{request.Pop<u64>()};
+        const auto orientation{request.Pop<NpadJoyOrientation>()};
+        LOGI("DSR-HID SetNpadJoyHoldType aruid=0x{:X} orientation={}", aruid, static_cast<i64>(orientation));
+        state.input->npad.orientation = orientation;
         state.input->npad.Update();
         return {};
     }
