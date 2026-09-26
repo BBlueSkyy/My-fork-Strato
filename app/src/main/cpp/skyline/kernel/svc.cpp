@@ -313,8 +313,9 @@ namespace skyline::kernel::svc {
         auto entry{reinterpret_cast<void *>(ctx.x1)};
         auto entryArgument{ctx.x2};
         auto stackTop{reinterpret_cast<u8 *>(ctx.x3)};
-        auto priority{static_cast<i8>(ctx.w4)};
-        auto idealCore{static_cast<i32>(ctx.w5)};
+        // AArch32 passes priority in R0 and processor ID in R4; AArch64 uses W4/W5.
+        auto priority{static_cast<i8>(state.process->is64bit() ? ctx.w4 : ctx.w0)};
+        auto idealCore{static_cast<i32>(state.process->is64bit() ? ctx.w5 : ctx.w4)};
 
         idealCore = (idealCore == IdealCoreUseProcessValue) ? static_cast<i32>(state.process->npdm.meta.idealCore) : idealCore;
         if (idealCore < 0 || idealCore >= constant::CoreCount) {
