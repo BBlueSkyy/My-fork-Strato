@@ -448,7 +448,7 @@ namespace skyline::gpu {
         /**
          * @brief Refreshes sparse holes in the mirror to their guest-visible zero value
          */
-        void ClearSparseMappings();
+        void RefreshSparseMappings();
 
         /**
          * @brief Copies the writable portions of a sparse texture mirror back into guest memory
