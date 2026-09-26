@@ -6,10 +6,7 @@
 package org.stratoemu.strato.applet.swkbd
 
 import android.annotation.SuppressLint
-import android.content.Context
 import android.content.DialogInterface
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.text.InputType
 import android.view.KeyEvent
@@ -18,7 +15,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputMethodManager
 import androidx.core.widget.doOnTextChanged
 import androidx.fragment.app.DialogFragment
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -105,28 +101,6 @@ class SoftwareKeyboardDialog : DialogFragment() {
         if (guideText.isNotBlank())
             binding.inputLayout.hint = guideText
 
-        if (inline) {
-            // Inline SWKBD renders its text through the game/indirect layer. Keep a
-            // tiny, effectively invisible editor attached to the dialog so Android
-            // still considers it a real text editor and provides an InputConnection.
-            binding.inputDialog.setBackgroundColor(Color.TRANSPARENT)
-            binding.header.visibility = View.GONE
-            binding.sub.visibility = View.GONE
-            binding.inputLayout.hint = null
-            binding.inputLayout.alpha = 0.01f
-            binding.inputLayout.layoutParams = binding.inputLayout.layoutParams.apply {
-                width = 1
-                height = 1
-            }
-            binding.textInput.isCursorVisible = false
-            binding.textInput.setTextColor(Color.TRANSPARENT)
-            binding.textInput.setHintTextColor(Color.TRANSPARENT)
-            binding.textInput.setBackgroundColor(Color.TRANSPARENT)
-            binding.lengthStatus.visibility = View.GONE
-            binding.cancelButton.visibility = View.GONE
-            binding.okButton.visibility = View.GONE
-        }
-
         binding.textInput.filters = arrayOf(SoftwareKeyboardFilter(config))
         suppressTextEvent = true
         val text = pendingText ?: savedInstanceState?.getString(argumentInitialText) ?: initialText
@@ -144,8 +118,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
         updateValidity(text)
 
         binding.okButton.setOnClickListener { submit() }
-        binding.cancelButton.visibility =
-            if (inline || config.isCancelButtonDisabled) View.GONE else View.VISIBLE
+        binding.cancelButton.visibility = if (config.isCancelButtonDisabled) View.GONE else View.VISIBLE
         binding.cancelButton.setOnClickListener { cancelFromUser() }
         binding.textInput.setOnEditorActionListener { _, actionId, event ->
             val done = actionId == EditorInfo.IME_ACTION_DONE ||
@@ -164,21 +137,8 @@ class SoftwareKeyboardDialog : DialogFragment() {
     override fun onStart() {
         super.onStart()
         if (::binding.isInitialized) {
-            if (inline) {
-                dialog?.window?.apply {
-                    clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                    setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-                    setDimAmount(0f)
-                    setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
-                }
-            }
             binding.textInput.requestFocus()
-            binding.textInput.post {
-                if (!isAdded || !binding.textInput.hasFocus())
-                    return@post
-                val inputMethodManager = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                inputMethodManager.showSoftInput(binding.textInput, InputMethodManager.SHOW_IMPLICIT)
-            }
+            dialog?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
         }
     }
 
