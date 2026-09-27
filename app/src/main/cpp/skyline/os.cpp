@@ -2,7 +2,9 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include "gpu.h"
+#include "audio.h"
 #include "nce.h"
+#include <jit/jit32.h>
 #include "nce/guest.h"
 #include "kernel/types/KProcess.h"
 #include "vfs/os_backing.h"
@@ -60,6 +62,7 @@ namespace skyline::kernel {
         process = std::make_shared<kernel::type::KProcess>(state);
 
         auto entry{state.loader->LoadProcessData(process, state)};
+        state.audio->SetGuestAddressOffset(process->memory.TranslateVirtualAddress(0));
         auto &nacp{state.loader->nacp};
         if (nacp) {
             std::string name{nacp->GetApplicationName(language::ApplicationLanguage::AmericanEnglish)}, publisher{nacp->GetApplicationPublisher(language::ApplicationLanguage::AmericanEnglish)};
@@ -78,6 +81,13 @@ namespace skyline::kernel {
 
             LOGINF(R"(Starting "{}" ({}) v{} by "{}")", name, nacp->GetSaveDataOwnerId(),
                    state.loader->programUpdateApplied && state.updateLoader && state.updateLoader->nacp ? state.updateLoader->nacp->GetApplicationVersion() : nacp->GetApplicationVersion(), publisher);
+        }
+
+        // Scheduler retrieves information from the NPDM of the process so it needs to be initialized after the process is created
+        state.scheduler = std::make_shared<kernel::Scheduler>(state);
+
+        if (!process->is64bit()) { // 32-bit guests execute via Dynarmic instead of NCE.
+            state.jit32 = std::make_shared<jit::Jit32>(state);
         }
 
         process->InitializeHeapTls();

@@ -43,13 +43,16 @@ namespace skyline::service::fssrv {
         std::string path(request.inputBuf.at(0).as_string(true));
         auto mode{request.Pop<vfs::Backing::Mode>()};
 
-        if (!backing->FileExists(path))
+        if (!backing->FileExists(path)) {
+            LOGD("OpenFile: '{}' does not exist (mode: 0x{:X})", path, mode.raw);
             return result::PathDoesNotExist;
+        }
 
         auto file{backing->OpenFileUnchecked(path, mode)};
-        if (file == nullptr)
+        if (file == nullptr) {
+            LOGW("OpenFile: failed to open '{}' (mode: 0x{:X})", path, mode.raw);
             return result::UnexpectedFailure;
-        else
+        } else
             manager.RegisterService(std::make_shared<IFile>(std::move(file), state, manager), session, response);
 
         return {};

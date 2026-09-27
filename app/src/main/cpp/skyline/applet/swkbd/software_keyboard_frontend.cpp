@@ -18,6 +18,12 @@ namespace skyline::applet::swkbd {
         return sessions.erase(sessionId) != 0;
     }
 
+    bool FrontendSessionRegistry::IsRegistered(FrontendSessionId sessionId) {
+        std::scoped_lock lock{mutex};
+        const auto it{sessions.find(sessionId)};
+        return it != sessions.end() && !it->second.expired();
+    }
+
     bool FrontendSessionRegistry::Dispatch(FrontendEvent event) {
         std::shared_ptr<SoftwareKeyboardFrontendCallbacks> callbacks;
         {

@@ -109,7 +109,13 @@ namespace skyline::service::am {
 
     Result IApplicationFunctions::SetTerminateResult(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto result{request.Pop<Result>()};
-        LOGI("App set termination result: {}", result.raw);
+        LOGI("App set termination result: {} (module {}, description {})", result.raw,
+             static_cast<u32>(result.module), static_cast<u32>(result.id));
+        if (!state.process->is64bit()) {
+            const auto &guest{static_cast<const kernel::type::KJit32Thread &>(*state.thread).ctx};
+            LOGI("Guest AArch32 termination call: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}",
+                 guest.pc, guest.lr, guest.sp);
+        }
         return {};
     }
 

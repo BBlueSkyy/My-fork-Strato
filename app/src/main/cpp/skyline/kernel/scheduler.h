@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #pragma once
+#include <atomic>
 
 #include "common/spin_lock.h"
 #include <common.h>
@@ -74,7 +75,7 @@ namespace skyline {
             static constexpr std::chrono::milliseconds PreemptiveTimeslice{10}; //!< The duration of time a preemptive thread can run before yielding
             inline static int YieldSignal{SIGRTMIN}; //!< The signal used to cause a non-cooperative yield in running threads (41)
             inline static int PreemptionSignal{SIGRTMIN + 1}; //!< The signal used to cause a preemptive yield in running threads (42)
-            inline static thread_local bool YieldPending{}; //!< A flag denoting if a yield is pending on this thread, it's checked prior to entering guest code as signals cannot interrupt host code
+            inline static thread_local std::atomic_bool YieldPending{false}; //!< Set by host signals and checked before entering guest code
 
             Scheduler(const DeviceState &state);
 
@@ -87,6 +88,11 @@ namespace skyline {
              * @brief A signal handler for scheduling guest threads not currently running guest code
              */
             static void HostSignalHandler(int signal, siginfo *info, ucontext *ctx);
+
+            /**
+             * @brief A signal handler for scheduling guest threads running through the JIT
+             */
+            static void JitSignalHandler(int signal, siginfo *info, ucontext *ctx);
 
             /**
              * @brief Checks all cores and determines the core where the supplied thread should be scheduled the earliest
@@ -118,9 +124,8 @@ namespace skyline {
 
             /**
              * @brief Rotates the calling thread's resident core queue, if it's at the front of it
-             * @param cooperative If this was triggered by a cooperative yield as opposed to a preemptive one
              */
-            void Rotate(bool cooperative = true);
+            void Rotate();
 
             /**
              * @brief Removes the calling thread from its resident core queue

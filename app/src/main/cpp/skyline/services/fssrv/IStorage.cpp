@@ -11,8 +11,11 @@ namespace skyline::service::fssrv {
         auto offset{request.Pop<u64>()};
         auto size{request.Pop<u64>()};
 
-        if (request.outputBuf.empty())
+        if (request.outputBuf.empty()) {
+            if (size)
+                LOGW("Read requested 0x{:X} bytes at offset 0x{:X} without an output buffer", size, offset);
             return {};
+        }
 
         auto &output{request.outputBuf.at(0)};
 
@@ -21,10 +24,12 @@ namespace skyline::service::fssrv {
         // was read and discarded, and the backing->Read() blindly relied on the entire span of the
         // output buffer, which could lead to unexpected reads and silent memory corruption later on (invalid span size elsewhere in the code).
         auto readSize{std::min(static_cast<size_t>(size), output.size())};
+        LOGD("Read: offset=0x{:X}, requested=0x{:X}, output=0x{:X}, backing=0x{:X}", offset, size, output.size(), backing->size);
         if (readSize == 0)
             return {};
 
         backing->Read(output.subspan(0, readSize), static_cast<size_t>(offset));
+        LOGD("Read complete: offset=0x{:X}, size=0x{:X}", offset, readSize);
 
         return {};
     }

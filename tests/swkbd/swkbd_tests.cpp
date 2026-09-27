@@ -1,9 +1,14 @@
 #include <cstdlib>
+#include <chrono>
+#include <condition_variable>
+#include <future>
 #include <iostream>
+#include <mutex>
 #include <vector>
 
 #include "skyline/applet/swkbd/software_keyboard_config.h"
 #include "skyline/applet/swkbd/software_keyboard_frontend.h"
+#include "skyline/applet/swkbd/frontend_task_queue.h"
 #include "skyline/applet/swkbd/software_keyboard_state.h"
 #include "skyline/applet/swkbd/software_keyboard_text.h"
 #include "skyline/services/am/applet/indirect_layer_registry.h"
@@ -13,6 +18,44 @@ using namespace skyline;
 using namespace skyline::applet::swkbd;
 
 namespace {
+    void Require(bool condition, const char *message);
+
+    void TestFrontendQueue() {
+        using namespace std::chrono_literals;
+        FrontendTaskQueue queue;
+        std::mutex mutex;
+        std::condition_variable condition;
+        std::vector<int> order;
+        std::promise<void> release;
+        auto gate{release.get_future().share()};
+        Require(queue.Post([gate, &mutex, &condition, &order] {
+            gate.wait();
+            {
+                std::lock_guard lock{mutex};
+                order.push_back(1);
+            }
+            condition.notify_all();
+        }), "first frontend request enqueued");
+        Require(queue.Post([&mutex, &condition, &order] {
+            {
+                std::lock_guard lock{mutex};
+                order.push_back(2);
+            }
+            condition.notify_all();
+        }), "second frontend request enqueued without waiting for first");
+        {
+            std::lock_guard lock{mutex};
+            Require(order.empty(), "blocked JNI request does not block the guest caller");
+        }
+        release.set_value();
+        {
+            std::unique_lock lock{mutex};
+            Require(condition.wait_for(lock, 2s, [&] { return order.size() == 2; }), "frontend requests complete");
+            Require(order == std::vector<int>({1, 2}), "frontend requests retain order");
+        }
+        queue.Stop();
+        Require(!queue.Post([] {}), "closed frontend rejects requests");
+    }
     void Require(bool condition, const char *message) {
         if (!condition) {
             std::cerr << "FAIL " << message << '\n';
@@ -110,7 +153,9 @@ namespace {
         const auto first{registry.Register(callbacks)};
         const auto second{registry.Register(callbacks)};
         Require(first != second && second > first, "monotonic session IDs");
+        Require(registry.IsRegistered(first), "queued frontend request sees active session");
         Require(registry.Dispatch({.sessionId = first, .type = FrontendEventType::Cancel, .text = {}, .cursor = 0}), "dispatch active session");
+        Require(!registry.IsRegistered(first), "queued frontend request skips closed session");
         Require(callbacks->calls == 1 && !registry.Dispatch({.sessionId = first, .type = {}, .text = {}, .cursor = 0}), "reentrant unregister and stale rejection");
         callbacks.reset();
         Require(!registry.Dispatch({.sessionId = second, .type = {}, .text = {}, .cursor = 0}), "expired callback rejection");
@@ -146,6 +191,7 @@ namespace {
 }
 
 int main() {
+    TestFrontendQueue();
     TestText();
     TestConfig();
     TestState();

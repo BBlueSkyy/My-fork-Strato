@@ -109,7 +109,10 @@ namespace skyline::kernel::type {
 
     KTransferMemory::~KTransferMemory() {
         if (state.process && guest.valid()) {
-            if (mmap(guest.data(), guest.size(), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED | MAP_ANONYMOUS, -1, 0) == MAP_FAILED) [[unlikely]]
+            // `guest` is an HOS virtual address. On AArch32 it is not the
+            // process address mapped by the host (and may belong to ART).
+            auto hostGuest{state.process->memory.GetHostSpan(guest)};
+            if (mmap(hostGuest.data(), hostGuest.size(), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED | MAP_ANONYMOUS, -1, 0) == MAP_FAILED) [[unlikely]]
                 LOGW("An error occurred while unmapping transfer memory in guest: {}", strerror(errno));
 
             // FIX: same exhaustive restore as Unmap() above, see comment there.
@@ -148,7 +151,7 @@ namespace skyline::kernel::type {
                     if (!state.process->memory.UnmapMemory(guest)) [[unlikely]] // Fail safe rather than leaving stale tracking behind
                         LOGW("~KTransferMemory: UnmapMemory rejected (IPC-locked?) in fail-safe path at: {} (0x{:X} bytes) - tracking may be desynced", fmt::ptr(guest.data()), guest.size());
             }
-            std::memcpy(guest.data(), host.data(), guest.size());
+            std::memcpy(hostGuest.data(), host.data(), hostGuest.size());
         }
     }
 }

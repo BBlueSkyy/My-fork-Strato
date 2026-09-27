@@ -230,12 +230,14 @@ namespace skyline::service {
             kernel::MemoryManager &memory;
             const ipc::IpcRequest &request;
 
-            static span<u8> GetPageAlignedInterior(span<u8> buffer) {
+            span<u8> GetPageAlignedInterior(span<u8> buffer) const {
                 if (buffer.empty())
                     return {};
 
-                u8 *start{util::AlignUp(buffer.data(), constant::PageSize)};
-                u8 *end{util::AlignDown(buffer.end().base(), constant::PageSize)};
+                // IPC services use host pointers, but the memory block map uses guest addresses.
+                u8 *guestAddress{reinterpret_cast<u8 *>(memory.TranslateHostAddress(buffer.data()))};
+                u8 *start{util::AlignUp(guestAddress, constant::PageSize)};
+                u8 *end{util::AlignDown(guestAddress + buffer.size(), constant::PageSize)};
                 if (start >= end)
                     return {};
 

@@ -103,6 +103,7 @@ namespace skyline::applet::swkbd {
 
         std::mutex inlineMutex;
         std::optional<FrontendSessionId> inlineSessionId;
+        std::shared_ptr<service::am::IStorage> inlineDictionaryStorage;
         InlineState inlineState{InlineState::Uninitialized};
         bool inlineStarted{};
         bool inlineUseUtf8{};

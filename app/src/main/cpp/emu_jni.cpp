@@ -201,7 +201,7 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_updatePerf
 extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_nativeSoftwareKeyboardEvent(
     JNIEnv *env, jobject, jlong sessionId, jint type, jstring text, jint cursor) {
     if (type < static_cast<jint>(skyline::applet::swkbd::FrontendEventType::TextChanged) ||
-        type > static_cast<jint>(skyline::applet::swkbd::FrontendEventType::FrontendDestroyed))
+        type > static_cast<jint>(skyline::applet::swkbd::FrontendEventType::FrontendOpened))
         return;
 
     std::u16string input;

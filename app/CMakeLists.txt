@@ -185,6 +185,12 @@ add_subdirectory("libraries/audio-core")
 include_directories(SYSTEM "libraries/audio-core/include")
 target_link_libraries_system(audio_core Boost::intrusive Boost::container range-v3)
 
+# Dynarmic
+set(DYNARMIC_FRONTENDS "A32" CACHE STRING "Enabled Dynarmic frontends" FORCE)
+set(DYNARMIC_INSTALL OFF CACHE BOOL "Skip Dynarmic installation" FORCE)
+set(DYNARMIC_USE_PRECOMPILED_HEADERS OFF CACHE BOOL "Use precompiled headers for Dynarmic" FORCE)
+add_subdirectory("libraries/dynarmic")
+
 # Skyline
 add_library(skyline SHARED
         ${source_DIR}/driver_jni.cpp
@@ -199,6 +205,9 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/common/trace.cpp
         ${source_DIR}/skyline/common/trap_manager.cpp
         ${source_DIR}/skyline/logger/logger.cpp
+        ${source_DIR}/skyline/jit/coproc_15.cpp
+        ${source_DIR}/skyline/jit/jit_core_32.cpp
+        ${source_DIR}/skyline/jit/jit32.cpp
         ${source_DIR}/skyline/nce/guest.S
         ${source_DIR}/skyline/nce.cpp
         ${source_DIR}/skyline/jvm.cpp
@@ -481,5 +490,5 @@ target_include_directories(skyline PRIVATE ${source_DIR}/skyline)
 target_compile_options(skyline PRIVATE -Wall -Wno-unknown-attributes -Wno-c++20-extensions -Wno-c++17-extensions -Wno-c99-designator -Wno-reorder -Wno-missing-braces -Wno-unused-variable -Wno-unused-private-field -Wno-dangling-else -Wconversion -fsigned-bitfields)
 
 add_dependencies(skyline ffmpeg)
-target_link_libraries(skyline PRIVATE shader_recompiler audio_core)
+target_link_libraries(skyline PRIVATE shader_recompiler audio_core dynarmic)
 target_link_libraries_system(skyline android perfetto fmt lz4_static tzcode vkma mbedtls mbedx509 mbedcrypto opus Boost::intrusive Boost::container Boost::preprocessor Boost::regex range-v3 adrenotools tsl::robin_map ffmpeg-avcodec ffmpeg-swscale ffmpeg-avutil)

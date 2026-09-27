@@ -100,6 +100,34 @@ namespace skyline::service::hid {
         return {};
     }
 
+    Result IHidServer::IsSixAxisSensorFusionEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        request.Skip<u32>();
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
+            return validation;
+
+        std::scoped_lock lock{state.input->npad.mutex};
+        response.Push<u8>(state.input->npad.at(handle.id).GetSixAxisConfig(handle).fusionEnabled);
+        return {};
+    }
+
+    Result IHidServer::EnableSixAxisSensorFusion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const bool enabled{(request.Pop<u32>() & 0xFF) != 0};
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
+            return validation;
+
+        std::scoped_lock lock{state.input->npad.mutex};
+        state.input->npad.at(handle.id).GetSixAxisConfig(handle).fusionEnabled = enabled;
+        return {};
+    }
+
     Result IHidServer::SetGyroscopeZeroDriftMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto handle{request.Pop<NpadDeviceHandle>()};
         const auto mode{request.Pop<GyroscopeZeroDriftMode>()};

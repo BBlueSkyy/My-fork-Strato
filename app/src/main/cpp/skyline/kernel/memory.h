@@ -271,7 +271,7 @@ namespace skyline {
             memory::AddressSpaceType addressSpaceType{};
             span<u8> addressSpace{}; //!< The entire address space
             span<u8> codeBase36Bit{}; //!< A mapping in the lower 36 bits of the address space for mapping code and stack on 36-bit guests
-            span<u8> base{}; //!< The application-accessible address space (for 39-bit guests) or the heap/alias address space (for 36-bit guests)
+            span<u8> base{}; //!< The application-accessible address space (for 39-bit and 32-bit guests) or the heap/alias address space (for 36-bit guests)
             MemoryRegion code{};
             MemoryRegion alias{};
             MemoryRegion heap{};
@@ -297,17 +297,16 @@ namespace skyline {
             void InitializeRegions(span<u8> codeRegion);
 
             /**
-             * @brief Mirrors a page-aligned mapping in the guest address space to the host address space
+             * @brief Mirrors a page-aligned host mapping of guest memory
              * @return A span to the host address space mirror mapped as RW, unmapping it is the responsibility of the caller
-             * @note The supplied mapping **must** be page-aligned and inside the guest address space
+             * @note The supplied mapping **must** be page-aligned and inside the host VMM base
              */
             span<u8> CreateMirror(span<u8> mapping);
 
             /**
-             * @brief Mirrors multiple page-aligned mapping in the guest address space to the host address space
-             * @param totalSize The total size of all the regions to be mirrored combined
+             * @brief Mirrors multiple page-aligned host mappings of guest memory
              * @return A span to the host address space mirror mapped as RW, unmapping it is the responsibility of the caller
-             * @note The supplied mapping **must** be page-aligned and inside the guest address space
+             * @note The supplied mappings **must** be page-aligned and inside the host VMM base
              * @note If a single mapping is mirrored, it is recommended to use CreateMirror instead
              */
             span<u8> CreateMirrors(const std::vector<span<u8>> &regions);
@@ -369,6 +368,12 @@ namespace skyline {
              * @brief Gets the highest chunk's descriptor that contains this address
              */
             std::optional<std::pair<u8 *, ChunkDescriptor>> GetChunk(u8 *addr);
+
+            /**
+             * @brief Checks whether every memory block in a guest range has a backing mapping
+             * @note The caller must first verify that the range lies inside the guest address space
+             */
+            bool IsRangeMapped(span<u8> region);
 
             /**
              * @brief Atomically validates that the entire range is currently Unmapped (Free) and, if so,
@@ -464,6 +469,30 @@ namespace skyline {
              * @return A span with `guestOffset` applied to it
              */
             span<u8> GetHostSpan(span<u8> guestSpan) const;
+
+            /**
+             * @brief Translates a guest virtual address to a host address
+             * @return The virtual address with `guestOffset` applied to it
+             */
+            u64 TranslateVirtualAddress(u64 vaddr) const;
+
+            /**
+             * @brief Translates a guest virtual address to a host address and returns a pointer of the specified type to it
+             * @return A pointer to the translated address of the specified type
+             */
+            template<typename T>
+            __attribute__((always_inline)) T TranslateVirtualPointer(u64 vaddr) const {
+                u64 paddr = TranslateVirtualAddress(vaddr);
+                auto *ptr = reinterpret_cast<void *>(paddr);
+
+                return reinterpret_cast<T>(ptr);
+            }
+
+            /**
+             * @brief Translates a host address to the corresponding address in the guest address space
+             * @return The virtual address with `guestOffset` removed from it
+             */
+            u64 TranslateHostAddress(u8 *hostAddr) const;
         };
     }
 }
