@@ -537,13 +537,17 @@ namespace skyline::kernel::type {
                 // If the thread is still waiting on the same condition variable then we can signal it (It could no longer be waiting due to a timeout)
                 u32 *mutex{thread->waitMutex};
                 KHandle tag{thread->waitTag};
+                bool scheduleThread{};
+                Result waitResult{};
 
                 while (true) {
                     // We need to lock the mutex before the thread can be scheduled
                     KHandle value{};
                     if (__atomic_compare_exchange_n(mutex, &value, tag, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
-                        // A quick CAS to lock the mutex for the thread, we can just schedule the thread if we succeed
-                        state.scheduler->InsertThread(thread);
+                        // The mutex is now owned by the waiting thread. Publish the completed wait
+                        // state before making it runnable so it cannot race ahead and have a later
+                        // wait overwritten by this signal path.
+                        scheduleThread = true;
                         break;
                     }
 
@@ -553,22 +557,26 @@ namespace skyline::kernel::type {
                             continue; // If we failed to set the waiters bit due to an outdated value then try again
 
                     // If we couldn't CAS the lock then we need to let the mutex holder schedule the thread instead of us during an unlock
-                    auto result{MutexLock(thread, mutex, value & ~HandleWaitersBit, tag, true)};
-                    if (result == result::InvalidCurrentMemory) {
+                    auto mutexResult{MutexLock(thread, mutex, value & ~HandleWaitersBit, tag, true)};
+                    if (mutexResult == result::InvalidCurrentMemory) {
                         continue;
-                    } else if (result == result::InvalidHandle) {
-                        thread->waitResult = result::InvalidState;
-                        state.scheduler->InsertThread(thread);
-                    } else if (result != Result{}) {
-                        throw exception("Failed to lock mutex: 0x{:X}", result);
+                    } else if (mutexResult == result::InvalidHandle) {
+                        waitResult = result::InvalidState;
+                        scheduleThread = true;
+                    } else if (mutexResult != Result{}) {
+                        throw exception("Failed to lock mutex: 0x{:X}", mutexResult);
                     }
                     break;
                 }
 
-                // Update the thread's wait state to avoid incorrect timeout cancellation behavior
+                // Update the wait state before scheduling. The woken thread can run immediately
+                // once InsertThread() notifies it, so none of these fields may be written after that.
                 thread->waitConditionVariable = nullptr;
                 thread->waitSignalled = true;
-                thread->waitResult = {};
+                thread->waitResult = waitResult;
+
+                if (scheduleThread)
+                    state.scheduler->InsertThread(thread);
             }
         }
     }
