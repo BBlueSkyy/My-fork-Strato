@@ -72,7 +72,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
     override fun onViewCreated(view : View, savedInstanceState : Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         isCancelable = !config.isCancelButtonDisabled
-        dialog?.setCanceledOnTouchOutside(!config.isCancelButtonDisabled)
+        dialog?.setCanceledOnTouchOutside(!inline && !config.isCancelButtonDisabled)
 
         val header = stringFromChars(config.headerText)
         binding.header.text = header
@@ -164,6 +164,10 @@ class SoftwareKeyboardDialog : DialogFragment() {
             dialog?.window?.apply {
                 if (inline) {
                     clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                    // The guest owns the visible inline keyboard and its touch input.
+                    // Keep this window focused for the Android IME while passing touches
+                    // through to the game and its on-screen controller.
+                    addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
                     setDimAmount(0f)
                     setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
                 }
