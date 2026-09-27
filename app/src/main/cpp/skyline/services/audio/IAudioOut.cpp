@@ -18,7 +18,11 @@ namespace skyline::service::audio {
                          KHandle handle, u32 appletResourceUserId)
         :  BaseService{state, manager},
            releaseEvent{std::make_shared<type::KEvent>(state, false)},
-           releaseEventWrapper{[releaseEvent = this->releaseEvent]() { releaseEvent->Signal(); },
+           releaseEventWrapper{[this, releaseEvent = this->releaseEvent]() {
+                                   if (diagnosticSession)
+                                       eventSignals.fetch_add(1, std::memory_order_relaxed);
+                                   releaseEvent->Signal();
+                               },
                                [releaseEvent = this->releaseEvent]() { releaseEvent->ResetSignal(); }},
            audioOutSessionId{sessionId},
            diagnosticSession{audioOutSessionsLogged.fetch_add(1, std::memory_order_relaxed) < 3},
@@ -35,8 +39,11 @@ namespace skyline::service::audio {
 
     IAudioOut::~IAudioOut() {
         if (diagnosticSession)
-            LOGI("AudioOut close: session={} state={} played={}", audioOutSessionId,
-                 static_cast<u32>(impl->GetState()), impl->GetPlayedSampleCount());
+            LOGI("AudioOut close: session={} state={} played={} pending={} appends={} releases={} polls={} signals={}",
+                 audioOutSessionId, static_cast<u32>(impl->GetState()), impl->GetPlayedSampleCount(),
+                 impl->GetBufferCount(), appendedBufferCount.load(std::memory_order_relaxed),
+                 releasedBufferCount.load(std::memory_order_relaxed), releasePolls.load(std::memory_order_relaxed),
+                 eventSignals.load(std::memory_order_relaxed));
         impl->Free();
     }
 
@@ -68,6 +75,8 @@ namespace skyline::service::audio {
         auto tag{request.Pop<u64>()};
 
         const auto result{impl->AppendBuffer(buffer, tag)};
+        if (diagnosticSession && !result.IsError())
+            appendedBufferCount.fetch_add(1, std::memory_order_relaxed);
         if (diagnosticSession && loggedAppends.fetch_add(1, std::memory_order_relaxed) < 4)
             LOGI("AudioOut append: session={} tag=0x{:X} samples=0x{:X} size=0x{:X} capacity=0x{:X} offset=0x{:X} result=0x{:X}",
                  audioOutSessionId, tag, static_cast<u64>(buffer.samples), static_cast<u64>(buffer.size), static_cast<u64>(buffer.capacity),
@@ -78,6 +87,8 @@ namespace skyline::service::audio {
     Result IAudioOut::RegisterBufferEvent(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto handle{state.process->InsertItem(releaseEvent)};
         LOGD("Buffer Release Event Handle: 0x{:X}", handle);
+        if (diagnosticSession && loggedAdditionalCalls.fetch_add(1, std::memory_order_relaxed) < 12)
+            LOGI("AudioOut register event: session={} handle=0x{:X}", audioOutSessionId, handle);
         response.copyHandles.push_back(handle);
         return {};
     }
@@ -87,9 +98,16 @@ namespace skyline::service::audio {
 
         std::vector<u64> releasedBuffers(maxCount);
         auto count{impl->GetReleasedBuffers(releasedBuffers)};
-        if (diagnosticSession && loggedReleases.fetch_add(1, std::memory_order_relaxed) < 4)
-            LOGI("AudioOut release: session={} count={} capacity={} played={}",
-                 audioOutSessionId, count, maxCount, impl->GetPlayedSampleCount());
+        if (diagnosticSession) {
+            releasePolls.fetch_add(1, std::memory_order_relaxed);
+            releasedBufferCount.fetch_add(count, std::memory_order_relaxed);
+            const bool logEarly{loggedReleases.fetch_add(1, std::memory_order_relaxed) < 4};
+            const bool logPositive{count != 0 && loggedPositiveReleases.fetch_add(1, std::memory_order_relaxed) < 4};
+            if (logEarly || logPositive)
+                LOGI("AudioOut release: session={} count={} capacity={} firstTag=0x{:X} played={}",
+                     audioOutSessionId, count, maxCount, count ? releasedBuffers[0] : 0,
+                     impl->GetPlayedSampleCount());
+        }
 
         request.outputBuf.at(0).copy_from(releasedBuffers);
         response.Push<u32>(count);
@@ -98,22 +116,34 @@ namespace skyline::service::audio {
 
     Result IAudioOut::ContainsAudioOutBuffer(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto tag{request.Pop<u64>()};
-        response.Push(static_cast<u32>(impl->ContainsAudioBuffer(tag)));
+        const auto contains{static_cast<u32>(impl->ContainsAudioBuffer(tag))};
+        if (diagnosticSession && loggedAdditionalCalls.fetch_add(1, std::memory_order_relaxed) < 12)
+            LOGI("AudioOut contains: session={} tag=0x{:X} contains={}", audioOutSessionId, tag, contains);
+        response.Push(contains);
         return {};
     }
 
     Result IAudioOut::GetAudioOutBufferCount(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push(impl->GetBufferCount());
+        const auto count{impl->GetBufferCount()};
+        if (diagnosticSession && loggedAdditionalCalls.fetch_add(1, std::memory_order_relaxed) < 12)
+            LOGI("AudioOut buffer count: session={} count={}", audioOutSessionId, count);
+        response.Push(count);
         return {};
     }
 
     Result IAudioOut::GetAudioOutPlayedSampleCount(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push(impl->GetPlayedSampleCount());
+        const auto played{impl->GetPlayedSampleCount()};
+        if (diagnosticSession && loggedAdditionalCalls.fetch_add(1, std::memory_order_relaxed) < 12)
+            LOGI("AudioOut played sample count: session={} count={}", audioOutSessionId, played);
+        response.Push(played);
         return {};
     }
 
     Result IAudioOut::FlushAudioOutBuffers(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push(static_cast<u32>(impl->FlushAudioOutBuffers()));
+        const auto flushed{static_cast<u32>(impl->FlushAudioOutBuffers())};
+        if (diagnosticSession && loggedAdditionalCalls.fetch_add(1, std::memory_order_relaxed) < 12)
+            LOGI("AudioOut flush: session={} flushed={}", audioOutSessionId, flushed);
+        response.Push(flushed);
         return {};
     }
 

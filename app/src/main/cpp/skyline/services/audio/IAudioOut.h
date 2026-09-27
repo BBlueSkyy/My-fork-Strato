@@ -30,6 +30,12 @@ namespace skyline::service::audio {
         std::atomic<u32> loggedAppends{};
         std::atomic<u32> loggedReleases{};
         std::atomic<u32> loggedVolumes{};
+        std::atomic<u32> loggedAdditionalCalls{};
+        std::atomic<u32> loggedPositiveReleases{};
+        std::atomic<u32> releasePolls{};
+        std::atomic<u32> releasedBufferCount{};
+        std::atomic<u32> appendedBufferCount{};
+        std::atomic<u32> eventSignals{};
 
       public:
         std::shared_ptr<AudioCore::AudioOut::Out> impl;
