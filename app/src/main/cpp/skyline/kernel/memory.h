@@ -413,7 +413,7 @@ namespace skyline {
             bool UnmapMemory(span<u8> memory);
 
             /**
-             * Frees the underlying memory
+             * Frees the underlying host memory (including texture mirror mappings)
              * @note Memory that's not aligned to page boundaries at the edges of the span will not be freed
              */
             void FreeMemory(span<u8> memory);
