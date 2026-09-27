@@ -3,6 +3,7 @@
 // Copyright © 2019-2022 Ryujinx Team and Contributors
 
 #include <services/am/storage/ObjIStorage.h>
+#include <services/am/storage/TransferMemoryIStorage.h>
 #include <services/am/storage/VectorIStorage.h>
 #include <utility>
 #include <jvm.h>
@@ -259,6 +260,7 @@ namespace skyline::applet::swkbd {
         {
             std::scoped_lock lock{inlineMutex};
             inlineSessionId = sessionId;
+            inlineDictionaryStorage.reset();
             inlineState = InlineState::Uninitialized;
             inlineStarted = true;
         }
@@ -420,6 +422,7 @@ namespace skyline::applet::swkbd {
         switch (request) {
             case InlineRequest::Finalize:
                 inlineStarted = false;
+                inlineDictionaryStorage.reset();
                 ChangeInlineStateLocked(InlineState::Uninitialized);
                 action.type = InlineFrontendActionType::Close;
                 onAppletStateChanged->Signal();
@@ -434,6 +437,7 @@ namespace skyline::applet::swkbd {
                 action = ProcessInlineCalcLocked(data.subspan(sizeof(InlineRequest)));
                 break;
             case InlineRequest::UnsetCustomizedDictionaries:
+                inlineDictionaryStorage.reset();
                 SendInlineReplyLocked(InlineReply::UnsetCustomizedDictionaries);
                 break;
             case InlineRequest::SetChangedStringV2:
@@ -594,6 +598,7 @@ namespace skyline::applet::swkbd {
             mode == service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay) {
             std::scoped_lock lock{inlineMutex};
             inlineStarted = false;
+            inlineDictionaryStorage.reset();
             inlineState = InlineState::Uninitialized;
             sessionId = std::exchange(inlineSessionId, std::nullopt);
         } else {
@@ -624,7 +629,16 @@ namespace skyline::applet::swkbd {
             InlineFrontendAction action;
             {
                 std::scoped_lock lock{inlineMutex};
-                action = ProcessInlineRequestLocked(data->GetSpan());
+                const auto contents{data->GetSpan()};
+                // User-word info uses transfer memory with a request header; dictionary
+                // backing arrives as handle storage before its separate request.
+                if (std::dynamic_pointer_cast<service::am::TransferMemoryIStorage>(data) &&
+                    (contents.size() < sizeof(InlineRequest) ||
+                     ReadInlineValue<InlineRequest>(contents, 0) != InlineRequest::SetUserWordInfo)) {
+                    inlineDictionaryStorage = std::move(data);
+                    return;
+                }
+                action = ProcessInlineRequestLocked(contents);
             }
             ExecuteInlineFrontendAction(std::move(action));
             return;
