@@ -31,6 +31,14 @@ namespace {
         static_assert(sizeof(FileSystemAttribute) == 0xC0);
     }
 
+    void TestFsResultWireEncoding() {
+        Check(result::PathDoesNotExist.raw == 0x202, "FS PathDoesNotExist changed its wire encoding");
+        Check(result::InvalidPath.raw == 0x2EE402, "FS InvalidPath lost its high description bit");
+        Check(result::InvalidArgument.raw == 0x2EE202, "FS InvalidArgument lost its high description bit");
+        Check(Result{0x2EE402}.module == 2 && Result{0x2EE402}.id == 6002,
+              "FS InvalidPath cannot be decoded from the guest result");
+    }
+
     void TestSignedRanges() {
         Check(!ValidateRange(-1, 1, 4), "negative offset accepted");
         Check(!ValidateRange(0, -1, 4), "negative size accepted");
@@ -607,6 +615,7 @@ int main() {
     };
 
     run("filesystem ABI layouts", TestAbiLayouts);
+    run("filesystem result wire encoding", TestFsResultWireEncoding);
     run("signed storage ranges", TestSignedRanges);
     run("guest path parsing", TestGuestPathParsing);
     run("filesystem service helpers", TestFileSystemServiceHelpers);

@@ -19,6 +19,7 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+#include <common/result.h>
 
 namespace skyline {
     using u8 = std::uint8_t;
@@ -29,18 +30,6 @@ namespace skyline {
     using i16 = std::int16_t;
     using i32 = std::int32_t;
     using i64 = std::int64_t;
-
-    union Result {
-        u32 raw{};
-        struct __attribute__((packed)) {
-            u16 module : 9;
-            u16 id : 12;
-        };
-
-        constexpr Result() = default;
-        constexpr Result(u16 module, u16 id) : module(module), id(id) {}
-        constexpr operator u32() const { return raw; }
-    };
 
     class exception : public std::runtime_error {
       public:
