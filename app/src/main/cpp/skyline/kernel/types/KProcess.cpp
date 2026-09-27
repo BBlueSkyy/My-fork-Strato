@@ -241,6 +241,8 @@ namespace skyline::kernel::type {
 
     Result KProcess::ConditionVariableWait(u32 *key, u32 *mutex, KHandle tag, i64 timeout) {
         TRACE_EVENT_FMT("kernel", "ConditionVariableWait {} ({})", fmt::ptr(key), fmt::ptr(mutex));
+        LOGD("[GRID-CV] cv-begin tid={} key={} mutex={} tag=0x{:X} timeout={}ns",
+             state.thread->id, fmt::ptr(key), fmt::ptr(mutex), tag, timeout);
 
         {
             // Update all waiter information
@@ -264,7 +266,12 @@ namespace skyline::kernel::type {
             MutexUnlock(mutex);
         }
 
+        LOGD("[GRID-CV] cv-parked tid={} key={} mutex={} timeout={}ns",
+             state.thread->id, fmt::ptr(key), fmt::ptr(mutex), timeout);
+
         if (timeout > 0 && !state.scheduler->TimedWaitSchedule(std::chrono::nanoseconds(timeout))) {
+            LOGD("[GRID-CV] cv-timer-expired tid={} key={} mutex={} timeout={}ns",
+                 state.thread->id, fmt::ptr(key), fmt::ptr(mutex), timeout);
             bool inQueue{true};
             {
                 // Attempt to remove ourselves from the queue so we cannot be signalled
@@ -325,20 +332,31 @@ namespace skyline::kernel::type {
                 state.thread->waitSignalled = true;
             }
 
+            LOGD("[GRID-CV] cv-timeout-state tid={} key={} mutex={} inQueue={} shouldWait={} signalled={}",
+                 state.thread->id, fmt::ptr(key), fmt::ptr(mutex), inQueue, shouldWait, state.thread->waitSignalled);
+
             if (shouldWait) {
                 // Wait if we've been signalled in the meantime as it would be problematic to double insert a thread into the scheduler
                 state.scheduler->WaitSchedule();
+                LOGD("[GRID-CV] cv-timeout-raced-signal tid={} key={} mutex={} result=0x{:X}",
+                     state.thread->id, fmt::ptr(key), fmt::ptr(mutex), state.thread->waitResult.raw);
                 return state.thread->waitResult;
             }
 
             state.scheduler->InsertThread(state.thread);
             state.scheduler->WaitSchedule();
 
+            LOGD("[GRID-CV] cv-timeout-final tid={} key={} mutex={}",
+                 state.thread->id, fmt::ptr(key), fmt::ptr(mutex));
             return result::TimedOut;
         } else {
             state.scheduler->WaitSchedule();
+            LOGD("[GRID-CV] cv-woke tid={} key={} mutex={} result=0x{:X}",
+                 state.thread->id, fmt::ptr(key), fmt::ptr(mutex), state.thread->waitResult.raw);
         }
 
+        LOGD("[GRID-CV] cv-return tid={} key={} mutex={} result=0x{:X}",
+             state.thread->id, fmt::ptr(key), fmt::ptr(mutex), state.thread->waitResult.raw);
         return state.thread->waitResult;
     }
 
