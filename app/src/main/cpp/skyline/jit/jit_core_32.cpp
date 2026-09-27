@@ -40,18 +40,42 @@ namespace skyline::jit {
         return Dynarmic::A32::Jit{config};
     }
 
-    void JitCore32::Run() {
-        auto haltReason{static_cast<HaltReason>(jit.Run())};
-        auto &thread{static_cast<kernel::type::KJit32Thread &>(*state.thread)};
-        // SVCs may block or migrate this thread, letting another guest reuse this core's JIT.
-        // Preserve the entire guest state before allowing the scheduler to run another thread.
-        SaveContext(thread.ctx);
-        thread.jit = nullptr;
-        ClearHalt(haltReason);
+    void JitCore32::Run(ThreadContext32 &context, u32 tlsPointer) {
+        HaltReason haltReason;
+        u32 swi;
+        {
+            // The scheduler may wake a replacement before the previous host thread leaves
+            // Dynarmic. Keep restoration, execution and saving under the same core lease.
+            std::scoped_lock lock{runMutex};
+            if (kernel::Scheduler::YieldPending || state.thread->killed)
+                return;
+
+            RestoreContext(context);
+            SetThreadPointer(context.tpidr);
+            SetTlsPointer(tlsPointer);
+
+            state.thread->jit = this;
+            try {
+                haltReason = static_cast<HaltReason>(jit.Run());
+            } catch (...) {
+                state.thread->jit = nullptr;
+                throw;
+            }
+
+            // SVCs can block or migrate the calling thread, so finish using the shared
+            // JIT before dispatching them and keep their results in the thread context.
+            SaveContext(context);
+            ClearHalt(haltReason);
+            swi = lastSwi;
+            state.thread->jit = nullptr;
+        }
+
+        if (state.thread->killed)
+            return;
 
         switch (haltReason) {
             case HaltReason::Svc:
-                SvcHandler(lastSwi, thread.ctx);
+                SvcHandler(swi, context);
                 break;
 
             case HaltReason::Preempted:

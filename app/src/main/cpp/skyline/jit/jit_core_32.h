@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <mutex>
 #include <common.h>
 #include <dynarmic/interface/A32/a32.h>
 #include <kernel/svc_context.h>
@@ -20,6 +21,7 @@ namespace skyline::jit {
         Dynarmic::ExclusiveMonitor &monitor;
         u32 coreId;
         u32 lastSwi{};
+        std::mutex runMutex; //!< Serializes ownership of this core's guest state across host threads
 
         std::shared_ptr<Coprocessor15> coproc15;
         Dynarmic::A32::Jit jit;
@@ -35,9 +37,11 @@ namespace skyline::jit {
         JitCore32(const DeviceState &state, Dynarmic::ExclusiveMonitor &monitor, u32 coreId);
 
         /**
-         * @brief Runs the JIT until it halts, then saves the guest state and handles the halt
+         * @brief Runs a thread on this JIT core until it halts, then saves and handles its state
+         * @param context The calling thread's saved context
+         * @param tlsPointer The calling thread's kernel-provided TLS pointer
          */
-        void Run();
+        void Run(ThreadContext32 &context, u32 tlsPointer);
 
         /**
          * @brief Stops execution by setting the given halt flag

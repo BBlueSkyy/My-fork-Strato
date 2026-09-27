@@ -96,7 +96,7 @@ namespace skyline::kernel::type {
                 state.scheduler->WaitSchedule();
 
             while (!killed) {
-                while (Scheduler::YieldPending) [[unlikely]] {
+                while (Scheduler::YieldPending && !killed) [[unlikely]] {
                     // If there is a yield pending on us after thread creation
                     state.scheduler->Rotate();
                     Scheduler::YieldPending = false;
@@ -107,6 +107,9 @@ namespace skyline::kernel::type {
                 // Run the guest code
                 Run();
             }
+            // A JIT thread stopped by SIGINT returns from Dynarmic instead of jumping
+            // past its execution guard; finish through the normal thread-exit path.
+            throw nce::NCE::ExitException(false);
         } catch (const nce::NCE::ExitException &e) {
             // NCE handles guest exits in its SVC handler; JIT exits reach this thread boundary.
             jit = nullptr;
@@ -164,8 +167,8 @@ namespace skyline::kernel::type {
         if (!killed && running) {
             statusCondition.wait(lock, [this]() { return ready || killed; });
             if (!killed) {
-                pthread_kill(pthread, SIGINT);
                 killed = true;
+                pthread_kill(pthread, SIGINT);
                 statusCondition.notify_all();
             }
         }
@@ -370,12 +373,6 @@ namespace skyline::kernel::type {
 
     void KJit32Thread::Run() {
         auto *core{&state.jit32->GetCore(coreId)};
-        jit = core;
-
-        core->RestoreContext(ctx);
-        core->SetThreadPointer(ctx.tpidr);
-        core->SetTlsPointer(static_cast<u32>(process.memory.TranslateHostAddress(tlsRegion)));
-
-        core->Run();
+        core->Run(ctx, static_cast<u32>(process.memory.TranslateHostAddress(tlsRegion)));
     }
 }

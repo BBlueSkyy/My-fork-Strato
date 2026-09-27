@@ -43,25 +43,30 @@ namespace skyline::jit {
         bool isGuest{thread->jit != nullptr}; // Whether the signal happened while running guest code
 
         if (isGuest) {
-            if (signal != SIGINT) {
-                signal::StackFrame topFrame{.lr = reinterpret_cast<void *>(ctx->uc_mcontext.pc), .next = reinterpret_cast<signal::StackFrame *>(ctx->uc_mcontext.regs[29])};
-                // TODO: this might give garbage stack frames and/or crash
-                std::string trace{thread->process.state.loader->GetStackTrace(&topFrame)};
+            if (signal == SIGINT) {
+                // Let Dynarmic return normally, including its execution guard cleanup.
+                // Long-jumping out would also abandon the core's ownership mutex.
+                thread->jit->HaltExecution(HaltReason::Preempted);
+                return;
+            }
 
-                std::string cpuContext;
-                if (mctx.fault_address)
-                    cpuContext += fmt::format("\n  Fault Address: 0x{:X}", mctx.fault_address);
-                if (mctx.sp)
-                    cpuContext += fmt::format("\n  Stack Pointer: 0x{:X}", mctx.sp);
-                for (size_t index{}; index < (sizeof(mcontext_t::regs) / sizeof(u64)); index += 2)
-                    cpuContext += fmt::format("\n  X{:<2}: 0x{:<16X} X{:<2}: 0x{:X}", index, mctx.regs[index], index + 1, mctx.regs[index + 1]);
+            signal::StackFrame topFrame{.lr = reinterpret_cast<void *>(ctx->uc_mcontext.pc), .next = reinterpret_cast<signal::StackFrame *>(ctx->uc_mcontext.regs[29])};
+            // TODO: this might give garbage stack frames and/or crash
+            std::string trace{thread->process.state.loader->GetStackTrace(&topFrame)};
 
-                LOGE("Thread #{} has crashed due to signal: {}\nStack Trace:{} \nCPU Context:{}", thread->id, strsignal(signal), trace, cpuContext);
+            std::string cpuContext;
+            if (mctx.fault_address)
+                cpuContext += fmt::format("\n  Fault Address: 0x{:X}", mctx.fault_address);
+            if (mctx.sp)
+                cpuContext += fmt::format("\n  Stack Pointer: 0x{:X}", mctx.sp);
+            for (size_t index{}; index < (sizeof(mcontext_t::regs) / sizeof(u64)); index += 2)
+                cpuContext += fmt::format("\n  X{:<2}: 0x{:<16X} X{:<2}: 0x{:X}", index, mctx.regs[index], index + 1, mctx.regs[index + 1]);
 
-                if (thread->id) {
-                    signal::BlockSignal({SIGINT});
-                    thread->process.Kill(false);
-                }
+            LOGE("Thread #{} has crashed due to signal: {}\nStack Trace:{} \nCPU Context:{}", thread->id, strsignal(signal), trace, cpuContext);
+
+            if (thread->id) {
+                signal::BlockSignal({SIGINT});
+                thread->process.Kill(false);
             }
 
             mctx.pc = reinterpret_cast<u64>(&std::longjmp);
