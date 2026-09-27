@@ -340,10 +340,11 @@ namespace skyline::kernel::type {
 
             // Move all threads waiting on this key to the next owner's waiter list
             std::shared_ptr<KThread> nextWaiter{};
-            for (auto it{waiters.erase(nextOwnerIt)}, nextIt{std::next(it)}; it != waiters.end(); it = nextIt++) {
-                auto thread{*it};
+            for (auto it{waiters.erase(nextOwnerIt)}; it != waiters.end();) {
+                auto current{it++};
+                auto thread{*current};
                 if (thread->waitMutex == mutex) {
-                    nextOwner->waiters.splice(std::upper_bound(nextOwner->waiters.begin(), nextOwner->waiters.end(), (*it)->priority.load(), KThread::IsHigherPriority), waiters, it);
+                    nextOwner->waiters.splice(std::upper_bound(nextOwner->waiters.begin(), nextOwner->waiters.end(), thread->priority.load(), KThread::IsHigherPriority), waiters, current);
                     thread->waitThread = nextOwner;
                     if (!nextWaiter)
                         nextWaiter = thread;
