@@ -32,27 +32,6 @@ namespace skyline::service::fssrv {
                 return std::nullopt;
             return ReadPath(request.inputBuf[index]);
         }
-
-        void LogRejectedOpenFilePath(const ipc::IpcRequest &request, const char *reason) {
-            if (request.inputBuf.empty()) {
-                LOGI("OpenFile rejected path ({}): missing path buffer", reason);
-                return;
-            }
-
-            const auto raw{request.inputBuf.front()};
-            const auto firstZero{std::find(raw.begin(), raw.end(), 0)};
-            const auto zeroOffset{firstZero == raw.end() ? raw.size() : static_cast<size_t>(firstZero - raw.begin())};
-            constexpr char HexDigits[]{"0123456789ABCDEF"};
-            constexpr size_t MaxPreviewBytes{48};
-            std::string prefixHex;
-            prefixHex.reserve(std::min(raw.size(), MaxPreviewBytes) * 2);
-            for (size_t i{}; i < std::min(raw.size(), MaxPreviewBytes); ++i) {
-                prefixHex += HexDigits[raw[i] >> 4];
-                prefixHex += HexDigits[raw[i] & 0xF];
-            }
-
-            LOGI("OpenFile rejected path ({}): bufferSize={} firstNulOffset={} prefixHex={}", reason, raw.size(), zeroOffset, prefixHex);
-        }
     }
 
     IFileSystem::IFileSystem(std::shared_ptr<vfs::FileSystem> backing, const DeviceState &state, ServiceManager &manager, bool readOnly)
@@ -100,10 +79,8 @@ namespace skyline::service::fssrv {
     Result IFileSystem::OpenFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto path{RequestPath(request)};
         const auto mode{ReadArgument<vfs::Backing::Mode>(request)};
-        if (!path) {
-            LogRejectedOpenFilePath(request, "invalid guest path");
+        if (!path)
             return result::InvalidPath;
-        }
         if (!mode || !IsOpenModeValid(*mode))
             return result::InvalidOpenMode;
         if (!IsMutationAllowed(readOnly, *mode))
@@ -113,11 +90,8 @@ namespace skyline::service::fssrv {
         if (!type || *type != vfs::Directory::EntryType::File)
             return result::PathDoesNotExist;
         auto [file, error]{backing->OpenFileWithError(*path, *mode)};
-        if (error) {
-            if (error == std::errc::invalid_argument)
-                LogRejectedOpenFilePath(request, "backing returned invalid_argument");
+        if (error)
             return MapVfsError(error);
-        }
         if (!file)
             return result::UnexpectedFailure;
         manager.RegisterService(std::make_shared<IFile>(std::move(file), state, manager), session, response);

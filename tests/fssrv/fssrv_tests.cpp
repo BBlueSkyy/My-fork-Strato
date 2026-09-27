@@ -52,6 +52,17 @@ namespace {
         auto path{ReadPath(valid)};
         Check(path && *path == "/a/b", "valid guest path was not preserved");
 
+        std::array<u8, 15> repeatedLeadingSlashes{'/', '/', 'u', 's', 'e', 'r', 'd', 'a', 't', 'a', '.', 'd', 'a', 't', 0};
+        path = ReadPath(repeatedLeadingSlashes);
+        Check(path && *path == "/userdata.dat", "repeated leading separators did not resolve within the filesystem root");
+
+        std::array<u8, 13> repeatedInnerSlashes{'/', 's', 'a', 'v', 'e', '/', '/', '/', 'f', 'i', 'l', 'e', 0};
+        path = ReadPath(repeatedInnerSlashes);
+        Check(path && *path == "/save/file", "repeated inner separators were not normalized");
+
+        std::array<u8, 7> disguisedTraversal{'/', '/', '.', '.', '/', 'x', 0};
+        Check(!ReadPath(disguisedTraversal), "leading separators bypassed parent traversal rejection");
+
         std::array<u8, 4> traversal{'.', '.', '/', 0};
         Check(!ReadPath(traversal), "parent traversal accepted");
 
@@ -263,6 +274,22 @@ namespace {
         request.cmdArg = request.cmdStorage.data();
         request.cmdArgSz = sizeof(T);
         return request;
+    }
+
+    void TestOpenFileWithRepeatedSeparators() {
+        TempDirectory root;
+        auto backing{std::make_shared<vfs::OsFileSystem>(root.path.string())};
+        Check(!backing->CreateFile("/userdata.dat", 0), "failed to create file in filesystem root");
+        DeviceState state;
+        service::ServiceManager manager;
+        kernel::type::KSession session;
+        IFileSystem filesystem(backing, state, manager);
+
+        std::array<u8, 15> path{'/', '/', 'u', 's', 'e', 'r', 'd', 'a', 't', 'a', '.', 'd', 'a', 't', 0};
+        auto request{RequestWith(vfs::Backing::Mode{true, false, false})};
+        request.inputBuf.emplace_back(path);
+        ipc::IpcResponse response;
+        Check(!filesystem.OpenFile(session, request, response), "guest path with repeated separators did not open a file inside the root");
     }
 
     void TestStorageServiceBoundsAndPermissions() {
@@ -618,6 +645,7 @@ int main() {
     run("filesystem result wire encoding", TestFsResultWireEncoding);
     run("signed storage ranges", TestSignedRanges);
     run("guest path parsing", TestGuestPathParsing);
+    run("filesystem open path normalization", TestOpenFileWithRepeatedSeparators);
     run("filesystem service helpers", TestFileSystemServiceHelpers);
     run("pagination bounds", TestPaginationBounds);
     run("rooted host mutations", TestRootedHostMutations);

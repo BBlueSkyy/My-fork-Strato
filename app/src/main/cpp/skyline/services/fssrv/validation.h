@@ -60,7 +60,7 @@ namespace skyline::service::fssrv {
             return std::nullopt;
 
         std::string path(reinterpret_cast<const char *>(buffer.data()), static_cast<size_t>(terminator - buffer.begin()));
-        if (path.empty() || path.find('\\') != std::string::npos || path.starts_with("//"))
+        if (path.empty() || path.find('\\') != std::string::npos)
             return std::nullopt;
 
         const bool absolute{path.front() == '/'};
@@ -69,6 +69,11 @@ namespace skyline::service::fssrv {
         bool first{true};
 
         while (position < path.size()) {
+            while (position < path.size() && path[position] == '/')
+                ++position;
+            if (position == path.size())
+                break;
+
             const auto separator{path.find('/', position)};
             const auto component{path.substr(position, separator - position)};
             if (component.empty() || component == "." || component == "..")
