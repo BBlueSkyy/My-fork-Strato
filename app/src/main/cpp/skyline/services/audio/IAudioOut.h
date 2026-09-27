@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <audio_core/out/audio_out_system.h>
 #include <audio_core/out/audio_out.h>
 #include <audio_core/core/hle/kernel/k_event.h>
@@ -21,6 +22,14 @@ namespace skyline::service::audio {
 
         u32 sampleRate;
         u8 channelCount;
+        size_t audioOutSessionId;
+        bool diagnosticSession{};
+        std::atomic<u32> loggedStates{};
+        std::atomic<u32> loggedStarts{};
+        std::atomic<u32> loggedStops{};
+        std::atomic<u32> loggedAppends{};
+        std::atomic<u32> loggedReleases{};
+        std::atomic<u32> loggedVolumes{};
 
       public:
         std::shared_ptr<AudioCore::AudioOut::Out> impl;
