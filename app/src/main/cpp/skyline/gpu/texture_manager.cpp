@@ -45,12 +45,16 @@ namespace skyline::gpu {
             const auto &hostGuest{*hostMapping->texture->guest};
             const bool hostIs3D{hostGuest.GetImageType() == vk::ImageType::e3D};
             const bool requestIs3D{guestTexture.GetImageType() == vk::ImageType::e3D};
-            const bool log3DPair{hostIs3D || requestIs3D};
+            const bool log3DPair{(hostIs3D || requestIs3D) &&
+                                 hostMapping->begin() < guestMapping.end() && guestMapping.begin() < hostMapping->end()};
             if (log3DPair) {
                 had3DOverlap = true;
-                LOGI("TEXMAN-3D-SLICE: host3D={}, request3D={}, hostView={}, requestView={}, hostSize=0x{:X}, requestSize=0x{:X}, hostDepth={}, requestDepth={}, requestBaseLayer={}, requestLayers={}, hostBlockDepth={}, requestBlockDepth={}, hostStart={}, requestStart={}, contained={}",
+                LOGI("TEXMAN-3D-SLICE: host3D={}, request3D={}, hostView={}, requestView={}, hostSize=0x{:X}, requestSize=0x{:X}, hostWidth={}, hostHeight={}, requestWidth={}, requestHeight={}, hostDepth={}, requestDepth={}, hostMipLevels={}, requestMipLevels={}, hostLayers={}, requestBaseLayer={}, requestLayers={}, hostBlockDepth={}, requestBlockDepth={}, hostStart={}, requestStart={}, contained={}",
                      hostIs3D, requestIs3D, static_cast<u32>(hostGuest.viewType), static_cast<u32>(guestTexture.viewType),
-                     hostMapping->size(), guestMapping.size(), hostGuest.dimensions.depth, guestTexture.dimensions.depth,
+                     hostMapping->size(), guestMapping.size(), hostGuest.dimensions.width, hostGuest.dimensions.height,
+                     guestTexture.dimensions.width, guestTexture.dimensions.height,
+                     hostGuest.dimensions.depth, guestTexture.dimensions.depth,
+                     hostGuest.mipLevelCount, guestTexture.mipLevelCount, hostGuest.layerCount,
                      guestTexture.baseArrayLayer, guestTexture.GetViewLayerCount(),
                      hostGuest.tileConfig.mode == texture::TileMode::Block ? hostGuest.tileConfig.blockDepth : 0,
                      guestTexture.tileConfig.mode == texture::TileMode::Block ? guestTexture.tileConfig.blockDepth : 0,
@@ -74,41 +78,24 @@ namespace skyline::gpu {
             if (firstHostMapping == hostMappings.begin() && firstHostMapping->begin() == guestMapping.begin() && mappingMatch && lastHostMapping == hostMappings.end() && lastGuestMapping.end() == std::prev(lastHostMapping)->end()) {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
                 auto &matchGuestTexture{*hostMapping->texture->guest};
-                const bool compatible3DBacking{
-                    (!hostIs3D && !requestIs3D) ||
-                    (hostIs3D &&
-                     (requestIs3D ? matchGuestTexture.dimensions.depth == guestTexture.dimensions.depth &&
-                                     (guestTexture.viewType == vk::ImageViewType::e3D ||
-                                      guestTexture.baseArrayLayer + guestTexture.GetViewLayerCount() <= matchGuestTexture.dimensions.depth)
-                                  : (guestTexture.viewType == vk::ImageViewType::e2D || guestTexture.viewType == vk::ImageViewType::e2DArray) &&
-                                    guestTexture.baseArrayLayer + guestTexture.GetViewLayerCount() <= matchGuestTexture.dimensions.depth))
-                };
-                const bool compatibleDimensions{(hostIs3D || requestIs3D)
-                    ? matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
-                      matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
-                      guestTexture.viewMipBase + guestTexture.viewMipCount <= hostMapping->texture->levelCount
-                    : ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
-                          matchGuestTexture.dimensions.height == guestTexture.dimensions.height) ||
-                         matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
-                        matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()) ||
-                       matchGuestTexture.viewMipBase > 0)
-                };
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                    compatible3DBacking && compatibleDimensions &&
-                    matchGuestTexture.tileConfig == guestTexture.tileConfig) {
+                    ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
+                        matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
+                        matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
+                        || matchGuestTexture.viewMipBase > 0)
+                    && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
                     if (log3DPair)
                         LOGI("TEXMAN-3D-SLICE: reused full mapping");
                     fullMatch = hostMapping->texture;
                 } else {
                     if (log3DPair)
-                        LOGI("TEXMAN-3D-SLICE: rejected full mapping: imageCompatible={}, dimensionsCompatible={}, formatCompatible={}, tilingCompatible={}",
-                             compatible3DBacking, compatibleDimensions, matchGuestTexture.format->IsCompatible(*guestTexture.format),
-                             matchGuestTexture.tileConfig == guestTexture.tileConfig);
+                        LOGI("TEXMAN-3D-SLICE: rejected full mapping: formatCompatible={}, tilingCompatible={}",
+                             matchGuestTexture.format->IsCompatible(*guestTexture.format), matchGuestTexture.tileConfig == guestTexture.tileConfig);
                     matches.push_back(hostMapping->texture);
                 }
             } else {
                 auto &matchGuestTexture{*hostMapping->texture->guest};
-                if ((!requestIs3D || hostIs3D) && matchGuestTexture.format->IsCompatible(*guestTexture.format) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
                         (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
                     size_t memOffset{static_cast<size_t>(guestMapping.data() - hostMapping->texture->guest->mappings.front().data())};
                     size_t layerMemOffset{};
@@ -134,11 +121,6 @@ namespace skyline::gpu {
                             break;
                         layerMemOffset += matchGuestTexture.GetLayerStride();
                     }
-
-                    if (matched && hostIs3D && guestTexture.viewType != vk::ImageViewType::e3D &&
-                        guestTexture.baseArrayLayer + matchLayer + guestTexture.GetViewLayerCount() >
-                            hostMapping->texture->mipLayouts[matchLevel].dimensions.depth)
-                        matched = false;
 
                     if (matched) {
                         if (log3DPair)
