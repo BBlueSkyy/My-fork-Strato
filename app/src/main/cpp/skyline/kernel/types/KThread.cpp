@@ -369,15 +369,13 @@ namespace skyline::kernel::type {
     }
 
     void KJit32Thread::Run() {
-        jit = &state.jit32->GetCore(coreId);
+        auto *core{&state.jit32->GetCore(coreId)};
+        jit = core;
 
-        jit->RestoreContext(ctx);
-        jit->SetThreadPointer(ctx.tpidr);
-        jit->SetTlsPointer(static_cast<u32>(process.memory.TranslateHostAddress(tlsRegion)));
+        core->RestoreContext(ctx);
+        core->SetThreadPointer(ctx.tpidr);
+        core->SetTlsPointer(static_cast<u32>(process.memory.TranslateHostAddress(tlsRegion)));
 
-        jit->Run();
-
-        jit->SaveContext(ctx);
-        jit = nullptr;
+        core->Run();
     }
 }

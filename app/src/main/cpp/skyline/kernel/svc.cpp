@@ -5,7 +5,6 @@
 #include <nce.h>
 #include <atomic>
 #include <cstring>
-#include <jit/jit_core_32.h>
 #include <kernel/types/KProcess.h>
 #include <kernel/types/KTransferMemory.h>
 #include <common/trace.h>
@@ -994,9 +993,10 @@ namespace skyline::kernel::svc {
         }
 
         LOGE("Guest svcBreak: reason=0x{:X}, arg=0x{:X}, size=0x{:X}", reason, ctx.x1, ctx.x2);
-        if (state.thread->jit) {
+        if (!state.process->is64bit()) {
+            const auto &guest{static_cast<const type::KJit32Thread &>(*state.thread).ctx};
             LOGE("Guest AArch32 break location: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}",
-                 state.thread->jit->GetPC(), state.thread->jit->GetRegister(14), state.thread->jit->GetSP());
+                 guest.pc, guest.lr, guest.sp);
 
             if (ctx.x1 && ctx.x2 == sizeof(u32)) {
                 auto region{span<u8>{reinterpret_cast<u8 *>(ctx.x1), sizeof(u32)}};

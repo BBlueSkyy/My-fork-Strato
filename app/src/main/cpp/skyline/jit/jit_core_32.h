@@ -35,8 +35,7 @@ namespace skyline::jit {
         JitCore32(const DeviceState &state, Dynarmic::ExclusiveMonitor &monitor, u32 coreId);
 
         /**
-         * @brief Runs the JIT
-         * @note This function does not return
+         * @brief Runs the JIT until it halts, then saves the guest state and handles the halt
          */
         void Run();
 
@@ -59,16 +58,6 @@ namespace skyline::jit {
          * @brief Restores the state of the JIT from the given context.
          */
         void RestoreContext(const ThreadContext32 &context);
-
-        /**
-         * @brief Constructs an SvcContext from the current state of the JIT
-         */
-        kernel::svc::SvcContext MakeSvcContext();
-
-        /**
-         * @brief Applies the given SvcContext to the current state of the JIT
-         */
-        void ApplySvcContext(const kernel::svc::SvcContext &context);
 
         /**
          * @brief Sets the Thread Pointer register to the specified value
@@ -120,8 +109,9 @@ namespace skyline::jit {
         /**
          * @brief Handles an SVC call from the JIT
          * @param swi The SVC number
+         * @param context The calling thread's saved context
          */
-        void SvcHandler(u32 swi);
+        void SvcHandler(u32 swi, ThreadContext32 &context);
 
         // Dynarmic callbacks
       public:

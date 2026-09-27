@@ -42,11 +42,16 @@ namespace skyline::jit {
 
     void JitCore32::Run() {
         auto haltReason{static_cast<HaltReason>(jit.Run())};
+        auto &thread{static_cast<kernel::type::KJit32Thread &>(*state.thread)};
+        // SVCs may block or migrate this thread, letting another guest reuse this core's JIT.
+        // Preserve the entire guest state before allowing the scheduler to run another thread.
+        SaveContext(thread.ctx);
+        thread.jit = nullptr;
         ClearHalt(haltReason);
 
         switch (haltReason) {
             case HaltReason::Svc:
-                SvcHandler(lastSwi);
+                SvcHandler(lastSwi, thread.ctx);
                 break;
 
             case HaltReason::Preempted:
@@ -80,23 +85,6 @@ namespace skyline::jit {
         jit.ExtRegs() = context.fpr;
         jit.SetCpsr(context.cpsr);
         jit.SetFpscr(context.fpscr);
-    }
-
-    kernel::svc::SvcContext JitCore32::MakeSvcContext() {
-        kernel::svc::SvcContext ctx{};
-        const auto &jitRegs{jit.Regs()};
-
-        for (size_t i = 0; i < ctx.regs.size(); i++)
-            ctx.regs[i] = static_cast<u64>(jitRegs[i]);
-
-        return ctx;
-    }
-
-    void JitCore32::ApplySvcContext(const kernel::svc::SvcContext &svcCtx) {
-        auto &jitRegs{jit.Regs()};
-
-        for (size_t i = 0; i < svcCtx.regs.size(); i++)
-            jitRegs[i] = static_cast<u32>(svcCtx.regs[i]);
     }
 
     void JitCore32::SetThreadPointer(u32 threadPtr) {
@@ -135,13 +123,13 @@ namespace skyline::jit {
         jit.Regs()[reg] = value;
     }
 
-    void JitCore32::SvcHandler(u32 swi) {
+    void JitCore32::SvcHandler(u32 swi, ThreadContext32 &context) {
         auto svc{kernel::svc::SvcTable[swi]};
         if (svc) [[likely]] {
             TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
-            auto svcContext = MakeSvcContext();
+            auto svcContext = jit::MakeSvcContext(context);
             (svc.function)(state, svcContext);
-            ApplySvcContext(svcContext);
+            jit::ApplySvcContext(svcContext, context);
         } else {
             throw exception("Unimplemented SVC 0x{:X}", swi);
         }
