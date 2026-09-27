@@ -1,10 +1,68 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <cstdint>
+#include <optional>
 #include <common/trace.h>
+#include "texture/layout.h"
 #include "texture_manager.h"
 
 namespace skyline::gpu {
+    namespace {
+        struct SliceLocation {
+            u32 level;
+            u32 slice;
+        };
+
+        // A block-linear 2D slice starts at a Z GOB within a 3D mip level. Its
+        // advertised mapping includes the other Z GOBs, so span containment
+        // alone cannot identify slices after the first one.
+        std::optional<SliceLocation> Find3DSlice(const GuestTexture &volume, span<u8> volumeMapping,
+                                                 const GuestTexture &slice, span<u8> sliceMapping) {
+            if (volume.GetImageType() != vk::ImageType::e3D || slice.GetImageType() != vk::ImageType::e2D ||
+                (slice.viewType != vk::ImageViewType::e2D && slice.viewType != vk::ImageViewType::e2DArray) ||
+                volume.mappings.size() != 1 || slice.mappings.size() != 1 ||
+                volume.tileConfig.mode != texture::TileMode::Block || slice.tileConfig.mode != texture::TileMode::Block ||
+                slice.dimensions.depth != 1 || slice.layerCount != 1 || slice.baseArrayLayer != 0 ||
+                slice.mipLevelCount != 1 || slice.viewMipBase != 0 || slice.viewMipCount != 1 ||
+                volume.format != slice.format)
+                return std::nullopt;
+
+            const auto volumeAddress{reinterpret_cast<std::uintptr_t>(volumeMapping.data())};
+            const auto sliceAddress{reinterpret_cast<std::uintptr_t>(sliceMapping.data())};
+            if (sliceAddress < volumeAddress || sliceAddress - volumeAddress >= volumeMapping.size())
+                return std::nullopt;
+
+            const auto layouts{texture::GetBlockLinearMipLayout(
+                volume.dimensions, volume.format->blockHeight, volume.format->blockWidth, volume.format->bpb,
+                volume.format->blockHeight, volume.format->blockWidth, volume.format->bpb,
+                volume.tileConfig.blockHeight, volume.tileConfig.blockDepth, volume.mipLevelCount)};
+            const size_t offset{sliceAddress - volumeAddress};
+            size_t levelOffset{};
+            for (u32 level{}; level < layouts.size(); ++level) {
+                const auto &layout{layouts[level]};
+                if (slice.dimensions.width == layout.dimensions.width &&
+                    slice.dimensions.height == layout.dimensions.height &&
+                    slice.tileConfig.blockHeight == layout.blockHeight &&
+                    slice.tileConfig.blockDepth == layout.blockDepth) {
+                    const size_t mobs{util::DivideCeil<size_t>(layout.dimensions.depth, layout.blockDepth)};
+                    const size_t mobSize{layout.blockLinearSize / mobs};
+                    if (sliceMapping.size() == mobSize) {
+                        const size_t gobSliceSize{512 * layout.blockHeight};
+                        for (u32 z{}; z < layout.dimensions.depth; ++z) {
+                            const size_t sliceOffset{levelOffset + (z / layout.blockDepth) * mobSize +
+                                                     (z % layout.blockDepth) * gobSliceSize};
+                            if (offset == sliceOffset)
+                                return SliceLocation{level, z};
+                        }
+                    }
+                }
+                levelOffset += layout.blockLinearSize;
+            }
+            return std::nullopt;
+        }
+    }
+
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
@@ -36,8 +94,11 @@ namespace skyline::gpu {
 
         std::shared_ptr<Texture> fullMatch{};
         std::shared_ptr<Texture> layerMipMatch{};
+        std::shared_ptr<Texture> sliceMatch{};
+        boost::container::small_vector<std::shared_ptr<Texture>, 8> sliceOverlaps{};
         u32 matchLevel{};
         u32 matchLayer{};
+        SliceLocation sliceLocation{};
         bool had3DOverlap{};
 
         while (hostMapping != textures.begin() && (--hostMapping)->end() > guestMapping.begin()) {
@@ -61,7 +122,31 @@ namespace skyline::gpu {
                      fmt::ptr(hostMapping->data()), fmt::ptr(guestMapping.data()),
                      hostMapping->contains(guestMapping));
             }
-            if (!hostMapping->contains(guestMapping) || hostMapping->texture->replaced)
+            if (hostMapping->texture->replaced)
+                continue;
+
+            if (hostIs3D != requestIs3D) {
+                if (hostIs3D) {
+                    if (auto location{Find3DSlice(hostGuest, *hostMapping, guestTexture, guestMapping)}) {
+                        sliceMatch = hostMapping->texture;
+                        sliceLocation = *location;
+                        if (log3DPair)
+                            LOGI("TEXMAN-3D-SLICE: reused 3D slice, mip={}, slice={}", location->level, location->slice);
+                    } else if (log3DPair && std::find(matches.begin(), matches.end(), hostMapping->texture) == matches.end()) {
+                        matches.push_back(hostMapping->texture);
+                    }
+                } else if (auto location{Find3DSlice(guestTexture, guestMapping, hostGuest, *hostMapping)}) {
+                    if (std::find(sliceOverlaps.begin(), sliceOverlaps.end(), hostMapping->texture) == sliceOverlaps.end())
+                        sliceOverlaps.push_back(hostMapping->texture);
+                    if (log3DPair)
+                        LOGI("TEXMAN-3D-SLICE: read back 2D slice before creating 3D image, mip={}, slice={}",
+                             location->level, location->slice);
+                } else if (log3DPair && std::find(matches.begin(), matches.end(), hostMapping->texture) == matches.end()) {
+                    matches.push_back(hostMapping->texture);
+                }
+                continue;
+            }
+            if (!hostMapping->contains(guestMapping))
                 continue;
 
             // We need to check that all corresponding mappings in the candidate texture and the guest texture match up
@@ -137,7 +222,27 @@ namespace skyline::gpu {
             }
          }
 
-        if (layerMipMatch) {
+        if (!sliceOverlaps.empty() && fullMatch) {
+            fullMatch->SynchronizeGuest(false, true);
+            fullMatch->replaced = true;
+            fullMatch = {};
+        }
+        if (!sliceOverlaps.empty() && layerMipMatch) {
+            layerMipMatch->SynchronizeGuest(false, true);
+            layerMipMatch->replaced = true;
+            layerMipMatch = {};
+        }
+
+        if (sliceMatch) {
+            ContextLock textureLock{tag, *sliceMatch};
+            return sliceMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
+                .aspectMask = guestTexture.aspect,
+                .baseMipLevel = sliceLocation.level,
+                .levelCount = 1,
+                .baseArrayLayer = sliceLocation.slice,
+                .layerCount = 1,
+            }, guestTexture.format, guestTexture.swizzle);
+        } else if (layerMipMatch && sliceOverlaps.empty()) {
             ContextLock textureLock{tag, *layerMipMatch};
             return layerMipMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
                 .aspectMask = guestTexture.aspect,
@@ -159,6 +264,12 @@ namespace skyline::gpu {
 
         for (auto &texture : matches)
             texture->SynchronizeGuest(false, true);
+
+        for (auto &texture : sliceOverlaps) {
+            if (std::find(matches.begin(), matches.end(), texture) == matches.end())
+                texture->SynchronizeGuest(false, true);
+            texture->replaced = true;
+        }
 
         if (had3DOverlap)
             LOGI("TEXMAN-3D-SLICE: no compatible mapping, creating a separate texture");
