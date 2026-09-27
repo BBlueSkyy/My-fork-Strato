@@ -136,10 +136,10 @@ namespace skyline {
     bool JvmManager::ShowSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
                                           const applet::swkbd::FrontendKeyboardConfig &config,
                                           std::u16string_view initialText, bool inlineKeyboard) {
-        return softwareKeyboardTasks.Post([this, sessionId, config, textCopy = std::u16string(initialText), inlineKeyboard]() mutable {
+        return softwareKeyboardTasks.Post([this, sessionId, configCopy = config, textCopy = std::u16string(initialText), inlineKeyboard]() mutable {
             if (!softwareKeyboardSessions.IsRegistered(sessionId))
                 return;
-            auto buffer{env->NewDirectByteBuffer(config.data(), config.size())};
+            auto buffer{env->NewDirectByteBuffer(configCopy.data(), configCopy.size())};
             jstring text{};
             if (buffer && !env->ExceptionCheck())
                 text = NewJString(env, textCopy);
