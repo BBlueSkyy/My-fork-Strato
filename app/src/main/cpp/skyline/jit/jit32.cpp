@@ -46,8 +46,8 @@ namespace skyline::jit {
             // ART, its compiler and the UI also run in this process. Their
             // signals belong to Android's original handler, not the HOS JIT.
             if (!loggedFirstJitFault.test_and_set())
-                LOGE("First JIT32 process signal: signal={} thread={} core=-1 hostPC=0x{:X} guestPC=0x0 lastSVC=0x0 yieldPending=0",
-                     signal, gettid(), mctx.pc);
+                LOGE("First JIT32 process signal: signal={} code={} fault=0x{:X} thread={} core=-1 hostPC=0x{:X} guestPC=0x0 lastSVC=0x0 yieldPending=0",
+                     signal, info->si_code, reinterpret_cast<uintptr_t>(info->si_addr), gettid(), mctx.pc);
             signal::ForwardOriginalHostSignal(signal, info, ctx);
             return;
         }

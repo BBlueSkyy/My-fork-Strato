@@ -69,8 +69,8 @@ namespace skyline::signal {
      */
     void Sigaction(int signal, const struct sigaction *action, struct sigaction *oldAction = nullptr);
 
-    // Delegate signals from threads outside guest execution to the handler that
-    // Android installed before the emulator registered its own signal handlers.
+    // Delegate signals from threads outside guest execution to the user handler
+    // present before the emulator registered its first signal handler.
     void ForwardOriginalHostSignal(int signal, siginfo *info, ucontext *context);
 
     /**

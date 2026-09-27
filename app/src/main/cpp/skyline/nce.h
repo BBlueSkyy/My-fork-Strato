@@ -13,6 +13,7 @@ namespace skyline::nce {
     class NCE {
       private:
         const DeviceState &state;
+        std::once_flag signalHandlersOnce;
 
         std::vector<hle::HookedSymbol> hookedSymbols; //!< The list of symbols that are hooked, these have a specific ordering that is hardcoded into the hooked functions
 
@@ -63,6 +64,9 @@ namespace skyline::nce {
          * @note There should only be one instance of NCE concurrently
          */
         NCE(const DeviceState &state);
+
+        /** Install guest TLS and signal handlers only when a 64-bit executable will use NCE. */
+        void InitializeGuestSignals();
 
         struct PatchData {
             size_t size; //!< Size of the .patch section

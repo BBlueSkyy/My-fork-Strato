@@ -163,7 +163,10 @@ namespace skyline::signal {
         if (action.sa_handler == SIG_IGN)
             return;
         if (action.sa_handler == SIG_DFL) {
-            Sigaction(signal, &action);
+            // Restore the user handler through sigchain, retaining ART's
+            // special handlers for other threads in the process.
+            if (sigaction(signal, &action, nullptr) != 0)
+                _exit(128 + signal);
             raise(signal);
             return;
         }
@@ -214,13 +217,7 @@ namespace skyline::signal {
         for (int signal : signals) {
             std::call_once(once[static_cast<size_t>(signal)], [&] {
                 struct sigaction oldAction{};
-                // Query through sigchain first: its raw kernel handler would call
-                // the *current* emulator user action again and recurse forever.
-                struct sigaction originalUserAction{};
-                if (sigaction(signal, nullptr, &originalUserAction) != 0)
-                    throw exception("sigaction query has failed with {}", strerror(errno));
                 Sigaction(signal, &action, &oldAction);
-                OriginalHostActions[static_cast<size_t>(signal)] = originalUserAction;
 
                 auto oldFlags = oldAction.sa_flags;
                 if (oldFlags) {
@@ -259,7 +256,15 @@ namespace skyline::signal {
     }
 
     void SetHostSignalHandler(std::initializer_list<int> signals, SignalAction function, bool syscallRestart) {
+        static std::array<std::once_flag, NSIG> originalActionOnce{};
         for (int signal : signals) {
+            // Save the Android user handler before the first emulator handler
+            // replaces it. NCE may later install its raw guest handler, but
+            // that must never become the fallback for an unrelated host thread.
+            std::call_once(originalActionOnce[static_cast<size_t>(signal)], [&] {
+                if (sigaction(signal, nullptr, &OriginalHostActions[static_cast<size_t>(signal)]) != 0)
+                    throw exception("sigaction query has failed with {}", strerror(errno));
+            });
             struct sigaction action{
                 .sa_sigaction = reinterpret_cast<sa_sigaction>(function),
                 .sa_flags = SA_SIGINFO | SA_EXPOSE_TAGBITS | SA_ONSTACK | (syscallRestart ? SA_RESTART : 0),
