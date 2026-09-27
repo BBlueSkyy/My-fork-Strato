@@ -890,15 +890,15 @@ namespace skyline::kernel::svc {
 
         auto conditional{reinterpret_cast<u32 *>(ctx.x1)};
         KHandle requesterHandle{ctx.w2};
-
         i64 timeout{static_cast<i64>(ctx.x3)};
-        LOGD("Waiting on {} with {} for {}ns", fmt::ptr(conditional), fmt::ptr(mutex), timeout);
+
+        LOGD("[GRID-CV] svc-enter tid={} key={} mutex={} tag=0x{:X} timeout={}ns",
+             state.thread->id, fmt::ptr(conditional), fmt::ptr(mutex), requesterHandle, timeout);
 
         auto result{state.process->ConditionVariableWait(conditional, mutex, requesterHandle, timeout)};
-        if (result == Result{})
-            LOGD("Waited for {} and reacquired {}", fmt::ptr(conditional), fmt::ptr(mutex));
-        else if (result == result::TimedOut)
-            LOGD("Wait on {} has timed out after {}ns", fmt::ptr(conditional), timeout);
+
+        LOGD("[GRID-CV] svc-exit tid={} key={} mutex={} tag=0x{:X} timeout={}ns result=0x{:X}",
+             state.thread->id, fmt::ptr(conditional), fmt::ptr(mutex), requesterHandle, timeout, result.raw);
         ctx.w0 = result;
     }
 
