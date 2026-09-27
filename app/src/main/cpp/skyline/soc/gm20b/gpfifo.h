@@ -106,9 +106,31 @@ namespace skyline::soc::gm20b {
         const DeviceState &state;
         ChannelContext &channelCtx;
         engine::GPFIFO gpfifoEngine; //!< The engine for processing GPFIFO method calls
-        CircularQueue<GpEntry> gpEntries;
+        CircularQueue<GpEntry, true> gpEntries;
         std::vector<u32> pushBufferData; //!< Persistent vector storing pushbuffer data to avoid constant reallocations
         bool skipDirtyFlushes{}; //!< If GPU flushing should be skipped when fetching pushbuffer contents
+
+        enum class DiagnosticState : u8 {
+            Starting,
+            Waiting,
+            ChannelLock,
+            Processing,
+            FlushEngineState,
+            ProcessMethod,
+            ArgumentRead,
+            GpfifoCall,
+            ExecutorSubmit,
+            Stopped,
+        };
+
+        std::atomic<DiagnosticState> diagnosticState{DiagnosticState::Starting};
+        std::atomic<u64> diagnosticAddress{};
+        std::atomic<u64> diagnosticLastSubmittedAddress{};
+        std::atomic<u32> diagnosticMethod{};
+        std::atomic<u64> diagnosticSubmitted{};
+        std::atomic<u64> diagnosticProgress{};
+        std::atomic_bool diagnosticStop{};
+        std::thread diagnosticThread;
 
         /**
          * @brief Holds the required state in order to resume a method started from one call to `Process` in another
@@ -155,6 +177,11 @@ namespace skyline::soc::gm20b {
          * @brief Executes all pending entries in the FIFO and polls for more
          */
         void Run();
+
+        /**
+         * @brief Reports a single low-frequency diagnostic snapshot if the GPFIFO stops making progress
+         */
+        void DiagnosticWatchdog();
 
       public:
         /**
