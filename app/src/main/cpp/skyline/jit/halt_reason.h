@@ -50,4 +50,8 @@ namespace skyline::jit {
     inline Dynarmic::HaltReason ToDynarmicHaltReason(HaltReason hr) {
         return static_cast<Dynarmic::HaltReason>(hr);
     }
+
+    inline bool HasHaltReason(HaltReason reasons, HaltReason flag) {
+        return Dynarmic::Has(ToDynarmicHaltReason(reasons), ToDynarmicHaltReason(flag));
+    }
 }

@@ -73,19 +73,20 @@ namespace skyline::jit {
         if (state.thread->killed)
             return;
 
-        switch (haltReason) {
-            case HaltReason::Svc:
-                SvcHandler(swi, context);
-                break;
+        // Dynarmic returns a bitmask: an SVC and a preemption may be requested
+        // together. The SVC must still run so the guest receives its result.
+        const bool preempted{HasHaltReason(haltReason, HaltReason::Preempted)};
+        const bool hasSvc{HasHaltReason(haltReason, HaltReason::Svc)};
+        if (preempted)
+            state.thread->isPreempted = false;
 
-            case HaltReason::Preempted:
-                state.thread->isPreempted = false;
-                return;
+        const u32 unexpectedReasons{static_cast<u32>(haltReason) &
+            ~(static_cast<u32>(HaltReason::Svc) | static_cast<u32>(HaltReason::Preempted))};
+        if (unexpectedReasons || (!hasSvc && !preempted))
+            LOGE("JIT halted: {} (0x{:X})", to_string(haltReason), static_cast<u32>(haltReason));
 
-            default:
-                LOGE("JIT halted: {}", to_string(haltReason));
-                break;
-        }
+        if (hasSvc)
+            SvcHandler(swi, context);
     }
 
     void JitCore32::HaltExecution(HaltReason hr) {
