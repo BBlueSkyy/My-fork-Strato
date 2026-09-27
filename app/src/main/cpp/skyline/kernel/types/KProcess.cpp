@@ -392,6 +392,15 @@ namespace skyline::kernel::type {
     Result KProcess::ConditionVariableWait(u32 *key, u32 *mutex, KHandle tag, i64 timeout) {
         TRACE_EVENT_FMT("kernel", "ConditionVariableWait {} ({})", fmt::ptr(key), fmt::ptr(mutex));
 
+        if (timeout == 0) {
+            // A zero timeout is a non-blocking wait: atomically release the user mutex
+            // with respect to condition-variable signalling, but don't enqueue or deschedule
+            // the current thread.
+            std::scoped_lock syncLock{syncWaiterMutex};
+            MutexUnlock(mutex);
+            return result::TimedOut;
+        }
+
         {
             // Update all waiter information
             std::unique_lock lock{state.thread->waiterMutex};
