@@ -80,6 +80,7 @@ namespace skyline {
     }
 
     JvmManager::~JvmManager() {
+        softwareKeyboardTasks.Stop();
         env->DeleteGlobalRef(shaderCompilationNotifierClass);
         env->DeleteGlobalRef(instanceClass);
         env->DeleteGlobalRef(instance);
@@ -135,47 +136,75 @@ namespace skyline {
     bool JvmManager::ShowSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
                                           const applet::swkbd::FrontendKeyboardConfig &config,
                                           std::u16string_view initialText, bool inlineKeyboard) {
-        auto configCopy{config};
-        auto buffer{env->NewDirectByteBuffer(configCopy.data(), configCopy.size())};
-        auto text{NewJString(env, initialText)};
-        const bool opened{env->CallBooleanMethod(instance, openSoftwareKeyboardId, static_cast<jlong>(sessionId), buffer, text,
-                                                 inlineKeyboard ? JNI_TRUE : JNI_FALSE) == JNI_TRUE};
-        env->DeleteLocalRef(text);
-        env->DeleteLocalRef(buffer);
-        if (env->ExceptionCheck()) {
-            env->ExceptionClear();
-            return false;
-        }
-        return opened;
+        return softwareKeyboardTasks.Post([this, sessionId, config, textCopy = std::u16string(initialText), inlineKeyboard]() mutable {
+            if (!softwareKeyboardSessions.IsRegistered(sessionId))
+                return;
+            auto buffer{env->NewDirectByteBuffer(config.data(), config.size())};
+            jstring text{};
+            if (buffer && !env->ExceptionCheck())
+                text = NewJString(env, textCopy);
+            bool accepted{};
+            if (buffer && text && !env->ExceptionCheck())
+                accepted = env->CallBooleanMethod(instance, openSoftwareKeyboardId, static_cast<jlong>(sessionId), buffer, text,
+                                                   inlineKeyboard ? JNI_TRUE : JNI_FALSE) == JNI_TRUE;
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+                accepted = false;
+            }
+            if (text)
+                env->DeleteLocalRef(text);
+            if (buffer)
+                env->DeleteLocalRef(buffer);
+            if (!accepted)
+                softwareKeyboardSessions.Dispatch({sessionId, applet::swkbd::FrontendEventType::FrontendDestroyed});
+        });
     }
 
     void JvmManager::ShowSoftwareKeyboardTextCheck(applet::swkbd::FrontendSessionId sessionId, u32 result,
                                                    std::u16string_view message) {
-        auto text{NewJString(env, message)};
-        env->CallVoidMethod(instance, showSoftwareKeyboardTextCheckId, static_cast<jlong>(sessionId),
-                            static_cast<jint>(result), text);
-        env->DeleteLocalRef(text);
+        softwareKeyboardTasks.Post([this, sessionId, result, copy = std::u16string(message)] {
+            auto text{NewJString(env, copy)};
+            if (text && !env->ExceptionCheck())
+                env->CallVoidMethod(instance, showSoftwareKeyboardTextCheckId, static_cast<jlong>(sessionId), static_cast<jint>(result), text);
+            if (text)
+                env->DeleteLocalRef(text);
+            if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+        });
     }
 
     void JvmManager::ResumeSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId) {
-        env->CallVoidMethod(instance, resumeSoftwareKeyboardId, static_cast<jlong>(sessionId));
+        softwareKeyboardTasks.Post([this, sessionId] {
+            env->CallVoidMethod(instance, resumeSoftwareKeyboardId, static_cast<jlong>(sessionId));
+            if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+        });
     }
 
     void JvmManager::UpdateSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
                                             std::u16string_view input, i32 cursor) {
-        auto text{NewJString(env, input)};
-        env->CallVoidMethod(instance, updateSoftwareKeyboardId, static_cast<jlong>(sessionId), text,
-                            static_cast<jint>(cursor));
-        env->DeleteLocalRef(text);
+        softwareKeyboardTasks.Post([this, sessionId, copy = std::u16string(input), cursor] {
+            auto text{NewJString(env, copy)};
+            if (text && !env->ExceptionCheck())
+                env->CallVoidMethod(instance, updateSoftwareKeyboardId, static_cast<jlong>(sessionId), text, static_cast<jint>(cursor));
+            if (text)
+                env->DeleteLocalRef(text);
+            if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+        });
     }
 
     void JvmManager::HideSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId) {
-        env->CallVoidMethod(instance, hideSoftwareKeyboardId, static_cast<jlong>(sessionId));
+        softwareKeyboardTasks.Post([this, sessionId] {
+            env->CallVoidMethod(instance, hideSoftwareKeyboardId, static_cast<jlong>(sessionId));
+            if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+        });
     }
 
     void JvmManager::CloseSoftwareKeyboardSession(applet::swkbd::FrontendSessionId sessionId) {
         softwareKeyboardSessions.Unregister(sessionId);
-        env->CallVoidMethod(instance, closeSoftwareKeyboardId, static_cast<jlong>(sessionId));
+        softwareKeyboardTasks.Post([this, sessionId] {
+            env->CallVoidMethod(instance, closeSoftwareKeyboardId, static_cast<jlong>(sessionId));
+            if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+        });
     }
 
     bool JvmManager::DispatchSoftwareKeyboardEvent(applet::swkbd::FrontendEvent event) {

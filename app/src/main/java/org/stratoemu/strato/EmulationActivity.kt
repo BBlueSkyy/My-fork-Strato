@@ -851,6 +851,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             softwareKeyboardDialogs[sessionId] = dialog
             try {
                 dialog.showNow(supportFragmentManager, "software-keyboard-$sessionId")
+                nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendOpened, "", 0)
             } catch (exception : IllegalStateException) {
                 softwareKeyboardDialogs.remove(sessionId)
                 nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)

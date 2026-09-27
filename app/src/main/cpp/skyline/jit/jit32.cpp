@@ -2,13 +2,19 @@
 // Copyright © 2023 Strato Team and Contributors (https://github.com/strato-emu/)
 
 #include "jit32.h"
+#include <atomic>
 #include <common/trap_manager.h>
 #include <common/signal.h>
 #include <kernel/types/KThread.h>
 #include <kernel/types/KProcess.h>
 #include <loader/loader.h>
+#include <unistd.h>
 
 namespace skyline::jit {
+    namespace {
+        std::atomic_flag loggedFirstJitFault = ATOMIC_FLAG_INIT;
+    }
+
     static std::array<JitCore32, CoreCount> MakeJitCores(const DeviceState &state, Dynarmic::ExclusiveMonitor &monitor) {
         // Set the signal handler before creating the JIT cores to ensure proper chaining with the Dynarmic handler which is set during construction
         signal::SetHostSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, Jit32::SignalHandler);
@@ -37,43 +43,40 @@ namespace skyline::jit {
         auto &mctx{ctx->uc_mcontext};
         auto thread{kernel::this_thread};
         if (!thread) {
-            signal::ExceptionalSignalHandler(signal, info, ctx);
+            // ART, its compiler and the UI also run in this process. Their
+            // signals belong to Android's original handler, not the HOS JIT.
+            if (!loggedFirstJitFault.test_and_set())
+                LOGE("First JIT32 process signal: signal={} thread={} core=-1 hostPC=0x{:X} guestPC=0x0 lastSVC=0x0 yieldPending=0",
+                     signal, gettid(), mctx.pc);
+            signal::ForwardOriginalHostSignal(signal, info, ctx);
             return;
         }
-        bool isGuest{thread->jit != nullptr}; // Whether the signal happened while running guest code
+        auto *core{thread->jit.load()};
+        bool isGuest{core != nullptr}; // Whether the signal happened while running guest code
 
         if (isGuest) {
             if (signal == SIGINT) {
                 // Let Dynarmic return normally, including its execution guard cleanup.
                 // Long-jumping out would also abandon the core's ownership mutex.
-                thread->jit->HaltExecution(HaltReason::Preempted);
+                core->HaltExecution(HaltReason::Preempted);
                 return;
             }
+            if (!loggedFirstJitFault.test_and_set())
+                LOGE("First JIT32 signal: signal={} thread={} core={} hostPC=0x{:X} guestPC=0x{:X} lastSVC=0x{:X} yieldPending={}",
+                     signal, thread->id, thread->coreId, mctx.pc, core->GetPC(), core->GetLastSwi(), kernel::Scheduler::YieldPending.load());
 
-            signal::StackFrame topFrame{.lr = reinterpret_cast<void *>(ctx->uc_mcontext.pc), .next = reinterpret_cast<signal::StackFrame *>(ctx->uc_mcontext.regs[29])};
-            // TODO: this might give garbage stack frames and/or crash
-            std::string trace{thread->process.state.loader->GetStackTrace(&topFrame)};
-
-            std::string cpuContext;
-            if (mctx.fault_address)
-                cpuContext += fmt::format("\n  Fault Address: 0x{:X}", mctx.fault_address);
-            if (mctx.sp)
-                cpuContext += fmt::format("\n  Stack Pointer: 0x{:X}", mctx.sp);
-            for (size_t index{}; index < (sizeof(mcontext_t::regs) / sizeof(u64)); index += 2)
-                cpuContext += fmt::format("\n  X{:<2}: 0x{:<16X} X{:<2}: 0x{:X}", index, mctx.regs[index], index + 1, mctx.regs[index + 1]);
-
-            LOGE("Thread #{} has crashed due to signal: {}\nStack Trace:{} \nCPU Context:{}", thread->id, strsignal(signal), trace, cpuContext);
-
-            if (thread->id) {
-                signal::BlockSignal({SIGINT});
-                thread->process.Kill(false);
-            }
-
-            mctx.pc = reinterpret_cast<u64>(&std::longjmp);
-            mctx.regs[0] = reinterpret_cast<u64>(thread->originalCtx);
-            mctx.regs[1] = true;
+            thread->jitFaultPc = mctx.pc;
+            thread->jitFaultAddress = signal == SIGSEGV ? reinterpret_cast<uintptr_t>(info->si_addr) : 0;
+            thread->jitFaultSignal.store(signal);
+            // Return through Dynarmic so it can clear its execution guard and
+            // release runMutex before the guest fault is raised on the host.
+            core->HaltExecution(HaltReason::Fault);
         } else {
-            signal::ExceptionalSignalHandler(signal, info, ctx); // Delegate throwing a host exception to the exceptional signal handler
+            if (!loggedFirstJitFault.test_and_set())
+                LOGE("First JIT32 host signal: signal={} thread={} core={} hostPC=0x{:X} guestPC=0x0 lastSVC=0x0 yieldPending={}",
+                     signal, thread->id, thread->coreId, mctx.pc, kernel::Scheduler::YieldPending.load());
+            // During SVC/JNI the core is no longer owned by this thread.
+            signal::ExceptionalSignalHandler(signal, info, ctx);
         }
     }
 }

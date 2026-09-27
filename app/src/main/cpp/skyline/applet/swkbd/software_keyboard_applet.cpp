@@ -399,7 +399,7 @@ namespace skyline::applet::swkbd {
             action.cursor = std::clamp(inlineCursorPosition, 0, static_cast<i32>(inlineText.size()));
             return action;
         }
-        if ((flags & InlineFlagDisappear) && inlineState == InlineState::Shown) {
+        if ((flags & InlineFlagDisappear) && (inlineState == InlineState::Shown || inlineState == InlineState::Appearing)) {
             HideInlineKeyboardLocked();
             action.type = InlineFrontendActionType::Hide;
             return action;
@@ -468,22 +468,13 @@ namespace skyline::applet::swkbd {
 
         switch (action.type) {
             case InlineFrontendActionType::Show: {
-                const bool opened{state.jvm->ShowSoftwareKeyboard(*sessionId, action.config, action.text, true)};
-                bool update{};
-                {
+                if (!state.jvm->ShowSoftwareKeyboard(*sessionId, action.config, action.text, true)) {
                     std::scoped_lock lock{inlineMutex};
-                    if (inlineSessionId != sessionId || inlineState != InlineState::Appearing)
-                        return;
-                    if (opened) {
-                        ChangeInlineStateLocked(InlineState::Shown);
-                        update = true;
-                    } else {
+                    if (inlineSessionId == sessionId && inlineState == InlineState::Appearing) {
                         SendInlineReplyLocked(InlineReply::DecidedCancel);
                         ChangeInlineStateLocked(InlineState::Hidden);
                     }
                 }
-                if (update)
-                    state.jvm->UpdateSoftwareKeyboard(*sessionId, action.text, action.cursor);
                 return;
             }
             case InlineFrontendActionType::Hide:
@@ -509,6 +500,15 @@ namespace skyline::applet::swkbd {
         if (!inlineStarted || !inlineSessionId || event.sessionId != *inlineSessionId ||
             (inlineState != InlineState::Shown && inlineState != InlineState::Appearing))
             return;
+        if (event.type == FrontendEventType::FrontendOpened) {
+            if (inlineState == InlineState::Appearing) {
+                ChangeInlineStateLocked(InlineState::Shown);
+                action.type = InlineFrontendActionType::Update;
+                action.text = inlineText;
+                action.cursor = inlineCursorPosition;
+            }
+            return;
+        }
         if (event.type == FrontendEventType::TextChanged || event.type == FrontendEventType::Submit) {
             if (!CanSerializeText(event.text, inlineUseUtf8 ? TextEncoding::Utf8 : TextEncoding::Utf16)) {
                 LOGW("Ignoring inline SWKBD frontend text that does not fit the protocol buffer");
@@ -563,6 +563,8 @@ namespace skyline::applet::swkbd {
             if (!normalSessionId || event.sessionId != *normalSessionId || !normalState)
                 return;
             switch (event.type) {
+                case FrontendEventType::FrontendOpened:
+                    break;
                 case FrontendEventType::Submit:
                     if (CanSerializeText(event.text, config.commonConfig.isUseUtf8 ? TextEncoding::Utf8 : TextEncoding::Utf16)) {
                         action = normalState->Submit(std::move(event.text));

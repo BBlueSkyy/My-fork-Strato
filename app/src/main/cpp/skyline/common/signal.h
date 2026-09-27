@@ -69,6 +69,10 @@ namespace skyline::signal {
      */
     void Sigaction(int signal, const struct sigaction *action, struct sigaction *oldAction = nullptr);
 
+    // Delegate signals from threads outside guest execution to the handler that
+    // Android installed before the emulator registered its own signal handlers.
+    void ForwardOriginalHostSignal(int signal, siginfo *info, ucontext *context);
+
     /**
      * @brief If the TLS value of the code running prior to a signal has a custom TLS value, this should be used to restore it
      * @param function A function which is inert if the TLS isn't required to be restored, it should return nullptr if TLS wasn't restored else the old TLS value

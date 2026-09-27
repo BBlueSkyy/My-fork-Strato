@@ -6,6 +6,7 @@
 #include <optional>
 #include "common.h"
 #include "applet/swkbd/software_keyboard_frontend.h"
+#include "applet/swkbd/frontend_task_queue.h"
 #include <jni.h>
 
 namespace skyline {
@@ -218,6 +219,7 @@ namespace skyline {
         jmethodID clearVibrationDeviceId;
 
         applet::swkbd::FrontendSessionRegistry softwareKeyboardSessions;
+        applet::swkbd::FrontendTaskQueue softwareKeyboardTasks;
         jmethodID openSoftwareKeyboardId;
         jmethodID showSoftwareKeyboardTextCheckId;
         jmethodID resumeSoftwareKeyboardId;

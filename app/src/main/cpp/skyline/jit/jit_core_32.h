@@ -43,6 +43,8 @@ namespace skyline::jit {
          */
         void Run(ThreadContext32 &context, u32 tlsPointer);
 
+        u32 GetLastSwi() const { return lastSwi; }
+
         /**
          * @brief Stops execution by setting the given halt flag
          */

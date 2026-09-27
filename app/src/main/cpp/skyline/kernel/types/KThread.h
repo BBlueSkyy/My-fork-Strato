@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #pragma once
+#include <atomic>
 
 #include <csetjmp>
 #include <nce/guest.h>
@@ -93,7 +94,10 @@ namespace skyline::kernel {
             bool isPaused{false}; //!< If the thread is currently paused and not runnable
             bool insertThreadOnResume{false}; //!< If the thread should be inserted into the scheduler when it resumes (used for pausing threads during sleep/sync)
 
-            jit::JitCore32 *jit{nullptr}; //!< The JIT core this thread is running on, or nullptr if it's not currently running
+            std::atomic<jit::JitCore32 *> jit{nullptr}; //!< Active guest JIT owner, read by asynchronous signal handlers
+            std::atomic<int> jitFaultSignal{0}; //!< Signal raised while executing AArch32 code; consumed after releasing the core lease
+            uintptr_t jitFaultPc{};
+            uintptr_t jitFaultAddress{};
 
             KThread(const DeviceState &state, KHandle handle, KProcess &process, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore);
 

@@ -53,6 +53,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
         const val eventTextCheckAccepted = 3
         const val eventTextCheckDismissed = 4
         const val eventFrontendDestroyed = 5
+        const val eventFrontendOpened = 6
 
         fun newInstance(sessionId : Long, config : SoftwareKeyboardConfig, initialText : String,
                         inline : Boolean) = SoftwareKeyboardDialog().apply {

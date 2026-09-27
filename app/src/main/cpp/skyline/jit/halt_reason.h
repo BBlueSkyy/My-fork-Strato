@@ -21,7 +21,8 @@ namespace skyline::jit {
         CacheInvalidation = static_cast<DynarmicHaltReasonType>(Dynarmic::HaltReason::CacheInvalidation),
         MemoryAbort = static_cast<DynarmicHaltReasonType>(Dynarmic::HaltReason::MemoryAbort),
         Svc = static_cast<DynarmicHaltReasonType>(Dynarmic::HaltReason::UserDefined1),
-        Preempted = static_cast<DynarmicHaltReasonType>(Dynarmic::HaltReason::UserDefined2)
+        Preempted = static_cast<DynarmicHaltReasonType>(Dynarmic::HaltReason::UserDefined2),
+        Fault = static_cast<DynarmicHaltReasonType>(Dynarmic::HaltReason::UserDefined3)
     };
 
     inline std::string to_string(HaltReason hr) {
@@ -33,6 +34,7 @@ namespace skyline::jit {
             CASE(MemoryAbort);
             CASE(Svc);
             CASE(Preempted);
+            CASE(Fault);
             default:
                 return "Unknown";
         }

@@ -44,8 +44,9 @@ namespace skyline::kernel {
     void Scheduler::JitSignalHandler(int signal, siginfo *info, ucontext *ctx) {
         // A halted JIT returns to KThread::ThreadEntrypoint, which processes this pending yield.
         YieldPending = true;
-        if (kernel::this_thread && kernel::this_thread->jit)
-            kernel::this_thread->jit->HaltExecution(jit::HaltReason::Preempted);
+        if (kernel::this_thread)
+            if (auto *core{kernel::this_thread->jit.load()})
+                core->HaltExecution(jit::HaltReason::Preempted);
     }
 
     Scheduler::CoreContext &Scheduler::GetOptimalCoreForThread(const std::shared_ptr<type::KThread> &thread) {

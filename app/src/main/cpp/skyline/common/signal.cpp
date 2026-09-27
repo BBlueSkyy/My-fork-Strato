@@ -156,6 +156,22 @@ namespace skyline::signal {
     }
 
     static std::array<GuestSignalAction, NSIG> GuestHandlers{}; //!< Signal handlers for signals in guest code
+    static std::array<struct sigaction, NSIG> OriginalHostActions{};
+
+    void ForwardOriginalHostSignal(int signal, siginfo *info, ucontext *context) {
+        const auto &action{OriginalHostActions[static_cast<size_t>(signal)]};
+        if (action.sa_handler == SIG_IGN)
+            return;
+        if (action.sa_handler == SIG_DFL) {
+            Sigaction(signal, &action);
+            raise(signal);
+            return;
+        }
+        if (action.sa_flags & SA_SIGINFO)
+            action.sa_sigaction(signal, info, context);
+        else
+            action.sa_handler(signal);
+    }
 
     /**
      * @brief A signal handler for handling signals coming from guest code
@@ -198,7 +214,13 @@ namespace skyline::signal {
         for (int signal : signals) {
             std::call_once(once[static_cast<size_t>(signal)], [&] {
                 struct sigaction oldAction{};
+                // Query through sigchain first: its raw kernel handler would call
+                // the *current* emulator user action again and recurse forever.
+                struct sigaction originalUserAction{};
+                if (sigaction(signal, nullptr, &originalUserAction) != 0)
+                    throw exception("sigaction query has failed with {}", strerror(errno));
                 Sigaction(signal, &action, &oldAction);
+                OriginalHostActions[static_cast<size_t>(signal)] = originalUserAction;
 
                 auto oldFlags = oldAction.sa_flags;
                 if (oldFlags) {

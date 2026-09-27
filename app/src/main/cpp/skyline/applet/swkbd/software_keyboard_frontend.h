@@ -19,6 +19,7 @@ namespace skyline::applet::swkbd {
         TextCheckAccepted = 3,
         TextCheckDismissed = 4,
         FrontendDestroyed = 5,
+        FrontendOpened = 6,
     };
 
     struct FrontendEvent {
@@ -43,6 +44,7 @@ namespace skyline::applet::swkbd {
       public:
         FrontendSessionId Register(std::weak_ptr<SoftwareKeyboardFrontendCallbacks> callbacks);
         bool Unregister(FrontendSessionId sessionId);
+        bool IsRegistered(FrontendSessionId sessionId);
         bool Dispatch(FrontendEvent event);
     };
 }

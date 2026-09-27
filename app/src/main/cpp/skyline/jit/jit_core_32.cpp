@@ -4,6 +4,7 @@
 #include <common/trace.h>
 #include <kernel/types/KProcess.h>
 #include <kernel/svc.h>
+#include <common/signal.h>
 #include "jit_core_32.h"
 #include "exception.h"
 
@@ -47,14 +48,23 @@ namespace skyline::jit {
             // The scheduler may wake a replacement before the previous host thread leaves
             // Dynarmic. Keep restoration, execution and saving under the same core lease.
             std::scoped_lock lock{runMutex};
-            if (kernel::Scheduler::YieldPending || state.thread->killed)
+            // A delayed signal for the previous owner can leave a halt bit set.
+            ClearHalt(static_cast<HaltReason>(static_cast<u32>(HaltReason::Preempted) |
+                static_cast<u32>(HaltReason::Fault)));
+            // Publish ownership before testing the pending flag. A yield that arrives
+            // afterward can halt this core even before Dynarmic enters Run().
+            state.thread->jit = this;
+            if (kernel::Scheduler::YieldPending || state.thread->killed) {
+                state.thread->jit = nullptr;
+                ClearHalt(static_cast<HaltReason>(static_cast<u32>(HaltReason::Preempted) |
+                    static_cast<u32>(HaltReason::Fault)));
                 return;
+            }
 
             RestoreContext(context);
             SetThreadPointer(context.tpidr);
             SetTlsPointer(tlsPointer);
 
-            state.thread->jit = this;
             try {
                 haltReason = static_cast<HaltReason>(jit.Run());
             } catch (...) {
@@ -62,12 +72,24 @@ namespace skyline::jit {
                 throw;
             }
 
+            // Signals delivered during context saving must only set YieldPending;
+            // they may no longer access this core after guest execution returns.
+            state.thread->jit = nullptr;
+
             // SVCs can block or migrate the calling thread, so finish using the shared
             // JIT before dispatching them and keep their results in the thread context.
             SaveContext(context);
-            ClearHalt(haltReason);
+            ClearHalt(static_cast<HaltReason>(static_cast<u32>(haltReason) |
+                static_cast<u32>(HaltReason::Preempted) | static_cast<u32>(HaltReason::Fault)));
             swi = lastSwi;
-            state.thread->jit = nullptr;
+        }
+
+        if (const int fault{state.thread->jitFaultSignal.exchange(0)}) {
+            signal::SignalException error;
+            error.signal = fault;
+            error.pc = reinterpret_cast<void *>(state.thread->jitFaultPc);
+            error.fault = reinterpret_cast<void *>(state.thread->jitFaultAddress);
+            throw error;
         }
 
         if (state.thread->killed)
@@ -81,7 +103,7 @@ namespace skyline::jit {
             state.thread->isPreempted = false;
 
         const u32 unexpectedReasons{static_cast<u32>(haltReason) &
-            ~(static_cast<u32>(HaltReason::Svc) | static_cast<u32>(HaltReason::Preempted))};
+            ~(static_cast<u32>(HaltReason::Svc) | static_cast<u32>(HaltReason::Preempted) | static_cast<u32>(HaltReason::Fault))};
         if (unexpectedReasons || (!hasSvc && !preempted))
             LOGE("JIT halted: {} (0x{:X})", to_string(haltReason), static_cast<u32>(haltReason));
 
