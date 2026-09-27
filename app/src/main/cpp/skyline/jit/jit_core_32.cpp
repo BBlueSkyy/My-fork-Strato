@@ -252,6 +252,19 @@ namespace skyline::jit {
 
     void JitCore32::ExceptionRaised(u32 pc, Dynarmic::A32::Exception exception) {
         LOGE("Exception raised at 0x{:X}: {}", pc, to_string(exception));
+        const u32 cpsr{jit.Cpsr()};
+        LOGE("AArch32 exception context: CPSR=0x{:X}, LR=0x{:X}, SP=0x{:X}, R0=0x{:X}, R1=0x{:X}, R2=0x{:X}, R3=0x{:X}",
+             cpsr, GetRegister(14), GetSP(), GetRegister(0), GetRegister(1), GetRegister(2), GetRegister(3));
+
+        auto region{span<u8>{reinterpret_cast<u8 *>(static_cast<uintptr_t>(pc & ~1U)), sizeof(u32)}};
+        if (state.process->memory.AddressSpaceContains(region) && state.process->memory.IsRangeMapped(region)) {
+            if (auto chunk{state.process->memory.GetChunk(region.data())}) {
+                LOGE("AArch32 exception memory: type=0x{:X}, permissions={}",
+                     chunk->second.state.value, chunk->second.permission);
+                if (chunk->second.permission.r)
+                    LOGE("AArch32 exception instruction: 0x{:08X}", MemoryRead32(pc & ~1U));
+            }
+        }
         state.process->Kill(false, true);
     }
 }
