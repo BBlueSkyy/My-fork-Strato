@@ -6,6 +6,13 @@
 #include <jvm.h>
 #include <common/trace.h>
 #include <kernel/results.h>
+#include <services/base_service.h>
+#include <fstream>
+#include <limits>
+#include <chrono>
+#include <signal.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #include "KProcess.h"
 
 namespace skyline::kernel::type {
@@ -30,6 +37,153 @@ namespace skyline::kernel::type {
         // Must happen after all threads have been killed/joined so no host thread can fault into
         // this process' trap map while (or after) it's being torn down
         trap.UninstallStaticInstance();
+    }
+
+    void KProcess::DumpThreadDiagnosticSnapshot() {
+        bool expected{};
+        if (!diagnosticSnapshotTaken.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+            return;
+
+        std::vector<std::shared_ptr<KThread>> snapshotThreads;
+        {
+            std::scoped_lock guard{threadMutex};
+            snapshotThreads = threads;
+        }
+
+        auto readWchan{[](i32 hostTid) {
+            std::string wchan{"unavailable"};
+            if (hostTid > 0) {
+                std::ifstream wchanFile{fmt::format("/proc/self/task/{}/wchan", hostTid)};
+                if (wchanFile)
+                    std::getline(wchanFile, wchan);
+            }
+            return wchan;
+        }};
+
+        for (const auto &thread : snapshotThreads) {
+            if (!thread)
+                continue;
+
+            const auto waitKind{thread->diagnosticWaitKind.load(std::memory_order_relaxed)};
+            const bool schedulerWait{thread->diagnosticSchedulerWait.load(std::memory_order_acquire)};
+            const i32 hostTid{thread->diagnosticHostTid.load(std::memory_order_relaxed)};
+            if (waitKind != KThread::DiagnosticWaitKind::None || schedulerWait || hostTid <= 0)
+                continue;
+
+            const std::string wchan{readWchan(hostTid)};
+            if (wchan != "0")
+                continue;
+
+            // SIGUSR2 guest-context sampling is an NCE-only diagnostic. AArch32 uses
+            // Dynarmic and intentionally does not install the NCE guest signal handlers.
+            if (!is64bit())
+                continue;
+
+            thread->diagnosticGuestContextValid.store(false, std::memory_order_release);
+            syscall(SYS_tgkill, getpid(), hostTid, SIGUSR2);
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+        LOGI("THREAD-SNAPSHOT begin count={}", snapshotThreads.size());
+
+        for (const auto &thread : snapshotThreads) {
+            if (!thread)
+                continue;
+
+            const auto waitKind{thread->diagnosticWaitKind.load(std::memory_order_relaxed)};
+            const u64 target0{thread->diagnosticTarget0.load(std::memory_order_relaxed)};
+            const u64 target1{thread->diagnosticTarget1.load(std::memory_order_relaxed)};
+            const u64 target2{thread->diagnosticTarget2.load(std::memory_order_relaxed)};
+            const u32 lastSvc{thread->diagnosticLastSvc.load(std::memory_order_relaxed)};
+            const u32 ipcCommand{thread->diagnosticIpcCommand.load(std::memory_order_relaxed)};
+            const i32 hostTid{thread->diagnosticHostTid.load(std::memory_order_relaxed)};
+            const bool schedulerWait{thread->diagnosticSchedulerWait.load(std::memory_order_acquire)};
+
+            const char *waitName{[&]() {
+                switch (waitKind) {
+                    case KThread::DiagnosticWaitKind::None: return "none";
+                    case KThread::DiagnosticWaitKind::SyncObject: return "sync-object";
+                    case KThread::DiagnosticWaitKind::ProcessWideKey: return "process-wide-key";
+                    case KThread::DiagnosticWaitKind::AddressArbiter: return "address-arbiter";
+                    case KThread::DiagnosticWaitKind::Ipc: return "ipc";
+                }
+                return "unknown";
+            }()};
+
+            bool statusKnown{};
+            bool running{};
+            bool ready{};
+            bool killed{};
+            {
+                std::unique_lock statusLock{thread->statusMutex, std::try_to_lock};
+                if (statusLock.owns_lock()) {
+                    statusKnown = true;
+                    running = thread->running;
+                    ready = thread->ready;
+                    killed = thread->killed;
+                }
+            }
+
+            const std::string wchan{readWchan(hostTid)};
+            const bool guestContextValid{thread->diagnosticGuestContextValid.load(std::memory_order_acquire)};
+            const u64 guestPc{thread->diagnosticGuestPc.load(std::memory_order_relaxed)};
+            const u64 guestLr{thread->diagnosticGuestLr.load(std::memory_order_relaxed)};
+            const u64 guestSp{thread->diagnosticGuestSp.load(std::memory_order_relaxed)};
+
+            const char *classification{
+                waitKind == KThread::DiagnosticWaitKind::Ipc ? "ipc" :
+                waitKind != KThread::DiagnosticWaitKind::None ? "guest-sync" :
+                schedulerWait ? "kernel-scheduler" :
+                (!wchan.empty() && wchan != "0" && wchan != "unavailable") ? "host-wait" :
+                "running-or-unknown"
+            };
+
+            std::string serviceName{"-"};
+            u32 objectType{std::numeric_limits<u32>::max()};
+            if (target0) {
+                try {
+                    auto object{GetHandle(static_cast<KHandle>(target0))};
+                    objectType = static_cast<u32>(object->objectType);
+                    if (waitKind == KThread::DiagnosticWaitKind::Ipc &&
+                        object->objectType == KType::KSession) {
+                        auto session{std::static_pointer_cast<KSession>(object)};
+                        if (session->serviceObject)
+                            serviceName = session->serviceObject->GetName();
+                    }
+                } catch (const std::exception &) {
+                }
+            }
+
+            u32 mutexRaw{};
+            KHandle mutexOwnerHandle{};
+            size_t mutexOwnerTid{std::numeric_limits<size_t>::max()};
+            bool mutexHasWaiters{};
+            if (waitKind == KThread::DiagnosticWaitKind::ProcessWideKey && target1) {
+                auto *mutex{reinterpret_cast<u32 *>(target1)};
+                if (memory.AddressSpaceContains(span<u8>{reinterpret_cast<u8 *>(mutex), sizeof(u32)})) {
+                    constexpr u32 DiagnosticHandleWaitersBit{1UL << 30};
+                    mutexRaw = __atomic_load_n(mutex, __ATOMIC_SEQ_CST);
+                    mutexHasWaiters = (mutexRaw & DiagnosticHandleWaitersBit) != 0;
+                    mutexOwnerHandle = mutexRaw & ~DiagnosticHandleWaitersBit;
+                    if (mutexOwnerHandle) {
+                        try {
+                            mutexOwnerTid = GetHandle<KThread>(mutexOwnerHandle)->id;
+                        } catch (const std::exception &) {
+                        }
+                    }
+                }
+            }
+
+            LOGI("THREAD-SNAPSHOT tid={} hostTid={} class={} prio={} wait={} schedulerWait={} lastSvc=0x{:X} target0=0x{:X} target1=0x{:X} target2=0x{:X} ipcCmd=0x{:X} service={} objectType={} wchan={} guestCtx={} pc=0x{:X} lr=0x{:X} sp=0x{:X} mutexRaw=0x{:X} mutexOwner=0x{:X} mutexOwnerTid={} mutexWaiters={} statusKnown={} running={} ready={} killed={}",
+                 thread->id, hostTid, classification, +thread->priority.load(std::memory_order_relaxed),
+                 waitName, schedulerWait, lastSvc, target0, target1, target2, ipcCommand,
+                 serviceName, objectType, wchan, guestContextValid, guestPc, guestLr, guestSp,
+                 mutexRaw, mutexOwnerHandle, mutexOwnerTid, mutexHasWaiters,
+                 statusKnown, running, ready, killed);
+        }
+
+        LOGI("THREAD-SNAPSHOT end");
     }
 
     void KProcess::Kill(bool join, bool all, bool disableCreation) {
@@ -200,10 +354,11 @@ namespace skyline::kernel::type {
 
             // Move all threads waiting on this key to the next owner's waiter list
             std::shared_ptr<KThread> nextWaiter{};
-            for (auto it{waiters.erase(nextOwnerIt)}, nextIt{std::next(it)}; it != waiters.end(); it = nextIt++) {
-                auto thread{*it};
+            for (auto it{waiters.erase(nextOwnerIt)}; it != waiters.end();) {
+                auto current{it++};
+                auto thread{*current};
                 if (thread->waitMutex == mutex) {
-                    nextOwner->waiters.splice(std::upper_bound(nextOwner->waiters.begin(), nextOwner->waiters.end(), (*it)->priority.load(), KThread::IsHigherPriority), waiters, it);
+                    nextOwner->waiters.splice(std::upper_bound(nextOwner->waiters.begin(), nextOwner->waiters.end(), thread->priority.load(), KThread::IsHigherPriority), waiters, current);
                     thread->waitThread = nextOwner;
                     if (!nextWaiter)
                         nextWaiter = thread;
@@ -250,6 +405,15 @@ namespace skyline::kernel::type {
 
     Result KProcess::ConditionVariableWait(u32 *key, u32 *mutex, KHandle tag, i64 timeout) {
         TRACE_EVENT_FMT("kernel", "ConditionVariableWait {} ({})", fmt::ptr(key), fmt::ptr(mutex));
+
+        if (timeout == 0) {
+            // A zero timeout is a non-blocking wait: atomically release the user mutex
+            // with respect to condition-variable signalling, but don't enqueue or deschedule
+            // the current thread.
+            std::scoped_lock syncLock{syncWaiterMutex};
+            MutexUnlock(mutex);
+            return result::TimedOut;
+        }
 
         {
             // Update all waiter information
@@ -387,13 +551,17 @@ namespace skyline::kernel::type {
                 // If the thread is still waiting on the same condition variable then we can signal it (It could no longer be waiting due to a timeout)
                 u32 *mutex{thread->waitMutex};
                 KHandle tag{thread->waitTag};
+                bool scheduleThread{};
+                Result waitResult{};
 
                 while (true) {
                     // We need to lock the mutex before the thread can be scheduled
                     KHandle value{};
                     if (__atomic_compare_exchange_n(mutex, &value, tag, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
-                        // A quick CAS to lock the mutex for the thread, we can just schedule the thread if we succeed
-                        state.scheduler->InsertThread(thread);
+                        // The mutex is now owned by the waiting thread. Publish the completed wait
+                        // state before making it runnable so it cannot race ahead and have a later
+                        // wait overwritten by this signal path.
+                        scheduleThread = true;
                         break;
                     }
 
@@ -403,22 +571,26 @@ namespace skyline::kernel::type {
                             continue; // If we failed to set the waiters bit due to an outdated value then try again
 
                     // If we couldn't CAS the lock then we need to let the mutex holder schedule the thread instead of us during an unlock
-                    auto result{MutexLock(thread, mutex, value & ~HandleWaitersBit, tag, true)};
-                    if (result == result::InvalidCurrentMemory) {
+                    auto mutexResult{MutexLock(thread, mutex, value & ~HandleWaitersBit, tag, true)};
+                    if (mutexResult == result::InvalidCurrentMemory) {
                         continue;
-                    } else if (result == result::InvalidHandle) {
-                        thread->waitResult = result::InvalidState;
-                        state.scheduler->InsertThread(thread);
-                    } else if (result != Result{}) {
-                        throw exception("Failed to lock mutex: 0x{:X}", result);
+                    } else if (mutexResult == result::InvalidHandle) {
+                        waitResult = result::InvalidState;
+                        scheduleThread = true;
+                    } else if (mutexResult != Result{}) {
+                        throw exception("Failed to lock mutex: 0x{:X}", mutexResult);
                     }
                     break;
                 }
 
-                // Update the thread's wait state to avoid incorrect timeout cancellation behavior
+                // Update the wait state before scheduling. The woken thread can run immediately
+                // once InsertThread() notifies it, so none of these fields may be written after that.
                 thread->waitConditionVariable = nullptr;
                 thread->waitSignalled = true;
-                thread->waitResult = {};
+                thread->waitResult = waitResult;
+
+                if (scheduleThread)
+                    state.scheduler->InsertThread(thread);
             }
         }
     }
