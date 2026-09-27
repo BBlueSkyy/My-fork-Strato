@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/uuid.h>
+#include <jit/jit_core_32.h>
 #include <mbedtls/sha1.h>
 #include <loader/loader.h>
 #include <common/settings.h>
@@ -109,7 +110,10 @@ namespace skyline::service::am {
 
     Result IApplicationFunctions::SetTerminateResult(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto result{request.Pop<Result>()};
-        LOGI("App set termination result: {}", result.raw);
+        LOGI("App set termination result: {} (module {}, description {})", result.raw, result.module, result.id);
+        if (state.thread->jit)
+            LOGI("Guest AArch32 termination call: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}",
+                 state.thread->jit->GetPC(), state.thread->jit->GetRegister(14), state.thread->jit->GetSP());
         return {};
     }
 

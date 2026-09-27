@@ -4,6 +4,8 @@
 #include <os.h>
 #include <nce.h>
 #include <atomic>
+#include <cstring>
+#include <jit/jit_core_32.h>
 #include <kernel/types/KProcess.h>
 #include <kernel/types/KTransferMemory.h>
 #include <common/trace.h>
@@ -992,6 +994,19 @@ namespace skyline::kernel::svc {
         }
 
         LOGE("Guest svcBreak: reason=0x{:X}, arg=0x{:X}, size=0x{:X}", reason, ctx.x1, ctx.x2);
+        if (state.thread->jit) {
+            LOGE("Guest AArch32 break location: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}",
+                 state.thread->jit->GetPC(), state.thread->jit->GetRegister(14), state.thread->jit->GetSP());
+
+            if (ctx.x1 && ctx.x2 == sizeof(u32)) {
+                auto region{span<u8>{reinterpret_cast<u8 *>(ctx.x1), sizeof(u32)}};
+                if (state.process->memory.AddressSpaceContains(region) && state.process->memory.IsRangeMapped(region)) {
+                    u32 payload{};
+                    std::memcpy(&payload, state.process->memory.TranslateVirtualPointer<const u8 *>(ctx.x1), sizeof(payload));
+                    LOGE("Guest svcBreak 4-byte payload: 0x{:08X}", payload);
+                }
+            }
+        }
         if (state.thread->id)
             state.process->Kill(false);
         std::longjmp(state.thread->originalCtx, true);
