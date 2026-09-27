@@ -2,7 +2,9 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include "gpu.h"
+#include "audio.h"
 #include "nce.h"
+#include <jit/jit32.h>
 #include "nce/guest.h"
 #include "kernel/types/KProcess.h"
 #include "vfs/os_backing.h"
@@ -58,26 +60,11 @@ namespace skyline::kernel {
 
         if (state.loader->nacp) {
             const auto &nacp{state.loader->nacp->nacpContents};
-            LOGI("[FSP-SAVE-TRACE] phase=startup-nacp saveDataOwnerId={:016X} defaultUser={:016X}{:016X} "
-                 "accountSize=0x{:X} accountJournal=0x{:X} deviceSize=0x{:X} deviceJournal=0x{:X} "
-                 "cacheSize=0x{:X} cacheJournal=0x{:X} cacheDataAndJournalMax=0x{:X} cacheIndexMax={}",
-                 nacp.saveDataOwnerId,
-                 constant::DefaultUserId.upper,
-                 constant::DefaultUserId.lower,
-                 nacp.userAccountSaveDataSize,
-                 nacp.userAccountSaveDataJournalSize,
-                 nacp.deviceSaveDataSize,
-                 nacp.deviceSaveDataJournalSize,
-                 nacp.cacheStorageSize,
-                 nacp.cacheStorageJournalSize,
-                 nacp.cacheStorageDataAndJournalSizeMax,
-                 nacp.cacheStorageIndexMax);
 
             const auto cacheProvisionResult{service::fssrv::EnsureApplicationCacheStorage(publicAppFilesPath,
                                                                                            nacp.saveDataOwnerId,
                                                                                            nacp.cacheStorageSize,
                                                                                            nacp.cacheStorageJournalSize)};
-            LOGI("[FSP-SAVE-TRACE] phase=startup-cache-provision result={}", cacheProvisionResult.raw);
             if (cacheProvisionResult)
                 throw exception("Failed to provision application cache storage: {}", cacheProvisionResult.raw);
 
@@ -85,8 +72,9 @@ namespace skyline::kernel {
                                                                                      nacp.saveDataOwnerId,
                                                                                      constant::DefaultUserId,
                                                                                      nacp.userAccountSaveDataSize,
-                                                                                     nacp.deviceSaveDataSize)};
-            LOGI("[FSP-SAVE-TRACE] phase=startup-save-provision result={}", saveProvisionResult.raw);
+                                                                                     nacp.userAccountSaveDataJournalSize,
+                                                                                     nacp.deviceSaveDataSize,
+                                                                                     nacp.deviceSaveDataJournalSize)};
             if (saveProvisionResult)
                 throw exception("Failed to provision application save data: {}", saveProvisionResult.raw);
         }
@@ -97,6 +85,7 @@ namespace skyline::kernel {
         process = std::make_shared<kernel::type::KProcess>(state);
 
         auto entry{state.loader->LoadProcessData(process, state)};
+        state.audio->SetGuestAddressOffset(process->memory.TranslateVirtualAddress(0));
         auto &nacp{state.loader->nacp};
         if (nacp) {
             std::string name{nacp->GetApplicationName(language::ApplicationLanguage::AmericanEnglish)}, publisher{nacp->GetApplicationPublisher(language::ApplicationLanguage::AmericanEnglish)};
@@ -115,6 +104,13 @@ namespace skyline::kernel {
 
             LOGINF(R"(Starting "{}" ({}) v{} by "{}")", name, nacp->GetSaveDataOwnerId(),
                    state.loader->programUpdateApplied && state.updateLoader && state.updateLoader->nacp ? state.updateLoader->nacp->GetApplicationVersion() : nacp->GetApplicationVersion(), publisher);
+        }
+
+        // Scheduler retrieves information from the NPDM of the process so it needs to be initialized after the process is created
+        state.scheduler = std::make_shared<kernel::Scheduler>(state);
+
+        if (!process->is64bit()) { // 32-bit guests execute via Dynarmic instead of NCE.
+            state.jit32 = std::make_shared<jit::Jit32>(state);
         }
 
         process->InitializeHeapTls();

@@ -61,6 +61,8 @@ namespace skyline::vfs {
         OsFileSystem(const std::string &basePath);
 
         static std::pair<std::shared_ptr<OsFileSystem>, std::error_code> OpenExisting(const std::string &basePath);
+
+        static std::pair<std::shared_ptr<OsFileSystem>, std::error_code> OpenExistingWithin(const std::string &basePath, const std::string &allowedRoot);
     };
 
     /**

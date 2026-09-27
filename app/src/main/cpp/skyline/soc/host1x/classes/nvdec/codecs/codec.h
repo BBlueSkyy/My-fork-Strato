@@ -39,6 +39,6 @@ namespace skyline::soc::host1x::nvdec {
         /**
          * @brief Runs one decode operation as configured in the register file, pushing the decoded frame into the supplied queue
          */
-        void Decode(FrameQueue &frameQueue);
+        void Decode(FrameQueue &frameQueue, u64 streamId);
     };
 }

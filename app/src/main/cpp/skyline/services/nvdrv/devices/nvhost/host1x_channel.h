@@ -15,6 +15,7 @@ namespace skyline::service::nvdrv::device::nvhost {
     class Host1xChannel : public NvDevice {
       private:
         core::ChannelType channelType; //!< The specific host1x channel that this instance refers to
+        u64 streamId; //!< Stable identity for this nvhost channel lifetime, propagated through Host1x submits
         std::mutex channelMutex; //!< Synchronises submit operations
 
       public:
@@ -60,6 +61,8 @@ namespace skyline::service::nvdrv::device::nvhost {
                       Core &core,
                       const SessionContext &ctx,
                       core::ChannelType channelType);
+
+        ~Host1xChannel() override;
 
         /**
          * @brief Sets the nvmap client to be used for channel submits

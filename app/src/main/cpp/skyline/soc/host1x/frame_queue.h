@@ -3,39 +3,43 @@
 
 #pragma once
 
-#include <condition_variable>
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <common.h>
 
 struct AVFrame;
 
 namespace skyline::soc::host1x {
-    using AVFramePtr = std::unique_ptr<AVFrame, void (*)(AVFrame *)>; //!< A decoded FFmpeg frame carrying its own deleter so this header doesn't depend on libavutil
+    using AVFramePtr = std::unique_ptr<AVFrame, void (*)(AVFrame *)>;
 
     /**
-     * @brief Holds frames decoded by NVDEC until they are consumed by VIC for surface conversion
-     * @note This is thread-safe as NVDEC and VIC execute on separate channel FIFO threads
+     * @brief Holds frames decoded by NVDEC until VIC consumes them, preserving presentation order independently for each nvhost stream
      */
     class FrameQueue {
       private:
-        std::mutex mutex; //!< Synchronises access to the frame list across channel threads
-        std::condition_variable frameCondition; //!< Signalled whenever a frame is pushed, waking consumers waiting on a specific surface
-        std::deque<std::pair<u64, AVFramePtr>> frames; //!< Decoded frames in decode order alongside the SMMU IOVA of the output luma plane NVDEC was programmed with
-        constexpr static size_t MaxQueueSize{32}; //!< Cap on retained frames so frames that are never consumed don't accumulate unboundedly
+        using PresentationQueue = std::deque<std::pair<u64, AVFramePtr>>;
+
+        std::mutex mutex;
+        std::unordered_map<u64, PresentationQueue> presentationStreams;
+        constexpr static size_t MaxQueueSize{32};
 
       public:
-        /**
-         * @brief Stores a decoded frame under the IOVA of the luma surface it was decoded into
-         * @note If a frame is already stored under the same IOVA it is replaced as the guest has reused the surface
-         */
-        void PushFrame(u64 lumaIova, AVFramePtr frame);
+        void OpenStream(u64 streamId);
+
+        void CloseStream(u64 streamId);
 
         /**
-         * @brief Removes and returns the frame stored under the supplied luma IOVA, briefly waiting for it if a reordering decoder hasn't emitted it yet
-         * @return The stored frame, the oldest frame as a fallback when no key matches within the wait, or an empty pointer when the queue is empty
+         * @brief Appends one visible FFmpeg output frame to the presentation queue for a specific NVDEC stream
+         * @note Repeated IOVAs are retained because every decoded frame is a distinct presentation event
          */
-        AVFramePtr PopFrame(u64 lumaIova);
+        void PushPresentationFrame(u64 streamId, u64 lumaIova, AVFramePtr frame);
+
+        /**
+         * @brief Finds the NVDEC stream owning the requested luma surface and consumes its next presentation frame
+         * @note The luma IOVA selects the stream, not the frame within that stream. Once selected, FIFO presentation order remains authoritative.
+         */
+        AVFramePtr PopPresentationFrame(u64 requestedLumaIova);
     };
 }

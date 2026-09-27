@@ -3,6 +3,7 @@
 #include <climits>
 #include <iostream>
 #include <os.h>
+#include <loader/loader.h>
 #include <services/fssrv/types.h>
 #include <services/fssrv/validation.h>
 #include <services/fssrv/helpers.h>
@@ -467,13 +468,19 @@ namespace {
         std::filesystem::create_directories(savePath);
         Check(!proxy.OpenSaveDataFileSystem(session, primarySave, response), "existing save did not open");
         Check(!proxy.OpenReadOnlySaveDataFileSystem(session, primarySave, response), "existing read-only save did not open");
+
+        TempDirectory outside;
+        std::filesystem::remove(savePath);
+        std::filesystem::create_directory_symlink(outside.path, savePath.parent_path());
+        Check(proxy.OpenSaveDataFileSystem(session, primarySave, response) == result::PermissionDenied,
+              "save root symlink escaped the configured switch directory");
     }
 
     void TestApplicationSaveProvisioning() {
         TempDirectory root;
         constexpr u64 SaveDataOwnerId{0x0100123456789000};
         constexpr service::account::UserId UserId{1, 0};
-        Check(!EnsureApplicationSaveData(root.path.string(), SaveDataOwnerId, UserId, 0x4000, 0x4000),
+        Check(!EnsureApplicationSaveData(root.path.string(), SaveDataOwnerId, UserId, 0x4000, 0, 0x4000, 0),
               "application save provisioning failed");
 
         const auto accountPath{root.path / "switch/nand/user/save/0000000000000000/00000000000000000000000000000001/0100123456789000"};
@@ -482,8 +489,16 @@ namespace {
         Check(std::filesystem::is_directory(accountPath), "declared account save was not provisioned");
         Check(std::filesystem::is_directory(devicePath), "declared device save was not provisioned");
         Check(!std::filesystem::exists(externalPath), "an unrelated application save was provisioned");
-        Check(!EnsureApplicationSaveData(root.path.string(), SaveDataOwnerId, UserId, 0x4000, 0x4000),
+        Check(!EnsureApplicationSaveData(root.path.string(), SaveDataOwnerId, UserId, 0x4000, 0, 0x4000, 0),
               "application save provisioning was not idempotent");
+
+        TempDirectory journalOnlyRoot;
+        Check(!EnsureApplicationSaveData(journalOnlyRoot.path.string(), SaveDataOwnerId, UserId, 0, 0x4000, 0, 0x4000),
+              "journal-only save provisioning failed");
+        Check(std::filesystem::is_directory(journalOnlyRoot.path / "switch/nand/user/save/0000000000000000/00000000000000000000000000000001/0100123456789000"),
+              "journal-only account save was not provisioned");
+        Check(std::filesystem::is_directory(journalOnlyRoot.path / "switch/nand/user/save/0000000000000000/00000000000000000000000000000000/0100123456789000"),
+              "journal-only device save was not provisioned");
 
         kernel::OS os;
         os.publicAppFilesPath = root.path.string();
@@ -546,6 +561,8 @@ namespace {
               "negative cache size was accepted");
         Check(CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x1000, 1, 0, 0, target, requiredSize) == result::CacheStorageIndexTooLarge,
               "cache index above the NACP maximum was accepted");
+        Check(CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x1000, 0x10000, 0x800, 0x800, target, requiredSize) == result::CacheStorageIndexTooLarge,
+              "wide cache index wrapped to index zero");
         Check(CreateApplicationCacheStorage(root.path.string(), SaveDataOwnerId, 0, 0x1000, 0, 0x800, 0x801, target, requiredSize) == result::CacheStorageSizeTooLarge,
               "cache size above the NACP maximum was accepted");
 

@@ -3,12 +3,15 @@
 
 #include <kernel/types/KProcess.h>
 #include <applet/applet_creator.h>
+#include <cstring>
+#include <utility>
 #include "ILibraryAppletAccessor.h"
 
 namespace skyline::service::am {
     ILibraryAppletAccessor::ILibraryAppletAccessor(const DeviceState &state, ServiceManager &manager,
                                                    skyline::applet::AppletId appletId,
-                                                   applet::LibraryAppletMode appletMode)
+                                                   applet::LibraryAppletMode appletMode,
+                                                   u64 appletResourceUserId)
         : BaseService(state, manager),
           stateChangeEvent(std::make_shared<type::KEvent>(state, false)),
           popNormalOutDataEvent(std::make_shared<type::KEvent>(state, false)),
@@ -17,19 +20,23 @@ namespace skyline::service::am {
           appletId(appletId), appletMode(appletMode),
           applet(skyline::applet::CreateApplet(state, manager, appletId, stateChangeEvent,
                                                popNormalOutDataEvent, popInteractiveOutDataEvent,
-                                               appletMode)) {
+                                               appletMode)), indirectLayers(manager.indirectLayers),
+          appletResourceUserId(appletResourceUserId) {
         stateChangeEventHandle = state.process->InsertItem(stateChangeEvent);
         popNormalOutDataEventHandle = state.process->InsertItem(popNormalOutDataEvent);
         popInteractiveOutDataEventHandle = state.process->InsertItem(popInteractiveOutDataEvent);
-        LOGD("Applet accessor for {} ID created with appletMode 0x{:X}", ToString(appletId), appletMode);
     }
 
+    ILibraryAppletAccessor::~ILibraryAppletAccessor() {
+        indirectLayers->Unregister(indirectLayerHandle);
+    }
     Result ILibraryAppletAccessor::StartApplet() {
         stateChangeEvent->ResetSignal();
         return applet->Start();
     }
 
     bool ILibraryAppletAccessor::IsAppletCompleted() const {
+        std::scoped_lock lock{kernel::type::KSyncObject::syncObjectMutex};
         return stateChangeEvent->signalled;
     }
 
@@ -39,7 +46,8 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::IsCompleted(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        response.Push<u8>(IsAppletCompleted());
+        const bool completed{IsAppletCompleted()};
+        response.Push<u8>(completed);
         return {};
     }
 
@@ -48,13 +56,19 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::RequestExit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
-        // Strato frontends are in-process rather than independent HOS processes. Marking the
-        // state event completes the same observable AM contract without killing the application.
+        applet->RequestExit();
+        indirectLayers->Unregister(indirectLayerHandle);
+        indirectLayerHandle = 0;
+        exited = true;
         stateChangeEvent->Signal();
         return {};
     }
 
     Result ILibraryAppletAccessor::Terminate(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        applet->RequestExit();
+        indirectLayers->Unregister(indirectLayerHandle);
+        indirectLayerHandle = 0;
+        exited = true;
         stateChangeEvent->Signal();
         return {};
     }
@@ -113,10 +127,18 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
-        // The command has no input payload. #151 does not provide an indirect-layer backend;
-        // do not return a fabricated consumer handle.
-        return result::ObjectInvalid;
+    Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto requestedAppletResourceUserId{request.Pop<u64>()};
+        if (exited || appletMode != applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay || !request.pid ||
+            requestedAppletResourceUserId != appletResourceUserId)
+            return result::ObjectInvalid;
+        if (!indirectLayerHandle ||
+            !indirectLayers->Get(indirectLayerHandle, request.pid, requestedAppletResourceUserId)) {
+            indirectLayers->Unregister(indirectLayerHandle);
+            indirectLayerHandle = indirectLayers->Register(applet, request.pid, requestedAppletResourceUserId);
+        }
+        response.Push<u64>(indirectLayerHandle);
+        return {};
     }
 
     Result ILibraryAppletAccessor::Unknown170(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {

@@ -29,6 +29,17 @@ namespace skyline::gpu::interconnect {
           outgoing{1U << *state.settings->executorSlotCountScale},
           thread{&CommandRecordThread::Run, this} {}
 
+    CommandRecordThread::~CommandRecordThread() {
+        Stop();
+    }
+
+    void CommandRecordThread::Stop() {
+        if (thread.joinable()) {
+            incoming.Close();
+            thread.join();
+        }
+    }
+
     CommandRecordThread::Slot::ScopedBegin::ScopedBegin(CommandRecordThread::Slot &slot) : slot{slot} {}
 
     CommandRecordThread::Slot::ScopedBegin::~ScopedBegin() {
@@ -257,7 +268,10 @@ namespace skyline::gpu::interconnect {
                     if (*state.settings->forceMaxGpuClocks)
                         adrenotools_set_turbo(false);
 
-                    condition.wait(lock, [this] { return !pendingSignalQueue.empty(); });
+                    condition.wait(lock, [this] { return stopping || !pendingSignalQueue.empty(); });
+
+                    if (stopping && pendingSignalQueue.empty())
+                        return;
 
                     // Once we have work to do, force turbo clocks is enabled
                     if (*state.settings->forceMaxGpuClocks)
@@ -280,6 +294,22 @@ namespace skyline::gpu::interconnect {
     }
 
     ExecutionWaiterThread::ExecutionWaiterThread(const DeviceState &state) : state{state}, thread{&ExecutionWaiterThread::Run, this} {}
+
+    ExecutionWaiterThread::~ExecutionWaiterThread() {
+        Stop();
+    }
+
+    void ExecutionWaiterThread::Stop() {
+        if (!thread.joinable())
+            return;
+
+        {
+            std::unique_lock lock{mutex};
+            stopping = true;
+        }
+        condition.notify_all();
+        thread.join();
+    }
 
     bool ExecutionWaiterThread::IsIdle() const {
         return idle;
@@ -327,6 +357,11 @@ namespace skyline::gpu::interconnect {
     }
 
     CommandExecutor::~CommandExecutor() {
+        // No worker may outlive the executor state it references. Drain recording first so all
+        // queued command buffers are submitted, then drain completion waits/callbacks before
+        // releasing the current, not-yet-submitted cycle and the remaining executor resources.
+        recordThread.Stop();
+        waiterThread.Stop();
         cycle->Cancel();
     }
 

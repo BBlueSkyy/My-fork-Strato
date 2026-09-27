@@ -19,9 +19,15 @@ namespace skyline::service::visrv {
          */
         Result SetLayerZ(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        /**
+         * @brief Returns the current display resolution and refresh rate
+         */
+        Result GetDisplayMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
       SERVICE_DECL(
           SFUNC(0x89D, ISystemDisplayService, SetLayerZ),
-          SFUNC_BASE(0x908, ISystemDisplayService, IDisplayService, CreateStrayLayer)
+          SFUNC_BASE(0x908, ISystemDisplayService, IDisplayService, CreateStrayLayer),
+          SFUNC(0xC80, ISystemDisplayService, GetDisplayMode)
       )
     };
 }

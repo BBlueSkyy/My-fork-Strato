@@ -3,7 +3,6 @@
 
 #include <os.h>
 #include <cstring>
-#include <filesystem>
 #include <vfs/os_filesystem.h>
 #include <vfs/nca.h>
 #include <loader/loader.h>
@@ -101,67 +100,43 @@ namespace skyline::service::fssrv {
     Result CreateSaveDataDirectory(const std::string &publicAppFilesPath, SaveDataSpaceId spaceId,
                                    SaveDataAttribute attribute, u64 defaultProgramId, bool allowExisting) {
         const auto saveDataPath{GetSaveDataPath(spaceId, attribute, defaultProgramId)};
-        if (!saveDataPath) {
-            LOGI("[FSP-SAVE-TRACE] function=CreateSaveDataDirectory phase=resolve-failed spaceId={} type={} programId={:016X} defaultProgramId={:016X}",
-                 static_cast<u32>(spaceId), static_cast<u32>(attribute.type), attribute.programId, defaultProgramId);
+        if (!saveDataPath)
             return result::InvalidArgument;
-        }
-
-        const std::string hostPath{publicAppFilesPath + "/switch" + *saveDataPath};
-        std::error_code existsBeforeError;
-        const bool existsBefore{std::filesystem::exists(hostPath, existsBeforeError)};
-        LOGI("[FSP-SAVE-TRACE] function=CreateSaveDataDirectory phase=before spaceId={} type={} programId={:016X} "
-             "defaultProgramId={:016X} userId={:016X}{:016X} saveDataId={:016X} rank={} index={} "
-             "allowExisting={} path={} existsBefore={} existsBeforeError={}",
-             static_cast<u32>(spaceId), static_cast<u32>(attribute.type), attribute.programId,
-             defaultProgramId, attribute.userId.upper, attribute.userId.lower, attribute.saveDataId,
-             static_cast<u32>(attribute.rank), attribute.index, allowExisting, hostPath,
-             existsBefore, existsBeforeError.value());
 
         try {
             vfs::OsFileSystem root{publicAppFilesPath + "/switch"};
             const auto error{root.CreateDirectory(*saveDataPath, true)};
-            std::error_code existsAfterError;
-            const bool existsAfter{std::filesystem::exists(hostPath, existsAfterError)};
-            LOGI("[FSP-SAVE-TRACE] function=CreateSaveDataDirectory phase=after path={} createError={} "
-                 "existsAfter={} existsAfterError={}",
-                 hostPath, error.value(), existsAfter, existsAfterError.value());
             if (error == std::errc::file_exists) {
                 if (!root.DirectoryExists(*saveDataPath))
                     return result::PathAlreadyExists;
                 return allowExisting ? Result{} : result::AlreadyExists;
             }
             return MapVfsError(error);
-        } catch (const std::exception &error) {
-            LOGI("[FSP-SAVE-TRACE] function=CreateSaveDataDirectory phase=exception path={} what={}", hostPath, error.what());
+        } catch (const std::exception &) {
             return result::UnexpectedFailure;
         }
     }
 
     Result EnsureApplicationSaveData(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
-                                     account::UserId userId, u64 accountSaveDataSize, u64 deviceSaveDataSize) {
-        LOGI("[FSP-SAVE-TRACE] function=EnsureApplicationSaveData saveDataOwnerId={:016X} userId={:016X}{:016X} "
-             "accountSize=0x{:X} deviceSize=0x{:X}",
-             saveDataOwnerId, userId.upper, userId.lower, accountSaveDataSize, deviceSaveDataSize);
-        if (accountSaveDataSize > 0 && userId != account::UserId{}) {
+                                     account::UserId userId, u64 accountSaveDataSize, u64 accountJournalSize,
+                                     u64 deviceSaveDataSize, u64 deviceJournalSize) {
+        if ((accountSaveDataSize > 0 || accountJournalSize > 0) && userId != account::UserId{}) {
             SaveDataAttribute attribute{};
             attribute.programId = saveDataOwnerId;
             attribute.userId = userId;
             attribute.type = SaveDataType::Account;
             const auto creationResult{CreateSaveDataDirectory(publicAppFilesPath, SaveDataSpaceId::User,
                                                               attribute, saveDataOwnerId, true)};
-            LOGI("[FSP-SAVE-TRACE] function=EnsureApplicationSaveData type=Account result={}", creationResult.raw);
             if (creationResult)
                 return creationResult;
         }
 
-        if (deviceSaveDataSize > 0) {
+        if (deviceSaveDataSize > 0 || deviceJournalSize > 0) {
             SaveDataAttribute attribute{};
             attribute.programId = saveDataOwnerId;
             attribute.type = SaveDataType::Device;
             const auto creationResult{CreateSaveDataDirectory(publicAppFilesPath, SaveDataSpaceId::User,
                                                               attribute, saveDataOwnerId, true)};
-            LOGI("[FSP-SAVE-TRACE] function=EnsureApplicationSaveData type=Device result={}", creationResult.raw);
             if (creationResult)
                 return creationResult;
         }
@@ -170,11 +145,7 @@ namespace skyline::service::fssrv {
     }
 
     Result EnsureApplicationCacheStorage(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
-                                         u64 cacheStorageSize, u64 cacheStorageJournalSize) {
-        LOGI("[FSP-SAVE-TRACE] function=EnsureApplicationCacheStorage saveDataOwnerId={:016X} "
-             "cacheSize=0x{:X} cacheJournal=0x{:X}",
-             saveDataOwnerId, cacheStorageSize, cacheStorageJournalSize);
-
+                                         u64 cacheStorageSize, [[maybe_unused]] u64 cacheStorageJournalSize) {
         // Launch-time ensure uses the legacy NACP cache size fields directly.
         // CacheStorageDataAndJournalSizeMax and CacheStorageIndexMax constrain the
         // explicit CreateCacheStorage API, not the index-zero ensure path.
@@ -189,17 +160,13 @@ namespace skyline::service::fssrv {
 
         const auto creationResult{CreateSaveDataDirectory(publicAppFilesPath, SaveDataSpaceId::User,
                                                           attribute, saveDataOwnerId, true)};
-        LOGI("[FSP-SAVE-TRACE] function=EnsureApplicationCacheStorage result={}", creationResult.raw);
         return creationResult;
     }
 
     Result CreateApplicationCacheStorage(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
                                          u16 cacheStorageIndexMax, u64 cacheStorageDataAndJournalSizeMax,
-                                         u16 index, i64 saveSize, i64 journalSize,
+                                         u64 index, i64 saveSize, i64 journalSize,
                                          CacheStorageTargetMedia &targetMedia, u64 &requiredSize) {
-        LOGI("[FSP-SAVE-TRACE] function=CreateApplicationCacheStorage saveDataOwnerId={:016X} index={} "
-             "saveSize=0x{:X} journalSize=0x{:X} indexMax={} dataAndJournalMax=0x{:X}",
-             saveDataOwnerId, index, saveSize, journalSize, cacheStorageIndexMax, cacheStorageDataAndJournalSizeMax);
         targetMedia = CacheStorageTargetMedia::None;
         requiredSize = 0;
         if (saveSize < 0 || journalSize < 0)
@@ -219,10 +186,9 @@ namespace skyline::service::fssrv {
         attribute.programId = saveDataOwnerId;
         attribute.type = SaveDataType::Cache;
         attribute.rank = SaveDataRank::Primary;
-        attribute.index = index;
+        attribute.index = static_cast<u16>(index);
         const auto creationResult{CreateSaveDataDirectory(publicAppFilesPath, SaveDataSpaceId::User,
                                                         attribute, saveDataOwnerId, false)};
-        LOGI("[FSP-SAVE-TRACE] function=CreateApplicationCacheStorage createResult={}", creationResult.raw);
         if (creationResult)
             return creationResult;
 
@@ -244,71 +210,35 @@ namespace skyline::service::fssrv {
 
     Result IFileSystemProxy::GetCacheStorageSize(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
         const auto index{ReadArgument<u16>(request)};
-        if (!index) {
-            LOGI("[FSP-SAVE-TRACE] command=GetCacheStorageSize phase=invalid-input");
+        if (!index)
             return result::InvalidArgument;
-        }
-        LOGI("[FSP-SAVE-TRACE] command=GetCacheStorageSize index={} result={}", *index, result::NotImplemented.raw);
         return result::NotImplemented;
     }
 
     Result IFileSystemProxy::OpenSaveDataFileSystemImpl(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response, bool readOnly) {
         const auto input{ReadArgument<OpenSaveDataInput>(request)};
-        if (!input) {
-            LOGI("[FSP-SAVE-TRACE] command=OpenSaveDataFileSystem phase=invalid-input readOnly={}", readOnly);
+        if (!input)
             return result::InvalidArgument;
-        }
 
-        LOGI("[FSP-SAVE-TRACE] command=OpenSaveDataFileSystem phase=request readOnly={} spaceId={} type={} "
-             "programId={:016X} userId={:016X}{:016X} saveDataId={:016X} rank={} index={}",
-             readOnly, static_cast<u32>(input->spaceId), static_cast<u32>(input->attribute.type),
-             input->attribute.programId, input->attribute.userId.upper, input->attribute.userId.lower,
-             input->attribute.saveDataId, static_cast<u32>(input->attribute.rank), input->attribute.index);
-
-        if (!IsValidSaveDataSpaceId(input->spaceId) || !IsValidSaveDataType(input->attribute.type) || !IsValidSaveDataRank(input->attribute.rank)) {
-            LOGI("[FSP-SAVE-TRACE] command=OpenSaveDataFileSystem phase=validation result={}", result::InvalidArgument.raw);
+        if (!IsValidSaveDataSpaceId(input->spaceId) || !IsValidSaveDataType(input->attribute.type) || !IsValidSaveDataRank(input->attribute.rank))
             return result::InvalidArgument;
-        }
-        if (input->attribute.rank != SaveDataRank::Primary || input->attribute.index != 0) {
-            LOGI("[FSP-SAVE-TRACE] command=OpenSaveDataFileSystem phase=unsupported-rank-index result={}", result::NotImplemented.raw);
+        if (input->attribute.rank != SaveDataRank::Primary || input->attribute.index != 0)
             return result::NotImplemented;
-        }
-        if (input->attribute.programId == 0 && (!state.loader || !state.loader->nacp)) {
-            LOGI("[FSP-SAVE-TRACE] command=OpenSaveDataFileSystem phase=missing-loader-nacp result={}", result::EntityNotFound.raw);
+        if (input->attribute.programId == 0 && (!state.loader || !state.loader->nacp))
             return result::EntityNotFound;
-        }
 
         const u64 defaultProgramId{input->attribute.programId == 0 ? state.loader->nacp->nacpContents.saveDataOwnerId : 0};
-        const u64 effectiveProgramId{input->attribute.programId == 0 ? defaultProgramId : input->attribute.programId};
         const auto saveDataPath{GetSaveDataPath(input->spaceId, input->attribute, defaultProgramId)};
-        if (!saveDataPath) {
-            LOGI("[FSP-SAVE-TRACE] command=OpenSaveDataFileSystem phase=path-unrepresentable effectiveProgramId={:016X} result={}",
-                 effectiveProgramId, result::NotImplemented.raw);
+        if (!saveDataPath)
             return result::NotImplemented;
-        }
 
         const std::string hostPath{state.os->publicAppFilesPath + "/switch" + *saveDataPath};
-        std::error_code existsError;
-        const bool exists{std::filesystem::exists(hostPath, existsError)};
-        LOGI("[FSP-SAVE-TRACE] command=OpenSaveDataFileSystem phase=before-open readOnly={} effectiveProgramId={:016X} "
-             "path={} exists={} existsError={}",
-             readOnly, effectiveProgramId, hostPath, exists, existsError.value());
-
-        auto [fileSystem, error]{vfs::OsFileSystem::OpenExisting(hostPath)};
-        if (error == std::errc::no_such_file_or_directory || error == std::errc::not_a_directory) {
-            LOGI("[FSP-SAVE-TRACE] command=OpenSaveDataFileSystem phase=after-open openError={} result={}",
-                 error.value(), result::EntityNotFound.raw);
+        auto [fileSystem, error]{vfs::OsFileSystem::OpenExistingWithin(hostPath, state.os->publicAppFilesPath + "/switch")};
+        if (error == std::errc::no_such_file_or_directory || error == std::errc::not_a_directory)
             return result::EntityNotFound;
-        }
-        if (error) {
-            const auto mappedResult{MapVfsError(error)};
-            LOGI("[FSP-SAVE-TRACE] command=OpenSaveDataFileSystem phase=after-open openError={} result={}",
-                 error.value(), mappedResult.raw);
-            return mappedResult;
-        }
+        if (error)
+            return MapVfsError(error);
 
-        LOGI("[FSP-SAVE-TRACE] command=OpenSaveDataFileSystem phase=success effectiveProgramId={:016X} path={}",
-             effectiveProgramId, hostPath);
         manager.RegisterService(std::make_shared<IFileSystem>(std::move(fileSystem), state, manager, readOnly), session, response);
         return {};
     }
@@ -322,7 +252,6 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystemProxy::OpenSaveDataInfoReader(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        LOGI("[FSP-SAVE-TRACE] command=OpenSaveDataInfoReader");
         manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager), session, response);
         return {};
     }
@@ -331,13 +260,11 @@ namespace skyline::service::fssrv {
         const auto spaceId{ReadArgument<SaveDataSpaceId>(request)};
         if (!spaceId || !IsValidSaveDataSpaceId(*spaceId))
             return result::InvalidArgument;
-        LOGI("[FSP-SAVE-TRACE] command=OpenSaveDataInfoReaderBySaveDataSpaceId spaceId={}", static_cast<u32>(*spaceId));
         manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager, std::vector<SaveDataInfo>{}, *spaceId), session, response);
         return {};
     }
 
     Result IFileSystemProxy::OpenSaveDataInfoReaderOnlyCacheStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        LOGI("[FSP-SAVE-TRACE] command=OpenSaveDataInfoReaderOnlyCacheStorage");
         manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager, std::vector<SaveDataInfo>{}, std::nullopt, true), session, response);
         return {};
     }

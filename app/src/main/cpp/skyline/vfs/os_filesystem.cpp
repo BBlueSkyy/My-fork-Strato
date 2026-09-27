@@ -68,6 +68,19 @@ namespace skyline::vfs {
         return {std::shared_ptr<OsFileSystem>(new OsFileSystem(std::move(rootPath), ExistingRoot{})), {}};
     }
 
+    std::pair<std::shared_ptr<OsFileSystem>, std::error_code> OsFileSystem::OpenExistingWithin(const std::string &basePath, const std::string &allowedRoot) {
+        auto [fileSystem, error]{OpenExisting(basePath)};
+        if (error)
+            return {nullptr, error};
+
+        auto [root, rootError]{OpenExisting(allowedRoot)};
+        if (rootError)
+            return {nullptr, rootError};
+        if (!IsWithin(root->rootPath, fileSystem->rootPath))
+            return {nullptr, std::make_error_code(std::errc::permission_denied)};
+        return {std::move(fileSystem), {}};
+    }
+
     std::pair<std::filesystem::path, std::error_code> OsFileSystem::ResolvePath(std::string_view guestPath) const {
         if (guestPath.find('\0') != std::string_view::npos || guestPath.find('\\') != std::string_view::npos || guestPath.starts_with("//"))
             return {{}, std::make_error_code(std::errc::invalid_argument)};

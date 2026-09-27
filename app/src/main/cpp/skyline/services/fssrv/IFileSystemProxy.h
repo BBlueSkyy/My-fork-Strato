@@ -17,7 +17,8 @@ namespace skyline::service::fssrv {
                                    SaveDataAttribute attribute, u64 defaultProgramId, bool allowExisting);
 
     Result EnsureApplicationSaveData(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
-                                     account::UserId userId, u64 accountSaveDataSize, u64 deviceSaveDataSize);
+                                     account::UserId userId, u64 accountSaveDataSize, u64 accountJournalSize,
+                                     u64 deviceSaveDataSize, u64 deviceJournalSize);
 
     Result EnsureApplicationCacheStorage(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
                                          u64 cacheStorageSize, u64 cacheStorageJournalSize);
@@ -30,7 +31,7 @@ namespace skyline::service::fssrv {
 
     Result CreateApplicationCacheStorage(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
                                          u16 cacheStorageIndexMax, u64 cacheStorageDataAndJournalSizeMax,
-                                         u16 index, i64 saveSize, i64 journalSize,
+                                         u64 index, i64 saveSize, i64 journalSize,
                                          CacheStorageTargetMedia &targetMedia, u64 &requiredSize);
 
     enum class StorageId : u8 {
