@@ -5,6 +5,7 @@
 
 #include <vfs/filesystem.h>
 #include <services/serviceman.h>
+#include "types.h"
 
 namespace skyline::service::fssrv {
     /**
@@ -14,9 +15,12 @@ namespace skyline::service::fssrv {
     class IFileSystem : public BaseService {
       private:
         std::shared_ptr<vfs::FileSystem> backing;
+        bool readOnly;
 
       public:
-        IFileSystem(std::shared_ptr<vfs::FileSystem> backing, const DeviceState &state, ServiceManager &manager);
+        IFileSystem(std::shared_ptr<vfs::FileSystem> backing, const DeviceState &state, ServiceManager &manager, bool readOnly = false);
+
+        Result CommitBacking();
 
         /**
          * @brief Creates a file at the specified path in the filesystem

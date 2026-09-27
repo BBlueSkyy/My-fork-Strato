@@ -48,19 +48,35 @@ namespace skyline::vfs {
         return output.size();
     }
 
-    size_t OsBacking::WriteImpl(span<u8> input, size_t offset) {
-        auto ret{pwrite64(fd, input.data(), input.size(), static_cast<off64_t>(offset))};
-        if (ret < 0)
-            throw exception("Failed to write to fd: {}", strerror(errno));
-
-        return static_cast<size_t>(ret);
+    std::pair<size_t, std::error_code> OsBacking::WriteWithErrorImpl(span<u8> input, size_t offset) {
+        size_t bytesWritten{};
+        while (bytesWritten < input.size()) {
+            const auto ret{pwrite64(fd, input.data() + bytesWritten, input.size() - bytesWritten, static_cast<off64_t>(offset + bytesWritten))};
+            if (ret < 0) {
+                if (errno == EINTR)
+                    continue;
+                return {bytesWritten, {errno, std::generic_category()}};
+            }
+            if (ret == 0)
+                return {bytesWritten, std::make_error_code(std::errc::io_error)};
+            bytesWritten += static_cast<size_t>(ret);
+        }
+        return {bytesWritten, {}};
     }
 
-    void OsBacking::ResizeImpl(size_t pSize) {
-        int ret{ftruncate(fd, static_cast<off_t>(pSize))};
-        if (ret < 0)
-            throw exception("Failed to resize file: {}", strerror(errno));
+    std::error_code OsBacking::ResizeWithErrorImpl(size_t pSize) {
+        if (pSize > static_cast<size_t>(std::numeric_limits<off_t>::max()))
+            return std::make_error_code(std::errc::value_too_large);
+        if (ftruncate(fd, static_cast<off_t>(pSize)) < 0)
+            return {errno, std::generic_category()};
 
         size = pSize;
+        return {};
+    }
+
+    std::error_code OsBacking::FlushImpl() {
+        if (fsync(fd) < 0)
+            return {errno, std::generic_category()};
+        return {};
     }
 }
