@@ -126,6 +126,9 @@ namespace skyline::input {
         /** Disconnects one logical Npad and detaches its current host mapping. */
         void Disconnect(NpadId id);
 
+        /** Swaps the host-controller assignments of two player Npads. */
+        void SwapAssignment(NpadId first, NpadId second);
+
         void UpdateControllerSharedMemory();
         void UpdateSixAxisSharedMemory();
         void SetVibrationPermitted(bool permitted);
