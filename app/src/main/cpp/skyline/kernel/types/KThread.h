@@ -55,6 +55,27 @@ namespace skyline::kernel {
             KHandle handle;
             size_t id; //!< Index of thread in parent process's KThread vector
 
+            enum class DiagnosticWaitKind : u8 {
+                None,
+                SyncObject,
+                ProcessWideKey,
+                AddressArbiter,
+                Ipc,
+            };
+
+            std::atomic<i32> diagnosticHostTid{};
+            std::atomic<u32> diagnosticLastSvc{};
+            std::atomic<DiagnosticWaitKind> diagnosticWaitKind{DiagnosticWaitKind::None};
+            std::atomic<u64> diagnosticTarget0{};
+            std::atomic<u64> diagnosticTarget1{};
+            std::atomic<u64> diagnosticTarget2{};
+            std::atomic<u32> diagnosticIpcCommand{};
+            std::atomic_bool diagnosticSchedulerWait{};
+            std::atomic_bool diagnosticGuestContextValid{};
+            std::atomic<u64> diagnosticGuestPc{};
+            std::atomic<u64> diagnosticGuestLr{};
+            std::atomic<u64> diagnosticGuestSp{};
+
             jmp_buf originalCtx{}; //!< The context of the host thread prior to jumping into guest code
 
             void *entry; //!< A function pointer to the thread's entry
@@ -78,7 +99,7 @@ namespace skyline::kernel {
             bool pendingYield{}; //!< If the thread has been yielded and hasn't been acted upon it yet
             bool forceYield{}; //!< If the thread has been forcefully yielded by another thread
 
-            RecursiveSpinLock waiterMutex; //!< Synchronizes operations on mutation of the waiter members
+            std::recursive_mutex waiterMutex; //!< Synchronizes operations on mutation of the waiter members
             u32 *waitMutex{}; //!< The key of the mutex which this thread is waiting on
             KHandle waitTag{}; //!< The handle of the thread which requested the mutex lock
             std::shared_ptr<KThread> waitThread; //!< The thread which this thread is waiting on
