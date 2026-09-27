@@ -7,7 +7,7 @@
 
 namespace skyline::service::friends {
     /**
-     * @brief IServiceCreator or friend:u is used by applications to open an IFriendService instance for accessing user friend info
+     * @brief IServiceCreator is shared by friend:a/m/s/u/v to open the friend and notification services
      * @url https://switchbrew.org/wiki/Friend_services#friend:u.2C_friend:v.2C_friend:m.2C_friend:s.2C_friend:a
      */
     class IServiceCreator : public BaseService {

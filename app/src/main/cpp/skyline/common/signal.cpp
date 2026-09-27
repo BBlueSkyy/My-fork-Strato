@@ -156,6 +156,25 @@ namespace skyline::signal {
     }
 
     static std::array<GuestSignalAction, NSIG> GuestHandlers{}; //!< Signal handlers for signals in guest code
+    static std::array<struct sigaction, NSIG> OriginalHostActions{};
+
+    void ForwardOriginalHostSignal(int signal, siginfo *info, ucontext *context) {
+        const auto &action{OriginalHostActions[static_cast<size_t>(signal)]};
+        if (action.sa_handler == SIG_IGN)
+            return;
+        if (action.sa_handler == SIG_DFL) {
+            // Restore the user handler through sigchain, retaining ART's
+            // special handlers for other threads in the process.
+            if (sigaction(signal, &action, nullptr) != 0)
+                _exit(128 + signal);
+            raise(signal);
+            return;
+        }
+        if (action.sa_flags & SA_SIGINFO)
+            action.sa_sigaction(signal, info, context);
+        else
+            action.sa_handler(signal);
+    }
 
     /**
      * @brief A signal handler for handling signals coming from guest code
@@ -237,7 +256,15 @@ namespace skyline::signal {
     }
 
     void SetHostSignalHandler(std::initializer_list<int> signals, SignalAction function, bool syscallRestart) {
+        static std::array<std::once_flag, NSIG> originalActionOnce{};
         for (int signal : signals) {
+            // Save the Android user handler before the first emulator handler
+            // replaces it. NCE may later install its raw guest handler, but
+            // that must never become the fallback for an unrelated host thread.
+            std::call_once(originalActionOnce[static_cast<size_t>(signal)], [&] {
+                if (sigaction(signal, nullptr, &OriginalHostActions[static_cast<size_t>(signal)]) != 0)
+                    throw exception("sigaction query has failed with {}", strerror(errno));
+            });
             struct sigaction action{
                 .sa_sigaction = reinterpret_cast<sa_sigaction>(function),
                 .sa_flags = SA_SIGINFO | SA_EXPOSE_TAGBITS | SA_ONSTACK | (syscallRestart ? SA_RESTART : 0),

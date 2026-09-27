@@ -134,7 +134,11 @@ namespace skyline::service {
             SERVICE_CASE(lm::ILogService, "lm")
             SERVICE_CASE(ldn::IUserServiceCreator, "ldn:u")
             SERVICE_CASE(account::IAccountServiceForApplication, "acc:u0")
+            SERVICE_CASE(friends::IServiceCreator, "friend:a")
+            SERVICE_CASE(friends::IServiceCreator, "friend:m")
+            SERVICE_CASE(friends::IServiceCreator, "friend:s")
             SERVICE_CASE(friends::IServiceCreator, "friend:u")
+            SERVICE_CASE(friends::IServiceCreator, "friend:v")
             SERVICE_CASE(nfp::IUserManager, "nfp:user")
             SERVICE_CASE(nifm::IStaticService, "nifm:u")
             SERVICE_CASE(nifm::IStaticService, "nifm:s")
@@ -231,12 +235,14 @@ namespace skyline::service {
             kernel::MemoryManager &memory;
             const ipc::IpcRequest &request;
 
-            static span<u8> GetPageAlignedInterior(span<u8> buffer) {
+            span<u8> GetPageAlignedInterior(span<u8> buffer) const {
                 if (buffer.empty())
                     return {};
 
-                u8 *start{util::AlignUp(buffer.data(), constant::PageSize)};
-                u8 *end{util::AlignDown(buffer.end().base(), constant::PageSize)};
+                // IPC services use host pointers, but the memory block map uses guest addresses.
+                u8 *guestAddress{reinterpret_cast<u8 *>(memory.TranslateHostAddress(buffer.data()))};
+                u8 *start{util::AlignUp(guestAddress, constant::PageSize)};
+                u8 *end{util::AlignDown(guestAddress + buffer.size(), constant::PageSize)};
                 if (start >= end)
                     return {};
 

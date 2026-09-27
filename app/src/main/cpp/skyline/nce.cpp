@@ -36,7 +36,7 @@ namespace skyline::nce {
             }
 
             while (kernel::Scheduler::YieldPending) [[unlikely]] {
-                state.scheduler->Rotate(false);
+                state.scheduler->Rotate();
                 kernel::Scheduler::YieldPending = false;
                 state.scheduler->WaitSchedule();
             }
@@ -113,7 +113,7 @@ namespace skyline::nce {
             }, hookedSymbol.hook);
 
             while (kernel::Scheduler::YieldPending) [[unlikely]] {
-                state.scheduler->Rotate(false);
+                state.scheduler->Rotate();
                 kernel::Scheduler::YieldPending = false;
                 state.scheduler->WaitSchedule();
             }
@@ -240,11 +240,15 @@ namespace skyline::nce {
         return threadCtx;
     }
 
-    NCE::NCE(const DeviceState &state) : state(state) {
-        signal::SetTlsRestorer(&NceTlsRestorer);
-        signal::SetGuestSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, nce::NCE::SignalHandler);
-        signal::SetGuestSignalHandler({SIGUSR2}, nce::NCE::DiagnosticSignalHandler);
-        signal::SetHostSignalHandler({SIGSEGV}, nce::NCE::HostSignalHandler);
+    NCE::NCE(const DeviceState &state) : state(state) {}
+
+    void NCE::InitializeGuestSignals() {
+        std::call_once(signalHandlersOnce, [] {
+            signal::SetTlsRestorer(&NceTlsRestorer);
+            signal::SetGuestSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, nce::NCE::SignalHandler);
+            signal::SetGuestSignalHandler({SIGUSR2}, nce::NCE::DiagnosticSignalHandler);
+            signal::SetHostSignalHandler({SIGSEGV}, nce::NCE::HostSignalHandler);
+        });
     }
 
     constexpr size_t TrampolineSize{18}; // Size of the main SVC trampoline function in u32 units

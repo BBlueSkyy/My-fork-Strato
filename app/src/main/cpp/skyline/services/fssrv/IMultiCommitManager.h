@@ -4,12 +4,16 @@
 #pragma once
 
 #include <services/serviceman.h>
+#include "IFileSystem.h"
 
 namespace skyline::service::fssrv {
     /**
      * @url https://switchbrew.org/wiki/Filesystem_services#IMultiCommitManager
      */
     class IMultiCommitManager : public BaseService {
+      private:
+        std::vector<std::shared_ptr<IFileSystem>> fileSystems;
+
       public:
         IMultiCommitManager(const DeviceState &state, ServiceManager &manager);
 

@@ -29,14 +29,20 @@ namespace skyline::service::am {
         skyline::applet::AppletId appletId;
         applet::LibraryAppletMode appletMode;
         std::shared_ptr<IApplet> applet;
+        std::shared_ptr<IndirectLayerRegistry> indirectLayers;
+        u64 appletResourceUserId{};
+        u64 indirectLayerHandle{};
+        bool exited{};
 
       public:
         ILibraryAppletAccessor(const DeviceState &state, ServiceManager &manager,
-                               skyline::applet::AppletId appletId, applet::LibraryAppletMode appletMode);
+                               skyline::applet::AppletId appletId, applet::LibraryAppletMode appletMode,
+                               u64 appletResourceUserId);
+
+        ~ILibraryAppletAccessor() override;
 
         Result StartApplet();
         bool IsAppletCompleted() const;
-
         Result GetAppletStateChangedEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result IsCompleted(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);
         Result Start(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &);

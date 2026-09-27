@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <os.h>
+#include <cstring>
 #include <vfs/os_filesystem.h>
 #include <vfs/nca.h>
 #include <loader/loader.h>
@@ -10,44 +11,195 @@
 #include "IMultiCommitManager.h"
 #include "IFileSystemProxy.h"
 #include "ISaveDataInfoReader.h"
+#include "helpers.h"
+#include "validation.h"
 
 namespace skyline::service::fssrv {
-    std::string GetSaveDataPath(SaveDataSpaceId spaceId, SaveDataAttribute attribute, u64 defaultProgramId) {
+    namespace {
+        struct OpenSaveDataInput {
+            SaveDataSpaceId spaceId;
+            u8 padding[7];
+            SaveDataAttribute attribute;
+        };
+        static_assert(sizeof(OpenSaveDataInput) == 0x48);
+
+        struct OpenDataStorageInput {
+            StorageId storageId;
+            u8 padding[7];
+            u64 dataId;
+        };
+        static_assert(sizeof(OpenDataStorageInput) == 0x10);
+
+        template<typename T>
+        std::optional<T> ReadArgument(const ipc::IpcRequest &request) {
+            if (!request.cmdArg || request.cmdArgSz < sizeof(T))
+                return std::nullopt;
+            T value{};
+            std::memcpy(&value, request.cmdArg, sizeof(T));
+            return value;
+        }
+
+        bool IsValidStorageId(StorageId storageId) {
+            switch (storageId) {
+                case StorageId::Host:
+                case StorageId::GameCard:
+                case StorageId::NandSystem:
+                case StorageId::NandUser:
+                case StorageId::SdCard:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+    }
+
+    std::optional<std::string> GetSaveDataPath(SaveDataSpaceId spaceId, SaveDataAttribute attribute, u64 defaultProgramId) {
+        if (!IsValidSaveDataSpaceId(spaceId) || !IsValidSaveDataType(attribute.type))
+            return std::nullopt;
         if (attribute.programId == 0)
             attribute.programId = defaultProgramId;
 
-        std::string spaceIdStr{[spaceId]() {
-            switch (spaceId) {
-                case SaveDataSpaceId::System:
-                    return "/nand/system";
-                case SaveDataSpaceId::User:
-                    return "/nand/user";
-                case SaveDataSpaceId::Temporary:
-                    return "/nand/temp";
-                default:
-                    throw exception("Unsupported savedata ID: {}", spaceId);
-            }
-        }()};
+        std::string spaceIdStr;
+        switch (spaceId) {
+            case SaveDataSpaceId::System:
+                spaceIdStr = "/nand/system";
+                break;
+            case SaveDataSpaceId::User:
+                spaceIdStr = "/nand/user";
+                break;
+            case SaveDataSpaceId::Temporary:
+                spaceIdStr = "/nand/temp";
+                break;
+            default:
+                return std::nullopt;
+        }
 
         switch (attribute.type) {
             case SaveDataType::System:
+                if (spaceId != SaveDataSpaceId::System)
+                    return std::nullopt;
                 return fmt::format("{}/save/{:016X}/{:016X}{:016X}/", spaceIdStr, attribute.saveDataId, attribute.userId.lower, attribute.userId.upper);
             case SaveDataType::Account:
             case SaveDataType::Device:
+                if (spaceId != SaveDataSpaceId::User)
+                    return std::nullopt;
                 return fmt::format("{}/save/{:016X}/{:016X}{:016X}/{:016X}/", spaceIdStr, 0, attribute.userId.lower, attribute.userId.upper, attribute.programId);
             case SaveDataType::Temporary:
+                if (spaceId != SaveDataSpaceId::Temporary)
+                    return std::nullopt;
                 return fmt::format("{}/{:016X}/{:016X}{:016X}/{:016X}/", spaceIdStr, 0, attribute.userId.lower, attribute.userId.upper, attribute.programId);
             case SaveDataType::Cache:
+                if (spaceId != SaveDataSpaceId::User)
+                    return std::nullopt;
                 return fmt::format("{}/save/cache/{:016X}/", spaceIdStr, attribute.programId);
             default:
-                throw exception("Unsupported savedata type: {}", attribute.type);
+                return std::nullopt;
         }
+    }
+
+    Result CreateSaveDataDirectory(const std::string &publicAppFilesPath, SaveDataSpaceId spaceId,
+                                   SaveDataAttribute attribute, u64 defaultProgramId, bool allowExisting) {
+        const auto saveDataPath{GetSaveDataPath(spaceId, attribute, defaultProgramId)};
+        if (!saveDataPath)
+            return result::InvalidArgument;
+
+        try {
+            vfs::OsFileSystem root{publicAppFilesPath + "/switch"};
+            const auto error{root.CreateDirectory(*saveDataPath, true)};
+            if (error == std::errc::file_exists) {
+                if (!root.DirectoryExists(*saveDataPath))
+                    return result::PathAlreadyExists;
+                return allowExisting ? Result{} : result::AlreadyExists;
+            }
+            return MapVfsError(error);
+        } catch (const std::exception &) {
+            return result::UnexpectedFailure;
+        }
+    }
+
+    Result EnsureApplicationSaveData(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
+                                     account::UserId userId, u64 accountSaveDataSize, u64 accountJournalSize,
+                                     u64 deviceSaveDataSize, u64 deviceJournalSize) {
+        if ((accountSaveDataSize > 0 || accountJournalSize > 0) && userId != account::UserId{}) {
+            SaveDataAttribute attribute{};
+            attribute.programId = saveDataOwnerId;
+            attribute.userId = userId;
+            attribute.type = SaveDataType::Account;
+            const auto creationResult{CreateSaveDataDirectory(publicAppFilesPath, SaveDataSpaceId::User,
+                                                              attribute, saveDataOwnerId, true)};
+            if (creationResult)
+                return creationResult;
+        }
+
+        if (deviceSaveDataSize > 0 || deviceJournalSize > 0) {
+            SaveDataAttribute attribute{};
+            attribute.programId = saveDataOwnerId;
+            attribute.type = SaveDataType::Device;
+            const auto creationResult{CreateSaveDataDirectory(publicAppFilesPath, SaveDataSpaceId::User,
+                                                              attribute, saveDataOwnerId, true)};
+            if (creationResult)
+                return creationResult;
+        }
+
+        return {};
+    }
+
+    Result EnsureApplicationCacheStorage(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
+                                         u64 cacheStorageSize, [[maybe_unused]] u64 cacheStorageJournalSize) {
+        // Launch-time ensure uses the legacy NACP cache size fields directly.
+        // CacheStorageDataAndJournalSizeMax and CacheStorageIndexMax constrain the
+        // explicit CreateCacheStorage API, not the index-zero ensure path.
+        if (cacheStorageSize == 0)
+            return {};
+
+        SaveDataAttribute attribute{};
+        attribute.programId = saveDataOwnerId;
+        attribute.type = SaveDataType::Cache;
+        attribute.rank = SaveDataRank::Primary;
+        attribute.index = 0;
+
+        const auto creationResult{CreateSaveDataDirectory(publicAppFilesPath, SaveDataSpaceId::User,
+                                                          attribute, saveDataOwnerId, true)};
+        return creationResult;
+    }
+
+    Result CreateApplicationCacheStorage(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
+                                         u16 cacheStorageIndexMax, u64 cacheStorageDataAndJournalSizeMax,
+                                         u64 index, i64 saveSize, i64 journalSize,
+                                         CacheStorageTargetMedia &targetMedia, u64 &requiredSize) {
+        targetMedia = CacheStorageTargetMedia::None;
+        requiredSize = 0;
+        if (saveSize < 0 || journalSize < 0)
+            return result::InvalidArgument;
+        if (index > cacheStorageIndexMax)
+            return result::CacheStorageIndexTooLarge;
+
+        const u64 unsignedSaveSize{static_cast<u64>(saveSize)};
+        const u64 unsignedJournalSize{static_cast<u64>(journalSize)};
+        if (unsignedSaveSize > std::numeric_limits<u64>::max() - unsignedJournalSize ||
+            unsignedSaveSize + unsignedJournalSize > cacheStorageDataAndJournalSizeMax)
+            return result::CacheStorageSizeTooLarge;
+        if (index != 0)
+            return result::NotImplemented;
+
+        SaveDataAttribute attribute{};
+        attribute.programId = saveDataOwnerId;
+        attribute.type = SaveDataType::Cache;
+        attribute.rank = SaveDataRank::Primary;
+        attribute.index = static_cast<u16>(index);
+        const auto creationResult{CreateSaveDataDirectory(publicAppFilesPath, SaveDataSpaceId::User,
+                                                        attribute, saveDataOwnerId, false)};
+        if (creationResult)
+            return creationResult;
+
+        targetMedia = CacheStorageTargetMedia::Nand;
+        return {};
     }
 
     IFileSystemProxy::IFileSystemProxy(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
 
-    Result IFileSystemProxy::SetCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        process = request.Pop<u64>();
+    Result IFileSystemProxy::SetCurrentProcess(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        process = request.pid;
         return {};
     }
 
@@ -56,43 +208,70 @@ namespace skyline::service::fssrv {
         return {};
     }
 
-    Result IFileSystemProxy::GetCacheStorageSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u64>(0);
-        response.Push<u64>(0);
+    Result IFileSystemProxy::GetCacheStorageSize(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        const auto index{ReadArgument<u16>(request)};
+        if (!index)
+            return result::InvalidArgument;
+        return result::NotImplemented;
+    }
+
+    Result IFileSystemProxy::OpenSaveDataFileSystemImpl(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response, bool readOnly) {
+        const auto input{ReadArgument<OpenSaveDataInput>(request)};
+        if (!input)
+            return result::InvalidArgument;
+
+        if (!IsValidSaveDataSpaceId(input->spaceId) || !IsValidSaveDataType(input->attribute.type) || !IsValidSaveDataRank(input->attribute.rank))
+            return result::InvalidArgument;
+        if (input->attribute.rank != SaveDataRank::Primary || input->attribute.index != 0)
+            return result::NotImplemented;
+        if (input->attribute.programId == 0 && (!state.loader || !state.loader->nacp))
+            return result::EntityNotFound;
+
+        const u64 defaultProgramId{input->attribute.programId == 0 ? state.loader->nacp->nacpContents.saveDataOwnerId : 0};
+        const auto saveDataPath{GetSaveDataPath(input->spaceId, input->attribute, defaultProgramId)};
+        if (!saveDataPath)
+            return result::NotImplemented;
+
+        const std::string hostPath{state.os->publicAppFilesPath + "/switch" + *saveDataPath};
+        auto [fileSystem, error]{vfs::OsFileSystem::OpenExistingWithin(hostPath, state.os->publicAppFilesPath + "/switch")};
+        if (error == std::errc::no_such_file_or_directory || error == std::errc::not_a_directory)
+            return result::EntityNotFound;
+        if (error)
+            return MapVfsError(error);
+
+        manager.RegisterService(std::make_shared<IFileSystem>(std::move(fileSystem), state, manager, readOnly), session, response);
         return {};
     }
 
     Result IFileSystemProxy::OpenSaveDataFileSystem(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto spaceId{request.Pop<SaveDataSpaceId>()};
-        auto attribute{request.Pop<SaveDataAttribute>()};
-        auto saveDataPath{GetSaveDataPath(spaceId, attribute, state.loader->nacp->nacpContents.saveDataOwnerId)};
-
-        manager.RegisterService(std::make_shared<IFileSystem>(std::make_shared<vfs::OsFileSystem>(state.os->publicAppFilesPath + "/switch" + saveDataPath), state, manager), session, response);
-        return {};
+        return OpenSaveDataFileSystemImpl(session, request, response, false);
     }
 
     Result IFileSystemProxy::OpenReadOnlySaveDataFileSystem(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // Forward to OpenSaveDataFileSystem for now.
-        // TODO: This should wrap the underlying filesystem with nn::fs::ReadOnlyFileSystem.
-        return OpenSaveDataFileSystem(session, request, response);
+        return OpenSaveDataFileSystemImpl(session, request, response, true);
     }
 
     Result IFileSystemProxy::OpenSaveDataInfoReader(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(ISaveDataInfoReader), session, response);
+        manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager), session, response);
         return {};
     }
 
     Result IFileSystemProxy::OpenSaveDataInfoReaderBySaveDataSpaceId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(ISaveDataInfoReader), session, response);
+        const auto spaceId{ReadArgument<SaveDataSpaceId>(request)};
+        if (!spaceId || !IsValidSaveDataSpaceId(*spaceId))
+            return result::InvalidArgument;
+        manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager, std::vector<SaveDataInfo>{}, *spaceId), session, response);
         return {};
     }
 
     Result IFileSystemProxy::OpenSaveDataInfoReaderOnlyCacheStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(SRVREG(ISaveDataInfoReader), session, response);
+        manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager, std::vector<SaveDataInfo>{}, std::nullopt, true), session, response);
         return {};
     }
 
     Result IFileSystemProxy::OpenDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        if (!state.loader)
+            return result::NoRomFsAvailable;
         auto backing{state.loader->currentProcessRomFs};
         if (!backing)
             return result::NoRomFsAvailable;
@@ -102,43 +281,72 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystemProxy::OpenDataStorageByDataId(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto storageId{request.Pop<StorageId>()};
-        request.Skip<std::array<u8, 7>>(); // 7-bytes padding
-        auto dataId{request.Pop<u64>()};
+        const auto input{ReadArgument<OpenDataStorageInput>(request)};
+        if (!input || !IsValidStorageId(input->storageId))
+            return result::InvalidArgument;
+        if (input->storageId == StorageId::Host)
+            return result::NotImplemented;
+
         // DLC content has its own RomFS; it is never patched against the current Program NCA.
-        for (const auto &dlc : state.dlcLoaders) {
-            if (dlc->cnmt && dlc->cnmt->header.id == dataId) {
+        if (input->storageId != StorageId::NandSystem) {
+            for (const auto &dlc : state.dlcLoaders) {
+                if (!dlc || !dlc->cnmt || dlc->cnmt->header.id != input->dataId)
+                    continue;
                 auto romFs{dlc->publicNca ? dlc->publicNca->romFs : nullptr};
                 if (!romFs)
                     return result::EntityNotFound;
                 manager.RegisterService(std::make_shared<IStorage>(romFs, state, manager), session, response);
                 return {};
             }
+            return result::EntityNotFound;
         }
 
-        auto systemArchivesFileSystem{std::make_shared<vfs::OsFileSystem>(state.os->publicAppFilesPath + "/switch/nand/system/Contents/registered/")};
-        auto systemArchives{systemArchivesFileSystem->OpenDirectory("")};
-        auto keyStore{std::make_shared<skyline::crypto::KeyStore>(state.os->privateAppFilesPath + "keys")};
+        bool archiveError{};
+        try {
+            auto systemArchivesFileSystem{std::make_shared<vfs::OsFileSystem>(state.os->publicAppFilesPath + "/switch/nand/system/Contents/registered/")};
+            auto systemArchives{systemArchivesFileSystem->OpenDirectory("")};
+            auto keyStore{std::make_shared<skyline::crypto::KeyStore>(state.os->privateAppFilesPath + "keys")};
 
-        for (const auto &entry : systemArchives->Read()) {
-            std::shared_ptr<vfs::Backing> backing{systemArchivesFileSystem->OpenFile(entry.name)};
-            auto nca{vfs::NCA(backing, keyStore)};
-
-            if (nca.header.titleId == dataId && nca.romFs != nullptr) {
-                manager.RegisterService(std::make_shared<IStorage>(nca.romFs, state, manager), session, response);
-                return {};
+            for (const auto &entry : systemArchives->Read()) {
+                if (entry.type != vfs::Directory::EntryType::File)
+                    continue;
+                auto backing{systemArchivesFileSystem->OpenFileUnchecked(entry.name)};
+                if (!backing)
+                    continue;
+                try {
+                    auto nca{vfs::NCA(backing, keyStore)};
+                    if (nca.header.titleId == input->dataId && nca.romFs != nullptr) {
+                        manager.RegisterService(std::make_shared<IStorage>(nca.romFs, state, manager), session, response);
+                        return {};
+                    }
+                } catch (const std::exception &) {
+                    archiveError = true;
+                }
             }
+        } catch (const std::exception &) {
+            archiveError = true;
         }
 
-        auto romFs{std::make_shared<IStorage>(state.os->assetFileSystem->OpenFile(fmt::format("romfs/{:016X}", dataId)), state, manager)};
-
-        manager.RegisterService(romFs, session, response);
+        if (!state.os->assetFileSystem) {
+            if (archiveError)
+                return result::UnexpectedFailure;
+            return result::EntityNotFound;
+        }
+        auto assetBacking{state.os->assetFileSystem->OpenFileUnchecked(fmt::format("romfs/{:016X}", input->dataId))};
+        if (!assetBacking) {
+            if (archiveError)
+                return result::UnexpectedFailure;
+            return result::EntityNotFound;
+        }
+        manager.RegisterService(std::make_shared<IStorage>(std::move(assetBacking), state, manager), session, response);
         return {};
     }
 
     Result IFileSystemProxy::OpenPatchDataStorageByCurrentProcess(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         // A base-only title (or an ExeFS-only update) has no Program patch data to open.
         // When available, this is the same persistent base+patch view used by command 200.
+        if (!state.loader)
+            return result::EntityNotFound;
         auto backing{state.loader->patchDataRomFs};
         if (!backing)
             return result::EntityNotFound;
@@ -147,8 +355,16 @@ namespace skyline::service::fssrv {
         return {};
     }
 
-    Result IFileSystemProxy::GetGlobalAccessLogMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u32>(0);
+    Result IFileSystemProxy::SetGlobalAccessLogMode(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        const auto mode{ReadArgument<u32>(request)};
+        if (!mode || *mode > 2)
+            return result::InvalidArgument;
+        globalAccessLogMode = *mode;
+        return {};
+    }
+
+    Result IFileSystemProxy::GetGlobalAccessLogMode(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.Push<u32>(globalAccessLogMode);
         return {};
     }
 

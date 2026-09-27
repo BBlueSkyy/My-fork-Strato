@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/uuid.h>
+#include <cstring>
 #include <mbedtls/sha1.h>
 #include <loader/loader.h>
 #include <common/settings.h>
@@ -10,7 +11,7 @@
 #include <services/account/IAccountServiceForApplication.h>
 #include <services/am/storage/VectorIStorage.h>
 #include <services/fssrv/IFileSystemProxy.h>
-#include <vfs/os_filesystem.h>
+#include <services/fssrv/results.h>
 #include "IApplicationFunctions.h"
 
 namespace skyline::service::am {
@@ -61,55 +62,29 @@ namespace skyline::service::am {
         auto userId{request.Pop<account::UserId>()};
         const auto &nacp{state.loader->nacp->nacpContents};
 
-        // EnsureSaveData is nn::fs::EnsureApplicationSaveData exposed through AM. The real
-        // implementation creates the save-data areas declared by control.nacp if they do not
-        // already exist. Strato backs save data with ordinary directories, so no block image or
-        // quota allocation is required here; creating the same directory that fsp-srv later opens
-        // is sufficient.
-        auto ensureDirectory{[&](fssrv::SaveDataType type, account::UserId saveUserId) {
-            fssrv::SaveDataAttribute attribute{};
-            attribute.programId = nacp.saveDataOwnerId;
-            attribute.userId = saveUserId;
-            attribute.type = type;
+        const auto ensureResult{fssrv::EnsureApplicationSaveData(state.os->publicAppFilesPath,
+                                                                 nacp.saveDataOwnerId,
+                                                                 userId,
+                                                                 nacp.userAccountSaveDataSize,
+                                                                 nacp.userAccountSaveDataJournalSize,
+                                                                 nacp.deviceSaveDataSize,
+                                                                 nacp.deviceSaveDataJournalSize)};
+        if (ensureResult)
+            return ensureResult;
 
-            auto saveDataPath{fssrv::GetSaveDataPath(
-                fssrv::SaveDataSpaceId::User,
-                attribute,
-                nacp.saveDataOwnerId
-            )};
-
-            [[maybe_unused]] auto saveFileSystem{std::make_shared<vfs::OsFileSystem>(
-                state.os->publicAppFilesPath + "/switch" + saveDataPath
-            )};
-        }};
-
-        if (nacp.userAccountSaveDataSize != 0 || nacp.userAccountSaveDataJournalSize != 0) {
-            LOGD("Ensuring account save data: owner={:016X}, user={:016X}{:016X}, size=0x{:X}, journal=0x{:X}",
-                 nacp.saveDataOwnerId,
-                 userId.upper,
-                 userId.lower,
-                 nacp.userAccountSaveDataSize,
-                 nacp.userAccountSaveDataJournalSize);
-            ensureDirectory(fssrv::SaveDataType::Account, userId);
-        }
-
-        if (nacp.deviceSaveDataSize != 0 || nacp.deviceSaveDataJournalSize != 0) {
-            LOGD("Ensuring device save data: owner={:016X}, size=0x{:X}, journal=0x{:X}",
-                 nacp.saveDataOwnerId,
-                 nacp.deviceSaveDataSize,
-                 nacp.deviceSaveDataJournalSize);
-            ensureDirectory(fssrv::SaveDataType::Device, {});
-        }
-
-        // On success the returned value is the additional space required by the operation. Strato
-        // does not emulate NAND quotas, so successful directory creation always requires 0 bytes.
         response.Push<u64>(0);
         return {};
     }
 
     Result IApplicationFunctions::SetTerminateResult(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto result{request.Pop<Result>()};
-        LOGI("App set termination result: {}", result.raw);
+        LOGI("App set termination result: {} (module {}, description {})", result.raw,
+             static_cast<u32>(result.module), static_cast<u32>(result.id));
+        if (!state.process->is64bit()) {
+            const auto &guest{static_cast<const kernel::type::KJit32Thread &>(*state.thread).ctx};
+            LOGI("Guest AArch32 termination call: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}",
+                 guest.pc, guest.lr, guest.sp);
+        }
         return {};
     }
 
@@ -140,21 +115,37 @@ namespace skyline::service::am {
     }
 
     Result IApplicationFunctions::CreateCacheStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // CreateCacheStorage(u16 index, s64 saveSize, s64 journalSize) -> (u64 storageTarget, u64 requiredSize)
-        // Each scalar input/output is padded out to its own 8-byte slot on the wire
-        auto index{static_cast<u16>(request.Pop<u64>())};
-        auto saveSize{request.Pop<i64>()};
-        auto journalSize{request.Pop<i64>()};
+        struct CreateCacheStorageInput {
+            u64 index;
+            i64 saveSize;
+            i64 journalSize;
+        };
+        static_assert(sizeof(CreateCacheStorageInput) == 0x18);
 
-        LOGD("Cache storage index: {}, save size: 0x{:X}, journal size: 0x{:X}", index, saveSize, journalSize);
+        if (!request.cmdArg || request.cmdArgSz < sizeof(CreateCacheStorageInput))
+            return fssrv::result::InvalidArgument;
+        CreateCacheStorageInput input{};
+        std::memcpy(&input, request.cmdArg, sizeof(input));
 
-        // As with EnsureSaveData, Strato does not emulate NAND quotas. A successful
-        // CreateCacheStorage therefore requires no additional free space. The second output is
-        // the amount still required on failure due to insufficient space, not the requested size.
-        // storageTarget is nn::fs::CacheStorageTargetMedia, 1 = Nand.
-        constexpr u64 CacheStorageTargetNand{1};
-        response.Push<u64>(CacheStorageTargetNand);
-        response.Push<u64>(0);
+        const auto &nacp{state.loader->nacp->nacpContents};
+
+        fssrv::CacheStorageTargetMedia targetMedia{};
+        u64 requiredSize{};
+        const auto createResult{fssrv::CreateApplicationCacheStorage(
+                state.os->publicAppFilesPath,
+                nacp.saveDataOwnerId,
+                nacp.cacheStorageIndexMax,
+                nacp.cacheStorageDataAndJournalSizeMax,
+                input.index,
+                input.saveSize,
+                input.journalSize,
+                targetMedia,
+                requiredSize)};
+        if (createResult)
+            return createResult;
+
+        response.Push<u64>(static_cast<u64>(targetMedia));
+        response.Push(requiredSize);
         return {};
     }
 

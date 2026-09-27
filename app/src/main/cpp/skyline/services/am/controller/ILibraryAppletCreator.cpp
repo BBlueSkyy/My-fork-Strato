@@ -20,7 +20,7 @@ namespace skyline::service::am {
     Result ILibraryAppletCreator::CreateLibraryApplet(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto appletId{request.Pop<skyline::applet::AppletId>()};
         const auto appletMode{request.Pop<applet::LibraryAppletMode>()};
-        auto accessor{SRVREG(ILibraryAppletAccessor, appletId, appletMode)};
+        auto accessor{SRVREG(ILibraryAppletAccessor, appletId, appletMode, appletState->appletResourceUserId)};
         manager.RegisterService(accessor, session, response);
         appletState->libraryAppletLaunchableEvent->Signal();
         return {};
@@ -30,7 +30,7 @@ namespace skyline::service::am {
         const auto appletId{request.Pop<skyline::applet::AppletId>()};
         const auto appletMode{request.Pop<applet::LibraryAppletMode>()};
         [[maybe_unused]] const u64 threadId{request.Pop<u64>()};
-        auto accessor{SRVREG(ILibraryAppletAccessor, appletId, appletMode)};
+        auto accessor{SRVREG(ILibraryAppletAccessor, appletId, appletMode, appletState->appletResourceUserId)};
         manager.RegisterService(accessor, session, response);
         appletState->libraryAppletLaunchableEvent->Signal();
         return {};

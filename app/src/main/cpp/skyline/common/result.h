@@ -12,9 +12,9 @@ namespace skyline {
      */
     union Result {
         u32 raw{};
-        struct __attribute__((packed)) {
-            u16 module : 9;
-            u16 id : 12;
+        struct {
+            u32 module : 9;
+            u32 id : 13;
         };
 
         /**
@@ -30,6 +30,8 @@ namespace skyline {
             return raw;
         }
     };
+
+    static_assert(sizeof(Result) == sizeof(u32));
 
     /**
      * @brief A wrapper around std::optional that also stores a HOS result code

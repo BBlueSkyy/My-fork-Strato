@@ -196,7 +196,7 @@ namespace skyline::service::nvdrv::device::nvhost {
         if (!h)
             return PosixResult::InvalidArgument;
 
-        u8 *cpuPtr{reinterpret_cast<u8 *>(h->address + bufferOffset)};
+        u8 *cpuPtr{state.process->memory.TranslateVirtualPointer<u8 *>(h->address + bufferOffset)};
         u64 size{mappingSize ? mappingSize : h->origSize};
 
         if (flags.fixed) {
@@ -345,7 +345,7 @@ namespace skyline::service::nvdrv::device::nvhost {
                 if (!h)
                     return PosixResult::InvalidArgument;
 
-                u8 *cpuPtr{reinterpret_cast<u8 *>(h->address + (static_cast<u64>(entry.handleOffsetBigPages) << vm.bigPageSizeBits))};
+                u8 *cpuPtr{state.process->memory.TranslateVirtualPointer<u8 *>(h->address + (static_cast<u64>(entry.handleOffsetBigPages) << vm.bigPageSizeBits))};
 
                 asCtx->gmmu.Map(virtAddr, cpuPtr, size);
             }
