@@ -150,6 +150,60 @@ namespace skyline::input {
         device.Disconnect();
     }
 
+    void NpadManager::SwapAssignment(NpadId first, NpadId second) {
+        std::scoped_lock guard{mutex};
+
+        if (first == second || first == NpadId::Handheld || second == NpadId::Handheld ||
+            first == NpadId::Unknown || second == NpadId::Unknown)
+            return;
+
+        auto &firstDevice{at(first)};
+        auto &secondDevice{at(second)};
+
+        struct Assignment {
+            NpadControllerType type{NpadControllerType::None};
+            i8 index{NpadDevice::NullIndex};
+            i8 partnerIndex{NpadDevice::NullIndex};
+            std::vector<size_t> controllers;
+        };
+
+        auto captureAssignment{[&](NpadDevice &device) {
+            Assignment assignment{
+                .type = device.type,
+                .index = device.index,
+                .partnerIndex = device.partnerIndex,
+            };
+
+            for (size_t index{}; index < controllers.size(); ++index) {
+                if (controllers[index].device == &device) {
+                    assignment.controllers.push_back(index);
+                    controllers[index].device = nullptr;
+                }
+            }
+
+            device.Disconnect();
+            return assignment;
+        }};
+
+        auto firstAssignment{captureAssignment(firstDevice)};
+        auto secondAssignment{captureAssignment(secondDevice)};
+
+        auto applyAssignment{[&](NpadDevice &device, const Assignment &assignment) {
+            if (assignment.type == NpadControllerType::None)
+                return;
+
+            device.Connect(assignment.type);
+            device.index = assignment.index;
+            device.partnerIndex = assignment.partnerIndex;
+
+            for (const auto index : assignment.controllers)
+                controllers.at(index).device = &device;
+        }};
+
+        applyAssignment(firstDevice, secondAssignment);
+        applyAssignment(secondDevice, firstAssignment);
+    }
+
     void NpadManager::UpdateControllerSharedMemory() {
         std::scoped_lock guard{mutex};
         for (auto &pad : npads)
