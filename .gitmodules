@@ -65,3 +65,6 @@
 [submodule "Dynarmic"]
 	path = app/libraries/dynarmic
 	url = https://github.com/strato-emu/dynarmic.git
+[submodule "app/libraries/zstd"]
+	path = app/libraries/zstd
+	url = https://github.com/facebook/zstd.git

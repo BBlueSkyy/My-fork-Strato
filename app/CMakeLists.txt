@@ -34,6 +34,9 @@ set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "Build lz4c progam with legacy argument
 add_subdirectory("libraries/lz4/build/cmake")
 include_directories(SYSTEM "libraries/lz4/lib")
 
+# Zstandard 1.5.7 sources used by the ZBIC NSO decoder
+include_directories(SYSTEM "libraries/zstd/lib")
+
 # Vulkan + Vulkan-Hpp
 add_compile_definitions(VK_USE_PLATFORM_ANDROID_KHR) # We want all the Android-specific structures to be defined
 add_compile_definitions(VULKAN_HPP_NO_SPACESHIP_OPERATOR) # libcxx doesn't implement operator<=> for std::array which breaks this
@@ -306,6 +309,8 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/loader/resolve_content.cpp
         ${source_DIR}/skyline/loader/nro.cpp
         ${source_DIR}/skyline/loader/nso.cpp
+        ${source_DIR}/skyline/loader/zbic.cpp
+        ${source_DIR}/skyline/loader/zbic_zstd.c
         ${source_DIR}/skyline/loader/nca.cpp
         ${source_DIR}/skyline/loader/xci.cpp
         ${source_DIR}/skyline/loader/nsp.cpp
@@ -486,6 +491,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/ngc/INgcServiceForApplication.cpp
         )
 target_include_directories(skyline PRIVATE ${source_DIR}/skyline)
+set_source_files_properties(${source_DIR}/skyline/loader/zbic_zstd.c PROPERTIES COMPILE_OPTIONS "-Wno-everything")
 # target_precompile_headers(skyline PRIVATE ${source_DIR}/skyline/common.h) # PCH will currently break Intellisense
 target_compile_options(skyline PRIVATE -Wall -Wno-unknown-attributes -Wno-c++20-extensions -Wno-c++17-extensions -Wno-c99-designator -Wno-reorder -Wno-missing-braces -Wno-unused-variable -Wno-unused-private-field -Wno-dangling-else -Wconversion -fsigned-bitfields)
 
