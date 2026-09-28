@@ -6,6 +6,7 @@
 #include <jvm.h>
 #include <common/trace.h>
 #include <kernel/results.h>
+#include <kernel/thread_tls.h>
 #include "KProcess.h"
 
 namespace skyline::kernel::type {
@@ -126,6 +127,7 @@ namespace skyline::kernel::type {
             mainThreadStack = span<u8>(pageCandidate, state.process->npdm.meta.mainThreadStackSize);
         }
         size_t tid{threads.size() + 1}; //!< The first thread is HOS-1 rather than HOS-0, this is to match the HOS kernel's behaviour
+        u8 *tlsRegion{AllocateTlsSlot()};
 
         auto thread{[&]() -> std::shared_ptr<KThread> {
             if (is64bit())
@@ -133,6 +135,10 @@ namespace skyline::kernel::type {
             else
                 return NewHandle<KJit32Thread>(std::ref(*this), tid, entry, argument, stackTop, priority ? *priority : state.process->npdm.meta.mainThreadPriority, idealCore ? *idealCore : state.process->npdm.meta.idealCore).item;
         }()};
+        // Both the initial thread and svcCreateThread use this path. NewHandle
+        // has assigned the guest handle, and the TLS slot is ready before Start.
+        thread->tlsRegion = tlsRegion;
+        WriteCurrentThreadHandle(thread->tlsRegion, thread->handle);
         threads.push_back(thread);
         return thread;
     }
