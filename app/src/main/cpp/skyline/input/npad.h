@@ -4,6 +4,7 @@
 #pragma once
 
 #include <range/v3/algorithm.hpp>
+#include "npad_assignment.h"
 #include "npad_device.h"
 
 namespace skyline::input {
@@ -23,6 +24,7 @@ namespace skyline::input {
       private:
         const DeviceState &state;
         bool activated{};
+        NpadAssignmentOrder<constant::NpadCount, constant::ControllerCount> assignmentOrder;
 
         friend NpadDevice;
 

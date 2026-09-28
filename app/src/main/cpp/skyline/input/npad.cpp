@@ -60,57 +60,61 @@ namespace skyline::input {
         for (auto &controller : controllers)
             controller.device = nullptr;
 
-        for (auto &id : supportedIds) {
-            if (id == NpadId::Unknown || !IsNpadIdValid(id))
-                continue;
-
-            auto &device{at(id)};
-
-            for (auto &controller : controllers) {
-                if (controller.device)
-                    continue;
-
-                NpadStyleSet style{};
-                if (id != NpadId::Handheld) {
-                    if (controller.type == NpadControllerType::ProController)
-                        style.proController = true;
-                    else if (controller.type == NpadControllerType::Gamecube)
-                        style.gamecube = true;
-                    else if (controller.type == NpadControllerType::JoyconLeft)
-                        style.joyconLeft = true;
-                    else if (controller.type == NpadControllerType::JoyconRight)
-                        style.joyconRight = true;
-                    if (controller.type == NpadControllerType::JoyconDual || controller.partnerIndex != -1)
-                        style.joyconDual = true;
-                } else if (controller.type == NpadControllerType::Handheld) {
-                    style.joyconHandheld = true;
-                }
-                style = NpadStyleSet{.raw = style.raw & styles.raw};
-
-                if (style.raw) {
-                    if (style.proController || style.gamecube || style.joyconHandheld || style.joyconLeft || style.joyconRight) {
-                        device.Connect(controller.type);
-                        device.index = static_cast<i8>(&controller - controllers.data());
-                        device.partnerIndex = -1;
-                        controller.device = &device;
-                    } else if (style.joyconDual && orientation == NpadJoyOrientation::Vertical && device.GetAssignment() == NpadJoyAssignment::Dual) {
-                        device.Connect(NpadControllerType::JoyconDual);
-                        device.index = static_cast<i8>(&controller - controllers.data());
-                        device.partnerIndex = controller.partnerIndex;
-                        controller.device = &device;
-                        controllers.at(static_cast<size_t>(controller.partnerIndex)).device = &device;
-                    } else {
-                        continue;
-                    }
-                    break;
-                }
-            }
+        std::vector<size_t> supportedSlots;
+        supportedSlots.reserve(supportedIds.size());
+        for (const auto id : supportedIds) {
+            if (id != NpadId::Unknown && IsNpadIdValid(id))
+                supportedSlots.push_back(NpadIdToIndex(id));
         }
+
+        assignmentOrder.Assign(supportedSlots, [&](size_t slot, size_t source) {
+            auto &device{npads.at(slot)};
+            auto &controller{controllers.at(source)};
+            if (controller.device)
+                return false;
+
+            NpadStyleSet style{};
+            if (device.id != NpadId::Handheld) {
+                if (controller.type == NpadControllerType::ProController)
+                    style.proController = true;
+                else if (controller.type == NpadControllerType::Gamecube)
+                    style.gamecube = true;
+                else if (controller.type == NpadControllerType::JoyconLeft)
+                    style.joyconLeft = true;
+                else if (controller.type == NpadControllerType::JoyconRight)
+                    style.joyconRight = true;
+                if (controller.type == NpadControllerType::JoyconDual || controller.partnerIndex != -1)
+                    style.joyconDual = true;
+            } else if (controller.type == NpadControllerType::Handheld) {
+                style.joyconHandheld = true;
+            }
+            style = NpadStyleSet{.raw = style.raw & styles.raw};
+
+            if (style.proController || style.gamecube || style.joyconHandheld || style.joyconLeft || style.joyconRight) {
+                device.Connect(controller.type);
+                device.index = static_cast<i8>(source);
+                device.partnerIndex = -1;
+                controller.device = &device;
+                return true;
+            }
+            if (style.joyconDual && orientation == NpadJoyOrientation::Vertical && device.GetAssignment() == NpadJoyAssignment::Dual &&
+                controller.partnerIndex >= 0 && static_cast<size_t>(controller.partnerIndex) < controllers.size() &&
+                !controllers[static_cast<size_t>(controller.partnerIndex)].device) {
+                device.Connect(NpadControllerType::JoyconDual);
+                device.index = static_cast<i8>(source);
+                device.partnerIndex = controller.partnerIndex;
+                controller.device = &device;
+                controllers[static_cast<size_t>(controller.partnerIndex)].device = &device;
+                return true;
+            }
+            return false;
+        });
 
         // We do this to prevent triggering the event unless there's a real change in a device's style, which would be caused if we disconnected all controllers then reconnected them
         for (auto &device : npads) {
             if (!ranges::any_of(controllers, [&](auto &controller) { return controller.device == &device; }))
                 device.Disconnect();
+            assignmentOrder.Observe(NpadIdToIndex(device.id), device.index);
         }
     }
 
@@ -137,6 +141,7 @@ namespace skyline::input {
 
             for (auto &controller : controllers)
                 controller.device = nullptr;
+            assignmentOrder.Reset();
         }
     }
 
@@ -202,6 +207,8 @@ namespace skyline::input {
 
         applyAssignment(firstDevice, secondAssignment);
         applyAssignment(secondDevice, firstAssignment);
+        assignmentOrder.Remember(NpadIdToIndex(first), firstDevice.index);
+        assignmentOrder.Remember(NpadIdToIndex(second), secondDevice.index);
     }
 
     void NpadManager::UpdateControllerSharedMemory() {

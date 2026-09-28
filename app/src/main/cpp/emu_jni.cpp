@@ -239,6 +239,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_0
     auto input{InputWeak.lock()};
     if (!input)
         return; // We don't mind if we miss button updates while input hasn't been initialized
+    std::scoped_lock guard{input->npad.mutex};
     auto device{input->npad.controllers[static_cast<size_t>(index)].device};
     if (device)
         device->SetButtonState(skyline::input::NpadButton{.raw = static_cast<skyline::u64>(mask)}, pressed);
@@ -248,6 +249,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_0
     auto input{InputWeak.lock()};
     if (!input)
         return; // We don't mind if we miss axis updates while input hasn't been initialized
+    std::scoped_lock guard{input->npad.mutex};
     auto device{input->npad.controllers[static_cast<size_t>(index)].device};
     if (device)
         device->SetAxisValue(static_cast<skyline::input::NpadAxisId>(axis), value);
@@ -260,6 +262,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_0
 
     const auto motionValue = reinterpret_cast<skyline::input::MotionSensorState*>(env->GetDirectBufferAddress(value));
 
+    std::scoped_lock guard{input->npad.mutex};
     auto device{input->npad.controllers[static_cast<size_t>(index)].device};
     if (device)
         device->SetMotionValue(static_cast<skyline::input::MotionId>(motionId), motionValue);
