@@ -206,6 +206,12 @@ namespace skyline::service::hid {
         Result GetNpadHandheldActivationMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @brief Swaps the controller assignments of two player Npads
+         * @url https://switchbrew.org/wiki/HID_services#SwapNpadAssignment
+         */
+        Result SwapNpadAssignment(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Returns the current vibration state of a device
          * @url https://switchbrew.org/wiki/HID_services#GetVibrationDeviceInfo
          */
@@ -306,6 +312,7 @@ namespace skyline::service::hid {
             SFUNC(0x7F, IHidServer, StopLrAssignmentMode),
             SFUNC(0x80, IHidServer, SetNpadHandheldActivationMode),
             SFUNC(0x81, IHidServer, GetNpadHandheldActivationMode),
+            SFUNC(0x82, IHidServer, SwapNpadAssignment),
             SFUNC(0xCB, IHidServer, CreateActiveVibrationDeviceList),
             SFUNC(0xC8, IHidServer, GetVibrationDeviceInfo),
             SFUNC(0xC9, IHidServer, SendVibrationValue),

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <range/v3/algorithm.hpp>
+#include "npad_assignment.h"
 #include "npad_device.h"
 
 namespace skyline::input {
@@ -23,6 +24,7 @@ namespace skyline::input {
       private:
         const DeviceState &state;
         bool activated{};
+        NpadAssignmentOrder<constant::NpadCount, constant::ControllerCount> assignmentOrder;
 
         friend NpadDevice;
 
@@ -125,6 +127,9 @@ namespace skyline::input {
 
         /** Disconnects one logical Npad and detaches its current host mapping. */
         void Disconnect(NpadId id);
+
+        /** Swaps the host-controller assignments of two player Npads. */
+        void SwapAssignment(NpadId first, NpadId second);
 
         void UpdateControllerSharedMemory();
         void UpdateSixAxisSharedMemory();

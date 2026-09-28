@@ -354,6 +354,25 @@ namespace skyline::service::hid {
         return {};
     }
 
+    Result IHidServer::SwapNpadAssignment(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto first{request.Pop<NpadId>()};
+        const auto second{request.Pop<NpadId>()};
+        const auto aruid{request.Pop<u64>()};
+
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (!NpadManager::IsNpadIdValid(first) || !NpadManager::IsNpadIdValid(second))
+            return result::InvalidNpadId;
+
+        // Horizon treats Handheld/Other as a successful no-op for this command.
+        if (first == NpadId::Handheld || second == NpadId::Handheld ||
+            first == NpadId::Unknown || second == NpadId::Unknown)
+            return {};
+
+        state.input->npad.SwapAssignment(first, second);
+        return {};
+    }
+
 
     Result IHidServer::GetVibrationDeviceInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto deviceHandle{request.Pop<NpadDeviceHandle>()};
