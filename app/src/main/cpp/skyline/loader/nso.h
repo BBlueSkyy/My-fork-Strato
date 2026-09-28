@@ -22,6 +22,8 @@ namespace skyline::loader {
                 bool textHash : 1; //!< .text hash should be checked before loading
                 bool roHash : 1; //!< .rodata hash should be checked before loading
                 bool dataHash : 1; //!< .data hash should be checked before loading
+                bool _reserved6_ : 1;
+                bool useZbicCompression : 1; //!< Compressed segments use ZBIC instead of LZ4
             };
             u32 raw;
         };
@@ -73,9 +75,10 @@ namespace skyline::loader {
          * @brief Reads the specified segment from the backing and decompresses it if needed
          * @param segment The header of the segment to read
          * @param compressedSize The compressed size of the segment, 0 if the segment is not compressed
+         * @param useZbicCompression Whether compressed data uses ZBIC instead of LZ4
          * @return A buffer containing the data of the requested segment
          */
-        static std::vector<u8> GetSegment(const std::shared_ptr<vfs::Backing> &backing, const NsoSegmentHeader &segment, u32 compressedSize);
+        static std::vector<u8> GetSegment(const std::shared_ptr<vfs::Backing> &backing, const NsoSegmentHeader &segment, u32 compressedSize, bool useZbicCompression);
 
       public:
         NsoLoader(std::shared_ptr<vfs::Backing> backing);

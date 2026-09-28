@@ -311,6 +311,7 @@
     <string name="opus_description">Opus Audio Codec provides a high-quality Opus decoder used to decode Opus-encoded audio provided by the guest</string>
     <string name="mbedtls_description">Mbed TLS is used to decrypt AES-encrypted NCAs</string>
     <string name="lz4_description">LZ4 is used to extract LZ4-compressed ELF sections from an NSO</string>
+    <string name="zstd_description">Zstandard 1.5.7 provides the base decoder used for ZBIC-compressed NSO segments</string>
     <string name="tzcode_description">tzcode provides a C API to access tzdb for time zone data</string>
     <string name="jssim_description">Java String Similarity powers our search functionality</string>
     <string name="andx_description">AndroidX provides a consistent user-experience across Android versions</string>

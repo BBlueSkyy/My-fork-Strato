@@ -105,6 +105,12 @@
             app:summary="@string/lz4_description"
             app:title="LZ4 Library" />
         <org.stratoemu.strato.preference.LicensePreference
+            app:libraryCopyright="Copyright (c) Meta Platforms, Inc. and affiliates."
+            app:libraryLicense="@string/bsd_3_clause_license"
+            app:libraryUrl="https://github.com/facebook/zstd"
+            app:summary="@string/zstd_description"
+            app:title="Zstandard" />
+        <org.stratoemu.strato.preference.LicensePreference
             app:libraryCopyright="Copyright 1985, 1987, 1988 The Regents of the University of California.\nAll rights reserved."
             app:libraryLicense="@string/bsd_3_clause_license"
             app:libraryUrl="https://github.com/skyline-emu/tz"
