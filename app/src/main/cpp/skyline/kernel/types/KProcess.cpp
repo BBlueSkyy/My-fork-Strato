@@ -217,11 +217,24 @@ namespace skyline::kernel::type {
                 }
             }
 
-            // Recompute effective priorities from base priority plus the
-            // remaining waiter sets. This permits both inheritance boosts and
-            // restoration after the highest-priority waiter goes away.
-            state.thread->UpdatePriorityInheritance();
-            nextOwner->UpdatePriorityInheritance();
+            // Recompute the current owner's effective priority from its base
+            // priority and the waiters that remain on locks it still owns.
+            // The current thread is running, so it cannot itself be blocked on
+            // another mutex while executing this unlock.
+            i8 currentEffective{state.thread->basePriority.load()};
+            if (!waiters.empty())
+                currentEffective = std::min(currentEffective, waiters.front()->priority.load());
+
+            const i8 oldCurrentEffective{state.thread->priority.exchange(currentEffective)};
+            if (oldCurrentEffective != currentEffective)
+                state.scheduler->UpdatePriority(state.thread);
+
+            // The next owner is still blocked and not present in a scheduler
+            // queue. Establish its correct effective priority before waking it.
+            i8 nextEffective{nextOwner->basePriority.load()};
+            if (!nextOwner->waiters.empty())
+                nextEffective = std::min(nextEffective, nextOwner->waiters.front()->priority.load());
+            nextOwner->priority = nextEffective;
 
             if (nextWaiter) {
                 __atomic_store_n(mutex, nextOwner->waitTag | HandleWaitersBit, __ATOMIC_SEQ_CST);
@@ -294,13 +307,17 @@ namespace skyline::kernel::type {
                             auto &waiters{waitThread->waiters};
                             auto it{std::find(waiters.begin(), waiters.end(), state.thread)};
                             if (it != waiters.end()) {
-                                // If we were signalled but are waiting on locking the associated mutex then we need to cancel our wait
+                                // If we were signalled but are waiting on locking the associated mutex then we need to cancel our wait.
+                                // First detach under both waiter locks, then restore the owner's effective priority after releasing them.
                                 waiters.erase(it);
-                                waitThread->UpdatePriorityInheritance();
 
                                 state.thread->waitMutex = nullptr;
                                 state.thread->waitTag = 0;
                                 state.thread->waitThread = nullptr;
+
+                                waitLock.unlock();
+                                lock.unlock();
+                                waitThread->UpdatePriorityInheritance();
                             } else {
                                 // If we were signalled and are no longer waiting on the associated mutex then we're already scheduled
                                 shouldWait = true;
