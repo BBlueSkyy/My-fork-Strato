@@ -183,8 +183,9 @@ namespace skyline::kernel::type {
         }
 
         if (isHighestPriority)
-            // If we were the highest priority thread then we need to inherit priorities for all threads we're waiting on recursively
-            thread->UpdatePriorityInheritance();
+            // Adding the highest-priority waiter may change the owner's effective
+            // priority and recursively the priority of any owner it is waiting on.
+            owner->UpdatePriorityInheritance();
 
         if (thread == state.thread)
             state.scheduler->WaitSchedule();
@@ -216,32 +217,13 @@ namespace skyline::kernel::type {
                 }
             }
 
-            if (!waiters.empty()) {
-                // If there are threads still waiting on us then try to inherit their priority
-                auto highestPriorityThread{waiters.front()};
-                i8 newPriority, currentPriority{state.thread->priority.load()};
-                do {
-                    newPriority = std::min(currentPriority, highestPriorityThread->priority.load());
-                } while (currentPriority != newPriority && !state.thread->priority.compare_exchange_strong(currentPriority, newPriority));
-                state.scheduler->UpdatePriority(state.thread);
-            } else {
-                i8 priority, basePriority;
-                do {
-                    basePriority = state.thread->basePriority.load();
-                    priority = state.thread->priority.load();
-                } while (priority != basePriority && !state.thread->priority.compare_exchange_strong(priority, basePriority));
-                if (priority != basePriority)
-                    state.scheduler->UpdatePriority(state.thread);
-            }
+            // Recompute effective priorities from base priority plus the
+            // remaining waiter sets. This permits both inheritance boosts and
+            // restoration after the highest-priority waiter goes away.
+            state.thread->UpdatePriorityInheritance();
+            nextOwner->UpdatePriorityInheritance();
 
             if (nextWaiter) {
-                // If there is a waiter on the new owner then try to inherit its priority
-                i8 priority, ownerPriority;
-                do {
-                    ownerPriority = nextOwner->priority.load();
-                    priority = std::min(ownerPriority, nextWaiter->priority.load());
-                } while (ownerPriority != priority && !nextOwner->priority.compare_exchange_strong(ownerPriority, priority));
-
                 __atomic_store_n(mutex, nextOwner->waitTag | HandleWaitersBit, __ATOMIC_SEQ_CST);
             } else {
                 __atomic_store_n(mutex, nextOwner->waitTag, __ATOMIC_SEQ_CST);
@@ -314,7 +296,7 @@ namespace skyline::kernel::type {
                             if (it != waiters.end()) {
                                 // If we were signalled but are waiting on locking the associated mutex then we need to cancel our wait
                                 waiters.erase(it);
-                                state.thread->UpdatePriorityInheritance();
+                                waitThread->UpdatePriorityInheritance();
 
                                 state.thread->waitMutex = nullptr;
                                 state.thread->waitTag = 0;
