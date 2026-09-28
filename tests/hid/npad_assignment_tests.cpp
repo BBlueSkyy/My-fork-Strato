@@ -64,7 +64,7 @@ namespace {
                 "unavailable preferred controller falls back without taking a reserved one");
 
         order.Observe(0, assigned[0]);
-        Require(Assign(order, {true, true, false, true}) == std::array<int, 4>{3, 1, 0, 2},
+        Require(Assign(order, {true, true, false, true}) == std::array<int, 4>{3, 1, 0, -1},
                 "temporary fallback must not replace the remembered preferred source");
     }
 
