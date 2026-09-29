@@ -302,7 +302,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                          vk::to_string(view->format->vkFormat),
                          static_cast<u32>(view->range.aspectMask),
                          static_cast<u32>(texture.format->vkAspect),
-                         clearSurface.mrtSelect, clearSurface.rtArrayIndex, partialClear);
+                         static_cast<u32>(clearSurface.mrtSelect),
+                         static_cast<u32>(clearSurface.rtArrayIndex),
+                         partialClear);
                 }
 
                 if (partialClear) {
