@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
-#include <cstdint>
 #include <adrenotools/driver.h>
 #include <gpu.h>
 #include <kernel/memory.h>
@@ -90,20 +89,10 @@ namespace skyline::gpu {
             if (!stateLock)
                 return false;
 
-            const bool backingWritesBlocked{buffer->AllCpuBackingWritesBlocked()};
-            if (!backingWritesBlocked && buffer->dirtyState != DirtyState::GpuDirty) {
+            if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty) {
                 buffer->dirtyState = DirtyState::CpuDirty;
                 return true;
             }
-
-            LOGD("[DMA251] WriteTrap deferred: id={} range=0x{:X}-0x{:X} dirty={} blocked={} currentGpuDirty={} cycle={}",
-                 buffer->id,
-                 static_cast<u64>(reinterpret_cast<std::uintptr_t>(buffer->guest->begin().base())),
-                 static_cast<u64>(reinterpret_cast<std::uintptr_t>(buffer->guest->end().base())),
-                 static_cast<u32>(buffer->dirtyState),
-                 backingWritesBlocked,
-                 buffer->currentExecutionGpuDirty,
-                 static_cast<bool>(buffer->cycle));
 
             if (buffer->accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold && *buffer->gpu.state.settings->enableFastGpuReadbackHack) {
                 // As opposed to skipping readback as we do for textures, with buffers we can still perform the readback but just without syncinc the GPU
@@ -121,17 +110,6 @@ namespace skyline::gpu {
                 return false;
 
             buffer->SynchronizeGuest(true); // We need to assume the buffer is dirty since we don't know what the guest is writing
-
-            const bool stillBlocked{buffer->AllCpuBackingWritesBlocked()};
-            if (stillBlocked) {
-                LOGW("[DMA251] WriteTrap marking CPU dirty while backing writes remain blocked: id={} range=0x{:X}-0x{:X} currentGpuDirty={} cycle={}",
-                     buffer->id,
-                     static_cast<u64>(reinterpret_cast<std::uintptr_t>(buffer->guest->begin().base())),
-                     static_cast<u64>(reinterpret_cast<std::uintptr_t>(buffer->guest->end().base())),
-                     buffer->currentExecutionGpuDirty,
-                     static_cast<bool>(buffer->cycle));
-            }
-
             buffer->dirtyState = DirtyState::CpuDirty;
             return true;
         });
