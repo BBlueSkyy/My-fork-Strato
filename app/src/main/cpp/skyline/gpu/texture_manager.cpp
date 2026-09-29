@@ -77,8 +77,6 @@ namespace skyline::gpu {
             } else {
                 auto &matchGuestTexture{*hostMapping->texture->guest};
 
-                }
-
                 // A render target may describe an individual Z slice of a block-linear
                 // 3D texture. Its guest address starts inside the parent mip rather than
                 // at the mip boundary, so the legacy mip/layer matcher below cannot find
