@@ -76,13 +76,15 @@ namespace skyline::service::fssrv {
 
             const auto separator{path.find('/', position)};
             const auto component{path.substr(position, separator - position)};
-            if (component.empty() || component == "." || component == "..")
+            if (component.empty() || component == "..")
                 return std::nullopt;
 
-            if (!first)
-                normalized += '/';
-            normalized += component;
-            first = false;
+            if (component != ".") {
+                if (!first)
+                    normalized += '/';
+                normalized += component;
+                first = false;
+            }
 
             if (separator == std::string::npos)
                 break;
