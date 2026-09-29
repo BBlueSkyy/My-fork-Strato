@@ -72,8 +72,12 @@ namespace skyline {
 
         class ServiceManager {
           public:
+            std::shared_ptr<BaseService> lastRegisteredService;
+
             template<typename Service>
-            void RegisterService(std::shared_ptr<Service>, kernel::type::KSession &, ipc::IpcResponse &) {}
+            void RegisterService(std::shared_ptr<Service> service, kernel::type::KSession &, ipc::IpcResponse &) {
+                lastRegisteredService = std::move(service);
+            }
         };
 
         class BaseService {
