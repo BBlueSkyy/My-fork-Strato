@@ -152,7 +152,7 @@ namespace skyline::kernel::type {
 
     Result KProcess::MutexLock(const std::shared_ptr<KThread> &thread, u32 *mutex, KHandle ownerHandle, KHandle tag, bool failOnOutdated) {
         TRACE_EVENT_FMT("kernel", "MutexLock {} @ 0x{:X}", fmt::ptr(mutex), thread->id);
-        std::scoped_lock priorityLock{priorityInheritanceMutex};
+        std::unique_lock priorityLock{priorityInheritanceMutex};
 
         std::shared_ptr<KThread> owner;
         try {
@@ -187,6 +187,12 @@ namespace skyline::kernel::type {
             // Adding the highest-priority waiter may change the owner's effective
             // priority and recursively the priority of any owner it is waiting on.
             owner->UpdatePriorityInheritance();
+
+        // The PI graph is now internally consistent. Never keep the process-wide
+        // PI serialization lock held while the guest thread blocks waiting to be
+        // scheduled, otherwise the mutex owner could be prevented from unlocking
+        // the mutex needed to wake this thread.
+        priorityLock.unlock();
 
         if (thread == state.thread)
             state.scheduler->WaitSchedule();
