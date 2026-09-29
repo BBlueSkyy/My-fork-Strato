@@ -72,15 +72,11 @@ namespace {
         path = ReadPath(rootCurrentDirectory);
         Check(path && *path == "/", "root current-directory path was not normalized");
 
-        std::array<u8, 17> parentDirectory{'/', 's', 'a', 'v', 'e', '/', 's', 'u', 'b', '/', '.', '.', '/', 'f', 'i', 'l', 'e'};
-        std::array<u8, 18> parentDirectoryZ{};
-        std::copy(parentDirectory.begin(), parentDirectory.end(), parentDirectoryZ.begin());
-        path = ReadPath(parentDirectoryZ);
+        std::array<u8, 18> parentDirectory{'/', 's', 'a', 'v', 'e', '/', 's', 'u', 'b', '/', '.', '.', '/', 'f', 'i', 'l', 'e', 0};
+        path = ReadPath(parentDirectory);
         Check(path && *path == "/save/file", "parent-directory component was not normalized");
 
-        std::array<u8, 12> trailingParent{'/', 's', 'a', 'v', 'e', '/', 's', 'u', 'b', '/', '.', 0};
-        trailingParent[10] = '.';
-        trailingParent[11] = 0;
+        std::array<u8, 13> trailingParent{'/', 's', 'a', 'v', 'e', '/', 's', 'u', 'b', '/', '.', '.', 0};
         path = ReadPath(trailingParent);
         Check(path && *path == "/save", "trailing parent-directory component was not normalized");
 
