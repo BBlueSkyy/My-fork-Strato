@@ -2,7 +2,6 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/trace.h>
-#include <gpu.h>
 #include "texture/layout.h"
 #include "texture_manager.h"
 
@@ -259,7 +258,6 @@ namespace skyline::gpu {
                     sourceGuest.mipLevelCount != 1 ||
                     sourceGuest.baseArrayLayer != 0 ||
                     sourceGuest.format != guestTexture.format ||
-                    source->format != ConvertHostCompatibleFormat(guestTexture.format, gpu.traits) ||
                     sourceGuest.tileConfig.mode != texture::TileMode::Block ||
                     sourceGuest.tileConfig.blockDepth != guestTexture.tileConfig.blockDepth)
                     continue;
