@@ -448,6 +448,7 @@ namespace skyline::kernel::svc {
             auto thread{state.process->GetHandle<type::KThread>(handle)};
             LOGD("Setting thread #{}'s base priority to {}", thread->id, priority);
 
+            std::scoped_lock priorityLock{state.process->GetPriorityInheritanceMutex()};
             const i8 oldBasePriority{thread->basePriority.exchange(priority)};
             if (oldBasePriority != priority)
                 thread->UpdatePriorityInheritance();
