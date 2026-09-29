@@ -56,7 +56,7 @@ namespace skyline::service::fssrv {
         }
 
         constexpr u32 CacheStorageMetadataMagic{0x43414348};
-        constexpr u32 CacheStorageMetadataVersion{1};
+        constexpr u32 CacheStorageMetadataVersion{2};
 
         struct CacheStorageMetadata {
             u32 magic{CacheStorageMetadataMagic};
@@ -70,6 +70,17 @@ namespace skyline::service::fssrv {
             std::array<u8, 6> reserved{};
         };
         static_assert(sizeof(CacheStorageMetadata) == 0x38);
+
+        struct CacheStorageMetadataV1 {
+            u32 magic{};
+            u32 version{};
+            u64 saveDataOwnerId{};
+            u64 dataSize{};
+            u64 journalSize{};
+            u16 index{};
+            std::array<u8, 6> reserved{};
+        };
+        static_assert(sizeof(CacheStorageMetadataV1) == 0x28);
 
         u64 MakeCacheSaveDataId(u64 saveDataOwnerId, u16 index) {
             // Strato has no Horizon save-data indexer. Assign a stable surrogate ID
@@ -105,7 +116,36 @@ namespace skyline::service::fssrv {
                     return {};
                 if (error)
                     return MapVfsError(error);
-                if (!backing || backing->size != sizeof(CacheStorageMetadata))
+                if (!backing)
+                    return result::UnexpectedFailure;
+
+                if (backing->size == sizeof(CacheStorageMetadataV1)) {
+                    CacheStorageMetadataV1 legacy{};
+                    auto bytes{span(reinterpret_cast<u8 *>(&legacy), sizeof(legacy))};
+                    auto [read, readError]{backing->ReadWithError(bytes)};
+                    if (readError)
+                        return MapBackingError(readError);
+                    if (read != bytes.size())
+                        return result::UnexpectedFailure;
+                    if (legacy.magic != CacheStorageMetadataMagic ||
+                        legacy.version != 1 ||
+                        legacy.saveDataOwnerId != saveDataOwnerId ||
+                        legacy.index != index ||
+                        legacy.dataSize > std::numeric_limits<u64>::max() - legacy.journalSize)
+                        return result::UnexpectedFailure;
+
+                    CacheStorageMetadata upgraded{};
+                    upgraded.saveDataOwnerId = legacy.saveDataOwnerId;
+                    upgraded.saveDataId = MakeCacheSaveDataId(legacy.saveDataOwnerId, legacy.index);
+                    upgraded.dataSize = legacy.dataSize;
+                    upgraded.journalSize = legacy.journalSize;
+                    upgraded.logicalSize = legacy.dataSize + legacy.journalSize;
+                    upgraded.index = legacy.index;
+                    metadata = upgraded;
+                    return {};
+                }
+
+                if (backing->size != sizeof(CacheStorageMetadata))
                     return result::UnexpectedFailure;
 
                 CacheStorageMetadata candidate{};
@@ -192,8 +232,14 @@ namespace skyline::service::fssrv {
             }
         }
 
+        u64 GetCurrentApplicationId(const DeviceState &state, u64 saveDataOwnerId) {
+            if (state.loader && state.loader->cnmt)
+                return state.loader->cnmt->header.id;
+            return saveDataOwnerId;
+        }
+
         Result GetCacheSaveDataInfo(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
-                                    std::optional<SaveDataInfo> &info) {
+                                    u64 applicationId, std::optional<SaveDataInfo> &info) {
             info.reset();
 
             std::optional<CacheStorageMetadata> metadata;
@@ -224,7 +270,7 @@ namespace skyline::service::fssrv {
             entry.saveDataId = metadata->saveDataId;
             entry.spaceId = SaveDataSpaceId::User;
             entry.type = SaveDataType::Cache;
-            entry.applicationId = saveDataOwnerId;
+            entry.applicationId = applicationId;
             entry.size = metadata->logicalSize;
             entry.index = metadata->index;
             entry.rank = SaveDataRank::Primary;
@@ -516,8 +562,10 @@ namespace skyline::service::fssrv {
         std::vector<SaveDataInfo> entries;
         if (state.loader && state.loader->nacp) {
             std::optional<SaveDataInfo> cacheInfo;
+            const u64 saveDataOwnerId{state.loader->nacp->nacpContents.saveDataOwnerId};
             const auto cacheResult{GetCacheSaveDataInfo(state.os->publicAppFilesPath,
-                                                        state.loader->nacp->nacpContents.saveDataOwnerId,
+                                                        saveDataOwnerId,
+                                                        GetCurrentApplicationId(state, saveDataOwnerId),
                                                         cacheInfo)};
             if (cacheResult)
                 return cacheResult;
@@ -537,8 +585,10 @@ namespace skyline::service::fssrv {
         std::vector<SaveDataInfo> entries;
         if (*spaceId == SaveDataSpaceId::User && state.loader && state.loader->nacp) {
             std::optional<SaveDataInfo> cacheInfo;
+            const u64 saveDataOwnerId{state.loader->nacp->nacpContents.saveDataOwnerId};
             const auto cacheResult{GetCacheSaveDataInfo(state.os->publicAppFilesPath,
-                                                        state.loader->nacp->nacpContents.saveDataOwnerId,
+                                                        saveDataOwnerId,
+                                                        GetCurrentApplicationId(state, saveDataOwnerId),
                                                         cacheInfo)};
             if (cacheResult)
                 return cacheResult;
@@ -554,8 +604,10 @@ namespace skyline::service::fssrv {
         std::vector<SaveDataInfo> entries;
         if (state.loader && state.loader->nacp) {
             std::optional<SaveDataInfo> cacheInfo;
+            const u64 saveDataOwnerId{state.loader->nacp->nacpContents.saveDataOwnerId};
             const auto cacheResult{GetCacheSaveDataInfo(state.os->publicAppFilesPath,
-                                                        state.loader->nacp->nacpContents.saveDataOwnerId,
+                                                        saveDataOwnerId,
+                                                        GetCurrentApplicationId(state, saveDataOwnerId),
                                                         cacheInfo)};
             if (cacheResult)
                 return cacheResult;
