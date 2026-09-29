@@ -210,68 +210,54 @@ namespace skyline::kernel::type {
     }
 
     void KThread::UpdatePriorityInheritance() {
-        std::unique_lock lock{waiterMutex};
+        auto thread{shared_from_this()};
 
-        std::shared_ptr<KThread> waitingOn{waitThread};
-        i8 currentPriority{priority.load()};
-        while (waitingOn) {
-            i8 ownerPriority;
-            do {
-                // Try to CAS the priority of the owner with the current thread
-                // If the new priority is equivalent to the current priority then we don't need to CAS
-                ownerPriority = waitingOn->priority.load();
-                if (ownerPriority <= currentPriority)
-                    return;
-            } while (!waitingOn->priority.compare_exchange_strong(ownerPriority, currentPriority));
+        while (thread) {
+            std::unique_lock lock{thread->waiterMutex};
 
-            if (ownerPriority != currentPriority) {
-                std::unique_lock waiterLock{waitingOn->waiterMutex, std::try_to_lock};
-                if (!waiterLock) {
-                    // We want to avoid a deadlock here from the thread holding waitingOn->waiterMutex waiting for waiterMutex
-                    // We use a fallback mechanism to avoid this, resetting the state and trying again after being able to successfully acquire waitingOn->waiterMutex once
-                    waitingOn->priority = ownerPriority;
+            // Horizon separates the requested/base priority from the effective
+            // scheduler priority. The latter is the highest priority (lowest
+            // numeric value) among the base priority and all mutex waiters.
+            i8 newPriority{thread->basePriority.load()};
+            if (!thread->waiters.empty())
+                newPriority = std::min(newPriority, thread->waiters.front()->priority.load());
 
+            const i8 oldPriority{thread->priority.load()};
+            if (newPriority == oldPriority)
+                return;
+
+            auto waitingOn{thread->waitThread};
+            std::unique_lock<RecursiveSpinLock> ownerLock;
+            if (waitingOn) {
+                // A priority change also changes this thread's ordering in its
+                // owner's waiter list. Avoid lock-order deadlocks by using the
+                // same retry pattern as the previous PI propagation code.
+                ownerLock = std::unique_lock<RecursiveSpinLock>{waitingOn->waiterMutex, std::try_to_lock};
+                if (!ownerLock) {
                     lock.unlock();
 
-                    waiterLock.lock();
-                    waiterLock.unlock();
-
-                    lock.lock();
-                    waitingOn = waitThread;
-
+                    ownerLock.lock();
+                    ownerLock.unlock();
                     continue;
                 }
 
-                auto nextThread{waitingOn->waitThread};
-                if (nextThread) {
-                    // We need to update the location of the owner thread in the waiter queue of the thread it's waiting on
-                    std::unique_lock nextWaiterLock{nextThread->waiterMutex, std::try_to_lock};
-                    if (!nextWaiterLock) {
-                        // We want to avoid a deadlock here from the thread holding nextThread->waiterMutex waiting for waiterMutex or waitingOn->waiterMutex
-                        waitingOn->priority = ownerPriority;
+                auto &ownerWaiters{waitingOn->waiters};
+                auto waiter{std::find(ownerWaiters.begin(), ownerWaiters.end(), thread)};
+                if (waiter == ownerWaiters.end())
+                    throw exception("Priority inheritance waiter missing from owner queue");
 
-                        lock.unlock();
-                        waiterLock.unlock();
-
-                        nextWaiterLock.lock();
-                        nextWaiterLock.unlock();
-
-                        lock.lock();
-                        waitingOn = waitThread;
-
-                        continue;
-                    }
-
-                    auto &piWaiters{nextThread->waiters};
-                    piWaiters.erase(std::find(piWaiters.begin(), piWaiters.end(), waitingOn));
-                    piWaiters.insert(std::upper_bound(piWaiters.begin(), piWaiters.end(), currentPriority, KThread::IsHigherPriority), waitingOn);
-                    break;
-                }
-                state.scheduler->UpdatePriority(waitingOn);
-                waitingOn = nextThread;
+                ownerWaiters.erase(waiter);
+                thread->priority = newPriority;
+                ownerWaiters.insert(std::upper_bound(ownerWaiters.begin(), ownerWaiters.end(), newPriority, KThread::IsHigherPriority), thread);
             } else {
-                break;
+                thread->priority = newPriority;
             }
+
+            state.scheduler->UpdatePriority(thread);
+
+            // If this thread is itself waiting on a mutex, its changed effective
+            // priority may change the priority inherited by that mutex's owner.
+            thread = waitingOn;
         }
     }
 
