@@ -134,6 +134,25 @@ namespace skyline::gpu::interconnect {
             centredSrcRectX = 0.0f;
 
         auto [dstGuestTexture, dstWentOob]{GetGuestTexture(dstSurface)};
+
+        if (srcGuestTexture.tileConfig.mode == gpu::texture::TileMode::Block &&
+            (srcGuestTexture.tileConfig.blockDepth > 1 || srcGuestTexture.dimensions.depth > 1))
+            LOGI("[TEX3D-F2D] src addr=0x{:X} dims={}x{}x{} block={}x{} rect={}x{}+{},{}",
+                 static_cast<u64>(srcSurface.address),
+                 srcGuestTexture.dimensions.width, srcGuestTexture.dimensions.height, srcGuestTexture.dimensions.depth,
+                 srcGuestTexture.tileConfig.blockHeight, srcGuestTexture.tileConfig.blockDepth,
+                 static_cast<u32>(duDx * static_cast<float>(dstRectWidth)),
+                 static_cast<u32>(dvDy * static_cast<float>(dstRectHeight)),
+                 static_cast<u32>(centredSrcRectX), static_cast<u32>(centredSrcRectY));
+
+        if (dstGuestTexture.tileConfig.mode == gpu::texture::TileMode::Block &&
+            (dstGuestTexture.tileConfig.blockDepth > 1 || dstGuestTexture.dimensions.depth > 1))
+            LOGI("[TEX3D-F2D] dst addr=0x{:X} dims={}x{}x{} block={}x{} rect={}x{}+{},{}",
+                 static_cast<u64>(dstSurface.address),
+                 dstGuestTexture.dimensions.width, dstGuestTexture.dimensions.height, dstGuestTexture.dimensions.depth,
+                 dstGuestTexture.tileConfig.blockHeight, dstGuestTexture.tileConfig.blockDepth,
+                 dstRectWidth, dstRectHeight, dstRectX, dstRectY);
+
         auto srcTextureView{gpu.texture.FindOrCreate(srcGuestTexture, executor.tag)};
         executor.AttachDependency(srcTextureView);
         executor.AttachTexture(srcTextureView.get());
