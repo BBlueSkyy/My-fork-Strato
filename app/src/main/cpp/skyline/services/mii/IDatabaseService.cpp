@@ -15,6 +15,7 @@ namespace skyline::service::mii {
         constexpr u32 DefaultSourceFlag{1U << 1};
         constexpr u32 DefaultMiiCount{6};
         constexpr Result InvalidArgument{static_cast<u32>(0x27E)};
+        constexpr Result NotFound{static_cast<u32>(0x87E)};
 
         struct CharInfo {
             std::array<u8, 0x10> createId{};
@@ -285,6 +286,17 @@ namespace skyline::service::mii {
         return {};
     }
 
+    Result IDatabaseService::UpdateLatest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        [[maybe_unused]] const auto oldCharInfo{request.Pop<CharInfo>()};
+        [[maybe_unused]] const auto sourceFlag{request.Pop<u32>()};
+
+        // UpdateLatest only resolves Miis stored in the user database. The current
+        // backend exposes built-in defaults but has no persistent user-Mii database,
+        // so an empty database must report NotFound rather than fabricate success.
+        response.Push(CharInfo{});
+        return NotFound;
+    }
+
     Result IDatabaseService::BuildRandom(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto age{request.Pop<u32>()};
         const auto gender{request.Pop<u32>()};
@@ -304,6 +316,15 @@ namespace skyline::service::mii {
 
         response.Push(MakeDefaultMii(index));
         return {};
+    }
+
+    Result IDatabaseService::GetIndex(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        [[maybe_unused]] const auto charInfo{request.Pop<CharInfo>()};
+
+        // GetIndex addresses the user Mii database, not the built-in default set.
+        // With no database entries available, Horizon semantics are NotFound/-1.
+        response.Push<s32>(-1);
+        return NotFound;
     }
 
     Result IDatabaseService::SetInterfaceVersion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
