@@ -72,6 +72,18 @@ namespace {
         path = ReadPath(rootCurrentDirectory);
         Check(path && *path == "/", "root current-directory path was not normalized");
 
+        std::array<u8, 17> parentDirectory{'/', 's', 'a', 'v', 'e', '/', 's', 'u', 'b', '/', '.', '.', '/', 'f', 'i', 'l', 'e'};
+        std::array<u8, 18> parentDirectoryZ{};
+        std::copy(parentDirectory.begin(), parentDirectory.end(), parentDirectoryZ.begin());
+        path = ReadPath(parentDirectoryZ);
+        Check(path && *path == "/save/file", "parent-directory component was not normalized");
+
+        std::array<u8, 12> trailingParent{'/', 's', 'a', 'v', 'e', '/', 's', 'u', 'b', '/', '.', 0};
+        trailingParent[10] = '.';
+        trailingParent[11] = 0;
+        path = ReadPath(trailingParent);
+        Check(path && *path == "/save", "trailing parent-directory component was not normalized");
+
         std::array<u8, 7> disguisedTraversal{'/', '/', '.', '.', '/', 'x', 0};
         Check(!ReadPath(disguisedTraversal), "leading separators bypassed parent traversal rejection");
 
