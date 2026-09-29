@@ -39,6 +39,7 @@ namespace skyline {
             using SyncWaiters = std::multimap<void *, std::shared_ptr<KThread>>;
             std::mutex syncWaiterMutex; //!< Synchronizes all mutations to the map to prevent races
             SyncWaiters syncWaiters; //!< All threads waiting on process-wide synchronization primitives (Atomic keys + Address Arbiter)
+            std::recursive_mutex priorityInheritanceMutex; //!< Serializes mutex waiter ownership and effective-priority propagation
 
             /**
             * @brief The status of a single TLS page (A page is 4096 bytes on ARMv8)
@@ -73,6 +74,10 @@ namespace skyline {
             KProcess(const DeviceState &state);
 
             ~KProcess();
+
+            std::recursive_mutex &GetPriorityInheritanceMutex() {
+                return priorityInheritanceMutex;
+            }
 
             bool is64bit() {
                 return npdm.meta.flags.is64Bit;
