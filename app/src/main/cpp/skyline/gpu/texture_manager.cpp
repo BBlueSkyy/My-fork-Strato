@@ -65,7 +65,6 @@ namespace skyline::gpu {
                 auto &matchGuestTexture{*hostMapping->texture->guest};
 
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                    (matchGuestTexture.format->vkAspect & guestTexture.format->vkAspect) != vk::ImageAspectFlags{} &&
                     ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                         matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
                         matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
@@ -93,7 +92,6 @@ namespace skyline::gpu {
                     guestTexture.viewMipBase == 0 &&
                     guestTexture.viewMipCount == 1 &&
                     matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                    (matchGuestTexture.format->vkAspect & guestTexture.format->vkAspect) != vk::ImageAspectFlags{} &&
                     matchGuestTexture.tileConfig.mode == texture::TileMode::Block &&
                     guestTexture.tileConfig.mode == texture::TileMode::Block) {
                     size_t memOffset{};
@@ -138,9 +136,7 @@ namespace skyline::gpu {
 
                 }
 
-                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                        (matchGuestTexture.format->vkAspect & guestTexture.format->vkAspect) != vk::ImageAspectFlags{} &&
-                        matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
                         (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
                     size_t memOffset{static_cast<size_t>(guestMapping.data() - hostMapping->texture->guest->mappings.front().data())};
                     size_t layerMemOffset{};

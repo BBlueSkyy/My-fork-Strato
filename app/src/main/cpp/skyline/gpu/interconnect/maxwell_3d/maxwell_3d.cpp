@@ -287,25 +287,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 ctx.executor.AttachTexture(&*view);
 
                 bool partialClear{!(clearSurface.rEnable && clearSurface.gEnable && clearSurface.bEnable && clearSurface.aEnable)};
-                if (!(view->range.aspectMask & vk::ImageAspectFlagBits::eColor)) {
-                    auto &texture{*view->texture};
-                    auto guestAddress{texture.guest && !texture.guest->mappings.empty()
-                        ? reinterpret_cast<uintptr_t>(texture.guest->mappings.front().data())
-                        : 0UL};
-                    LOGI("[TEXFMT] color-clear-noncolor addr=0x{:X} dims={}x{}x{} "
-                         "guest={} host={} view={} rangeAspect=0x{:X} texAspect=0x{:X} "
-                         "mrt={} arrayIndex={} partial={}",
-                         guestAddress,
-                         texture.dimensions.width, texture.dimensions.height, texture.dimensions.depth,
-                         texture.guest ? vk::to_string(texture.guest->format->vkFormat) : "none",
-                         vk::to_string(texture.format->vkFormat),
-                         vk::to_string(view->format->vkFormat),
-                         static_cast<u32>(view->range.aspectMask),
-                         static_cast<u32>(texture.format->vkAspect),
-                         static_cast<u32>(clearSurface.mrtSelect),
-                         static_cast<u32>(clearSurface.rtArrayIndex),
-                         partialClear);
-                }
+                if (!(view->range.aspectMask & vk::ImageAspectFlagBits::eColor))
+                    LOGW("Colour RT used in clear lacks colour aspect"); // TODO: Drop this check after texman rework
+
 
                 if (partialClear) {
                     ctx.gpu.helperShaders.clearHelperShader.Clear(ctx.gpu, view->range.aspectMask,

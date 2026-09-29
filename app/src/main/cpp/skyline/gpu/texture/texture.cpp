@@ -749,9 +749,9 @@ namespace skyline::gpu {
         if (!guest)
             return;
 
-        // FIXME (TEXMAN): This should really be tracked on the texture usage side
-        if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsRt)
-            gpuDirty = false;
+        // Preserve GPU-dirty tracking even when the guest mirror is retained.
+        // FreeGuest() itself still honors freeGuestTextureMemory, so this changes
+        // coherency tracking without forcing guest texture memory to be released.
 
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
         {
@@ -893,24 +893,8 @@ namespace skyline::gpu {
         auto viewFormat{pFormat->vkFormat}, textureFormat{format->vkFormat};
         if ((flags & vk::ImageCreateFlagBits::eMutableFormat) == vk::ImageCreateFlags{} &&
             viewFormat != textureFormat &&
-            (!gpu.traits.quirks.adrenoRelaxedFormatAliasing || !texture::IsAdrenoAliasCompatible(viewFormat, textureFormat))) {
-            auto guestAddress{guest && !guest->mappings.empty()
-                ? reinterpret_cast<uintptr_t>(guest->mappings.front().data())
-                : 0UL};
-            LOGI("[TEXFMT] non-mutable-cross-format addr=0x{:X} dims={}x{}x{} "
-                 "guest={} host={} view={} flags=0x{:X} texAspect=0x{:X} viewAspect=0x{:X} "
-                 "rangeAspect=0x{:X} mip={}/{} layer={}/{} type={}",
-                 guestAddress,
-                 dimensions.width, dimensions.height, dimensions.depth,
-                 guest ? vk::to_string(guest->format->vkFormat) : "none",
-                 vk::to_string(textureFormat), vk::to_string(viewFormat),
-                 static_cast<u32>(flags),
-                 static_cast<u32>(format->vkAspect), static_cast<u32>(pFormat->vkAspect),
-                 static_cast<u32>(range.aspectMask),
-                 range.baseMipLevel, range.levelCount,
-                 range.baseArrayLayer, range.layerCount,
-                 static_cast<u32>(type));
-        }
+            (!gpu.traits.quirks.adrenoRelaxedFormatAliasing || !texture::IsAdrenoAliasCompatible(viewFormat, textureFormat)))
+            LOGW("Creating a view of a texture with a different format without mutable format: {} - {}", vk::to_string(viewFormat), vk::to_string(textureFormat));
 
         if ((pFormat->vkAspect & format->vkAspect) == vk::ImageAspectFlagBits{}) {
             pFormat = format; // If the requested format doesn't share any aspects then fallback to the texture's format in the hope it's more likely to function
