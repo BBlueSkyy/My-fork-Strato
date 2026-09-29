@@ -39,17 +39,15 @@ namespace skyline::soc::gm20b::engine {
     void MaxwellDma::DmaCopy() {
         if (registers.launchDma->multiLineEnable) {
             if (registers.launchDma->remapEnable) [[unlikely]] {
-                // Remap is handled entirely through the GMMU read/write path (see CopyRemapMultiLine),
-                // it never touches the Vulkan-backed interconnect buffers, so we don't need to Submit() here
-                if (registers.launchDma->srcMemoryLayout == Registers::LaunchDma::MemoryLayout::Pitch &&
-                    registers.launchDma->dstMemoryLayout == Registers::LaunchDma::MemoryLayout::Pitch) {
-                    CopyRemapMultiLine();
-                } else {
-                    // TODO: BlockLinear surfaces with remap enabled (e.g. compressed texture uploads with
-                    // component padding) aren't handled yet, materialize into a linear scratch buffer via
-                    // PerformRemap() and feed it through CopyBlockLinearToPitch/CopyPitchToBlockLinear
-                    LOGW("Remapped DMA copies involving BlockLinear surfaces are unimplemented!");
-                }
+                bool usesBlockLinear{
+                    registers.launchDma->srcMemoryLayout == Registers::LaunchDma::MemoryLayout::BlockLinear ||
+                    registers.launchDma->dstMemoryLayout == Registers::LaunchDma::MemoryLayout::BlockLinear
+                };
+
+                if (usesBlockLinear)
+                    channelCtx.executor.Submit();
+
+                CopyRemapMultiLine();
                 return;
             }
 
@@ -217,30 +215,174 @@ namespace skyline::soc::gm20b::engine {
 
         bool needsSource{RemapNeedsSource()};
         bool needsDestinationPreserve{RemapNeedsDestinationPreserve()};
+        bool srcBlockLinear{registers.launchDma->srcMemoryLayout == Registers::LaunchDma::MemoryLayout::BlockLinear};
+        bool dstBlockLinear{registers.launchDma->dstMemoryLayout == Registers::LaunchDma::MemoryLayout::BlockLinear};
 
-        if (copyCache.size() < dstLineSize)
-            copyCache.resize(dstLineSize);
-        u8 *dstScratch{copyCache.data()};
+        if (!srcBlockLinear && !dstBlockLinear) {
+            if (copyCache.size() < dstLineSize)
+                copyCache.resize(dstLineSize);
+            u8 *dstScratch{copyCache.data()};
 
-        std::vector<u8> srcScratch;
-        if (needsSource)
-            srcScratch.resize(srcLineSize);
+            std::vector<u8> srcScratch;
+            if (needsSource)
+                srcScratch.resize(srcLineSize);
 
-        for (size_t line{}; line < lines; line++) {
-            u64 srcLineOffset{u64{*registers.offsetIn} + line * *registers.pitchIn};
-            u64 dstLineOffset{u64{*registers.offsetOut} + line * *registers.pitchOut};
+            for (size_t line{}; line < lines; line++) {
+                u64 srcLineOffset{u64{*registers.offsetIn} + line * *registers.pitchIn};
+                u64 dstLineOffset{u64{*registers.offsetOut} + line * *registers.pitchOut};
 
-            if (needsDestinationPreserve)
-                channelCtx.asCtx->gmmu.Read(dstScratch, dstLineOffset, dstLineSize);
+                if (needsDestinationPreserve)
+                    channelCtx.asCtx->gmmu.Read(dstScratch, dstLineOffset, dstLineSize);
 
-            if (needsSource) {
-                channelCtx.asCtx->gmmu.Read(srcScratch.data(), srcLineOffset, srcLineSize);
-                PerformRemap(dstScratch, srcScratch.data(), elementsPerLine);
+                if (needsSource) {
+                    channelCtx.asCtx->gmmu.Read(srcScratch.data(), srcLineOffset, srcLineSize);
+                    PerformRemap(dstScratch, srcScratch.data(), elementsPerLine);
+                } else {
+                    PerformRemap(dstScratch, nullptr, elementsPerLine);
+                }
+
+                channelCtx.asCtx->gmmu.Write(dstLineOffset, dstScratch, dstLineSize);
+            }
+            return;
+        }
+
+        if (srcBlockLinear && registers.srcSurface->blockSize.Width() != 1) [[unlikely]] {
+            LOGE("Blocklinear surfaces with a non-one block width are unsupported on the Tegra X1: {}", registers.srcSurface->blockSize.Width());
+            return;
+        }
+        if (dstBlockLinear && registers.dstSurface->blockSize.Width() != 1) [[unlikely]] {
+            LOGE("Blocklinear surfaces with a non-one block width are unsupported on the Tegra X1: {}", registers.dstSurface->blockSize.Width());
+            return;
+        }
+        if (srcBlockLinear && dstBlockLinear && registers.srcSurface->depth != registers.dstSurface->depth) [[unlikely]] {
+            LOGW("BlockLinear remap with mismatched surface depth is unsupported: {} -> {}", registers.srcSurface->depth, registers.dstSurface->depth);
+            return;
+        }
+
+        size_t depth{srcBlockLinear ? registers.srcSurface->depth : registers.dstSurface->depth};
+        size_t totalElements{elementsPerLine * lines * depth};
+        std::vector<u8> srcLinear;
+        std::vector<u8> dstLinear(totalElements * dstBpp);
+
+        auto copyPitchToLinear{[&](u8 *dst, u64 address, size_t pitch, size_t lineSize) {
+            for (size_t slice{}; slice < depth; slice++) {
+                for (size_t line{}; line < lines; line++) {
+                    size_t index{slice * lines + line};
+                    channelCtx.asCtx->gmmu.Read(dst + index * lineSize, address + index * pitch, lineSize);
+                }
+            }
+        }};
+
+        auto copyLinearToPitch{[&](u8 *src, u64 address, size_t pitch, size_t lineSize) {
+            for (size_t slice{}; slice < depth; slice++) {
+                for (size_t line{}; line < lines; line++) {
+                    size_t index{slice * lines + line};
+                    channelCtx.asCtx->gmmu.Write(address + index * pitch, src + index * lineSize, lineSize);
+                }
+            }
+        }};
+
+        std::vector<u8> srcBlockCache;
+        if (needsSource) {
+            srcLinear.resize(totalElements * srcBpp);
+            if (srcBlockLinear) {
+                gpu::texture::Dimensions srcDimensions{
+                    static_cast<u32>(registers.srcSurface->width * srcBpp),
+                    registers.srcSurface->height,
+                    registers.srcSurface->depth
+                };
+                gpu::texture::Dimensions copyDimensions{
+                    static_cast<u32>(elementsPerLine * srcBpp),
+                    static_cast<u32>(lines),
+                    static_cast<u32>(depth)
+                };
+                size_t srcLayerSize{gpu::texture::GetBlockLinearLayerSize(
+                    srcDimensions, 1, 1, 1,
+                    registers.srcSurface->blockSize.Height(), registers.srcSurface->blockSize.Depth()
+                )};
+                auto srcMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, srcLayerSize)};
+                u8 *srcBlock{};
+                if (srcMappings.size() == 1) {
+                    srcBlock = srcMappings.front().data();
+                } else {
+                    srcBlockCache.resize(srcLayerSize);
+                    srcBlock = srcBlockCache.data();
+                    channelCtx.asCtx->gmmu.Read(srcBlock, u64{*registers.offsetIn}, srcLayerSize);
+                }
+
+                gpu::texture::CopyBlockLinearToPitchSubrect(
+                    copyDimensions, srcDimensions,
+                    1, 1, 1, static_cast<u32>(srcLineSize),
+                    registers.srcSurface->blockSize.Height(), registers.srcSurface->blockSize.Depth(),
+                    srcBlock, srcLinear.data(),
+                    static_cast<u32>(registers.srcSurface->origin.x * srcBpp), registers.srcSurface->origin.y
+                );
             } else {
-                PerformRemap(dstScratch, nullptr, elementsPerLine);
+                copyPitchToLinear(srcLinear.data(), u64{*registers.offsetIn}, *registers.pitchIn, srcLineSize);
+            }
+        }
+
+        std::vector<u8> dstBlockCache;
+        u8 *dstBlock{};
+        size_t dstLayerSize{};
+        gpu::texture::Dimensions dstDimensions{};
+        gpu::texture::Dimensions dstCopyDimensions{};
+        bool dstSplit{};
+
+        if (dstBlockLinear) {
+            dstDimensions = {
+                static_cast<u32>(registers.dstSurface->width * dstBpp),
+                registers.dstSurface->height,
+                registers.dstSurface->depth
+            };
+            dstCopyDimensions = {
+                static_cast<u32>(elementsPerLine * dstBpp),
+                static_cast<u32>(lines),
+                static_cast<u32>(depth)
+            };
+            dstLayerSize = gpu::texture::GetBlockLinearLayerSize(
+                dstDimensions, 1, 1, 1,
+                registers.dstSurface->blockSize.Height(), registers.dstSurface->blockSize.Depth()
+            );
+
+            auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, dstLayerSize)};
+            dstSplit = dstMappings.size() != 1;
+            if (dstSplit) {
+                dstBlockCache.resize(dstLayerSize);
+                dstBlock = dstBlockCache.data();
+                channelCtx.asCtx->gmmu.Read(dstBlock, u64{*registers.offsetOut}, dstLayerSize);
+            } else {
+                dstBlock = dstMappings.front().data();
             }
 
-            channelCtx.asCtx->gmmu.Write(dstLineOffset, dstScratch, dstLineSize);
+            if (needsDestinationPreserve) {
+                gpu::texture::CopyBlockLinearToPitchSubrect(
+                    dstCopyDimensions, dstDimensions,
+                    1, 1, 1, static_cast<u32>(dstLineSize),
+                    registers.dstSurface->blockSize.Height(), registers.dstSurface->blockSize.Depth(),
+                    dstBlock, dstLinear.data(),
+                    static_cast<u32>(registers.dstSurface->origin.x * dstBpp), registers.dstSurface->origin.y
+                );
+            }
+        } else if (needsDestinationPreserve) {
+            copyPitchToLinear(dstLinear.data(), u64{*registers.offsetOut}, *registers.pitchOut, dstLineSize);
+        }
+
+        PerformRemap(dstLinear.data(), needsSource ? srcLinear.data() : nullptr, totalElements);
+
+        if (dstBlockLinear) {
+            gpu::texture::CopyPitchToBlockLinearSubrect(
+                dstCopyDimensions, dstDimensions,
+                1, 1, 1, static_cast<u32>(dstLineSize),
+                registers.dstSurface->blockSize.Height(), registers.dstSurface->blockSize.Depth(),
+                dstLinear.data(), dstBlock,
+                static_cast<u32>(registers.dstSurface->origin.x * dstBpp), registers.dstSurface->origin.y
+            );
+
+            if (dstSplit)
+                channelCtx.asCtx->gmmu.Write(u64{*registers.offsetOut}, dstBlock, dstLayerSize);
+        } else {
+            copyLinearToPitch(dstLinear.data(), u64{*registers.offsetOut}, *registers.pitchOut, dstLineSize);
         }
     }
 
@@ -260,7 +402,7 @@ namespace skyline::soc::gm20b::engine {
             size_t offset{isSrcSplit ? srcSize : 0};
 
             if (copyCache.size() < (dstSize + offset))
-            copyCache.resize(dstSize + offset);
+                copyCache.resize(dstSize + offset);
 
             dst = copyCache.data() + offset;
 
