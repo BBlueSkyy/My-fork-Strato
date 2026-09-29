@@ -14,76 +14,12 @@ namespace skyline::service::mii {
     namespace {
         constexpr u32 DefaultMiiCount{6};
         constexpr Result InvalidArgument{static_cast<u32>(0x27E)};
+        constexpr Result BufferTooSmall{static_cast<u32>(0x47E)};
         constexpr Result NotUpdated{static_cast<u32>(0x67E)};
         constexpr Result NotFound{static_cast<u32>(0x87E)};
         constexpr Result DatabaseFull{static_cast<u32>(0xA7E)};
+        constexpr Result InvalidCharInfo{static_cast<u32>((100U << 9U) | 126U)};
         constexpr Result InvalidOperationOnSpecialMii{static_cast<u32>((202U << 9U) | 126U)};
-
-        /* CharInfo is shared with the persistent database backend. */
-#if 0
-        struct CharInfo {
-            std::array<u8, 0x10> createId{};
-            std::array<char16_t, 10> name{};
-            u16 nullTerminator{};
-            u8 fontRegion{};
-            u8 favoriteColor{};
-            u8 gender{};
-            u8 height{};
-            u8 build{};
-            u8 type{};
-            u8 regionMove{};
-            u8 facelineType{};
-            u8 facelineColor{};
-            u8 facelineWrinkle{};
-            u8 facelineMake{};
-            u8 hairType{};
-            u8 hairColor{};
-            u8 hairFlip{};
-            u8 eyeType{};
-            u8 eyeColor{};
-            u8 eyeScale{};
-            u8 eyeAspect{};
-            u8 eyeRotate{};
-            u8 eyeX{};
-            u8 eyeY{};
-            u8 eyebrowType{};
-            u8 eyebrowColor{};
-            u8 eyebrowScale{};
-            u8 eyebrowAspect{};
-            u8 eyebrowRotate{};
-            u8 eyebrowX{};
-            u8 eyebrowY{};
-            u8 noseType{};
-            u8 noseScale{};
-            u8 noseY{};
-            u8 mouthType{};
-            u8 mouthColor{};
-            u8 mouthScale{};
-            u8 mouthAspect{};
-            u8 mouthY{};
-            u8 beardColor{};
-            u8 beardType{};
-            u8 mustacheType{};
-            u8 mustacheScale{};
-            u8 mustacheY{};
-            u8 glassType{};
-            u8 glassColor{};
-            u8 glassScale{};
-            u8 glassY{};
-            u8 moleType{};
-            u8 moleScale{};
-            u8 moleX{};
-            u8 moleY{};
-            u8 padding{};
-        };
-        static_assert(sizeof(CharInfo) == 0x58);
-
-        struct CharInfoElement {
-            CharInfo charInfo{};
-            u32 source{};
-        };
-        static_assert(sizeof(CharInfoElement) == 0x5C);
-#endif
 
         constexpr std::array<std::u16string_view, DefaultMiiCount> DefaultNames{
             u"Player", u"Mario", u"Luigi", u"Peach", u"Link", u"Samus"
@@ -273,8 +209,10 @@ namespace skyline::service::mii {
         if (sourceFlag & DatabaseSourceFlag) {
             const auto entries{database.Snapshot()};
             for (const auto &info : entries) {
-                if (count >= capacity)
-                    break;
+                if (count >= capacity) {
+                    response.Push<u32>(static_cast<u32>(count));
+                    return BufferTooSmall;
+                }
 
                 const CharInfoElement element{
                     .charInfo = info,
@@ -286,7 +224,12 @@ namespace skyline::service::mii {
         }
 
         if (sourceFlag & DefaultSourceFlag) {
-            for (u32 index{}; index < DefaultMiiCount && count < capacity; index++) {
+            for (u32 index{}; index < DefaultMiiCount; index++) {
+                if (count >= capacity) {
+                    response.Push<u32>(static_cast<u32>(count));
+                    return BufferTooSmall;
+                }
+
                 const CharInfoElement element{
                     .charInfo = MakeDefaultMii(index),
                     .source = Source::Default,
@@ -309,8 +252,10 @@ namespace skyline::service::mii {
         if (sourceFlag & DatabaseSourceFlag) {
             const auto entries{database.Snapshot()};
             for (const auto &info : entries) {
-                if (count >= capacity)
-                    break;
+                if (count >= capacity) {
+                    response.Push<u32>(static_cast<u32>(count));
+                    return BufferTooSmall;
+                }
 
                 std::memcpy(output.data() + count * sizeof(CharInfo), &info, sizeof(info));
                 count++;
@@ -318,7 +263,12 @@ namespace skyline::service::mii {
         }
 
         if (sourceFlag & DefaultSourceFlag) {
-            for (u32 index{}; index < DefaultMiiCount && count < capacity; index++) {
+            for (u32 index{}; index < DefaultMiiCount; index++) {
+                if (count >= capacity) {
+                    response.Push<u32>(static_cast<u32>(count));
+                    return BufferTooSmall;
+                }
+
                 const auto info{MakeDefaultMii(index)};
                 std::memcpy(output.data() + count * sizeof(CharInfo), &info, sizeof(info));
                 count++;
@@ -338,6 +288,11 @@ namespace skyline::service::mii {
             return NotFound;
         }
 
+        if (interfaceVersion >= 1 && !IsValidCharInfo(oldCharInfo)) {
+            response.Push(CharInfo{});
+            return InvalidCharInfo;
+        }
+
         const auto storedInfo{database.FindByCreateId(oldCharInfo.createId)};
         if (!storedInfo || storedInfo->type != oldCharInfo.type) {
             response.Push(CharInfo{});
@@ -345,7 +300,11 @@ namespace skyline::service::mii {
         }
 
         response.Push(*storedInfo);
-        if (std::memcmp(&oldCharInfo, &*storedInfo, sizeof(CharInfo)) == 0)
+        auto oldComparable{oldCharInfo};
+        auto storedComparable{*storedInfo};
+        oldComparable.padding = 0;
+        storedComparable.padding = 0;
+        if (std::memcmp(&oldComparable, &storedComparable, sizeof(CharInfo)) == 0)
             return NotUpdated;
 
         return {};
@@ -374,6 +333,11 @@ namespace skyline::service::mii {
 
     Result IDatabaseService::GetIndex(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto charInfo{request.Pop<CharInfo>()};
+        if (!IsValidCharInfo(charInfo)) {
+            response.Push<s32>(-1);
+            return InvalidCharInfo;
+        }
+
         const auto index{database.FindIndex(charInfo.createId)};
         response.Push<s32>(index);
         return index >= 0 ? Result{} : NotFound;
@@ -397,6 +361,8 @@ namespace skyline::service::mii {
                 return {};
             case MiiDatabase::AppendResult::Full:
                 return DatabaseFull;
+            case MiiDatabase::AppendResult::InvalidCharInfo:
+                return InvalidCharInfo;
             case MiiDatabase::AppendResult::InvalidSpecial:
                 return InvalidOperationOnSpecialMii;
         }

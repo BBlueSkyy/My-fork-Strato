@@ -84,11 +84,14 @@ namespace skyline::service::mii {
     };
     static_assert(sizeof(CharInfoElement) == 0x5C);
 
+    bool IsValidCharInfo(const CharInfo &info);
+
     class MiiDatabase {
       public:
         enum class AppendResult {
             Success,
             Full,
+            InvalidCharInfo,
             InvalidSpecial,
         };
 

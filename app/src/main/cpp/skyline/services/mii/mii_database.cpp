@@ -13,8 +13,90 @@
 
 namespace skyline::service::mii {
     namespace {
+        bool IsValidCreateId(const std::array<u8, 0x10> &createId) {
+            const bool nonZero{std::any_of(createId.begin(), createId.end(), [](u8 value) { return value != 0; })};
+            return nonZero && (createId[8] & 0xC0U) == 0x80U;
+        }
+
+        bool IsValidNickname(const CharInfo &info) {
+            std::array<char16_t, 11> characters{};
+            std::copy(info.name.begin(), info.name.end(), characters.begin());
+            characters.back() = static_cast<char16_t>(info.nullTerminator);
+
+            for (size_t index{}; index < characters.size(); index++) {
+                const auto value{static_cast<u16>(characters[index])};
+                if (value >= 0xD800 && value <= 0xDBFF) {
+                    if (++index >= characters.size())
+                        return false;
+                    const auto low{static_cast<u16>(characters[index])};
+                    if (low < 0xDC00 || low > 0xDFFF)
+                        return false;
+                } else if (value >= 0xDC00 && value <= 0xDFFF) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+
         constexpr std::array<char, 4> DatabaseMagic{'S', 'M', 'D', 'B'};
         constexpr u32 DatabaseVersion{1};
+    }
+
+    bool IsValidCharInfo(const CharInfo &info) {
+        if (!IsValidCreateId(info.createId) || !IsValidNickname(info))
+            return false;
+
+        return info.fontRegion <= 3 &&
+               info.favoriteColor <= 11 &&
+               info.gender <= 1 &&
+               info.height <= 0x7F &&
+               info.build <= 0x7F &&
+               info.type <= 1 &&
+               info.regionMove <= 3 &&
+               info.facelineType <= 11 &&
+               info.facelineColor <= 9 &&
+               info.facelineWrinkle <= 11 &&
+               info.facelineMake <= 11 &&
+               info.hairType <= 131 &&
+               info.hairColor <= 99 &&
+               info.hairFlip <= 1 &&
+               info.eyeType <= 59 &&
+               info.eyeColor <= 99 &&
+               info.eyeScale <= 7 &&
+               info.eyeAspect <= 6 &&
+               info.eyeRotate <= 7 &&
+               info.eyeX <= 12 &&
+               info.eyeY <= 18 &&
+               info.eyebrowType <= 23 &&
+               info.eyebrowColor <= 99 &&
+               info.eyebrowScale <= 8 &&
+               info.eyebrowAspect <= 6 &&
+               info.eyebrowRotate <= 11 &&
+               info.eyebrowX <= 12 &&
+               info.eyebrowY <= 18 &&
+               info.noseType <= 17 &&
+               info.noseScale <= 8 &&
+               info.noseY <= 18 &&
+               info.mouthType <= 35 &&
+               info.mouthColor <= 99 &&
+               info.mouthScale <= 8 &&
+               info.mouthAspect <= 6 &&
+               info.mouthY <= 18 &&
+               info.beardColor <= 99 &&
+               info.beardType <= 5 &&
+               info.mustacheType <= 5 &&
+               info.mustacheScale <= 8 &&
+               info.mustacheY <= 16 &&
+               info.glassType <= 19 &&
+               info.glassColor <= 99 &&
+               info.glassScale <= 7 &&
+               info.glassY <= 20 &&
+               info.moleType <= 1 &&
+               info.moleScale <= 8 &&
+               info.moleX <= 16 &&
+               info.moleY <= 30;
     }
 
     MiiDatabase::MiiDatabase(const DeviceState &state)
@@ -156,6 +238,9 @@ namespace skyline::service::mii {
     }
 
     MiiDatabase::AppendResult MiiDatabase::Append(const CharInfo &charInfo) {
+        if (!IsValidCharInfo(charInfo))
+            return AppendResult::InvalidCharInfo;
+
         if (charInfo.type == 1)
             return AppendResult::InvalidSpecial;
 
