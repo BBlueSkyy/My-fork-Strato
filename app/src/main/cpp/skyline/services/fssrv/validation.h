@@ -64,9 +64,8 @@ namespace skyline::service::fssrv {
             return std::nullopt;
 
         const bool absolute{path.front() == '/'};
-        std::string normalized{absolute ? "/" : ""};
+        std::vector<std::string_view> components;
         size_t position{absolute ? 1U : 0U};
-        bool first{true};
 
         while (position < path.size()) {
             while (position < path.size() && path[position] == '/')
@@ -75,22 +74,31 @@ namespace skyline::service::fssrv {
                 break;
 
             const auto separator{path.find('/', position)};
-            const auto component{path.substr(position, separator - position)};
-            if (component.empty() || component == "..")
-                return std::nullopt;
+            const std::string_view component{path.data() + position, separator == std::string::npos ? path.size() - position : separator - position};
 
-            if (component != ".") {
-                if (!first)
-                    normalized += '/';
-                normalized += component;
-                first = false;
+            if (component == ".") {
+                // Current-directory components are removed by Horizon path normalization.
+            } else if (component == "..") {
+                if (components.empty())
+                    return std::nullopt;
+                components.pop_back();
+            } else if (!component.empty()) {
+                components.emplace_back(component);
             }
 
             if (separator == std::string::npos)
                 break;
             position = separator + 1;
-            if (position == path.size())
-                break;
+        }
+
+        std::string normalized;
+        if (absolute)
+            normalized = "/";
+
+        for (const auto component : components) {
+            if (!normalized.empty() && normalized.back() != '/')
+                normalized += '/';
+            normalized.append(component);
         }
 
         return normalized;
