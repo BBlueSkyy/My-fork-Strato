@@ -60,6 +60,26 @@ namespace {
         path = ReadPath(repeatedInnerSlashes);
         Check(path && *path == "/save/file", "repeated inner separators were not normalized");
 
+        std::array<u8, 15> currentDirectory{'/', 's', 'a', 'v', 'e', '/', '.', '/', 'f', 'i', 'l', 'e', 0, 0, 0};
+        path = ReadPath(currentDirectory);
+        Check(path && *path == "/save/file", "current-directory component was not normalized");
+
+        std::array<u8, 9> trailingCurrentDirectory{'/', 's', 'a', 'v', 'e', '/', '.', 0, 0};
+        path = ReadPath(trailingCurrentDirectory);
+        Check(path && *path == "/save", "trailing current-directory component was not normalized");
+
+        std::array<u8, 3> rootCurrentDirectory{'/', '.', 0};
+        path = ReadPath(rootCurrentDirectory);
+        Check(path && *path == "/", "root current-directory path was not normalized");
+
+        std::array<u8, 18> parentDirectory{'/', 's', 'a', 'v', 'e', '/', 's', 'u', 'b', '/', '.', '.', '/', 'f', 'i', 'l', 'e', 0};
+        path = ReadPath(parentDirectory);
+        Check(path && *path == "/save/file", "parent-directory component was not normalized");
+
+        std::array<u8, 13> trailingParent{'/', 's', 'a', 'v', 'e', '/', 's', 'u', 'b', '/', '.', '.', 0};
+        path = ReadPath(trailingParent);
+        Check(path && *path == "/save", "trailing parent-directory component was not normalized");
+
         std::array<u8, 7> disguisedTraversal{'/', '/', '.', '.', '/', 'x', 0};
         Check(!ReadPath(disguisedTraversal), "leading separators bypassed parent traversal rejection");
 
@@ -572,6 +592,11 @@ namespace {
         state.loader = std::make_shared<loader::Loader>();
         state.loader->nacp.emplace();
         state.loader->nacp->nacpContents.saveDataOwnerId = SaveDataOwnerId;
+        state.loader->nacp->nacpContents.cacheStorageSize = 0xC00000;
+        state.loader->nacp->nacpContents.cacheStorageJournalSize = 0xC00000;
+        state.loader->cnmt.emplace();
+        constexpr u64 ApplicationId{0x010083A018260000};
+        state.loader->cnmt->header.id = ApplicationId;
         service::ServiceManager manager;
         kernel::type::KSession session;
         IFileSystemProxy proxy(state, manager);
@@ -581,6 +606,37 @@ namespace {
         input.attribute.programId = 0;
         input.attribute.type = SaveDataType::Cache;
         auto request{RequestWith(input)};
+        ipc::IpcResponse sizeResponse;
+        auto sizeRequest{RequestWith<u16>(0)};
+        Check(!proxy.GetCacheStorageSize(session, sizeRequest, sizeResponse),
+              "launch-provisioned cache size query failed");
+        Check(sizeResponse.Get<i64>() == 0xC00000 &&
+              sizeResponse.Get<i64>(sizeof(i64)) == 0xC00000,
+              "launch-provisioned cache sizes were not preserved");
+
+        ipc::IpcRequest readerRequest;
+        ipc::IpcResponse readerOpenResponse;
+        Check(!proxy.OpenSaveDataInfoReaderOnlyCacheStorage(session, readerRequest, readerOpenResponse),
+              "cache-only save-data reader did not open");
+        auto cacheReader{std::dynamic_pointer_cast<ISaveDataInfoReader>(manager.lastRegisteredService)};
+        Check(cacheReader != nullptr, "cache-only save-data reader was not registered");
+
+        std::array<SaveDataInfo, 1> cacheEntries{};
+        ipc::IpcRequest readRequest;
+        readRequest.outputBuf.emplace_back(reinterpret_cast<u8 *>(cacheEntries.data()), sizeof(cacheEntries));
+        ipc::IpcResponse readResponse;
+        Check(!cacheReader->ReadSaveDataInfo(session, readRequest, readResponse),
+              "cache-only save-data reader failed");
+        Check(readResponse.Get<i64>() == 1, "existing cache was invisible to the cache-only reader");
+        Check(cacheEntries[0].type == SaveDataType::Cache &&
+              cacheEntries[0].spaceId == SaveDataSpaceId::User &&
+              cacheEntries[0].applicationId == ApplicationId &&
+              cacheEntries[0].index == 0 &&
+              cacheEntries[0].rank == SaveDataRank::Primary &&
+              cacheEntries[0].saveDataId != 0 &&
+              cacheEntries[0].size == 0x1800000,
+              "cache-only reader returned inconsistent SaveDataInfo");
+
         ipc::IpcResponse response;
         Check(!proxy.OpenSaveDataFileSystem(session, request, response),
               "launch-provisioned cache storage did not open through programId zero");
@@ -625,6 +681,44 @@ namespace {
         auto request{RequestWith(input)};
         ipc::IpcResponse response;
         Check(!proxy.OpenSaveDataFileSystem(session, request, response), "created cache storage did not open");
+
+        TempDirectory legacyRoot;
+        const auto legacyCachePath{legacyRoot.path / "switch/nand/user/save/cache/0100F2200C984000"};
+        std::filesystem::create_directories(legacyCachePath);
+
+        kernel::OS legacyOs;
+        legacyOs.publicAppFilesPath = legacyRoot.path.string();
+        DeviceState legacyState{.os = &legacyOs};
+        legacyState.loader = std::make_shared<loader::Loader>();
+        legacyState.loader->nacp.emplace();
+        legacyState.loader->nacp->nacpContents.saveDataOwnerId = SaveDataOwnerId;
+        service::ServiceManager legacyManager;
+        kernel::type::KSession legacySession;
+        IFileSystemProxy legacyProxy(legacyState, legacyManager);
+
+        auto legacySizeRequest{RequestWith<u16>(0)};
+        ipc::IpcResponse legacyMissingResponse;
+        Check(legacyProxy.GetCacheStorageSize(legacySession, legacySizeRequest, legacyMissingResponse) == result::EntityNotFound,
+              "untracked legacy cache reported fabricated sizes");
+
+        target = CacheStorageTargetMedia::None;
+        requiredSize = UINT64_MAX;
+        Check(!CreateApplicationCacheStorage(legacyRoot.path.string(), SaveDataOwnerId, 0, 0x1000,
+                                             0, 0x800, 0x800, target, requiredSize),
+              "legacy directory-only cache was not adopted");
+        Check(target == CacheStorageTargetMedia::Nand && requiredSize == 0,
+              "legacy cache adoption returned the wrong outputs");
+        Check(CreateApplicationCacheStorage(legacyRoot.path.string(), SaveDataOwnerId, 0, 0x1000,
+                                            0, 0x800, 0x800, target, requiredSize) == result::AlreadyExists,
+              "adopted cache stopped preserving duplicate creation semantics");
+
+        auto migratedSizeRequest{RequestWith<u16>(0)};
+        ipc::IpcResponse migratedSizeResponse;
+        Check(!legacyProxy.GetCacheStorageSize(legacySession, migratedSizeRequest, migratedSizeResponse),
+              "adopted cache size query failed");
+        Check(migratedSizeResponse.Get<i64>() == 0x800 &&
+              migratedSizeResponse.Get<i64>(sizeof(i64)) == 0x800,
+              "adopted cache sizes were not persisted");
     }
 
 }

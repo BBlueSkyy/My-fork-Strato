@@ -10,6 +10,8 @@ namespace skyline::loader {
         struct Nacp {
             struct {
                 u64 saveDataOwnerId{};
+                u64 cacheStorageSize{};
+                u64 cacheStorageJournalSize{};
             } nacpContents;
         };
 
