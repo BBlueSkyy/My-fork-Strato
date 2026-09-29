@@ -183,9 +183,8 @@ namespace skyline::kernel::type {
         }
 
         if (isHighestPriority)
-            // Adding the highest-priority waiter may change the owner's effective
-            // priority and recursively the priority of any owner it is waiting on.
-            owner->UpdatePriorityInheritance();
+            // If we were the highest priority thread then we need to inherit priorities for all threads we're waiting on recursively
+            thread->UpdatePriorityInheritance();
 
         if (thread == state.thread)
             state.scheduler->WaitSchedule();
@@ -307,17 +306,13 @@ namespace skyline::kernel::type {
                             auto &waiters{waitThread->waiters};
                             auto it{std::find(waiters.begin(), waiters.end(), state.thread)};
                             if (it != waiters.end()) {
-                                // If we were signalled but are waiting on locking the associated mutex then we need to cancel our wait.
-                                // First detach under both waiter locks, then restore the owner's effective priority after releasing them.
+                                // If we were signalled but are waiting on locking the associated mutex then we need to cancel our wait
                                 waiters.erase(it);
+                                state.thread->UpdatePriorityInheritance();
 
                                 state.thread->waitMutex = nullptr;
                                 state.thread->waitTag = 0;
                                 state.thread->waitThread = nullptr;
-
-                                waitLock.unlock();
-                                lock.unlock();
-                                waitThread->UpdatePriorityInheritance();
                             } else {
                                 // If we were signalled and are no longer waiting on the associated mutex then we're already scheduled
                                 shouldWait = true;
