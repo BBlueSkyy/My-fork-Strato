@@ -12,72 +12,14 @@
 
 namespace skyline::service::mii {
     namespace {
-        constexpr u32 DefaultSourceFlag{1U << 1};
         constexpr u32 DefaultMiiCount{6};
         constexpr Result InvalidArgument{static_cast<u32>(0x27E)};
-
-        struct CharInfo {
-            std::array<u8, 0x10> createId{};
-            std::array<char16_t, 10> name{};
-            u16 nullTerminator{};
-            u8 fontRegion{};
-            u8 favoriteColor{};
-            u8 gender{};
-            u8 height{};
-            u8 build{};
-            u8 type{};
-            u8 regionMove{};
-            u8 facelineType{};
-            u8 facelineColor{};
-            u8 facelineWrinkle{};
-            u8 facelineMake{};
-            u8 hairType{};
-            u8 hairColor{};
-            u8 hairFlip{};
-            u8 eyeType{};
-            u8 eyeColor{};
-            u8 eyeScale{};
-            u8 eyeAspect{};
-            u8 eyeRotate{};
-            u8 eyeX{};
-            u8 eyeY{};
-            u8 eyebrowType{};
-            u8 eyebrowColor{};
-            u8 eyebrowScale{};
-            u8 eyebrowAspect{};
-            u8 eyebrowRotate{};
-            u8 eyebrowX{};
-            u8 eyebrowY{};
-            u8 noseType{};
-            u8 noseScale{};
-            u8 noseY{};
-            u8 mouthType{};
-            u8 mouthColor{};
-            u8 mouthScale{};
-            u8 mouthAspect{};
-            u8 mouthY{};
-            u8 beardColor{};
-            u8 beardType{};
-            u8 mustacheType{};
-            u8 mustacheScale{};
-            u8 mustacheY{};
-            u8 glassType{};
-            u8 glassColor{};
-            u8 glassScale{};
-            u8 glassY{};
-            u8 moleType{};
-            u8 moleScale{};
-            u8 moleX{};
-            u8 moleY{};
-            u8 padding{};
-        };
-        static_assert(sizeof(CharInfo) == 0x58);
-
-        struct CharInfoElement {
-            CharInfo charInfo{};
-            u32 source{};
-        };
-        static_assert(sizeof(CharInfoElement) == 0x5C);
+        constexpr Result BufferTooSmall{static_cast<u32>(0x47E)};
+        constexpr Result NotUpdated{static_cast<u32>(0x67E)};
+        constexpr Result NotFound{static_cast<u32>(0x87E)};
+        constexpr Result DatabaseFull{static_cast<u32>(0xA7E)};
+        constexpr Result InvalidCharInfo{static_cast<u32>((100U << 9U) | 126U)};
+        constexpr Result InvalidOperationOnSpecialMii{static_cast<u32>((202U << 9U) | 126U)};
 
         constexpr std::array<std::u16string_view, DefaultMiiCount> DefaultNames{
             u"Player", u"Mario", u"Luigi", u"Peach", u"Link", u"Samus"
@@ -224,64 +166,147 @@ namespace skyline::service::mii {
         }
     }
 
-    IDatabaseService::IDatabaseService(const DeviceState &state, ServiceManager &manager, u32 databaseType)
-        : BaseService(state, manager), databaseType(databaseType) {}
+    IDatabaseService::IDatabaseService(const DeviceState &state, ServiceManager &manager, MiiDatabase &database, u32 databaseType)
+        : BaseService(state, manager), database(database), databaseType(databaseType),
+          updateCounter(database.GetUpdateCounter()) {}
 
     Result IDatabaseService::IsUpdated(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        request.Pop<u32>();
-        response.Push<u8>(0);
+        const auto sourceFlag{request.Pop<u32>()};
+        bool updated{};
+
+        if (sourceFlag & DatabaseSourceFlag) {
+            const auto currentCounter{database.GetUpdateCounter()};
+            updated = updateCounter != currentCounter;
+            updateCounter = currentCounter;
+        }
+
+        response.Push<u8>(updated);
         return {};
     }
 
     Result IDatabaseService::IsFullDatabase(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<u8>(0);
+        response.Push<u8>(database.IsFull());
         return {};
     }
 
     Result IDatabaseService::GetCount(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto sourceFlag{request.Pop<u32>()};
-        response.Push<u32>((sourceFlag & DefaultSourceFlag) ? DefaultMiiCount : 0);
+        u32 count{};
+        if (sourceFlag & DatabaseSourceFlag)
+            count += database.GetCount();
+        if (sourceFlag & DefaultSourceFlag)
+            count += DefaultMiiCount;
+        response.Push<u32>(count);
         return {};
     }
 
     Result IDatabaseService::Get(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto sourceFlag{request.Pop<u32>()};
         auto &output{request.outputBuf.at(0)};
-        u32 count{};
+        const auto capacity{output.size() / sizeof(CharInfoElement)};
+        size_t count{};
 
-        if (sourceFlag & DefaultSourceFlag) {
-            const auto capacity{output.size() / sizeof(CharInfoElement)};
-            count = static_cast<u32>(std::min<size_t>(DefaultMiiCount, capacity));
+        if (sourceFlag & DatabaseSourceFlag) {
+            const auto entries{database.Snapshot()};
+            for (const auto &info : entries) {
+                if (count >= capacity) {
+                    response.Push<u32>(static_cast<u32>(count));
+                    return BufferTooSmall;
+                }
 
-            for (u32 index{}; index < count; index++) {
                 const CharInfoElement element{
-                    .charInfo = MakeDefaultMii(index),
-                    .source = 1,
+                    .charInfo = info,
+                    .source = Source::Database,
                 };
-                std::memcpy(output.data() + index * sizeof(CharInfoElement), &element, sizeof(element));
+                std::memcpy(output.data() + count * sizeof(CharInfoElement), &element, sizeof(element));
+                count++;
             }
         }
 
-        response.Push<u32>(count);
+        if (sourceFlag & DefaultSourceFlag) {
+            for (u32 index{}; index < DefaultMiiCount; index++) {
+                if (count >= capacity) {
+                    response.Push<u32>(static_cast<u32>(count));
+                    return BufferTooSmall;
+                }
+
+                const CharInfoElement element{
+                    .charInfo = MakeDefaultMii(index),
+                    .source = Source::Default,
+                };
+                std::memcpy(output.data() + count * sizeof(CharInfoElement), &element, sizeof(element));
+                count++;
+            }
+        }
+
+        response.Push<u32>(static_cast<u32>(count));
         return {};
     }
 
     Result IDatabaseService::Get1(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto sourceFlag{request.Pop<u32>()};
         auto &output{request.outputBuf.at(0)};
-        u32 count{};
+        const auto capacity{output.size() / sizeof(CharInfo)};
+        size_t count{};
 
-        if (sourceFlag & DefaultSourceFlag) {
-            const auto capacity{output.size() / sizeof(CharInfo)};
-            count = static_cast<u32>(std::min<size_t>(DefaultMiiCount, capacity));
+        if (sourceFlag & DatabaseSourceFlag) {
+            const auto entries{database.Snapshot()};
+            for (const auto &info : entries) {
+                if (count >= capacity) {
+                    response.Push<u32>(static_cast<u32>(count));
+                    return BufferTooSmall;
+                }
 
-            for (u32 index{}; index < count; index++) {
-                const auto info{MakeDefaultMii(index)};
-                std::memcpy(output.data() + index * sizeof(CharInfo), &info, sizeof(info));
+                std::memcpy(output.data() + count * sizeof(CharInfo), &info, sizeof(info));
+                count++;
             }
         }
 
-        response.Push<u32>(count);
+        if (sourceFlag & DefaultSourceFlag) {
+            for (u32 index{}; index < DefaultMiiCount; index++) {
+                if (count >= capacity) {
+                    response.Push<u32>(static_cast<u32>(count));
+                    return BufferTooSmall;
+                }
+
+                const auto info{MakeDefaultMii(index)};
+                std::memcpy(output.data() + count * sizeof(CharInfo), &info, sizeof(info));
+                count++;
+            }
+        }
+
+        response.Push<u32>(static_cast<u32>(count));
+        return {};
+    }
+
+    Result IDatabaseService::UpdateLatest(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto oldCharInfo{request.Pop<CharInfo>()};
+        const auto sourceFlag{request.Pop<u32>()};
+
+        if (!(sourceFlag & DatabaseSourceFlag)) {
+            response.Push(CharInfo{});
+            return NotFound;
+        }
+
+        if (interfaceVersion >= 1 && !IsValidCharInfo(oldCharInfo)) {
+            response.Push(CharInfo{});
+            return InvalidCharInfo;
+        }
+
+        const auto storedInfo{database.FindByCreateId(oldCharInfo.createId)};
+        if (!storedInfo || storedInfo->type != oldCharInfo.type) {
+            response.Push(CharInfo{});
+            return NotFound;
+        }
+
+        response.Push(*storedInfo);
+        auto oldComparable{oldCharInfo};
+        auto storedComparable{*storedInfo};
+        oldComparable.padding = 0;
+        storedComparable.padding = 0;
+        if (std::memcmp(&oldComparable, &storedComparable, sizeof(CharInfo)) == 0)
+            return NotUpdated;
+
         return {};
     }
 
@@ -306,6 +331,18 @@ namespace skyline::service::mii {
         return {};
     }
 
+    Result IDatabaseService::GetIndex(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto charInfo{request.Pop<CharInfo>()};
+        if (!IsValidCharInfo(charInfo)) {
+            response.Push<i32>(-1);
+            return InvalidCharInfo;
+        }
+
+        const auto index{database.FindIndex(charInfo.createId)};
+        response.Push<i32>(index);
+        return index >= 0 ? Result{} : NotFound;
+    }
+
     Result IDatabaseService::SetInterfaceVersion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         interfaceVersion = request.Pop<u32>();
         return {};
@@ -313,5 +350,23 @@ namespace skyline::service::mii {
 
     Result IDatabaseService::DeleteFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         return {};
+    }
+
+    Result IDatabaseService::Append(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto charInfo{request.Pop<CharInfo>()};
+
+        switch (database.Append(charInfo)) {
+            case MiiDatabase::AppendResult::Success:
+                updateCounter = database.GetUpdateCounter();
+                return {};
+            case MiiDatabase::AppendResult::Full:
+                return DatabaseFull;
+            case MiiDatabase::AppendResult::InvalidCharInfo:
+                return InvalidCharInfo;
+            case MiiDatabase::AppendResult::InvalidSpecial:
+                return InvalidOperationOnSpecialMii;
+        }
+
+        return InvalidArgument;
     }
 }
