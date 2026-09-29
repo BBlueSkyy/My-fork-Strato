@@ -11,6 +11,59 @@
 #include "maxwell_dma.h"
 
 namespace skyline::soc::gm20b::engine {
+    namespace {
+        size_t GetBlockLinearSubrectSize(gpu::texture::Dimensions surfaceDimensions,
+                                         gpu::texture::Dimensions pitchDimensions,
+                                         u32 originX, u32 originY,
+                                         size_t gobBlockHeight, size_t gobBlockDepth) {
+            constexpr size_t GobWidth{64};
+            constexpr size_t GobHeight{8};
+            constexpr size_t GobSize{GobWidth * GobHeight};
+
+            if (!pitchDimensions.width || !pitchDimensions.height || !surfaceDimensions.depth ||
+                originX >= surfaceDimensions.width || originY >= surfaceDimensions.height)
+                return 0;
+
+            size_t copyWidth{std::min<size_t>(pitchDimensions.width, surfaceDimensions.width - originX)};
+            size_t linesPerSlice{std::min<size_t>(pitchDimensions.height, surfaceDimensions.height - originY)};
+            if (!copyWidth || !linesPerSlice)
+                return 0;
+
+            size_t sliceCount{std::min<size_t>(
+                surfaceDimensions.depth,
+                util::DivideCeil<size_t>(pitchDimensions.height, linesPerSlice)
+            )};
+            size_t linesInLastSlice{std::min<size_t>(
+                linesPerSlice,
+                pitchDimensions.height - ((sliceCount - 1) * linesPerSlice)
+            )};
+
+            size_t lastX{originX + copyWidth - 1};
+            size_t lastY{originY + linesInLastSlice - 1};
+            size_t lastZ{sliceCount - 1};
+
+            size_t alignedWidth{util::AlignUp<size_t>(surfaceDimensions.width, GobWidth)};
+            size_t gobsInX{alignedWidth / GobWidth};
+            size_t xBlockSize{GobSize * gobBlockHeight * gobBlockDepth};
+            size_t blockRowSize{gobsInX * xBlockSize};
+            size_t zGroupSize{
+                util::DivideCeil<size_t>(surfaceDimensions.height, GobHeight * gobBlockHeight) * blockRowSize
+            };
+
+            size_t offsetZ{
+                (lastZ / gobBlockDepth) * zGroupSize +
+                (lastZ % gobBlockDepth) * GobSize * gobBlockHeight
+            };
+            size_t offsetY{
+                (lastY / (GobHeight * gobBlockHeight)) * blockRowSize +
+                ((lastY / GobHeight) % gobBlockHeight) * GobSize
+            };
+            size_t offsetX{(lastX / GobWidth) * xBlockSize};
+
+            // Conservatively include the whole final GOB touched by the copy.
+            return offsetZ + offsetY + offsetX + GobSize;
+        }
+    }
     MaxwellDma::MaxwellDma(const DeviceState &state, ChannelContext &channelCtx)
         : channelCtx{channelCtx},
           syncpoints{state.soc->host1x.syncpoints},
@@ -309,17 +362,28 @@ namespace skyline::soc::gm20b::engine {
         size_t srcLayerStride{gpu::texture::GetBlockLinearLayerSize(srcDimensions, 1, 1, 1, registers.srcSurface->blockSize.Height(), registers.srcSurface->blockSize.Depth())};
         size_t srcLayerAddress{*registers.offsetIn + (registers.srcSurface->layer * srcLayerStride)};
 
-        // Get source address
-        auto srcMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, srcLayerStride)};
+        gpu::texture::Dimensions dstDimensions{*registers.lineLengthIn, *registers.lineCount, 1};
+        size_t srcCopySize{std::min(
+            srcLayerStride,
+            GetBlockLinearSubrectSize(
+                srcDimensions, dstDimensions,
+                registers.srcSurface->origin.x, registers.srcSurface->origin.y,
+                registers.srcSurface->blockSize.Height(), registers.srcSurface->blockSize.Depth()
+            )
+        )};
+        size_t dstSize{*registers.pitchOut * dstDimensions.height}; // Raw DMA copies use one byte per element.
 
-        gpu::texture::Dimensions dstDimensions{*registers.lineLengthIn, *registers.lineCount, registers.srcSurface->depth};
-        size_t dstSize{*registers.pitchOut * dstDimensions.height * dstDimensions.depth}; // If remapping is not enabled there are only 1 bytes per pixel
+        if (!srcCopySize || !dstSize)
+            return;
 
-        // Get destination address
+        // Only map the block-linear GOBs that this DMA rectangle can actually touch. The surface
+        // depth describes the destination layout; lineCount describes how much data is transferred.
+        auto srcMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, srcCopySize)};
         auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, dstSize)};
 
         auto copyFunc{[&](u8 *src, u8 *dst) {
-            if ((util::AlignDown(srcDimensions.width, 64) != util::AlignDown(dstDimensions.width, 64))
+            if (srcDimensions.depth != 1
+                || (util::AlignDown(srcDimensions.width, 64) != util::AlignDown(dstDimensions.width, 64))
                 || registers.srcSurface->origin.x || registers.srcSurface->origin.y) {
                 gpu::texture::CopyBlockLinearToPitchSubrect(
                     dstDimensions, srcDimensions,
@@ -341,34 +405,46 @@ namespace skyline::soc::gm20b::engine {
         LOGD("{}x{}x{}@0x{:X} -> {}x{}x{}@0x{:X}", srcDimensions.width, srcDimensions.height, srcDimensions.depth, srcLayerAddress, dstDimensions.width, dstDimensions.height, dstDimensions.depth, u64{*registers.offsetOut});
 
         if (srcMappings.size() != 1 || dstMappings.size() != 1) [[unlikely]]
-            HandleSplitCopy(srcMappings, dstMappings, srcLayerStride, dstSize, copyFunc);
+            HandleSplitCopy(srcMappings, dstMappings, srcCopySize, dstSize, copyFunc);
         else [[likely]]
             copyFunc(srcMappings.front().data(), dstMappings.front().data());
     }
 
     void MaxwellDma::CopyPitchToBlockLinear() {
         if (registers.dstSurface->blockSize.Width() != 1) [[unlikely]] {
-            LOGE("Blocklinear surfaces with a non-one block width are unsupported on the Tegra X1: {}", registers.srcSurface->blockSize.Width());
+            LOGE("Blocklinear surfaces with a non-one block width are unsupported on the Tegra X1: {}", registers.dstSurface->blockSize.Width());
             return;
         }
 
-        gpu::texture::Dimensions srcDimensions{*registers.lineLengthIn, *registers.lineCount, registers.dstSurface->depth};
-        size_t srcSize{*registers.pitchIn * srcDimensions.height * srcDimensions.depth}; // If remapping is not enabled there are only 1 bytes per pixel
-
-        // Get source address
-        auto srcMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, srcSize)};
+        // LAUNCH_DMA lineCount is a count of pitch-linear lines, not the block-linear surface depth.
+        // Treat the pitch side as a single linear stream; the subrect swizzler advances into later
+        // Z slices only if lineCount actually extends past the current slice.
+        gpu::texture::Dimensions srcDimensions{*registers.lineLengthIn, *registers.lineCount, 1};
+        size_t srcSize{*registers.pitchIn * srcDimensions.height};
 
         gpu::texture::Dimensions dstDimensions{registers.dstSurface->width, registers.dstSurface->height, registers.dstSurface->depth};
         size_t dstLayerStride{gpu::texture::GetBlockLinearLayerSize(dstDimensions, 1, 1, 1, registers.dstSurface->blockSize.Height(), registers.dstSurface->blockSize.Depth())};
         size_t dstLayerAddress{*registers.offsetOut + (registers.dstSurface->layer * dstLayerStride)};
+        size_t dstCopySize{std::min(
+            dstLayerStride,
+            GetBlockLinearSubrectSize(
+                dstDimensions, srcDimensions,
+                registers.dstSurface->origin.x, registers.dstSurface->origin.y,
+                registers.dstSurface->blockSize.Height(), registers.dstSurface->blockSize.Depth()
+            )
+        )};
 
-        // Get destination address
-        auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, dstLayerStride)};
+        if (!srcSize || !dstCopySize)
+            return;
+
+        auto srcMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, srcSize)};
+        auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, dstCopySize)};
 
         LOGD("{}x{}x{}@0x{:X} -> {}x{}x{}@0x{:X}", srcDimensions.width, srcDimensions.height, srcDimensions.depth, u64{*registers.offsetIn}, dstDimensions.width, dstDimensions.height, dstDimensions.depth, dstLayerAddress);
 
         auto copyFunc{[&](u8 *src, u8 *dst) {
-            if ((util::AlignDown(srcDimensions.width, 64) != util::AlignDown(dstDimensions.width, 64))
+            if (dstDimensions.depth != 1
+                || (util::AlignDown(srcDimensions.width, 64) != util::AlignDown(dstDimensions.width, 64))
                 || registers.dstSurface->origin.x || registers.dstSurface->origin.y) {
                 gpu::texture::CopyPitchToBlockLinearSubrect(
                     srcDimensions, dstDimensions,
@@ -388,7 +464,7 @@ namespace skyline::soc::gm20b::engine {
         }};
 
         if (srcMappings.size() != 1 || dstMappings.size() != 1) [[unlikely]]
-            HandleSplitCopy(srcMappings, dstMappings, srcSize, dstLayerStride, copyFunc);
+            HandleSplitCopy(srcMappings, dstMappings, srcSize, dstCopySize, copyFunc);
         else [[likely]]
             copyFunc(srcMappings.front().data(), dstMappings.front().data());
     }
