@@ -18,26 +18,6 @@ namespace skyline::gpu::texture {
     constexpr size_t GobHeight{8}; //!< The height of a GOB in lines
     constexpr size_t SectorLinesInGob{(GobWidth / SectorWidth) * GobHeight}; //!< The number of lines of sectors inside a GOB
 
-    size_t GetBlockLinearLayerSize(Dimensions dimensions, size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb, size_t gobBlockHeight, size_t gobBlockDepth) {
-        size_t robLineWidth{util::DivideCeil<size_t>(dimensions.width, formatBlockWidth)}; //!< The width of the ROB in terms of format blocks
-        size_t robLineBytes{util::AlignUp(robLineWidth * formatBpb, GobWidth)}; //!< The amount of bytes in a single block
-
-        size_t robHeight{GobHeight * gobBlockHeight}; //!< The height of a single ROB (Row of Blocks) in lines
-        size_t surfaceHeightLines{util::DivideCeil<size_t>(dimensions.height, formatBlockHeight)}; //!< The height of the surface in lines
-        size_t surfaceHeightRobs{util::DivideCeil(surfaceHeightLines, robHeight)}; //!< The height of the surface in ROBs (Row Of Blocks, incl. padding ROB)
-
-        size_t robDepth{util::AlignUp(dimensions.depth, gobBlockDepth)}; //!< The depth of the surface in slices, aligned to include padding Z-axis GOBs
-
-        return robLineBytes * robHeight * surfaceHeightRobs * robDepth;
-    }
-
-    template<typename Type>
-    constexpr Type CalculateBlockGobs(Type blockGobs, Type surfaceGobs) {
-        if (surfaceGobs > blockGobs)
-            return blockGobs;
-        return std::bit_ceil<Type>(surfaceGobs);
-    }
-
     size_t GetBlockLinearLayerSize(Dimensions dimensions, size_t formatBlockHeight, size_t formatBlockWidth, size_t formatBpb, size_t gobBlockHeight, size_t gobBlockDepth, size_t levelCount, bool isMultiLayer) {
         // Calculate the size of the surface in GOBs on every axis
         size_t gobsWidth{util::DivideCeil<size_t>(util::DivideCeil<size_t>(dimensions.width, formatBlockWidth) * formatBpb, GobWidth)};
@@ -46,16 +26,36 @@ namespace skyline::gpu::texture {
 
         size_t totalSize{}, layerAlignment{GobWidth * GobHeight * gobBlockHeight * gobBlockDepth};
         for (size_t i{}; i < levelCount; i++) {
-            // Iterate over every level, adding the size of the current level to the total size
-            totalSize += (GobWidth * gobsWidth) * (GobHeight * util::AlignUp(gobsHeight, gobBlockHeight)) * util::AlignUp(gobsDepth, gobBlockDepth);
+            // A depth-1 view can still be a slice of a 3D block-linear texture. In that
+            // case gobBlockDepth must be preserved, but the final unused Z GOBs after the
+            // last byte of the slice are not part of the view's guest-memory range.
+            size_t levelSize{
+                (GobWidth * gobsWidth) *
+                (GobHeight * util::AlignUp(gobsHeight, gobBlockHeight)) *
+                util::AlignUp(gobsDepth, gobBlockDepth)
+            };
 
-            // Successively divide every dimension by 2 until the final level is reached, the division is rounded up to contain the padding GOBs
+            if ((i + 1) == levelCount && gobBlockDepth > 1) {
+                size_t remainderZ{gobsDepth % gobBlockDepth};
+                if (remainderZ != 0) {
+                    size_t gobSize{GobWidth * GobHeight * gobBlockHeight};
+                    levelSize -= gobSize * (gobBlockDepth - remainderZ);
+                }
+            }
+
+            totalSize += levelSize;
+
+            // Successively divide every dimension by 2 until the final level is reached.
             gobsWidth = std::max(util::DivideCeil(gobsWidth, 2UL), 1UL);
             gobsHeight = std::max(util::DivideCeil(gobsHeight, 2UL), 1UL);
-            gobsDepth = std::max(gobsDepth / 2, 1UL); // The GOB depth is the same as the depth dimension and needs to be rounded down during the division
+            gobsDepth = std::max(gobsDepth / 2, 1UL);
 
             gobBlockHeight = CalculateBlockGobs(gobBlockHeight, gobsHeight);
-            gobBlockDepth = CalculateBlockGobs(gobBlockDepth, gobsDepth);
+
+            // Unlike Y, Z block depth must not collapse all the way down on level 0 for
+            // a depth slice. Reduce it by at most one step per mip level.
+            if (gobBlockDepth != 1 && gobsDepth <= (gobBlockDepth >> 1))
+                gobBlockDepth >>= 1;
         }
 
         return isMultiLayer ? util::AlignUp(totalSize, layerAlignment) : totalSize;
@@ -67,17 +67,30 @@ namespace skyline::gpu::texture {
 
         size_t gobsWidth{util::DivideCeil<size_t>(util::DivideCeil<size_t>(dimensions.width, formatBlockWidth) * formatBpb, GobWidth)};
         size_t gobsHeight{util::DivideCeil<size_t>(util::DivideCeil<size_t>(dimensions.height, formatBlockHeight), GobHeight)};
-        // Note: We don't need a separate gobsDepth variable here, since a GOB is always a single slice deep and the value would be the same as the depth dimension
 
         for (size_t i{}; i < levelCount; i++) {
             size_t linearSize{util::DivideCeil<size_t>(dimensions.width, formatBlockWidth) * formatBpb * util::DivideCeil<size_t>(dimensions.height, formatBlockHeight) * dimensions.depth};
             size_t targetLinearSize{targetFormatBpb == 0 ? linearSize : util::DivideCeil<size_t>(dimensions.width, targetFormatBlockWidth) * targetFormatBpb * util::DivideCeil<size_t>(dimensions.height, targetFormatBlockHeight) * dimensions.depth};
 
+            size_t blockLinearSize{
+                (GobWidth * gobsWidth) *
+                (GobHeight * util::AlignUp(gobsHeight, gobBlockHeight)) *
+                util::AlignUp(static_cast<size_t>(dimensions.depth), gobBlockDepth)
+            };
+
+            if ((i + 1) == levelCount && gobBlockDepth > 1) {
+                size_t remainderZ{dimensions.depth % gobBlockDepth};
+                if (remainderZ != 0) {
+                    size_t gobSize{GobWidth * GobHeight * gobBlockHeight};
+                    blockLinearSize -= gobSize * (gobBlockDepth - remainderZ);
+                }
+            }
+
             mipLevels.emplace_back(
                 dimensions,
                 linearSize,
                 targetLinearSize,
-                (GobWidth * gobsWidth) * (GobHeight * util::AlignUp(gobsHeight, gobBlockHeight)) * util::AlignUp(dimensions.depth, gobBlockDepth),
+                blockLinearSize,
                 gobBlockHeight, gobBlockDepth
             );
 
@@ -89,7 +102,8 @@ namespace skyline::gpu::texture {
             dimensions.depth = std::max(dimensions.depth / 2, 1U);
 
             gobBlockHeight = CalculateBlockGobs(gobBlockHeight, gobsHeight);
-            gobBlockDepth = CalculateBlockGobs(gobBlockDepth, static_cast<size_t>(dimensions.depth));
+            if (gobBlockDepth != 1 && dimensions.depth <= (gobBlockDepth >> 1))
+                gobBlockDepth >>= 1;
         }
 
         return mipLevels;

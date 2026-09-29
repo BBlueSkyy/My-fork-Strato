@@ -13,21 +13,6 @@ namespace skyline::gpu {
 
         auto guestMapping{guestTexture.mappings.front()};
 
-        const bool requestIs3D{
-            guestTexture.GetImageType() == vk::ImageType::e3D ||
-            guestTexture.viewType == vk::ImageViewType::e3D ||
-            guestTexture.dimensions.depth > 1
-        };
-        if (requestIs3D)
-            LOGI("[TEX3D] request dims={}x{}x{} view={} imageType={} layers={} baseLayer={} "
-                 "mips={}/{}+{} block={}x{} mappings={}",
-                 guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
-                 static_cast<u32>(guestTexture.viewType), static_cast<u32>(guestTexture.GetImageType()),
-                 guestTexture.layerCount, guestTexture.baseArrayLayer,
-                 guestTexture.mipLevelCount, guestTexture.viewMipBase, guestTexture.viewMipCount,
-                 guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
-                 guestTexture.mappings.size());
-
         /*
          * Iterate over all textures that overlap with the first mapping of the guest texture and compare the mappings:
          * 1) All mappings match up perfectly, we check that the rest of the supplied mappings correspond to mappings in the texture
@@ -58,7 +43,6 @@ namespace skyline::gpu {
         u32 depthSliceLevel{};
         u32 depthSlice{};
         u32 depthSliceParentDepth{};
-        bool saw3DOverlap{};
 
         while (hostMapping != textures.begin() && (--hostMapping)->end() > guestMapping.begin()) {
             auto &hostMappings{hostMapping->texture->guest->mappings};
@@ -80,32 +64,12 @@ namespace skyline::gpu {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
                 auto &matchGuestTexture{*hostMapping->texture->guest};
 
-                const bool exact3DRelation{
-                    requestIs3D ||
-                    matchGuestTexture.GetImageType() == vk::ImageType::e3D ||
-                    matchGuestTexture.viewType == vk::ImageViewType::e3D ||
-                    matchGuestTexture.dimensions.depth > 1
-                };
-                if (exact3DRelation)
-                    LOGI("[TEX3D] exact-map req={}x{}x{} view={} imageType={} layers={} "
-                         "host={}x{}x{} view={} imageType={} layers={} "
-                         "reqBlock={}x{} hostBlock={}x{}",
-                         guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
-                         static_cast<u32>(guestTexture.viewType), static_cast<u32>(guestTexture.GetImageType()),
-                         guestTexture.layerCount,
-                         matchGuestTexture.dimensions.width, matchGuestTexture.dimensions.height, matchGuestTexture.dimensions.depth,
-                         static_cast<u32>(matchGuestTexture.viewType), static_cast<u32>(matchGuestTexture.GetImageType()),
-                         matchGuestTexture.layerCount,
-                         guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
-                         matchGuestTexture.tileConfig.blockHeight, matchGuestTexture.tileConfig.blockDepth);
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
                     ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                         matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
                         matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
                         || matchGuestTexture.viewMipBase > 0)
                     && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
-                    if (exact3DRelation)
-                        LOGI("[TEX3D] exact-map-accepted-as-full-match");
                     fullMatch = hostMapping->texture;
                 } else {
                     matches.push_back(hostMapping->texture);
@@ -113,29 +77,6 @@ namespace skyline::gpu {
             } else {
                 auto &matchGuestTexture{*hostMapping->texture->guest};
 
-                const bool is3DTo2DOverlap{
-                    matchGuestTexture.GetImageType() == vk::ImageType::e3D &&
-                    (guestTexture.viewType == vk::ImageViewType::e2D ||
-                     guestTexture.viewType == vk::ImageViewType::e2DArray)
-                };
-                if (is3DTo2DOverlap) {
-                    saw3DOverlap = true;
-                    size_t diagnosticOffset{};
-                    for (auto it{hostMappings.begin()}; it != hostMapping->iterator; ++it)
-                        diagnosticOffset += it->size();
-                    diagnosticOffset += static_cast<size_t>(guestMapping.data() - hostMapping->iterator->data());
-
-                    LOGI("[TEX3D] overlap req={}x{}x{} view={} layers={} mips={}/{}+{} block={}x{} "
-                         "host={}x{}x{} view={} layers={} mips={} block={}x{} offset=0x{:X}",
-                         guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
-                         static_cast<u32>(guestTexture.viewType), guestTexture.layerCount,
-                         guestTexture.mipLevelCount, guestTexture.viewMipBase, guestTexture.viewMipCount,
-                         guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
-                         matchGuestTexture.dimensions.width, matchGuestTexture.dimensions.height, matchGuestTexture.dimensions.depth,
-                         static_cast<u32>(matchGuestTexture.viewType), matchGuestTexture.layerCount,
-                         matchGuestTexture.mipLevelCount,
-                         matchGuestTexture.tileConfig.blockHeight, matchGuestTexture.tileConfig.blockDepth,
-                         diagnosticOffset);
                 }
 
                 // A render target may describe an individual Z slice of a block-linear
@@ -185,10 +126,6 @@ namespace skyline::gpu {
                                         depthSliceLevel = level;
                                         depthSlice = slice;
                                         depthSliceParentDepth = mipLevel.dimensions.depth;
-                                        LOGI("[TEX3D] matched mip={} slice={} parentDepth={} offset=0x{:X} "
-                                             "reqLayers={} block={}x{}",
-                                             level, slice, mipLevel.dimensions.depth, memOffset,
-                                             viewLayerCount, mipLevel.blockHeight, mipLevel.blockDepth);
                                     }
                                     break;
                                 }
@@ -199,12 +136,6 @@ namespace skyline::gpu {
                         ++level;
                     }
 
-                    if (!depthSliceMatch)
-                        LOGI("[TEX3D] no-slice-match offset=0x{:X} req={}x{}x{} reqBlock={}x{} hostLevels={}",
-                             memOffset,
-                             guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
-                             guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
-                             hostMapping->texture->mipLayouts.size());
                 }
 
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
@@ -248,9 +179,6 @@ namespace skyline::gpu {
          }
 
         if (depthSliceMatch) {
-            LOGI("[TEX3D] using-3d-backing mip={} slice={} layers={}",
-                 depthSliceLevel, depthSlice, guestTexture.GetViewLayerCount());
-
             // Prefer the real 3D storage over an independently cached slice. The latter
             // would otherwise retain stale contents after the guest renders into another
             // view of the same 3D resource.
@@ -275,8 +203,6 @@ namespace skyline::gpu {
                 .layerCount = guestTexture.GetViewLayerCount(),
             }, guestTexture.format, guestTexture.swizzle);
         } else if (fullMatch) {
-            if (saw3DOverlap)
-                LOGI("[TEX3D] overlap-resolved-by-legacy-full-match");
             ContextLock textureLock{tag, *fullMatch};
             return fullMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
                 .aspectMask = guestTexture.aspect,
@@ -287,26 +213,120 @@ namespace skyline::gpu {
             }, guestTexture.format, guestTexture.swizzle);
         }
 
+        size_t aggregatedDepthSlices{};
+        if (guestTexture.GetImageType() == vk::ImageType::e3D &&
+            guestTexture.tileConfig.mode == texture::TileMode::Block) {
+            auto parentMipLayouts{texture::GetBlockLinearMipLayout(
+                guestTexture.dimensions,
+                guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
+                guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
+                guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
+                guestTexture.mipLevelCount
+            )};
+
+            auto getGuestOffset{[&](const u8 *address) -> std::optional<size_t> {
+                auto addressValue{reinterpret_cast<uintptr_t>(address)};
+                size_t mappingBase{};
+                for (const auto &mapping : guestTexture.mappings) {
+                    auto begin{reinterpret_cast<uintptr_t>(mapping.data())};
+                    auto end{begin + mapping.size()};
+                    if (addressValue >= begin && addressValue < end)
+                        return mappingBase + static_cast<size_t>(addressValue - begin);
+                    mappingBase += mapping.size();
+                }
+                return std::nullopt;
+            }};
+
+            struct SliceSource {
+                std::shared_ptr<Texture> texture;
+                u32 level;
+                u32 slice;
+            };
+            boost::container::small_vector<SliceSource, 16> sliceSources;
+
+            for (const auto &mapping : textures) {
+                auto source{mapping.texture};
+                if (!source || source->replaced || !source->guest)
+                    continue;
+
+                if (std::find_if(sliceSources.begin(), sliceSources.end(), [&](const SliceSource &entry) {
+                        return entry.texture == source;
+                    }) != sliceSources.end())
+                    continue;
+
+                const auto &sourceGuest{*source->guest};
+                if (sourceGuest.GetImageType() != vk::ImageType::e2D ||
+                    sourceGuest.dimensions.depth != 1 ||
+                    sourceGuest.layerCount != 1 ||
+                    sourceGuest.mipLevelCount != 1 ||
+                    sourceGuest.baseArrayLayer != 0 ||
+                    sourceGuest.format != guestTexture.format ||
+                    sourceGuest.tileConfig.mode != texture::TileMode::Block ||
+                    sourceGuest.tileConfig.blockDepth != guestTexture.tileConfig.blockDepth)
+                    continue;
+
+                auto sourceOffset{getGuestOffset(sourceGuest.mappings.front().data())};
+                if (!sourceOffset)
+                    continue;
+
+                size_t levelOffset{};
+                bool found{};
+                for (u32 level{}; level < parentMipLayouts.size() && !found; ++level) {
+                    const auto &mip{parentMipLayouts[level]};
+                    if (sourceGuest.dimensions.width == mip.dimensions.width &&
+                        sourceGuest.dimensions.height == mip.dimensions.height &&
+                        sourceGuest.tileConfig.blockHeight == mip.blockHeight &&
+                        sourceGuest.tileConfig.blockDepth == mip.blockDepth) {
+                        for (u32 slice{}; slice < mip.dimensions.depth; ++slice) {
+                            auto sliceOffset{texture::GetBlockLinearDepthSliceOffset(
+                                mip.dimensions,
+                                guestTexture.format->blockWidth,
+                                guestTexture.format->blockHeight,
+                                guestTexture.format->bpb,
+                                mip.blockHeight,
+                                mip.blockDepth,
+                                slice
+                            )};
+
+                            if (sliceOffset && levelOffset + *sliceOffset == *sourceOffset) {
+                                auto existing{std::find_if(sliceSources.begin(), sliceSources.end(),
+                                    [level, slice](const SliceSource &entry) {
+                                        return entry.level == level && entry.slice == slice;
+                                    })};
+
+                                if (existing == sliceSources.end()) {
+                                    sliceSources.push_back({source, level, slice});
+                                } else if (!existing->texture->everUsedAsRt && source->everUsedAsRt) {
+                                    existing->texture = source;
+                                }
+
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    levelOffset += mip.blockLinearSize;
+                }
+            }
+
+            for (auto &source : sliceSources) {
+                if (std::find(matches.begin(), matches.end(), source.texture) == matches.end())
+                    matches.push_back(source.texture);
+            }
+            aggregatedDepthSlices = sliceSources.size();
+        }
+
         for (auto &texture : matches)
             texture->SynchronizeGuest(false, true);
 
-        // Create a texture as we cannot find one that matches
-        if (saw3DOverlap)
-            LOGI("[TEX3D] creating-separate-storage req={}x{}x{} view={} layers={} mips={}/{}+{} block={}x{} size=0x{:X}",
-                 guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
-                 static_cast<u32>(guestTexture.viewType), guestTexture.layerCount,
-                 guestTexture.mipLevelCount, guestTexture.viewMipBase, guestTexture.viewMipCount,
-                 guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
-                 guestTexture.CalculateLayerSize());
+        if (aggregatedDepthSlices)
+            LOGI("[TEX3D] synchronized {} rendered 2D slices before creating {}x{}x{} 3D backing",
+                 aggregatedDepthSlices,
+                 guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth);
 
-        if (requestIs3D)
-            LOGI("[TEX3D] new-3d-storage dims={}x{}x{} view={} imageType={} layers={} "
-                 "baseLayer={} block={}x{} size=0x{:X}",
-                 guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
-                 static_cast<u32>(guestTexture.viewType), static_cast<u32>(guestTexture.GetImageType()),
-                 guestTexture.layerCount, guestTexture.baseArrayLayer,
-                 guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
-                 guestTexture.CalculateLayerSize());
+        // Create a texture as we cannot find one that matches
+
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();

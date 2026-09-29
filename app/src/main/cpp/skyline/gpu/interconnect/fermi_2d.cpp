@@ -98,7 +98,10 @@ namespace skyline::gpu::interconnect {
                 .pitch = surface.stride
             };
         } else {
-            texture.dimensions = gpu::texture::Dimensions{surface.width, surface.height, surface.depth};
+            // Fermi2D blits operate on one 2D Z slice at a time. Keep the parent
+            // blockDepth so block-linear conversion preserves the 3D GOB interleaving,
+            // but do not make each slice claim the full parent depth.
+            texture.dimensions = gpu::texture::Dimensions{surface.width, surface.height, 1};
             texture.tileConfig = gpu::texture::TileConfig{
                 .mode = gpu::texture::TileMode::Block,
                 .blockHeight = surface.blockSize.Height(),
@@ -135,23 +138,6 @@ namespace skyline::gpu::interconnect {
 
         auto [dstGuestTexture, dstWentOob]{GetGuestTexture(dstSurface)};
 
-        if (srcGuestTexture.tileConfig.mode == gpu::texture::TileMode::Block &&
-            (srcGuestTexture.tileConfig.blockDepth > 1 || srcGuestTexture.dimensions.depth > 1))
-            LOGI("[TEX3D-F2D] src addr=0x{:X} dims={}x{}x{} block={}x{} rect={}x{}+{},{}",
-                 static_cast<u64>(srcSurface.address),
-                 srcGuestTexture.dimensions.width, srcGuestTexture.dimensions.height, srcGuestTexture.dimensions.depth,
-                 srcGuestTexture.tileConfig.blockHeight, srcGuestTexture.tileConfig.blockDepth,
-                 static_cast<u32>(duDx * static_cast<float>(dstRectWidth)),
-                 static_cast<u32>(dvDy * static_cast<float>(dstRectHeight)),
-                 static_cast<u32>(centredSrcRectX), static_cast<u32>(centredSrcRectY));
-
-        if (dstGuestTexture.tileConfig.mode == gpu::texture::TileMode::Block &&
-            (dstGuestTexture.tileConfig.blockDepth > 1 || dstGuestTexture.dimensions.depth > 1))
-            LOGI("[TEX3D-F2D] dst addr=0x{:X} dims={}x{}x{} block={}x{} rect={}x{}+{},{}",
-                 static_cast<u64>(dstSurface.address),
-                 dstGuestTexture.dimensions.width, dstGuestTexture.dimensions.height, dstGuestTexture.dimensions.depth,
-                 dstGuestTexture.tileConfig.blockHeight, dstGuestTexture.tileConfig.blockDepth,
-                 dstRectWidth, dstRectHeight, dstRectX, dstRectY);
 
         auto srcTextureView{gpu.texture.FindOrCreate(srcGuestTexture, executor.tag)};
         executor.AttachDependency(srcTextureView);
