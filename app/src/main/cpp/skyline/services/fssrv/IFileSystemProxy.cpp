@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <os.h>
+#include <algorithm>
 #include <cstring>
 #include <limits>
 #include <vfs/os_filesystem.h>
@@ -52,7 +53,6 @@ namespace skyline::service::fssrv {
                     return false;
             }
         }
-
 
         constexpr u32 CacheStorageMetadataMagic{0x43414348};
         constexpr u32 CacheStorageMetadataVersion{1};
