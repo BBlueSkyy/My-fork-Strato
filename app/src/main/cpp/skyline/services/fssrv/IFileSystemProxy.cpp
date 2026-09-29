@@ -62,12 +62,34 @@ namespace skyline::service::fssrv {
             u32 magic{CacheStorageMetadataMagic};
             u32 version{CacheStorageMetadataVersion};
             u64 saveDataOwnerId{};
+            u64 saveDataId{};
             u64 dataSize{};
             u64 journalSize{};
+            u64 logicalSize{};
             u16 index{};
             std::array<u8, 6> reserved{};
         };
-        static_assert(sizeof(CacheStorageMetadata) == 0x28);
+        static_assert(sizeof(CacheStorageMetadata) == 0x38);
+
+        u64 MakeCacheSaveDataId(u64 saveDataOwnerId, u16 index) {
+            // Strato has no Horizon save-data indexer. Assign a stable surrogate ID
+            // from the durable cache key instead of fabricating one while enumerating.
+            constexpr u64 FnvOffset{14695981039346656037ULL};
+            constexpr u64 FnvPrime{1099511628211ULL};
+            u64 hash{FnvOffset};
+            const auto mixByte{[&](u8 value) {
+                hash ^= value;
+                hash *= FnvPrime;
+            }};
+            constexpr std::array<u8, 5> Domain{'c', 'a', 'c', 'h', 'e'};
+            for (u8 value : Domain)
+                mixByte(value);
+            for (size_t shift{}; shift < sizeof(saveDataOwnerId) * 8; shift += 8)
+                mixByte(static_cast<u8>(saveDataOwnerId >> shift));
+            mixByte(static_cast<u8>(index));
+            mixByte(static_cast<u8>(index >> 8));
+            return hash == 0 ? 1 : hash;
+        }
 
         std::string GetCacheStorageMetadataPath(u64 saveDataOwnerId, u16 index) {
             return fmt::format("/.strato/cache/{:016X}-{:04X}.bin", saveDataOwnerId, index);
@@ -109,7 +131,11 @@ namespace skyline::service::fssrv {
         Result WriteCacheStorageMetadata(const std::string &publicAppFilesPath, u64 saveDataOwnerId, u16 index,
                                          u64 dataSize, u64 journalSize) {
             if (dataSize > static_cast<u64>(std::numeric_limits<i64>::max()) ||
-                journalSize > static_cast<u64>(std::numeric_limits<i64>::max()))
+                journalSize > static_cast<u64>(std::numeric_limits<i64>::max()) ||
+                dataSize > std::numeric_limits<u64>::max() - journalSize)
+                return result::InvalidArgument;
+            const u64 logicalSize{dataSize + journalSize};
+            if (logicalSize > static_cast<u64>(std::numeric_limits<i64>::max()))
                 return result::InvalidArgument;
 
             try {
@@ -145,8 +171,10 @@ namespace skyline::service::fssrv {
 
                 CacheStorageMetadata metadata{};
                 metadata.saveDataOwnerId = saveDataOwnerId;
+                metadata.saveDataId = MakeCacheSaveDataId(saveDataOwnerId, index);
                 metadata.dataSize = dataSize;
                 metadata.journalSize = journalSize;
+                metadata.logicalSize = logicalSize;
                 metadata.index = index;
 
                 auto bytes{span(reinterpret_cast<u8 *>(&metadata), sizeof(metadata))};
@@ -162,6 +190,46 @@ namespace skyline::service::fssrv {
             } catch (const std::exception &) {
                 return result::UnexpectedFailure;
             }
+        }
+
+        Result GetCacheSaveDataInfo(const std::string &publicAppFilesPath, u64 saveDataOwnerId,
+                                    std::optional<SaveDataInfo> &info) {
+            info.reset();
+
+            std::optional<CacheStorageMetadata> metadata;
+            const auto metadataResult{ReadCacheStorageMetadata(publicAppFilesPath, saveDataOwnerId, 0, metadata)};
+            if (metadataResult)
+                return metadataResult;
+            if (!metadata)
+                return {};
+
+            SaveDataAttribute attribute{};
+            attribute.programId = saveDataOwnerId;
+            attribute.type = SaveDataType::Cache;
+            attribute.rank = SaveDataRank::Primary;
+            attribute.index = metadata->index;
+            const auto saveDataPath{GetSaveDataPath(SaveDataSpaceId::User, attribute, saveDataOwnerId)};
+            if (!saveDataPath)
+                return result::InvalidArgument;
+
+            try {
+                vfs::OsFileSystem root{publicAppFilesPath + "/switch"};
+                if (!root.DirectoryExists(*saveDataPath))
+                    return {};
+            } catch (const std::exception &) {
+                return result::UnexpectedFailure;
+            }
+
+            SaveDataInfo entry{};
+            entry.saveDataId = metadata->saveDataId;
+            entry.spaceId = SaveDataSpaceId::User;
+            entry.type = SaveDataType::Cache;
+            entry.applicationId = saveDataOwnerId;
+            entry.size = metadata->logicalSize;
+            entry.index = metadata->index;
+            entry.rank = SaveDataRank::Primary;
+            info = entry;
+            return {};
         }
     }
 
@@ -444,8 +512,20 @@ namespace skyline::service::fssrv {
         return OpenSaveDataFileSystemImpl(session, request, response, true);
     }
 
-    Result IFileSystemProxy::OpenSaveDataInfoReader(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager), session, response);
+    Result IFileSystemProxy::OpenSaveDataInfoReader(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        std::vector<SaveDataInfo> entries;
+        if (state.loader && state.loader->nacp) {
+            std::optional<SaveDataInfo> cacheInfo;
+            const auto cacheResult{GetCacheSaveDataInfo(state.os->publicAppFilesPath,
+                                                        state.loader->nacp->nacpContents.saveDataOwnerId,
+                                                        cacheInfo)};
+            if (cacheResult)
+                return cacheResult;
+            if (cacheInfo)
+                entries.push_back(*cacheInfo);
+        }
+
+        manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager, std::move(entries)), session, response);
         return {};
     }
 
@@ -453,12 +533,37 @@ namespace skyline::service::fssrv {
         const auto spaceId{ReadArgument<SaveDataSpaceId>(request)};
         if (!spaceId || !IsValidSaveDataSpaceId(*spaceId))
             return result::InvalidArgument;
-        manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager, std::vector<SaveDataInfo>{}, *spaceId), session, response);
+
+        std::vector<SaveDataInfo> entries;
+        if (*spaceId == SaveDataSpaceId::User && state.loader && state.loader->nacp) {
+            std::optional<SaveDataInfo> cacheInfo;
+            const auto cacheResult{GetCacheSaveDataInfo(state.os->publicAppFilesPath,
+                                                        state.loader->nacp->nacpContents.saveDataOwnerId,
+                                                        cacheInfo)};
+            if (cacheResult)
+                return cacheResult;
+            if (cacheInfo)
+                entries.push_back(*cacheInfo);
+        }
+
+        manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager, std::move(entries), *spaceId), session, response);
         return {};
     }
 
-    Result IFileSystemProxy::OpenSaveDataInfoReaderOnlyCacheStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager, std::vector<SaveDataInfo>{}, std::nullopt, true), session, response);
+    Result IFileSystemProxy::OpenSaveDataInfoReaderOnlyCacheStorage(type::KSession &session, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        std::vector<SaveDataInfo> entries;
+        if (state.loader && state.loader->nacp) {
+            std::optional<SaveDataInfo> cacheInfo;
+            const auto cacheResult{GetCacheSaveDataInfo(state.os->publicAppFilesPath,
+                                                        state.loader->nacp->nacpContents.saveDataOwnerId,
+                                                        cacheInfo)};
+            if (cacheResult)
+                return cacheResult;
+            if (cacheInfo)
+                entries.push_back(*cacheInfo);
+        }
+
+        manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager, std::move(entries), std::nullopt, true), session, response);
         return {};
     }
 
