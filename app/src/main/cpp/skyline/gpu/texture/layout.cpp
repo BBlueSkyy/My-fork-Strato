@@ -95,6 +95,32 @@ namespace skyline::gpu::texture {
         return mipLevels;
     }
 
+    std::optional<size_t> GetBlockLinearDepthSliceOffset(Dimensions dimensions,
+                                                         size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb,
+                                                         size_t gobBlockHeight, size_t gobBlockDepth,
+                                                         size_t slice) {
+        if (!dimensions || !formatBlockWidth || !formatBlockHeight || !formatBpb ||
+            !gobBlockHeight || !gobBlockDepth || slice >= dimensions.depth)
+            return std::nullopt;
+
+        const size_t widthBlocks{util::DivideCeil<size_t>(dimensions.width, formatBlockWidth)};
+        const size_t widthGobs{util::DivideCeil<size_t>(widthBlocks * formatBpb, GobWidth)};
+        const size_t heightBlocks{util::DivideCeil<size_t>(dimensions.height, formatBlockHeight)};
+        const size_t heightGobs{util::DivideCeil<size_t>(heightBlocks, GobHeight)};
+        const size_t blocksInY{util::DivideCeil<size_t>(heightGobs, gobBlockHeight)};
+
+        // Block-linear Z GOBs are interleaved inside each X/Y block. This is the same
+        // addressing relationship used by CopyBlockLinearInternal: slices within one
+        // Z block advance by one Y block of GOBs, while complete Z blocks advance by
+        // the size of an entire X/Y slice plane.
+        const size_t gobColumnSize{GobWidth * GobHeight * gobBlockHeight};
+        const size_t slicePlaneSize{widthGobs * blocksInY * gobColumnSize};
+        const size_t sliceInBlock{slice % gobBlockDepth};
+        const size_t blockBaseSlice{slice - sliceInBlock};
+
+        return (sliceInBlock * gobColumnSize) + (blockBaseSlice * slicePlaneSize);
+    }
+
     /**
      * @brief Copies pixel data between a pitch-linear and blocklinear texture
      * @tparam BlockLinearToPitch Whether to copy from a blocklinear texture to a pitch-linear texture or a pitch-linear texture to a blocklinear texture

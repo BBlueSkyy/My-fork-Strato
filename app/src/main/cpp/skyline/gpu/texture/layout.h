@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <optional>
 #include "texture.h"
 
 namespace skyline::gpu::texture {
@@ -31,6 +32,16 @@ namespace skyline::gpu::texture {
                                                         size_t targetFormatBlockHeight, size_t targetFormatBlockWidth, size_t targetFormatBpb,
                                                         size_t gobBlockHeight, size_t gobBlockDepth,
                                                         size_t levelCount);
+
+    /**
+     * @brief Gets the byte offset at which a depth slice begins inside a block-linear mip level
+     * @note Depth slices sharing a Z block are interleaved; this is the address of the first GOB
+     *       belonging to the slice, not a claim that the slice occupies one contiguous byte range.
+     */
+    std::optional<size_t> GetBlockLinearDepthSliceOffset(Dimensions dimensions,
+                                                         size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb,
+                                                         size_t gobBlockHeight, size_t gobBlockDepth,
+                                                         size_t slice);
 
     /**
      * @brief Copies the contents of a blocklinear texture to a linear output buffer
