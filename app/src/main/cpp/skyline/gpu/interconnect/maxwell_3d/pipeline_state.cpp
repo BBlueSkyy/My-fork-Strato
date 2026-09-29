@@ -53,6 +53,20 @@ namespace skyline::gpu::interconnect::maxwell3d {
         guest.viewType = target.thirdDimension > 1 ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
 
         u32 depth{thirdDimensionDefinesArraySize ? 1U : target.thirdDimension};
+
+        if (!thirdDimensionDefinesArraySize || target.layerOffset || target.thirdDimension > 1)
+            LOGI("[TEX3D-RT] idx={} offset=0x{:X} size={}x{} thirdDim={} layerOffset={} control={} "
+                 "layout={} block={}x{} viewType={} imageDepth={} baseLayer={} layerCount={}",
+                 index,
+                 static_cast<u64>(target.offset),
+                 target.width, target.height,
+                 target.thirdDimension, target.layerOffset,
+                 static_cast<u32>(target.memory.thirdDimensionControl),
+                 static_cast<u32>(target.memory.layout),
+                 target.memory.BlockHeight(), target.memory.BlockDepth(),
+                 static_cast<u32>(guest.viewType),
+                 depth, guest.baseArrayLayer, guest.layerCount);
+
         if (target.memory.layout == engine::TargetMemory::Layout::Pitch) {
             guest.dimensions = texture::Dimensions{target.width / guest.format->bpb, target.height, depth};
             guest.tileConfig = texture::TileConfig{
