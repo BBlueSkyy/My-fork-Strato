@@ -59,6 +59,7 @@
 #include "capsrv/IScreenShotApplicationService.h"
 #include "ro/IRoInterface.h"
 #include "mii/IStaticService.h"
+#include "mii/mii_database.h"
 #include "olsc/IOlscServiceForApplication.h"
 #include "clkrst/IClkrstManager.h"
 #include "ts/IMeasurementServer.h"
@@ -80,11 +81,12 @@ namespace skyline::service {
         settings::SettingsStore settingsStore;
         pl::SharedFontCore sharedFontCore;
         irs::SharedIirCore sharedIirCore;
+        mii::MiiDatabase miiDatabase;
         nvdrv::Driver nvdrv;
         std::shared_ptr<ssl::SslSharedState> sslState;
 
         explicit GlobalServiceState(const DeviceState &state)
-            : timesrv(state), settingsStore(state), sharedFontCore(state), sharedIirCore(state), nvdrv(state),
+            : timesrv(state), settingsStore(state), sharedFontCore(state), sharedIirCore(state), miiDatabase(state), nvdrv(state),
               sslState(std::make_shared<ssl::SslSharedState>(state)) {}
     };
 
@@ -162,8 +164,8 @@ namespace skyline::service {
             SERVICE_CASE(capsrv::IScreenShotApplicationService, "caps:su")
             SERVICE_CASE(nim::IShopServiceAccessServerInterface, "nim:eca")
             SERVICE_CASE(ro::IRoInterface, "ldr:ro")
-            SERVICE_CASE(mii::IStaticService, "mii:e")
-            SERVICE_CASE(mii::IStaticService, "mii:u")
+            SERVICE_CASE(mii::IStaticService, "mii:e", globalServiceState->miiDatabase)
+            SERVICE_CASE(mii::IStaticService, "mii:u", globalServiceState->miiDatabase)
             SERVICE_CASE(olsc::IOlscServiceForApplication, "olsc:u")
             SERVICE_CASE(clkrst::IClkrstManager, "clkrst")
             SERVICE_CASE(ts::IMeasurementServer, "ts")

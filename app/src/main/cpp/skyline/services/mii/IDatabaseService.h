@@ -4,6 +4,7 @@
 #pragma once
 
 #include <services/serviceman.h>
+#include "mii_database.h"
 
 namespace skyline::service::mii {
     /**
@@ -11,11 +12,13 @@ namespace skyline::service::mii {
      */
     class IDatabaseService : public BaseService {
       private:
+        MiiDatabase &database;
         [[maybe_unused]] u32 databaseType{};
         u32 interfaceVersion{};
+        u64 updateCounter{};
 
       public:
-        IDatabaseService(const DeviceState &state, ServiceManager &manager, u32 databaseType = 0);
+        IDatabaseService(const DeviceState &state, ServiceManager &manager, MiiDatabase &database, u32 databaseType = 0);
 
         Result IsUpdated(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
@@ -39,6 +42,8 @@ namespace skyline::service::mii {
 
         Result DeleteFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result Append(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         SERVICE_DECL(
             SFUNC(0x0, IDatabaseService, IsUpdated),
             SFUNC(0x1, IDatabaseService, IsFullDatabase),
@@ -50,7 +55,8 @@ namespace skyline::service::mii {
             SFUNC(0x7, IDatabaseService, BuildDefault),
             SFUNC(0x10, IDatabaseService, DeleteFile),
             SFUNC(0x15, IDatabaseService, GetIndex),
-            SFUNC(0x16, IDatabaseService, SetInterfaceVersion)
+            SFUNC(0x16, IDatabaseService, SetInterfaceVersion),
+            SFUNC(0x1A, IDatabaseService, Append)
         )
     };
 }
