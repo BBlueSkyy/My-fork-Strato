@@ -131,8 +131,10 @@ namespace skyline::kernel {
             void DisarmPreemptionTimer();
 
             /**
-             * @brief Recursively updates the priority for any threads this thread might be waiting on
-             * @note PI is performed by temporarily upgrading a thread's priority if a thread waiting on it has a higher priority to prevent priority inversion
+             * @brief Recomputes this thread's effective priority from its base priority and
+             *        mutex waiters, then propagates any change through the lock-owner chain
+             * @note Lower numeric values are higher priorities. This restores priority in
+             *       both directions when waiters/base priority change, preserving PI.
              * @note This will lock `waiterMutex` internally and it must **not** be held when calling this function
              */
             void UpdatePriorityInheritance();

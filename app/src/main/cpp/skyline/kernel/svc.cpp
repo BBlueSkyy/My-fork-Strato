@@ -446,19 +446,12 @@ namespace skyline::kernel::svc {
         }
         try {
             auto thread{state.process->GetHandle<type::KThread>(handle)};
-            LOGD("Setting thread #{}'s priority to {}", thread->id, priority);
-            if (thread->priority != priority) {
-                thread->basePriority = priority;
-                i8 newPriority{};
-                do {
-                    // Try to CAS the priority of the thread with its new base priority
-                    // If the new priority is equivalent to the current priority then we don't need to CAS
-                    newPriority = thread->priority.load();
-                    newPriority = std::min(newPriority, priority);
-                } while (newPriority != priority && !thread->priority.compare_exchange_strong(newPriority, priority));
-                state.scheduler->UpdatePriority(thread);
+            LOGD("Setting thread #{}'s base priority to {}", thread->id, priority);
+
+            const i8 oldBasePriority{thread->basePriority.exchange(priority)};
+            if (oldBasePriority != priority)
                 thread->UpdatePriorityInheritance();
-            }
+
             ctx.w0 = Result{};
         } catch (const std::out_of_range &) {
             LOGW("'handle' invalid: 0x{:X}", handle);
