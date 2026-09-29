@@ -65,18 +65,27 @@ namespace skyline::gpu {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
                 auto &matchGuestTexture{*hostMapping->texture->guest};
 
-                if (matchGuestTexture.GetImageType() != guestTexture.GetImageType() &&
-                    (matchGuestTexture.GetImageType() == vk::ImageType::e3D ||
-                     guestTexture.GetImageType() == vk::ImageType::e3D))
-                    LOGI("[TEX3D] reject-cross-image-full-match hostImageType={} reqImageType={} "
-                         "host={}x{}x{} req={}x{}x{}",
-                         static_cast<u32>(matchGuestTexture.GetImageType()),
-                         static_cast<u32>(guestTexture.GetImageType()),
-                         matchGuestTexture.dimensions.width, matchGuestTexture.dimensions.height, matchGuestTexture.dimensions.depth,
-                         guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth);
+                const bool copyOnly3DSlice{
+                    matchGuestTexture.GetImageType() == vk::ImageType::e2D &&
+                    guestTexture.GetImageType() == vk::ImageType::e3D &&
+                    matchGuestTexture.dimensions.depth == 1 &&
+                    matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
+                    matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
+                    matchGuestTexture.layerCount == 1 &&
+                    matchGuestTexture.mipLevelCount == 1 &&
+                    matchGuestTexture.format == guestTexture.format &&
+                    matchGuestTexture.tileConfig == guestTexture.tileConfig
+                };
+
+                if (copyOnly3DSlice) {
+                    // A 2D render target can represent one slice of a 3D texture. It cannot
+                    // be returned as a Vulkan 3D view of the same image, but its contents
+                    // must be preserved when a real 3D backing is created.
+                    matches.push_back(hostMapping->texture);
+                    continue;
+                }
 
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                    matchGuestTexture.GetImageType() == guestTexture.GetImageType() &&
                     ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                         matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
                         matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
@@ -261,8 +270,17 @@ namespace skyline::gpu {
             }, guestTexture.format, guestTexture.swizzle);
         }
 
-        for (auto &texture : matches)
-            texture->SynchronizeGuest(false, true);
+        for (auto &matchedTexture : matches) {
+            const bool deferred3DSliceCopy{
+                guestTexture.GetImageType() == vk::ImageType::e3D &&
+                matchedTexture->guest &&
+                matchedTexture->guest->GetImageType() == vk::ImageType::e2D &&
+                matchedTexture->guest->dimensions.depth == 1 &&
+                matchedTexture->guest->format == guestTexture.format
+            };
+            if (!deferred3DSliceCopy)
+                matchedTexture->SynchronizeGuest(false, true);
+        }
 
         // Create a texture as we cannot find one that matches
         if (saw3DOverlap)
@@ -276,6 +294,103 @@ namespace skyline::gpu {
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
+
+        if (guestTexture.GetImageType() == vk::ImageType::e3D &&
+            guestTexture.tileConfig.mode == texture::TileMode::Block) {
+            struct SliceCopy {
+                std::shared_ptr<Texture> source;
+                u32 level{};
+                u32 slice{};
+            };
+            boost::container::small_vector<SliceCopy, 16> sliceCopies;
+
+            auto findGuestOffset{[&](u8 *address) -> std::optional<size_t> {
+                size_t base{};
+                for (const auto &mapping : guestTexture.mappings) {
+                    if (address >= mapping.begin() && address < mapping.end())
+                        return base + static_cast<size_t>(address - mapping.begin());
+                    base += mapping.size();
+                }
+                return std::nullopt;
+            }};
+
+            for (const auto &mapping : textures) {
+                auto source{mapping.texture};
+                if (!source || source->replaced || !source->guest || source == texture)
+                    continue;
+
+                const auto &sourceGuest{*source->guest};
+                if (sourceGuest.GetImageType() != vk::ImageType::e2D ||
+                    sourceGuest.dimensions.depth != 1 ||
+                    sourceGuest.layerCount != 1 ||
+                    sourceGuest.mipLevelCount != 1 ||
+                    sourceGuest.format != guestTexture.format ||
+                    source->format != texture->format ||
+                    sourceGuest.tileConfig.mode != texture::TileMode::Block ||
+                    !(source->format->vkAspect & vk::ImageAspectFlagBits::eColor))
+                    continue;
+
+                auto sourceOffset{findGuestOffset(sourceGuest.mappings.front().data())};
+                if (!sourceOffset)
+                    continue;
+
+                size_t levelOffset{};
+                for (u32 level{}; level < texture->mipLayouts.size(); ++level) {
+                    const auto &mip{texture->mipLayouts[level]};
+                    if (sourceGuest.dimensions.width == mip.dimensions.width &&
+                        sourceGuest.dimensions.height == mip.dimensions.height &&
+                        sourceGuest.tileConfig.blockHeight == mip.blockHeight &&
+                        sourceGuest.tileConfig.blockDepth == mip.blockDepth) {
+                        for (u32 slice{}; slice < mip.dimensions.depth; ++slice) {
+                            auto sliceOffset{texture::GetBlockLinearDepthSliceOffset(
+                                mip.dimensions,
+                                guestTexture.format->blockWidth,
+                                guestTexture.format->blockHeight,
+                                guestTexture.format->bpb,
+                                mip.blockHeight,
+                                mip.blockDepth,
+                                slice
+                            )};
+                            if (!sliceOffset || levelOffset + *sliceOffset != *sourceOffset)
+                                continue;
+
+                            auto existing{std::find_if(sliceCopies.begin(), sliceCopies.end(),
+                                [level, slice](const SliceCopy &copy) {
+                                    return copy.level == level && copy.slice == slice;
+                                })};
+                            if (existing == sliceCopies.end()) {
+                                sliceCopies.push_back({source, level, slice});
+                            } else if (!existing->source->everUsedAsRt && source->everUsedAsRt) {
+                                existing->source = source;
+                            }
+                            break;
+                        }
+                    }
+                    levelOffset += mip.blockLinearSize;
+                }
+            }
+
+            if (!sliceCopies.empty()) {
+                // Initialize the full 3D image from guest memory first, then overlay any
+                // GPU-rendered 2D slices. This mirrors CopyOnly semantics: untouched slices
+                // keep their guest contents while rendered slices stay authoritative.
+                ContextLock destinationLock{tag, *texture};
+                texture->SynchronizeHost(true);
+
+                for (auto &copy : sliceCopies) {
+                    ContextLock sourceLock{tag, *copy.source};
+                    copy.source->SynchronizeHost();
+
+                    LOGI("[TEX3D] migrate-2d-slice mip={} slice={} dims={}x{}",
+                         copy.level, copy.slice,
+                         copy.source->dimensions.width, copy.source->dimensions.height);
+
+                    texture->CopySliceFrom(copy.source, copy.level, copy.slice);
+                    copy.source->replaced = true;
+                }
+            }
+        }
+
         auto it{texture->guest->mappings.begin()};
         textures.emplace(mappingEnd, TextureMapping{texture, it, guestMapping});
         while ((++it) != texture->guest->mappings.end()) {
