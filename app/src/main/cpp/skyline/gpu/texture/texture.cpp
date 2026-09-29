@@ -893,8 +893,24 @@ namespace skyline::gpu {
         auto viewFormat{pFormat->vkFormat}, textureFormat{format->vkFormat};
         if ((flags & vk::ImageCreateFlagBits::eMutableFormat) == vk::ImageCreateFlags{} &&
             viewFormat != textureFormat &&
-            (!gpu.traits.quirks.adrenoRelaxedFormatAliasing || !texture::IsAdrenoAliasCompatible(viewFormat, textureFormat)))
-            LOGW("Creating a view of a texture with a different format without mutable format: {} - {}", vk::to_string(viewFormat), vk::to_string(textureFormat));
+            (!gpu.traits.quirks.adrenoRelaxedFormatAliasing || !texture::IsAdrenoAliasCompatible(viewFormat, textureFormat))) {
+            auto guestAddress{guest && !guest->mappings.empty()
+                ? reinterpret_cast<uintptr_t>(guest->mappings.front().data())
+                : 0UL};
+            LOGI("[TEXFMT] non-mutable-cross-format addr=0x{:X} dims={}x{}x{} "
+                 "guest={} host={} view={} flags=0x{:X} texAspect=0x{:X} viewAspect=0x{:X} "
+                 "rangeAspect=0x{:X} mip={}/{} layer={}/{} type={}",
+                 guestAddress,
+                 dimensions.width, dimensions.height, dimensions.depth,
+                 guest ? vk::to_string(guest->format->vkFormat) : "none",
+                 vk::to_string(textureFormat), vk::to_string(viewFormat),
+                 static_cast<u32>(flags),
+                 static_cast<u32>(format->vkAspect), static_cast<u32>(pFormat->vkAspect),
+                 static_cast<u32>(range.aspectMask),
+                 range.baseMipLevel, range.levelCount,
+                 range.baseArrayLayer, range.layerCount,
+                 static_cast<u32>(type));
+        }
 
         if ((pFormat->vkAspect & format->vkAspect) == vk::ImageAspectFlagBits{}) {
             pFormat = format; // If the requested format doesn't share any aspects then fallback to the texture's format in the hope it's more likely to function
@@ -1037,166 +1053,6 @@ namespace skyline::gpu {
             else
                 return submitFunc({});
         }()};
-        newCycle->AttachObjects(std::move(source), shared_from_this());
-        cycle = newCycle;
-    }
-
-    void Texture::CopySliceFrom(std::shared_ptr<Texture> source, u32 dstLevel, u32 dstSlice, u32 srcLevel) {
-        if (!guest || !source->guest ||
-            guest->GetImageType() != vk::ImageType::e3D ||
-            source->guest->GetImageType() != vk::ImageType::e2D)
-            throw exception("CopySliceFrom requires a 2D source and 3D destination");
-
-        if (format != source->format)
-            throw exception("CopySliceFrom requires matching host formats");
-
-        if (srcLevel >= source->mipLayouts.size() || dstLevel >= mipLayouts.size())
-            throw exception("CopySliceFrom mip level out of range");
-
-        const auto &srcMip{source->mipLayouts[srcLevel]};
-        const auto &dstMip{mipLayouts[dstLevel]};
-        if (srcMip.dimensions.depth != 1 ||
-            srcMip.dimensions.width != dstMip.dimensions.width ||
-            srcMip.dimensions.height != dstMip.dimensions.height ||
-            dstSlice >= dstMip.dimensions.depth)
-            throw exception("CopySliceFrom incompatible slice dimensions");
-
-        auto aspect{format->vkAspect & source->format->vkAspect};
-        if (aspect == vk::ImageAspectFlags{})
-            throw exception("CopySliceFrom has no shared image aspect");
-
-        if (cycle)
-            cycle->WaitSubmit();
-        if (source->cycle)
-            source->cycle->WaitSubmit();
-
-        WaitOnBacking();
-        source->WaitOnBacking();
-        WaitOnFence();
-
-        if (source->layout == vk::ImageLayout::eUndefined)
-            throw exception("Cannot copy from image with undefined layout");
-
-        TRACE_EVENT("gpu", "Texture::CopySliceFrom");
-
-        auto submitFunc{[&](vk::Semaphore extraWaitSemaphore) {
-            boost::container::small_vector<vk::Semaphore, 1> waitSemaphores;
-            if (extraWaitSemaphore)
-                waitSemaphores.push_back(extraWaitSemaphore);
-
-            return gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commandBuffer) {
-                auto sourceBacking{source->GetBacking()};
-                auto destinationBacking{GetBacking()};
-
-                vk::ImageSubresourceRange srcRange{
-                    .aspectMask = aspect,
-                    .baseMipLevel = srcLevel,
-                    .levelCount = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                };
-                vk::ImageSubresourceRange dstRange{
-                    .aspectMask = aspect,
-                    .baseMipLevel = dstLevel,
-                    .levelCount = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                };
-
-                if (source->layout != vk::ImageLayout::eTransferSrcOptimal)
-                    commandBuffer.pipelineBarrier(
-                        vk::PipelineStageFlagBits::eAllCommands,
-                        vk::PipelineStageFlagBits::eTransfer,
-                        {}, {}, {},
-                        vk::ImageMemoryBarrier{
-                            .image = sourceBacking,
-                            .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
-                            .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-                            .oldLayout = source->layout,
-                            .newLayout = vk::ImageLayout::eTransferSrcOptimal,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .subresourceRange = srcRange,
-                        });
-
-                if (layout != vk::ImageLayout::eTransferDstOptimal)
-                    commandBuffer.pipelineBarrier(
-                        vk::PipelineStageFlagBits::eAllCommands,
-                        vk::PipelineStageFlagBits::eTransfer,
-                        {}, {}, {},
-                        vk::ImageMemoryBarrier{
-                            .image = destinationBacking,
-                            .srcAccessMask = vk::AccessFlagBits::eMemoryRead,
-                            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-                            .oldLayout = layout,
-                            .newLayout = vk::ImageLayout::eTransferDstOptimal,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .subresourceRange = dstRange,
-                        });
-
-                commandBuffer.copyImage(
-                    sourceBacking, vk::ImageLayout::eTransferSrcOptimal,
-                    destinationBacking, vk::ImageLayout::eTransferDstOptimal,
-                    vk::ImageCopy{
-                        .srcSubresource = {
-                            .aspectMask = aspect,
-                            .mipLevel = srcLevel,
-                            .baseArrayLayer = 0,
-                            .layerCount = 1,
-                        },
-                        .srcOffset = {0, 0, 0},
-                        .dstSubresource = {
-                            .aspectMask = aspect,
-                            .mipLevel = dstLevel,
-                            .baseArrayLayer = 0,
-                            .layerCount = 1,
-                        },
-                        .dstOffset = {0, 0, static_cast<i32>(dstSlice)},
-                        .extent = {
-                            .width = srcMip.dimensions.width,
-                            .height = srcMip.dimensions.height,
-                            .depth = 1,
-                        },
-                    });
-
-                if (layout != vk::ImageLayout::eTransferDstOptimal)
-                    commandBuffer.pipelineBarrier(
-                        vk::PipelineStageFlagBits::eTransfer,
-                        vk::PipelineStageFlagBits::eAllCommands,
-                        {}, {}, {},
-                        vk::ImageMemoryBarrier{
-                            .image = destinationBacking,
-                            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-                            .dstAccessMask = vk::AccessFlagBits::eMemoryRead,
-                            .oldLayout = vk::ImageLayout::eTransferDstOptimal,
-                            .newLayout = layout,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .subresourceRange = dstRange,
-                        });
-
-                if (source->layout != vk::ImageLayout::eTransferSrcOptimal)
-                    commandBuffer.pipelineBarrier(
-                        vk::PipelineStageFlagBits::eTransfer,
-                        vk::PipelineStageFlagBits::eAllCommands,
-                        {}, {}, {},
-                        vk::ImageMemoryBarrier{
-                            .image = sourceBacking,
-                            .srcAccessMask = vk::AccessFlagBits::eTransferRead,
-                            .dstAccessMask = vk::AccessFlagBits::eMemoryWrite,
-                            .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
-                            .newLayout = source->layout,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .subresourceRange = srcRange,
-                        });
-            }, waitSemaphores);
-        }};
-
-        auto newCycle{source->cycle
-            ? source->cycle->RecordSemaphoreWaitUsage(std::move(submitFunc))
-            : submitFunc({})};
         newCycle->AttachObjects(std::move(source), shared_from_this());
         cycle = newCycle;
     }
