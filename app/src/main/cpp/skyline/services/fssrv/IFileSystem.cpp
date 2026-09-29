@@ -27,10 +27,25 @@ namespace skyline::service::fssrv {
             return value;
         }
 
-        std::optional<std::string> RequestPath(ipc::IpcRequest &request, size_t index = 0) {
-            if (index >= request.inputBuf.size())
+        std::optional<std::string> RequestPath(ipc::IpcRequest &request, const char *operation, size_t index = 0) {
+            if (index >= request.inputBuf.size()) {
+                LOGI("FSP path diag: {} missing input buffer {}", operation, index);
                 return std::nullopt;
-            return ReadPath(request.inputBuf[index]);
+            }
+
+            const auto buffer{request.inputBuf[index]};
+            const auto path{ReadPath(buffer)};
+            if (!path) {
+                constexpr size_t PreviewSize{32};
+                std::string preview;
+                const auto count{std::min(buffer.size(), PreviewSize)};
+                preview.reserve(count * 3);
+                for (size_t i{}; i < count; ++i)
+                    preview += fmt::format("{:02X}{}", buffer[i], i + 1 == count ? "" : " ");
+                LOGI("FSP path diag: {} invalid path buffer {} size={} first{}=[{}]",
+                     operation, index, buffer.size(), count, preview);
+            }
+            return path;
         }
     }
 
@@ -40,7 +55,7 @@ namespace skyline::service::fssrv {
     Result IFileSystem::CreateFile(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
         if (readOnly)
             return result::WriteNotPermitted;
-        const auto path{RequestPath(request)};
+        const auto path{RequestPath(request, __func__)};
         const auto input{ReadArgument<CreateFileInput>(request)};
         if (!path)
             return result::InvalidPath;
@@ -59,14 +74,14 @@ namespace skyline::service::fssrv {
     Result IFileSystem::CreateDirectory(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
         if (readOnly)
             return result::WriteNotPermitted;
-        const auto path{RequestPath(request)};
+        const auto path{RequestPath(request, __func__)};
         if (!path)
             return result::InvalidPath;
         return MapVfsError(backing->CreateDirectory(*path, false));
     }
 
     Result IFileSystem::GetEntryType(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        const auto path{RequestPath(request)};
+        const auto path{RequestPath(request, __func__)};
         if (!path)
             return result::InvalidPath;
         const auto type{backing->GetEntryType(*path)};
@@ -77,7 +92,7 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystem::OpenFile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        const auto path{RequestPath(request)};
+        const auto path{RequestPath(request, __func__)};
         const auto mode{ReadArgument<vfs::Backing::Mode>(request)};
         if (!path)
             return result::InvalidPath;
@@ -101,7 +116,7 @@ namespace skyline::service::fssrv {
     Result IFileSystem::DeleteFile(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
         if (readOnly)
             return result::WriteNotPermitted;
-        const auto path{RequestPath(request)};
+        const auto path{RequestPath(request, __func__)};
         if (!path)
             return result::InvalidPath;
         return MapVfsError(backing->DeleteFile(*path));
@@ -110,7 +125,7 @@ namespace skyline::service::fssrv {
     Result IFileSystem::DeleteDirectory(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
         if (readOnly)
             return result::WriteNotPermitted;
-        const auto path{RequestPath(request)};
+        const auto path{RequestPath(request, __func__)};
         if (!path)
             return result::InvalidPath;
         return MapVfsError(backing->DeleteDirectory(*path));
@@ -119,7 +134,7 @@ namespace skyline::service::fssrv {
     Result IFileSystem::DeleteDirectoryRecursively(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
         if (readOnly)
             return result::WriteNotPermitted;
-        const auto path{RequestPath(request)};
+        const auto path{RequestPath(request, __func__)};
         if (!path)
             return result::InvalidPath;
         return MapVfsError(backing->DeleteDirectoryRecursively(*path));
@@ -128,8 +143,8 @@ namespace skyline::service::fssrv {
     Result IFileSystem::RenameFile(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
         if (readOnly)
             return result::WriteNotPermitted;
-        const auto oldPath{RequestPath(request)};
-        const auto newPath{RequestPath(request, 1)};
+        const auto oldPath{RequestPath(request, __func__)};
+        const auto newPath{RequestPath(request, __func__, 1)};
         if (!oldPath || !newPath)
             return result::InvalidPath;
         return MapVfsError(backing->RenameFile(*oldPath, *newPath));
@@ -138,15 +153,15 @@ namespace skyline::service::fssrv {
     Result IFileSystem::RenameDirectory(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
         if (readOnly)
             return result::WriteNotPermitted;
-        const auto oldPath{RequestPath(request)};
-        const auto newPath{RequestPath(request, 1)};
+        const auto oldPath{RequestPath(request, __func__)};
+        const auto newPath{RequestPath(request, __func__, 1)};
         if (!oldPath || !newPath)
             return result::InvalidPath;
         return MapVfsError(backing->RenameDirectory(*oldPath, *newPath));
     }
 
     Result IFileSystem::OpenDirectory(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        const auto path{RequestPath(request)};
+        const auto path{RequestPath(request, __func__)};
         const auto rawMode{ReadArgument<u32>(request)};
         if (!path)
             return result::InvalidPath;
@@ -171,7 +186,7 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystem::GetFreeSpaceSize(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        const auto path{RequestPath(request)};
+        const auto path{RequestPath(request, __func__)};
         if (!path)
             return result::InvalidPath;
         u64 free{}, total{};
@@ -184,7 +199,7 @@ namespace skyline::service::fssrv {
     }
 
     Result IFileSystem::GetTotalSpaceSize(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        const auto path{RequestPath(request)};
+        const auto path{RequestPath(request, __func__)};
         if (!path)
             return result::InvalidPath;
         u64 free{}, total{};
@@ -199,14 +214,14 @@ namespace skyline::service::fssrv {
     Result IFileSystem::CleanDirectoryRecursively(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
         if (readOnly)
             return result::WriteNotPermitted;
-        const auto path{RequestPath(request)};
+        const auto path{RequestPath(request, __func__)};
         if (!path)
             return result::InvalidPath;
         return MapVfsError(backing->CleanDirectoryRecursively(*path));
     }
 
     Result IFileSystem::GetFileTimeStampRaw(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        const auto path{RequestPath(request)};
+        const auto path{RequestPath(request, __func__)};
         if (!path)
             return result::InvalidPath;
         vfs::FileTimeStamp timestamp{};
