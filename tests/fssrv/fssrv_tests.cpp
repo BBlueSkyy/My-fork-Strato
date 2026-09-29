@@ -572,6 +572,8 @@ namespace {
         state.loader = std::make_shared<loader::Loader>();
         state.loader->nacp.emplace();
         state.loader->nacp->nacpContents.saveDataOwnerId = SaveDataOwnerId;
+        state.loader->nacp->nacpContents.cacheStorageSize = 0xC00000;
+        state.loader->nacp->nacpContents.cacheStorageJournalSize = 0xC00000;
         service::ServiceManager manager;
         kernel::type::KSession session;
         IFileSystemProxy proxy(state, manager);
@@ -581,6 +583,14 @@ namespace {
         input.attribute.programId = 0;
         input.attribute.type = SaveDataType::Cache;
         auto request{RequestWith(input)};
+        ipc::IpcResponse sizeResponse;
+        auto sizeRequest{RequestWith<u16>(0)};
+        Check(!proxy.GetCacheStorageSize(session, sizeRequest, sizeResponse),
+              "launch-provisioned cache size query failed");
+        Check(sizeResponse.Get<i64>() == 0xC00000 &&
+              sizeResponse.Get<i64>(sizeof(i64)) == 0xC00000,
+              "launch-provisioned cache sizes were not preserved");
+
         ipc::IpcResponse response;
         Check(!proxy.OpenSaveDataFileSystem(session, request, response),
               "launch-provisioned cache storage did not open through programId zero");
@@ -625,6 +635,44 @@ namespace {
         auto request{RequestWith(input)};
         ipc::IpcResponse response;
         Check(!proxy.OpenSaveDataFileSystem(session, request, response), "created cache storage did not open");
+
+        TempDirectory legacyRoot;
+        const auto legacyCachePath{legacyRoot.path / "switch/nand/user/save/cache/0100F2200C984000"};
+        std::filesystem::create_directories(legacyCachePath);
+
+        kernel::OS legacyOs;
+        legacyOs.publicAppFilesPath = legacyRoot.path.string();
+        DeviceState legacyState{.os = &legacyOs};
+        legacyState.loader = std::make_shared<loader::Loader>();
+        legacyState.loader->nacp.emplace();
+        legacyState.loader->nacp->nacpContents.saveDataOwnerId = SaveDataOwnerId;
+        service::ServiceManager legacyManager;
+        kernel::type::KSession legacySession;
+        IFileSystemProxy legacyProxy(legacyState, legacyManager);
+
+        auto legacySizeRequest{RequestWith<u16>(0)};
+        ipc::IpcResponse legacyMissingResponse;
+        Check(legacyProxy.GetCacheStorageSize(legacySession, legacySizeRequest, legacyMissingResponse) == result::EntityNotFound,
+              "untracked legacy cache reported fabricated sizes");
+
+        target = CacheStorageTargetMedia::None;
+        requiredSize = UINT64_MAX;
+        Check(!CreateApplicationCacheStorage(legacyRoot.path.string(), SaveDataOwnerId, 0, 0x1000,
+                                             0, 0x800, 0x800, target, requiredSize),
+              "legacy directory-only cache was not adopted");
+        Check(target == CacheStorageTargetMedia::Nand && requiredSize == 0,
+              "legacy cache adoption returned the wrong outputs");
+        Check(CreateApplicationCacheStorage(legacyRoot.path.string(), SaveDataOwnerId, 0, 0x1000,
+                                            0, 0x800, 0x800, target, requiredSize) == result::AlreadyExists,
+              "adopted cache stopped preserving duplicate creation semantics");
+
+        auto migratedSizeRequest{RequestWith<u16>(0)};
+        ipc::IpcResponse migratedSizeResponse;
+        Check(!legacyProxy.GetCacheStorageSize(legacySession, migratedSizeRequest, migratedSizeResponse),
+              "adopted cache size query failed");
+        Check(migratedSizeResponse.Get<i64>() == 0x800 &&
+              migratedSizeResponse.Get<i64>(sizeof(i64)) == 0x800,
+              "adopted cache sizes were not persisted");
     }
 
 }
