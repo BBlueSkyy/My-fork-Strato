@@ -3,6 +3,7 @@
 
 #include <os.h>
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
 #include <vfs/os_filesystem.h>
@@ -113,10 +114,10 @@ namespace skyline::service::fssrv {
 
             try {
                 vfs::OsFileSystem root{publicAppFilesPath + "/switch"};
-                constexpr std::string_view MetadataDirectory{"/.strato/cache"};
-                const auto directoryError{root.CreateDirectory(std::string(MetadataDirectory), true)};
+                constexpr const char *MetadataDirectory{"/.strato/cache"};
+                const auto directoryError{root.CreateDirectory(MetadataDirectory, true)};
                 if (directoryError == std::errc::file_exists) {
-                    if (!root.DirectoryExists(std::string(MetadataDirectory)))
+                    if (!root.DirectoryExists(MetadataDirectory))
                         return result::PathAlreadyExists;
                 } else if (directoryError) {
                     return MapVfsError(directoryError);
