@@ -606,6 +606,12 @@ namespace skyline::gpu {
         });
 
         /**
+         * @brief Copies one 2D texture into a depth slice of this 3D texture
+         * @note Source and destination host formats must match exactly
+         */
+        void CopySliceFrom(std::shared_ptr<Texture> source, u32 dstLevel, u32 dstSlice, u32 srcLevel = 0);
+
+        /**
          * @return If the texture is frequently locked by threads using non-ContextLocks
          */
         bool FrequentlyLocked() {

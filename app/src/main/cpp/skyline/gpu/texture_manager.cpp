@@ -211,7 +211,13 @@ namespace skyline::gpu {
             }, guestTexture.format, guestTexture.swizzle);
         }
 
-        size_t aggregatedDepthSlices{};
+        struct SliceSource {
+            std::shared_ptr<Texture> texture;
+            u32 level{};
+            u32 slice{};
+        };
+        boost::container::small_vector<SliceSource, 16> sliceSources;
+
         if (guestTexture.GetImageType() == vk::ImageType::e3D &&
             guestTexture.tileConfig.mode == texture::TileMode::Block) {
             auto parentMipLayouts{texture::GetBlockLinearMipLayout(
@@ -235,16 +241,9 @@ namespace skyline::gpu {
                 return std::nullopt;
             }};
 
-            struct SliceSource {
-                std::shared_ptr<Texture> texture;
-                u32 level;
-                u32 slice;
-            };
-            boost::container::small_vector<SliceSource, 16> sliceSources;
-
             for (const auto &mapping : textures) {
                 auto source{mapping.texture};
-                if (!source || source->replaced || !source->guest)
+                if (!source || source->replaced || !source->guest || !source->everUsedAsRt)
                     continue;
 
                 if (std::find_if(sliceSources.begin(), sliceSources.end(), [&](const SliceSource &entry) {
@@ -259,6 +258,7 @@ namespace skyline::gpu {
                     sourceGuest.mipLevelCount != 1 ||
                     sourceGuest.baseArrayLayer != 0 ||
                     sourceGuest.format != guestTexture.format ||
+                    source->format != ConvertHostCompatibleFormat(guestTexture.format, gpu.traits) ||
                     sourceGuest.tileConfig.mode != texture::TileMode::Block ||
                     sourceGuest.tileConfig.blockDepth != guestTexture.tileConfig.blockDepth)
                     continue;
@@ -291,13 +291,8 @@ namespace skyline::gpu {
                                     [level, slice](const SliceSource &entry) {
                                         return entry.level == level && entry.slice == slice;
                                     })};
-
-                                if (existing == sliceSources.end()) {
+                                if (existing == sliceSources.end())
                                     sliceSources.push_back({source, level, slice});
-                                } else if (!existing->texture->everUsedAsRt && source->everUsedAsRt) {
-                                    existing->texture = source;
-                                }
-
                                 found = true;
                                 break;
                             }
@@ -307,28 +302,49 @@ namespace skyline::gpu {
                     levelOffset += mip.blockLinearSize;
                 }
             }
-
-            for (auto &source : sliceSources) {
-                if (std::find(matches.begin(), matches.end(), source.texture) == matches.end())
-                    matches.push_back(source.texture);
-            }
-            aggregatedDepthSlices = sliceSources.size();
         }
 
-        for (auto &texture : matches)
-            texture->SynchronizeGuest(false, true);
-
-        if (aggregatedDepthSlices)
-            LOGI("[TEX3D] synchronized {} rendered 2D slices before creating {}x{}x{} 3D backing",
-                 aggregatedDepthSlices,
-                 guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth);
+        // Preserve non-slice incompatible overlaps through guest memory as before. Rendered
+        // 2D depth slices are copied directly GPU->GPU below, so they must not be flushed
+        // through guest memory first.
+        for (auto &matchedTexture : matches) {
+            const bool isSliceSource{std::any_of(sliceSources.begin(), sliceSources.end(),
+                [&](const SliceSource &source) {
+                    return source.texture == matchedTexture;
+                })};
+            if (!isSliceSource)
+                matchedTexture->SynchronizeGuest(false, true);
+        }
 
         // Create a texture as we cannot find one that matches
 
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();
-        texture->TransitionLayout(vk::ImageLayout::eGeneral);
+        {
+            ContextLock destinationLock{tag, *texture};
+            texture->TransitionLayout(vk::ImageLayout::eGeneral);
+
+            if (!sliceSources.empty()) {
+                // First load untouched portions from guest memory. Rendered slices are then
+                // overlaid directly from their GPU backings so correctness does not depend
+                // on Free Guest Texture Memory or a host->guest->host round trip.
+                texture->SynchronizeHost(false);
+                texture->SynchronizeHost(true);
+
+                for (auto &source : sliceSources) {
+                    ContextLock sourceLock{tag, *source.texture};
+                    source.texture->SynchronizeHost(true);
+                    texture->CopySliceFrom(source.texture, source.level, source.slice);
+                    source.texture->replaced = true;
+                }
+
+                LOGI("[TEX3D] copied {} rendered 2D slices directly into {}x{}x{} 3D backing",
+                     sliceSources.size(),
+                     guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth);
+            }
+        }
+
         auto it{texture->guest->mappings.begin()};
         textures.emplace(mappingEnd, TextureMapping{texture, it, guestMapping});
         while ((++it) != texture->guest->mappings.end()) {
