@@ -13,6 +13,21 @@ namespace skyline::gpu {
 
         auto guestMapping{guestTexture.mappings.front()};
 
+        const bool requestIs3D{
+            guestTexture.GetImageType() == vk::ImageType::e3D ||
+            guestTexture.viewType == vk::ImageViewType::e3D ||
+            guestTexture.dimensions.depth > 1
+        };
+        if (requestIs3D)
+            LOGI("[TEX3D] request dims={}x{}x{} view={} imageType={} layers={} baseLayer={} "
+                 "mips={}/{}+{} block={}x{} mappings={}",
+                 guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
+                 static_cast<u32>(guestTexture.viewType), static_cast<u32>(guestTexture.GetImageType()),
+                 guestTexture.layerCount, guestTexture.baseArrayLayer,
+                 guestTexture.mipLevelCount, guestTexture.viewMipBase, guestTexture.viewMipCount,
+                 guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
+                 guestTexture.mappings.size());
+
         /*
          * Iterate over all textures that overlap with the first mapping of the guest texture and compare the mappings:
          * 1) All mappings match up perfectly, we check that the rest of the supplied mappings correspond to mappings in the texture
@@ -64,12 +79,33 @@ namespace skyline::gpu {
             if (firstHostMapping == hostMappings.begin() && firstHostMapping->begin() == guestMapping.begin() && mappingMatch && lastHostMapping == hostMappings.end() && lastGuestMapping.end() == std::prev(lastHostMapping)->end()) {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
                 auto &matchGuestTexture{*hostMapping->texture->guest};
+
+                const bool exact3DRelation{
+                    requestIs3D ||
+                    matchGuestTexture.GetImageType() == vk::ImageType::e3D ||
+                    matchGuestTexture.viewType == vk::ImageViewType::e3D ||
+                    matchGuestTexture.dimensions.depth > 1
+                };
+                if (exact3DRelation)
+                    LOGI("[TEX3D] exact-map req={}x{}x{} view={} imageType={} layers={} "
+                         "host={}x{}x{} view={} imageType={} layers={} "
+                         "reqBlock={}x{} hostBlock={}x{}",
+                         guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
+                         static_cast<u32>(guestTexture.viewType), static_cast<u32>(guestTexture.GetImageType()),
+                         guestTexture.layerCount,
+                         matchGuestTexture.dimensions.width, matchGuestTexture.dimensions.height, matchGuestTexture.dimensions.depth,
+                         static_cast<u32>(matchGuestTexture.viewType), static_cast<u32>(matchGuestTexture.GetImageType()),
+                         matchGuestTexture.layerCount,
+                         guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
+                         matchGuestTexture.tileConfig.blockHeight, matchGuestTexture.tileConfig.blockDepth);
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
                     ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                         matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
                         matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
                         || matchGuestTexture.viewMipBase > 0)
                     && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
+                    if (exact3DRelation)
+                        LOGI("[TEX3D] exact-map-accepted-as-full-match");
                     fullMatch = hostMapping->texture;
                 } else {
                     matches.push_back(hostMapping->texture);
@@ -260,6 +296,15 @@ namespace skyline::gpu {
                  guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
                  static_cast<u32>(guestTexture.viewType), guestTexture.layerCount,
                  guestTexture.mipLevelCount, guestTexture.viewMipBase, guestTexture.viewMipCount,
+                 guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
+                 guestTexture.CalculateLayerSize());
+
+        if (requestIs3D)
+            LOGI("[TEX3D] new-3d-storage dims={}x{}x{} view={} imageType={} layers={} "
+                 "baseLayer={} block={}x{} size=0x{:X}",
+                 guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
+                 static_cast<u32>(guestTexture.viewType), static_cast<u32>(guestTexture.GetImageType()),
+                 guestTexture.layerCount, guestTexture.baseArrayLayer,
                  guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
                  guestTexture.CalculateLayerSize());
 
