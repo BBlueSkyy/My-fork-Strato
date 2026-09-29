@@ -307,8 +307,10 @@ namespace skyline::gpu {
             auto findGuestOffset{[&](u8 *address) -> std::optional<size_t> {
                 size_t base{};
                 for (const auto &mapping : guestTexture.mappings) {
-                    if (address >= mapping.begin() && address < mapping.end())
-                        return base + static_cast<size_t>(address - mapping.begin());
+                    auto *mappingBegin{mapping.data()};
+                    auto *mappingEnd{mapping.data() + mapping.size()};
+                    if (address >= mappingBegin && address < mappingEnd)
+                        return base + static_cast<size_t>(address - mappingBegin);
                     base += mapping.size();
                 }
                 return std::nullopt;
