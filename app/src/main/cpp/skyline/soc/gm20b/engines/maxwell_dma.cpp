@@ -273,14 +273,6 @@ namespace skyline::soc::gm20b::engine {
         bool srcBlockLinear{registers.launchDma->srcMemoryLayout == Registers::LaunchDma::MemoryLayout::BlockLinear};
         bool dstBlockLinear{registers.launchDma->dstMemoryLayout == Registers::LaunchDma::MemoryLayout::BlockLinear};
 
-        LOGD("[DMA251] remap multi-line: srcLayout={} dstLayout={} src=0x{:X} dst=0x{:X} elements={} lines={} srcBpp={} dstBpp={} pitchIn={} pitchOut={} srcDepth={} dstDepth={}",
-             static_cast<u32>(registers.launchDma->srcMemoryLayout),
-             static_cast<u32>(registers.launchDma->dstMemoryLayout),
-             u64{*registers.offsetIn}, u64{*registers.offsetOut},
-             elementsPerLine, lines, srcBpp, dstBpp,
-             *registers.pitchIn, *registers.pitchOut,
-             registers.srcSurface->depth, registers.dstSurface->depth);
-
         if (!elementsPerLine || !lines || !dstBpp)
             return;
 
