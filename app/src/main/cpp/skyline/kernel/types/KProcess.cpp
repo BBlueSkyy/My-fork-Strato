@@ -152,6 +152,7 @@ namespace skyline::kernel::type {
 
     Result KProcess::MutexLock(const std::shared_ptr<KThread> &thread, u32 *mutex, KHandle ownerHandle, KHandle tag, bool failOnOutdated) {
         TRACE_EVENT_FMT("kernel", "MutexLock {} @ 0x{:X}", fmt::ptr(mutex), thread->id);
+        std::scoped_lock priorityLock{priorityInheritanceMutex};
 
         std::shared_ptr<KThread> owner;
         try {
@@ -196,6 +197,7 @@ namespace skyline::kernel::type {
     void KProcess::MutexUnlock(u32 *mutex) {
         TRACE_EVENT_FMT("kernel", "MutexUnlock {}", fmt::ptr(mutex));
 
+        std::scoped_lock priorityLock{priorityInheritanceMutex};
         std::scoped_lock lock{state.thread->waiterMutex};
         auto &waiters{state.thread->waiters};
         auto nextOwnerIt{std::find_if(waiters.begin(), waiters.end(), [mutex](const std::shared_ptr<KThread> &thread) { return thread->waitMutex == mutex; })};
@@ -289,7 +291,9 @@ namespace skyline::kernel::type {
 
             bool shouldWait{false};
             if (!inQueue) {
-                // If we weren't in the queue then we need to check if we were signalled already
+                // If we weren't in the queue then we need to check if we were signalled already.
+                // Serialize waiter ownership changes with priority propagation.
+                std::scoped_lock priorityLock{priorityInheritanceMutex};
                 while (true) {
                     std::unique_lock lock{state.thread->waiterMutex};
 
@@ -387,6 +391,7 @@ namespace skyline::kernel::type {
                 }
             }
 
+            std::scoped_lock priorityLock{priorityInheritanceMutex};
             std::scoped_lock lock{thread->waiterMutex};
             if (thread->waitConditionVariable == conditionVariable) {
                 // If the thread is still waiting on the same condition variable then we can signal it (It could no longer be waiting due to a timeout)
