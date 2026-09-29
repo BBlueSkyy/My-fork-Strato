@@ -70,8 +70,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         guest.layerStride = (guest.baseArrayLayer > 1 || guest.layerCount > 1) ? target.ArrayPitch() : 0;
 
-        auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(target.offset, guest.GetSize())};
-        guest.mappings.assign(mappings.begin(), mappings.end());
+        guest.SetMappings(ctx.channelCtx.asCtx->gmmu, target.offset);
 
         if (guest.MappingsValid()) {
             if (guest.tileConfig.mode == gpu::texture::TileMode::Block)
@@ -123,8 +122,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         guest.layerStride = (guest.baseArrayLayer > 1 || guest.layerCount > 1) ? engine->ZtArrayPitch() : 0;
 
-        auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(engine->ztOffset, guest.GetSize())};
-        guest.mappings.assign(mappings.begin(), mappings.end());
+        guest.SetMappings(ctx.channelCtx.asCtx->gmmu, engine->ztOffset);
 
         if (guest.MappingsValid()) {
             if (guest.tileConfig.mode == gpu::texture::TileMode::Block)

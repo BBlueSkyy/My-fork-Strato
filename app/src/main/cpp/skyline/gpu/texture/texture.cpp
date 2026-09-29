@@ -73,7 +73,7 @@ namespace skyline::gpu {
     }
 
     bool GuestTexture::MappingsValid() const {
-        return ranges::all_of(mappings, [](const auto &mapping) { return mapping.valid(); });
+        return !mappings.empty() && !hasUnmappedMappings;
     }
 
     TextureView::TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format, vk::ComponentMapping mapping) : texture(std::move(texture)), type(type), format(format), mapping(mapping), range(range) {}
@@ -124,13 +124,37 @@ namespace skyline::gpu {
 
     void Texture::SetupGuestMappings() {
         auto &mappings{guest->mappings};
-        if (mappings.size() == 1) {
+        std::vector<span<u8>> trapMappings;
+
+        if (guest->hasSparseMappings) {
+            size_t totalSize{};
+            for (auto mapping : mappings)
+                totalSize += mapping.size();
+
+            size_t alignedSize{util::AlignUp(totalSize, constant::PageSize)};
+            auto sparseMirror{mmap(nullptr, alignedSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)};
+            if (sparseMirror == MAP_FAILED)
+                throw exception("Failed to create sparse texture mirror: {}", strerror(errno));
+
+            alignedMirror = span<u8>{reinterpret_cast<u8 *>(sparseMirror), alignedSize};
+            mirror = alignedMirror.first(totalSize);
+
+            size_t offset{};
+            for (auto mapping : mappings) {
+                if (mapping.valid()) {
+                    std::memcpy(mirror.data() + offset, mapping.data(), mapping.size());
+                    trapMappings.push_back(mapping);
+                }
+                offset += mapping.size();
+            }
+        } else if (mappings.size() == 1) {
             auto mapping{mappings.front()};
             u8 *alignedData{util::AlignDown(mapping.data(), constant::PageSize)};
             size_t alignedSize{static_cast<size_t>(util::AlignUp(mapping.data() + mapping.size(), constant::PageSize) - alignedData)};
 
             alignedMirror = gpu.state.process->memory.CreateMirror(span<u8>{alignedData, alignedSize});
             mirror = alignedMirror.subspan(static_cast<size_t>(mapping.data() - alignedData), mapping.size());
+            trapMappings.assign(mappings.begin(), mappings.end());
         } else {
             std::vector<span<u8>> alignedMappings;
 
@@ -151,11 +175,13 @@ namespace skyline::gpu {
 
             alignedMirror = gpu.state.process->memory.CreateMirrors(alignedMappings);
             mirror = alignedMirror.subspan(static_cast<size_t>(frontMapping.data() - alignedData), totalSize);
+            trapMappings.assign(mappings.begin(), mappings.end());
         }
 
         // We can't just capture `this` in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Texture> weakThis{weak_from_this()};
-        trapHandle = gpu.state.process->trap.CreateTrap(mappings, [weakThis] {
+        if (!trapMappings.empty())
+            trapHandle = gpu.state.process->trap.CreateTrap(trapMappings, [weakThis] {
             auto texture{weakThis.lock()};
             if (!texture)
                 return;
@@ -240,6 +266,33 @@ namespace skyline::gpu {
             texture->SynchronizeGuest(true, true); // We need to assume the texture is dirty since we don't know what the guest is writing
             return true;
         });
+    }
+
+    void Texture::RefreshSparseMappings() {
+        if (!guest->hasSparseMappings)
+            return;
+
+        size_t offset{};
+        for (auto mapping : guest->mappings) {
+            auto destination{mirror.subspan(offset, mapping.size())};
+            if (mapping.valid())
+                std::memcpy(destination.data(), mapping.data(), mapping.size());
+            else
+                std::memset(destination.data(), 0, destination.size());
+            offset += mapping.size();
+        }
+    }
+
+    void Texture::FlushSparseMappings() {
+        if (!guest->hasSparseMappings)
+            return;
+
+        size_t offset{};
+        for (auto mapping : guest->mappings) {
+            if (mapping.valid())
+                std::memcpy(mapping.data(), mirror.data() + offset, mapping.size());
+            offset += mapping.size();
+        }
     }
 
     std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl() {
@@ -492,9 +545,14 @@ namespace skyline::gpu {
         } else if (levelCount != 0) {
             throw exception("Mipmapped textures with tiling mode '{}' aren't supported", static_cast<int>(tiling));
         }
+
+        FlushSparseMappings();
     }
 
     void Texture::FreeGuest() {
+        if (guest->hasSparseMappings)
+            return;
+
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
         if (*gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
             gpu.state.process->memory.FreeMemory(mirror);
@@ -740,6 +798,9 @@ namespace skyline::gpu {
     }
 
     void Texture::MarkGpuDirty(UsageTracker &usageTracker) {
+        if (!guest)
+            return;
+
         for (auto mapping : guest->mappings)
             if (mapping.valid())
                 usageTracker.dirtyIntervals.Insert(mapping);
@@ -759,15 +820,23 @@ namespace skyline::gpu {
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 // If a texture is Clean then we can just transition it to being GPU dirty and retrap it
                 dirtyState = DirtyState::GpuDirty;
-                gpu.state.process->trap.TrapRegions(*trapHandle, false);
+                if (trapHandle)
+                    gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
             } else if (dirtyState != DirtyState::CpuDirty) {
                 return; // If the texture has not been modified on the CPU, there is no need to synchronize it
             }
 
+            if (guest->hasSparseMappings) {
+                if (trapHandle)
+                    gpu.state.process->trap.TrapRegions(*trapHandle, true);
+                RefreshSparseMappings();
+            }
+
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
-            gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
+            if (trapHandle)
+                gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
         // From this point on Clean -> CPU dirty state transitions can occur, GPU dirty -> * transitions will always require the full lock to be held and thus won't occur
@@ -805,15 +874,23 @@ namespace skyline::gpu {
             std::scoped_lock lock{stateMutex};
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 dirtyState = DirtyState::GpuDirty;
-                gpu.state.process->trap.TrapRegions(*trapHandle, false);
+                if (trapHandle)
+                    gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
             } else if (dirtyState != DirtyState::CpuDirty) {
                 return;
             }
 
+            if (guest->hasSparseMappings) {
+                if (trapHandle)
+                    gpu.state.process->trap.TrapRegions(*trapHandle, true);
+                RefreshSparseMappings();
+            }
+
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
-            gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
+            if (trapHandle)
+                gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
         auto stagingBuffer{SynchronizeHostImpl()};
@@ -842,7 +919,7 @@ namespace skyline::gpu {
             std::scoped_lock lock{stateMutex};
             if (cpuDirty && dirtyState == DirtyState::Clean) {
                 dirtyState = DirtyState::CpuDirty;
-                if (!skipTrap)
+                if (!skipTrap && trapHandle)
                     gpu.state.process->trap.DeleteTrap(*trapHandle);
                 return;
             } else if (dirtyState != DirtyState::GpuDirty) {
@@ -859,6 +936,9 @@ namespace skyline::gpu {
             return;
 
         WaitOnBacking();
+
+        if (guest->hasSparseMappings && trapHandle)
+            gpu.state.process->trap.RemoveTrap(*trapHandle);
 
         if (tiling == vk::ImageTiling::eOptimal || !std::holds_alternative<memory::Image>(backing)) {
             if (!downloadStagingBuffer)
@@ -879,7 +959,7 @@ namespace skyline::gpu {
             throw exception("Host -> Guest synchronization of images tiled as '{}' isn't implemented", vk::to_string(tiling));
         }
 
-        if (!skipTrap)
+        if (!skipTrap && trapHandle)
             if (cpuDirty)
                 gpu.state.process->trap.DeleteTrap(*trapHandle);
             else

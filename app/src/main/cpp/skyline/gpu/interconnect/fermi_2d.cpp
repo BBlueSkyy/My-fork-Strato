@@ -107,8 +107,7 @@ namespace skyline::gpu::interconnect {
         }
 
         u64 iova{u64{surface.address} + addressOffset};
-        auto mappings{channelCtx.asCtx->gmmu.TranslateRange(iova, texture.GetSize())};
-        texture.mappings.assign(mappings.begin(), mappings.end());
+        texture.SetMappings(channelCtx.asCtx->gmmu, iova);
 
         return {texture, addressOffset != 0};
     }

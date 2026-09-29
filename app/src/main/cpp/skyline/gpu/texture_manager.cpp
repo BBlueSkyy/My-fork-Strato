@@ -10,6 +10,18 @@ namespace skyline::gpu {
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
+        if (guestTexture.hasSparseMappings) {
+            auto texture{std::make_shared<Texture>(gpu, guestTexture)};
+            texture->TransitionLayout(vk::ImageLayout::eGeneral);
+            return texture->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
+                .aspectMask = guestTexture.aspect,
+                .baseMipLevel = guestTexture.viewMipBase,
+                .levelCount = guestTexture.viewMipCount,
+                .baseArrayLayer = guestTexture.baseArrayLayer,
+                .layerCount = guestTexture.GetViewLayerCount(),
+            }, guestTexture.format, guestTexture.swizzle);
+        }
+
         auto guestMapping{guestTexture.mappings.front()};
 
         /*
