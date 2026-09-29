@@ -60,6 +60,18 @@ namespace {
         path = ReadPath(repeatedInnerSlashes);
         Check(path && *path == "/save/file", "repeated inner separators were not normalized");
 
+        std::array<u8, 15> currentDirectory{'/', 's', 'a', 'v', 'e', '/', '.', '/', 'f', 'i', 'l', 'e', 0, 0, 0};
+        path = ReadPath(currentDirectory);
+        Check(path && *path == "/save/file", "current-directory component was not normalized");
+
+        std::array<u8, 9> trailingCurrentDirectory{'/', 's', 'a', 'v', 'e', '/', '.', 0, 0};
+        path = ReadPath(trailingCurrentDirectory);
+        Check(path && *path == "/save", "trailing current-directory component was not normalized");
+
+        std::array<u8, 3> rootCurrentDirectory{'/', '.', 0};
+        path = ReadPath(rootCurrentDirectory);
+        Check(path && *path == "/", "root current-directory path was not normalized");
+
         std::array<u8, 7> disguisedTraversal{'/', '/', '.', '.', '/', 'x', 0};
         Check(!ReadPath(disguisedTraversal), "leading separators bypassed parent traversal rejection");
 
