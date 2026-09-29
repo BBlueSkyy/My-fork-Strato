@@ -111,6 +111,7 @@ namespace skyline::gpu {
 
             buffer->SynchronizeGuest(true); // We need to assume the buffer is dirty since we don't know what the guest is writing
             buffer->dirtyState = DirtyState::CpuDirty;
+
             return true;
         });
     }
