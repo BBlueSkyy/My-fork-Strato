@@ -574,6 +574,9 @@ namespace {
         state.loader->nacp->nacpContents.saveDataOwnerId = SaveDataOwnerId;
         state.loader->nacp->nacpContents.cacheStorageSize = 0xC00000;
         state.loader->nacp->nacpContents.cacheStorageJournalSize = 0xC00000;
+        state.loader->cnmt.emplace();
+        constexpr u64 ApplicationId{0x010083A018260000};
+        state.loader->cnmt->header.id = ApplicationId;
         service::ServiceManager manager;
         kernel::type::KSession session;
         IFileSystemProxy proxy(state, manager);
@@ -590,6 +593,29 @@ namespace {
         Check(sizeResponse.Get<i64>() == 0xC00000 &&
               sizeResponse.Get<i64>(sizeof(i64)) == 0xC00000,
               "launch-provisioned cache sizes were not preserved");
+
+        ipc::IpcRequest readerRequest;
+        ipc::IpcResponse readerOpenResponse;
+        Check(!proxy.OpenSaveDataInfoReaderOnlyCacheStorage(session, readerRequest, readerOpenResponse),
+              "cache-only save-data reader did not open");
+        auto cacheReader{std::dynamic_pointer_cast<ISaveDataInfoReader>(manager.lastRegisteredService)};
+        Check(cacheReader != nullptr, "cache-only save-data reader was not registered");
+
+        std::array<SaveDataInfo, 1> cacheEntries{};
+        ipc::IpcRequest readRequest;
+        readRequest.outputBuf.emplace_back(reinterpret_cast<u8 *>(cacheEntries.data()), sizeof(cacheEntries));
+        ipc::IpcResponse readResponse;
+        Check(!cacheReader->ReadSaveDataInfo(session, readRequest, readResponse),
+              "cache-only save-data reader failed");
+        Check(readResponse.Get<i64>() == 1, "existing cache was invisible to the cache-only reader");
+        Check(cacheEntries[0].type == SaveDataType::Cache &&
+              cacheEntries[0].spaceId == SaveDataSpaceId::User &&
+              cacheEntries[0].applicationId == ApplicationId &&
+              cacheEntries[0].index == 0 &&
+              cacheEntries[0].rank == SaveDataRank::Primary &&
+              cacheEntries[0].saveDataId != 0 &&
+              cacheEntries[0].size == 0x1800000,
+              "cache-only reader returned inconsistent SaveDataInfo");
 
         ipc::IpcResponse response;
         Check(!proxy.OpenSaveDataFileSystem(session, request, response),
