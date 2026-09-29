@@ -228,12 +228,26 @@ namespace skyline::gpu {
                 // Skip updating backing if the changes are gonna be updated later by SynchroniseHost in executor anyway
                 return;
 
-            if (!SequencedCpuBackingWritesBlocked() && PollFence())
+            if (!SequencedCpuBackingWritesBlocked() && PollFence()) {
                 // We can write directly to the backing as long as this resource isn't being actively used by a past workload (in the current context or another)
                 std::memcpy(backing->data() + dstOffset, src->mirror.data() + srcOffset, size);
-            else
+            } else {
+                // The GPU copy callback reads from the source backing. If the source is CPU dirty,
+                // its mirror is newer than that backing, so blocking backing writes first would leave
+                // the GPU reading stale data and create the invalid CpuDirty + AllWrites state.
+                // Synchronize the source before the callback makes it immutable for this execution.
+                if (src->dirtyState == DirtyState::CpuDirty)
+                    src->SynchronizeHost();
+
                 gpuCopyCallback();
+            }
         } else {
+            // If only the destination is GPU dirty, the source can still be CPU dirty. The GPU
+            // callback will read the source backing, so make it current before either buffer is
+            // made immutable by the interconnect copy path.
+            if (src->dirtyState == DirtyState::CpuDirty)
+                src->SynchronizeHost();
+
             MarkGpuDirty(usageTracker);
             gpuCopyCallback();
         }
