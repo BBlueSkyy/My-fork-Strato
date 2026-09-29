@@ -248,9 +248,18 @@ namespace skyline::gpu::texture {
         }
 
         size_t pitchTextureHeight{util::DivideCeil<size_t>(pitchDimensions.height, formatBlockHeight)};
+        size_t blockLinearTextureHeight{util::DivideCeil<size_t>(blockLinearDimensions.height, formatBlockHeight)};
         size_t robHeight{gobBlockHeight * GobHeight};
 
         originY = util::DivideCeil<u32>(originY, static_cast<u32>(formatBlockHeight));
+        if (!pitchTextureHeight || originY >= blockLinearTextureHeight)
+            return;
+
+        // LAUNCH_DMA lineCount is the total number of pitch-linear lines to transfer. A 3D
+        // block-linear surface may therefore consume those lines across multiple Z slices; the
+        // surface depth itself is not the number of pitch slices to copy.
+        size_t linesPerSlice{std::min(pitchTextureHeight, blockLinearTextureHeight - originY)};
+        size_t unprocessedLines{pitchTextureHeight};
 
         size_t depthMobCount{util::DivideCeil<size_t>(blockLinearDimensions.depth, gobBlockDepth)};  //!< The depth of the surface in MOBs (Matrix of Blocks)
         size_t lastMobSliceCount{gobBlockDepth - (util::AlignUp(blockLinearDimensions.depth, gobBlockDepth) - blockLinearDimensions.depth)};
@@ -264,12 +273,13 @@ namespace skyline::gpu::texture {
         u8 *pitchOffset{pitch};
 
         auto copyTexture{[&]<typename FORMATBPB>() __attribute__((always_inline)) {
-            for (size_t currMob{}; currMob < depthMobCount; ++currMob, blockLinear += robSize * robPerMob) {
+            for (size_t currMob{}; currMob < depthMobCount && unprocessedLines; ++currMob, blockLinear += robSize * robPerMob) {
                 size_t sliceCount{(currMob + 1) == depthMobCount ? lastMobSliceCount : gobBlockDepth};
                 u64 sliceOffset{};
-                for (size_t slice{}; slice < sliceCount; ++slice, sliceOffset += (GobHeight * GobWidth * gobBlockHeight)) {
+                for (size_t slice{}; slice < sliceCount && unprocessedLines; ++slice, sliceOffset += (GobHeight * GobWidth * gobBlockHeight)) {
+                    size_t linesInSlice{std::min(unprocessedLines, linesPerSlice)};
                     u64 robOffset{util::AlignDown(originY, robHeight) * blockLinearTextureWidthAlignedBytes * gobBlockDepth};
-                    for (size_t line{}; line < pitchTextureHeight; ++line, pitchOffset += pitchBytes) {
+                    for (size_t line{}; line < linesInSlice; ++line, pitchOffset += pitchBytes) {
                         // XYZ Offset in entire ROBs
                         if (line && !((originY + line) & (robHeight - 1))) [[unlikely]]
                             robOffset += robSize;
@@ -303,6 +313,8 @@ namespace skyline::gpu::texture {
                                 *reinterpret_cast<FORMATBPB *>(swizzledOffset) = *reinterpret_cast<FORMATBPB *>(deSwizzledOffset);
                         }
                     }
+
+                    unprocessedLines -= linesInSlice;
                 }
             }
         }};
