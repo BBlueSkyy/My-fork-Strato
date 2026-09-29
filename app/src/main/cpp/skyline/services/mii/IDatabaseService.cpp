@@ -334,12 +334,12 @@ namespace skyline::service::mii {
     Result IDatabaseService::GetIndex(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto charInfo{request.Pop<CharInfo>()};
         if (!IsValidCharInfo(charInfo)) {
-            response.Push<s32>(-1);
+            response.Push<i32>(-1);
             return InvalidCharInfo;
         }
 
         const auto index{database.FindIndex(charInfo.createId)};
-        response.Push<s32>(index);
+        response.Push<i32>(index);
         return index >= 0 ? Result{} : NotFound;
     }
 

@@ -225,7 +225,7 @@ namespace skyline::service::mii {
         return *entry;
     }
 
-    s32 MiiDatabase::FindIndex(const std::array<u8, 0x10> &createId) const {
+    i32 MiiDatabase::FindIndex(const std::array<u8, 0x10> &createId) const {
         std::scoped_lock lock{mutex};
         const auto entry{std::find_if(entries.begin(), entries.end(), [&](const CharInfo &candidate) {
             return candidate.createId == createId;
@@ -234,7 +234,7 @@ namespace skyline::service::mii {
         if (entry == entries.end())
             return -1;
 
-        return static_cast<s32>(std::distance(entries.begin(), entry));
+        return static_cast<i32>(std::distance(entries.begin(), entry));
     }
 
     MiiDatabase::AppendResult MiiDatabase::Append(const CharInfo &charInfo) {

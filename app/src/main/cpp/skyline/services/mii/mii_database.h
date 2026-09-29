@@ -122,7 +122,7 @@ namespace skyline::service::mii {
         bool IsFull() const;
         std::vector<CharInfo> Snapshot() const;
         std::optional<CharInfo> FindByCreateId(const std::array<u8, 0x10> &createId) const;
-        s32 FindIndex(const std::array<u8, 0x10> &createId) const;
+        i32 FindIndex(const std::array<u8, 0x10> &createId) const;
         AppendResult Append(const CharInfo &charInfo);
     };
 }
