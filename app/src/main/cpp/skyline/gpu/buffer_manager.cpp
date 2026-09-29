@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <cstdint>
 #include <common/settings.h>
 #include <gpu.h>
 #include "buffer_manager.h"
@@ -120,7 +121,15 @@ namespace skyline::gpu {
                     copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->backing->data(), srcBuffer->backing->data());
                 } else if (srcBuffer->AllCpuBackingWritesBlocked()) {
                     if (srcBuffer->dirtyState == Buffer::DirtyState::CpuDirty)
-                        LOGE("Buffer (0x{}-0x{}) is marked as CPU dirty while CPU backing writes are blocked, this is not valid", srcBuffer->guest->begin().base(), srcBuffer->guest->end().base());
+                        LOGE("[DMA251] Coalesce invalid buffer state: id={} range=0x{:X}-0x{:X} dirty={} immutability={} currentGpuDirty={} sequence={} cycle={}",
+                             srcBuffer->id,
+                             static_cast<u64>(reinterpret_cast<std::uintptr_t>(srcBuffer->guest->begin().base())),
+                             static_cast<u64>(reinterpret_cast<std::uintptr_t>(srcBuffer->guest->end().base())),
+                             static_cast<u32>(srcBuffer->dirtyState),
+                             static_cast<u32>(srcBuffer->backingImmutability),
+                             srcBuffer->currentExecutionGpuDirty,
+                             srcBuffer->sequenceNumber,
+                             static_cast<bool>(srcBuffer->cycle));
 
                     // We need the backing to be stable so that any writes within this context are sequenced correctly, we can't use the source mirror here either since buffer writes within this context will update the mirror on CPU and backing on GPU
                     copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->backing->data(), srcBuffer->backing->data());
