@@ -183,8 +183,9 @@ namespace skyline::kernel::type {
         }
 
         if (isHighestPriority)
-            // If we were the highest priority thread then we need to inherit priorities for all threads we're waiting on recursively
-            thread->UpdatePriorityInheritance();
+            // Adding the highest-priority waiter may change the owner's effective
+            // priority and recursively the priority of any owner it is waiting on.
+            owner->UpdatePriorityInheritance();
 
         if (thread == state.thread)
             state.scheduler->WaitSchedule();
