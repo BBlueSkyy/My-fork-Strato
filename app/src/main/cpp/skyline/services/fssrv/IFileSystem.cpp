@@ -36,14 +36,36 @@ namespace skyline::service::fssrv {
             const auto buffer{request.inputBuf[index]};
             const auto path{ReadPath(buffer)};
             if (!path) {
-                constexpr size_t PreviewSize{32};
-                std::string preview;
-                const auto count{std::min(buffer.size(), PreviewSize)};
-                preview.reserve(count * 3);
-                for (size_t i{}; i < count; ++i)
-                    preview += fmt::format("{:02X}{}", buffer[i], i + 1 == count ? "" : " ");
-                LOGI("FSP path diag: {} invalid path buffer {} size={} first{}=[{}]",
-                     operation, index, buffer.size(), count, preview);
+                const auto terminator{std::find(buffer.begin(), buffer.end(), 0)};
+                const auto nulOffset{terminator == buffer.end() ? buffer.size() : static_cast<size_t>(terminator - buffer.begin())};
+                const auto rawLength{std::min(nulOffset, static_cast<size_t>(160))};
+
+                std::string raw;
+                raw.reserve(rawLength);
+                for (size_t i{}; i < rawLength; ++i) {
+                    const u8 value{buffer[i]};
+                    if (value >= 0x20 && value <= 0x7E)
+                        raw += static_cast<char>(value);
+                    else
+                        raw += fmt::format("\\x{:02X}", value);
+                }
+
+                const auto backslash{std::find(buffer.begin(), terminator, static_cast<u8>('\\'))};
+                const char *reason{"component"};
+                if (buffer.empty())
+                    reason = "empty-buffer";
+                else if (buffer.size() > FspPathSize)
+                    reason = "oversized-buffer";
+                else if (terminator == buffer.end())
+                    reason = "missing-nul";
+                else if (nulOffset == 0)
+                    reason = "empty-path";
+                else if (backslash != terminator)
+                    reason = "backslash";
+
+                LOGI("FSP path diag: {} invalid path buffer {} reason={} size={} nul={} raw='{}{}'",
+                     operation, index, reason, buffer.size(), nulOffset, raw,
+                     nulOffset > rawLength ? "..." : "");
             }
             return path;
         }
