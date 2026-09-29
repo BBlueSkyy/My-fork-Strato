@@ -573,6 +573,7 @@ namespace skyline::service::fssrv {
                 entries.push_back(*cacheInfo);
         }
 
+        LOGI("FSP cache diag: OpenSaveDataInfoReader entries={}", entries.size());
         manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager, std::move(entries)), session, response);
         return {};
     }
@@ -596,6 +597,8 @@ namespace skyline::service::fssrv {
                 entries.push_back(*cacheInfo);
         }
 
+        LOGI("FSP cache diag: OpenSaveDataInfoReaderBySaveDataSpaceId space={} entries={}",
+             static_cast<u32>(*spaceId), entries.size());
         manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager, std::move(entries), *spaceId), session, response);
         return {};
     }
@@ -615,6 +618,7 @@ namespace skyline::service::fssrv {
                 entries.push_back(*cacheInfo);
         }
 
+        LOGI("FSP cache diag: OpenSaveDataInfoReaderOnlyCacheStorage entries={}", entries.size());
         manager.RegisterService(std::make_shared<ISaveDataInfoReader>(state, manager, std::move(entries), std::nullopt, true), session, response);
         return {};
     }
