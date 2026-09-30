@@ -94,8 +94,10 @@ namespace skyline::gpu {
 
                     bool useWriteCycle{write && buffer->CanUseFastWriteReadback()};
                     auto nextCycle{useWriteCycle ? buffer->writeCycle : buffer->cycle};
-                    if (useWriteCycle && buffer->cycle && buffer->cycle != nextCycle)
+                    if (useWriteCycle && buffer->cycle && buffer->cycle != nextCycle) {
                         bufferReadOnlyCycleBypasses.fetch_add(1, std::memory_order_relaxed);
+                        buffer->fastWriteReadbackBypasses++;
+                    }
 
                     waitCycle = std::move(nextCycle);
                 } while (waitCycle);
@@ -156,7 +158,9 @@ namespace skyline::gpu {
                 // The imminent CPU write must always leave the guest copy CPU dirty.
                 std::memcpy(buffer->mirror.data(), buffer->backing->data(), buffer->mirror.size());
                 buffer->dirtyState = DirtyState::CpuDirty;
+                buffer->fastWriteReadbackHits++;
                 bufferFastWriteHits.fetch_add(1, std::memory_order_relaxed);
+                buffer->LogFastWriteReadbackDiag();
                 LogBufferReadbackDiag();
                 return true;
             }
@@ -439,6 +443,31 @@ namespace skyline::gpu {
                accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold &&
                *gpu.state.settings->enableFastGpuReadbackHack &&
                *gpu.state.settings->enableFastReadbackWrites;
+    }
+
+    void Buffer::LogFastWriteReadbackDiag() const {
+        const bool milestone{
+            fastWriteReadbackHits == 1 ||
+            fastWriteReadbackHits == 8 ||
+            fastWriteReadbackHits == 32 ||
+            fastWriteReadbackHits == 128 ||
+            fastWriteReadbackHits == 512 ||
+            (fastWriteReadbackHits > 512 && (fastWriteReadbackHits % 1024) == 0)
+        };
+        if (!milestone)
+            return;
+
+        LOGI("[FastReadbackDiag][HotBuffer] id={} size={} sequence={} fast_hits={} read_only_bypasses={} guest_waits={} guest_wait_us={} cycle_present={} write_cycle_present={} cycle_is_write_cycle={}",
+             id,
+             mirror.size(),
+             sequenceNumber,
+             fastWriteReadbackHits,
+             fastWriteReadbackBypasses,
+             accumulatedGuestWaitCounter,
+             accumulatedGuestWaitTime.count() / 1000,
+             static_cast<bool>(cycle),
+             static_cast<bool>(writeCycle),
+             cycle && writeCycle && cycle == writeCycle);
     }
 
     Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, GuestBuffer guest, size_t id, bool direct)
