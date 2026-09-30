@@ -749,9 +749,9 @@ namespace skyline::gpu {
         if (!guest)
             return;
 
-        // Preserve GPU-dirty tracking even when the guest mirror is retained.
-        // FreeGuest() itself still honors freeGuestTextureMemory, so this changes
-        // coherency tracking without forcing guest texture memory to be released.
+        // FIXME (TEXMAN): This should really be tracked on the texture usage side
+        if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsRt)
+            gpuDirty = false;
 
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
         {
