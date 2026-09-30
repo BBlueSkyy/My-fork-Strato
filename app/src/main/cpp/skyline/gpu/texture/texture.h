@@ -410,6 +410,8 @@ namespace skyline::gpu {
 
         std::shared_ptr<memory::StagingBuffer> downloadStagingBuffer{};
 
+        inline static std::atomic<u64> gpuWriteSequenceCounter{}; //!< Global monotonic sequence used to order GPU render-target writes
+        u64 lastGpuWriteSequence{}; //!< Sequence of the most recent render-target write to this texture
         u32 lastRenderPassIndex{}; //!< The index of the last render pass that used this texture
         texture::RenderPassUsage lastRenderPassUsage{texture::RenderPassUsage::None}; //!< The type of usage in the last render pass
         bool everUsedAsRt{}; //!< If this texture has ever been used as a rendertarget

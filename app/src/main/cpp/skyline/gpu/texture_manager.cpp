@@ -70,7 +70,18 @@ namespace skyline::gpu {
                         matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
                         || matchGuestTexture.viewMipBase > 0)
                     && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
-                    fullMatch = hostMapping->texture;
+                    auto candidate{hostMapping->texture};
+
+                    // Prefer the backing that was written by the GPU most recently. This mirrors
+                    // the modified-sequence selection used by modern texture caches and prevents a
+                    // stale alias from winning solely because of iteration order (notably D32/R32).
+                    if (!fullMatch ||
+                        candidate->lastGpuWriteSequence > fullMatch->lastGpuWriteSequence ||
+                        (candidate->lastGpuWriteSequence == fullMatch->lastGpuWriteSequence &&
+                         matchGuestTexture.format == guestTexture.format &&
+                         fullMatch->guest->format != guestTexture.format)) {
+                        fullMatch = std::move(candidate);
+                    }
                 } else {
                     matches.push_back(hostMapping->texture);
                 }

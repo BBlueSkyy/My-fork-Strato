@@ -1051,6 +1051,7 @@ namespace skyline::gpu {
 
         if (renderPassUsage == texture::RenderPassUsage::RenderTarget) {
             everUsedAsRt = true;
+            lastGpuWriteSequence = ++gpuWriteSequenceCounter;
             pendingStageMask = vk::PipelineStageFlagBits::eVertexShader |
                 vk::PipelineStageFlagBits::eTessellationControlShader |
                 vk::PipelineStageFlagBits::eTessellationEvaluationShader |
