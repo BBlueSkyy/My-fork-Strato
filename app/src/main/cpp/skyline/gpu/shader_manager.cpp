@@ -3,6 +3,7 @@
 
 #include <array>
 #include <fstream>
+#include <unordered_set>
 #include <range/v3/algorithm.hpp>
 #include <boost/functional/hash.hpp>
 #include <gpu.h>
@@ -31,48 +32,78 @@ namespace Shader::Log {
 }
 
 namespace skyline::gpu {
-    static bool ApplyNfsFragmentMarker(Shader::IR::Program &program, u64 hash) {
-        if (program.stage != Shader::Stage::Fragment)
-            return false;
+    static const char *CbufOpcodeName(Shader::IR::Opcode opcode) {
+        switch (opcode) {
+            case Shader::IR::Opcode::GetCbufU8: return "u8";
+            case Shader::IR::Opcode::GetCbufS8: return "s8";
+            case Shader::IR::Opcode::GetCbufU16: return "u16";
+            case Shader::IR::Opcode::GetCbufS16: return "s16";
+            case Shader::IR::Opcode::GetCbufU32: return "u32";
+            case Shader::IR::Opcode::GetCbufF32: return "f32";
+            case Shader::IR::Opcode::GetCbufU32x2: return "u32x2";
+            default: return nullptr;
+        }
+    }
 
-        std::optional<std::array<float, 3>> marker;
-        switch (hash) {
-            case 0xF7B1681BF375550CULL:
-                marker = std::array<float, 3>{1.0f, 0.0f, 0.0f}; // red
-                break;
-            case 0xA889A7EF47C17121ULL:
-                marker = std::array<float, 3>{0.0f, 1.0f, 0.0f}; // green
-                break;
-            case 0xCB6482CD56727002ULL:
-                marker = std::array<float, 3>{0.0f, 0.0f, 1.0f}; // blue
-                break;
-            case 0xAE29B20939298730ULL:
-                marker = std::array<float, 3>{1.0f, 1.0f, 0.0f}; // yellow
-                break;
-            default:
-                return false;
+    static void TraceCbufDependencies(const Shader::IR::Value &value,
+                                      std::unordered_set<const Shader::IR::Inst *> &visited,
+                                      std::vector<std::tuple<u32, u32, const char *>> &out,
+                                      bool &hasDynamicCbuf) {
+        const Shader::IR::Inst *inst{value.TryInstRecursive()};
+        if (!inst || !visited.insert(inst).second)
+            return;
+
+        if (const char *kind{CbufOpcodeName(inst->GetOpcode())}) {
+            const auto index{inst->Arg(0)};
+            const auto offset{inst->Arg(1)};
+            if (index.IsImmediate() && offset.IsImmediate()) {
+                out.emplace_back(index.U32(), offset.U32(), kind);
+            } else {
+                hasDynamicCbuf = true;
+            }
+            return;
         }
 
-        u32 replaced{};
-        for (Shader::IR::Block *block : program.blocks) {
-            for (auto &inst : *block) {
+        for (size_t i{}; i < inst->NumArgs(); i++)
+            TraceCbufDependencies(inst->Arg(i), visited, out, hasDynamicCbuf);
+    }
+
+    static void LogFragmentCbufSlice(const Shader::IR::Program &program, u64 hash) {
+        if (program.stage != Shader::Stage::Fragment || hash != 0xAE29B20939298730ULL)
+            return;
+
+        for (const Shader::IR::Block *block : program.blocks) {
+            for (const auto &inst : *block) {
                 if (inst.GetOpcode() != Shader::IR::Opcode::SetFragColor)
                     continue;
 
-                const auto colorIndex{inst.Arg(0)};
+                const auto rt{inst.Arg(0)};
                 const auto component{inst.Arg(1)};
-                if (!colorIndex.IsImmediate() || !component.IsImmediate() ||
-                    colorIndex.U32() != 0 || component.U32() >= 3) {
+                if (!rt.IsImmediate() || !component.IsImmediate() || rt.U32() != 0 || component.U32() >= 3)
                     continue;
-                }
 
-                inst.SetArg(2, Shader::IR::Value{marker.value()[component.U32()]});
-                replaced++;
+                std::unordered_set<const Shader::IR::Inst *> visited;
+                std::vector<std::tuple<u32, u32, const char *>> dependencies;
+                bool hasDynamicCbuf{};
+                TraceCbufDependencies(inst.Arg(2), visited, dependencies, hasDynamicCbuf);
+
+                std::sort(dependencies.begin(), dependencies.end(), [](const auto &lhs, const auto &rhs) {
+                    if (std::get<0>(lhs) != std::get<0>(rhs))
+                        return std::get<0>(lhs) < std::get<0>(rhs);
+                    if (std::get<1>(lhs) != std::get<1>(rhs))
+                        return std::get<1>(lhs) < std::get<1>(rhs);
+                    return std::string_view{std::get<2>(lhs)} < std::string_view{std::get<2>(rhs)};
+                });
+                dependencies.erase(std::unique(dependencies.begin(), dependencies.end()), dependencies.end());
+
+                LOGI("NFS_CBUF_SLICE FS=0x{:016X} rt=0 component={} deps={} dynamic={}",
+                     hash, component.U32(), dependencies.size(), hasDynamicCbuf);
+                for (const auto &[index, offset, kind] : dependencies) {
+                    LOGI("NFS_CBUF_SLICE FS=0x{:016X} rt=0 component={} cbuf={} off=0x{:X} kind={}",
+                         hash, component.U32(), index, offset, kind);
+                }
             }
         }
-
-        LOGI("NFS_FS_MARKER hash=0x{:016X} writes={}", hash, replaced);
-        return replaced != 0;
     }
 
     void ShaderManager::LoadShaderReplacements(std::string_view replacementDir) {
@@ -488,10 +519,11 @@ namespace skyline::gpu {
     vk::ShaderModule ShaderManager::CompileShader(const Shader::RuntimeInfo &runtimeInfo, Shader::IR::Program &program, Shader::Backend::Bindings &bindings, u64 hash) {
         std::scoped_lock lock{poolMutex};
 
-        ApplyNfsFragmentMarker(program, hash);
 
         if (program.info.loads.Legacy() || program.info.stores.Legacy())
             Shader::Maxwell::ConvertLegacyToGeneric(program, runtimeInfo);
+
+        LogFragmentCbufSlice(program, hash);
 
         auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings)};
         auto spirv{ProcessShaderBinary(true, hash, span<u32>{spirvEmitted}.cast<u8>()).cast<u32>()};
