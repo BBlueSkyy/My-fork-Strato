@@ -68,6 +68,42 @@ namespace skyline::gpu {
             TraceCbufDependencies(inst->Arg(i), visited, out, hasDynamicCbuf);
     }
 
+    static void ApplyNfsCarCbufColorProbe(Shader::IR::Program &program, u64 hash) {
+        if (program.stage != Shader::Stage::Fragment || hash != 0xAE29B20939298730ULL)
+            return;
+
+        u32 replaced{};
+        for (Shader::IR::Block *block : program.blocks) {
+            for (auto &inst : *block) {
+                if (inst.GetOpcode() != Shader::IR::Opcode::GetCbufF32)
+                    continue;
+
+                const auto index{inst.Arg(0)};
+                const auto offset{inst.Arg(1)};
+                if (!index.IsImmediate() || !offset.IsImmediate() || index.U32() != 3)
+                    continue;
+
+                std::optional<float> replacement;
+                switch (offset.U32()) {
+                    case 0xC0:
+                        replacement = 4.0f;
+                        break;
+                    case 0xC4:
+                    case 0xC8:
+                        replacement = 1.0f;
+                        break;
+                    default:
+                        continue;
+                }
+
+                inst.ReplaceUsesWith(Shader::IR::Value{replacement.value()});
+                replaced++;
+            }
+        }
+
+        LOGI("NFS_CBUF_COLOR_PROBE FS=0x{:016X} replaced={}", hash, replaced);
+    }
+
     static void LogFragmentCbufSlice(const Shader::IR::Program &program, u64 hash) {
         if (program.stage != Shader::Stage::Fragment || hash != 0xAE29B20939298730ULL)
             return;
@@ -524,6 +560,7 @@ namespace skyline::gpu {
             Shader::Maxwell::ConvertLegacyToGeneric(program, runtimeInfo);
 
         LogFragmentCbufSlice(program, hash);
+        ApplyNfsCarCbufColorProbe(program, hash);
 
         auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings)};
         auto spirv{ProcessShaderBinary(true, hash, span<u32>{spirvEmitted}.cast<u8>()).cast<u32>()};
