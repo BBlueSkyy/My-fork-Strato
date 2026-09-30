@@ -106,6 +106,8 @@ namespace skyline::gpu {
         static constexpr std::chrono::nanoseconds FastReadbackHackWaitTimeThreshold{constant::NsInSecond / 4}; //!< (Staged) Threshold for the amount of time buffer texture can be waited on before it should be considered for the readback hack, `SkipReadbackHackWaitCountThreshold` needs to be hit before this
         size_t accumulatedGuestWaitCounter{}; //!< (Staged) Total number of times the buffer has been waited on
         std::chrono::nanoseconds accumulatedGuestWaitTime{}; //!< (Staged) Amount of time the buffer has been waited on for since the `FastReadbackHackWaitTimeThreshold`th wait on it by the guest
+        u64 fastWriteReadbackHits{}; //!< Diagnostic count of conservative fast write readbacks for this buffer
+        u64 fastWriteReadbackBypasses{}; //!< Diagnostic count of later read-only cycles bypassed for this buffer
 
         /**
          * @brief Resets all megabuffer tracking state
@@ -145,6 +147,11 @@ namespace skyline::gpu {
          * @return If the conservative fast readback path may be used for a CPU write trap
          */
         bool CanUseFastWriteReadback() const;
+
+        /**
+         * @brief Emits a sparse per-buffer diagnostic snapshot for the conservative fast write path
+         */
+        void LogFastWriteReadbackDiag() const;
 
         bool ValidateMegaBufferViewImplDirect(vk::DeviceSize size);
 
