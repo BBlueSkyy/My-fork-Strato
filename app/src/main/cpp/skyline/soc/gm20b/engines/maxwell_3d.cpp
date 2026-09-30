@@ -68,7 +68,13 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
         else if (registers.renderEnableOverride->mode == Registers::RenderEnableOverride::Mode::NeverRender)
             return false;
 
-
+        const auto address{u64{registers.renderEnable->offset}};
+        const auto queryBacked{[this](u64 queryAddress) {
+            return interconnect.QueryPresentAtAddress(queryAddress);
+        }};
+        const auto synchronizeQueries{[this] {
+            channelCtx.executor.Submit({}, true);
+        }};
 
         switch (registers.renderEnable->mode) {
             case Registers::RenderEnable::Mode::True:
@@ -76,27 +82,22 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
             case Registers::RenderEnable::Mode::False:
                 return false;
             case Registers::RenderEnable::Mode::Conditional:
-                // TODO: Use indirect draws to emulate conditional rendering with queries, for now just ignore such cases as they would decrease performance anyway by forcing a CPU sync
-                if (interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset}))
-                    return true;
+                if (queryBacked(address))
+                    synchronizeQueries();
 
-                return channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset) != 0;
+                return channelCtx.asCtx->gmmu.Read<u64>(registers.renderEnable->offset) != 0;
             case Registers::RenderEnable::Mode::RenderIfEqual:
-                // TODO: See above
-                if (interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset}) ||
-                    interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset + 16}))
-                    return true;
+                if (queryBacked(address) || queryBacked(address + 16))
+                    synchronizeQueries();
 
-                return channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset) ==
-                    channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset + 16);
+                return channelCtx.asCtx->gmmu.Read<u64>(registers.renderEnable->offset) ==
+                    channelCtx.asCtx->gmmu.Read<u64>(registers.renderEnable->offset + 16);
             case Registers::RenderEnable::Mode::RenderIfNotEqual:
-                // TODO: See above
-                if (interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset}) ||
-                    interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset + 16}))
-                    return true;
+                if (queryBacked(address) || queryBacked(address + 16))
+                    synchronizeQueries();
 
-                return channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset) !=
-                    channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset + 16);
+                return channelCtx.asCtx->gmmu.Read<u64>(registers.renderEnable->offset) !=
+                    channelCtx.asCtx->gmmu.Read<u64>(registers.renderEnable->offset + 16);
         }
 
         return true;
