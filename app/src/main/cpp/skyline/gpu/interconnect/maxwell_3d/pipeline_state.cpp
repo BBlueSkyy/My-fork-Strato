@@ -53,6 +53,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         guest.viewType = target.thirdDimension > 1 ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
 
         u32 depth{thirdDimensionDefinesArraySize ? 1U : target.thirdDimension};
+
+
         if (target.memory.layout == engine::TargetMemory::Layout::Pitch) {
             guest.dimensions = texture::Dimensions{target.width / guest.format->bpb, target.height, depth};
             guest.tileConfig = texture::TileConfig{

@@ -98,7 +98,10 @@ namespace skyline::gpu::interconnect {
                 .pitch = surface.stride
             };
         } else {
-            texture.dimensions = gpu::texture::Dimensions{surface.width, surface.height, surface.depth};
+            // Fermi2D blits operate on one 2D Z slice at a time. Keep the parent
+            // blockDepth so block-linear conversion preserves the 3D GOB interleaving,
+            // but do not make each slice claim the full parent depth.
+            texture.dimensions = gpu::texture::Dimensions{surface.width, surface.height, 1};
             texture.tileConfig = gpu::texture::TileConfig{
                 .mode = gpu::texture::TileMode::Block,
                 .blockHeight = surface.blockSize.Height(),
@@ -134,6 +137,8 @@ namespace skyline::gpu::interconnect {
             centredSrcRectX = 0.0f;
 
         auto [dstGuestTexture, dstWentOob]{GetGuestTexture(dstSurface)};
+
+
         auto srcTextureView{gpu.texture.FindOrCreate(srcGuestTexture, executor.tag)};
         executor.AttachDependency(srcTextureView);
         executor.AttachTexture(srcTextureView.get());
