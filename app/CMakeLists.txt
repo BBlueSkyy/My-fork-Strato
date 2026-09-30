@@ -480,6 +480,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/mmnv/IRequest.cpp
         ${source_DIR}/skyline/services/mii/IStaticService.cpp
         ${source_DIR}/skyline/services/mii/IDatabaseService.cpp
+        ${source_DIR}/skyline/services/mii/mii_database.cpp
         ${source_DIR}/skyline/services/olsc/IOlscServiceForApplication.cpp
         ${source_DIR}/skyline/services/clkrst/IClkrstManager.cpp
         ${source_DIR}/skyline/services/clkrst/IClkrstSession.cpp

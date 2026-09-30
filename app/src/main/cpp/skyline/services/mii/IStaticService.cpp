@@ -5,11 +5,12 @@
 #include "IDatabaseService.h"
 
 namespace skyline::service::mii {
-    IStaticService::IStaticService(const DeviceState &state, ServiceManager &manager) : BaseService(state, manager) {}
+    IStaticService::IStaticService(const DeviceState &state, ServiceManager &manager, MiiDatabase &database)
+        : BaseService(state, manager), database(database) {}
 
     Result IStaticService::GetDatabaseService(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto databaseType{request.Pop<u32>()};
-        manager.RegisterService(SRVREG(IDatabaseService, databaseType), session, response);
+        manager.RegisterService(SRVREG(IDatabaseService, database, databaseType), session, response);
         return {};
     }
 }

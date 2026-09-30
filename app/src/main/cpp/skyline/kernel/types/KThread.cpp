@@ -210,6 +210,7 @@ namespace skyline::kernel::type {
     }
 
     void KThread::UpdatePriorityInheritance() {
+        std::scoped_lock priorityLock{process.GetPriorityInheritanceMutex()};
         auto thread{shared_from_this()};
 
         while (thread) {

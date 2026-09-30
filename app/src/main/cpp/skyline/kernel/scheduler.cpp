@@ -310,10 +310,12 @@ namespace skyline::kernel {
         auto *core{&cores.at(thread->coreId)};
         std::unique_lock coreLock(core->mutex);
 
-        auto currentIt{std::find(core->queue.begin(), core->queue.end(), thread)}, nextIt{std::next(currentIt)};
-        if (currentIt == core->queue.end()) {
+        auto currentIt{std::find(core->queue.begin(), core->queue.end(), thread)};
+        if (currentIt == core->queue.end())
             return;
-        } else if (currentIt == core->queue.begin()) {
+
+        auto nextIt{std::next(currentIt)};
+        if (currentIt == core->queue.begin()) {
             // Alternatively, if it's currently running then we'd just want to yield if there's a higher priority thread to run instead
             if (nextIt != core->queue.end() && (*nextIt)->priority < thread->priority) {
                 YieldThread(thread);
