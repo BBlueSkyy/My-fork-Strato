@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <array>
 #include <fstream>
 #include <range/v3/algorithm.hpp>
 #include <boost/functional/hash.hpp>
@@ -30,6 +31,50 @@ namespace Shader::Log {
 }
 
 namespace skyline::gpu {
+    static bool ApplyNfsFragmentMarker(Shader::IR::Program &program, u64 hash) {
+        if (program.stage != Shader::Stage::Fragment)
+            return false;
+
+        std::optional<std::array<float, 3>> marker;
+        switch (hash) {
+            case 0xF7B1681BF375550CULL:
+                marker = std::array<float, 3>{1.0f, 0.0f, 0.0f}; // red
+                break;
+            case 0xA889A7EF47C17121ULL:
+                marker = std::array<float, 3>{0.0f, 1.0f, 0.0f}; // green
+                break;
+            case 0xCB6482CD56727002ULL:
+                marker = std::array<float, 3>{0.0f, 0.0f, 1.0f}; // blue
+                break;
+            case 0xAE29B20939298730ULL:
+                marker = std::array<float, 3>{1.0f, 1.0f, 0.0f}; // yellow
+                break;
+            default:
+                return false;
+        }
+
+        u32 replaced{};
+        for (Shader::IR::Block *block : program.blocks) {
+            for (auto &inst : *block) {
+                if (inst.GetOpcode() != Shader::IR::Opcode::SetFragColor)
+                    continue;
+
+                const auto colorIndex{inst.Arg(0)};
+                const auto component{inst.Arg(1)};
+                if (!colorIndex.IsImmediate() || !component.IsImmediate() ||
+                    colorIndex.U32() != 0 || component.U32() >= 3) {
+                    continue;
+                }
+
+                inst.SetArg(2, Shader::IR::Value{marker.value()[component.U32()]});
+                replaced++;
+            }
+        }
+
+        LOGI("NFS_FS_MARKER hash=0x{:016X} writes={}", hash, replaced);
+        return replaced != 0;
+    }
+
     void ShaderManager::LoadShaderReplacements(std::string_view replacementDir) {
         std::filesystem::path replacementDirPath{replacementDir};
         if (std::filesystem::exists(replacementDirPath)) {
@@ -442,6 +487,8 @@ namespace skyline::gpu {
 
     vk::ShaderModule ShaderManager::CompileShader(const Shader::RuntimeInfo &runtimeInfo, Shader::IR::Program &program, Shader::Backend::Bindings &bindings, u64 hash) {
         std::scoped_lock lock{poolMutex};
+
+        ApplyNfsFragmentMarker(program, hash);
 
         if (program.info.loads.Legacy() || program.info.stores.Legacy())
             Shader::Maxwell::ConvertLegacyToGeneric(program, runtimeInfo);
