@@ -23,7 +23,8 @@ namespace skyline::soc::host1x {
 
         std::mutex mutex;
         std::unordered_map<u64, PresentationQueue> presentationStreams;
-        constexpr static size_t MaxQueueSize{32};
+        // Presentation-order queues retain every visible decoded frame, including repeated surface
+        constexpr static size_t MaxPresentationQueueSize{100};
 
       public:
         void OpenStream(u64 streamId);
