@@ -19,7 +19,7 @@ namespace skyline::soc::host1x {
         std::scoped_lock lock(mutex);
 
         auto &frames{presentationStreams[streamId]};
-        if (frames.size() >= MaxQueueSize) {
+        if (frames.size() >= MaxPresentationQueueSize) {
             LOGW("Presentation frame queue overflow for stream {}, dropping oldest frame with luma IOVA: 0x{:X}",
                  streamId, frames.front().first);
             frames.pop_front();
