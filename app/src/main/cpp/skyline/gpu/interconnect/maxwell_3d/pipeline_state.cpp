@@ -229,7 +229,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     /* Rasterizer State */
     void RasterizationState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
-        manager.Bind(handle, rasterEnable, frontPolygonMode, backPolygonMode, viewportClipControl, oglCullEnable, oglFrontFace, oglCullFace, windowOrigin, provokingVertex, polyOffset, pointSize, zClipRange,
+        manager.Bind(handle, rasterEnable, frontPolygonMode, backPolygonMode, viewportClipControl, oglCullEnable, oglFrontFace, oglCullFace, windowOrigin, provokingVertex, polyOffset, pointSize,
                      viewport0.offsetZ, viewportClip0.minZ, viewportClip0.maxZ);
     }
 
@@ -264,10 +264,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         packedState.provokingVertex = engine->provokingVertex.value;
         packedState.pointSize = engine->pointSize;
 
-        // Diagnostic port of Ryujinx #1556: infer the guest depth convention from the
-        // viewport transform instead of trusting ZClipRange. High-level APIs program
-        // ZeroToOne with TranslateZ equal to Near or Far, while MinusOneToOne places
-        // TranslateZ between the two extents.
+        // Infer the guest depth convention from the viewport transform. ZeroToOne
+        // places TranslateZ at one of the depth extents, while MinusOneToOne places
+        // TranslateZ between them.
         packedState.openGlNdc = engine->viewportClip0.minZ != engine->viewport0.offsetZ &&
                                 engine->viewportClip0.maxZ != engine->viewport0.offsetZ;
 
