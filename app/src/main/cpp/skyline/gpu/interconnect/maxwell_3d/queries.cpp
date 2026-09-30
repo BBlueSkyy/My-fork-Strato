@@ -88,7 +88,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     auto dstBinding{queriesPtr[i].view.GetBinding(gpu)};
                     auto timestampSrcBinding{queriesPtr[i].timestampBinding};
 
-                    commandBuffer.copyQueryPoolResults(*pool, i, 1, dstBinding.buffer, dstBinding.offset, 0, {});
+                    vk::QueryResultFlags resultFlags{};
+                    vk::DeviceSize resultStride{sizeof(u32)};
+                    if (timestampSrcBinding) {
+                        resultFlags |= vk::QueryResultFlagBits::e64;
+                        resultStride = sizeof(u64);
+                    }
+
+                    commandBuffer.copyQueryPoolResults(*pool, i, 1, dstBinding.buffer, dstBinding.offset, resultStride, resultFlags);
                     if (timestampSrcBinding)
                         commandBuffer.copyBuffer(timestampSrcBinding.buffer, dstBinding.buffer, {vk::BufferCopy{
                             .size = 8,
