@@ -68,40 +68,80 @@ namespace skyline::gpu {
             TraceCbufDependencies(inst->Arg(i), visited, out, hasDynamicCbuf);
     }
 
-    static void ApplyNfsCarCbufColorProbe(Shader::IR::Program &program, u64 hash) {
+    static bool IsNfsLightingVectorOffset(u32 offset) {
+        switch (offset) {
+            case 0xB0:
+            case 0xB4:
+            case 0xB8:
+            case 0xC0:
+            case 0xC4:
+            case 0xC8:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static void TraceNfsLightingPaths(const Shader::IR::Value &value,
+                                      std::vector<Shader::IR::Opcode> &path,
+                                      std::unordered_set<const Shader::IR::Inst *> &active,
+                                      std::unordered_set<u32> &loggedOffsets,
+                                      u32 component,
+                                      u32 depth = 0) {
+        if (depth > 64)
+            return;
+
+        const Shader::IR::Inst *inst{value.TryInstRecursive()};
+        if (!inst || !active.insert(inst).second)
+            return;
+
+        path.push_back(inst->GetOpcode());
+
+        if (inst->GetOpcode() == Shader::IR::Opcode::GetCbufF32) {
+            const auto index{inst->Arg(0)};
+            const auto offset{inst->Arg(1)};
+            if (index.IsImmediate() && offset.IsImmediate() && index.U32() == 3 &&
+                IsNfsLightingVectorOffset(offset.U32()) && loggedOffsets.insert(offset.U32()).second) {
+                std::string chain;
+                for (size_t i{}; i < path.size(); i++) {
+                    if (i)
+                        chain += " <- ";
+                    chain += Shader::IR::NameOf(path[i]);
+                }
+                LOGI("NFS_LIGHT_PATH FS=0xAE29B20939298730 component={} cbuf=3 off=0x{:X} path={}",
+                     component, offset.U32(), chain);
+            }
+        } else {
+            for (size_t i{}; i < inst->NumArgs(); i++)
+                TraceNfsLightingPaths(inst->Arg(i), path, active, loggedOffsets, component, depth + 1);
+        }
+
+        path.pop_back();
+        active.erase(inst);
+    }
+
+    static void LogNfsLightingOperationPaths(const Shader::IR::Program &program, u64 hash) {
         if (program.stage != Shader::Stage::Fragment || hash != 0xAE29B20939298730ULL)
             return;
 
-        u32 replaced{};
-        for (Shader::IR::Block *block : program.blocks) {
-            for (auto &inst : *block) {
-                if (inst.GetOpcode() != Shader::IR::Opcode::GetCbufF32)
+        for (const Shader::IR::Block *block : program.blocks) {
+            for (const auto &inst : *block) {
+                if (inst.GetOpcode() != Shader::IR::Opcode::SetFragColor)
                     continue;
 
-                const auto index{inst.Arg(0)};
-                const auto offset{inst.Arg(1)};
-                if (!index.IsImmediate() || !offset.IsImmediate() || index.U32() != 3)
+                const auto rt{inst.Arg(0)};
+                const auto component{inst.Arg(1)};
+                if (!rt.IsImmediate() || !component.IsImmediate() ||
+                    rt.U32() != 0 || component.U32() >= 3) {
                     continue;
-
-                std::optional<float> replacement;
-                switch (offset.U32()) {
-                    case 0xC0:
-                        replacement = 4.0f;
-                        break;
-                    case 0xC4:
-                    case 0xC8:
-                        replacement = 1.0f;
-                        break;
-                    default:
-                        continue;
                 }
 
-                inst.ReplaceUsesWith(Shader::IR::Value{replacement.value()});
-                replaced++;
+                std::vector<Shader::IR::Opcode> path{Shader::IR::Opcode::SetFragColor};
+                std::unordered_set<const Shader::IR::Inst *> active;
+                std::unordered_set<u32> loggedOffsets;
+                TraceNfsLightingPaths(inst.Arg(2), path, active, loggedOffsets, component.U32());
             }
         }
-
-        LOGI("NFS_CBUF_COLOR_PROBE FS=0x{:016X} replaced={}", hash, replaced);
     }
 
     static void LogFragmentCbufSlice(const Shader::IR::Program &program, u64 hash) {
@@ -560,7 +600,7 @@ namespace skyline::gpu {
             Shader::Maxwell::ConvertLegacyToGeneric(program, runtimeInfo);
 
         LogFragmentCbufSlice(program, hash);
-        ApplyNfsCarCbufColorProbe(program, hash);
+        LogNfsLightingOperationPaths(program, hash);
 
         auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings)};
         auto spirv{ProcessShaderBinary(true, hash, span<u32>{spirvEmitted}.cast<u8>()).cast<u32>()};
