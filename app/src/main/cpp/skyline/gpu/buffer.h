@@ -77,6 +77,7 @@ namespace skyline::gpu {
         RecursiveSpinLock stateMutex; //!< Synchronizes access to the dirty state and backing immutability
 
         bool currentExecutionGpuDirty{}; //!< If the buffer is GPU dirty within the current execution
+        std::shared_ptr<FenceCycle> writeCycle{}; //!< (Staged) The most recent cycle that can modify the GPU backing; later read-only cycles do not replace it
 
         static constexpr u32 InitialSequenceNumber{1}; //!< Sequence number that all buffers start off with
         static constexpr u32 FrequentlySyncedThreshold{6}; //!< Threshold for the sequence number after which the buffer is considered elegible for megabuffering
@@ -140,6 +141,11 @@ namespace skyline::gpu {
          */
         bool RefreshGpuWritesActiveDirect(bool wait = false, const std::function<void()> &flushHostCallback = {});
 
+        /**
+         * @return If the conservative fast readback path may be used for a CPU write trap
+         */
+        bool CanUseFastWriteReadback() const;
+
         bool ValidateMegaBufferViewImplDirect(vk::DeviceSize size);
 
         bool ValidateMegaBufferViewImplStaged(vk::DeviceSize size);
@@ -176,6 +182,8 @@ namespace skyline::gpu {
         void UpdateCycle(const std::shared_ptr<FenceCycle> &newCycle) {
             newCycle->ChainCycle(cycle);
             cycle = newCycle;
+            if (currentExecutionGpuDirty && !isDirect)
+                writeCycle = newCycle;
         }
 
         constexpr vk::Buffer GetBacking() {

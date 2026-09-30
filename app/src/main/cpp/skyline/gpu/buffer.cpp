@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
 #include <adrenotools/driver.h>
 #include <gpu.h>
 #include <kernel/memory.h>
@@ -10,6 +11,37 @@
 #include "buffer.h"
 
 namespace skyline::gpu {
+    namespace {
+        constexpr u64 BufferReadbackDiagLogInterval{256};
+
+        std::atomic<u64> bufferReadbackDiagEvents{};
+        std::atomic<u64> bufferFastWriteHits{};
+        std::atomic<u64> bufferReadPreciseFallbacks{};
+        std::atomic<u64> bufferWritePreciseFallbacks{};
+        std::atomic<u64> bufferPreciseSyncs{};
+        std::atomic<u64> bufferPreciseSyncNs{};
+        std::atomic<u64> bufferPreTrapWaits{};
+        std::atomic<u64> bufferPreTrapWaitNs{};
+        std::atomic<u64> bufferReadOnlyCycleBypasses{};
+
+        void LogBufferReadbackDiag() {
+            const auto events{bufferReadbackDiagEvents.fetch_add(1, std::memory_order_relaxed) + 1};
+            if (events != 1 && (events % BufferReadbackDiagLogInterval) != 0)
+                return;
+
+            LOGI("[FastReadbackDiag][Buffer] events={} fast_write_hits={} read_precise={} write_precise={} precise_syncs={} precise_sync_us={} pretrap_waits={} pretrap_wait_us={} read_only_cycle_bypasses={}",
+                 events,
+                 bufferFastWriteHits.load(std::memory_order_relaxed),
+                 bufferReadPreciseFallbacks.load(std::memory_order_relaxed),
+                 bufferWritePreciseFallbacks.load(std::memory_order_relaxed),
+                 bufferPreciseSyncs.load(std::memory_order_relaxed),
+                 bufferPreciseSyncNs.load(std::memory_order_relaxed) / 1000,
+                 bufferPreTrapWaits.load(std::memory_order_relaxed),
+                 bufferPreTrapWaitNs.load(std::memory_order_relaxed) / 1000,
+                 bufferReadOnlyCycleBypasses.load(std::memory_order_relaxed));
+        }
+    }
+
     void Buffer::ResetMegabufferState() {
         if (megaBufferTableUsed)
             megaBufferTableValidity.reset();
@@ -25,7 +57,7 @@ namespace skyline::gpu {
 
         // We can't just capture this in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Buffer> weakThis{shared_from_this()};
-        trapHandle = gpu.state.process->trap.CreateTrap(*guest, [weakThis] {
+        trapHandle = gpu.state.process->trap.CreateTrap(*guest, [weakThis](bool write) {
             auto buffer{weakThis.lock()};
             if (!buffer)
                 return;
@@ -37,22 +69,35 @@ namespace skyline::gpu {
                 // If this mutex would cause other callbacks to be blocked then we should block on this mutex in advance
                 std::shared_ptr<FenceCycle> waitCycle{};
                 do {
+                    i64 waitNs{};
                     if (waitCycle) {
-                        i64 startNs{buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold ? util::GetTimeNs() : 0};
+                        i64 startNs{util::GetTimeNs()};
                         waitCycle->Wait();
-                        if (startNs)
-                            buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(util::GetTimeNs() - startNs);
+                        waitNs = util::GetTimeNs() - startNs;
 
-                        buffer->accumulatedGuestWaitCounter++;
+                        bufferPreTrapWaits.fetch_add(1, std::memory_order_relaxed);
+                        bufferPreTrapWaitNs.fetch_add(static_cast<u64>(waitNs), std::memory_order_relaxed);
+                        LogBufferReadbackDiag();
                     }
 
                     std::scoped_lock lock{*buffer};
-                    if (waitCycle && buffer->cycle == waitCycle) {
-                        buffer->cycle = {};
-                        waitCycle = {};
-                    } else {
-                        waitCycle = buffer->cycle;
+                    if (waitCycle) {
+                        if (buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold)
+                            buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(waitNs);
+                        buffer->accumulatedGuestWaitCounter++;
+
+                        if (buffer->writeCycle == waitCycle)
+                            buffer->writeCycle = {};
+                        if (buffer->cycle == waitCycle)
+                            buffer->cycle = {};
                     }
+
+                    bool useWriteCycle{write && buffer->CanUseFastWriteReadback()};
+                    auto nextCycle{useWriteCycle ? buffer->writeCycle : buffer->cycle};
+                    if (useWriteCycle && buffer->cycle && buffer->cycle != nextCycle)
+                        bufferReadOnlyCycleBypasses.fetch_add(1, std::memory_order_relaxed);
+
+                    waitCycle = std::move(nextCycle);
                 } while (waitCycle);
             }
         }, [weakThis] {
@@ -76,6 +121,8 @@ namespace skyline::gpu {
             if (buffer->cycle)
                 return false;
 
+            bufferReadPreciseFallbacks.fetch_add(1, std::memory_order_relaxed);
+            LogBufferReadbackDiag();
             buffer->SynchronizeGuest(true); // We can skip trapping since the caller will do it
             return true;
         }, [weakThis] {
@@ -94,21 +141,28 @@ namespace skyline::gpu {
                 return true;
             }
 
-            if (buffer->accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold && *buffer->gpu.state.settings->enableFastGpuReadbackHack) {
-                // As opposed to skipping readback as we do for textures, with buffers we can still perform the readback but just without syncinc the GPU
-                // While the read data may be invalid it's still better than nothing and works in most cases
-                memcpy(buffer->mirror.data(), buffer->backing->data(), buffer->mirror.size());
-                buffer->dirtyState = *buffer->gpu.state.settings->enableFastReadbackWrites ? DirtyState::CpuDirty : DirtyState::Clean;
-                return true;
-            }
-
             std::unique_lock lock{*buffer, std::try_to_lock};
             if (!lock)
                 return false;
 
-            if (buffer->cycle)
+            bool fastWriteReadback{buffer->CanUseFastWriteReadback()};
+            if (fastWriteReadback ? buffer->writeCycle : buffer->cycle)
                 return false;
 
+            if (fastWriteReadback) {
+                // The backing is safe to read once the last GPU writer has completed. Later
+                // read-only GPU users may continue using the backing while the guest write updates
+                // only the mirror. Any future mirror-to-backing sync still waits on the full cycle.
+                // The imminent CPU write must always leave the guest copy CPU dirty.
+                std::memcpy(buffer->mirror.data(), buffer->backing->data(), buffer->mirror.size());
+                buffer->dirtyState = DirtyState::CpuDirty;
+                bufferFastWriteHits.fetch_add(1, std::memory_order_relaxed);
+                LogBufferReadbackDiag();
+                return true;
+            }
+
+            bufferWritePreciseFallbacks.fetch_add(1, std::memory_order_relaxed);
+            LogBufferReadbackDiag();
             buffer->SynchronizeGuest(true); // We need to assume the buffer is dirty since we don't know what the guest is writing
             buffer->dirtyState = DirtyState::CpuDirty;
 
@@ -380,6 +434,13 @@ namespace skyline::gpu {
             MarkGpuDirtyImplStaged();
     }
 
+    bool Buffer::CanUseFastWriteReadback() const {
+        return !isDirect &&
+               accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold &&
+               *gpu.state.settings->enableFastGpuReadbackHack &&
+               *gpu.state.settings->enableFastReadbackWrites;
+    }
+
     Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, GuestBuffer guest, size_t id, bool direct)
         : gpu{gpu},
           guest{guest},
@@ -427,6 +488,7 @@ namespace skyline::gpu {
         if (cycle) {
             cycle->Wait();
             cycle = nullptr;
+            writeCycle = nullptr;
         }
     }
 
@@ -436,6 +498,7 @@ namespace skyline::gpu {
 
         if (cycle->Poll()) {
             cycle = nullptr;
+            writeCycle = nullptr;
             return true;
         }
 
@@ -490,10 +553,15 @@ namespace skyline::gpu {
             if (nonBlocking && !PollFence())
                 return false; // If the fence is not signalled and non-blocking behaviour is requested then bail out
 
+            i64 syncStartNs{util::GetTimeNs()};
             WaitOnFence();
             std::memcpy(mirror.data(), backing->data(), mirror.size());
+            i64 syncNs{util::GetTimeNs() - syncStartNs};
 
             dirtyState = DirtyState::Clean;
+            bufferPreciseSyncs.fetch_add(1, std::memory_order_relaxed);
+            bufferPreciseSyncNs.fetch_add(static_cast<u64>(syncNs), std::memory_order_relaxed);
+            LogBufferReadbackDiag();
         }
 
         if (!skipTrap)

@@ -7,11 +7,17 @@
 #include "trap_manager.h"
 
 namespace skyline {
-    CallbackEntry::CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, writeCallback{std::move(writeCallback)} {}
+    CallbackEntry::CallbackEntry(TrapProtection protection, AccessLockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, writeCallback{std::move(writeCallback)} {}
 
     constexpr TrapHandle::TrapHandle(const TrapMap::GroupHandle &handle) : TrapMap::GroupHandle(handle) {}
 
     TrapHandle TrapManager::CreateTrap(span<span<u8>> regions, const LockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback) {
+        return CreateTrap(regions, AccessLockCallback{[lockCallback](bool) {
+            lockCallback();
+        }}, readCallback, writeCallback);
+    }
+
+    TrapHandle TrapManager::CreateTrap(span<span<u8>> regions, const AccessLockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback) {
         TRACE_EVENT("host", "TrapManager::CreateTrap");
         std::scoped_lock lock{trapMutex};
         TrapHandle handle{trapMap.Insert(regions, CallbackEntry{TrapProtection::None, lockCallback, readCallback, writeCallback})};
@@ -120,11 +126,11 @@ namespace skyline {
     bool TrapManager::HandleTrap(u8 *address, bool write) {
         TRACE_EVENT("host", "TrapManager::TrapHandler");
 
-        LockCallback lockCallback{};
+        AccessLockCallback lockCallback{};
         while (true) {
             if (lockCallback) {
                 // We want to avoid a deadlock of holding trapMutex while locking the resource inside a callback while another thread holding the resource's mutex waits on trapMutex, we solve this by quitting the loop if a callback would be blocking and attempt to lock the resource externally
-                lockCallback();
+                lockCallback(write);
                 lockCallback = {};
             }
 
