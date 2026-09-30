@@ -260,7 +260,6 @@ namespace skyline::gpu {
                 vkImageMutableFormatCostly = true; // Disables UBWC and forces linear tiling
                 adrenoRelaxedFormatAliasing = true;
                 brokenTextureShadowCompare = true;  
-                brokenFp16FloatControls = true;
                 break;
             }
 
