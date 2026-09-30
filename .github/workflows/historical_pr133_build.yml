@@ -1,0 +1,47 @@
+name: Historical PR133 APK
+
+on:
+  push:
+    branches: [ archive/pr133-exact-apk ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore CCache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 3Gi
+
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Ninja Build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          ln -sf /usr/bin/ninja .
+
+      - name: Android Assemble
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          PR_NUMBER: 133
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand assembleDevRelease
+
+      - name: Rename APK
+        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk historical-pr133-release.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-pr133-release.apk
+          path: historical-pr133-release.apk
