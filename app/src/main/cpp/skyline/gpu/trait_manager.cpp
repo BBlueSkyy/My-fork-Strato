@@ -259,7 +259,6 @@ namespace skyline::gpu {
             case vk::DriverId::eMesaTurnip: {
                 vkImageMutableFormatCostly = true; // Disables UBWC and forces linear tiling
                 adrenoRelaxedFormatAliasing = true;
-                brokenTextureShadowCompare = true;  
                 brokenFp16FloatControls = true;
                 break;
             }
