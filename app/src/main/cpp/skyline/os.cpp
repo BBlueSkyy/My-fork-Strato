@@ -16,6 +16,7 @@
 #include "services/account/IAccountServiceForApplication.h"
 #include "services/fssrv/IFileSystemProxy.h"
 #include "os.h"
+#include <common/settings.h>
 #include <logger/logger.h>
 
 namespace skyline::kernel {
@@ -40,6 +41,8 @@ namespace skyline::kernel {
         keyStore = std::make_shared<crypto::KeyStore>(privateAppFilesPath + "keys/");
 
         LOGI("OS::Execute - romFd: {}, updateFd: {}, dlcFds count: {}", romFd, updateFd, dlcFds.size());
+        if (*state.settings->autoStub)
+            LOGW("[AUTOSTUB][ENABLED] Service diagnostics enabled");
 
         state.loader = GetLoader(romFd, keyStore, romType);
 
