@@ -174,7 +174,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
             const engine::PolyOffset &polyOffset;
             const engine::ProvokingVertex &provokingVertex;
             const float &pointSize;
-            const engine::ZClipRange &zClipRange;
             const engine::Viewport &viewport0;
             const engine::ViewportClip &viewportClip0;
 
