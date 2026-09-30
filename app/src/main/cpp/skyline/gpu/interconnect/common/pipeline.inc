@@ -160,9 +160,23 @@ namespace skyline::gpu::interconnect {
         }
 
         ctx.executor.AttachTexture(texture);
-        auto view{texture->GetView()};
+        vk::ImageView view{texture->GetView()};
 
         if (texture->texture) {
+            // Diagnostic: when the shader declares a depth texture, force the sampled view to
+            // expose only the depth aspect. This isolates depth/stencil TIC swizzle/aspect
+            // selection from the rest of the texture-manager behavior.
+            if constexpr (requires { desc.is_depth; }) {
+                if (desc.is_depth &&
+                    (texture->texture->format->vkAspect & vk::ImageAspectFlagBits::eDepth)) {
+                    auto depthRange{texture->range};
+                    depthRange.aspectMask = vk::ImageAspectFlagBits::eDepth;
+                    auto depthView{texture->texture->GetView(texture->type, depthRange,
+                                                            texture->format, texture->mapping)};
+                    view = depthView->GetView();
+                }
+            }
+
             texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
         }
 
