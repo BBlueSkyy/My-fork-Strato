@@ -211,7 +211,6 @@ namespace skyline::gpu {
             }, guestTexture.format, guestTexture.swizzle);
         }
 
-        size_t aggregatedDepthSlices{};
         if (guestTexture.GetImageType() == vk::ImageType::e3D &&
             guestTexture.tileConfig.mode == texture::TileMode::Block) {
             auto parentMipLayouts{texture::GetBlockLinearMipLayout(
@@ -312,16 +311,10 @@ namespace skyline::gpu {
                 if (std::find(matches.begin(), matches.end(), source.texture) == matches.end())
                     matches.push_back(source.texture);
             }
-            aggregatedDepthSlices = sliceSources.size();
         }
 
         for (auto &texture : matches)
             texture->SynchronizeGuest(false, true);
-
-        if (aggregatedDepthSlices)
-            LOGI("[TEX3D] synchronized {} rendered 2D slices before creating {}x{}x{} 3D backing",
-                 aggregatedDepthSlices,
-                 guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth);
 
         // Create a texture as we cannot find one that matches
 
