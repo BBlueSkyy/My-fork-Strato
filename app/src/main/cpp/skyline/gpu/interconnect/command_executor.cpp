@@ -411,6 +411,45 @@ namespace skyline::gpu::interconnect {
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
                 renderPassIndex++;
             }
+
+            // Diagnostic: use an image-scoped dependency when a depth render target is consumed
+            // as a sampled image. The normal path below already emits a broad memory barrier via
+            // RenderPassNode, but keeping the image in the same layout here isolates whether some
+            // drivers require explicit depth-attachment-write -> shader-read visibility.
+            std::vector<vk::ImageMemoryBarrier> depthSampleBarriers;
+            vk::PipelineStageFlags depthSampleDstStages{};
+            for (auto view : sampledImages) {
+                auto &sampledTexture{view->texture};
+                if (sampledTexture->GetLastRenderPassUsage() != texture::RenderPassUsage::RenderTarget ||
+                    !(view->format->vkAspect & (vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil)))
+                    continue;
+
+                depthSampleDstStages |= sampledTexture->GetReadStageMask();
+                depthSampleBarriers.emplace_back(vk::ImageMemoryBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+                    .oldLayout = sampledTexture->layout,
+                    .newLayout = sampledTexture->layout,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = sampledTexture->GetBacking(),
+                    .subresourceRange = view->range,
+                });
+            }
+
+            if (!depthSampleBarriers.empty()) {
+                if (!depthSampleDstStages)
+                    depthSampleDstStages = vk::PipelineStageFlagBits::eFragmentShader;
+
+                slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                    [barriers = std::move(depthSampleBarriers), depthSampleDstStages](
+                        vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &) {
+                        commandBuffer.pipelineBarrier(
+                            vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests,
+                            depthSampleDstStages, {}, {}, {}, barriers);
+                    });
+            }
+
             renderPass = &std::get<node::RenderPassNode>(slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassNode>(), renderArea));
             renderPassIt = std::prev(slot->nodes.end());
             addSubpass();
