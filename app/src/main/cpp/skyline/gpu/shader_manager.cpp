@@ -120,6 +120,62 @@ namespace skyline::gpu {
         active.erase(inst);
     }
 
+    static void CollectNfsLightDirectionOffsets(const Shader::IR::Value &value,
+                                                std::unordered_set<const Shader::IR::Inst *> &visited,
+                                                std::unordered_set<u32> &offsets,
+                                                u32 depth = 0) {
+        if (depth > 64)
+            return;
+
+        const Shader::IR::Inst *inst{value.TryInstRecursive()};
+        if (!inst || !visited.insert(inst).second)
+            return;
+
+        if (inst->GetOpcode() == Shader::IR::Opcode::GetCbufF32) {
+            const auto index{inst->Arg(0)};
+            const auto offset{inst->Arg(1)};
+            if (index.IsImmediate() && offset.IsImmediate() && index.U32() == 3) {
+                switch (offset.U32()) {
+                    case 0xB0:
+                    case 0xB4:
+                    case 0xB8:
+                        offsets.insert(offset.U32());
+                        break;
+                    default:
+                        break;
+                }
+            }
+            return;
+        }
+
+        for (size_t i{}; i < inst->NumArgs(); i++)
+            CollectNfsLightDirectionOffsets(inst->Arg(i), visited, offsets, depth + 1);
+    }
+
+    static void ApplyNfsDiffuseSaturateProbe(Shader::IR::Program &program, u64 hash) {
+        if (program.stage != Shader::Stage::Fragment || hash != 0xAE29B20939298730ULL)
+            return;
+
+        u32 replaced{};
+        for (Shader::IR::Block *block : program.blocks) {
+            for (auto &inst : *block) {
+                if (inst.GetOpcode() != Shader::IR::Opcode::FPSaturate32)
+                    continue;
+
+                std::unordered_set<const Shader::IR::Inst *> visited;
+                std::unordered_set<u32> offsets;
+                CollectNfsLightDirectionOffsets(inst.Arg(0), visited, offsets);
+
+                if (offsets.contains(0xB0) && offsets.contains(0xB4) && offsets.contains(0xB8)) {
+                    inst.ReplaceUsesWith(Shader::IR::Value{1.0f});
+                    replaced++;
+                }
+            }
+        }
+
+        LOGI("NFS_DIFFUSE_PROBE FS=0x{:016X} replaced={} value=1.0", hash, replaced);
+    }
+
     static void LogNfsLightingOperationPaths(const Shader::IR::Program &program, u64 hash) {
         if (program.stage != Shader::Stage::Fragment || hash != 0xAE29B20939298730ULL)
             return;
@@ -601,6 +657,7 @@ namespace skyline::gpu {
 
         LogFragmentCbufSlice(program, hash);
         LogNfsLightingOperationPaths(program, hash);
+        ApplyNfsDiffuseSaturateProbe(program, hash);
 
         auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings)};
         auto spirv{ProcessShaderBinary(true, hash, span<u32>{spirvEmitted}.cast<u8>()).cast<u32>()};
