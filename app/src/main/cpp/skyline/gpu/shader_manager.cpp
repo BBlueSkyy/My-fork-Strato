@@ -11,6 +11,7 @@
 #include <shader_compiler/common/settings.h>
 #include <shader_compiler/common/log.h>
 #include <shader_compiler/frontend/maxwell/translate_program.h>
+#include <shader_compiler/frontend/ir/modifiers.h>
 #include <shader_compiler/backend/spirv/emit_spirv.h>
 #include <vulkan/vulkan_raii.hpp>
 #include "shader_manager.h"
@@ -120,60 +121,95 @@ namespace skyline::gpu {
         active.erase(inst);
     }
 
-    static void CollectNfsLightDirectionOffsets(const Shader::IR::Value &value,
-                                                std::unordered_set<const Shader::IR::Inst *> &visited,
-                                                std::unordered_set<u32> &offsets,
-                                                u32 depth = 0) {
-        if (depth > 64)
+    static bool IsTextureReadOpcode(Shader::IR::Opcode opcode) {
+        switch (opcode) {
+            case Shader::IR::Opcode::ImageSampleImplicitLod:
+            case Shader::IR::Opcode::ImageSampleExplicitLod:
+            case Shader::IR::Opcode::ImageSampleDrefImplicitLod:
+            case Shader::IR::Opcode::ImageSampleDrefExplicitLod:
+            case Shader::IR::Opcode::ImageGather:
+            case Shader::IR::Opcode::ImageGatherDref:
+            case Shader::IR::Opcode::ImageFetch:
+            case Shader::IR::Opcode::ImageQueryLod:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static void TraceNfsTexturePaths(const Shader::IR::Value &value,
+                                     const Shader::IR::Program &program,
+                                     std::vector<Shader::IR::Opcode> &path,
+                                     std::unordered_set<const Shader::IR::Inst *> &active,
+                                     std::unordered_set<u64> &logged,
+                                     u32 component,
+                                     u32 depth = 0) {
+        if (depth > 96)
             return;
 
         const Shader::IR::Inst *inst{value.TryInstRecursive()};
-        if (!inst || !visited.insert(inst).second)
+        if (!inst || !active.insert(inst).second)
             return;
 
-        if (inst->GetOpcode() == Shader::IR::Opcode::GetCbufF32) {
-            const auto index{inst->Arg(0)};
-            const auto offset{inst->Arg(1)};
-            if (index.IsImmediate() && offset.IsImmediate() && index.U32() == 3) {
-                switch (offset.U32()) {
-                    case 0xB0:
-                    case 0xB4:
-                    case 0xB8:
-                        offsets.insert(offset.U32());
-                        break;
-                    default:
-                        break;
+        path.push_back(inst->GetOpcode());
+
+        if (IsTextureReadOpcode(inst->GetOpcode())) {
+            const auto info{inst->Flags<Shader::IR::TextureInstInfo>()};
+            const u32 descriptorIndex{static_cast<u32>(info.descriptor_index)};
+            const u64 key{(static_cast<u64>(component) << 32) | descriptorIndex};
+
+            if (logged.insert(key).second) {
+                std::string chain;
+                for (size_t i{}; i < path.size(); i++) {
+                    if (i)
+                        chain += " <- ";
+                    chain += Shader::IR::NameOf(path[i]);
+                }
+
+                if (descriptorIndex < program.info.texture_descriptors.size()) {
+                    const auto &desc{program.info.texture_descriptors[descriptorIndex]};
+                    LOGI("NFS_TEX_PATH FS=0xAE29B20939298730 component={} desc={} opcode={} type={} depth={} cbuf={} off=0x{:X} count={} secondary={} sec_cbuf={} sec_off=0x{:X} path={}",
+                         component, descriptorIndex, Shader::IR::NameOf(inst->GetOpcode()),
+                         static_cast<u32>(desc.type), desc.is_depth,
+                         desc.cbuf_index, desc.cbuf_offset, desc.count, desc.has_secondary,
+                         desc.secondary_cbuf_index, desc.secondary_cbuf_offset, chain);
+                } else {
+                    LOGI("NFS_TEX_PATH FS=0xAE29B20939298730 component={} desc={} opcode={} flags_type={} flags_depth={} path={}",
+                         component, descriptorIndex, Shader::IR::NameOf(inst->GetOpcode()),
+                         static_cast<u32>(info.type), static_cast<u32>(info.is_depth), chain);
                 }
             }
-            return;
+        } else {
+            for (size_t i{}; i < inst->NumArgs(); i++)
+                TraceNfsTexturePaths(inst->Arg(i), program, path, active, logged, component, depth + 1);
         }
 
-        for (size_t i{}; i < inst->NumArgs(); i++)
-            CollectNfsLightDirectionOffsets(inst->Arg(i), visited, offsets, depth + 1);
+        path.pop_back();
+        active.erase(inst);
     }
 
-    static void ApplyNfsDiffuseSaturateProbe(Shader::IR::Program &program, u64 hash) {
+    static void LogNfsTextureDependencies(const Shader::IR::Program &program, u64 hash) {
         if (program.stage != Shader::Stage::Fragment || hash != 0xAE29B20939298730ULL)
             return;
 
-        u32 replaced{};
-        for (Shader::IR::Block *block : program.blocks) {
-            for (auto &inst : *block) {
-                if (inst.GetOpcode() != Shader::IR::Opcode::FPSaturate32)
+        for (const Shader::IR::Block *block : program.blocks) {
+            for (const auto &inst : *block) {
+                if (inst.GetOpcode() != Shader::IR::Opcode::SetFragColor)
                     continue;
 
-                std::unordered_set<const Shader::IR::Inst *> visited;
-                std::unordered_set<u32> offsets;
-                CollectNfsLightDirectionOffsets(inst.Arg(0), visited, offsets);
-
-                if (offsets.contains(0xB0) && offsets.contains(0xB4) && offsets.contains(0xB8)) {
-                    inst.ReplaceUsesWith(Shader::IR::Value{1.0f});
-                    replaced++;
+                const auto rt{inst.Arg(0)};
+                const auto component{inst.Arg(1)};
+                if (!rt.IsImmediate() || !component.IsImmediate() ||
+                    rt.U32() != 0 || component.U32() >= 3) {
+                    continue;
                 }
+
+                std::vector<Shader::IR::Opcode> path{Shader::IR::Opcode::SetFragColor};
+                std::unordered_set<const Shader::IR::Inst *> active;
+                std::unordered_set<u64> logged;
+                TraceNfsTexturePaths(inst.Arg(2), program, path, active, logged, component.U32());
             }
         }
-
-        LOGI("NFS_DIFFUSE_PROBE FS=0x{:016X} replaced={} value=1.0", hash, replaced);
     }
 
     static void LogNfsLightingOperationPaths(const Shader::IR::Program &program, u64 hash) {
@@ -657,7 +693,7 @@ namespace skyline::gpu {
 
         LogFragmentCbufSlice(program, hash);
         LogNfsLightingOperationPaths(program, hash);
-        ApplyNfsDiffuseSaturateProbe(program, hash);
+        LogNfsTextureDependencies(program, hash);
 
         auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings)};
         auto spirv{ProcessShaderBinary(true, hash, span<u32>{spirvEmitted}.cast<u8>()).cast<u32>()};
