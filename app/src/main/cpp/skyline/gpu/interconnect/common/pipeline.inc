@@ -68,7 +68,7 @@ namespace skyline::gpu::interconnect {
                 dstStageMask |= dstStage;
             }
 
-            view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
+            view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker, Buffer::GpuWriteSource::StorageBuffer);
         } else {
             if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag)})
                 return megaBufferBinding;
@@ -115,7 +115,7 @@ namespace skyline::gpu::interconnect {
                 srcStageMask |= vk::PipelineStageFlagBits::eAllCommands;
                 dstStageMask |= dstStage;
             }
-            view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
+            view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker, Buffer::GpuWriteSource::ImageBuffer);
         }
 
         view.GetBuffer()->BlockSequencedCpuBackingWrites();

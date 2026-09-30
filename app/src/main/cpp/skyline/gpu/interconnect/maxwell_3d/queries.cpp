@@ -124,7 +124,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         auto &counter{counters[static_cast<u32>(type)]};
 
-        view->GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
+        view->GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker, Buffer::GpuWriteSource::Query);
         counter.Report(ctx, *view, timestamp);
         counter.Begin(ctx);
     }

@@ -457,7 +457,7 @@ namespace skyline::gpu {
         if (!milestone)
             return;
 
-        LOGI("[FastReadbackDiag][HotBuffer] id={} size={} sequence={} fast_hits={} read_only_bypasses={} guest_waits={} guest_wait_us={} cycle_present={} write_cycle_present={} cycle_is_write_cycle={}",
+        LOGI("[FastReadbackDiag][HotBuffer] id={} size={} sequence={} fast_hits={} read_only_bypasses={} guest_waits={} guest_wait_us={} cycle_present={} write_cycle_present={} cycle_is_write_cycle={} src_internal={} src_storage={} src_image={} src_query={} src_xfb={} src_dma_clear={}",
              id,
              mirror.size(),
              sequenceNumber,
@@ -467,7 +467,13 @@ namespace skyline::gpu {
              accumulatedGuestWaitTime.count() / 1000,
              static_cast<bool>(cycle),
              static_cast<bool>(writeCycle),
-             cycle && writeCycle && cycle == writeCycle);
+             cycle && writeCycle && cycle == writeCycle,
+             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::Internal)],
+             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::StorageBuffer)],
+             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::ImageBuffer)],
+             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::Query)],
+             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::TransformFeedback)],
+             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::DmaClear)]);
     }
 
     Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, GuestBuffer guest, size_t id, bool direct)
@@ -503,10 +509,11 @@ namespace skyline::gpu {
         WaitOnFence();
     }
 
-    void Buffer::MarkGpuDirty(UsageTracker &usageTracker) {
+    void Buffer::MarkGpuDirty(UsageTracker &usageTracker, GpuWriteSource source) {
         if (!guest)
             return;
 
+        gpuWriteSourceCounts[static_cast<size_t>(source)]++;
         usageTracker.dirtyIntervals.Insert(*guest);
         MarkGpuDirtyImpl();
     }

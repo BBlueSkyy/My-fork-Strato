@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <boost/functional/hash.hpp>
 #include <common/linear_allocator.h>
 #include <common/spin_lock.h>
@@ -43,6 +44,17 @@ namespace skyline::gpu {
      * @note This class conforms to the Lockable and BasicLockable C++ named requirements
      */
     class Buffer : public std::enable_shared_from_this<Buffer> {
+      public:
+        enum class GpuWriteSource : u8 {
+            Internal,
+            StorageBuffer,
+            ImageBuffer,
+            Query,
+            TransformFeedback,
+            DmaClear,
+            Count,
+        };
+
       private:
         GPU &gpu;
         RecursiveSpinLock mutex; //!< Synchronizes any mutations to the buffer or its backing
@@ -108,6 +120,7 @@ namespace skyline::gpu {
         std::chrono::nanoseconds accumulatedGuestWaitTime{}; //!< (Staged) Amount of time the buffer has been waited on for since the `FastReadbackHackWaitTimeThreshold`th wait on it by the guest
         u64 fastWriteReadbackHits{}; //!< Diagnostic count of conservative fast write readbacks for this buffer
         u64 fastWriteReadbackBypasses{}; //!< Diagnostic count of later read-only cycles bypassed for this buffer
+        std::array<u64, static_cast<size_t>(GpuWriteSource::Count)> gpuWriteSourceCounts{}; //!< Diagnostic counts of GPU-write origins seen by this buffer
 
         /**
          * @brief Resets all megabuffer tracking state
@@ -252,7 +265,7 @@ namespace skyline::gpu {
          * @note This **must** be called after syncing the buffer to the GPU not before
          * @note The buffer **must** be locked prior to calling this
          */
-        void MarkGpuDirty(UsageTracker &usageTracker);
+        void MarkGpuDirty(UsageTracker &usageTracker, GpuWriteSource source = GpuWriteSource::Internal);
 
         /**
          * @brief Prevents sequenced writes to this buffer's backing from occuring on the CPU, forcing sequencing on the GPU instead for the duration of the context. Unsequenced writes such as those from the guest can still occur however.
