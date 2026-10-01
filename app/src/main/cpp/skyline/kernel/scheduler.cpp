@@ -18,6 +18,7 @@ namespace skyline::kernel {
         if (state.process->is64bit()) {
             signal::SetGuestSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::GuestSignalHandler, false);
             signal::SetGuestSignalHandler({Scheduler::DiagnosticSignal}, Scheduler::DiagnosticSignalHandler, false);
+            signal::SetHostSignalHandler({Scheduler::DiagnosticSignal}, Scheduler::DiagnosticHostSignalHandler, false);
             signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::HostSignalHandler, false);
         } else {
             signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::JitSignalHandler, false);
@@ -48,6 +49,11 @@ namespace skyline::kernel {
         thread->diagnosticGuestPc.store(ctx->uc_mcontext.pc, std::memory_order_relaxed);
         thread->diagnosticGuestSp.store(ctx->uc_mcontext.sp, std::memory_order_relaxed);
         thread->diagnosticGuestSamples.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void Scheduler::DiagnosticHostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+        // The sampling signal may arrive while the target is briefly in host/kernel code.
+        // In that case do nothing; a later sample can capture guest PC/SP.
     }
 
     void Scheduler::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
