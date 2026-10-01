@@ -194,8 +194,11 @@ namespace skyline::kernel {
         }
 
         namespace AS36bit {
-            constexpr size_t CodeRegionStart{0x8000000}; //!< The start address of the code region (128MiB)
-            constexpr size_t CodeRegionSize{0x78000000}; //!< The size of the code region (2GiB - 128MiB)
+            constexpr size_t CodeRegionStart{0x8000000}; //!< The architectural start of the code region (128MiB)
+            constexpr size_t CodeRegionEnd{0x80000000}; //!< The architectural end of the low code/stack window (2GiB)
+            constexpr size_t CodeRegionSize{CodeRegionEnd - CodeRegionStart};
+            constexpr size_t MinCodeCarveoutSize{0x32000000}; //!< Minimum low carveout used by the original split 36-bit mapping
+            constexpr size_t CodeCarveoutSearchStart{0x0C000000}; //!< Preserve the original Strato search floor
             constexpr size_t AliasRegionSize{0x180000000}; //!< The size of the alias region (6GiB)
             constexpr size_t HeapRegionSize{0x180000000}; //!< The size of the heap region (6GiB)
 
@@ -267,33 +270,25 @@ namespace skyline::kernel {
             }
 
             case memory::AddressSpaceType::AddressSpace36Bit: {
-                // Diagnostic for old rtld implementations: prefer a smaller carveout
-                // starting at the real HOS 36-bit code-region base. The current
-                // full-size 0x78000000 reservation often has to be displaced far
-                // above 0x08000000 on Android, which breaks rtld module discovery.
-                constexpr size_t DiagnosticCodeRegionSize{0x08000000}; // 128 MiB
-                try {
-                    auto exactCodeBase{AllocateMappedRange(
-                        DiagnosticCodeRegionSize,
-                        RegionAlignment,
-                        AS36bit::CodeRegionStart,
-                        AS36bit::CodeRegionStart + DiagnosticCodeRegionSize + RegionAlignment,
-                        false)};
+                // 36-bit processes require code/stack to live in the architectural
+                // low window. Reserving the full 0x78000000 contiguously is too
+                // strict on Android and can displace the mapping above 2GiB,
+                // which old rtld implementations cannot discover correctly.
+                //
+                // Preserve Strato's original split-mapping strategy: reserve the
+                // largest available low carveout (at least 0x32000000) strictly
+                // below 0x80000000, while keeping alias/heap in the high carveout.
+                code = codeBase36Bit = AllocateMappedRange(
+                    AS36bit::MinCodeCarveoutSize,
+                    RegionAlignment,
+                    AS36bit::CodeCarveoutSearchStart,
+                    AS36bit::CodeRegionEnd,
+                    true);
 
-                    if (exactCodeBase.data() != reinterpret_cast<u8 *>(AS36bit::CodeRegionStart)) {
-                        munmap(exactCodeBase.data(), exactCodeBase.size());
-                        throw exception("exact low code carveout unavailable");
-                    }
-
-                    code = codeBase36Bit = exactCodeBase;
-                    LOGW("ARMS rtld diagnostic: using exact 36-bit code carveout {} - {} (0x{:X} bytes)",
-                         fmt::ptr(codeBase36Bit.data()),
-                         fmt::ptr(codeBase36Bit.end().base()),
-                         codeBase36Bit.size());
-                } catch (const std::exception &e) {
-                    LOGW("ARMS rtld diagnostic: exact 36-bit code carveout failed: {}; using legacy displaced carveout", e.what());
-                    code = codeBase36Bit = AllocateMappedRange(AS36bit::CodeRegionSize, RegionAlignment, AS36bit::CodeRegionStart, KgslReservedRegionSize, false);
-                }
+                LOGW("ARMS rtld diagnostic: selected 36-bit code carveout {} - {} (0x{:X} bytes)",
+                     fmt::ptr(codeBase36Bit.data()),
+                     fmt::ptr(codeBase36Bit.end().base()),
+                     codeBase36Bit.size());
 
                 if ((reinterpret_cast<u64>(base.data()) + baseSize) > (1ULL << 36)) {
                     LOGW("Couldn't fit regions into 36 bit AS! Resizing AS to 39 bits!");
@@ -344,19 +339,29 @@ namespace skyline::kernel {
             }
 
             case memory::AddressSpaceType::AddressSpace36Bit: {
-                // As a workaround if we can't place the code region at the base of the AS we mark it as inaccessible heap so rtld doesn't crash
+                // Old rtld walks memory beginning at 0x08000000. Gaps that are
+                // not host-backed must not look Free/Unmapped, otherwise rtld
+                // and nnSdk may select addresses that NCE cannot access.
                 if (codeBase36Bit.data() != reinterpret_cast<u8 *>(AS36bit::CodeRegionStart)) {
                     MapInternal(std::pair<u8 *, ChunkDescriptor>(reinterpret_cast<u8 *>(AS36bit::CodeRegionStart), {
-                        .size = reinterpret_cast<size_t>(codeBase36Bit.data() - AS36bit::CodeRegionStart),
+                        .size = static_cast<size_t>(codeBase36Bit.data() - AS36bit::CodeRegionStart),
                         .state = memory::states::Heap
                     }));
                 }
 
-                // If the low host carveout is smaller than the architectural 36-bit
-                // code/stack window, hide the unavailable remainder from guest allocators.
-                // The old split-mapping implementation represented this gap as Heap as well;
-                // leaving it Unmapped makes nnSdk select stack/alias destinations that NCE
-                // cannot actually back at the same guest address.
+                const size_t loadedCodeSize{util::AlignUp(codeRegion.size(), RegionAlignment)};
+                if (loadedCodeSize > codeBase36Bit.size()) [[unlikely]]
+                    throw exception("36-bit code carveout is too small for loaded code: 0x{:X}/0x{:X}", loadedCodeSize, codeBase36Bit.size());
+
+                // Match the original split 36-bit layout: loaded NSOs occupy the
+                // beginning of the low carveout; stack/TLS use its remaining
+                // host-backed portion.
+                code = span<u8>{codeBase36Bit.data(), loadedCodeSize};
+                stack = span<u8>{code.end().base(), codeBase36Bit.size() - code.size()};
+                tlsIo = stack;
+
+                // Hide the unavailable low-address gap between the end of the
+                // carveout and the high alias/heap reservation.
                 if (codeBase36Bit.end().base() < base.data()) {
                     MapInternal(std::pair<u8 *, ChunkDescriptor>(codeBase36Bit.end().base(), {
                         .size = static_cast<size_t>(base.data() - codeBase36Bit.end().base()),
@@ -364,15 +369,8 @@ namespace skyline::kernel {
                     }));
                 }
 
-                // Place code, stack and TLS/IO in the lower 36-bits of the host AS and heap and alias past that.
-                // The diagnostic exact-base path may intentionally reserve less
-                // than the architectural maximum; only expose memory we actually
-                // mapped in the host process.
-                code = span<u8>{codeBase36Bit.data(), codeBase36Bit.end().base()};
-                stack = code; // stack is shared with code on 36-bit
-                tlsIo = stack; // TLS/IO is shared with stack on 36-bit
                 alias = span<u8>{base.data(), AS36bit::AliasRegionSize};
-                heap = span<u8>{alias.host.end().base(), AS36bit::HeapRegionSize};
+                heap = span<u8>{alias.end().base(), AS36bit::HeapRegionSize};
                 break;
             }
 
