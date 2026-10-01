@@ -245,8 +245,11 @@ namespace skyline::kernel::type {
     void KThread::Start(bool self) {
         std::unique_lock lock(statusMutex);
         if (!running) {
-            LOGI("[THREAD-DIAG] T{} Start begin handle=0x{:X} entry={} ideal={} core={} priority={} self={}",
-                 id, handle, entry, idealCore, coreId, priority.load(), self);
+            LOGI("[THREAD-DIAG] T{} Start begin handle=0x{:X} entry={} ideal={} core={} priority={} base={} affinity=0x{:X} self={}",
+                 id, handle, entry, idealCore, coreId,
+                 priority.load(std::memory_order_relaxed),
+                 basePriority.load(std::memory_order_relaxed),
+                 affinityMask.to_ullong(), self);
             {
                 std::scoped_lock migrationLock{coreMigrationMutex};
                 auto thisShared{shared_from_this()};
