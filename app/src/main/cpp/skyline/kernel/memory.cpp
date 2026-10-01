@@ -17,7 +17,7 @@ namespace skyline::kernel {
             munmap(reinterpret_cast<void *>(codeBase36Bit.data()), codeBase36Bit.size());
     }
 
-    void MemoryManager::MapInternal(const std::pair<u8 *, ChunkDescriptor> &newDesc) {
+    void MemoryManager::MapInternal(const std::pair<u8 *, ChunkDescriptor> &newDesc, bool reprotectHost) {
         // The chunk that contains / precedes the new chunk base address
         auto firstChunkBase{chunks.lower_bound(newDesc.first)};
         if (newDesc.first <= firstChunkBase->first && firstChunkBase != chunks.begin())
@@ -113,7 +113,7 @@ namespace skyline::kernel {
                 chunks.insert_or_assign(newDesc.first, newDesc.second);
         }
 
-        if (needsReprotection) {
+        if (needsReprotection && reprotectHost) {
             // Retrieve the host region to re-protect
             span<u8> hostSpan{GetHostSpan({newDesc.first, newDesc.second.size})};
             if (mprotect(hostSpan.data(), hostSpan.size(), !isUnmapping ? PROT_READ | PROT_WRITE | PROT_EXEC : PROT_NONE)) [[unlikely]]
@@ -346,7 +346,7 @@ namespace skyline::kernel {
                     MapInternal(std::pair<u8 *, ChunkDescriptor>(reinterpret_cast<u8 *>(AS36bit::CodeRegionStart), {
                         .size = reinterpret_cast<size_t>(codeBase36Bit.data()) - AS36bit::CodeRegionStart,
                         .state = memory::states::Heap
-                    }));
+                    }), false);
                 }
 
                 const size_t loadedCodeSize{util::AlignUp(codeRegion.size(), RegionAlignment)};
@@ -366,7 +366,7 @@ namespace skyline::kernel {
                     MapInternal(std::pair<u8 *, ChunkDescriptor>(codeBase36Bit.end().base(), {
                         .size = static_cast<size_t>(base.data() - codeBase36Bit.end().base()),
                         .state = memory::states::Heap
-                    }));
+                    }), false);
                 }
 
                 alias = span<u8>{base.data(), AS36bit::AliasRegionSize};
@@ -412,6 +412,67 @@ namespace skyline::kernel {
              fmt::ptr(heap.guest.data()), fmt::ptr(heap.guest.end().base()), heap.size(),
              fmt::ptr(stack.guest.data()), fmt::ptr(stack.guest.end().base()), stack.size(),
              fmt::ptr(tlsIo.guest.data()), fmt::ptr(tlsIo.guest.end().base()), tlsIo.size());
+    }
+
+    MemoryManager::SharedMemoryPreparationResult MemoryManager::PrepareSharedMemoryMapping36Bit(span<u8> region, bool &dynamicBacking) {
+        dynamicBacking = false;
+
+        if (addressSpaceType != memory::AddressSpaceType::AddressSpace36Bit)
+            return AddressSpaceContains(region) ? SharedMemoryPreparationResult::Success : SharedMemoryPreparationResult::InvalidRegion;
+
+        const auto start{reinterpret_cast<uintptr_t>(region.data())};
+        const auto end{start + region.size()};
+        constexpr uintptr_t AliasCodeStart{AS36bit::CodeRegionStart};
+        constexpr uintptr_t AliasCodeEnd{1ULL << 36};
+
+        if (!region.size() || start >= end || start < AliasCodeStart || end > AliasCodeEnd)
+            return SharedMemoryPreparationResult::InvalidRegion;
+
+        auto overlaps = [](span<u8> lhs, span<u8> rhs) {
+            return lhs.data() < rhs.end().base() && rhs.data() < lhs.end().base();
+        };
+
+        if ((alias.guest.valid() && overlaps(region, alias.guest)) ||
+            (heap.guest.valid() && overlaps(region, heap.guest)))
+            return SharedMemoryPreparationResult::InvalidRegion;
+
+        std::unique_lock lock{mutex};
+
+        // KSharedMemory::Map requires the destination to be Free on Horizon.
+        bool isFree{true};
+        ForeachChunkInRange(region, [&](const std::pair<u8 *, ChunkDescriptor> &desc) {
+            if (desc.second.state != memory::states::Unmapped)
+                isFree = false;
+        });
+        if (!isFree)
+            return SharedMemoryPreparationResult::InvalidCurrentMemory;
+
+        auto hostRegion{GetHostSpan(region)};
+        if (codeBase36Bit.contains(hostRegion) || base.contains(hostRegion))
+            return SharedMemoryPreparationResult::Success;
+
+        // Reserve only the requested high 36-bit range. MAP_FIXED_NOREPLACE is
+        // critical here: MAP_FIXED could overwrite an unrelated Android mapping.
+        void *mapping{mmap(hostRegion.data(), hostRegion.size(), PROT_NONE,
+                           MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0)};
+        if (mapping == MAP_FAILED)
+            return SharedMemoryPreparationResult::OutOfMemory;
+
+        // Older kernels may ignore MAP_FIXED_NOREPLACE and treat the address as a
+        // hint. Never accept a mapping at a different host address.
+        if (mapping != hostRegion.data()) [[unlikely]] {
+            munmap(mapping, hostRegion.size());
+            return SharedMemoryPreparationResult::OutOfMemory;
+        }
+
+        dynamicBacking = true;
+        return SharedMemoryPreparationResult::Success;
+    }
+
+    void MemoryManager::ReleaseSharedMemoryBacking36Bit(span<u8> region) {
+        auto hostRegion{GetHostSpan(region)};
+        if (munmap(hostRegion.data(), hostRegion.size()) == -1) [[unlikely]]
+            LOGW("Failed to release dynamic 36-bit shared-memory backing: {}", strerror(errno));
     }
 
     span<u8> MemoryManager::CreateMirror(span<u8> mapping) {
