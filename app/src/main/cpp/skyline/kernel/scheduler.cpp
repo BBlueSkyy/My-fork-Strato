@@ -237,6 +237,7 @@ namespace skyline::kernel {
         TRACE_EVENT("scheduler", "WaitSchedule");
         if (loadBalance) {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
+            bool diagnosticRotationAttempted{false};
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
                 auto front{core->queue.empty() ? std::shared_ptr<type::KThread>{} : core->queue.front()};
                 LOGI("[THREAD-DIAG] WaitSchedule blocked T{} core={} priority={} front=T{} front_priority={} queue_size={} waited_ms={} front_pc=0x{:X} front_sp=0x{:X} front_lr=0x{:X} front_insn={:08X} samples={}",
@@ -250,10 +251,32 @@ namespace skyline::kernel {
                      front ? front->diagnosticGuestInsn.load(std::memory_order_relaxed) : 0,
                      front ? front->diagnosticGuestSamples.load(std::memory_order_relaxed) : 0);
 
-                // Sample a competing NCE thread's current guest PC/SP without yielding it or
-                // changing scheduler state. Repeated samples help distinguish a tight loop from
-                // a thread sleeping at one instruction.
-                if (front && front != thread && front->priority.load() == thread->priority.load() && state.process->is64bit())
+                bool diagnosticRotationTriggered{false};
+                if (!diagnosticRotationAttempted &&
+                    thread->id == 22 &&
+                    front &&
+                    front->id == 15 &&
+                    front->priority.load() == thread->priority.load() &&
+                    front->coreId == thread->coreId) {
+                    diagnosticRotationAttempted = true;
+                    diagnosticRotationTriggered = true;
+                    LOGI("[THREAD-DIAG] one-shot rotation request front=T{} waiter=T{} core={} priority={}",
+                         front->id, thread->id, core->id, thread->priority.load());
+
+                    // Diagnostic experiment only: request one normal scheduler yield from the
+                    // currently-running equal-priority thread. Do not reorder the queue here;
+                    // the target's GuestSignalHandler performs the normal Rotate()/WaitSchedule()
+                    // handoff after receiving YieldSignal.
+                    YieldThread(front);
+                }
+
+                // Preserve passive PC/SP sampling on all other iterations. Avoid sending the
+                // diagnostic signal in the same iteration as the one-shot yield so the causal
+                // experiment contains only one scheduler-affecting signal.
+                if (!diagnosticRotationTriggered &&
+                    front && front != thread &&
+                    front->priority.load() == thread->priority.load() &&
+                    state.process->is64bit())
                     front->SendSignal(DiagnosticSignal);
 
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
