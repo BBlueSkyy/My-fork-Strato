@@ -99,6 +99,11 @@ namespace skyline::kernel {
             uintptr_t jitFaultPc{};
             uintptr_t jitFaultAddress{};
 
+            // Temporary scheduler diagnostics: sampled asynchronously from an NCE host signal.
+            std::atomic<uintptr_t> diagnosticGuestPc{0};
+            std::atomic<uintptr_t> diagnosticGuestSp{0};
+            std::atomic<u32> diagnosticGuestSamples{0};
+
             KThread(const DeviceState &state, KHandle handle, KProcess &process, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore);
 
             ~KThread() override;
