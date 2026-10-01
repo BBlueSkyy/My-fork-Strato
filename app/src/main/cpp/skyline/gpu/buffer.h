@@ -138,6 +138,22 @@ namespace skyline::gpu {
         u64 writeFaultWriterRangeOverlap{};
         u64 writeFaultWriterRangeDisjoint{};
         u64 writeFaultWriterRangeUnknown{};
+        IntervalList<size_t> gpuDirtyPageDiagRanges;
+        bool gpuDirtyPageDiagRangesValid{};
+        bool gpuDirtyPageDiagRangesStarted{};
+        IntervalList<size_t> cpuPageDiagGpuRanges;
+        bool cpuPageDiagGpuRangesValid{};
+        std::vector<u64> cpuPageDiagBaselineHashes;
+        bool cpuPageDiagPrepared{};
+        bool cpuPageDiagActive{};
+        u64 cpuPageDiagWindows{};
+        u64 cpuPageDiagRangeValidWindows{};
+        u64 cpuPageDiagRangeUnknownWindows{};
+        u64 cpuDirtyPages{};
+        u64 gpuDirtyPages{};
+        u64 cpuGpuOverlapPages{};
+        u64 cpuOnlyPages{};
+        u64 gpuOnlyPages{};
 
         /**
          * @brief Resets all megabuffer tracking state
@@ -183,6 +199,11 @@ namespace skyline::gpu {
          */
         void LogFastWriteReadbackDiag() const;
 
+        void PrepareCpuPageDiag();
+        void BeginCpuPageDiag();
+        void FinalizeCpuPageDiag();
+        void LogCpuGpuPageDiag() const;
+
         bool ValidateMegaBufferViewImplDirect(vk::DeviceSize size);
 
         bool ValidateMegaBufferViewImplStaged(vk::DeviceSize size);
@@ -223,6 +244,17 @@ namespace skyline::gpu {
                 writeCycle = newCycle;
                 writeCycleStorageWriteRanges = currentExecutionStorageWriteRanges;
                 writeCycleStorageRangesComplete = currentExecutionStorageRangesComplete && currentExecutionStorageRangeRecorded;
+
+                const bool currentRangesValid{currentExecutionStorageRangesComplete && currentExecutionStorageRangeRecorded};
+                if (!gpuDirtyPageDiagRangesStarted) {
+                    gpuDirtyPageDiagRangesValid = currentRangesValid;
+                    gpuDirtyPageDiagRangesStarted = true;
+                } else {
+                    gpuDirtyPageDiagRangesValid = gpuDirtyPageDiagRangesValid && currentRangesValid;
+                }
+
+                if (currentExecutionStorageRangeRecorded)
+                    gpuDirtyPageDiagRanges.Merge(currentExecutionStorageWriteRanges);
             }
 
             currentExecutionStorageWriteRanges.Clear();
