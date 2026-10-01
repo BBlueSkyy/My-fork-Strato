@@ -218,6 +218,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
              }
          }()};
 
+         // Descriptor reuse must not skip resource usage tracking. Even when no descriptor
+         // writes are required, sampled textures can have been rendered to since the
+         // previous draw and therefore need a fresh RT -> shader-read dependency.
+         pipeline->RefreshSampledImageUsage(ctx, activeDescriptorSetSampledImages,
+                                            srcStageMask, dstStageMask);
+
          if (oldPipeline != pipeline)
              // If the pipeline has changed, we need to update the pipeline state
              builder.SetPipeline(pipeline->compiledPipeline.pipeline, vk::PipelineBindPoint::eGraphics);
