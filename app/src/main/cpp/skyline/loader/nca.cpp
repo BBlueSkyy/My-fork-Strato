@@ -32,7 +32,7 @@ namespace skyline::loader {
 
         LOGI("Loaded 'rtld.nso' at {} (.text @ {})", fmt::ptr(base), entry);
 
-        for (const auto &nso : {"main", "subsdk0", "subsdk1", "subsdk2", "subsdk3", "subsdk4", "subsdk5", "subsdk6", "subsdk7", "subsdk8", "subsdk9", "sdk"}) {
+        for (const auto &nso : {"main", "subsdk0", "subsdk1", "subsdk2", "subsdk3", "subsdk4", "subsdk5", "subsdk6", "subsdk7", "sdk"}) {
             if (exeFs->FileExists(nso))
                 nsoFile = exeFs->OpenFile(nso);
             else
