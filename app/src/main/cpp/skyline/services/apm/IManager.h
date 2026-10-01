@@ -4,28 +4,27 @@
 #pragma once
 
 #include <services/serviceman.h>
+#include "performance_state.h"
 
 namespace skyline::service::apm {
-    /**
-     * @brief IManager is mostly only used to open an ISession
-     * @url https://switchbrew.org/wiki/PPC_services#apm
-     */
+    namespace result {
+        constexpr Result InvalidParameters(148, 1);
+    }
+
     class IManager : public BaseService {
+      private:
+        std::shared_ptr<PerformanceState> performanceState;
+
       public:
-        IManager(const DeviceState &state, ServiceManager &manager);
+        IManager(const DeviceState &state, ServiceManager &manager, std::shared_ptr<PerformanceState> performanceState);
 
-        /**
-         * @brief Returns an handle to ISession
-         */
         Result OpenSession(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
-
-        /**
-         * @url https://switchbrew.org/wiki/PPC_services#IsCpuOverclockEnabled
-         */
+        Result GetPerformanceMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result IsCpuOverclockEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         SERVICE_DECL(
             SFUNC(0x0, IManager, OpenSession),
+            SFUNC(0x1, IManager, GetPerformanceMode),
             SFUNC(0x6, IManager, IsCpuOverclockEnabled)
         )
     };
