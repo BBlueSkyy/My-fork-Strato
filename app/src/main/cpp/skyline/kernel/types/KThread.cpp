@@ -197,14 +197,19 @@ namespace skyline::kernel::type {
     void KThread::SendSignal(int signal) {
         std::unique_lock lock(statusMutex);
         statusCondition.wait(lock, [this]() { return ready || killed; });
-        if (!killed && running)
+        if (!killed && running) {
+            LOGI("[THREAD-DIAG] T{} SendSignal signal={} core={} priority={} pendingYield={} forceYield={}",
+                 id, signal, coreId, priority.load(), pendingYield, forceYield);
             pthread_kill(pthread, signal);
+        }
     }
 
     void KThread::ArmPreemptionTimer(std::chrono::nanoseconds timeToFire) {
         std::unique_lock lock(statusMutex);
         statusCondition.wait(lock, [this]() { return ready || killed; });
         if (!killed && running) {
+            LOGI("[THREAD-DIAG] T{} ArmPreemptionTimer core={} priority={} duration_ns={}",
+                 id, coreId, priority.load(), timeToFire.count());
             struct itimerspec spec{.it_value = {
                 .tv_nsec = std::min(static_cast<i64>(timeToFire.count()), constant::NsInSecond),
                 .tv_sec = std::max(std::chrono::duration_cast<std::chrono::seconds>(timeToFire).count() - 1, 0LL),
@@ -221,6 +226,7 @@ namespace skyline::kernel::type {
         std::unique_lock lock(statusMutex);
         statusCondition.wait(lock, [this]() { return ready || killed; });
         if (!killed && running) {
+            LOGI("[THREAD-DIAG] T{} DisarmPreemptionTimer core={} priority={}", id, coreId, priority.load());
             struct itimerspec spec{};
             timer_settime(preemptionTimer, 0, &spec, nullptr);
             isPreempted = false;
