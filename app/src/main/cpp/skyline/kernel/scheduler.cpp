@@ -235,6 +235,11 @@ namespace skyline::kernel {
             thread->scheduleCondition.wait(lock, wakeFunction);
         }
 
+        LOGI("[THREAD-DIAG] WaitSchedule scheduled T{} core={} priority={} front=T{} queue_size={}",
+             thread->id, core->id, thread->priority.load(),
+             core->queue.empty() ? -1LL : static_cast<i64>(core->queue.front()->id),
+             core->queue.size());
+
         if (thread->priority == core->preemptionPriority)
             // If the thread needs to be preempted then arm its preemption timer
             thread->ArmPreemptionTimer(PreemptiveTimeslice);
@@ -272,8 +277,12 @@ namespace skyline::kernel {
 
         std::unique_lock lock(core.mutex);
 
-        const auto frontBefore{core.queue.empty() ? nullptr : core.queue.front()};
-        const auto nextBefore{core.queue.size() > 1 ? *std::next(core.queue.begin()) : nullptr};
+        std::shared_ptr<type::KThread> frontBefore{};
+        std::shared_ptr<type::KThread> nextBefore{};
+        if (!core.queue.empty())
+            frontBefore = core.queue.front();
+        if (core.queue.size() > 1)
+            nextBefore = *std::next(core.queue.begin());
         LOGI("[THREAD-DIAG] Rotate begin T{} core={} priority={} signal={} pendingYield={} forceYield={} queue_size={} front=T{} next=T{} next_priority={}",
              thread->id, core.id, thread->priority.load(), diagnosticSignal,
              thread->pendingYield, thread->forceYield, core.queue.size(),
