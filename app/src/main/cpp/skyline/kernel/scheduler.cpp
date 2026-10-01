@@ -28,6 +28,7 @@ namespace skyline::kernel {
         {
             TRACE_EVENT_FMT("scheduler", "{} Signal", signal == PreemptionSignal ? "Preemption" : "Yield");
             const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
+            diagnosticSignal = signal;
             if (signal == PreemptionSignal)
                 state.thread->isPreempted = false;
             state.scheduler->Rotate();
@@ -38,11 +39,13 @@ namespace skyline::kernel {
     }
 
     void Scheduler::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+        diagnosticSignal = signal;
         YieldPending = true;
     }
 
     void Scheduler::JitSignalHandler(int signal, siginfo *info, ucontext *ctx) {
         // A halted JIT returns to KThread::ThreadEntrypoint, which processes this pending yield.
+        diagnosticSignal = signal;
         YieldPending = true;
         if (kernel::this_thread)
             if (auto *core{kernel::this_thread->jit.load()})
@@ -105,6 +108,9 @@ namespace skyline::kernel {
     }
 
     void Scheduler::YieldThread(const std::shared_ptr<type::KThread> &thread) {
+        LOGI("[THREAD-DIAG] YieldThread requester=T{} target=T{} core={} priority={} pendingYield={} forceYield={}",
+             state.thread ? static_cast<i64>(state.thread->id) : -1LL, thread->id, thread->coreId,
+             thread->priority.load(), thread->pendingYield, thread->forceYield);
         if (state.thread != thread) {
             // If another thread is being yielded, we need to send it an OS signal to yield
             if (!thread->pendingYield) {
@@ -211,6 +217,11 @@ namespace skyline::kernel {
         if (loadBalance) {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
+                LOGI("[THREAD-DIAG] WaitSchedule blocked T{} core={} priority={} front=T{} front_priority={} queue_size={} waited_ms={}",
+                     thread->id, core->id, thread->priority.load(),
+                     core->queue.empty() ? -1LL : static_cast<i64>(core->queue.front()->id),
+                     core->queue.empty() ? -1LL : static_cast<i64>(core->queue.front()->priority.load()),
+                     core->queue.size(), loadBalanceThreshold.count());
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 auto newCore{&GetOptimalCoreForThread(state.thread)};
@@ -261,6 +272,15 @@ namespace skyline::kernel {
 
         std::unique_lock lock(core.mutex);
 
+        const auto frontBefore{core.queue.empty() ? nullptr : core.queue.front()};
+        const auto nextBefore{core.queue.size() > 1 ? *std::next(core.queue.begin()) : nullptr};
+        LOGI("[THREAD-DIAG] Rotate begin T{} core={} priority={} signal={} pendingYield={} forceYield={} queue_size={} front=T{} next=T{} next_priority={}",
+             thread->id, core.id, thread->priority.load(), diagnosticSignal,
+             thread->pendingYield, thread->forceYield, core.queue.size(),
+             frontBefore ? static_cast<i64>(frontBefore->id) : -1LL,
+             nextBefore ? static_cast<i64>(nextBefore->id) : -1LL,
+             nextBefore ? static_cast<i64>(nextBefore->priority.load()) : -1LL);
+
         if (core.queue.front() == thread) {
             // If this thread is at the front of the thread queue then we need to rotate the thread
             // In the case where this thread was forcefully yielded, we don't need to do this as it's done by the thread which yielded to this thread
@@ -268,6 +288,8 @@ namespace skyline::kernel {
             core.queue.splice(std::upper_bound(core.queue.begin(), core.queue.end(), thread->priority.load(), type::KThread::IsHigherPriority), core.queue, core.queue.begin());
 
             auto &front{core.queue.front()};
+            LOGI("[THREAD-DIAG] Rotate reordered T{} core={} new_front=T{} new_front_priority={} queue_size={}",
+                 thread->id, core.id, front->id, front->priority.load(), core.queue.size());
             if (front != thread)
                 front->scheduleCondition.notify(); // If we aren't at the front of the queue, only then should we wake the thread at the front up
         } else if (!thread->forceYield) {
@@ -279,6 +301,11 @@ namespace skyline::kernel {
         thread->DisarmPreemptionTimer(); // If a preemptive thread did a cooperative yield then we need to disarm the preemptive timer
         thread->pendingYield = false;
         thread->forceYield = false;
+        LOGI("[THREAD-DIAG] Rotate end T{} core={} front=T{} queue_size={}",
+             thread->id, core.id,
+             core.queue.empty() ? -1LL : static_cast<i64>(core.queue.front()->id),
+             core.queue.size());
+        diagnosticSignal = 0;
     }
 
     void Scheduler::RemoveThread() {
@@ -286,6 +313,10 @@ namespace skyline::kernel {
         {
             auto &core{cores.at(thread->coreId)};
             std::unique_lock lock(core.mutex);
+
+            LOGI("[THREAD-DIAG] RemoveThread begin T{} core={} priority={} queue_size={} front=T{}",
+                 thread->id, core.id, thread->priority.load(), core.queue.size(),
+                 core.queue.empty() ? -1LL : static_cast<i64>(core.queue.front()->id));
 
             if (!thread->isPaused) {
                 auto it{std::find(core.queue.begin(), core.queue.end(), thread)};
@@ -305,6 +336,10 @@ namespace skyline::kernel {
             } else {
                 thread->insertThreadOnResume = false;
             }
+
+            LOGI("[THREAD-DIAG] RemoveThread end T{} core={} queue_size={} front=T{}",
+                 thread->id, core.id, core.queue.size(),
+                 core.queue.empty() ? -1LL : static_cast<i64>(core.queue.front()->id));
         }
 
         thread->DisarmPreemptionTimer();
