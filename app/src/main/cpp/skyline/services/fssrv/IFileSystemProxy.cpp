@@ -44,6 +44,7 @@ namespace skyline::service::fssrv {
 
         bool IsValidStorageId(StorageId storageId) {
             switch (storageId) {
+                case StorageId::None:
                 case StorageId::Host:
                 case StorageId::GameCard:
                 case StorageId::NandSystem:
@@ -648,7 +649,12 @@ namespace skyline::service::fssrv {
                 manager.RegisterService(std::make_shared<IStorage>(romFs, state, manager), session, response);
                 return {};
             }
-            return result::EntityNotFound;
+
+            // StorageId::None is a valid unscoped lookup. Horizon-compatible
+            // implementations use it to search the aggregate content provider,
+            // so continue with system content after checking externally loaded DLC.
+            if (input->storageId != StorageId::None)
+                return result::EntityNotFound;
         }
 
         bool archiveError{};

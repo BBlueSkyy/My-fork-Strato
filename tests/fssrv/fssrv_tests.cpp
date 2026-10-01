@@ -493,8 +493,12 @@ namespace {
         Check(proxy.OpenDataStorageByCurrentProcess(session, emptyRequest, response) == result::NoRomFsAvailable, "missing current-process loader was dereferenced");
         Check(proxy.OpenPatchDataStorageByCurrentProcess(session, emptyRequest, response) == result::EntityNotFound, "missing patch loader was dereferenced");
 
-        auto invalidStorage{RequestWith(OpenDataStorageInput{StorageId::None, {}, 1})};
-        Check(proxy.OpenDataStorageByDataId(session, invalidStorage, response) == result::InvalidArgument, "invalid StorageId accepted");
+        auto unscopedStorage{RequestWith(OpenDataStorageInput{StorageId::None, {}, 1})};
+        Check(proxy.OpenDataStorageByDataId(session, unscopedStorage, response) != result::InvalidArgument,
+              "StorageId::None was rejected instead of performing an unscoped lookup");
+        auto invalidStorage{RequestWith(OpenDataStorageInput{static_cast<StorageId>(0xFF), {}, 1})};
+        Check(proxy.OpenDataStorageByDataId(session, invalidStorage, response) == result::InvalidArgument,
+              "unknown StorageId accepted");
         auto hostStorage{RequestWith(OpenDataStorageInput{StorageId::Host, {}, 1})};
         Check(proxy.OpenDataStorageByDataId(session, hostStorage, response) == result::NotImplemented, "unrepresentable host storage was searched permissively");
 
