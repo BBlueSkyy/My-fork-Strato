@@ -23,7 +23,15 @@ namespace skyline::loader {
 
         auto nsoFile{exeFs->OpenFile("rtld")};
 
-        state.process->memory.InitializeVmm(process->npdm.meta.flags.type, process->npdm.meta.flags.enableAliasRegionExtraSize);
+        // Temporary diagnostic: keep the base game's ExeFS/NPDM intact, but run
+        // old 36-bit processes through the known-working 39-bit VMM path. This
+        // isolates rtld/NSO differences from the AddressSpace36Bit memory layout.
+        auto addressSpaceType{process->npdm.meta.flags.type};
+        if (addressSpaceType == memory::AddressSpaceType::AddressSpace36Bit) {
+            LOGW("ARMS rtld diagnostic: forcing AddressSpace36Bit VMM to AddressSpace39Bit");
+            addressSpaceType = memory::AddressSpaceType::AddressSpace39Bit;
+        }
+        state.process->memory.InitializeVmm(addressSpaceType, process->npdm.meta.flags.enableAliasRegionExtraSize);
 
         auto loadInfo{NsoLoader::LoadNso(loader, nsoFile, process, state, 0, "rtld.nso")};
         u64 offset{loadInfo.size};
