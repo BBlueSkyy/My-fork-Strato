@@ -80,6 +80,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 DetermineRenderTargetDimensions(guest, engine->surfaceClip);
 
             view = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
+            if (view && guest.dimensions.width >= 256 && guest.dimensions.height >= 128) {
+                LOGI("NS_ALIAS RT iova=0x{:X} size=0x{:X} map={} mapSize=0x{:X} dims={}x{}x{} mip={} layers={} view={} fmt={} tile={} bh={} bd={} tex={} replaced={} everRt={}",
+                     target.offset, guest.GetSize(), fmt::ptr(guest.mappings.front().data()), guest.mappings.front().size(),
+                     guest.dimensions.width, guest.dimensions.height, guest.dimensions.depth,
+                     guest.mipLevelCount, guest.layerCount, static_cast<u32>(guest.viewType),
+                     vk::to_string(guest.format->vkFormat), static_cast<u32>(guest.tileConfig.mode),
+                     guest.tileConfig.blockHeight, guest.tileConfig.blockDepth, fmt::ptr(view->texture.get()),
+                     view->texture->replaced, view->texture->everUsedAsRt);
+            }
         } else {
             format = engine::ColorTarget::Format::Disabled;
             packedState.SetColorRenderTargetFormat(index, engine::ColorTarget::Format::Disabled);
