@@ -6,7 +6,6 @@
 #include <common/trace.h>
 #include <jit/halt_reason.h>
 #include <jit/jit_core_32.h>
-#include <loader/loader.h>
 #include "types/KThread.h"
 #include "types/KProcess.h"
 #include "scheduler.h"
@@ -50,19 +49,8 @@ namespace skyline::kernel {
         const uintptr_t pc{ctx->uc_mcontext.pc};
         thread->diagnosticGuestPc.store(pc, std::memory_order_relaxed);
         thread->diagnosticGuestSp.store(ctx->uc_mcontext.sp, std::memory_order_relaxed);
-        const uintptr_t lr{ctx->uc_mcontext.regs[30]};
-        thread->diagnosticGuestLr.store(lr, std::memory_order_relaxed);
+        thread->diagnosticGuestLr.store(ctx->uc_mcontext.regs[30], std::memory_order_relaxed);
         thread->diagnosticGuestInsn.store(*reinterpret_cast<const u32 *>(pc), std::memory_order_relaxed);
-
-        // X30 is the architectural return address of the current guest function. Sampling
-        // the call at LR-4 and the instruction resumed at LR lets us identify a tight
-        // caller/callee loop without touching scheduler state.
-        if (lr >= sizeof(u32) && (lr & 0x3) == 0) {
-            thread->diagnosticGuestCallerInsn.store(*reinterpret_cast<const u32 *>(lr - sizeof(u32)), std::memory_order_relaxed);
-            thread->diagnosticGuestReturnInsn.store(*reinterpret_cast<const u32 *>(lr), std::memory_order_relaxed);
-        }
-        thread->diagnosticGuestX0.store(ctx->uc_mcontext.regs[0], std::memory_order_relaxed);
-        thread->diagnosticGuestX1.store(ctx->uc_mcontext.regs[1], std::memory_order_relaxed);
         thread->diagnosticGuestSamples.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -251,27 +239,16 @@ namespace skyline::kernel {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
                 auto front{core->queue.empty() ? std::shared_ptr<type::KThread>{} : core->queue.front()};
-                const uintptr_t frontPc{front ? front->diagnosticGuestPc.load(std::memory_order_relaxed) : 0};
-                const uintptr_t frontSp{front ? front->diagnosticGuestSp.load(std::memory_order_relaxed) : 0};
-                const uintptr_t frontLr{front ? front->diagnosticGuestLr.load(std::memory_order_relaxed) : 0};
-                const u32 frontInsn{front ? front->diagnosticGuestInsn.load(std::memory_order_relaxed) : 0};
-                const u32 callerInsn{front ? front->diagnosticGuestCallerInsn.load(std::memory_order_relaxed) : 0};
-                const u32 returnInsn{front ? front->diagnosticGuestReturnInsn.load(std::memory_order_relaxed) : 0};
-                const u64 frontX0{front ? front->diagnosticGuestX0.load(std::memory_order_relaxed) : 0};
-                const u64 frontX1{front ? front->diagnosticGuestX1.load(std::memory_order_relaxed) : 0};
-                const u32 frontSamples{front ? front->diagnosticGuestSamples.load(std::memory_order_relaxed) : 0};
-
-                auto pcSymbol{frontPc ? state.loader->ResolveSymbol64(reinterpret_cast<void *>(frontPc)) : loader::Loader::SymbolInfo{}};
-                auto lrSymbol{frontLr ? state.loader->ResolveSymbol64(reinterpret_cast<void *>(frontLr)) : loader::Loader::SymbolInfo{}};
-
-                LOGI("[THREAD-DIAG] WaitSchedule blocked T{} core={} priority={} front=T{} front_priority={} queue_size={} waited_ms={} front_pc=0x{:X} front_sp=0x{:X} front_lr=0x{:X} front_insn={:08X} caller_insn={:08X} return_insn={:08X} x0=0x{:X} x1=0x{:X} samples={} pc_symbol={} pc_module={} lr_symbol={} lr_module={}",
+                LOGI("[THREAD-DIAG] WaitSchedule blocked T{} core={} priority={} front=T{} front_priority={} queue_size={} waited_ms={} front_pc=0x{:X} front_sp=0x{:X} front_lr=0x{:X} front_insn={:08X} samples={}",
                      thread->id, core->id, thread->priority.load(),
                      front ? static_cast<i64>(front->id) : -1LL,
                      front ? static_cast<i64>(front->priority.load()) : -1LL,
                      core->queue.size(), loadBalanceThreshold.count(),
-                     frontPc, frontSp, frontLr, frontInsn, callerInsn, returnInsn, frontX0, frontX1, frontSamples,
-                     pcSymbol.name ? pcSymbol.name : "<none>", pcSymbol.executableName,
-                     lrSymbol.name ? lrSymbol.name : "<none>", lrSymbol.executableName);
+                     front ? front->diagnosticGuestPc.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestSp.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestLr.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestInsn.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestSamples.load(std::memory_order_relaxed) : 0);
 
                 // Sample a competing NCE thread's current guest PC/SP without yielding it or
                 // changing scheduler state. Repeated samples help distinguish a tight loop from
