@@ -125,6 +125,10 @@ namespace skyline::kernel {
         auto &core{cores.at(thread->coreId)};
         std::unique_lock lock{core.mutex};
 
+        LOGI("[THREAD-DIAG] InsertThread begin T{} core={} priority={} queue_size={} front={}",
+             thread->id, core.id, thread->priority.load(), core.queue.size(),
+             core.queue.empty() ? -1LL : static_cast<i64>(core.queue.front()->id));
+
         if (thread->isPaused) {
             // We cannot insert a thread that is paused, so we just let the resuming thread insert it
             thread->insertThreadOnResume = true;
@@ -160,6 +164,10 @@ namespace skyline::kernel {
         } else {
             core.queue.insert(nextThread, thread);
         }
+
+        LOGI("[THREAD-DIAG] InsertThread end T{} core={} queue_size={} front={}",
+             thread->id, core.id, core.queue.size(),
+             core.queue.empty() ? -1LL : static_cast<i64>(core.queue.front()->id));
     }
 
     void Scheduler::MigrateToCore(const std::shared_ptr<type::KThread> &thread, CoreContext *&currentCore, CoreContext *targetCore, std::unique_lock<SpinLock> &lock) {
