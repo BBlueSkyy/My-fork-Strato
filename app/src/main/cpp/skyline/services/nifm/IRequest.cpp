@@ -39,7 +39,10 @@ namespace skyline::service::nifm {
             case RequestState::Free:
                 return hasConnection ? Result{} : result::NetworkCommunicationDisabled;
             case RequestState::OnHold:
-                UpdateState(hasConnection ? RequestState::Accepted : RequestState::Invalid);
+                // Horizon reports a completed request failure through state 1;
+                // GetResult provides the concrete networking error. State 0 is
+                // Invalid and must not be used as the normal failure terminal state.
+                UpdateState(hasConnection ? RequestState::Accepted : RequestState::Free);
                 return result::PendingConnection;
             case RequestState::Accepted:
             case RequestState::Blocking:
