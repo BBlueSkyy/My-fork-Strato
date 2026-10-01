@@ -356,13 +356,13 @@ namespace skyline::gpu::interconnect {
             }
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
             if (texture && guest.dimensions.width >= 256 && guest.dimensions.height >= 128) {
-                LOGI("NS_ALIAS TIC index={} iova=0x{:X} size=0x{:X} map={} mapSize=0x{:X} dims={}x{}x{} mip={} viewMip={}+{} layers={} baseLayer={} view={} fmt={} tile={} bh={} bd={} tex={} replaced={} everRt={}",
+                LOGI("NS_ALIAS TIC index={} iova=0x{:X} size=0x{:X} map={} mapSize=0x{:X} dims={}x{}x{} mip={} viewMip={}+{} layers={} baseLayer={} view={} fmt={} tile={} bh={} bd={} tex={} replaced={} lastUsage={}",
                      index, textureHeader.Iova(), guest.GetSize(), fmt::ptr(guest.mappings.front().data()), guest.mappings.front().size(),
                      guest.dimensions.width, guest.dimensions.height, guest.dimensions.depth,
                      guest.mipLevelCount, guest.viewMipBase, guest.viewMipCount, guest.layerCount, guest.baseArrayLayer,
                      static_cast<u32>(guest.viewType), vk::to_string(guest.format->vkFormat),
                      static_cast<u32>(guest.tileConfig.mode), guest.tileConfig.blockHeight, guest.tileConfig.blockDepth,
-                     fmt::ptr(texture->texture.get()), texture->texture->replaced, texture->texture->everUsedAsRt);
+                     fmt::ptr(texture->texture.get()), texture->texture->replaced, static_cast<u32>(texture->texture->GetLastRenderPassUsage()));
             }
         }
 
