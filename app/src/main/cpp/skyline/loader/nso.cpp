@@ -64,16 +64,16 @@ namespace skyline::loader {
             executable.dynstr = {header.dynstr.offset, header.dynstr.size};
         }
 
-        // Temporary ARMS diagnostic: identify which NSO defines or references the
-        // unresolved rtld symbol without altering relocation or symbol resolution.
-        if (dynamicallyLinked && executable.dynsym.size && executable.dynstr.size) {
+        // Temporary ARMS diagnostic: inspect the symbol in every NSO, including
+        // rtld itself, without changing relocation or symbol-resolution semantics.
+        if (executable.dynsym.size && executable.dynstr.size) {
             constexpr std::string_view TargetSymbol{"__nnDetailInitLibc0"};
             std::string_view dynstr{
                 reinterpret_cast<const char *>(executable.ro.contents.data() + executable.dynstr.offset),
                 executable.dynstr.size
             };
 
-            auto logTargetSymbol = [&](const auto &symbol) {
+            auto logTargetSymbol = [&](const auto &symbol, size_t index) {
                 if (!symbol.st_name || symbol.st_name >= dynstr.size())
                     return;
 
@@ -82,13 +82,21 @@ namespace skyline::loader {
                 if (terminator == std::string_view::npos || remaining.substr(0, terminator) != TargetSymbol)
                     return;
 
-                LOGI("ARMS rtld diagnostic: {} {} '{}' (value=0x{:X}, size=0x{:X}, shndx=0x{:X})",
+                const u8 bind{static_cast<u8>(symbol.st_info >> 4)};
+                const u8 type{static_cast<u8>(symbol.st_info & 0xF)};
+                const u8 visibility{static_cast<u8>(symbol.st_other & 0x3)};
+
+                LOGI("ARMS rtld diagnostic: {} {} '{}' (index={}, value=0x{:X}, size=0x{:X}, shndx=0x{:X}, bind={}, type={}, visibility={})",
                      name.empty() ? "NSO" : name,
-                     symbol.st_shndx == 0 ? "references" : "defines",
+                     symbol.st_shndx == SHN_UNDEF ? "references" : "defines",
                      TargetSymbol,
+                     index,
                      symbol.st_value,
                      symbol.st_size,
-                     symbol.st_shndx);
+                     symbol.st_shndx,
+                     bind,
+                     type,
+                     visibility);
             };
 
             span dynsym{
@@ -97,11 +105,13 @@ namespace skyline::loader {
             };
 
             if (process->npdm.meta.flags.is64Bit) {
-                for (const auto &symbol : dynsym.cast<Elf64_Sym>())
-                    logTargetSymbol(symbol);
+                auto symbols{dynsym.cast<Elf64_Sym>()};
+                for (size_t index{}; index < symbols.size(); index++)
+                    logTargetSymbol(symbols[index], index);
             } else {
-                for (const auto &symbol : dynsym.cast<Elf32_Sym>())
-                    logTargetSymbol(symbol);
+                auto symbols{dynsym.cast<Elf32_Sym>()};
+                for (size_t index{}; index < symbols.size(); index++)
+                    logTargetSymbol(symbols[index], index);
             }
         }
 
