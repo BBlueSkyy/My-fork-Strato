@@ -206,10 +206,33 @@ namespace skyline::kernel::type {
         std::scoped_lock priorityLock{priorityInheritanceMutex};
         std::scoped_lock lock{state.thread->waiterMutex};
         auto &waiters{state.thread->waiters};
+
+        if (state.thread->priority.load(std::memory_order_relaxed) == 44) {
+            size_t sameKeyWaiters{};
+            for (const auto &waiter : waiters)
+                if (waiter->waitMutex == mutex)
+                    sameKeyWaiters++;
+
+            LOGI("[THREAD-MUTEX] unlock begin owner=T{} core={} mutex={} base={} effective={} waiters={} same_key_waiters={}",
+                 state.thread->id, state.thread->coreId, fmt::ptr(mutex),
+                 state.thread->basePriority.load(std::memory_order_relaxed),
+                 state.thread->priority.load(std::memory_order_relaxed),
+                 waiters.size(), sameKeyWaiters);
+        }
+
         auto nextOwnerIt{std::find_if(waiters.begin(), waiters.end(), [mutex](const std::shared_ptr<KThread> &thread) { return thread->waitMutex == mutex; })};
         if (nextOwnerIt != waiters.end()) {
             auto nextOwner{*nextOwnerIt};
             std::scoped_lock nextLock{nextOwner->waiterMutex};
+
+            if (state.thread->priority.load(std::memory_order_relaxed) == 44 ||
+                nextOwner->priority.load(std::memory_order_relaxed) == 44) {
+                LOGI("[THREAD-MUTEX] unlock handoff owner=T{} next=T{} mutex={} next_core={} next_base={} next_effective={} next_tag=0x{:X}",
+                     state.thread->id, nextOwner->id, fmt::ptr(mutex), nextOwner->coreId,
+                     nextOwner->basePriority.load(std::memory_order_relaxed),
+                     nextOwner->priority.load(std::memory_order_relaxed), nextOwner->waitTag);
+            }
+
             nextOwner->waitThread = std::shared_ptr<KThread>{nullptr};
             nextOwner->waitMutex = nullptr;
 
@@ -244,6 +267,13 @@ namespace skyline::kernel::type {
                 nextEffective = std::min(nextEffective, nextOwner->waiters.front()->priority.load());
             nextOwner->priority = nextEffective;
 
+            if (oldCurrentEffective == 44 || currentEffective == 44 || nextEffective == 44) {
+                LOGI("[THREAD-MUTEX] unlock priorities owner=T{} old_effective={} base={} restored_effective={} next=T{} next_effective={} remaining_owner_waiters={} transferred_waiters={}",
+                     state.thread->id, oldCurrentEffective,
+                     state.thread->basePriority.load(std::memory_order_relaxed), currentEffective,
+                     nextOwner->id, nextEffective, waiters.size(), nextOwner->waiters.size());
+            }
+
             if (nextWaiter) {
                 __atomic_store_n(mutex, nextOwner->waitTag | HandleWaitersBit, __ATOMIC_SEQ_CST);
             } else {
@@ -253,6 +283,12 @@ namespace skyline::kernel::type {
             // Finally, schedule the next owner accordingly
             state.scheduler->InsertThread(nextOwner);
         } else {
+            if (state.thread->priority.load(std::memory_order_relaxed) == 44) {
+                LOGI("[THREAD-MUTEX] unlock no-waiter owner=T{} mutex={} base={} effective={} -> value=0",
+                     state.thread->id, fmt::ptr(mutex),
+                     state.thread->basePriority.load(std::memory_order_relaxed),
+                     state.thread->priority.load(std::memory_order_relaxed));
+            }
             __atomic_store_n(mutex, 0, __ATOMIC_SEQ_CST);
         }
     }
