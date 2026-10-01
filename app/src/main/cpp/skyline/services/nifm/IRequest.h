@@ -12,6 +12,8 @@ namespace skyline::service::nifm {
      */
     enum class RequestState : u32 {
         Invalid = 0,
+        // State 1 is the idle state and is also used when a submitted request
+        // completes with an error; GetResult carries the actual failure code.
         Free = 1,
         OnHold = 2,
         Accepted = 3,
