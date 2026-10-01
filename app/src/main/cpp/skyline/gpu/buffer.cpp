@@ -35,13 +35,17 @@ namespace skyline::gpu {
         std::atomic<u64> bufferPreTrapWaits{};
         std::atomic<u64> bufferPreTrapWaitNs{};
         std::atomic<u64> bufferReadOnlyCycleBypasses{};
+        std::atomic<u64> bufferRangeFastPages{};
+        std::atomic<u64> bufferRangePageWaits{};
+        std::atomic<u64> bufferRangePageSyncs{};
+        std::atomic<u64> bufferRangeFallbacks{};
 
         void LogBufferReadbackDiag() {
             const auto events{bufferReadbackDiagEvents.fetch_add(1, std::memory_order_relaxed) + 1};
             if (events != 1 && (events % BufferReadbackDiagLogInterval) != 0)
                 return;
 
-            LOGI("[FastReadbackDiag][Buffer] events={} fast_write_hits={} read_precise={} write_precise={} precise_syncs={} precise_sync_us={} pretrap_waits={} pretrap_wait_us={} read_only_cycle_bypasses={}",
+            LOGI("[FastReadbackDiag][Buffer] events={} fast_write_hits={} read_precise={} write_precise={} precise_syncs={} precise_sync_us={} pretrap_waits={} pretrap_wait_us={} read_only_cycle_bypasses={} range_fast_pages={} range_page_waits={} range_page_syncs={} range_fallbacks={}",
                  events,
                  bufferFastWriteHits.load(std::memory_order_relaxed),
                  bufferReadPreciseFallbacks.load(std::memory_order_relaxed),
@@ -50,7 +54,11 @@ namespace skyline::gpu {
                  bufferPreciseSyncNs.load(std::memory_order_relaxed) / 1000,
                  bufferPreTrapWaits.load(std::memory_order_relaxed),
                  bufferPreTrapWaitNs.load(std::memory_order_relaxed) / 1000,
-                 bufferReadOnlyCycleBypasses.load(std::memory_order_relaxed));
+                 bufferReadOnlyCycleBypasses.load(std::memory_order_relaxed),
+                 bufferRangeFastPages.load(std::memory_order_relaxed),
+                 bufferRangePageWaits.load(std::memory_order_relaxed),
+                 bufferRangePageSyncs.load(std::memory_order_relaxed),
+                 bufferRangeFallbacks.load(std::memory_order_relaxed));
         }
     }
 
@@ -61,6 +69,74 @@ namespace skyline::gpu {
         megaBufferTableUsed = false;
         megaBufferViewAccumulatedSize = 0;
         unifiedMegaBuffer = {};
+    }
+
+    size_t Buffer::GetGuestPageIndex(const u8 *address) const {
+        if (!guest)
+            return rangeGpuDirtyPageFlags.size();
+
+        const auto guestStart{reinterpret_cast<uintptr_t>(guest->data())};
+        const auto guestEnd{guestStart + guest->size()};
+        const auto target{reinterpret_cast<uintptr_t>(address)};
+        if (target < guestStart || target >= guestEnd)
+            return rangeGpuDirtyPageFlags.size();
+
+        return (target - guestStart) / constant::PageSize;
+    }
+
+    bool Buffer::HasRangeCpuDirtyPages() const {
+        return std::find(rangeCpuDirtyPageFlags.begin(), rangeCpuDirtyPageFlags.end(), u8{1}) != rangeCpuDirtyPageFlags.end();
+    }
+
+    bool Buffer::HasRangeGpuDirtyPages() const {
+        return std::find(rangeGpuDirtyPageFlags.begin(), rangeGpuDirtyPageFlags.end(), u8{1}) != rangeGpuDirtyPageFlags.end();
+    }
+
+    void Buffer::ClearCompletedPageWriteCycle(const std::shared_ptr<FenceCycle> &completedCycle) {
+        if (!completedCycle)
+            return;
+
+        for (auto &pageCycle : rangePageWriteCycles)
+            if (pageCycle == completedCycle)
+                pageCycle = {};
+    }
+
+    void Buffer::ClearRangeDirtyTracking() {
+        std::fill(rangeGpuDirtyPageFlags.begin(), rangeGpuDirtyPageFlags.end(), 0);
+        std::fill(rangeCpuDirtyPageFlags.begin(), rangeCpuDirtyPageFlags.end(), 0);
+        std::fill(currentExecutionStorageWritePages.begin(), currentExecutionStorageWritePages.end(), 0);
+        for (auto &pageCycle : rangePageWriteCycles)
+            pageCycle = {};
+
+        rangeGpuDirtyValid = false;
+        rangeGpuDirtyStarted = false;
+    }
+
+    void Buffer::CopyGpuDirtyPagesToMirror() {
+        for (size_t page{}; page < rangeGpuDirtyPageFlags.size(); page++) {
+            if (!rangeGpuDirtyPageFlags[page])
+                continue;
+
+            if (!rangeCpuDirtyPageFlags[page]) {
+                const size_t offset{page * constant::PageSize};
+                const size_t size{std::min<size_t>(constant::PageSize, mirror.size() - offset)};
+                std::memcpy(mirror.data() + offset, backing->data() + offset, size);
+            }
+
+            rangeGpuDirtyPageFlags[page] = 0;
+        }
+    }
+
+    void Buffer::CopyCpuDirtyPagesToBacking() {
+        for (size_t page{}; page < rangeCpuDirtyPageFlags.size(); page++) {
+            if (!rangeCpuDirtyPageFlags[page])
+                continue;
+
+            const size_t offset{page * constant::PageSize};
+            const size_t size{std::min<size_t>(constant::PageSize, mirror.size() - offset)};
+            std::memcpy(backing->data() + offset, mirror.data() + offset, size);
+            rangeCpuDirtyPageFlags[page] = 0;
+        }
     }
 
     void Buffer::SetupStagedTraps() {
@@ -321,6 +397,11 @@ namespace skyline::gpu {
                                     UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
         std::scoped_lock lock{stateMutex, src->stateMutex}; // Fine even if src and dst are same since recursive mutex
 
+        if (HasRangeCpuDirtyPages())
+            SynchronizeHost(true);
+        if (src->HasRangeCpuDirtyPages())
+            src->SynchronizeHost(true);
+
         if (dirtyState == DirtyState::CpuDirty && SequencedCpuBackingWritesBlocked())
             // If the buffer is used in sequence directly on the GPU, SynchronizeHost before modifying the mirror contents to ensure proper sequencing. This write will then be sequenced on the GPU instead (the buffer will be kept clean for the rest of the execution due to gpuCopyCallback blocking all writes)
             SynchronizeHost();
@@ -392,6 +473,9 @@ namespace skyline::gpu {
         // We cannot have *ANY* state changes for the duration of this function, if the buffer became CPU dirty partway through the GPU writes would mismatch the CPU writes
         std::scoped_lock lock{stateMutex};
 
+        if (HasRangeCpuDirtyPages())
+            SynchronizeHost(true);
+
         // If the buffer is GPU dirty do the write on the GPU and we're done
         if (dirtyState == DirtyState::GpuDirty) {
             if (gpuCopyCallback)
@@ -461,8 +545,13 @@ namespace skyline::gpu {
     void Buffer::MarkGpuDirtyImplStaged() {
         std::scoped_lock lock{stateMutex}; // stateMutex is locked to prevent state changes at any point during this function
 
-        if (dirtyState == DirtyState::GpuDirty)
+        if (dirtyState == DirtyState::GpuDirty && !HasRangeCpuDirtyPages())
             return;
+
+        if (HasRangeCpuDirtyPages())
+            SynchronizeHost(true);
+
+        ClearRangeDirtyTracking();
 
         gpuDirtyPageDiagRanges.Clear();
         gpuDirtyPageDiagRangesValid = false;
@@ -665,11 +754,16 @@ namespace skyline::gpu {
           isDirect{direct},
           id{id},
           megaBufferTableShift{std::max(std::bit_width(guest.size() / MegaBufferTableMaxEntries - 1), MegaBufferTableShiftMin)} {
-        if (isDirect)
+        if (isDirect) {
             directBacking = gpu.memory.ImportBuffer(mirror);
-        else {
+        } else {
             backing = gpu.memory.AllocateBuffer(mirror.size());
-            cpuPageDiagBaselineHashes.resize((mirror.size() + constant::PageSize - 1) / constant::PageSize);
+
+            const size_t pageCount{(mirror.size() + constant::PageSize - 1) / constant::PageSize};
+            currentExecutionStorageWritePages.resize(pageCount);
+            rangeGpuDirtyPageFlags.resize(pageCount);
+            rangeCpuDirtyPageFlags.resize(pageCount);
+            rangePageWriteCycles.resize(pageCount);
         }
 
         megaBufferTable.resize(guest.size() / (1 << megaBufferTableShift));
@@ -684,7 +778,6 @@ namespace skyline::gpu {
     }
 
     Buffer::~Buffer() {
-        FinalizeCpuPageDiag();
         if (trapHandle)
             gpu.state.process->trap.DeleteTrap(*trapHandle);
         SynchronizeGuest(true);
@@ -704,6 +797,11 @@ namespace skyline::gpu {
             if (bindingEnd > bindingOffset) {
                 currentExecutionStorageWriteRanges.Insert({bindingOffset, bindingEnd});
                 currentExecutionStorageRangeRecorded = true;
+
+                const size_t firstPage{bindingOffset / constant::PageSize};
+                const size_t lastPage{(bindingEnd - 1) / constant::PageSize};
+                for (size_t page{firstPage}; page <= lastPage && page < currentExecutionStorageWritePages.size(); page++)
+                    currentExecutionStorageWritePages[page] = 1;
             }
         }
 
@@ -748,8 +846,10 @@ namespace skyline::gpu {
 
         if (cycle) {
             cycle->Wait();
+            auto completedCycle{cycle};
             cycle = nullptr;
             writeCycle = nullptr;
+            ClearCompletedPageWriteCycle(completedCycle);
             writeCycleStorageWriteRanges.Clear();
             writeCycleStorageRangesComplete = false;
         }
@@ -760,8 +860,10 @@ namespace skyline::gpu {
             return true;
 
         if (cycle->Poll()) {
+            auto completedCycle{cycle};
             cycle = nullptr;
             writeCycle = nullptr;
+            ClearCompletedPageWriteCycle(completedCycle);
             writeCycleStorageWriteRanges.Clear();
             writeCycleStorageRangesComplete = false;
             return true;
