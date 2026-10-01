@@ -267,7 +267,33 @@ namespace skyline::kernel {
             }
 
             case memory::AddressSpaceType::AddressSpace36Bit: {
-                code = codeBase36Bit = AllocateMappedRange(AS36bit::CodeRegionSize, RegionAlignment, AS36bit::CodeRegionStart, KgslReservedRegionSize, false);
+                // Diagnostic for old rtld implementations: prefer a smaller carveout
+                // starting at the real HOS 36-bit code-region base. The current
+                // full-size 0x78000000 reservation often has to be displaced far
+                // above 0x08000000 on Android, which breaks rtld module discovery.
+                constexpr size_t DiagnosticCodeRegionSize{0x08000000}; // 128 MiB
+                try {
+                    auto exactCodeBase{AllocateMappedRange(
+                        DiagnosticCodeRegionSize,
+                        RegionAlignment,
+                        AS36bit::CodeRegionStart,
+                        AS36bit::CodeRegionStart + DiagnosticCodeRegionSize + RegionAlignment,
+                        false)};
+
+                    if (exactCodeBase.data() != reinterpret_cast<u8 *>(AS36bit::CodeRegionStart)) {
+                        munmap(exactCodeBase.data(), exactCodeBase.size());
+                        throw exception("exact low code carveout unavailable");
+                    }
+
+                    code = codeBase36Bit = exactCodeBase;
+                    LOGW("ARMS rtld diagnostic: using exact 36-bit code carveout {} - {} (0x{:X} bytes)",
+                         fmt::ptr(codeBase36Bit.data()),
+                         fmt::ptr(codeBase36Bit.end().base()),
+                         codeBase36Bit.size());
+                } catch (const std::exception &e) {
+                    LOGW("ARMS rtld diagnostic: exact 36-bit code carveout failed: {}; using legacy displaced carveout", e.what());
+                    code = codeBase36Bit = AllocateMappedRange(AS36bit::CodeRegionSize, RegionAlignment, AS36bit::CodeRegionStart, KgslReservedRegionSize, false);
+                }
 
                 if ((reinterpret_cast<u64>(base.data()) + baseSize) > (1ULL << 36)) {
                     LOGW("Couldn't fit regions into 36 bit AS! Resizing AS to 39 bits!");
@@ -326,8 +352,11 @@ namespace skyline::kernel {
                     }));
                 }
 
-                // Place code, stack and TLS/IO in the lower 36-bits of the host AS and heap and alias past that
-                code = span<u8>{codeBase36Bit.data(), codeBase36Bit.data() + AS36bit::CodeRegionSize};
+                // Place code, stack and TLS/IO in the lower 36-bits of the host AS and heap and alias past that.
+                // The diagnostic exact-base path may intentionally reserve less
+                // than the architectural maximum; only expose memory we actually
+                // mapped in the host process.
+                code = span<u8>{codeBase36Bit.data(), codeBase36Bit.end().base()};
                 stack = code; // stack is shared with code on 36-bit
                 tlsIo = stack; // TLS/IO is shared with stack on 36-bit
                 alias = span<u8>{base.data(), AS36bit::AliasRegionSize};
