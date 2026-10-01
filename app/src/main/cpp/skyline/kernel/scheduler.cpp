@@ -46,8 +46,11 @@ namespace skyline::kernel {
             return;
 
         auto &thread{threadContext->state->thread};
-        thread->diagnosticGuestPc.store(ctx->uc_mcontext.pc, std::memory_order_relaxed);
+        const uintptr_t pc{ctx->uc_mcontext.pc};
+        thread->diagnosticGuestPc.store(pc, std::memory_order_relaxed);
         thread->diagnosticGuestSp.store(ctx->uc_mcontext.sp, std::memory_order_relaxed);
+        thread->diagnosticGuestLr.store(ctx->uc_mcontext.regs[30], std::memory_order_relaxed);
+        thread->diagnosticGuestInsn.store(*reinterpret_cast<const u32 *>(pc), std::memory_order_relaxed);
         thread->diagnosticGuestSamples.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -236,13 +239,15 @@ namespace skyline::kernel {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
                 auto front{core->queue.empty() ? std::shared_ptr<type::KThread>{} : core->queue.front()};
-                LOGI("[THREAD-DIAG] WaitSchedule blocked T{} core={} priority={} front=T{} front_priority={} queue_size={} waited_ms={} front_pc=0x{:X} front_sp=0x{:X} samples={}",
+                LOGI("[THREAD-DIAG] WaitSchedule blocked T{} core={} priority={} front=T{} front_priority={} queue_size={} waited_ms={} front_pc=0x{:X} front_sp=0x{:X} front_lr=0x{:X} front_insn={:08X} samples={}",
                      thread->id, core->id, thread->priority.load(),
                      front ? static_cast<i64>(front->id) : -1LL,
                      front ? static_cast<i64>(front->priority.load()) : -1LL,
                      core->queue.size(), loadBalanceThreshold.count(),
                      front ? front->diagnosticGuestPc.load(std::memory_order_relaxed) : 0,
                      front ? front->diagnosticGuestSp.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestLr.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestInsn.load(std::memory_order_relaxed) : 0,
                      front ? front->diagnosticGuestSamples.load(std::memory_order_relaxed) : 0);
 
                 // Sample a competing NCE thread's current guest PC/SP without yielding it or
