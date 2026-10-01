@@ -90,6 +90,7 @@ namespace skyline {
              * @brief Temporary diagnostic signal handler that samples guest PC/SP without changing scheduler state
              */
             static void DiagnosticSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls);
+            static void DiagnosticHostSignalHandler(int signal, siginfo *info, ucontext *ctx);
 
             /**
              * @brief A signal handler for scheduling guest threads not currently running guest code
