@@ -169,6 +169,8 @@ namespace skyline::gpu {
         u64 rangeFastPageWaits{};
         u64 rangeFastPageSyncs{};
         u64 rangeFastPageFallbacks{};
+        u64 rangeMergeWaits{};
+        u64 rangeMergeWaitNs{};
 
         /**
          * @brief Resets all megabuffer tracking state
