@@ -313,8 +313,10 @@ namespace skyline::gpu {
             }
         }
 
-        for (auto &texture : matches)
+        for (auto &texture : matches) {
             texture->SynchronizeGuest(false, true);
+            texture->replaced = true;
+        }
 
         // Create a texture as we cannot find one that matches
 
