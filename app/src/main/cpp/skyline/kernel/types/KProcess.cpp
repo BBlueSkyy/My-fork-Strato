@@ -5,6 +5,7 @@
 #include <os.h>
 #include <jvm.h>
 #include <common/trace.h>
+#include <unordered_set>
 #include <kernel/results.h>
 #include <kernel/thread_tls.h>
 #include "KProcess.h"
@@ -19,6 +20,7 @@ namespace skyline::kernel::type {
     }
 
     KProcess::KProcess(const DeviceState &state) : memory(state), KSyncObject(state, KType::KProcess) {
+        resourceLimit = std::make_shared<KResourceLimit>(state);
         trap.InstallStaticInstance();
     }
 
@@ -96,6 +98,58 @@ namespace skyline::kernel::type {
         auto tlsPage{std::make_shared<TlsPage>(pageCandidate)};
         tlsPages.push_back(tlsPage);
         return tlsPage->ReserveSlot();
+    }
+
+    void KProcess::RefreshResourceLimitValues() {
+        using Resource = LimitableResource;
+
+        // Horizon's application group has fixed non-memory quotas. Strato uses the
+        // same retail application defaults for query compatibility. The memory
+        // ceiling follows Strato's own process budget so it stays consistent with
+        // InfoType_TotalMemorySize rather than claiming a memory arrangement Strato
+        // does not emulate.
+        constexpr i64 ApplicationThreadLimit{96};
+        constexpr i64 ApplicationEventLimit{0};
+        constexpr i64 ApplicationTransferMemoryLimit{32};
+        constexpr i64 ApplicationSessionLimit{1};
+        constexpr u64 TotalPhysicalMemory{0xF8000000ULL};
+
+        const i64 currentMemory{static_cast<i64>(memory.GetUserMemoryUsage())};
+        const i64 memoryLimit{static_cast<i64>(std::min<u64>(TotalPhysicalMemory, memory.heap.size()))};
+
+        i64 currentThreads{};
+        {
+            std::scoped_lock lock{threadMutex};
+            for (const auto &thread : threads)
+                if (thread && !thread->killed.load(std::memory_order_relaxed))
+                    ++currentThreads;
+        }
+
+        i64 currentTransferMemories{};
+        {
+            std::shared_lock lock{handleMutex};
+            std::unordered_set<const KObject *> objects;
+            for (const auto &object : handles)
+                if (object && object->objectType == KType::KTransferMemory)
+                    objects.insert(object.get());
+            currentTransferMemories = static_cast<i64>(objects.size());
+        }
+
+        resourceLimit->SetLimitValue(Resource::Memory, memoryLimit);
+        resourceLimit->SetLimitValue(Resource::Threads, ApplicationThreadLimit);
+        resourceLimit->SetLimitValue(Resource::Events, ApplicationEventLimit);
+        resourceLimit->SetLimitValue(Resource::TransferMemories, ApplicationTransferMemoryLimit);
+        resourceLimit->SetLimitValue(Resource::Sessions, ApplicationSessionLimit);
+
+        resourceLimit->SetCurrentValue(Resource::Memory, currentMemory);
+        resourceLimit->SetCurrentValue(Resource::Threads, currentThreads);
+        // Strato's HLE KEvent/KSession objects do not map one-to-one onto Horizon's
+        // application resource accounting, so do not manufacture counts from handles.
+        resourceLimit->SetCurrentValue(Resource::Events, 0);
+        resourceLimit->SetCurrentValue(Resource::TransferMemories, currentTransferMemories);
+        // Strato does not model Horizon's resource-limit reservations for IPC sessions.
+        // Report only reservations we can account for instead of fabricating one.
+        resourceLimit->SetCurrentValue(Resource::Sessions, 0);
     }
 
     std::shared_ptr<KThread> KProcess::CreateThread(void *entry, u64 argument, void *stackTop, std::optional<i8> priority, std::optional<u8> idealCore) {
