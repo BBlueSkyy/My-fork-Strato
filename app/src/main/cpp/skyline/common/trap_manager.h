@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <mutex>
+#include "interval_list.h"
 #include "interval_map.h"
 
 namespace skyline {
