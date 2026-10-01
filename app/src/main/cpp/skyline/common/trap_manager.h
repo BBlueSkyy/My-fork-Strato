@@ -19,7 +19,7 @@ namespace skyline {
 
     using TrapCallback = std::function<bool()>;
     using LockCallback = std::function<void()>;
-    using AccessLockCallback = std::function<void(bool write)>;
+    using AccessLockCallback = std::function<void(u8 *address, bool write)>;
 
     struct CallbackEntry {
         TrapProtection protection; //!< The least restrictive protection that this callback needs to have
@@ -54,7 +54,7 @@ namespace skyline {
         TrapHandle CreateTrap(span<span<u8>> regions, const LockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback);
 
         /**
-         * @brief Creates a trap whose external lock callback also receives the fault access type
+         * @brief Creates a trap whose external lock callback also receives the fault address and access type
          * @note Existing callers should keep using the LockCallback overload unless access type changes synchronization semantics
          */
         TrapHandle CreateTrap(span<span<u8>> regions, const AccessLockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback);

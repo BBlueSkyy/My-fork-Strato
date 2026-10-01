@@ -130,6 +130,14 @@ namespace skyline::gpu {
         u64 storageWriteOther{};
         size_t storageWriteMinBindingSize{};
         size_t storageWriteMaxBindingSize{};
+        IntervalList<size_t> currentExecutionStorageWriteRanges;
+        IntervalList<size_t> writeCycleStorageWriteRanges;
+        bool currentExecutionStorageRangeRecorded{};
+        bool currentExecutionStorageRangesComplete{true};
+        bool writeCycleStorageRangesComplete{};
+        u64 writeFaultWriterRangeOverlap{};
+        u64 writeFaultWriterRangeDisjoint{};
+        u64 writeFaultWriterRangeUnknown{};
 
         /**
          * @brief Resets all megabuffer tracking state
@@ -211,8 +219,15 @@ namespace skyline::gpu {
         void UpdateCycle(const std::shared_ptr<FenceCycle> &newCycle) {
             newCycle->ChainCycle(cycle);
             cycle = newCycle;
-            if (currentExecutionGpuDirty && !isDirect)
+            if (currentExecutionGpuDirty && !isDirect) {
                 writeCycle = newCycle;
+                writeCycleStorageWriteRanges = currentExecutionStorageWriteRanges;
+                writeCycleStorageRangesComplete = currentExecutionStorageRangesComplete && currentExecutionStorageRangeRecorded;
+            }
+
+            currentExecutionStorageWriteRanges.Clear();
+            currentExecutionStorageRangeRecorded = false;
+            currentExecutionStorageRangesComplete = true;
         }
 
         constexpr vk::Buffer GetBacking() {
@@ -279,7 +294,7 @@ namespace skyline::gpu {
         /**
          * @brief Records shader-stage and binding-size information for writable storage buffers
          */
-        void RecordStorageWriteBinding(vk::PipelineStageFlagBits stage, size_t bindingSize);
+        void RecordStorageWriteBinding(vk::PipelineStageFlagBits stage, size_t bindingOffset, size_t bindingSize);
 
         /**
          * @brief Prevents sequenced writes to this buffer's backing from occuring on the CPU, forcing sequencing on the GPU instead for the duration of the context. Unsequenced writes such as those from the guest can still occur however.

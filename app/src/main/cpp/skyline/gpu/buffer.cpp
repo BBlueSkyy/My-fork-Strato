@@ -57,7 +57,7 @@ namespace skyline::gpu {
 
         // We can't just capture this in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Buffer> weakThis{shared_from_this()};
-        trapHandle = gpu.state.process->trap.CreateTrap(*guest, [weakThis](bool write) {
+        trapHandle = gpu.state.process->trap.CreateTrap(*guest, [weakThis](u8 *faultAddress, bool write) {
             auto buffer{weakThis.lock()};
             if (!buffer)
                 return;
@@ -86,8 +86,11 @@ namespace skyline::gpu {
                             buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(waitNs);
                         buffer->accumulatedGuestWaitCounter++;
 
-                        if (buffer->writeCycle == waitCycle)
+                        if (buffer->writeCycle == waitCycle) {
                             buffer->writeCycle = {};
+                            buffer->writeCycleStorageWriteRanges.Clear();
+                            buffer->writeCycleStorageRangesComplete = false;
+                        }
                         if (buffer->cycle == waitCycle)
                             buffer->cycle = {};
                     }
@@ -97,6 +100,33 @@ namespace skyline::gpu {
                     if (useWriteCycle && buffer->cycle && buffer->cycle != nextCycle) {
                         bufferReadOnlyCycleBypasses.fetch_add(1, std::memory_order_relaxed);
                         buffer->fastWriteReadbackBypasses++;
+                    }
+
+                    if (useWriteCycle && nextCycle && nextCycle == buffer->writeCycle) {
+                        bool classified{};
+                        if (buffer->writeCycleStorageRangesComplete && buffer->guest) {
+                            const uintptr_t pageStart{reinterpret_cast<uintptr_t>(faultAddress) & ~(constant::PageSize - 1)};
+                            const uintptr_t pageEnd{pageStart + constant::PageSize};
+                            const uintptr_t guestStart{reinterpret_cast<uintptr_t>(buffer->guest->data())};
+                            const uintptr_t guestEnd{guestStart + buffer->guest->size()};
+                            const uintptr_t overlapStart{std::max(pageStart, guestStart)};
+                            const uintptr_t overlapEnd{std::min(pageEnd, guestEnd)};
+
+                            if (overlapStart < overlapEnd) {
+                                IntervalList<size_t>::Interval faultRange{
+                                    overlapStart - guestStart,
+                                    overlapEnd - guestStart,
+                                };
+                                if (buffer->writeCycleStorageWriteRanges.Intersect(faultRange))
+                                    buffer->writeFaultWriterRangeOverlap++;
+                                else
+                                    buffer->writeFaultWriterRangeDisjoint++;
+                                classified = true;
+                            }
+                        }
+
+                        if (!classified)
+                            buffer->writeFaultWriterRangeUnknown++;
                     }
 
                     waitCycle = std::move(nextCycle);
@@ -457,7 +487,7 @@ namespace skyline::gpu {
         if (!milestone)
             return;
 
-        LOGI("[FastReadbackDiag][HotBuffer] id={} size={} sequence={} fast_hits={} read_only_bypasses={} guest_waits={} guest_wait_us={} cycle_present={} write_cycle_present={} cycle_is_write_cycle={} src_internal={} src_storage={} src_image={} src_query={} src_xfb={} src_dma_clear={} storage_vtx={} storage_tesc={} storage_tese={} storage_geom={} storage_frag={} storage_comp={} storage_other={} storage_min={} storage_max={}",
+        LOGI("[FastReadbackDiag][HotBuffer] id={} size={} sequence={} fast_hits={} read_only_bypasses={} guest_waits={} guest_wait_us={} cycle_present={} write_cycle_present={} cycle_is_write_cycle={} src_internal={} src_storage={} src_image={} src_query={} src_xfb={} src_dma_clear={} storage_vtx={} storage_tesc={} storage_tese={} storage_geom={} storage_frag={} storage_comp={} storage_other={} storage_min={} storage_max={} writer_page_overlap={} writer_page_disjoint={} writer_page_unknown={}",
              id,
              mirror.size(),
              sequenceNumber,
@@ -482,7 +512,10 @@ namespace skyline::gpu {
              storageWriteCompute,
              storageWriteOther,
              storageWriteMinBindingSize,
-             storageWriteMaxBindingSize);
+             storageWriteMaxBindingSize,
+             writeFaultWriterRangeOverlap,
+             writeFaultWriterRangeDisjoint,
+             writeFaultWriterRangeUnknown);
     }
 
     Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, GuestBuffer guest, size_t id, bool direct)
@@ -518,11 +551,19 @@ namespace skyline::gpu {
         WaitOnFence();
     }
 
-    void Buffer::RecordStorageWriteBinding(vk::PipelineStageFlagBits stage, size_t bindingSize) {
+    void Buffer::RecordStorageWriteBinding(vk::PipelineStageFlagBits stage, size_t bindingOffset, size_t bindingSize) {
         if (!storageWriteMinBindingSize || bindingSize < storageWriteMinBindingSize)
             storageWriteMinBindingSize = bindingSize;
         if (bindingSize > storageWriteMaxBindingSize)
             storageWriteMaxBindingSize = bindingSize;
+
+        if (bindingOffset < mirror.size()) {
+            const size_t bindingEnd{std::min(mirror.size(), bindingOffset + bindingSize)};
+            if (bindingEnd > bindingOffset) {
+                currentExecutionStorageWriteRanges.Insert({bindingOffset, bindingEnd});
+                currentExecutionStorageRangeRecorded = true;
+            }
+        }
 
         switch (stage) {
             case vk::PipelineStageFlagBits::eVertexShader:
@@ -554,6 +595,8 @@ namespace skyline::gpu {
             return;
 
         gpuWriteSourceCounts[static_cast<size_t>(source)]++;
+        if (source != GpuWriteSource::StorageBuffer)
+            currentExecutionStorageRangesComplete = false;
         usageTracker.dirtyIntervals.Insert(*guest);
         MarkGpuDirtyImpl();
     }
@@ -565,6 +608,8 @@ namespace skyline::gpu {
             cycle->Wait();
             cycle = nullptr;
             writeCycle = nullptr;
+            writeCycleStorageWriteRanges.Clear();
+            writeCycleStorageRangesComplete = false;
         }
     }
 
@@ -575,6 +620,8 @@ namespace skyline::gpu {
         if (cycle->Poll()) {
             cycle = nullptr;
             writeCycle = nullptr;
+            writeCycleStorageWriteRanges.Clear();
+            writeCycleStorageRangesComplete = false;
             return true;
         }
 
