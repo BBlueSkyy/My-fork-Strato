@@ -68,10 +68,7 @@ class MainViewModel @Inject constructor(
                 }
             }
 
-            state = if (searchLocations.isEmpty()) {
-                MainState.Loaded(ArrayList())
-            } else {
-                try {
+            state = try {
                     searchLocations.forEach { searchLocation ->
                         try {
                             KeyReader.importFromLocation(context, searchLocation)
@@ -125,7 +122,6 @@ class MainViewModel @Inject constructor(
                     Log.w(TAG, "Ran into exception while saving: ${e.message}")
                     MainState.Error(e)
                 }
-            }
         }
     }
 
