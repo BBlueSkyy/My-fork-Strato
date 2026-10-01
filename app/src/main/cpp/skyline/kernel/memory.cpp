@@ -285,11 +285,6 @@ namespace skyline::kernel {
                     AS36bit::CodeRegionEnd,
                     true);
 
-                LOGW("ARMS rtld diagnostic: selected 36-bit code carveout {} - {} (0x{:X} bytes)",
-                     fmt::ptr(codeBase36Bit.data()),
-                     fmt::ptr(codeBase36Bit.end().base()),
-                     codeBase36Bit.size());
-
                 if ((reinterpret_cast<u64>(base.data()) + baseSize) > (1ULL << 36)) {
                     LOGW("Couldn't fit regions into 36 bit AS! Resizing AS to 39 bits!");
                     addressSpace = span<u8>{reinterpret_cast<u8 *>(0), 1ULL << 39};
