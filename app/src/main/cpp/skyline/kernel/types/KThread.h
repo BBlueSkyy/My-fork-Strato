@@ -3,6 +3,7 @@
 
 #pragma once
 #include <atomic>
+#include <array>
 
 #include <csetjmp>
 #include <nce/guest.h>
@@ -17,6 +18,18 @@ namespace skyline::kernel {
     thread_local inline type::KThread *this_thread{nullptr}; //!< The guest KThread for the current host thread
 
     namespace type {
+        enum class DiagnosticActivityType : u32 {
+            SvcExit,
+            IpcExit,
+            WaitSyncBegin,
+            WaitSyncEnd,
+            CondvarWaitBegin,
+            CondvarWaitEnd,
+            CondvarSignal,
+            SyncSignal,
+            SyncWake,
+        };
+
         /**
          * @brief KThread manages a single thread of execution which is responsible for running guest code and kernel code which is invoked by the guest
          */
@@ -105,6 +118,26 @@ namespace skyline::kernel {
             std::atomic<uintptr_t> diagnosticGuestLr{0};
             std::atomic<u32> diagnosticGuestInsn{0};
             std::atomic<u32> diagnosticGuestSamples{0};
+
+            // Temporary diagnostic breadcrumb ring. Every field is atomic so the scheduler can
+            // inspect another runnable thread without taking locks or perturbing scheduling.
+            static constexpr size_t DiagnosticActivityCount{8};
+            struct DiagnosticActivitySlot {
+                std::atomic<u64> sequence{0}; // odd while being written, even when stable
+                std::atomic<u64> tick{0};
+                std::atomic<u32> type{0};
+                std::atomic<u32> id{0};
+                std::atomic<u32> value{0};
+                std::atomic<u64> arg0{0};
+                std::atomic<u64> arg1{0};
+                std::atomic<const char *> name{nullptr};
+            };
+            std::array<DiagnosticActivitySlot, DiagnosticActivityCount> diagnosticActivities{};
+            std::atomic<u64> diagnosticActivitySequence{0};
+
+            void RecordDiagnosticActivity(DiagnosticActivityType type, u32 id = 0, u32 value = 0,
+                                          u64 arg0 = 0, u64 arg1 = 0, const char *name = nullptr);
+            void LogDiagnosticActivities(const char *reason) const;
 
             KThread(const DeviceState &state, KHandle handle, KProcess &process, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore);
 
