@@ -414,11 +414,9 @@ namespace skyline::kernel {
              fmt::ptr(tlsIo.guest.data()), fmt::ptr(tlsIo.guest.end().base()), tlsIo.size());
     }
 
-    MemoryManager::SharedMemoryPreparationResult MemoryManager::PrepareSharedMemoryMapping36Bit(span<u8> region, bool &dynamicBacking) {
-        dynamicBacking = false;
-
+    bool MemoryManager::IsValidSharedMemoryRegion36Bit(span<u8> region) const {
         if (addressSpaceType != memory::AddressSpaceType::AddressSpace36Bit)
-            return AddressSpaceContains(region) ? SharedMemoryPreparationResult::Success : SharedMemoryPreparationResult::InvalidRegion;
+            return false;
 
         const auto start{reinterpret_cast<uintptr_t>(region.data())};
         const auto end{start + region.size()};
@@ -426,14 +424,23 @@ namespace skyline::kernel {
         constexpr uintptr_t AliasCodeEnd{1ULL << 36};
 
         if (!region.size() || start >= end || start < AliasCodeStart || end > AliasCodeEnd)
-            return SharedMemoryPreparationResult::InvalidRegion;
+            return false;
 
         auto overlaps = [](span<u8> lhs, span<u8> rhs) {
             return lhs.data() < rhs.end().base() && rhs.data() < lhs.end().base();
         };
 
-        if ((alias.guest.valid() && overlaps(region, alias.guest)) ||
-            (heap.guest.valid() && overlaps(region, heap.guest)))
+        return !(alias.guest.valid() && overlaps(region, alias.guest)) &&
+               !(heap.guest.valid() && overlaps(region, heap.guest));
+    }
+
+    MemoryManager::SharedMemoryPreparationResult MemoryManager::PrepareSharedMemoryMapping36Bit(span<u8> region, bool &dynamicBacking) {
+        dynamicBacking = false;
+
+        if (addressSpaceType != memory::AddressSpaceType::AddressSpace36Bit)
+            return AddressSpaceContains(region) ? SharedMemoryPreparationResult::Success : SharedMemoryPreparationResult::InvalidRegion;
+
+        if (!IsValidSharedMemoryRegion36Bit(region))
             return SharedMemoryPreparationResult::InvalidRegion;
 
         std::unique_lock lock{mutex};
