@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <boost/functional/hash.hpp>
 #include <common/linear_allocator.h>
