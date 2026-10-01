@@ -44,6 +44,7 @@ namespace skyline {
         class Scheduler {
           private:
             const DeviceState &state;
+            inline static thread_local int diagnosticSignal{0}; //!< Temporary scheduler instrumentation: last yield/preemption signal seen by this host thread
 
             struct CoreContext {
                 u8 id;
