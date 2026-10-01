@@ -104,7 +104,6 @@ namespace skyline::gpu {
     void Buffer::ClearRangeDirtyTracking() {
         std::fill(rangeGpuDirtyPageFlags.begin(), rangeGpuDirtyPageFlags.end(), 0);
         std::fill(rangeCpuDirtyPageFlags.begin(), rangeCpuDirtyPageFlags.end(), 0);
-        std::fill(currentExecutionStorageWritePages.begin(), currentExecutionStorageWritePages.end(), 0);
         for (auto &pageCycle : rangePageWriteCycles)
             pageCycle = {};
 
@@ -954,8 +953,20 @@ namespace skyline::gpu {
             // the mirror and CPU-only pages into the backing.
             WaitOnFence();
 
-            if (rangeGpuDirtyStarted && rangeGpuDirtyValid)
+            if (rangeGpuDirtyStarted && rangeGpuDirtyValid) {
                 CopyGpuDirtyPagesToMirror();
+            } else {
+                // If classification was invalidated after page-tracked CPU writes,
+                // conservatively refresh every page except the CPU-owned ones.
+                for (size_t page{}; page < rangeCpuDirtyPageFlags.size(); page++) {
+                    if (rangeCpuDirtyPageFlags[page])
+                        continue;
+
+                    const size_t offset{page * constant::PageSize};
+                    const size_t size{std::min<size_t>(constant::PageSize, mirror.size() - offset)};
+                    std::memcpy(mirror.data() + offset, backing->data() + offset, size);
+                }
+            }
 
             AdvanceSequence();
 
@@ -1003,9 +1014,27 @@ namespace skyline::gpu {
                 if (!HasRangeCpuDirtyPages())
                     ClearRangeDirtyTracking();
             } else {
-                std::memcpy(mirror.data(), backing->data(), mirror.size());
-                ClearRangeDirtyTracking();
-                dirtyState = DirtyState::Clean;
+                if (HasRangeCpuDirtyPages()) {
+                    for (size_t page{}; page < rangeCpuDirtyPageFlags.size(); page++) {
+                        if (rangeCpuDirtyPageFlags[page])
+                            continue;
+
+                        const size_t offset{page * constant::PageSize};
+                        const size_t size{std::min<size_t>(constant::PageSize, mirror.size() - offset)};
+                        std::memcpy(mirror.data() + offset, backing->data() + offset, size);
+                    }
+
+                    std::fill(rangeGpuDirtyPageFlags.begin(), rangeGpuDirtyPageFlags.end(), 0);
+                    for (auto &pageCycle : rangePageWriteCycles)
+                        pageCycle = {};
+                    rangeGpuDirtyStarted = false;
+                    rangeGpuDirtyValid = false;
+                    dirtyState = DirtyState::CpuDirty;
+                } else {
+                    std::memcpy(mirror.data(), backing->data(), mirror.size());
+                    ClearRangeDirtyTracking();
+                    dirtyState = DirtyState::Clean;
+                }
             }
 
             const i64 syncNs{util::GetTimeNs() - syncStartNs};
