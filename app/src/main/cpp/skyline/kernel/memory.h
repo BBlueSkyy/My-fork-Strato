@@ -478,6 +478,7 @@ namespace skyline {
              * that entire range on Android, host backing is reserved on demand without
              * replacing unrelated native mappings.
              */
+            bool IsValidSharedMemoryRegion36Bit(span<u8> region) const;
             SharedMemoryPreparationResult PrepareSharedMemoryMapping36Bit(span<u8> region, bool &dynamicBacking);
 
             /**
