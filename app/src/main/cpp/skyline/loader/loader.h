@@ -132,6 +132,20 @@ namespace skyline::loader {
         virtual void *LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) = 0;
 
         /**
+         * @return The value supplied in X0 when the main thread enters the loader-provided entry point
+         * @note Normal Horizon executables use 0. NRO loaders may return a Homebrew ABI config-table pointer.
+         */
+        virtual u64 GetMainThreadArgument() const {
+            return 0;
+        }
+
+        /**
+         * @brief Called after the kernel has allocated the main-thread handle but before guest execution starts
+         * @note Loaders may use this to finalize state which depends on the real thread handle.
+         */
+        virtual void OnMainThreadCreated(const std::shared_ptr<kernel::type::KProcess> &, KHandle) {}
+
+        /**
          * @note The lifetime of the data contained within is tied to the lifetime of the Loader class it was obtained from (as this points to symbols from the executables loaded into memory directly)
          */
         struct SymbolInfo {
