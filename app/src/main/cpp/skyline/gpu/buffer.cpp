@@ -143,23 +143,78 @@ namespace skyline::gpu {
         if (isDirect)
             return;
 
-        // We can't just capture this in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Buffer> weakThis{shared_from_this()};
-        trapHandle = gpu.state.process->trap.CreateTrap(*guest, [weakThis](u8 *faultAddress, bool write) {
+        trapHandle = gpu.state.process->trap.CreatePageWriteTrap(*guest, [weakThis](u8 *faultAddress, bool write) {
             auto buffer{weakThis.lock()};
             if (!buffer)
                 return;
 
             std::unique_lock stateLock{buffer->stateMutex};
-            if (buffer->AllCpuBackingWritesBlocked() || buffer->dirtyState == DirtyState::GpuDirty) {
-                stateLock.unlock(); // If the lock isn't unlocked, a deadlock from threads waiting on the other lock can occur
+            const size_t page{buffer->GetGuestPageIndex(faultAddress)};
+            const bool rangePageFast{
+                write &&
+                page < buffer->rangePageWriteCycles.size() &&
+                buffer->CanUseFastWriteReadback() &&
+                buffer->rangeGpuDirtyStarted &&
+                buffer->rangeGpuDirtyValid
+            };
 
-                // If this mutex would cause other callbacks to be blocked then we should block on this mutex in advance
+            if (rangePageFast) {
+                stateLock.unlock();
+
                 std::shared_ptr<FenceCycle> waitCycle{};
                 do {
                     i64 waitNs{};
                     if (waitCycle) {
-                        i64 startNs{util::GetTimeNs()};
+                        const i64 startNs{util::GetTimeNs()};
+                        waitCycle->Wait();
+                        waitNs = util::GetTimeNs() - startNs;
+
+                        bufferPreTrapWaits.fetch_add(1, std::memory_order_relaxed);
+                        bufferPreTrapWaitNs.fetch_add(static_cast<u64>(waitNs), std::memory_order_relaxed);
+                        bufferRangePageWaits.fetch_add(1, std::memory_order_relaxed);
+                        LogBufferReadbackDiag();
+                    }
+
+                    std::scoped_lock lock{*buffer};
+                    if (waitCycle) {
+                        if (buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold)
+                            buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(waitNs);
+                        buffer->accumulatedGuestWaitCounter++;
+                        buffer->rangeFastPageWaits++;
+
+                        buffer->ClearCompletedPageWriteCycle(waitCycle);
+                        if (buffer->writeCycle == waitCycle) {
+                            buffer->writeCycle = {};
+                            buffer->writeCycleStorageWriteRanges.Clear();
+                            buffer->writeCycleStorageRangesComplete = false;
+                        }
+                        if (buffer->cycle == waitCycle)
+                            buffer->cycle = {};
+                    }
+
+                    const size_t currentPage{buffer->GetGuestPageIndex(faultAddress)};
+                    waitCycle = currentPage < buffer->rangePageWriteCycles.size()
+                        ? buffer->rangePageWriteCycles[currentPage]
+                        : std::shared_ptr<FenceCycle>{};
+
+                    if (!waitCycle && buffer->cycle) {
+                        bufferReadOnlyCycleBypasses.fetch_add(1, std::memory_order_relaxed);
+                        buffer->fastWriteReadbackBypasses++;
+                    }
+                } while (waitCycle);
+
+                return;
+            }
+
+            if (buffer->AllCpuBackingWritesBlocked() || buffer->dirtyState == DirtyState::GpuDirty) {
+                stateLock.unlock();
+
+                std::shared_ptr<FenceCycle> waitCycle{};
+                do {
+                    i64 waitNs{};
+                    if (waitCycle) {
+                        const i64 startNs{util::GetTimeNs()};
                         waitCycle->Wait();
                         waitNs = util::GetTimeNs() - startNs;
 
@@ -174,6 +229,7 @@ namespace skyline::gpu {
                             buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(waitNs);
                         buffer->accumulatedGuestWaitCounter++;
 
+                        buffer->ClearCompletedPageWriteCycle(waitCycle);
                         if (buffer->writeCycle == waitCycle) {
                             buffer->writeCycle = {};
                             buffer->writeCycleStorageWriteRanges.Clear();
@@ -183,38 +239,11 @@ namespace skyline::gpu {
                             buffer->cycle = {};
                     }
 
-                    bool useWriteCycle{write && buffer->CanUseFastWriteReadback()};
+                    const bool useWriteCycle{write && buffer->CanUseFastWriteReadback()};
                     auto nextCycle{useWriteCycle ? buffer->writeCycle : buffer->cycle};
                     if (useWriteCycle && buffer->cycle && buffer->cycle != nextCycle) {
                         bufferReadOnlyCycleBypasses.fetch_add(1, std::memory_order_relaxed);
                         buffer->fastWriteReadbackBypasses++;
-                    }
-
-                    if (useWriteCycle && nextCycle && nextCycle == buffer->writeCycle) {
-                        bool classified{};
-                        if (buffer->writeCycleStorageRangesComplete && buffer->guest) {
-                            const uintptr_t pageStart{reinterpret_cast<uintptr_t>(faultAddress) & ~(constant::PageSize - 1)};
-                            const uintptr_t pageEnd{pageStart + constant::PageSize};
-                            const uintptr_t guestStart{reinterpret_cast<uintptr_t>(buffer->guest->data())};
-                            const uintptr_t guestEnd{guestStart + buffer->guest->size()};
-                            const uintptr_t overlapStart{std::max(pageStart, guestStart)};
-                            const uintptr_t overlapEnd{std::min(pageEnd, guestEnd)};
-
-                            if (overlapStart < overlapEnd) {
-                                IntervalList<size_t>::Interval faultRange{
-                                    overlapStart - guestStart,
-                                    overlapEnd - guestStart,
-                                };
-                                if (buffer->writeCycleStorageWriteRanges.Intersect(faultRange))
-                                    buffer->writeFaultWriterRangeOverlap++;
-                                else
-                                    buffer->writeFaultWriterRangeDisjoint++;
-                                classified = true;
-                            }
-                        }
-
-                        if (!classified)
-                            buffer->writeFaultWriterRangeUnknown++;
                     }
 
                     waitCycle = std::move(nextCycle);
@@ -232,7 +261,7 @@ namespace skyline::gpu {
                 return false;
 
             if (buffer->dirtyState != DirtyState::GpuDirty)
-                return true; // If state is already CPU dirty/Clean we don't need to do anything
+                return true;
 
             std::unique_lock lock{*buffer, std::try_to_lock};
             if (!lock)
@@ -243,56 +272,77 @@ namespace skyline::gpu {
 
             bufferReadPreciseFallbacks.fetch_add(1, std::memory_order_relaxed);
             LogBufferReadbackDiag();
-            buffer->SynchronizeGuest(true); // We can skip trapping since the caller will do it
+            buffer->SynchronizeGuest(true);
             return true;
-        }, [weakThis] {
+        }, [weakThis](u8 *faultAddress) {
             TRACE_EVENT("gpu", "Buffer::WriteTrap");
 
             auto buffer{weakThis.lock()};
             if (!buffer)
-                return true;
+                return TrapWriteResult::ResolveEntry;
 
             std::unique_lock stateLock{buffer->stateMutex, std::try_to_lock};
             if (!stateLock)
-                return false;
+                return TrapWriteResult::Retry;
+
+            const size_t page{buffer->GetGuestPageIndex(faultAddress)};
+            const bool rangePageFast{
+                page < buffer->rangePageWriteCycles.size() &&
+                buffer->CanUseFastWriteReadback() &&
+                buffer->rangeGpuDirtyStarted &&
+                buffer->rangeGpuDirtyValid
+            };
+
+            if (rangePageFast) {
+                std::unique_lock lock{*buffer, std::try_to_lock};
+                if (!lock)
+                    return TrapWriteResult::Retry;
+
+                if (buffer->rangePageWriteCycles[page])
+                    return TrapWriteResult::Retry;
+
+                if (buffer->rangeGpuDirtyPageFlags[page]) {
+                    const size_t offset{page * constant::PageSize};
+                    const size_t size{std::min<size_t>(constant::PageSize, buffer->mirror.size() - offset)};
+                    std::memcpy(buffer->mirror.data() + offset, buffer->backing->data() + offset, size);
+                    buffer->rangeGpuDirtyPageFlags[page] = 0;
+                    buffer->rangeFastPageSyncs++;
+                    bufferRangePageSyncs.fetch_add(1, std::memory_order_relaxed);
+                }
+
+                buffer->rangeCpuDirtyPageFlags[page] = 1;
+                buffer->dirtyState = buffer->HasRangeGpuDirtyPages() ? DirtyState::GpuDirty : DirtyState::CpuDirty;
+                buffer->rangeFastPageHits++;
+                buffer->fastWriteReadbackHits++;
+                bufferFastWriteHits.fetch_add(1, std::memory_order_relaxed);
+                bufferRangeFastPages.fetch_add(1, std::memory_order_relaxed);
+                buffer->LogFastWriteReadbackDiag();
+                LogBufferReadbackDiag();
+                return TrapWriteResult::ResolvePage;
+            }
 
             if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty) {
                 buffer->dirtyState = DirtyState::CpuDirty;
-                return true;
+                return TrapWriteResult::ResolveEntry;
             }
 
             std::unique_lock lock{*buffer, std::try_to_lock};
             if (!lock)
-                return false;
+                return TrapWriteResult::Retry;
 
-            bool fastWriteReadback{buffer->CanUseFastWriteReadback()};
-            if (fastWriteReadback ? buffer->writeCycle : buffer->cycle)
-                return false;
-
-            buffer->PrepareCpuPageDiag();
-
-            if (fastWriteReadback) {
-                // The backing is safe to read once the last GPU writer has completed. Later
-                // read-only GPU users may continue using the backing while the guest write updates
-                // only the mirror. Any future mirror-to-backing sync still waits on the full cycle.
-                // The imminent CPU write must always leave the guest copy CPU dirty.
-                std::memcpy(buffer->mirror.data(), buffer->backing->data(), buffer->mirror.size());
-                buffer->dirtyState = DirtyState::CpuDirty;
-                buffer->BeginCpuPageDiag();
-                buffer->fastWriteReadbackHits++;
-                bufferFastWriteHits.fetch_add(1, std::memory_order_relaxed);
-                buffer->LogFastWriteReadbackDiag();
-                LogBufferReadbackDiag();
-                return true;
+            if (buffer->cycle) {
+                buffer->rangeFastPageFallbacks++;
+                bufferRangeFallbacks.fetch_add(1, std::memory_order_relaxed);
+                return TrapWriteResult::Retry;
             }
 
             bufferWritePreciseFallbacks.fetch_add(1, std::memory_order_relaxed);
+            buffer->rangeFastPageFallbacks++;
+            bufferRangeFallbacks.fetch_add(1, std::memory_order_relaxed);
             LogBufferReadbackDiag();
-            buffer->SynchronizeGuest(true); // We need to assume the buffer is dirty since we don't know what the guest is writing
+            buffer->SynchronizeGuest(true);
             buffer->dirtyState = DirtyState::CpuDirty;
-            buffer->BeginCpuPageDiag();
-
-            return true;
+            return TrapWriteResult::ResolveEntry;
         });
     }
 
