@@ -8,6 +8,7 @@
 #include "settings/ISettingsServer.h"
 #include "settings/ISystemSettingsServer.h"
 #include "apm/IManager.h"
+#include "apm/performance_state.h"
 #include "am/IApplicationProxyService.h"
 #include "am/IAllSystemAppletProxiesService.h"
 #include "audio/IAudioInManager.h"
@@ -62,6 +63,7 @@
 #include "mii/mii_database.h"
 #include "olsc/IOlscServiceForApplication.h"
 #include "clkrst/IClkrstManager.h"
+#include "clkrst/clock_state.h"
 #include "ts/IMeasurementServer.h"
 #include "psm/IPsmServer.h"
 #include "ntc/IEnsureNetworkClockAvailabilityService.h"
@@ -84,10 +86,14 @@ namespace skyline::service {
         mii::MiiDatabase miiDatabase;
         nvdrv::Driver nvdrv;
         std::shared_ptr<ssl::SslSharedState> sslState;
+        std::shared_ptr<apm::PerformanceState> performanceState;
+        std::shared_ptr<clkrst::ClockResetState> clockResetState;
 
         explicit GlobalServiceState(const DeviceState &state)
             : timesrv(state), settingsStore(state), sharedFontCore(state), sharedIirCore(state), miiDatabase(state), nvdrv(state),
-              sslState(std::make_shared<ssl::SslSharedState>(state)) {}
+              sslState(std::make_shared<ssl::SslSharedState>(state)),
+              performanceState(std::make_shared<apm::PerformanceState>(state)),
+              clockResetState(std::make_shared<clkrst::ClockResetState>(state)) {}
     };
 
     ServiceManager::ServiceManager(const DeviceState &state) : state(state), smUserInterface(std::make_shared<sm::IUserInterface>(state, *this)), globalServiceState(std::make_shared<GlobalServiceState>(state)) {}
@@ -101,7 +107,8 @@ namespace skyline::service {
             SERVICE_CASE(fatalsrv::IService, "fatal:u")
             SERVICE_CASE(settings::ISettingsServer, "set", globalServiceState->settingsStore)
             SERVICE_CASE(settings::ISystemSettingsServer, "set:sys", globalServiceState->settingsStore, globalServiceState->timesrv)
-            SERVICE_CASE(apm::IManager, "apm")
+            SERVICE_CASE(apm::IManager, "apm", globalServiceState->performanceState)
+            SERVICE_CASE(apm::IManager, "apm:am", globalServiceState->performanceState)
             SERVICE_CASE(am::IApplicationProxyService, "appletOE")
             SERVICE_CASE(am::IAllSystemAppletProxiesService, "appletAE")
             SERVICE_CASE(audio::IAudioInManager, "audin:u")
@@ -167,7 +174,8 @@ namespace skyline::service {
             SERVICE_CASE(mii::IStaticService, "mii:e", globalServiceState->miiDatabase)
             SERVICE_CASE(mii::IStaticService, "mii:u", globalServiceState->miiDatabase)
             SERVICE_CASE(olsc::IOlscServiceForApplication, "olsc:u")
-            SERVICE_CASE(clkrst::IClkrstManager, "clkrst")
+            SERVICE_CASE(clkrst::IClkrstManager, "clkrst", globalServiceState->clockResetState)
+            SERVICE_CASE(clkrst::IClkrstManager, "clkrst:i", globalServiceState->clockResetState)
             SERVICE_CASE(ts::IMeasurementServer, "ts")
             SERVICE_CASE(psm::IPsmServer, "psm")
             SERVICE_CASE(ntc::IEnsureNetworkClockAvailabilityService, "ntc")
