@@ -6,7 +6,6 @@
 #include <common/trace.h>
 #include <jit/halt_reason.h>
 #include <jit/jit_core_32.h>
-#include <loader/loader.h>
 #include "types/KThread.h"
 #include "types/KProcess.h"
 #include "scheduler.h"
@@ -237,23 +236,14 @@ namespace skyline::kernel {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
                 auto front{core->queue.empty() ? std::shared_ptr<type::KThread>{} : core->queue.front()};
-                const uintptr_t frontPc{front ? front->diagnosticGuestPc.load(std::memory_order_relaxed) : 0};
-                const uintptr_t frontSp{front ? front->diagnosticGuestSp.load(std::memory_order_relaxed) : 0};
-                const u32 frontSamples{front ? front->diagnosticGuestSamples.load(std::memory_order_relaxed) : 0};
                 LOGI("[THREAD-DIAG] WaitSchedule blocked T{} core={} priority={} front=T{} front_priority={} queue_size={} waited_ms={} front_pc=0x{:X} front_sp=0x{:X} samples={}",
                      thread->id, core->id, thread->priority.load(),
                      front ? static_cast<i64>(front->id) : -1LL,
                      front ? static_cast<i64>(front->priority.load()) : -1LL,
                      core->queue.size(), loadBalanceThreshold.count(),
-                     frontPc, frontSp, frontSamples);
-
-                if (frontPc && state.process->is64bit()) {
-                    auto *instruction{state.process->memory.TranslateVirtualPointer<u32 *>(frontPc)};
-                    LOGI("[THREAD-DIAG] front T{} code pc=0x{:X} insn[-2..+2]={:08X} {:08X} {:08X} {:08X} {:08X} symbol={}",
-                         front ? static_cast<i64>(front->id) : -1LL, frontPc,
-                         instruction[-2], instruction[-1], instruction[0], instruction[1], instruction[2],
-                         state.loader->GetStackTrace(std::vector<void *>{reinterpret_cast<void *>(frontPc)}));
-                }
+                     front ? front->diagnosticGuestPc.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestSp.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestSamples.load(std::memory_order_relaxed) : 0);
 
                 // Sample a competing NCE thread's current guest PC/SP without yielding it or
                 // changing scheduler state. Repeated samples help distinguish a tight loop from
