@@ -252,6 +252,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
         u32 GetTotalSampledImageCount() const;
 
         /**
+         * @brief Refreshes per-draw lifetime and read-after-write synchronization for sampled images.
+         *
+         * Descriptor sets may be reused without rewriting their image bindings. Resource usage
+         * tracking must still run for every draw so a texture rendered earlier in the execution
+         * is made visible before a later shader read.
+         */
+        void RefreshSampledImageUsage(InterconnectContext &ctx, span<TextureView *> sampledImages,
+                                      vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask);
+
+        /**
          * @brief Creates a descriptor set update from the current GPU state
          * @param sampledImages A span of size `GetTotalSampledImageCount()` in which texture view pointers for each sampled image will be written
          */
