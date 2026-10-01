@@ -115,6 +115,13 @@ namespace skyline {
             const auto &blockEntry{this->blockSegmentTable[virt]};
             VaType segmentOffset{virt - blockEntry.virt};
 
+            // Segment-table entries are a fast lookup cache; validate that the requested
+            // virtual address is actually contained by the returned block before exposing it.
+            // An address at or beyond the block end would otherwise produce an empty span
+            // that can reach GPU buffer creation as a zero-sized mapping.
+            if (segmentOffset >= blockEntry.extent)
+                return {span<u8>{}, 0};
+
             if (blockEntry.extraInfo.sparseMapped || blockEntry.phys == nullptr)
                 return {span<u8>{static_cast<u8*>(nullptr), blockEntry.extent}, segmentOffset};
 
