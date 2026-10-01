@@ -238,6 +238,7 @@ namespace skyline::kernel {
         if (loadBalance) {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             bool diagnosticRotationAttempted{false};
+            bool diagnosticActivityDumped{false};
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
                 auto front{core->queue.empty() ? std::shared_ptr<type::KThread>{} : core->queue.front()};
                 LOGI("[THREAD-DIAG] WaitSchedule blocked T{} core={} priority={} front=T{} front_priority={} queue_size={} waited_ms={} front_pc=0x{:X} front_sp=0x{:X} front_lr=0x{:X} front_insn={:08X} samples={}",
@@ -250,6 +251,16 @@ namespace skyline::kernel {
                      front ? front->diagnosticGuestLr.load(std::memory_order_relaxed) : 0,
                      front ? front->diagnosticGuestInsn.load(std::memory_order_relaxed) : 0,
                      front ? front->diagnosticGuestSamples.load(std::memory_order_relaxed) : 0);
+
+                if (!diagnosticActivityDumped &&
+                    front && front != thread &&
+                    front->priority.load() == thread->priority.load() &&
+                    front->coreId == thread->coreId) {
+                    diagnosticActivityDumped = true;
+                    LOGI("[THREAD-ACT] equal-priority stall waiter=T{} front=T{} core={} priority={} waited_ms={}",
+                         thread->id, front->id, core->id, thread->priority.load(), loadBalanceThreshold.count());
+                    front->LogDiagnosticActivities("equal-priority-stall");
+                }
 
                 bool diagnosticRotationTriggered{false};
                 if (!diagnosticRotationAttempted &&
