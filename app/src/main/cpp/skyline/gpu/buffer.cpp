@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
 #include <adrenotools/driver.h>
 #include <gpu.h>
 #include <kernel/memory.h>
@@ -10,6 +11,61 @@
 #include "buffer.h"
 
 namespace skyline::gpu {
+    namespace {
+        constexpr u64 BufferReadbackDiagLogInterval{256};
+
+        u64 HashReadbackPage(const u8 *data, size_t size) {
+            constexpr u64 OffsetBasis{1469598103934665603ULL};
+            constexpr u64 Prime{1099511628211ULL};
+
+            u64 hash{OffsetBasis};
+            for (size_t i{}; i < size; i++) {
+                hash ^= data[i];
+                hash *= Prime;
+            }
+            return hash;
+        }
+
+        std::atomic<u64> bufferReadbackDiagEvents{};
+        std::atomic<u64> bufferFastWriteHits{};
+        std::atomic<u64> bufferReadPreciseFallbacks{};
+        std::atomic<u64> bufferWritePreciseFallbacks{};
+        std::atomic<u64> bufferPreciseSyncs{};
+        std::atomic<u64> bufferPreciseSyncNs{};
+        std::atomic<u64> bufferPreTrapWaits{};
+        std::atomic<u64> bufferPreTrapWaitNs{};
+        std::atomic<u64> bufferReadOnlyCycleBypasses{};
+        std::atomic<u64> bufferRangeFastPages{};
+        std::atomic<u64> bufferRangePageWaits{};
+        std::atomic<u64> bufferRangePageSyncs{};
+        std::atomic<u64> bufferRangeFallbacks{};
+        std::atomic<u64> bufferRangeMergeWaits{};
+        std::atomic<u64> bufferRangeMergeWaitNs{};
+
+        void LogBufferReadbackDiag() {
+            const auto events{bufferReadbackDiagEvents.fetch_add(1, std::memory_order_relaxed) + 1};
+            if (events != 1 && (events % BufferReadbackDiagLogInterval) != 0)
+                return;
+
+            LOGI("[FastReadbackDiag][Buffer] events={} fast_write_hits={} read_precise={} write_precise={} precise_syncs={} precise_sync_us={} pretrap_waits={} pretrap_wait_us={} read_only_cycle_bypasses={} range_fast_pages={} range_page_waits={} range_page_syncs={} range_fallbacks={} range_merge_waits={} range_merge_wait_us={}",
+                 events,
+                 bufferFastWriteHits.load(std::memory_order_relaxed),
+                 bufferReadPreciseFallbacks.load(std::memory_order_relaxed),
+                 bufferWritePreciseFallbacks.load(std::memory_order_relaxed),
+                 bufferPreciseSyncs.load(std::memory_order_relaxed),
+                 bufferPreciseSyncNs.load(std::memory_order_relaxed) / 1000,
+                 bufferPreTrapWaits.load(std::memory_order_relaxed),
+                 bufferPreTrapWaitNs.load(std::memory_order_relaxed) / 1000,
+                 bufferReadOnlyCycleBypasses.load(std::memory_order_relaxed),
+                 bufferRangeFastPages.load(std::memory_order_relaxed),
+                 bufferRangePageWaits.load(std::memory_order_relaxed),
+                 bufferRangePageSyncs.load(std::memory_order_relaxed),
+                 bufferRangeFallbacks.load(std::memory_order_relaxed),
+                 bufferRangeMergeWaits.load(std::memory_order_relaxed),
+                 bufferRangeMergeWaitNs.load(std::memory_order_relaxed) / 1000);
+        }
+    }
+
     void Buffer::ResetMegabufferState() {
         if (megaBufferTableUsed)
             megaBufferTableValidity.reset();
@@ -19,40 +75,182 @@ namespace skyline::gpu {
         unifiedMegaBuffer = {};
     }
 
+    size_t Buffer::GetGuestPageIndex(const u8 *address) const {
+        if (!guest)
+            return rangeGpuDirtyPageFlags.size();
+
+        const auto guestStart{reinterpret_cast<uintptr_t>(guest->data())};
+        const auto guestEnd{guestStart + guest->size()};
+        const auto target{reinterpret_cast<uintptr_t>(address)};
+        if (target < guestStart || target >= guestEnd)
+            return rangeGpuDirtyPageFlags.size();
+
+        return (target - guestStart) / constant::PageSize;
+    }
+
+    bool Buffer::HasRangeCpuDirtyPages() const {
+        return std::find(rangeCpuDirtyPageFlags.begin(), rangeCpuDirtyPageFlags.end(), u8{1}) != rangeCpuDirtyPageFlags.end();
+    }
+
+    bool Buffer::HasRangeGpuDirtyPages() const {
+        return std::find(rangeGpuDirtyPageFlags.begin(), rangeGpuDirtyPageFlags.end(), u8{1}) != rangeGpuDirtyPageFlags.end();
+    }
+
+    void Buffer::ClearCompletedPageWriteCycle(const std::shared_ptr<FenceCycle> &completedCycle) {
+        if (!completedCycle)
+            return;
+
+        for (auto &pageCycle : rangePageWriteCycles)
+            if (pageCycle == completedCycle)
+                pageCycle = {};
+    }
+
+    void Buffer::ClearRangeDirtyTracking() {
+        std::fill(rangeGpuDirtyPageFlags.begin(), rangeGpuDirtyPageFlags.end(), 0);
+        std::fill(rangeCpuDirtyPageFlags.begin(), rangeCpuDirtyPageFlags.end(), 0);
+        for (auto &pageCycle : rangePageWriteCycles)
+            pageCycle = {};
+
+        rangeGpuDirtyValid = false;
+        rangeGpuDirtyStarted = false;
+    }
+
+    void Buffer::CopyGpuDirtyPagesToMirror() {
+        for (size_t page{}; page < rangeGpuDirtyPageFlags.size(); page++) {
+            if (!rangeGpuDirtyPageFlags[page])
+                continue;
+
+            if (!rangeCpuDirtyPageFlags[page]) {
+                const size_t offset{page * constant::PageSize};
+                const size_t size{std::min<size_t>(constant::PageSize, mirror.size() - offset)};
+                std::memcpy(mirror.data() + offset, backing->data() + offset, size);
+            }
+
+            rangeGpuDirtyPageFlags[page] = 0;
+        }
+    }
+
+    void Buffer::CopyCpuDirtyPagesToBacking() {
+        for (size_t page{}; page < rangeCpuDirtyPageFlags.size(); page++) {
+            if (!rangeCpuDirtyPageFlags[page])
+                continue;
+
+            const size_t offset{page * constant::PageSize};
+            const size_t size{std::min<size_t>(constant::PageSize, mirror.size() - offset)};
+            std::memcpy(backing->data() + offset, mirror.data() + offset, size);
+            rangeCpuDirtyPageFlags[page] = 0;
+        }
+    }
+
     void Buffer::SetupStagedTraps() {
         if (isDirect)
             return;
 
-        // We can't just capture this in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Buffer> weakThis{shared_from_this()};
-        trapHandle = gpu.state.process->trap.CreateTrap(*guest, [weakThis] {
+        trapHandle = gpu.state.process->trap.CreatePageWriteTrap(*guest, [weakThis](u8 *faultAddress, bool write) {
             auto buffer{weakThis.lock()};
             if (!buffer)
                 return;
 
             std::unique_lock stateLock{buffer->stateMutex};
-            if (buffer->AllCpuBackingWritesBlocked() || buffer->dirtyState == DirtyState::GpuDirty) {
-                stateLock.unlock(); // If the lock isn't unlocked, a deadlock from threads waiting on the other lock can occur
+            const size_t page{buffer->GetGuestPageIndex(faultAddress)};
+            const bool rangePageFast{
+                write &&
+                page < buffer->rangePageWriteCycles.size() &&
+                buffer->CanUseFastWriteReadback() &&
+                buffer->rangeGpuDirtyStarted &&
+                buffer->rangeGpuDirtyValid &&
+                !buffer->AllCpuBackingWritesBlocked()
+            };
 
-                // If this mutex would cause other callbacks to be blocked then we should block on this mutex in advance
+            if (rangePageFast) {
+                stateLock.unlock();
+
                 std::shared_ptr<FenceCycle> waitCycle{};
                 do {
+                    i64 waitNs{};
                     if (waitCycle) {
-                        i64 startNs{buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold ? util::GetTimeNs() : 0};
+                        const i64 startNs{util::GetTimeNs()};
                         waitCycle->Wait();
-                        if (startNs)
-                            buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(util::GetTimeNs() - startNs);
+                        waitNs = util::GetTimeNs() - startNs;
 
-                        buffer->accumulatedGuestWaitCounter++;
+                        bufferPreTrapWaits.fetch_add(1, std::memory_order_relaxed);
+                        bufferPreTrapWaitNs.fetch_add(static_cast<u64>(waitNs), std::memory_order_relaxed);
+                        bufferRangePageWaits.fetch_add(1, std::memory_order_relaxed);
+                        LogBufferReadbackDiag();
                     }
 
                     std::scoped_lock lock{*buffer};
-                    if (waitCycle && buffer->cycle == waitCycle) {
-                        buffer->cycle = {};
-                        waitCycle = {};
-                    } else {
-                        waitCycle = buffer->cycle;
+                    if (waitCycle) {
+                        if (buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold)
+                            buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(waitNs);
+                        buffer->accumulatedGuestWaitCounter++;
+                        buffer->rangeFastPageWaits++;
+
+                        buffer->ClearCompletedPageWriteCycle(waitCycle);
+                        if (buffer->writeCycle == waitCycle) {
+                            buffer->writeCycle = {};
+                            buffer->writeCycleStorageWriteRanges.Clear();
+                            buffer->writeCycleStorageRangesComplete = false;
+                        }
+                        if (buffer->cycle == waitCycle)
+                            buffer->cycle = {};
                     }
+
+                    const size_t currentPage{buffer->GetGuestPageIndex(faultAddress)};
+                    waitCycle = currentPage < buffer->rangePageWriteCycles.size()
+                        ? buffer->rangePageWriteCycles[currentPage]
+                        : std::shared_ptr<FenceCycle>{};
+
+                    if (!waitCycle && buffer->cycle) {
+                        bufferReadOnlyCycleBypasses.fetch_add(1, std::memory_order_relaxed);
+                        buffer->fastWriteReadbackBypasses++;
+                    }
+                } while (waitCycle);
+
+                return;
+            }
+
+            if (buffer->AllCpuBackingWritesBlocked() || buffer->dirtyState == DirtyState::GpuDirty) {
+                stateLock.unlock();
+
+                std::shared_ptr<FenceCycle> waitCycle{};
+                do {
+                    i64 waitNs{};
+                    if (waitCycle) {
+                        const i64 startNs{util::GetTimeNs()};
+                        waitCycle->Wait();
+                        waitNs = util::GetTimeNs() - startNs;
+
+                        bufferPreTrapWaits.fetch_add(1, std::memory_order_relaxed);
+                        bufferPreTrapWaitNs.fetch_add(static_cast<u64>(waitNs), std::memory_order_relaxed);
+                        LogBufferReadbackDiag();
+                    }
+
+                    std::scoped_lock lock{*buffer};
+                    if (waitCycle) {
+                        if (buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold)
+                            buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(waitNs);
+                        buffer->accumulatedGuestWaitCounter++;
+
+                        buffer->ClearCompletedPageWriteCycle(waitCycle);
+                        if (buffer->writeCycle == waitCycle) {
+                            buffer->writeCycle = {};
+                            buffer->writeCycleStorageWriteRanges.Clear();
+                            buffer->writeCycleStorageRangesComplete = false;
+                        }
+                        if (buffer->cycle == waitCycle)
+                            buffer->cycle = {};
+                    }
+
+                    const bool useWriteCycle{write && buffer->CanUseFastWriteReadback()};
+                    auto nextCycle{useWriteCycle ? buffer->writeCycle : buffer->cycle};
+                    if (useWriteCycle && buffer->cycle && buffer->cycle != nextCycle) {
+                        bufferReadOnlyCycleBypasses.fetch_add(1, std::memory_order_relaxed);
+                        buffer->fastWriteReadbackBypasses++;
+                    }
+
+                    waitCycle = std::move(nextCycle);
                 } while (waitCycle);
             }
         }, [weakThis] {
@@ -67,7 +265,7 @@ namespace skyline::gpu {
                 return false;
 
             if (buffer->dirtyState != DirtyState::GpuDirty)
-                return true; // If state is already CPU dirty/Clean we don't need to do anything
+                return true;
 
             std::unique_lock lock{*buffer, std::try_to_lock};
             if (!lock)
@@ -76,43 +274,80 @@ namespace skyline::gpu {
             if (buffer->cycle)
                 return false;
 
-            buffer->SynchronizeGuest(true); // We can skip trapping since the caller will do it
+            bufferReadPreciseFallbacks.fetch_add(1, std::memory_order_relaxed);
+            LogBufferReadbackDiag();
+            buffer->SynchronizeGuest(true);
             return true;
-        }, [weakThis] {
+        }, [weakThis](u8 *faultAddress) {
             TRACE_EVENT("gpu", "Buffer::WriteTrap");
 
             auto buffer{weakThis.lock()};
             if (!buffer)
-                return true;
+                return TrapWriteResult::ResolveEntry;
 
             std::unique_lock stateLock{buffer->stateMutex, std::try_to_lock};
             if (!stateLock)
-                return false;
+                return TrapWriteResult::Retry;
+
+            const size_t page{buffer->GetGuestPageIndex(faultAddress)};
+            const bool rangePageFast{
+                page < buffer->rangePageWriteCycles.size() &&
+                buffer->CanUseFastWriteReadback() &&
+                buffer->rangeGpuDirtyStarted &&
+                buffer->rangeGpuDirtyValid &&
+                !buffer->AllCpuBackingWritesBlocked()
+            };
+
+            if (rangePageFast) {
+                std::unique_lock lock{*buffer, std::try_to_lock};
+                if (!lock)
+                    return TrapWriteResult::Retry;
+
+                if (buffer->rangePageWriteCycles[page])
+                    return TrapWriteResult::Retry;
+
+                if (buffer->rangeGpuDirtyPageFlags[page]) {
+                    const size_t offset{page * constant::PageSize};
+                    const size_t size{std::min<size_t>(constant::PageSize, buffer->mirror.size() - offset)};
+                    std::memcpy(buffer->mirror.data() + offset, buffer->backing->data() + offset, size);
+                    buffer->rangeGpuDirtyPageFlags[page] = 0;
+                    buffer->rangeFastPageSyncs++;
+                    bufferRangePageSyncs.fetch_add(1, std::memory_order_relaxed);
+                }
+
+                buffer->rangeCpuDirtyPageFlags[page] = 1;
+                buffer->dirtyState = buffer->HasRangeGpuDirtyPages() ? DirtyState::GpuDirty : DirtyState::CpuDirty;
+                buffer->rangeFastPageHits++;
+                buffer->fastWriteReadbackHits++;
+                bufferFastWriteHits.fetch_add(1, std::memory_order_relaxed);
+                bufferRangeFastPages.fetch_add(1, std::memory_order_relaxed);
+                buffer->LogFastWriteReadbackDiag();
+                LogBufferReadbackDiag();
+                return TrapWriteResult::ResolvePage;
+            }
 
             if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty) {
                 buffer->dirtyState = DirtyState::CpuDirty;
-                return true;
-            }
-
-            if (buffer->accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold && *buffer->gpu.state.settings->enableFastGpuReadbackHack) {
-                // As opposed to skipping readback as we do for textures, with buffers we can still perform the readback but just without syncinc the GPU
-                // While the read data may be invalid it's still better than nothing and works in most cases
-                memcpy(buffer->mirror.data(), buffer->backing->data(), buffer->mirror.size());
-                buffer->dirtyState = *buffer->gpu.state.settings->enableFastReadbackWrites ? DirtyState::CpuDirty : DirtyState::Clean;
-                return true;
+                return TrapWriteResult::ResolveEntry;
             }
 
             std::unique_lock lock{*buffer, std::try_to_lock};
             if (!lock)
-                return false;
+                return TrapWriteResult::Retry;
 
-            if (buffer->cycle)
-                return false;
+            if (buffer->cycle) {
+                buffer->rangeFastPageFallbacks++;
+                bufferRangeFallbacks.fetch_add(1, std::memory_order_relaxed);
+                return TrapWriteResult::Retry;
+            }
 
-            buffer->SynchronizeGuest(true); // We need to assume the buffer is dirty since we don't know what the guest is writing
+            bufferWritePreciseFallbacks.fetch_add(1, std::memory_order_relaxed);
+            buffer->rangeFastPageFallbacks++;
+            bufferRangeFallbacks.fetch_add(1, std::memory_order_relaxed);
+            LogBufferReadbackDiag();
+            buffer->SynchronizeGuest(true);
             buffer->dirtyState = DirtyState::CpuDirty;
-
-            return true;
+            return TrapWriteResult::ResolveEntry;
         });
     }
 
@@ -217,6 +452,11 @@ namespace skyline::gpu {
                                     UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
         std::scoped_lock lock{stateMutex, src->stateMutex}; // Fine even if src and dst are same since recursive mutex
 
+        if (HasRangeCpuDirtyPages())
+            SynchronizeHost(true);
+        if (src->HasRangeCpuDirtyPages())
+            src->SynchronizeHost(true);
+
         if (dirtyState == DirtyState::CpuDirty && SequencedCpuBackingWritesBlocked())
             // If the buffer is used in sequence directly on the GPU, SynchronizeHost before modifying the mirror contents to ensure proper sequencing. This write will then be sequenced on the GPU instead (the buffer will be kept clean for the rest of the execution due to gpuCopyCallback blocking all writes)
             SynchronizeHost();
@@ -288,6 +528,9 @@ namespace skyline::gpu {
         // We cannot have *ANY* state changes for the duration of this function, if the buffer became CPU dirty partway through the GPU writes would mismatch the CPU writes
         std::scoped_lock lock{stateMutex};
 
+        if (HasRangeCpuDirtyPages())
+            SynchronizeHost(true);
+
         // If the buffer is GPU dirty do the write on the GPU and we're done
         if (dirtyState == DirtyState::GpuDirty) {
             if (gpuCopyCallback)
@@ -357,8 +600,17 @@ namespace skyline::gpu {
     void Buffer::MarkGpuDirtyImplStaged() {
         std::scoped_lock lock{stateMutex}; // stateMutex is locked to prevent state changes at any point during this function
 
-        if (dirtyState == DirtyState::GpuDirty)
+        if (dirtyState == DirtyState::GpuDirty && !HasRangeCpuDirtyPages())
             return;
+
+        if (HasRangeCpuDirtyPages())
+            SynchronizeHost(true);
+
+        ClearRangeDirtyTracking();
+
+        gpuDirtyPageDiagRanges.Clear();
+        gpuDirtyPageDiagRangesValid = false;
+        gpuDirtyPageDiagRangesStarted = false;
 
         gpu.state.process->trap.TrapRegions(*trapHandle, false); // This has to occur prior to any synchronization as it'll skip trapping
 
@@ -380,6 +632,181 @@ namespace skyline::gpu {
             MarkGpuDirtyImplStaged();
     }
 
+    bool Buffer::CanUseFastWriteReadback() const {
+        return !isDirect &&
+               accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold &&
+               *gpu.state.settings->enableFastGpuReadbackHack &&
+               *gpu.state.settings->enableFastReadbackWrites;
+    }
+
+    void Buffer::LogFastWriteReadbackDiag() const {
+        const bool milestone{
+            fastWriteReadbackHits == 1 ||
+            fastWriteReadbackHits == 8 ||
+            fastWriteReadbackHits == 32 ||
+            fastWriteReadbackHits == 128 ||
+            fastWriteReadbackHits == 512 ||
+            (fastWriteReadbackHits > 512 && (fastWriteReadbackHits % 1024) == 0)
+        };
+        if (!milestone)
+            return;
+
+        LOGI("[FastReadbackDiag][HotBuffer] id={} size={} sequence={} fast_hits={} read_only_bypasses={} guest_waits={} guest_wait_us={} cycle_present={} write_cycle_present={} cycle_is_write_cycle={} src_internal={} src_storage={} src_image={} src_query={} src_xfb={} src_dma_clear={} storage_vtx={} storage_tesc={} storage_tese={} storage_geom={} storage_frag={} storage_comp={} storage_other={} storage_min={} storage_max={} writer_page_overlap={} writer_page_disjoint={} writer_page_unknown={} cpu_dirty_pages={} gpu_dirty_pages={} cpu_gpu_overlap_pages={} cpu_only_pages={} gpu_only_pages={} dirty_page_windows={} dirty_page_valid_windows={} dirty_page_unknown_windows={} range_fast_page_hits={} range_fast_page_waits={} range_fast_page_syncs={} range_fast_page_fallbacks={} range_merge_waits={} range_merge_wait_us={}",
+             id,
+             mirror.size(),
+             sequenceNumber,
+             fastWriteReadbackHits,
+             fastWriteReadbackBypasses,
+             accumulatedGuestWaitCounter,
+             accumulatedGuestWaitTime.count() / 1000,
+             static_cast<bool>(cycle),
+             static_cast<bool>(writeCycle),
+             cycle && writeCycle && cycle == writeCycle,
+             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::Internal)],
+             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::StorageBuffer)],
+             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::ImageBuffer)],
+             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::Query)],
+             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::TransformFeedback)],
+             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::DmaClear)],
+             storageWriteVertex,
+             storageWriteTessControl,
+             storageWriteTessEvaluation,
+             storageWriteGeometry,
+             storageWriteFragment,
+             storageWriteCompute,
+             storageWriteOther,
+             storageWriteMinBindingSize,
+             storageWriteMaxBindingSize,
+             writeFaultWriterRangeOverlap,
+             writeFaultWriterRangeDisjoint,
+             writeFaultWriterRangeUnknown,
+             cpuDirtyPages,
+             gpuDirtyPages,
+             cpuGpuOverlapPages,
+             cpuOnlyPages,
+             gpuOnlyPages,
+             cpuPageDiagWindows,
+             cpuPageDiagRangeValidWindows,
+             cpuPageDiagRangeUnknownWindows,
+             rangeFastPageHits,
+             rangeFastPageWaits,
+             rangeFastPageSyncs,
+             rangeFastPageFallbacks,
+             rangeMergeWaits,
+             rangeMergeWaitNs / 1000);
+    }
+
+    void Buffer::PrepareCpuPageDiag() {
+        cpuPageDiagGpuRanges = gpuDirtyPageDiagRanges;
+        cpuPageDiagGpuRangesValid = gpuDirtyPageDiagRangesStarted && gpuDirtyPageDiagRangesValid;
+        cpuPageDiagPrepared = true;
+    }
+
+    void Buffer::BeginCpuPageDiag() {
+        if (!guest || isDirect)
+            return;
+
+        if (!cpuPageDiagPrepared)
+            PrepareCpuPageDiag();
+
+        const size_t pageCount{(mirror.size() + constant::PageSize - 1) / constant::PageSize};
+        if (cpuPageDiagBaselineHashes.size() != pageCount)
+            cpuPageDiagBaselineHashes.resize(pageCount);
+
+        for (size_t page{}; page < pageCount; page++) {
+            const size_t offset{page * constant::PageSize};
+            const size_t size{std::min<size_t>(constant::PageSize, mirror.size() - offset)};
+            cpuPageDiagBaselineHashes[page] = HashReadbackPage(mirror.data() + offset, size);
+        }
+
+        cpuPageDiagPrepared = false;
+        cpuPageDiagActive = true;
+
+        gpuDirtyPageDiagRanges.Clear();
+        gpuDirtyPageDiagRangesValid = false;
+        gpuDirtyPageDiagRangesStarted = false;
+    }
+
+    void Buffer::LogCpuGpuPageDiag() const {
+        const bool milestone{
+            cpuPageDiagWindows == 1 ||
+            cpuPageDiagWindows == 8 ||
+            cpuPageDiagWindows == 32 ||
+            cpuPageDiagWindows == 128 ||
+            cpuPageDiagWindows == 512 ||
+            (cpuPageDiagWindows > 512 && (cpuPageDiagWindows % 1024) == 0)
+        };
+        if (!milestone)
+            return;
+
+        LOGI("[FastReadbackDiag][DirtyPages] id={} windows={} valid_windows={} unknown_windows={} cpu_dirty_pages={} gpu_dirty_pages={} overlap_pages={} cpu_only_pages={} gpu_only_pages={}",
+             id,
+             cpuPageDiagWindows,
+             cpuPageDiagRangeValidWindows,
+             cpuPageDiagRangeUnknownWindows,
+             cpuDirtyPages,
+             gpuDirtyPages,
+             cpuGpuOverlapPages,
+             cpuOnlyPages,
+             gpuOnlyPages);
+    }
+
+    void Buffer::FinalizeCpuPageDiag() {
+        if (!cpuPageDiagActive || !guest || isDirect)
+            return;
+
+        const size_t pageCount{(mirror.size() + constant::PageSize - 1) / constant::PageSize};
+        u64 windowCpuDirty{};
+        u64 windowGpuDirty{};
+        u64 windowOverlap{};
+        u64 windowCpuOnly{};
+        u64 windowGpuOnly{};
+
+        for (size_t page{}; page < pageCount; page++) {
+            const size_t offset{page * constant::PageSize};
+            const size_t size{std::min<size_t>(constant::PageSize, mirror.size() - offset)};
+            const bool cpuDirty{cpuPageDiagBaselineHashes[page] != HashReadbackPage(mirror.data() + offset, size)};
+
+            bool gpuDirty{};
+            if (cpuPageDiagGpuRangesValid) {
+                gpuDirty = cpuPageDiagGpuRanges.Intersect({offset, offset + size});
+                if (gpuDirty)
+                    windowGpuDirty++;
+            }
+
+            if (cpuDirty) {
+                windowCpuDirty++;
+                if (cpuPageDiagGpuRangesValid) {
+                    if (gpuDirty)
+                        windowOverlap++;
+                    else
+                        windowCpuOnly++;
+                }
+            } else if (cpuPageDiagGpuRangesValid && gpuDirty) {
+                windowGpuOnly++;
+            }
+        }
+
+        cpuPageDiagWindows++;
+        cpuDirtyPages += windowCpuDirty;
+
+        if (cpuPageDiagGpuRangesValid) {
+            cpuPageDiagRangeValidWindows++;
+            gpuDirtyPages += windowGpuDirty;
+            cpuGpuOverlapPages += windowOverlap;
+            cpuOnlyPages += windowCpuOnly;
+            gpuOnlyPages += windowGpuOnly;
+        } else {
+            cpuPageDiagRangeUnknownWindows++;
+        }
+
+        cpuPageDiagActive = false;
+        cpuPageDiagGpuRanges.Clear();
+        cpuPageDiagGpuRangesValid = false;
+
+        LogCpuGpuPageDiag();
+    }
+
     Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, GuestBuffer guest, size_t id, bool direct)
         : gpu{gpu},
           guest{guest},
@@ -388,10 +815,17 @@ namespace skyline::gpu {
           isDirect{direct},
           id{id},
           megaBufferTableShift{std::max(std::bit_width(guest.size() / MegaBufferTableMaxEntries - 1), MegaBufferTableShiftMin)} {
-        if (isDirect)
+        if (isDirect) {
             directBacking = gpu.memory.ImportBuffer(mirror);
-        else
+        } else {
             backing = gpu.memory.AllocateBuffer(mirror.size());
+
+            const size_t pageCount{(mirror.size() + constant::PageSize - 1) / constant::PageSize};
+            currentExecutionStorageWritePages.resize(pageCount);
+            rangeGpuDirtyPageFlags.resize(pageCount);
+            rangeCpuDirtyPageFlags.resize(pageCount);
+            rangePageWriteCycles.resize(pageCount);
+        }
 
         megaBufferTable.resize(guest.size() / (1 << megaBufferTableShift));
     }
@@ -413,10 +847,57 @@ namespace skyline::gpu {
         WaitOnFence();
     }
 
-    void Buffer::MarkGpuDirty(UsageTracker &usageTracker) {
+    void Buffer::RecordStorageWriteBinding(vk::PipelineStageFlagBits stage, size_t bindingOffset, size_t bindingSize) {
+        if (!storageWriteMinBindingSize || bindingSize < storageWriteMinBindingSize)
+            storageWriteMinBindingSize = bindingSize;
+        if (bindingSize > storageWriteMaxBindingSize)
+            storageWriteMaxBindingSize = bindingSize;
+
+        if (bindingOffset < mirror.size()) {
+            const size_t bindingEnd{std::min(mirror.size(), bindingOffset + bindingSize)};
+            if (bindingEnd > bindingOffset) {
+                currentExecutionStorageWriteRanges.Insert({bindingOffset, bindingEnd});
+                currentExecutionStorageRangeRecorded = true;
+
+                const size_t firstPage{bindingOffset / constant::PageSize};
+                const size_t lastPage{(bindingEnd - 1) / constant::PageSize};
+                for (size_t page{firstPage}; page <= lastPage && page < currentExecutionStorageWritePages.size(); page++)
+                    currentExecutionStorageWritePages[page] = 1;
+            }
+        }
+
+        switch (stage) {
+            case vk::PipelineStageFlagBits::eVertexShader:
+                storageWriteVertex++;
+                break;
+            case vk::PipelineStageFlagBits::eTessellationControlShader:
+                storageWriteTessControl++;
+                break;
+            case vk::PipelineStageFlagBits::eTessellationEvaluationShader:
+                storageWriteTessEvaluation++;
+                break;
+            case vk::PipelineStageFlagBits::eGeometryShader:
+                storageWriteGeometry++;
+                break;
+            case vk::PipelineStageFlagBits::eFragmentShader:
+                storageWriteFragment++;
+                break;
+            case vk::PipelineStageFlagBits::eComputeShader:
+                storageWriteCompute++;
+                break;
+            default:
+                storageWriteOther++;
+                break;
+        }
+    }
+
+    void Buffer::MarkGpuDirty(UsageTracker &usageTracker, GpuWriteSource source) {
         if (!guest)
             return;
 
+        gpuWriteSourceCounts[static_cast<size_t>(source)]++;
+        if (source != GpuWriteSource::StorageBuffer)
+            currentExecutionStorageRangesComplete = false;
         usageTracker.dirtyIntervals.Insert(*guest);
         MarkGpuDirtyImpl();
     }
@@ -426,7 +907,12 @@ namespace skyline::gpu {
 
         if (cycle) {
             cycle->Wait();
+            auto completedCycle{cycle};
             cycle = nullptr;
+            writeCycle = nullptr;
+            ClearCompletedPageWriteCycle(completedCycle);
+            writeCycleStorageWriteRanges.Clear();
+            writeCycleStorageRangesComplete = false;
         }
     }
 
@@ -435,7 +921,12 @@ namespace skyline::gpu {
             return true;
 
         if (cycle->Poll()) {
+            auto completedCycle{cycle};
             cycle = nullptr;
+            writeCycle = nullptr;
+            ClearCompletedPageWriteCycle(completedCycle);
+            writeCycleStorageWriteRanges.Clear();
+            writeCycleStorageRangesComplete = false;
             return true;
         }
 
@@ -458,19 +949,59 @@ namespace skyline::gpu {
 
         TRACE_EVENT("gpu", "Buffer::SynchronizeHost");
 
-        {
-            std::scoped_lock lock{stateMutex};
-            if (dirtyState != DirtyState::CpuDirty)
-                return;
+        std::scoped_lock lock{stateMutex};
 
-            dirtyState = DirtyState::Clean;
-            WaitOnFence();
+        const bool rangeCpuDirty{HasRangeCpuDirtyPages()};
+        if (dirtyState != DirtyState::CpuDirty && !rangeCpuDirty)
+            return;
 
-            AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
+        if (rangeCpuDirty) {
+            // Defer the expensive wait until the GPU actually needs the guest CPU
+            // writes. Once the full cycle is complete, merge GPU-only pages into
+            // the mirror and CPU-only pages into the backing.
+            if (cycle) {
+                const i64 startNs{util::GetTimeNs()};
+                WaitOnFence();
+                const i64 waitNs{util::GetTimeNs() - startNs};
+                rangeMergeWaits++;
+                rangeMergeWaitNs += static_cast<u64>(waitNs);
+                bufferRangeMergeWaits.fetch_add(1, std::memory_order_relaxed);
+                bufferRangeMergeWaitNs.fetch_add(static_cast<u64>(waitNs), std::memory_order_relaxed);
+                LogBufferReadbackDiag();
+            }
+
+            if (rangeGpuDirtyStarted && rangeGpuDirtyValid) {
+                CopyGpuDirtyPagesToMirror();
+            } else {
+                // If classification was invalidated after page-tracked CPU writes,
+                // conservatively refresh every page except the CPU-owned ones.
+                for (size_t page{}; page < rangeCpuDirtyPageFlags.size(); page++) {
+                    if (rangeCpuDirtyPageFlags[page])
+                        continue;
+
+                    const size_t offset{page * constant::PageSize};
+                    const size_t size{std::min<size_t>(constant::PageSize, mirror.size() - offset)};
+                    std::memcpy(mirror.data() + offset, backing->data() + offset, size);
+                }
+            }
+
+            AdvanceSequence();
 
             if (!skipTrap)
-                gpu.state.process->trap.TrapRegions(*trapHandle, true); // Trap any future CPU writes to this buffer, must be done before the memcpy so that any modifications during the copy are tracked
+                gpu.state.process->trap.TrapRegions(*trapHandle, true);
+
+            CopyCpuDirtyPagesToBacking();
+            ClearRangeDirtyTracking();
+            dirtyState = DirtyState::Clean;
+            return;
         }
+
+        dirtyState = DirtyState::Clean;
+        WaitOnFence();
+        AdvanceSequence();
+
+        if (!skipTrap)
+            gpu.state.process->trap.TrapRegions(*trapHandle, true);
 
         std::memcpy(backing->data(), mirror.data(), mirror.size());
     }
@@ -485,15 +1016,48 @@ namespace skyline::gpu {
             std::scoped_lock lock{stateMutex};
 
             if (dirtyState != DirtyState::GpuDirty)
-                return true; // If the buffer is not dirty, there is no need to synchronize it
+                return true;
 
             if (nonBlocking && !PollFence())
-                return false; // If the fence is not signalled and non-blocking behaviour is requested then bail out
+                return false;
 
+            const i64 syncStartNs{util::GetTimeNs()};
             WaitOnFence();
-            std::memcpy(mirror.data(), backing->data(), mirror.size());
 
-            dirtyState = DirtyState::Clean;
+            if (rangeGpuDirtyStarted && rangeGpuDirtyValid) {
+                CopyGpuDirtyPagesToMirror();
+                dirtyState = HasRangeCpuDirtyPages() ? DirtyState::CpuDirty : DirtyState::Clean;
+
+                if (!HasRangeCpuDirtyPages())
+                    ClearRangeDirtyTracking();
+            } else {
+                if (HasRangeCpuDirtyPages()) {
+                    for (size_t page{}; page < rangeCpuDirtyPageFlags.size(); page++) {
+                        if (rangeCpuDirtyPageFlags[page])
+                            continue;
+
+                        const size_t offset{page * constant::PageSize};
+                        const size_t size{std::min<size_t>(constant::PageSize, mirror.size() - offset)};
+                        std::memcpy(mirror.data() + offset, backing->data() + offset, size);
+                    }
+
+                    std::fill(rangeGpuDirtyPageFlags.begin(), rangeGpuDirtyPageFlags.end(), 0);
+                    for (auto &pageCycle : rangePageWriteCycles)
+                        pageCycle = {};
+                    rangeGpuDirtyStarted = false;
+                    rangeGpuDirtyValid = false;
+                    dirtyState = DirtyState::CpuDirty;
+                } else {
+                    std::memcpy(mirror.data(), backing->data(), mirror.size());
+                    ClearRangeDirtyTracking();
+                    dirtyState = DirtyState::Clean;
+                }
+            }
+
+            const i64 syncNs{util::GetTimeNs() - syncStartNs};
+            bufferPreciseSyncs.fetch_add(1, std::memory_order_relaxed);
+            bufferPreciseSyncNs.fetch_add(static_cast<u64>(syncNs), std::memory_order_relaxed);
+            LogBufferReadbackDiag();
         }
 
         if (!skipTrap)

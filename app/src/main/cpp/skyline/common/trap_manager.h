@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <mutex>
+#include "interval_list.h"
 #include "interval_map.h"
 
 namespace skyline {
@@ -19,13 +20,25 @@ namespace skyline {
 
     using TrapCallback = std::function<bool()>;
     using LockCallback = std::function<void()>;
+    using AccessLockCallback = std::function<void(u8 *address, bool write)>;
+
+    enum class TrapWriteResult {
+        Retry,
+        ResolveEntry,
+        ResolvePage,
+    };
+
+    using PageWriteCallback = std::function<TrapWriteResult(u8 *address)>;
 
     struct CallbackEntry {
         TrapProtection protection; //!< The least restrictive protection that this callback needs to have
-        LockCallback lockCallback;
+        AccessLockCallback lockCallback;
         TrapCallback readCallback, writeCallback;
+        PageWriteCallback pageWriteCallback;
+        IntervalList<u8 *> writeUnprotectedPages;
 
-        CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback);
+        CallbackEntry(TrapProtection protection, AccessLockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback);
+        CallbackEntry(TrapProtection protection, AccessLockCallback lockCallback, TrapCallback readCallback, PageWriteCallback pageWriteCallback);
     };
 
     using TrapMap = IntervalMap<u8 *, CallbackEntry>;
@@ -51,6 +64,18 @@ namespace skyline {
          * @note This doesn't trap the region in itself, any trapping must be done via TrapRegions(...)
          */
         TrapHandle CreateTrap(span<span<u8>> regions, const LockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback);
+
+        /**
+         * @brief Creates a trap whose external lock callback also receives the fault address and access type
+         * @note Existing callers should keep using the LockCallback overload unless access type changes synchronization semantics
+         */
+        TrapHandle CreateTrap(span<span<u8>> regions, const AccessLockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback);
+
+        /**
+         * @brief Creates a trap whose successful writes can be resolved at page granularity
+         * @note ResolvePage only releases the faulting page; TrapRegions clears all page releases
+         */
+        TrapHandle CreatePageWriteTrap(span<span<u8>> regions, const AccessLockCallback &lockCallback, const TrapCallback &readCallback, const PageWriteCallback &writeCallback);
 
         /**
          * @brief Re-traps a region of memory after protections were removed
