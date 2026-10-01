@@ -457,7 +457,7 @@ namespace skyline::gpu {
         if (!milestone)
             return;
 
-        LOGI("[FastReadbackDiag][HotBuffer] id={} size={} sequence={} fast_hits={} read_only_bypasses={} guest_waits={} guest_wait_us={} cycle_present={} write_cycle_present={} cycle_is_write_cycle={} src_internal={} src_storage={} src_image={} src_query={} src_xfb={} src_dma_clear={}",
+        LOGI("[FastReadbackDiag][HotBuffer] id={} size={} sequence={} fast_hits={} read_only_bypasses={} guest_waits={} guest_wait_us={} cycle_present={} write_cycle_present={} cycle_is_write_cycle={} src_internal={} src_storage={} src_image={} src_query={} src_xfb={} src_dma_clear={} storage_vtx={} storage_tesc={} storage_tese={} storage_geom={} storage_frag={} storage_comp={} storage_other={} storage_min={} storage_max={}",
              id,
              mirror.size(),
              sequenceNumber,
@@ -473,7 +473,16 @@ namespace skyline::gpu {
              gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::ImageBuffer)],
              gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::Query)],
              gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::TransformFeedback)],
-             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::DmaClear)]);
+             gpuWriteSourceCounts[static_cast<size_t>(GpuWriteSource::DmaClear)],
+             storageWriteVertex,
+             storageWriteTessControl,
+             storageWriteTessEvaluation,
+             storageWriteGeometry,
+             storageWriteFragment,
+             storageWriteCompute,
+             storageWriteOther,
+             storageWriteMinBindingSize,
+             storageWriteMaxBindingSize);
     }
 
     Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, GuestBuffer guest, size_t id, bool direct)
@@ -507,6 +516,37 @@ namespace skyline::gpu {
         if (mirror.valid())
             munmap(mirror.data(), mirror.size());
         WaitOnFence();
+    }
+
+    void Buffer::RecordStorageWriteBinding(vk::PipelineStageFlagBits stage, size_t bindingSize) {
+        if (!storageWriteMinBindingSize || bindingSize < storageWriteMinBindingSize)
+            storageWriteMinBindingSize = bindingSize;
+        if (bindingSize > storageWriteMaxBindingSize)
+            storageWriteMaxBindingSize = bindingSize;
+
+        switch (stage) {
+            case vk::PipelineStageFlagBits::eVertexShader:
+                storageWriteVertex++;
+                break;
+            case vk::PipelineStageFlagBits::eTessellationControlShader:
+                storageWriteTessControl++;
+                break;
+            case vk::PipelineStageFlagBits::eTessellationEvaluationShader:
+                storageWriteTessEvaluation++;
+                break;
+            case vk::PipelineStageFlagBits::eGeometryShader:
+                storageWriteGeometry++;
+                break;
+            case vk::PipelineStageFlagBits::eFragmentShader:
+                storageWriteFragment++;
+                break;
+            case vk::PipelineStageFlagBits::eComputeShader:
+                storageWriteCompute++;
+                break;
+            default:
+                storageWriteOther++;
+                break;
+        }
     }
 
     void Buffer::MarkGpuDirty(UsageTracker &usageTracker, GpuWriteSource source) {

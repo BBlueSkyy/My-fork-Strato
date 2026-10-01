@@ -121,6 +121,15 @@ namespace skyline::gpu {
         u64 fastWriteReadbackHits{}; //!< Diagnostic count of conservative fast write readbacks for this buffer
         u64 fastWriteReadbackBypasses{}; //!< Diagnostic count of later read-only cycles bypassed for this buffer
         std::array<u64, static_cast<size_t>(GpuWriteSource::Count)> gpuWriteSourceCounts{}; //!< Diagnostic counts of GPU-write origins seen by this buffer
+        u64 storageWriteVertex{};
+        u64 storageWriteTessControl{};
+        u64 storageWriteTessEvaluation{};
+        u64 storageWriteGeometry{};
+        u64 storageWriteFragment{};
+        u64 storageWriteCompute{};
+        u64 storageWriteOther{};
+        size_t storageWriteMinBindingSize{};
+        size_t storageWriteMaxBindingSize{};
 
         /**
          * @brief Resets all megabuffer tracking state
@@ -266,6 +275,11 @@ namespace skyline::gpu {
          * @note The buffer **must** be locked prior to calling this
          */
         void MarkGpuDirty(UsageTracker &usageTracker, GpuWriteSource source = GpuWriteSource::Internal);
+
+        /**
+         * @brief Records shader-stage and binding-size information for writable storage buffers
+         */
+        void RecordStorageWriteBinding(vk::PipelineStageFlagBits stage, size_t bindingSize);
 
         /**
          * @brief Prevents sequenced writes to this buffer's backing from occuring on the CPU, forcing sequencing on the GPU instead for the duration of the context. Unsequenced writes such as those from the guest can still occur however.

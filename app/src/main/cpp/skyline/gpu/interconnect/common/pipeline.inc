@@ -68,6 +68,7 @@ namespace skyline::gpu::interconnect {
                 dstStageMask |= dstStage;
             }
 
+            view.GetBuffer()->RecordStorageWriteBinding(dstStage, ssbo.size);
             view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker, Buffer::GpuWriteSource::StorageBuffer);
         } else {
             if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag)})
