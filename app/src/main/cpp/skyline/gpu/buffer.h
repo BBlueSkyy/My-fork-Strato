@@ -155,6 +155,20 @@ namespace skyline::gpu {
         u64 cpuOnlyPages{};
         u64 gpuOnlyPages{};
 
+        // Experimental page-granular fast readback state. GPU and CPU dirty pages are
+        // intentionally tracked separately so disjoint guest writes never overwrite
+        // pending GPU results.
+        std::vector<u8> currentExecutionStorageWritePages;
+        std::vector<u8> rangeGpuDirtyPageFlags;
+        std::vector<u8> rangeCpuDirtyPageFlags;
+        std::vector<std::shared_ptr<FenceCycle>> rangePageWriteCycles;
+        bool rangeGpuDirtyValid{};
+        bool rangeGpuDirtyStarted{};
+        u64 rangeFastPageHits{};
+        u64 rangeFastPageWaits{};
+        u64 rangeFastPageSyncs{};
+        u64 rangeFastPageFallbacks{};
+
         /**
          * @brief Resets all megabuffer tracking state
          */
@@ -204,6 +218,14 @@ namespace skyline::gpu {
         void FinalizeCpuPageDiag();
         void LogCpuGpuPageDiag() const;
 
+        size_t GetGuestPageIndex(const u8 *address) const;
+        bool HasRangeCpuDirtyPages() const;
+        bool HasRangeGpuDirtyPages() const;
+        void ClearCompletedPageWriteCycle(const std::shared_ptr<FenceCycle> &completedCycle);
+        void ClearRangeDirtyTracking();
+        void CopyGpuDirtyPagesToMirror();
+        void CopyCpuDirtyPagesToBacking();
+
         bool ValidateMegaBufferViewImplDirect(vk::DeviceSize size);
 
         bool ValidateMegaBufferViewImplStaged(vk::DeviceSize size);
@@ -246,6 +268,23 @@ namespace skyline::gpu {
                 writeCycleStorageRangesComplete = currentExecutionStorageRangesComplete && currentExecutionStorageRangeRecorded;
 
                 const bool currentRangesValid{currentExecutionStorageRangesComplete && currentExecutionStorageRangeRecorded};
+                if (!rangeGpuDirtyStarted) {
+                    rangeGpuDirtyValid = currentRangesValid;
+                    rangeGpuDirtyStarted = true;
+                } else {
+                    rangeGpuDirtyValid = rangeGpuDirtyValid && currentRangesValid;
+                }
+
+                if (currentRangesValid) {
+                    for (size_t page{}; page < currentExecutionStorageWritePages.size(); page++) {
+                        if (!currentExecutionStorageWritePages[page])
+                            continue;
+
+                        rangeGpuDirtyPageFlags[page] = 1;
+                        rangePageWriteCycles[page] = newCycle;
+                    }
+                }
+
                 if (!gpuDirtyPageDiagRangesStarted) {
                     gpuDirtyPageDiagRangesValid = currentRangesValid;
                     gpuDirtyPageDiagRangesStarted = true;
@@ -257,6 +296,7 @@ namespace skyline::gpu {
                     gpuDirtyPageDiagRanges.Merge(currentExecutionStorageWriteRanges);
             }
 
+            std::fill(currentExecutionStorageWritePages.begin(), currentExecutionStorageWritePages.end(), 0);
             currentExecutionStorageWriteRanges.Clear();
             currentExecutionStorageRangeRecorded = false;
             currentExecutionStorageRangesComplete = true;
