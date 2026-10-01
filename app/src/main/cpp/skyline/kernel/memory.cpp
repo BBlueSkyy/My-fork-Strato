@@ -352,6 +352,18 @@ namespace skyline::kernel {
                     }));
                 }
 
+                // If the low host carveout is smaller than the architectural 36-bit
+                // code/stack window, hide the unavailable remainder from guest allocators.
+                // The old split-mapping implementation represented this gap as Heap as well;
+                // leaving it Unmapped makes nnSdk select stack/alias destinations that NCE
+                // cannot actually back at the same guest address.
+                if (codeBase36Bit.end().base() < base.data()) {
+                    MapInternal(std::pair<u8 *, ChunkDescriptor>(codeBase36Bit.end().base(), {
+                        .size = static_cast<size_t>(base.data() - codeBase36Bit.end().base()),
+                        .state = memory::states::Heap
+                    }));
+                }
+
                 // Place code, stack and TLS/IO in the lower 36-bits of the host AS and heap and alias past that.
                 // The diagnostic exact-base path may intentionally reserve less
                 // than the architectural maximum; only expose memory we actually
