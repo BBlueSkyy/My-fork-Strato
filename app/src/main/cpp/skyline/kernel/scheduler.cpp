@@ -152,8 +152,11 @@ namespace skyline::kernel {
         auto &core{cores.at(thread->coreId)};
         std::unique_lock lock{core.mutex};
 
-        LOGI("[THREAD-DIAG] InsertThread begin T{} core={} priority={} queue_size={} front={}",
-             thread->id, core.id, thread->priority.load(), core.queue.size(),
+        LOGI("[THREAD-DIAG] InsertThread begin T{} core={} priority={} base={} affinity=0x{:X} queue_size={} front={}",
+             thread->id, core.id,
+             thread->priority.load(std::memory_order_relaxed),
+             thread->basePriority.load(std::memory_order_relaxed),
+             thread->affinityMask.to_ullong(), core.queue.size(),
              core.queue.empty() ? -1LL : static_cast<i64>(core.queue.front()->id));
 
         if (thread->isPaused) {
@@ -241,10 +244,15 @@ namespace skyline::kernel {
             bool diagnosticActivityDumped{false};
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
                 auto front{core->queue.empty() ? std::shared_ptr<type::KThread>{} : core->queue.front()};
-                LOGI("[THREAD-DIAG] WaitSchedule blocked T{} core={} priority={} front=T{} front_priority={} queue_size={} waited_ms={} front_pc=0x{:X} front_sp=0x{:X} front_lr=0x{:X} front_insn={:08X} samples={}",
-                     thread->id, core->id, thread->priority.load(),
+                LOGI("[THREAD-DIAG] WaitSchedule blocked T{} core={} priority={} base={} affinity=0x{:X} front=T{} front_priority={} front_base={} front_affinity=0x{:X} queue_size={} waited_ms={} front_pc=0x{:X} front_sp=0x{:X} front_lr=0x{:X} front_insn={:08X} samples={}",
+                     thread->id, core->id,
+                     thread->priority.load(std::memory_order_relaxed),
+                     thread->basePriority.load(std::memory_order_relaxed),
+                     thread->affinityMask.to_ullong(),
                      front ? static_cast<i64>(front->id) : -1LL,
-                     front ? static_cast<i64>(front->priority.load()) : -1LL,
+                     front ? static_cast<i64>(front->priority.load(std::memory_order_relaxed)) : -1LL,
+                     front ? static_cast<i64>(front->basePriority.load(std::memory_order_relaxed)) : -1LL,
+                     front ? front->affinityMask.to_ullong() : 0,
                      core->queue.size(), loadBalanceThreshold.count(),
                      front ? front->diagnosticGuestPc.load(std::memory_order_relaxed) : 0,
                      front ? front->diagnosticGuestSp.load(std::memory_order_relaxed) : 0,
