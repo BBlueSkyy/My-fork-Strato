@@ -17,6 +17,7 @@ namespace skyline::kernel {
         // Don't restart syscalls: we want futexes to fail and their predicates rechecked
         if (state.process->is64bit()) {
             signal::SetGuestSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::GuestSignalHandler, false);
+            signal::SetGuestSignalHandler({Scheduler::DiagnosticSignal}, Scheduler::DiagnosticSignalHandler, false);
             signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::HostSignalHandler, false);
         } else {
             signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::JitSignalHandler, false);
@@ -36,6 +37,17 @@ namespace skyline::kernel {
             state.scheduler->WaitSchedule();
         }
         TRACE_EVENT_BEGIN("guest", "Guest");
+    }
+
+    void Scheduler::DiagnosticSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
+        auto *threadContext{reinterpret_cast<nce::ThreadContext *>(*tls)};
+        if (!threadContext || !threadContext->state || !threadContext->state->thread)
+            return;
+
+        auto &thread{threadContext->state->thread};
+        thread->diagnosticGuestPc.store(ctx->uc_mcontext.pc, std::memory_order_relaxed);
+        thread->diagnosticGuestSp.store(ctx->uc_mcontext.sp, std::memory_order_relaxed);
+        thread->diagnosticGuestSamples.fetch_add(1, std::memory_order_relaxed);
     }
 
     void Scheduler::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
@@ -217,11 +229,22 @@ namespace skyline::kernel {
         if (loadBalance) {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
-                LOGI("[THREAD-DIAG] WaitSchedule blocked T{} core={} priority={} front=T{} front_priority={} queue_size={} waited_ms={}",
+                auto front{core->queue.empty() ? std::shared_ptr<type::KThread>{} : core->queue.front()};
+                LOGI("[THREAD-DIAG] WaitSchedule blocked T{} core={} priority={} front=T{} front_priority={} queue_size={} waited_ms={} front_pc=0x{:X} front_sp=0x{:X} samples={}",
                      thread->id, core->id, thread->priority.load(),
-                     core->queue.empty() ? -1LL : static_cast<i64>(core->queue.front()->id),
-                     core->queue.empty() ? -1LL : static_cast<i64>(core->queue.front()->priority.load()),
-                     core->queue.size(), loadBalanceThreshold.count());
+                     front ? static_cast<i64>(front->id) : -1LL,
+                     front ? static_cast<i64>(front->priority.load()) : -1LL,
+                     core->queue.size(), loadBalanceThreshold.count(),
+                     front ? front->diagnosticGuestPc.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestSp.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestSamples.load(std::memory_order_relaxed) : 0);
+
+                // Sample a competing NCE thread's current guest PC/SP without yielding it or
+                // changing scheduler state. Repeated samples help distinguish a tight loop from
+                // a thread sleeping at one instruction.
+                if (front && front != thread && front->priority.load() == thread->priority.load() && state.process->is64bit())
+                    front->SendSignal(DiagnosticSignal);
+
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 auto newCore{&GetOptimalCoreForThread(state.thread)};
