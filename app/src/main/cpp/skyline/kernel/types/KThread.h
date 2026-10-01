@@ -104,6 +104,10 @@ namespace skyline::kernel {
             std::atomic<uintptr_t> diagnosticGuestSp{0};
             std::atomic<uintptr_t> diagnosticGuestLr{0};
             std::atomic<u32> diagnosticGuestInsn{0};
+            std::atomic<u32> diagnosticGuestCallerInsn{0};
+            std::atomic<u32> diagnosticGuestReturnInsn{0};
+            std::atomic<u64> diagnosticGuestX0{0};
+            std::atomic<u64> diagnosticGuestX1{0};
             std::atomic<u32> diagnosticGuestSamples{0};
 
             KThread(const DeviceState &state, KHandle handle, KProcess &process, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore);
