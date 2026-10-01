@@ -39,13 +39,15 @@ namespace skyline::gpu {
         std::atomic<u64> bufferRangePageWaits{};
         std::atomic<u64> bufferRangePageSyncs{};
         std::atomic<u64> bufferRangeFallbacks{};
+        std::atomic<u64> bufferRangeMergeWaits{};
+        std::atomic<u64> bufferRangeMergeWaitNs{};
 
         void LogBufferReadbackDiag() {
             const auto events{bufferReadbackDiagEvents.fetch_add(1, std::memory_order_relaxed) + 1};
             if (events != 1 && (events % BufferReadbackDiagLogInterval) != 0)
                 return;
 
-            LOGI("[FastReadbackDiag][Buffer] events={} fast_write_hits={} read_precise={} write_precise={} precise_syncs={} precise_sync_us={} pretrap_waits={} pretrap_wait_us={} read_only_cycle_bypasses={} range_fast_pages={} range_page_waits={} range_page_syncs={} range_fallbacks={}",
+            LOGI("[FastReadbackDiag][Buffer] events={} fast_write_hits={} read_precise={} write_precise={} precise_syncs={} precise_sync_us={} pretrap_waits={} pretrap_wait_us={} read_only_cycle_bypasses={} range_fast_pages={} range_page_waits={} range_page_syncs={} range_fallbacks={} range_merge_waits={} range_merge_wait_us={}",
                  events,
                  bufferFastWriteHits.load(std::memory_order_relaxed),
                  bufferReadPreciseFallbacks.load(std::memory_order_relaxed),
@@ -58,7 +60,9 @@ namespace skyline::gpu {
                  bufferRangeFastPages.load(std::memory_order_relaxed),
                  bufferRangePageWaits.load(std::memory_order_relaxed),
                  bufferRangePageSyncs.load(std::memory_order_relaxed),
-                 bufferRangeFallbacks.load(std::memory_order_relaxed));
+                 bufferRangeFallbacks.load(std::memory_order_relaxed),
+                 bufferRangeMergeWaits.load(std::memory_order_relaxed),
+                 bufferRangeMergeWaitNs.load(std::memory_order_relaxed) / 1000);
         }
     }
 
@@ -155,7 +159,8 @@ namespace skyline::gpu {
                 page < buffer->rangePageWriteCycles.size() &&
                 buffer->CanUseFastWriteReadback() &&
                 buffer->rangeGpuDirtyStarted &&
-                buffer->rangeGpuDirtyValid
+                buffer->rangeGpuDirtyValid &&
+                !buffer->AllCpuBackingWritesBlocked()
             };
 
             if (rangePageFast) {
@@ -289,7 +294,8 @@ namespace skyline::gpu {
                 page < buffer->rangePageWriteCycles.size() &&
                 buffer->CanUseFastWriteReadback() &&
                 buffer->rangeGpuDirtyStarted &&
-                buffer->rangeGpuDirtyValid
+                buffer->rangeGpuDirtyValid &&
+                !buffer->AllCpuBackingWritesBlocked()
             };
 
             if (rangePageFast) {
@@ -645,7 +651,7 @@ namespace skyline::gpu {
         if (!milestone)
             return;
 
-        LOGI("[FastReadbackDiag][HotBuffer] id={} size={} sequence={} fast_hits={} read_only_bypasses={} guest_waits={} guest_wait_us={} cycle_present={} write_cycle_present={} cycle_is_write_cycle={} src_internal={} src_storage={} src_image={} src_query={} src_xfb={} src_dma_clear={} storage_vtx={} storage_tesc={} storage_tese={} storage_geom={} storage_frag={} storage_comp={} storage_other={} storage_min={} storage_max={} writer_page_overlap={} writer_page_disjoint={} writer_page_unknown={} cpu_dirty_pages={} gpu_dirty_pages={} cpu_gpu_overlap_pages={} cpu_only_pages={} gpu_only_pages={} dirty_page_windows={} dirty_page_valid_windows={} dirty_page_unknown_windows={} range_fast_page_hits={} range_fast_page_waits={} range_fast_page_syncs={} range_fast_page_fallbacks={}",
+        LOGI("[FastReadbackDiag][HotBuffer] id={} size={} sequence={} fast_hits={} read_only_bypasses={} guest_waits={} guest_wait_us={} cycle_present={} write_cycle_present={} cycle_is_write_cycle={} src_internal={} src_storage={} src_image={} src_query={} src_xfb={} src_dma_clear={} storage_vtx={} storage_tesc={} storage_tese={} storage_geom={} storage_frag={} storage_comp={} storage_other={} storage_min={} storage_max={} writer_page_overlap={} writer_page_disjoint={} writer_page_unknown={} cpu_dirty_pages={} gpu_dirty_pages={} cpu_gpu_overlap_pages={} cpu_only_pages={} gpu_only_pages={} dirty_page_windows={} dirty_page_valid_windows={} dirty_page_unknown_windows={} range_fast_page_hits={} range_fast_page_waits={} range_fast_page_syncs={} range_fast_page_fallbacks={} range_merge_waits={} range_merge_wait_us={}",
              id,
              mirror.size(),
              sequenceNumber,
@@ -685,7 +691,9 @@ namespace skyline::gpu {
              rangeFastPageHits,
              rangeFastPageWaits,
              rangeFastPageSyncs,
-             rangeFastPageFallbacks);
+             rangeFastPageFallbacks,
+             rangeMergeWaits,
+             rangeMergeWaitNs / 1000);
     }
 
     void Buffer::PrepareCpuPageDiag() {
@@ -951,7 +959,16 @@ namespace skyline::gpu {
             // Defer the expensive wait until the GPU actually needs the guest CPU
             // writes. Once the full cycle is complete, merge GPU-only pages into
             // the mirror and CPU-only pages into the backing.
-            WaitOnFence();
+            if (cycle) {
+                const i64 startNs{util::GetTimeNs()};
+                WaitOnFence();
+                const i64 waitNs{util::GetTimeNs() - startNs};
+                rangeMergeWaits++;
+                rangeMergeWaitNs += static_cast<u64>(waitNs);
+                bufferRangeMergeWaits.fetch_add(1, std::memory_order_relaxed);
+                bufferRangeMergeWaitNs.fetch_add(static_cast<u64>(waitNs), std::memory_order_relaxed);
+                LogBufferReadbackDiag();
+            }
 
             if (rangeGpuDirtyStarted && rangeGpuDirtyValid) {
                 CopyGpuDirtyPagesToMirror();
