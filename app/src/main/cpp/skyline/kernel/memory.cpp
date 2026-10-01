@@ -344,7 +344,7 @@ namespace skyline::kernel {
                 // and nnSdk may select addresses that NCE cannot access.
                 if (codeBase36Bit.data() != reinterpret_cast<u8 *>(AS36bit::CodeRegionStart)) {
                     MapInternal(std::pair<u8 *, ChunkDescriptor>(reinterpret_cast<u8 *>(AS36bit::CodeRegionStart), {
-                        .size = static_cast<size_t>(codeBase36Bit.data() - AS36bit::CodeRegionStart),
+                        .size = reinterpret_cast<size_t>(codeBase36Bit.data()) - AS36bit::CodeRegionStart,
                         .state = memory::states::Heap
                     }));
                 }
@@ -357,7 +357,7 @@ namespace skyline::kernel {
                 // beginning of the low carveout; stack/TLS use its remaining
                 // host-backed portion.
                 code = span<u8>{codeBase36Bit.data(), loadedCodeSize};
-                stack = span<u8>{code.end().base(), codeBase36Bit.size() - code.size()};
+                stack = span<u8>{code.host.end().base(), codeBase36Bit.size() - code.size()};
                 tlsIo = stack;
 
                 // Hide the unavailable low-address gap between the end of the
@@ -370,7 +370,7 @@ namespace skyline::kernel {
                 }
 
                 alias = span<u8>{base.data(), AS36bit::AliasRegionSize};
-                heap = span<u8>{alias.end().base(), AS36bit::HeapRegionSize};
+                heap = span<u8>{alias.host.end().base(), AS36bit::HeapRegionSize};
                 break;
             }
 
