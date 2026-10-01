@@ -64,6 +64,47 @@ namespace skyline::loader {
             executable.dynstr = {header.dynstr.offset, header.dynstr.size};
         }
 
+        // Temporary ARMS diagnostic: identify which NSO defines or references the
+        // unresolved rtld symbol without altering relocation or symbol resolution.
+        if (dynamicallyLinked && executable.dynsym.size && executable.dynstr.size) {
+            constexpr std::string_view TargetSymbol{"__nnDetailInitLibc0"};
+            std::string_view dynstr{
+                reinterpret_cast<const char *>(executable.ro.contents.data() + executable.dynstr.offset),
+                executable.dynstr.size
+            };
+
+            auto logTargetSymbol = [&](const auto &symbol) {
+                if (!symbol.st_name || symbol.st_name >= dynstr.size())
+                    return;
+
+                const auto remaining{dynstr.substr(symbol.st_name)};
+                const auto terminator{remaining.find('\0')};
+                if (terminator == std::string_view::npos || remaining.substr(0, terminator) != TargetSymbol)
+                    return;
+
+                LOGI("ARMS rtld diagnostic: {} {} '{}' (value=0x{:X}, size=0x{:X}, shndx=0x{:X})",
+                     name.empty() ? "NSO" : name,
+                     symbol.st_shndx == 0 ? "references" : "defines",
+                     TargetSymbol,
+                     symbol.st_value,
+                     symbol.st_size,
+                     symbol.st_shndx);
+            };
+
+            span dynsym{
+                reinterpret_cast<u8 *>(executable.ro.contents.data() + executable.dynsym.offset),
+                executable.dynsym.size
+            };
+
+            if (process->npdm.meta.flags.is64Bit) {
+                for (const auto &symbol : dynsym.cast<Elf64_Sym>())
+                    logTargetSymbol(symbol);
+            } else {
+                for (const auto &symbol : dynsym.cast<Elf32_Sym>())
+                    logTargetSymbol(symbol);
+            }
+        }
+
         const u64 titleId{process->npdm.aci0.programId};
         if (titleId) {
             auto pchtxtPatches{mods::CollectPchtxtPatches(state.os->publicAppFilesPath, titleId, header.buildId)};
