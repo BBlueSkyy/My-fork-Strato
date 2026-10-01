@@ -754,6 +754,31 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return descriptorInfo.totalCombinedImageSamplerCount;
     }
 
+    void Pipeline::RefreshSampledImageUsage(InterconnectContext &ctx, span<TextureView *> sampledImages,
+                                            vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+        size_t sampledImageIndex{};
+
+        for (size_t stageIndex{}; stageIndex < engine::ShaderStageCount; ++stageIndex) {
+            if (!(stageMask & (1U << stageIndex)))
+                continue;
+
+            const auto &stage{descriptorInfo.stages[stageIndex]};
+            for (const auto &desc : stage.combinedImageSamplerDescs) {
+                for (u32 arrayIndex{}; arrayIndex < desc.count; ++arrayIndex) {
+                    if (sampledImageIndex >= sampledImages.size())
+                        return;
+
+                    auto *view{sampledImages[sampledImageIndex++]};
+                    if (!view)
+                        continue;
+
+                    ctx.executor.AttachTexture(view);
+                    view->texture->PopulateReadBarrier(stage.stage, srcStageMask, dstStageMask);
+                }
+            }
+        }
+    }
+
     DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
 
