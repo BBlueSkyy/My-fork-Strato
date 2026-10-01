@@ -262,7 +262,6 @@ namespace skyline {
             std::map<u8 *, ChunkDescriptor> chunks;
 
             std::vector<std::shared_ptr<type::KMemory>> memRefs;
-            std::vector<span<u8>> dynamicSharedReservations36Bit;
 
             void MapInternal(const std::pair<u8 *, ChunkDescriptor> &newDesc, bool reprotectHost = true);
 
@@ -455,9 +454,15 @@ namespace skyline {
             size_t GetSystemResourceUsage();
 
             /**
-             * @return If the supplied guest region has host backing reserved by the VMM
+             * @return If the supplied guest region is contained within host-backed VMM space
              */
-            bool AddressSpaceContains(span<u8> region);
+            constexpr bool AddressSpaceContains(span<u8> region) const {
+                region = GetHostSpan(region);
+                if (addressSpaceType == memory::AddressSpaceType::AddressSpace36Bit)
+                    return codeBase36Bit.contains(region) || base.contains(region);
+                else
+                    return base.contains(region);
+            }
 
             enum class SharedMemoryPreparationResult {
                 Success,
@@ -473,11 +478,11 @@ namespace skyline {
              * that entire range on Android, host backing is reserved on demand without
              * replacing unrelated native mappings.
              */
-            SharedMemoryPreparationResult PrepareSharedMemoryMapping36Bit(span<u8> region);
+            SharedMemoryPreparationResult PrepareSharedMemoryMapping36Bit(span<u8> region, bool &dynamicBacking);
 
             /**
              * @brief Releases host backing created on demand for a 36-bit shared mapping.
-             * @note Pre-existing code/base carveouts are never released by this method.
+             * @note Call only when PrepareSharedMemoryMapping36Bit returned dynamicBacking=true.
              */
             void ReleaseSharedMemoryBacking36Bit(span<u8> region);
 
