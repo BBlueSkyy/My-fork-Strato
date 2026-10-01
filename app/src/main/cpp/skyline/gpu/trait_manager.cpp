@@ -250,7 +250,7 @@ namespace skyline::gpu {
 
                 brokenSubgroupShuffle = true;
                 brokenSpirvVectorAccessChain = true;
-brokenFp16FloatControls = true;
+                brokenFp16FloatControls = true;
                 maxGlobalPriority = vk::QueueGlobalPriorityEXT::eHigh;
                 break;
             }
@@ -258,7 +258,7 @@ brokenFp16FloatControls = true;
             case vk::DriverId::eMesaTurnip: {
                 vkImageMutableFormatCostly = true; // Disables UBWC and forces linear tiling
                 adrenoRelaxedFormatAliasing = true;
-brokenFp16FloatControls = true;
+                brokenFp16FloatControls = true;
                 break;
             }
 
