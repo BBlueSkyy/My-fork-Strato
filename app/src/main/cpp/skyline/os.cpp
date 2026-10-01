@@ -17,6 +17,32 @@
 #include "services/fssrv/IFileSystemProxy.h"
 #include "os.h"
 #include <logger/logger.h>
+#include <cstdio>
+#include <limits.h>
+#include <unistd.h>
+
+namespace {
+    std::optional<std::string> ResolveNroGuestPath(int fd, const std::string &publicAppFilesPath) {
+        std::array<char, 64> fdPath{};
+        std::snprintf(fdPath.data(), fdPath.size(), "/proc/self/fd/%d", fd);
+
+        std::array<char, PATH_MAX + 1> hostPathBuffer{};
+        const ssize_t length{readlink(fdPath.data(), hostPathBuffer.data(), PATH_MAX)};
+        if (length <= 0)
+            return std::nullopt;
+
+        std::string hostPath{hostPathBuffer.data(), static_cast<size_t>(length)};
+        std::string sdmcRoot{publicAppFilesPath};
+        if (sdmcRoot.empty() || sdmcRoot.back() != '/')
+            sdmcRoot.push_back('/');
+        sdmcRoot += "switch/sdmc/";
+
+        if (hostPath.size() <= sdmcRoot.size() || hostPath.compare(0, sdmcRoot.size(), sdmcRoot) != 0)
+            return std::nullopt;
+
+        return "sdmc:/" + hostPath.substr(sdmcRoot.size());
+    }
+}
 
 namespace skyline::kernel {
     OS::OS(
@@ -114,8 +140,9 @@ namespace skyline::kernel {
         }
 
         process->InitializeHeapTls();
-        auto thread{process->CreateThread(entry)};
+        auto thread{process->CreateThread(entry, state.loader->GetMainThreadArgument())};
         if (thread) {
+            state.loader->OnMainThreadCreated(process, thread->handle);
             LOGI("Starting main HOS thread");
             thread->Start(true);
             process->Kill(true, true, true);
@@ -126,8 +153,14 @@ namespace skyline::kernel {
     std::shared_ptr<loader::Loader> OS::GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType) {
         auto file{std::make_shared<vfs::OsBacking>(fd)};
         switch (romType) {
-            case loader::RomFormat::NRO:
-                return std::make_shared<loader::NroLoader>(std::move(file));
+            case loader::RomFormat::NRO: {
+                auto launchPath{ResolveNroGuestPath(fd, publicAppFilesPath)};
+                if (launchPath)
+                    LOGI("NRO launch path: {}", *launchPath);
+                else
+                    LOGW("NRO is outside the emulated SD card; Homebrew ABI argv[0] will be omitted");
+                return std::make_shared<loader::NroLoader>(std::move(file), std::move(launchPath));
+            }
             case loader::RomFormat::NSO:
                 return std::make_shared<loader::NsoLoader>(std::move(file));
             case loader::RomFormat::NCA:

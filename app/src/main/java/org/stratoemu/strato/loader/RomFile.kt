@@ -11,7 +11,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
+import java.io.File
 import java.io.ObjectInputStream
 import java.io.ObjectOutputStream
 import java.io.Serializable
@@ -46,13 +48,28 @@ enum class RomType(val value: Int) {
  * @param contentResolver The instance of ContentResolver associated with the current context
  */
 fun getRomFormat(uri : Uri, contentResolver : ContentResolver) : RomFormat {
-    var uriStr = ""
-    contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-        val nameIndex : Int = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-        cursor.moveToFirst()
-        uriStr = cursor.getString(nameIndex)
+    val uriStr = if (uri.scheme == ContentResolver.SCHEME_FILE) {
+        uri.lastPathSegment.orEmpty()
+    } else {
+        var displayName = ""
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIndex : Int = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (nameIndex >= 0 && cursor.moveToFirst())
+                displayName = cursor.getString(nameIndex)
+        }
+        displayName
     }
+
     return RomFormat.valueOf(uriStr.substring(uriStr.lastIndexOf(".") + 1).uppercase(Locale.ROOT))
+}
+
+internal fun openRomFileDescriptor(context : Context, uri : Uri) : ParcelFileDescriptor? {
+    return if (uri.scheme == ContentResolver.SCHEME_FILE) {
+        val path = uri.path ?: return null
+        ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY)
+    } else {
+        context.contentResolver.openFileDescriptor(uri, "r")
+    }
 }
 
 /**
@@ -201,9 +218,9 @@ internal class RomFile(context : Context, format : RomFormat, uri : Uri, systemL
         get() = result == LoaderResult.Success
 
     init {
-        context.contentResolver.openFileDescriptor(uri, "r")!!.use {
-    val diagnosticsPath = "${context.getExternalFilesDir(null)?.canonicalPath ?: context.filesDir.canonicalPath}/nca_diag.txt"
-        result = LoaderResult.get(populate(format.ordinal, it.fd, "${context.filesDir.canonicalPath}/keys/", systemLanguage, diagnosticsPath))
+        openRomFileDescriptor(context, uri)!!.use {
+            val diagnosticsPath = "${context.getExternalFilesDir(null)?.canonicalPath ?: context.filesDir.canonicalPath}/nca_diag.txt"
+            result = LoaderResult.get(populate(format.ordinal, it.fd, "${context.filesDir.canonicalPath}/keys/", systemLanguage, diagnosticsPath))
         }
 
        appEntry = AppEntry(

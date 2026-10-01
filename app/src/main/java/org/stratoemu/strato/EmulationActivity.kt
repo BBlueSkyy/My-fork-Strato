@@ -57,6 +57,7 @@ import org.stratoemu.strato.emulation.PipelineLoadingFragment
 import org.stratoemu.strato.input.*
 import org.stratoemu.strato.loader.RomFile
 import org.stratoemu.strato.loader.getRomFormat
+import org.stratoemu.strato.loader.openRomFileDescriptor
 import org.stratoemu.strato.preference.GameContentPreference
 import org.stratoemu.strato.settings.AppSettings
 import org.stratoemu.strato.settings.EmulationSettings
@@ -263,7 +264,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         val romType = item.format.ordinal
 
         @SuppressLint("Recycle")
-        val romFd = contentResolver.openFileDescriptor(rom, "r")!!
+        val romFd = openRomFileDescriptor(this, rom)!!
 
         var dlcFds : IntArray? = null
         if (dlcUris.isNotEmpty()) {

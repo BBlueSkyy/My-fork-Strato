@@ -10,6 +10,7 @@ import org.stratoemu.strato.loader.AppEntry
 import org.stratoemu.strato.loader.RomFile
 import org.stratoemu.strato.loader.RomFormat
 import org.stratoemu.strato.loader.RomFormat.*
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -74,12 +75,50 @@ class RomProvider @Inject constructor(
         }
     }
 
+    private fun addEmulatedSdHomebrewEntries(
+        entries: ArrayList<AppEntry>,
+        seenUris: MutableSet<String>,
+        systemLanguage: Int
+    ) {
+        val externalFiles = context.getExternalFilesDir(null) ?: return
+        val switchDirectory = File(externalFiles, "switch/sdmc/switch")
+        if (!switchDirectory.isDirectory)
+            return
+
+        switchDirectory.walkTopDown()
+            .filter { it.isFile && it.extension.equals("nro", ignoreCase = true) }
+            .forEach { file ->
+                val uri = Uri.fromFile(file)
+                val uriString = uri.toString()
+                if (!seenUris.add(uriString))
+                    return@forEach
+
+                try {
+                    entries.add(
+                        RomFile(
+                            context,
+                            NRO,
+                            uri,
+                            systemLanguage
+                        ).appEntry
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "Unable to load homebrew NRO $uriString: ${e.message}")
+                }
+            }
+    }
+
     fun loadRoms(
         searchLocations: Collection<Uri>,
         systemLanguage: Int
     ): ArrayList<AppEntry> {
         val entries = arrayListOf<AppEntry>()
         val seenUris = mutableSetOf<String>()
+
+        // Mirror hbmenu discovery for app-owned sdmc:/switch homebrew. This path is
+        // directly accessible to Strato even though Android's document picker does
+        // not normally expose Android/data as a selectable game folder.
+        addEmulatedSdHomebrewEntries(entries, seenUris, systemLanguage)
 
         searchLocations
             .filter { it.toString().isNotBlank() }

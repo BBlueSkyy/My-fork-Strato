@@ -50,7 +50,7 @@ namespace skyline::loader {
 
         /**
          * @brief The asset section was created by homebrew developers to store additional data for their applications to use
-         * @note This would actually be retrieved by NRO homebrew by reading the NRO file itself (reading its own binary) but libnx homebrew wrongly detects the images to be running in NSO mode where the RomFS is handled by HOS, this allows us to just provide the parsed data from the asset section to it directly
+         * @note Strato parses it for frontend metadata and the optional RomFS while the guest itself still enters through the Homebrew ABI.
          */
         struct NroAssetHeader {
             u32 magic; //!< "ASET"
@@ -61,6 +61,9 @@ namespace skyline::loader {
         } assetHeader{};
 
         std::shared_ptr<vfs::Backing> backing;
+        std::optional<std::string> launchPath;
+        u64 homebrewConfigAddress{};
+        u64 mainThreadHandleAddress{};
 
         /**
          * @brief Reads the data of the specified segment
@@ -70,10 +73,16 @@ namespace skyline::loader {
         std::vector<u8> GetSegment(const NroSegmentHeader &segment);
 
       public:
-        NroLoader(std::shared_ptr<vfs::Backing> backing);
+        NroLoader(std::shared_ptr<vfs::Backing> backing, std::optional<std::string> launchPath = std::nullopt);
 
         std::vector<u8> GetIcon(language::ApplicationLanguage language) override;
 
         void *LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) override;
+
+        u64 GetMainThreadArgument() const override {
+            return homebrewConfigAddress;
+        }
+
+        void OnMainThreadCreated(const std::shared_ptr<kernel::type::KProcess> &process, KHandle handle) override;
     };
 }
