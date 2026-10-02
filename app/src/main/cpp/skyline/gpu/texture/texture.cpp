@@ -55,6 +55,8 @@ namespace skyline::gpu {
     }
 
     u32 GuestTexture::GetViewLayerCount() const {
+        if (viewLayerCount)
+            return viewLayerCount;
         if (GetImageType() == vk::ImageType::e3D && viewType != vk::ImageViewType::e3D)
             return dimensions.depth;
         else
@@ -744,6 +746,9 @@ namespace skyline::gpu {
     }
 
     void Texture::MarkGpuDirty(UsageTracker &usageTracker) {
+        if (!guest)
+            return;
+
         for (auto mapping : guest->mappings)
             if (mapping.valid())
                 usageTracker.dirtyIntervals.Insert(mapping);

@@ -246,6 +246,7 @@ namespace skyline::gpu {
         vk::ImageViewType viewType{};
         u32 baseArrayLayer{};
         u32 layerCount{1};
+        u32 viewLayerCount{}; //!< Optional layer count for a view when the backing image contains additional base layers
         u32 layerStride{}; //!< An optional hint regarding the size of a single layer, it **should** be set to 0 when not available and should never be a non-0 value that doesn't reflect the correct layer stride
         u32 mipLevelCount{1}; //!< The total amount of mip levels in the parent image, if one exists
         u32 viewMipBase{}; //!< The minimum mip level of the view, this is the smallest mip level that can be accessed via this view
