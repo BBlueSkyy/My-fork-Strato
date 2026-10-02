@@ -14,8 +14,6 @@ namespace skyline::gpu {
         GPU &gpu;
         texture::TextureMappingCache mappingCache; //!< Guest texture mapping index
 
-        std::vector<TextureMapping> textures; //!< A sorted vector of all texture mappings
-
       public:
         TextureManager(GPU &gpu);
 
