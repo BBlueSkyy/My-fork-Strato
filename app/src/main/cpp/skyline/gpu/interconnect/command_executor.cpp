@@ -539,14 +539,35 @@ namespace skyline::gpu::interconnect {
             }
 
             const auto textureAddress{reinterpret_cast<uintptr_t>(texture.get())};
+            std::string guestFormatName{"none"};
+            u32 guestBlockWidth{}, guestBlockHeight{}, guestBpb{};
+            std::string guestSwizzleR{"Identity"}, guestSwizzleG{"Identity"};
+            std::string guestSwizzleB{"Identity"}, guestSwizzleA{"Identity"};
+            if (texture->guest && texture->guest->format) {
+                guestFormatName = vk::to_string(texture->guest->format->vkFormat);
+                guestBlockWidth = texture->guest->format->blockWidth;
+                guestBlockHeight = texture->guest->format->blockHeight;
+                guestBpb = texture->guest->format->bpb;
+                guestSwizzleR = vk::to_string(texture->guest->swizzle.r);
+                guestSwizzleG = vk::to_string(texture->guest->swizzle.g);
+                guestSwizzleB = vk::to_string(texture->guest->swizzle.b);
+                guestSwizzleA = vk::to_string(texture->guest->swizzle.a);
+            }
+
             const auto metadata{fmt::format(
                 "input_index={}\nfile={}\nrender_pass={}\nsubmission={}\ntexture=0x{:X}\n"
-                "width={}\nheight={}\ndepth={}\nformat={}\nlayout={}\nsize={}\n"
-                "levels={}\nlayers={}\nguest_map=0x{:X}\nguest_map_size={}\ntile={}\nbh={}\nbd={}\n",
+                "width={}\nheight={}\ndepth={}\nhost_format={}\nguest_format={}\nlayout={}\n"
+                "host_surface_size={}\nguest_linear_size={}\nlevels={}\nlayers={}\n"
+                "guest_map=0x{:X}\nguest_map_size={}\ntile={}\nbh={}\nbd={}\n"
+                "guest_block_width={}\nguest_block_height={}\nguest_bpb={}\n"
+                "guest_swizzle={},{},{},{}\n",
                 inputIndex, fileName, renderPassIndex, submissionNumber, textureAddress,
-                width, height, depth, formatName, vk::to_string(texture->layout), texture->surfaceSize,
+                width, height, depth, formatName, guestFormatName, vk::to_string(texture->layout),
+                texture->surfaceSize, texture->deswizzledSurfaceSize,
                 texture->levelCount, texture->layerCount,
-                guestMap, guestMapSize, tileMode, blockHeight, blockDepth)};
+                guestMap, guestMapSize, tileMode, blockHeight, blockDepth,
+                guestBlockWidth, guestBlockHeight, guestBpb,
+                guestSwizzleR, guestSwizzleG, guestSwizzleB, guestSwizzleA)};
 
             slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
                 [texture, stagingBuffer](vk::raii::CommandBuffer &commandBuffer,
