@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "texture/storage.h"
+#include "texture/mapping_cache.h"
 
 namespace skyline::gpu {
     /**
@@ -11,21 +11,9 @@ namespace skyline::gpu {
      */
     class TextureManager {
       private:
-        /**
-         * @brief A single contiguous mapping of a texture in the CPU address space
-         */
-        struct TextureMapping : span<u8> {
-            std::shared_ptr<texture::TextureStorage> storage;
-            GuestTexture::Mappings::iterator iterator; //!< An iterator to the mapping in the texture's GuestTexture corresponding to this mapping
-
-            template<typename... Args>
-            TextureMapping(std::shared_ptr<texture::TextureStorage> storage, GuestTexture::Mappings::iterator iterator, Args &&... args)
-                : span<u8>(std::forward<Args>(args)...),
-                  storage(std::move(storage)),
-                  iterator(iterator) {}
-        };
-
         GPU &gpu;
+        texture::TextureMappingCache mappingCache; //!< Guest texture mapping index
+
         std::vector<TextureMapping> textures; //!< A sorted vector of all texture mappings
 
       public:
