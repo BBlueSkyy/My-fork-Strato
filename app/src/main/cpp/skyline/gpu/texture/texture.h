@@ -504,6 +504,12 @@ namespace skyline::gpu {
         bool diagnosticTicSrgb{};
         std::atomic<u32> diagnosticCpuWriteTrapCount{};
         u64 diagnosticInitialGuestHash{};
+        bool diagnosticSameSequenceTicMismatch{};
+        std::array<u32, 8> diagnosticCachedTicRaw{};
+        std::array<u32, 8> diagnosticCurrentTicRaw{};
+        u64 diagnosticPreFindGuestHash{};
+        u64 diagnosticPostOverlapGuestHash{};
+        u32 diagnosticOverlapSyncCount{};
 
         /**
          * @brief Creates a texture object wrapping the supplied backing with the supplied attributes
