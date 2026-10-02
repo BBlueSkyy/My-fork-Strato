@@ -64,7 +64,7 @@ namespace skyline::gpu {
             if (firstHostMapping == hostMappings.begin() && firstHostMapping->begin() == guestMapping.begin() && mappingMatch && lastHostMapping == hostMappings.end() && lastGuestMapping.end() == std::prev(lastHostMapping)->end()) {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
                 auto &matchGuestTexture{*candidateStorage->texture->guest};
-                auto formatCompatibility{texture::ClassifyCompatibility(*matchGuestTexture.format, *guestTexture.format)};
+                auto formatCompatibility{texture::ClassifyFormatCompatibility(*matchGuestTexture.format, *guestTexture.format)};
                 if (texture::CanShareStorage(formatCompatibility) &&
                     ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                         matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
@@ -77,7 +77,7 @@ namespace skyline::gpu {
                 }
             } else {
                 auto &matchGuestTexture{*candidateStorage->texture->guest};
-                auto formatCompatibility{texture::ClassifyCompatibility(*matchGuestTexture.format, *guestTexture.format)};
+                auto formatCompatibility{texture::ClassifyFormatCompatibility(*matchGuestTexture.format, *guestTexture.format)};
 
                 // A render target may describe an individual Z slice of a block-linear
                 // 3D texture. Its guest address starts inside the parent mip rather than
