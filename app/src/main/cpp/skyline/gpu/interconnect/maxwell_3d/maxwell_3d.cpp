@@ -288,18 +288,24 @@ namespace skyline::gpu::interconnect::maxwell3d {
             const auto backingFormat{
                 texture->format ? vk::to_string(texture->format->vkFormat) : std::string{"Undefined"}
             };
-            const bool hdrCandidate{
-                texture->dimensions.width == 1280 &&
-                texture->dimensions.height == 720 &&
+            const bool captureCandidate{
                 texture->format &&
-                texture->format->vkFormat == vk::Format::eR16G16B16A16Sfloat
+                !texture->format->IsCompressed() &&
+                (texture->format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+                texture->sampleCount == vk::SampleCountFlagBits::e1 &&
+                texture->surfaceSize &&
+                texture->surfaceSize <= 64ULL * 1024 * 1024 &&
+                texture->dimensions.width >= 64 &&
+                texture->dimensions.height >= 64 &&
+                texture->dimensions.width <= 4096 &&
+                texture->dimensions.height <= 4096
             };
 
             trace += fmt::format(
                 "{}[{}] view_ptr={} vk_view={} texture_ptr={} vk_image={} "
                 "dims={}x{}x{} view_format={} backing_format={} layout={} "
                 "aspect=0x{:X} base_mip={} levels={} base_layer={} layers={} "
-                "guest_map=0x{:X} guest_size={} last_usage={} replaced={} hdr_candidate={}\n",
+                "guest_map=0x{:X} guest_size={} last_usage={} replaced={} capture_candidate={}\n",
                 label, index,
                 fmt::ptr(view),
                 fmt::ptr(static_cast<VkImageView>(view->GetView())),
@@ -320,7 +326,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 guestMapSize,
                 static_cast<u32>(texture->GetLastRenderPassUsage()),
                 texture->replaced,
-                hdrCandidate);
+                captureCandidate);
         }};
 
         const auto colorAttachments{activeState.GetColorAttachments()};
@@ -330,7 +336,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
         for (size_t index{}; index < activeDescriptorSetSampledImages.size(); ++index)
             appendView("sampled", index, activeDescriptorSetSampledImages[index]);
 
-        ctx.executor.TrackDiagnosticSampledInputs(activeDescriptorSetSampledImages);
 
         if (auto *depth{activeState.GetDepthAttachment()})
             appendView("depth_attachment", 0, depth);
