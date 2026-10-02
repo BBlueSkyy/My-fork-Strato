@@ -2,11 +2,129 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/trace.h>
-#include "texture/layout.h"
+#include <gpu.h>
 #include "texture/compatibility.h"
+#include "texture/layout.h"
+#include "texture/resource_layout.h"
 #include "texture_manager.h"
 
 namespace skyline::gpu {
+    namespace {
+        std::optional<texture::ImageKind> ImageKindOf(vk::ImageType type) {
+            switch (type) {
+                case vk::ImageType::e1D: return texture::ImageKind::OneDimensional;
+                case vk::ImageType::e2D: return texture::ImageKind::TwoDimensional;
+                case vk::ImageType::e3D: return texture::ImageKind::ThreeDimensional;
+            }
+            return std::nullopt;
+        }
+
+        std::optional<texture::ViewKind> ViewKindOf(vk::ImageViewType type) {
+            switch (type) {
+                case vk::ImageViewType::e1D: return texture::ViewKind::OneDimensional;
+                case vk::ImageViewType::e1DArray: return texture::ViewKind::OneDimensionalArray;
+                case vk::ImageViewType::e2D: return texture::ViewKind::TwoDimensional;
+                case vk::ImageViewType::e2DArray: return texture::ViewKind::TwoDimensionalArray;
+                case vk::ImageViewType::eCube: return texture::ViewKind::Cube;
+                case vk::ImageViewType::eCubeArray: return texture::ViewKind::CubeArray;
+                case vk::ImageViewType::e3D: return texture::ViewKind::ThreeDimensional;
+            }
+            return std::nullopt;
+        }
+
+        std::optional<texture::OwnedTextureResourceLayout> DescribeGuestLayout(
+            const GuestTexture &guest, const texture::GuestResourceRanges &ranges, const Texture *backing = nullptr) {
+            // A nonzero baseArrayLayer currently changes the translated mapping length;
+            // its origin relative to the VkImage is not recorded in GuestTexture.
+            if (!guest.format || guest.baseArrayLayer || !guest.mipLevelCount ||
+                !guest.layerCount || !guest.viewMipCount)
+                return std::nullopt;
+            auto imageKind = ImageKindOf(guest.GetImageType());
+            auto viewKind = ViewKindOf(guest.viewType);
+            if (!imageKind || !viewKind)
+                return std::nullopt;
+
+            texture::TileLayout tile{};
+            switch (guest.tileConfig.mode) {
+                case texture::TileMode::Linear: tile.mode = texture::TileKind::Linear; break;
+                case texture::TileMode::Pitch:
+                    tile.mode = texture::TileKind::Pitch;
+                    tile.pitch = guest.tileConfig.pitch;
+                    break;
+                case texture::TileMode::Block:
+                    tile.mode = texture::TileKind::Block;
+                    tile.blockHeight = guest.tileConfig.blockHeight;
+                    tile.blockDepth = guest.tileConfig.blockDepth;
+                    if (!tile.blockHeight || !tile.blockDepth)
+                        return std::nullopt;
+                    break;
+            }
+
+            std::vector<texture::MipDescription> mips;
+            if (tile.mode == texture::TileKind::Block) {
+                auto calculated = backing ? std::vector<texture::MipLevelLayout>{} :
+                    texture::GetBlockLinearMipLayout(guest.dimensions,
+                        guest.format->blockHeight, guest.format->blockWidth, guest.format->bpb,
+                        guest.format->blockHeight, guest.format->blockWidth, guest.format->bpb,
+                        guest.tileConfig.blockHeight, guest.tileConfig.blockDepth, guest.mipLevelCount);
+                const auto &levels = backing ? backing->mipLayouts : calculated;
+                if (levels.size() != guest.mipLevelCount)
+                    return std::nullopt;
+                for (const auto &level : levels)
+                    mips.push_back({level.dimensions.width, level.dimensions.height,
+                        level.dimensions.depth, level.blockLinearSize});
+            } else {
+                // The existing upload path does not support linear/pitch mip chains.
+                if (guest.mipLevelCount != 1)
+                    return std::nullopt;
+                mips.push_back({guest.dimensions.width, guest.dimensions.height,
+                    guest.dimensions.depth, guest.CalculateLayerSize()});
+            }
+
+            const auto layerStride = guest.layerStride ? guest.layerStride : guest.CalculateLayerSize();
+            texture::TextureResourceLayout info{
+                .tile = tile,
+                .imageType = *imageKind,
+                .viewType = *viewKind,
+                .cubeCompatible = backing && static_cast<bool>(backing->flags & vk::ImageCreateFlagBits::eCubeCompatible),
+                .layerStride = layerStride,
+                .viewMipBase = guest.viewMipBase,
+                .viewMipCount = guest.viewMipCount,
+                .viewLayerBase = guest.baseArrayLayer,
+                .viewLayerCount = guest.GetViewLayerCount(),
+            };
+            return texture::BuildResourceLayout(ranges, mips, guest.layerCount, info);
+        }
+
+        // Restrict the new path to known Vulkan compatibility classes and image flags.
+        bool VerifiedFormatClass(vk::Format lhs, vk::Format rhs) {
+            const auto rgba = [](vk::Format format) {
+                return format == vk::Format::eR8G8B8A8Unorm || format == vk::Format::eR8G8B8A8Srgb;
+            };
+            const auto bgra = [](vk::Format format) {
+                return format == vk::Format::eB8G8R8A8Unorm || format == vk::Format::eB8G8R8A8Srgb;
+            };
+            return (rgba(lhs) && rgba(rhs)) || (bgra(lhs) && bgra(rhs));
+        }
+
+        bool SupportsHostFormatView(const GPU &gpu, const Texture &backing, const GuestTexture &requested) {
+            const auto viewFormat = requested.format == backing.guest->format
+                ? backing.format->vkFormat : requested.format->vkFormat;
+            if (viewFormat == backing.format->vkFormat)
+                return true;
+            if (!(backing.flags & vk::ImageCreateFlagBits::eMutableFormat) ||
+                !VerifiedFormatClass(backing.format->vkFormat, viewFormat) ||
+                requested.format->vkAspect != backing.format->vkAspect)
+                return false;
+
+            auto properties = gpu.vkPhysicalDevice.getFormatProperties(viewFormat);
+            auto required = vk::FormatFeatureFlags{vk::FormatFeatureFlagBits::eSampledImage};
+            if (backing.usage & vk::ImageUsageFlagBits::eColorAttachment)
+                required |= vk::FormatFeatureFlagBits::eColorAttachment;
+            return (properties.optimalTilingFeatures & required) == required;
+        }
+    }
+
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
@@ -16,15 +134,80 @@ namespace skyline::gpu {
         if (!guestRanges.Valid())
             throw exception("Invalid guest texture mapping ranges");
 
-        /*
-         * Keep the legacy format/layout/view decisions below. Candidate selection now
-         * verifies the entire physical mapping sequence, including non-contiguous spans.
-         * All overlaps are indexed separately for alias-group metadata.
-         */
+        // The resolved Full path precedes the legacy fallback. Other relations
+        // retain separate backings until copy and dirty tracking are implemented.
 
         boost::container::small_vector<std::shared_ptr<Texture>, 4> matches{};
         auto mappingLookup{mappingCache.Lookup(guestRanges)};
         boost::container::small_vector<std::shared_ptr<texture::TextureStorage>, 4> visitedStorages{};
+
+        const auto legacyExactMatch = [&guestTexture](const GuestTexture &existing, texture::FormatCompatibility format) {
+            return texture::CanShareStorage(format) &&
+                (((existing.dimensions.width == guestTexture.dimensions.width &&
+                    existing.dimensions.height == guestTexture.dimensions.height) ||
+                    existing.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
+                    existing.GetViewDepth() <= guestTexture.GetViewDepth() || existing.viewMipBase > 0) &&
+                existing.tileConfig == guestTexture.tileConfig;
+        };
+
+        const auto requestedLayout = DescribeGuestLayout(guestTexture, guestRanges);
+        std::vector<std::shared_ptr<texture::TextureStorage>> classifiedStorages;
+        std::shared_ptr<texture::TextureStorage> sharedStorage;
+        texture::ResolvedViewBase sharedBase{};
+        bool sharedExact{};
+
+        if (requestedLayout) {
+            for (const auto &storage : mappingLookup.storages) {
+                if (!storage || storage->texture->replaced || !storage->texture->guest)
+                    continue;
+                const auto backingLayout = DescribeGuestLayout(*storage->texture->guest,
+                    storage->ranges, storage->texture.get());
+                if (!backingLayout)
+                    continue; // Unresolved layout keeps the old lookup behavior.
+
+                classifiedStorages.push_back(storage);
+                const auto format = texture::ClassifyFormatCompatibility(
+                    *storage->texture->guest->format, *guestTexture.format);
+                const auto relation = texture::ClassifyAndResolveView(backingLayout->Layout(),
+                    requestedLayout->Layout(), format, SupportsHostFormatView(gpu, *storage->texture, guestTexture));
+                switch (relation.relation) {
+                    case texture::TextureViewCompatibility::Full: {
+                        const auto base = *relation.sharedView;
+                        const auto &image = *storage->texture;
+                        if (base.mip >= image.levelCount || guestTexture.viewMipCount > image.levelCount - base.mip ||
+                            base.layer >= image.layerCount || guestTexture.GetViewLayerCount() > image.layerCount - base.layer)
+                            break;
+                        const auto exact = storage->ranges.Size() == guestRanges.Size() &&
+                            storage->ranges.FindContainedOffset(guestRanges) == 0;
+                        if (!sharedStorage || (exact && !sharedExact) ||
+                            (exact == sharedExact && (image.levelCount > sharedStorage->texture->levelCount ||
+                                image.layerCount > sharedStorage->texture->layerCount))) {
+                            sharedStorage = storage;
+                            sharedBase = base;
+                            sharedExact = exact;
+                        }
+                        break;
+                    }
+                    case texture::TextureViewCompatibility::CopyOnly:
+                        // A separate representation needs explicit copy dependencies in the next phase.
+                        break;
+                    case texture::TextureViewCompatibility::LayoutIncompatible:
+                    case texture::TextureViewCompatibility::Incompatible:
+                        break;
+                }
+            }
+        }
+
+        if (sharedStorage) {
+            ContextLock textureLock{tag, *sharedStorage->texture};
+            return sharedStorage->texture->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
+                .aspectMask = guestTexture.aspect,
+                .baseMipLevel = sharedBase.mip,
+                .levelCount = guestTexture.viewMipCount,
+                .baseArrayLayer = sharedBase.layer,
+                .layerCount = guestTexture.GetViewLayerCount(),
+            }, guestTexture.format, guestTexture.swizzle);
+        }
 
         std::shared_ptr<Texture> fullMatch{};
         std::shared_ptr<Texture> layerMipMatch{};
@@ -43,6 +226,19 @@ namespace skyline::gpu {
             if (candidateStorage->texture->replaced)
                 continue;
 
+            if (std::find(classifiedStorages.begin(), classifiedStorages.end(), candidateStorage) != classifiedStorages.end()) {
+                // The classifier ruled out Full. Preserve the old readback only for
+                // exact mappings that the old mismatch path would have synchronized.
+                const auto matched = candidateStorage->ranges.FindContainedOffset(guestRanges);
+                if (matched == 0 && candidateStorage->ranges.Size() == guestRanges.Size()) {
+                    const auto &existing = *candidateStorage->texture->guest;
+                    const auto format = texture::ClassifyFormatCompatibility(*existing.format, *guestTexture.format);
+                    if (!legacyExactMatch(existing, format))
+                        matches.push_back(candidateStorage->texture);
+                }
+                continue;
+            }
+
             auto matchedOffset{candidateStorage->ranges.FindContainedOffset(guestRanges)};
             if (!matchedOffset)
                 continue;
@@ -51,12 +247,7 @@ namespace skyline::gpu {
                 // An exact physical match, including all spans in their logical order.
                 auto &matchGuestTexture{*candidateStorage->texture->guest};
                 auto formatCompatibility{texture::ClassifyFormatCompatibility(*matchGuestTexture.format, *guestTexture.format)};
-                if (texture::CanShareStorage(formatCompatibility) &&
-                    ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
-                        matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
-                        matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
-                        || matchGuestTexture.viewMipBase > 0)
-                    && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
+                if (legacyExactMatch(matchGuestTexture, formatCompatibility)) {
                     fullMatch = candidateStorage->texture;
                 } else {
                     matches.push_back(candidateStorage->texture);
