@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "texture/storage.h"
 #include "texture/mapping_cache.h"
 
 namespace skyline::gpu {

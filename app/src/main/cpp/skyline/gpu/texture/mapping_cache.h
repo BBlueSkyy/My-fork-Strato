@@ -5,81 +5,64 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <utility>
+#include <cstdint>
+#include <memory>
 #include <vector>
-#include <boost/container/small_vector.hpp>
-#include "storage.h"
+#include "guest_range.h"
 
 namespace skyline::gpu::texture {
-    /**
-     * @brief Spatial index for guest texture mappings.
-     *
-     * This class deliberately owns only range lookup and insertion ordering. Decisions
-     * about format compatibility, views, synchronization and alias semantics remain in
-     * TextureManager/TextureGroup.
-     */
+    class TextureStorage;
+
+    /** Indexes each physical segment while retaining its position in its guest resource. */
     class TextureMappingCache {
       public:
-        /**
-         * @brief A single contiguous guest CPU mapping associated with a texture storage
-         */
-        struct Mapping : span<u8> {
+        struct Mapping : GuestResourceRanges::Segment {
             std::shared_ptr<TextureStorage> storage;
-            GuestTexture::Mappings::iterator iterator;
-
-            template<typename... Args>
-            Mapping(std::shared_ptr<TextureStorage> storage, GuestTexture::Mappings::iterator iterator, Args &&... args)
-                : span<u8>(std::forward<Args>(args)...),
-                  storage(std::move(storage)),
-                  iterator(iterator) {}
         };
 
         struct LookupResult {
-            boost::container::small_vector<const Mapping *, 8> overlaps;
-            size_t insertionIndex{};
+            std::vector<const Mapping *> firstMappingOverlaps; //!< Legacy match candidates, from highest address.
+            std::vector<std::shared_ptr<TextureStorage>> storages; //!< Unique storages touching any query segment.
         };
 
       private:
-        std::vector<Mapping> mappings;
+        std::vector<Mapping> mappings; //!< Ordered by physical start address.
 
       public:
-        /**
-         * @brief Finds mappings overlapping the supplied guest range.
-         *
-         * The traversal and insertion position intentionally preserve the legacy
-         * TextureManager ordering while moving range indexing out of FindOrCreate.
-         */
-        LookupResult Lookup(span<u8> guestMapping) const {
+        LookupResult Lookup(const GuestResourceRanges &resource) const {
             LookupResult result{};
+            if (!resource.Valid())
+                return result;
 
-            auto mappingEnd{std::upper_bound(mappings.begin(), mappings.end(), guestMapping, [guestMapping](const auto &, const auto &element) {
-                return guestMapping.end() < element.end();
-            })};
-            auto hostMapping{std::lower_bound(mappingEnd, mappings.end(), guestMapping, [guestMapping](const auto &, const auto &element) {
-                return guestMapping.begin() < element.end();
-            })};
+            const auto &first{resource.Segments().front()};
+            for (auto it{mappings.rbegin()}; it != mappings.rend(); ++it) {
+                if (it->address < first.End() && first.address < it->End())
+                    result.firstMappingOverlaps.push_back(&*it);
+            }
 
-            result.insertionIndex = static_cast<size_t>(std::distance(mappings.begin(), mappingEnd));
-
-            while (hostMapping != mappings.begin() && (--hostMapping)->end() > guestMapping.begin())
-                result.overlaps.push_back(&*hostMapping);
+            for (const auto &segment : resource.Segments()) {
+                for (const auto &mapping : mappings) {
+                    if (mapping.address >= segment.End())
+                        break;
+                    if (segment.address >= mapping.End())
+                        continue;
+                    if (std::find(result.storages.begin(), result.storages.end(), mapping.storage) == result.storages.end())
+                        result.storages.push_back(mapping.storage);
+                }
+            }
 
             return result;
         }
 
-        /**
-         * @brief Inserts a mapping at the insertion point produced by Lookup()
-         */
-        void InsertAt(size_t index, std::shared_ptr<TextureStorage> storage, GuestTexture::Mappings::iterator iterator, span<u8> mapping) {
-            mappings.emplace(mappings.begin() + static_cast<std::ptrdiff_t>(index), std::move(storage), iterator, mapping);
-        }
+        void Insert(const std::shared_ptr<TextureStorage> &storage, const GuestResourceRanges &resource) {
+            if (!resource.Valid())
+                return;
 
-        /**
-         * @brief Inserts an additional mapping while retaining address ordering
-         */
-        void Insert(std::shared_ptr<TextureStorage> storage, GuestTexture::Mappings::iterator iterator, span<u8> mapping) {
-            auto position{std::upper_bound(mappings.begin(), mappings.end(), mapping)};
-            mappings.emplace(position, std::move(storage), iterator, mapping);
+            for (const auto &segment : resource.Segments()) {
+                auto position{std::upper_bound(mappings.begin(), mappings.end(), segment.address,
+                    [](std::uintptr_t address, const Mapping &mapping) { return address < mapping.address; })};
+                mappings.insert(position, Mapping{segment, storage});
+            }
         }
     };
 }

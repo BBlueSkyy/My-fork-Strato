@@ -6,6 +6,7 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include "guest_range.h"
 #include "texture.h"
 
 namespace skyline::gpu::texture {
@@ -42,15 +43,17 @@ namespace skyline::gpu::texture {
       public:
         std::shared_ptr<Texture> texture;
         std::shared_ptr<TextureGroup> group;
+        GuestResourceRanges ranges;
 
-        TextureStorage(std::shared_ptr<Texture> texture, std::shared_ptr<TextureGroup> group)
+        TextureStorage(std::shared_ptr<Texture> texture, std::shared_ptr<TextureGroup> group, GuestResourceRanges ranges)
             : texture(std::move(texture)),
-              group(std::move(group)) {}
+              group(std::move(group)),
+              ranges(std::move(ranges)) {}
     };
 
-    inline std::shared_ptr<TextureStorage> CreateTextureStorage(std::shared_ptr<Texture> texture) {
+    inline std::shared_ptr<TextureStorage> CreateTextureStorage(std::shared_ptr<Texture> texture, GuestResourceRanges ranges) {
         auto group{std::make_shared<TextureGroup>()};
-        auto storage{std::make_shared<TextureStorage>(std::move(texture), group)};
+        auto storage{std::make_shared<TextureStorage>(std::move(texture), group, std::move(ranges))};
         group->Attach(storage);
         return storage;
     }
