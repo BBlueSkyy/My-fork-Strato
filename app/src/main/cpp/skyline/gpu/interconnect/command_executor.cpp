@@ -586,8 +586,9 @@ namespace skyline::gpu::interconnect {
 
             slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
                 [texture, stagingBuffer](vk::raii::CommandBuffer &commandBuffer,
-                                         const std::shared_ptr<FenceCycle> &,
+                                         const std::shared_ptr<FenceCycle> &cycle,
                                          GPU &) {
+                    cycle->AttachObjects(texture, stagingBuffer);
                     texture->CopyIntoStagingBuffer(commandBuffer, stagingBuffer);
                 });
 
