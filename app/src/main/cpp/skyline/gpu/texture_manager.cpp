@@ -28,7 +28,6 @@ namespace skyline::gpu {
          * 5) Create a new texture and insert it in the map then return it
          */
 
-        std::shared_ptr<Texture> match{};
         boost::container::small_vector<std::shared_ptr<Texture>, 4> matches{};
         boost::container::small_vector<std::shared_ptr<texture::TextureStorage>, 4> overlappingStorages{};
         auto mappingLookup{mappingCache.Lookup(guestMapping)};
