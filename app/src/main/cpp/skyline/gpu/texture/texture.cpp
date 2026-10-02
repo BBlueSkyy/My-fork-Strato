@@ -813,6 +813,7 @@ namespace skyline::gpu {
             // guest texture memory is retained. The pending bit is consumed only here,
             // after descriptor preparation and immediately before command submission.
             const bool explicitGpuWrite{std::exchange(gpuWritePending, false)};
+            gpuDirty = gpuDirty || explicitGpuWrite;
 
             // FIXME (TEXMAN): This should really be tracked on the texture usage side
             if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsRt && !explicitGpuWrite)
