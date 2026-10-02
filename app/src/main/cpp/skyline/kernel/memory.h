@@ -263,7 +263,7 @@ namespace skyline {
 
             std::vector<std::shared_ptr<type::KMemory>> memRefs;
 
-            void MapInternal(const std::pair<u8 *, ChunkDescriptor> &newDesc);
+            void MapInternal(const std::pair<u8 *, ChunkDescriptor> &newDesc, bool reprotectHost = true);
 
             void ForeachChunkInRange(span<u8> memory, auto editCallback);
 
@@ -454,7 +454,7 @@ namespace skyline {
             size_t GetSystemResourceUsage();
 
             /**
-             * @return If the supplied guest region is contained withing the accessible guest address space
+             * @return If the supplied guest region is contained within host-backed VMM space
              */
             constexpr bool AddressSpaceContains(span<u8> region) const {
                 region = GetHostSpan(region);
@@ -463,6 +463,29 @@ namespace skyline {
                 else
                     return base.contains(region);
             }
+
+            enum class SharedMemoryPreparationResult {
+                Success,
+                InvalidRegion,
+                InvalidCurrentMemory,
+                OutOfMemory,
+            };
+
+            /**
+             * @brief Validates and prepares a 36-bit shared-memory mapping.
+             * @details Horizon permits Shared mappings in the 36-bit alias-code region
+             * (0x08000000..0x1000000000) outside Heap/Alias. Since Strato cannot reserve
+             * that entire range on Android, host backing is reserved on demand without
+             * replacing unrelated native mappings.
+             */
+            bool IsValidSharedMemoryRegion36Bit(span<u8> region) const;
+            SharedMemoryPreparationResult PrepareSharedMemoryMapping36Bit(span<u8> region, bool &dynamicBacking);
+
+            /**
+             * @brief Releases host backing created on demand for a 36-bit shared mapping.
+             * @note Call only when PrepareSharedMemoryMapping36Bit returned dynamicBacking=true.
+             */
+            void ReleaseSharedMemoryBacking36Bit(span<u8> region);
 
             /**
              * @brief Gets the host address of a guest region

@@ -10,6 +10,9 @@ namespace skyline::kernel::type {
      * @brief KSharedMemory is used to retain two mappings of the same underlying memory, allowing sharing memory between two processes
      */
     class KSharedMemory : public KMemory {
+      private:
+        bool dynamicGuestBacking{};
+
       public:
         KSharedMemory(const DeviceState &state, size_t size);
 
@@ -17,6 +20,11 @@ namespace skyline::kernel::type {
          * @note 'ptr' needs to be in guest-reserved address space
          */
         u8 *Map(span<u8> map, memory::Permission permission);
+
+        /**
+         * @brief Maps after svcMapSharedMemory has safely prepared a host range outside the normal 36-bit carveouts.
+         */
+        u8 *MapPrepared(span<u8> map, memory::Permission permission, bool dynamicBacking);
 
         /**
          * @note 'ptr' needs to be in guest-reserved address space

@@ -580,7 +580,7 @@ namespace skyline::kernel::svc {
                 return;
             }
 
-            if (address >= (address + size) || !state.process->memory.AddressSpaceContains(span<u8>{address, size})) [[unlikely]] {
+            if (address >= (address + size)) [[unlikely]] {
                 ctx.w0 = result::InvalidCurrentMemory;
                 LOGW("Invalid address and size combination: 'address': {}, 'size': 0x{:X}", fmt::ptr(address), size);
                 return;
@@ -593,9 +593,35 @@ namespace skyline::kernel::svc {
                 return;
             }
 
+            span<u8> mapping{address, size};
+            bool dynamicBacking{};
+
+            if (state.process->memory.addressSpaceType == memory::AddressSpaceType::AddressSpace36Bit) {
+                switch (state.process->memory.PrepareSharedMemoryMapping36Bit(mapping, dynamicBacking)) {
+                    case MemoryManager::SharedMemoryPreparationResult::Success:
+                        break;
+                    case MemoryManager::SharedMemoryPreparationResult::InvalidRegion:
+                        ctx.w0 = result::InvalidMemoryRegion;
+                        return;
+                    case MemoryManager::SharedMemoryPreparationResult::InvalidCurrentMemory:
+                        ctx.w0 = result::InvalidCurrentMemory;
+                        return;
+                    case MemoryManager::SharedMemoryPreparationResult::OutOfMemory:
+                        ctx.w0 = result::OutOfMemory;
+                        return;
+                }
+            } else if (!state.process->memory.AddressSpaceContains(mapping)) [[unlikely]] {
+                ctx.w0 = result::InvalidCurrentMemory;
+                LOGW("Invalid address and size combination: 'address': {}, 'size': 0x{:X}", fmt::ptr(address), size);
+                return;
+            }
+
             LOGD("Mapping shared memory (0x{:X}) at {} - {} (0x{:X} bytes), with permissions: ({}{}{})", handle, fmt::ptr(address), fmt::ptr(address + size), size, permission.r ? 'R' : '-', permission.w ? 'W' : '-', permission.x ? 'X' : '-');
 
-            object->Map(span<u8>{address, size}, permission);
+            if (state.process->memory.addressSpaceType == memory::AddressSpaceType::AddressSpace36Bit)
+                object->MapPrepared(mapping, permission, dynamicBacking);
+            else
+                object->Map(mapping, permission);
             state.process->memory.AddRef(object);
 
             ctx.w0 = Result{};
@@ -624,7 +650,14 @@ namespace skyline::kernel::svc {
                 return;
             }
 
-            if (address >= (address + size) || !state.process->memory.AddressSpaceContains(span<u8>{address, size})) [[unlikely]] {
+            span<u8> mapping{address, size};
+            const bool valid36BitShared{
+                state.process->memory.addressSpaceType == memory::AddressSpaceType::AddressSpace36Bit &&
+                state.process->memory.IsValidSharedMemoryRegion36Bit(mapping)
+            };
+
+            if (address >= (address + size) ||
+                (!valid36BitShared && !state.process->memory.AddressSpaceContains(mapping))) [[unlikely]] {
                 ctx.w0 = result::InvalidCurrentMemory;
                 LOGW("Invalid address and size combination: 'address': {}, 'size': 0x{:X}", fmt::ptr(address), size);
                 return;
@@ -632,7 +665,7 @@ namespace skyline::kernel::svc {
 
             LOGD("Unmapping shared memory (0x{:X}) at {} - {} (0x{:X} bytes)", handle, fmt::ptr(address), fmt::ptr(address + size), size);
 
-            object->Unmap(span<u8>{address, size});
+            object->Unmap(mapping);
             state.process->memory.RemoveRef(object);
 
             ctx.w0 = Result{};

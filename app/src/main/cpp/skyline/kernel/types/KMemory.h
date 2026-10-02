@@ -14,6 +14,10 @@ namespace skyline::kernel::type {
       private:
         int fileDescriptor; //!< A file descriptor to the underlying shared memory
 
+      protected:
+        u8 *MapImpl(span<u8> map, memory::Permission permission, bool preparedAddressSpace);
+        void UnmapImpl(span<u8> map, bool preparedAddressSpace);
+
       public:
         KMemory(const DeviceState &state, KType objectType, size_t size);
 
