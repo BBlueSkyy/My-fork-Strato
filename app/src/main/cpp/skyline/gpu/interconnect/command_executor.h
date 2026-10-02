@@ -229,6 +229,7 @@ namespace skyline::gpu::interconnect {
         std::vector<std::shared_ptr<Texture>> diagnosticRenderTargets;
         std::vector<std::function<void()>> pendingDiagnosticCaptureCallbacks;
         DiagnosticCaptureState diagnosticCaptureState{DiagnosticCaptureState::WaitingForHdr};
+        bool diagnosticCaptureArmed{};
         size_t diagnosticCaptureIndex{};
         size_t diagnosticFullHdCount{};
         std::string diagnosticCaptureDirectory;
@@ -237,6 +238,7 @@ namespace skyline::gpu::interconnect {
 
         void TrackDiagnosticRenderTargets(span<TextureView *> colorAttachments);
         void QueueDiagnosticRenderTargetCaptures();
+        bool CheckDiagnosticCaptureArm();
         bool EnsureDiagnosticCaptureDirectory();
 
         void RotateRecordSlot();
