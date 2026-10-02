@@ -407,6 +407,7 @@ namespace skyline {
 
         enum class NCAParseMode {
             Full,
+            ProgramDeferred,
             MetadataOnly,
         };
 
@@ -492,6 +493,8 @@ namespace skyline {
 
             bool HasBktrSection() const;
             bool HasRomFsSection() const;
+            std::shared_ptr<FileSystem> OpenExeFs();
+            std::shared_ptr<Backing> OpenRomFs();
 
             // Called on the patch NCA. Base and patch section offsets are never interchanged.
             std::shared_ptr<FileSystem> OpenExeFsWithPatch(NCA &base);
