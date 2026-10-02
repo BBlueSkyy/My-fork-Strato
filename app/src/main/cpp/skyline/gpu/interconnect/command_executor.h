@@ -234,6 +234,7 @@ namespace skyline::gpu::interconnect {
         DiagnosticCaptureState diagnosticCaptureState{DiagnosticCaptureState::WaitingForArm};
         bool diagnosticCaptureArmed{};
         bool diagnosticSampledInputsCaptured{};
+        std::optional<u32> diagnosticSampledInputRenderPass;
         size_t diagnosticCaptureIndex{};
         std::string diagnosticCaptureDirectory;
 
