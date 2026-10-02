@@ -393,6 +393,7 @@ namespace skyline::gpu {
             CpuDirty, //!< The CPU mappings have been modified but the GPU texture is not up to date
             GpuDirty, //!< The GPU texture has been modified but the CPU mappings have not been updated
         } dirtyState{DirtyState::CpuDirty}; //!< The state of the CPU mappings with respect to the GPU texture
+        bool gpuWritePending{}; //!< A submitted GPU write must leave the guest copy stale after any required host upload
         bool memoryFreed{}; //!< If the guest backing memory has been freed
         std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
 
