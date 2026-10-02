@@ -38,7 +38,13 @@ int main() {
     mipView.viewMipCount = 1;
     mipView.viewLayerCount = 1;
     mipView.subresources = mipSubresource;
-    Check(ClassifyTextureViewCompatibility(parent, mipView, FormatCompatibility::ViewCompatible), TextureViewCompatibility::Full, "aligned mip view");
+    Check(ClassifyTextureViewCompatibility(parent, mipView, FormatCompatibility::ViewCompatible, true), TextureViewCompatibility::Full, "aligned mip view");
+
+    Check(ClassifyTextureViewCompatibility(parent, mipView, FormatCompatibility::ViewCompatible), TextureViewCompatibility::LayoutIncompatible, "host format view must be verified");
+
+    mipView.viewType = ViewKind::Cube;
+    Check(ClassifyTextureViewCompatibility(parent, mipView, FormatCompatibility::Exact), TextureViewCompatibility::LayoutIncompatible, "cube needs host image flag and six faces");
+    mipView.viewType = ViewKind::TwoDimensional;
 
     const std::array shiftedMip{
         GuestSubresource{.offset = 0x1810, .size = 0x200, .width = 32, .height = 16, .depth = 1, .mip = 0, .layer = 0},

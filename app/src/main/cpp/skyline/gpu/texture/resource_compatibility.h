@@ -58,6 +58,7 @@ namespace skyline::gpu::texture {
         TileLayout tile{};
         ImageKind imageType{};
         ViewKind viewType{};
+        bool cubeCompatible{}; //!< Backing VkImage was created with cube compatibility.
         std::uint64_t layerStride{};
         std::uint32_t viewMipBase{}, viewMipCount{};
         std::uint32_t viewLayerBase{}, viewLayerCount{};
@@ -90,10 +91,12 @@ namespace skyline::gpu::texture {
      * Classify a requested view against the backing image's complete subresource layout.
      * This only reports possible relationships: it does not grant a Vulkan view, schedule a
      * copy, or determine which representation contains the latest GPU-written contents.
+     * supportsFormatView must be verified for this particular pair of host formats and
+     * backing image creation flags; guest texel compatibility alone is insufficient.
      */
     inline TextureViewCompatibility ClassifyTextureViewCompatibility(
         const TextureResourceLayout &backing, const TextureResourceLayout &requested,
-        FormatCompatibility format) {
+        FormatCompatibility format, bool supportsFormatView = false) {
         if (format == FormatCompatibility::Incompatible ||
             !requested.viewMipCount || !requested.viewLayerCount ||
             requested.subresources.empty() || backing.subresources.empty())
@@ -138,6 +141,10 @@ namespace skyline::gpu::texture {
             backing.imageType != requested.imageType ||
             !ValidViewType(backing.imageType, backing.viewType) ||
             !ValidViewType(backing.imageType, requested.viewType) ||
+            (format == FormatCompatibility::ViewCompatible && !supportsFormatView) ||
+            ((requested.viewType == ViewKind::Cube || requested.viewType == ViewKind::CubeArray) &&
+                (!backing.cubeCompatible || requested.viewLayerBase % 6 ||
+                    (requested.viewType == ViewKind::Cube ? requested.viewLayerCount != 6 : requested.viewLayerCount % 6))) ||
             (requested.viewLayerCount > 1 && backing.layerStride != requested.layerStride))
             return TextureViewCompatibility::LayoutIncompatible;
 
