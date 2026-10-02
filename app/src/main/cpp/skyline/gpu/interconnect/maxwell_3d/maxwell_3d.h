@@ -51,6 +51,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ConstantBuffers constantBuffers;
         Samplers samplers;
         const engine::SamplerBinding &samplerBinding;
+        const engine::Blend &diagnosticBlend;
         Textures textures;
         std::shared_ptr<memory::Buffer> quadConversionBuffer{};
         bool quadConversionBufferAttached{};
