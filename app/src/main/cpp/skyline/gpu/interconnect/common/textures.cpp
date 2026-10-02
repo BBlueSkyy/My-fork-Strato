@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
-#include <string_view>
-
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include <gpu/texture_manager.h>
@@ -172,6 +170,29 @@ namespace skyline::gpu::interconnect {
         #undef TIC_FORMAT_CASE_INT
         #undef TIC_FORMAT_CASE_NORM_INT
         #undef TIC_FORMAT_CASE_NORM_INT_FLOAT
+    }
+
+    static bool IsIntegerTicFormat(texture::Format format) {
+        return format == format::R8Uint ||
+               format == format::R8Sint ||
+               format == format::R16Uint ||
+               format == format::R16Sint ||
+               format == format::R8G8Uint ||
+               format == format::R8G8Sint ||
+               format == format::R32Uint ||
+               format == format::R32Sint ||
+               format == format::R16G16Uint ||
+               format == format::R16G16Sint ||
+               format == format::R8G8B8A8Uint ||
+               format == format::R8G8B8A8Sint ||
+               format == format::A2B10G10R10Uint ||
+               format == format::A2B10G10R10Sint ||
+               format == format::R32G32Uint ||
+               format == format::R32G32Sint ||
+               format == format::R16G16B16A16Uint ||
+               format == format::R16G16B16A16Sint ||
+               format == format::R32G32B32A32Uint ||
+               format == format::R32G32B32A32Sint;
     }
 
     static vk::ComponentMapping ConvertTicSwizzleMapping(TextureImageControl::FormatWord format, vk::ComponentMapping swizzleMapping) {
@@ -407,8 +428,7 @@ namespace skyline::gpu::interconnect {
             return false;
         }
 
-        const std::string_view numericFormat{vk::componentNumericFormat(format->vkFormat, 0)};
-        return numericFormat == "SINT" || numericFormat == "UINT";
+        return IsIntegerTicFormat(format);
     }
 
     vk::raii::BufferView *Textures::GetOrCreateTexelBufferView(
