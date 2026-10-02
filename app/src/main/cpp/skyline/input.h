@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <unordered_set>
 
 #include "common.h"
@@ -35,6 +36,7 @@ namespace skyline::input {
         KeyboardManager keyboard;
 
         Input(const DeviceState &state);
+        ~Input();
 
         /** Registers the application-scoped HID state owned by an IAppletResource. */
         bool RegisterAppletResource(u64 aruid);
@@ -46,6 +48,7 @@ namespace skyline::input {
         bool IsAppletResourceRegistered(u64 aruid) const;
 
       private:
+        std::atomic_bool stopUpdateThread{};
         std::thread updateThread; //!< A thread that handles delivering HID shared memory updates at a fixed rate
 
         /**
