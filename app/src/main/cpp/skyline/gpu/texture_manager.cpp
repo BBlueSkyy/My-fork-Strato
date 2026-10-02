@@ -31,11 +31,7 @@ namespace skyline::gpu {
         std::shared_ptr<Texture> match{};
         boost::container::small_vector<std::shared_ptr<Texture>, 4> matches{};
         boost::container::small_vector<std::shared_ptr<texture::TextureStorage>, 4> overlappingStorages{};
-        auto mappingEnd{std::upper_bound(textures.begin(), textures.end(), guestMapping, [guestMapping](const auto &value, const auto &element) {
-            return guestMapping.end() < element.end();
-        })}, hostMapping{std::lower_bound(mappingEnd, textures.end(), guestMapping, [guestMapping](const auto &value, const auto &element) {
-            return guestMapping.begin() < element.end();
-        })};
+        auto mappingLookup{mappingCache.Lookup(guestMapping)};
 
         std::shared_ptr<Texture> fullMatch{};
         std::shared_ptr<Texture> layerMipMatch{};
@@ -46,7 +42,7 @@ namespace skyline::gpu {
         u32 depthSlice{};
         u32 depthSliceParentDepth{};
 
-        while (hostMapping != textures.begin() && (--hostMapping)->end() > guestMapping.begin()) {
+        for (const auto *hostMapping : mappingLookup.overlaps) {
             auto &candidateStorage{hostMapping->storage};
             if (std::find(overlappingStorages.begin(), overlappingStorages.end(), candidateStorage) == overlappingStorages.end())
                 overlappingStorages.push_back(candidateStorage);
@@ -332,12 +328,10 @@ namespace skyline::gpu {
         auto storage{skyline::gpu::texture::CreateTextureStorage(texture)};
         skyline::gpu::texture::JoinTextureStorageGroups(storage, overlappingStorages);
         auto it{texture->guest->mappings.begin()};
-        textures.emplace(mappingEnd, TextureMapping{storage, it, guestMapping});
+        mappingCache.InsertAt(mappingLookup.insertionIndex, storage, it, guestMapping);
         while ((++it) != texture->guest->mappings.end()) {
             guestMapping = *it;
-            auto mapping{std::upper_bound(textures.begin(), textures.end(), guestMapping)};
-            // TODO: Delete overlapping textures that aren't in texture pool
-            textures.emplace(mapping, TextureMapping{storage, it, guestMapping});
+            mappingCache.Insert(storage, it, guestMapping);
         }
 
         return texture->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
