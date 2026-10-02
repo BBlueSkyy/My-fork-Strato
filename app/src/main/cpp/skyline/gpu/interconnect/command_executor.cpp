@@ -460,6 +460,8 @@ namespace skyline::gpu::interconnect {
             std::filesystem::remove(armPath, error);
             diagnosticCaptureArmed = true;
             diagnosticCaptureState = DiagnosticCaptureState::WaitingForHdr;
+            diagnosticSampledInputs.clear();
+            diagnosticSampledInputsCaptured = false;
             diagnosticDrawTraceLines.clear();
             diagnosticDrawTraceFlushedCount = 0;
             LOGI("MINIRD arm marker consumed; waiting for the next HDR chain");
@@ -479,6 +481,92 @@ namespace skyline::gpu::interconnect {
         }
 
         return false;
+    }
+
+    void CommandExecutor::QueueDiagnosticSampledInputCaptures() {
+        if (diagnosticSampledInputsCaptured ||
+            diagnosticCaptureState != DiagnosticCaptureState::Capturing ||
+            renderPassIndex != 8 ||
+            diagnosticCaptureDirectory.empty() ||
+            diagnosticSampledInputs.empty())
+            return;
+
+        const std::filesystem::path captureDirectory{diagnosticCaptureDirectory};
+
+        for (size_t inputIndex{}; inputIndex < diagnosticSampledInputs.size(); ++inputIndex) {
+            const auto &texture{diagnosticSampledInputs[inputIndex]};
+            if (!texture ||
+                texture->layout == vk::ImageLayout::eUndefined ||
+                !texture->surfaceSize ||
+                texture->sampleCount != vk::SampleCountFlagBits::e1)
+                continue;
+
+            auto stagingBuffer{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+            const auto width{texture->dimensions.width};
+            const auto height{texture->dimensions.height};
+            const auto depth{texture->dimensions.depth};
+            const auto formatName{vk::to_string(texture->format->vkFormat)};
+            const auto fileName{fmt::format("rp8_input_{:02}_{}x{}x{}_{}.raw",
+                                            inputIndex, width, height, depth, formatName)};
+            const auto rawPath{captureDirectory / fileName};
+            const auto metadataPath{captureDirectory / fmt::format("rp8_input_{:02}.txt", inputIndex)};
+
+            uintptr_t guestMap{};
+            size_t guestMapSize{};
+            u32 tileMode{};
+            u32 blockHeight{};
+            u32 blockDepth{};
+            if (texture->guest) {
+                if (!texture->guest->mappings.empty())
+                    guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                for (const auto &mapping : texture->guest->mappings)
+                    guestMapSize += mapping.size();
+                tileMode = static_cast<u32>(texture->guest->tileConfig.mode);
+                if (texture->guest->tileConfig.mode == texture::TileMode::Block) {
+                    blockHeight = texture->guest->tileConfig.blockHeight;
+                    blockDepth = texture->guest->tileConfig.blockDepth;
+                }
+            }
+
+            const auto textureAddress{reinterpret_cast<uintptr_t>(texture.get())};
+            const auto metadata{fmt::format(
+                "input_index={}\nfile={}\nrender_pass={}\nsubmission={}\ntexture=0x{:X}\n"
+                "width={}\nheight={}\ndepth={}\nformat={}\nlayout={}\nsize={}\n"
+                "levels={}\nlayers={}\nguest_map=0x{:X}\nguest_map_size={}\ntile={}\nbh={}\nbd={}\n",
+                inputIndex, fileName, renderPassIndex, submissionNumber, textureAddress,
+                width, height, depth, formatName, vk::to_string(texture->layout), texture->surfaceSize,
+                texture->levelCount, texture->layerCount,
+                guestMap, guestMapSize, tileMode, blockHeight, blockDepth)};
+
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [texture, stagingBuffer](vk::raii::CommandBuffer &commandBuffer,
+                                         const std::shared_ptr<FenceCycle> &cycle,
+                                         GPU &) {
+                    cycle->AttachObjects(texture, stagingBuffer);
+                    texture->CopyIntoStagingBuffer(commandBuffer, stagingBuffer);
+                });
+
+            pendingDiagnosticCaptureCallbacks.emplace_back(
+                [stagingBuffer, rawPath, metadataPath, metadata, inputIndex] {
+                    std::ofstream raw{rawPath, std::ios::out | std::ios::binary | std::ios::trunc};
+                    if (!raw) {
+                        LOGE("MINIRD failed to open rp8 sampled input {}", inputIndex);
+                        return;
+                    }
+                    raw.write(reinterpret_cast<const char *>(stagingBuffer->data()),
+                              static_cast<std::streamsize>(stagingBuffer->size()));
+                    raw.close();
+
+                    std::ofstream meta{metadataPath, std::ios::out | std::ios::trunc};
+                    if (meta)
+                        meta << metadata;
+
+                    LOGI("MINIRD wrote rp8 sampled input {}: {}", inputIndex, rawPath.string());
+                });
+        }
+
+        diagnosticSampledInputsCaptured = true;
+        diagnosticSampledInputs.clear();
     }
 
     void CommandExecutor::FlushDiagnosticDrawTrace() {
@@ -716,6 +804,7 @@ namespace skyline::gpu::interconnect {
             }
         }
 
+        QueueDiagnosticSampledInputCaptures();
         diagnosticRenderTargets.clear();
 
         if (captureComplete) {
@@ -996,6 +1085,23 @@ namespace skyline::gpu::interconnect {
         diagnosticDrawTraceLines.emplace_back(
             fmt::format("submission={} render_pass={}\n{}",
                         submissionNumber, renderPassIndex, std::move(trace)));
+    }
+
+    void CommandExecutor::TrackDiagnosticSampledInputs(span<TextureView *> sampledImages) {
+        if (!IsDiagnosticDrawTraceActive() || diagnosticSampledInputsCaptured)
+            return;
+
+        for (auto *view : sampledImages) {
+            if (!view)
+                continue;
+
+            std::shared_ptr<Texture> texture{view->texture};
+            if (std::find_if(diagnosticSampledInputs.begin(), diagnosticSampledInputs.end(),
+                             [&](const auto &existing) {
+                                 return existing.get() == texture.get();
+                             }) == diagnosticSampledInputs.end())
+                diagnosticSampledInputs.emplace_back(std::move(texture));
+        }
     }
 
     u32 CommandExecutor::AddCheckpointImpl(std::string_view annotation) {
