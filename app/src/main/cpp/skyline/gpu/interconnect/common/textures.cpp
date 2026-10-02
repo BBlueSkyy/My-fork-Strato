@@ -290,11 +290,11 @@ namespace skyline::gpu::interconnect {
             switch (textureHeader.textureType) {
                 case TextureImageControl::TextureType::e1D:
                     guest.viewType = shaderType == Shader::TextureType::ColorArray1D ? vk::ImageViewType::e1DArray : vk::ImageViewType::e1D;
-                    guest.layerCount = 1;
+                    guest.viewLayerCount = 1;
                     break;
                 case TextureImageControl::TextureType::e1DArray:
                     guest.viewType = vk::ImageViewType::e1DArray;
-                    guest.layerCount = depth;
+                    guest.viewLayerCount = depth;
                     break;
                 case TextureImageControl::TextureType::e1DBuffer:
                     throw exception("1D Buffers are not supported");
@@ -305,30 +305,33 @@ namespace skyline::gpu::interconnect {
                     guest.viewMipCount = 1;
                 case TextureImageControl::TextureType::e2D:
                     guest.viewType = shaderType == Shader::TextureType::ColorArray2D ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
-                    guest.layerCount = 1;
+                    guest.viewLayerCount = 1;
                     break;
                 case TextureImageControl::TextureType::e2DArray:
                     guest.viewType = vk::ImageViewType::e2DArray;
-                    guest.layerCount = depth;
+                    guest.viewLayerCount = depth;
                     break;
 
                 case TextureImageControl::TextureType::e3D:
                     guest.viewType = vk::ImageViewType::e3D;
+                    guest.viewLayerCount = 1;
                     guest.layerCount = 1;
                     guest.dimensions.depth = depth;
                     break;
 
                 case TextureImageControl::TextureType::eCube:
                     guest.viewType = shaderType == Shader::TextureType::ColorArrayCube ? vk::ImageViewType::eCubeArray : vk::ImageViewType::eCube;
-                    guest.layerCount = CubeFaceCount;
+                    guest.viewLayerCount = CubeFaceCount;
                     break;
                 case TextureImageControl::TextureType::eCubeArray:
                     guest.viewType = vk::ImageViewType::eCubeArray;
-                    guest.layerCount = depth * CubeFaceCount;
+                    guest.viewLayerCount = depth * CubeFaceCount;
                     break;
             }
 
-            size_t size; //!< The size of the texture in bytes
+            if (textureHeader.textureType != TextureImageControl::TextureType::e3D)
+                guest.layerCount = guest.baseArrayLayer + guest.viewLayerCount;
+
             if (textureHeader.headerType == TextureImageControl::HeaderType::Pitch) {
                 guest.tileConfig = {
                     .mode = texture::TileMode::Pitch,
@@ -345,45 +348,29 @@ namespace skyline::gpu::interconnect {
             }
 
 
-            const size_t guestSize{guest.GetSize()};
-            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guestSize)};
-            guest.mappings.assign(mappings.begin(), mappings.end());
-            if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
-                if (loggedUnmappedTextureIovas.insert(textureHeader.Iova()).second) {
-                    size_t mappedBytes{};
-                    size_t unmappedBytes{};
-                    size_t firstInvalidOffset{guestSize};
-                    size_t mappingOffset{};
+            u64 backingIova{textureHeader.Iova()};
+            size_t backingSize{guest.GetSize()};
 
-                    for (auto mapping : guest.mappings) {
-                        if (mapping.valid()) {
-                            mappedBytes += mapping.size();
-                        } else {
-                            unmappedBytes += mapping.size();
-                            firstInvalidOffset = std::min(firstInvalidOffset, mappingOffset);
-                        }
-                        mappingOffset += mapping.size();
-                    }
+            if (guest.baseArrayLayer) {
+                const u64 layerStride{guest.GetLayerStride()};
+                const u64 baseLayerOffset{layerStride * guest.baseArrayLayer};
+                if (baseLayerOffset > backingIova) {
+                    LOGW("Texture base layer offset exceeds TIC address: iova=0x{:X}, baseLayer={}, layerStride=0x{:X}",
+                         textureHeader.Iova(), guest.baseArrayLayer, layerStride);
+                    if (!nullTextureView)
+                        nullTextureView = CreateNullTexture(ctx);
 
-                    auto [blockMapping, blockOffset]{ctx.channelCtx.asCtx->gmmu.LookupBlock(textureHeader.Iova())};
-                    const u64 blockStart{textureHeader.Iova() - blockOffset};
-                    const u64 blockEnd{blockStart + blockMapping.size()};
-
-                    LOGW("Unmapped TIC: index={} iova=0x{:X} size=0x{:X} dims={}x{}x{} layers={} baseLayer={} mips={} viewMip={}+{} format=0x{:X} textureType={} headerType={} sparse={} tile=0x{:X} shaderType={} block=[0x{:X},0x{:X}) blockValid={} blockOffset=0x{:X} mappings={} mapped=0x{:X} unmapped=0x{:X} firstInvalid=0x{:X}",
-                         index, textureHeader.Iova(), guestSize,
-                         guest.dimensions.width, guest.dimensions.height, guest.dimensions.depth,
-                         guest.layerCount, guest.baseArrayLayer, guest.mipLevelCount,
-                         guest.viewMipBase, guest.viewMipCount,
-                         static_cast<u32>(textureHeader.formatWord.format),
-                         static_cast<u32>(textureHeader.textureType),
-                         static_cast<u32>(textureHeader.headerType),
-                         static_cast<u32>(textureHeader.isSparse),
-                         static_cast<u32>(textureHeader.tileConfig.raw),
-                         static_cast<u32>(shaderType),
-                         blockStart, blockEnd, blockMapping.valid(), blockOffset,
-                         guest.mappings.size(), mappedBytes, unmappedBytes, firstInvalidOffset);
+                    return nullTextureView.get();
                 }
 
+                backingIova -= baseLayerOffset;
+                backingSize = static_cast<size_t>(layerStride * guest.layerCount);
+            }
+
+            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(backingIova, backingSize)};
+            guest.mappings.assign(mappings.begin(), mappings.end());
+            if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
+                LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
 
