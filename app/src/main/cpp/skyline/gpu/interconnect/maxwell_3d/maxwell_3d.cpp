@@ -359,9 +359,186 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         constexpr u64 MarvelGameplayVertex{0x382850889BD45FFBULL};
         constexpr u64 MarvelGameplayFragment{0x5D696B49F0491509ULL};
-        if (packed.shaderHashes[1] == MarvelGameplayVertex &&
-            packed.shaderHashes[5] == MarvelGameplayFragment)
+        const bool marvelGameplayTarget{
+            packed.shaderHashes[1] == MarvelGameplayVertex &&
+            packed.shaderHashes[5] == MarvelGameplayFragment
+        };
+        if (marvelGameplayTarget) {
             ctx.executor.TrackDiagnosticSampledInputs(activeDescriptorSetSampledImages);
+
+            // Diagnostic-only: capture the first large gameplay batch feeding the broken
+            // Marvel scenery. This records guest index/vertex data and bound constant buffers
+            // without changing any draw state.
+            if (!diagnosticGameplayGeometryCaptured && indexed && count == 12288) {
+                diagnosticGameplayGeometryCaptured = true;
+                trace += "marvel_geometry_capture=true\n";
+
+                size_t indexSize{};
+                switch (diagnosticIndexBuffer.indexSize) {
+                    case engine::IndexBuffer::IndexSize::OneByte:
+                        indexSize = 1;
+                        break;
+                    case engine::IndexBuffer::IndexSize::TwoBytes:
+                        indexSize = 2;
+                        break;
+                    case engine::IndexBuffer::IndexSize::FourBytes:
+                        indexSize = 4;
+                        break;
+                }
+
+                const u64 indexBase{u64{diagnosticIndexBuffer.address}};
+                const u64 indexLimit{u64{diagnosticIndexBuffer.limit}};
+                const u64 indexAddress{indexBase + static_cast<u64>(first) * indexSize};
+                size_t requestedIndexBytes{static_cast<size_t>(count) * indexSize};
+                size_t availableIndexBytes{
+                    indexLimit >= indexAddress
+                        ? static_cast<size_t>(indexLimit - indexAddress + 1)
+                        : 0
+                };
+                size_t indexBytes{std::min(requestedIndexBytes, availableIndexBytes)};
+                indexBytes = std::min<size_t>(indexBytes, 2ULL * 1024 * 1024);
+
+                std::vector<u8> indexData(indexBytes);
+                if (indexBytes)
+                    ctx.channelCtx.asCtx->gmmu.Read(indexData.data(), indexAddress, indexBytes);
+
+                ctx.executor.WriteDiagnosticBlob(
+                    "marvel_target_indices.bin",
+                    span<const u8>{indexData.data(), indexData.size()});
+
+                u32 maxIndex{};
+                bool haveIndex{};
+                const size_t indexCount{indexSize ? indexData.size() / indexSize : 0};
+                for (size_t element{}; element < indexCount; ++element) {
+                    u32 value{};
+                    if (indexSize == 1) {
+                        value = indexData[element];
+                        if (value == 0xFF)
+                            continue;
+                    } else if (indexSize == 2) {
+                        u16 v{};
+                        std::memcpy(&v, indexData.data() + element * 2, sizeof(v));
+                        value = v;
+                        if (value == 0xFFFF)
+                            continue;
+                    } else if (indexSize == 4) {
+                        std::memcpy(&value, indexData.data() + element * 4, sizeof(value));
+                        if (value == 0xFFFFFFFF)
+                            continue;
+                    } else {
+                        break;
+                    }
+
+                    maxIndex = haveIndex ? std::max(maxIndex, value) : value;
+                    haveIndex = true;
+                }
+
+                trace += fmt::format(
+                    "index_buffer base=0x{:X} limit=0x{:X} address=0x{:X} type={} bytes={} max_index={}\n",
+                    indexBase, indexLimit, indexAddress,
+                    static_cast<u32>(diagnosticIndexBuffer.indexSize),
+                    indexData.size(), haveIndex ? maxIndex : 0);
+
+                std::array<bool, engine::VertexStreamCount> usedStreams{};
+                for (size_t attributeIndex{}; attributeIndex < diagnosticVertexAttributes.size(); ++attributeIndex) {
+                    const auto &attribute{diagnosticVertexAttributes[attributeIndex]};
+                    if (attribute.source != engine::VertexAttribute::Source::Active)
+                        continue;
+
+                    if (attribute.stream < usedStreams.size())
+                        usedStreams[attribute.stream] = true;
+
+                    trace += fmt::format(
+                        "vertex_attribute index={} raw=0x{:08X} stream={} offset={} components={} numerical={} swap_rb={}\n",
+                        attributeIndex, attribute.raw, attribute.stream, attribute.offset,
+                        static_cast<u32>(attribute.componentBitWidths),
+                        static_cast<u32>(attribute.numericalType),
+                        static_cast<bool>(attribute.swapRAndB));
+                }
+
+                for (size_t streamIndex{}; streamIndex < diagnosticVertexStreams.size(); ++streamIndex) {
+                    if (!usedStreams[streamIndex])
+                        continue;
+
+                    const auto &stream{diagnosticVertexStreams[streamIndex]};
+                    const u64 streamBase{u64{stream.location}};
+                    const u64 streamLimit{
+                        diagnosticVertexStreamLimits[streamIndex]
+                            ? u64{*diagnosticVertexStreamLimits[streamIndex]}
+                            : 0
+                    };
+                    size_t available{
+                        streamLimit >= streamBase
+                            ? static_cast<size_t>(streamLimit - streamBase + 1)
+                            : 0
+                    };
+
+                    size_t needed{};
+                    if (stream.format.stride) {
+                        const size_t elementCountNeeded{
+                            diagnosticVertexStreamInstances[streamIndex].isInstanced
+                                ? std::max<size_t>(instanceCount, 1)
+                                : (haveIndex
+                                    ? static_cast<size_t>(maxIndex) + static_cast<size_t>(vertexOffset) + 1
+                                    : static_cast<size_t>(count) + static_cast<size_t>(vertexOffset))
+                        };
+                        needed = elementCountNeeded * stream.format.stride;
+                    }
+
+                    size_t dumpBytes{available};
+                    if (needed)
+                        dumpBytes = std::min(dumpBytes, needed);
+                    dumpBytes = std::min<size_t>(dumpBytes, 4ULL * 1024 * 1024);
+
+                    std::vector<u8> vertexData(dumpBytes);
+                    if (dumpBytes)
+                        ctx.channelCtx.asCtx->gmmu.Read(vertexData.data(), streamBase, dumpBytes);
+
+                    const auto fileName{fmt::format("marvel_target_vertex_stream_{:02}.bin", streamIndex)};
+                    ctx.executor.WriteDiagnosticBlob(
+                        fileName,
+                        span<const u8>{vertexData.data(), vertexData.size()});
+
+                    trace += fmt::format(
+                        "vertex_stream index={} raw=0x{:08X} enabled={} stride={} location=0x{:X} limit=0x{:X} "
+                        "frequency={} instanced={} dumped={} file={}\n",
+                        streamIndex, stream.format.raw, static_cast<bool>(stream.format.enable),
+                        stream.format.stride, streamBase, streamLimit, stream.frequency,
+                        static_cast<bool>(diagnosticVertexStreamInstances[streamIndex].isInstanced),
+                        vertexData.size(), fileName);
+                }
+
+                size_t constantBufferDumpTotal{};
+                constexpr size_t MaxConstantBufferDump{16 * 1024};
+                constexpr size_t MaxConstantBufferDumpTotal{256 * 1024};
+                for (size_t stage{}; stage < constantBuffers.boundConstantBuffers.size(); ++stage) {
+                    for (size_t slot{}; slot < constantBuffers.boundConstantBuffers[stage].size(); ++slot) {
+                        auto &constantBuffer{constantBuffers.boundConstantBuffers[stage][slot]};
+                        if (!constantBuffer.view || constantBufferDumpTotal >= MaxConstantBufferDumpTotal)
+                            continue;
+
+                        size_t dumpBytes{std::min<size_t>(constantBuffer.view.size, MaxConstantBufferDump)};
+                        dumpBytes = std::min(dumpBytes, MaxConstantBufferDumpTotal - constantBufferDumpTotal);
+                        if (!dumpBytes)
+                            continue;
+
+                        std::vector<u8> constantData(dumpBytes);
+                        constantBuffer.Read(ctx.executor, constantData, 0);
+
+                        const auto fileName{fmt::format(
+                            "marvel_target_cbuf_stage{}_slot{:02}.bin", stage, slot)};
+                        ctx.executor.WriteDiagnosticBlob(
+                            fileName,
+                            span<const u8>{constantData.data(), constantData.size()});
+                        constantBufferDumpTotal += constantData.size();
+
+                        trace += fmt::format(
+                            "constant_buffer stage={} slot={} view_size={} dumped={} file={}\n",
+                            stage, slot, constantBuffer.view.size, constantData.size(), fileName);
+                    }
+                }
+            }
+        }
 
         if (auto *depth{activeState.GetDepthAttachment()})
             appendView("depth_attachment", 0, depth);
