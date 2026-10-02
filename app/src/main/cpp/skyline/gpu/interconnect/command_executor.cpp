@@ -12,6 +12,7 @@
 #include <common/settings.h>
 #include <loader/loader.h>
 #include <gpu.h>
+#include <gpu/texture/layout.h>
 #include <os.h>
 #include <dlfcn.h>
 #include "command_executor.h"
@@ -576,6 +577,37 @@ namespace skyline::gpu::interconnect {
                     cycle->AttachObjects(texture, stagingBuffer);
                     texture->CopyIntoStagingBuffer(commandBuffer, stagingBuffer);
                 });
+
+            if (inputIndex == 0 && texture->guest && texture->levelCount == 1 &&
+                texture->layerCount == 1 && !texture->mirror.empty()) {
+                const auto guestRawPath{captureDirectory / "gameplay_input_00_guest_raw.bin"};
+                const auto guestLinearPath{captureDirectory / "gameplay_input_00_guest_linear.raw"};
+
+                std::vector<u8> guestRaw(texture->mirror.begin(), texture->mirror.end());
+                std::vector<u8> guestLinear(texture->deswizzledSurfaceSize);
+
+                if (texture->guest->tileConfig.mode == texture::TileMode::Block) {
+                    texture::CopyBlockLinearToLinear(*texture->guest, guestRaw.data(), guestLinear.data());
+                } else if (texture->guest->tileConfig.mode == texture::TileMode::Pitch) {
+                    texture::CopyPitchLinearToLinear(*texture->guest, guestRaw.data(), guestLinear.data());
+                } else if (texture->guest->tileConfig.mode == texture::TileMode::Linear) {
+                    std::memcpy(guestLinear.data(), guestRaw.data(),
+                                std::min(guestLinear.size(), guestRaw.size()));
+                }
+
+                std::ofstream guestRawFile{guestRawPath, std::ios::out | std::ios::binary | std::ios::trunc};
+                if (guestRawFile)
+                    guestRawFile.write(reinterpret_cast<const char *>(guestRaw.data()),
+                                       static_cast<std::streamsize>(guestRaw.size()));
+
+                std::ofstream guestLinearFile{guestLinearPath, std::ios::out | std::ios::binary | std::ios::trunc};
+                if (guestLinearFile)
+                    guestLinearFile.write(reinterpret_cast<const char *>(guestLinear.data()),
+                                          static_cast<std::streamsize>(guestLinear.size()));
+
+                LOGI("MINIRD dumped gameplay input 0 guest mirror: raw={} linear={}",
+                     guestRaw.size(), guestLinear.size());
+            }
 
             pendingDiagnosticCaptureCallbacks.emplace_back(
                 [stagingBuffer, rawPath, metadataPath, metadata, inputIndex] {
