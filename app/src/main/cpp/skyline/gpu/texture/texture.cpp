@@ -6,6 +6,7 @@
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
 #include <common/settings.h>
+#include <common/utils.h>
 #include "texture.h"
 #include "layout.h"
 #include "adreno_aliasing.h"
@@ -151,6 +152,12 @@ namespace skyline::gpu {
 
             alignedMirror = gpu.state.process->memory.CreateMirrors(alignedMappings);
             mirror = alignedMirror.subspan(static_cast<size_t>(frontMapping.data() - alignedData), totalSize);
+        }
+
+        if (dimensions == texture::Dimensions{176, 104, 1} && !mirror.empty()) {
+            diagnosticInitialGuestHash = XXH64(mirror.data(), mirror.size(), 0);
+            LOGI("MINIRD Marvel initial guest hash=0x{:016X} bytes={}",
+                 diagnosticInitialGuestHash, mirror.size());
         }
 
         // We can't just capture `this` in the lambda since the lambda could exceed the lifetime of the buffer
