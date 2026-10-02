@@ -489,6 +489,20 @@ namespace skyline::gpu {
         vk::SampleCountFlagBits sampleCount;
         bool replaced{};
 
+        // Diagnostic-only TIC metadata used by the Marvel Cosmic Invasion mini-RenderDoc
+        // capture. Remove these fields together with the rest of PR #294 diagnostics.
+        bool diagnosticTicValid{};
+        u32 diagnosticTicIndex{};
+        u64 diagnosticTicIova{};
+        std::array<u32, 8> diagnosticTicRaw{};
+        u32 diagnosticTicHeaderType{};
+        u32 diagnosticTicFormatWord{};
+        u32 diagnosticTicTileConfig{};
+        u32 diagnosticTicTextureType{};
+        u32 diagnosticTicColorKeyOp{};
+        u32 diagnosticTicViewConfig{};
+        bool diagnosticTicSrgb{};
+
         /**
          * @brief Creates a texture object wrapping the supplied backing with the supplied attributes
          * @param layout The initial layout of the texture, it **must** be eUndefined or ePreinitialized
