@@ -261,6 +261,9 @@ namespace skyline::gpu::interconnect {
 
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        bool diagnosticSameSequenceMismatch{};
+        std::array<u32, 8> diagnosticCachedTicRaw{};
+        std::array<u32, 8> diagnosticCurrentTicRaw{};
 
         auto recordMarvelTic{[&](TextureView *view) -> TextureView * {
             if (!view || index >= textureHeaders.size() || !view->texture)
@@ -283,6 +286,11 @@ namespace skyline::gpu::interconnect {
             backing->diagnosticTicColorKeyOp = tic.colorKeyOp;
             backing->diagnosticTicViewConfig = tic.viewConfig.raw;
             backing->diagnosticTicSrgb = tic.isSrgb;
+            if (diagnosticSameSequenceMismatch) {
+                backing->diagnosticSameSequenceTicMismatch = true;
+                backing->diagnosticCachedTicRaw = diagnosticCachedTicRaw;
+                backing->diagnosticCurrentTicRaw = diagnosticCurrentTicRaw;
+            }
             return view;
         }};
 
@@ -291,10 +299,21 @@ namespace skyline::gpu::interconnect {
             std::fill(textureHeaderCache.begin(), textureHeaderCache.end(), CacheEntry{});
         } else if (textureHeaders.size() > index && textureHeaderCache[index].view) {
             auto &cached{textureHeaderCache[index]};
-            if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber)
-                return recordMarvelTic(cached.view);
+            const bool sameSequence{cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber};
+            const bool ticMatches{cached.tic == textureHeaders[index]};
+            const bool viewValid{!cached.view->texture->replaced};
 
-            if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
+            // A TIC pool entry is guest memory and may be rewritten without advancing the
+            // channel sequence. The old fast-path returned the cached view solely because
+            // the sequence matched, which could bind a stale texture. Always validate the
+            // current 32-byte TIC before reusing the cached view.
+            if (sameSequence && (!ticMatches || !viewValid)) {
+                diagnosticSameSequenceMismatch = true;
+                diagnosticCachedTicRaw = std::bit_cast<std::array<u32, 8>>(cached.tic);
+                diagnosticCurrentTicRaw = std::bit_cast<std::array<u32, 8>>(textureHeaders[index]);
+            }
+
+            if (ticMatches && viewValid) {
                 cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
                 return recordMarvelTic(cached.view);
             }
