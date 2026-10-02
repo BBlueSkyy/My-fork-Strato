@@ -14,7 +14,7 @@ namespace skyline::gpu::texture {
     /**
      * @brief Groups host texture storages that represent overlapping/aliased guest memory
      *
-     * Groups currently contain one storage. The grouping exists as a behavior-neutral
+     * Group membership is currently metadata-only. It exists as a behavior-neutral
      * foundation for sharing validity/dirty state and explicit alias dependencies later.
      */
     class TextureGroup {
