@@ -61,8 +61,11 @@ namespace skyline::gpu {
 
         constexpr u64 MarvelFinalBlitVertex{0xAD0412E01E9E7673ULL};
         constexpr u64 MarvelFinalBlitFragment{0x32E936B33B4DE075ULL};
+        constexpr u64 MarvelGameplayVertex{0x382850889BD45FFBULL};
+        constexpr u64 MarvelGameplayFragment{0x5D696B49F0491509ULL};
         const bool dumpMarvelTarget{
-            hash == MarvelFinalBlitVertex || hash == MarvelFinalBlitFragment
+            hash == MarvelFinalBlitVertex || hash == MarvelFinalBlitFragment ||
+            hash == MarvelGameplayVertex || hash == MarvelGameplayFragment
         };
 
         if (DumpShaders || dumpMarvelTarget) {
