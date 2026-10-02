@@ -172,6 +172,29 @@ namespace skyline::gpu::interconnect {
         #undef TIC_FORMAT_CASE_NORM_INT_FLOAT
     }
 
+    static bool IsIntegerTicFormat(texture::Format format) {
+        return format == format::R8Uint ||
+               format == format::R8Sint ||
+               format == format::R16Uint ||
+               format == format::R16Sint ||
+               format == format::R8G8Uint ||
+               format == format::R8G8Sint ||
+               format == format::R32Uint ||
+               format == format::R32Sint ||
+               format == format::R16G16Uint ||
+               format == format::R16G16Sint ||
+               format == format::R8G8B8A8Uint ||
+               format == format::R8G8B8A8Sint ||
+               format == format::A2B10G10R10Uint ||
+               format == format::A2B10G10R10Sint ||
+               format == format::R32G32Uint ||
+               format == format::R32G32Sint ||
+               format == format::R16G16B16A16Uint ||
+               format == format::R16G16B16A16Sint ||
+               format == format::R32G32B32A32Uint ||
+               format == format::R32G32B32A32Sint;
+    }
+
     static vk::ComponentMapping ConvertTicSwizzleMapping(TextureImageControl::FormatWord format, vk::ComponentMapping swizzleMapping) {
         auto convertComponentSwizzle{[swizzleMapping](TextureImageControl::ImageSwizzle swizzle) {
             switch (swizzle) {
@@ -389,6 +412,23 @@ namespace skyline::gpu::interconnect {
             }
 
         throw exception("Invalid TIC texture type: {}", static_cast<u32>(textureHeaders[index].textureType));
+    }
+
+    bool Textures::IsTexturePixelFormatInteger(InterconnectContext &ctx, u32 index) {
+        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        if (index >= textureHeaders.size()) {
+            LOGW("Texture pixel format requested for out-of-range TIC index {}", index);
+            return false;
+        }
+
+        const auto &textureHeader{textureHeaders[index]};
+        const auto format{ConvertTicFormat(textureHeader.formatWord, textureHeader.isSrgb)};
+        if (!format) {
+            LOGW("Texture pixel format requested for unsupported TIC index {}", index);
+            return false;
+        }
+
+        return IsIntegerTicFormat(format);
     }
 
     vk::raii::BufferView *Textures::GetOrCreateTexelBufferView(

@@ -618,6 +618,10 @@ namespace skyline::gpu {
         if (format->vkAspect & (vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil))
             usage |= vk::ImageUsageFlagBits::eDepthStencilAttachment;
 
+        const auto formatFeatures{gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat).optimalTilingFeatures};
+        if (formatFeatures & vk::FormatFeatureFlagBits::eStorageImage)
+            usage |= vk::ImageUsageFlagBits::eStorage;
+
         auto imageType{guest->GetImageType()};
         if (imageType == vk::ImageType::e2D && dimensions.width == dimensions.height && layerCount >= 6)
             flags |= vk::ImageCreateFlagBits::eCubeCompatible;

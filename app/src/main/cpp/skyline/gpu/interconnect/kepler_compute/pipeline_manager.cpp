@@ -22,6 +22,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
             }, [&](u32 index) {
                 return textures.GetTextureType(ctx, BindlessHandle{ .raw = index }.textureIndex);
             }, [&](u32 index) {
+                return textures.IsTexturePixelFormatInteger(ctx, BindlessHandle{ .raw = index }.textureIndex);
+            }, [&](u32 index) {
                 BindlessHandle handle{ .raw = index };
                 return samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex);
             })};
