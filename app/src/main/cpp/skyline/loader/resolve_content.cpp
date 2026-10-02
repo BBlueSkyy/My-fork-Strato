@@ -53,8 +53,8 @@ namespace skyline::loader {
             LOGI("ResolveProgramContent: selected external Program update");
         }
 
-        auto exeFs{patch ? patch->OpenExeFsWithPatch(*programNca) : programNca->exeFs};
-        auto data{patch ? patch->OpenRomFsWithPatch(*programNca) : programNca->romFs};
+        auto exeFs{patch ? patch->OpenExeFsWithPatch(*programNca) : programNca->OpenExeFs()};
+        auto data{patch ? patch->OpenRomFsWithPatch(*programNca) : programNca->OpenRomFs()};
         if (!exeFs || !exeFs->FileExists("main") || !exeFs->FileExists("main.npdm"))
             throw exception("Resolved Program ExeFS lacks main or main.npdm");
 
