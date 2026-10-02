@@ -473,8 +473,16 @@ namespace skyline::vfs {
         // Validate names and file extents before PartitionFileSystem indexes the name table.
         const auto pfsHeader{ReadExact<std::array<u32, 4>>(data)};
         const u64 namesOffset{0x10 + static_cast<u64>(pfsHeader[1]) * 0x18};
-        if (pfsHeader[0] != util::MakeMagic<u32>("PFS0") || !InRange(namesOffset, pfsHeader[2], data->size))
-            throw loader_exception(LoaderResult::ParsingError, "Invalid NCA PFS0 table extent");
+        if (pfsHeader[0] != util::MakeMagic<u32>("PFS0") || !InRange(namesOffset, pfsHeader[2], data->size)) {
+            const auto &compression{section.raw.compressionInfo.bucket};
+            throw loader_exception(
+                LoaderResult::ParsingError,
+                fmt::format(
+                    "Invalid NCA PFS0 table extent (contentType={}, titleId={:016X}, section={}, layerCount={}, dataOffset=0x{:X}, dataSize=0x{:X}, backingSize=0x{:X}, magic=0x{:08X}, entries={}, strings=0x{:X}, sparseGen={}, compressionOffset=0x{:X}, compressionSize=0x{:X}, encryption={})",
+                    static_cast<u32>(contentType), header.titleId, index, count, dataLevel[0], dataLevel[1], data->size,
+                    pfsHeader[0], pfsHeader[1], pfsHeader[2], section.raw.sparseInfo.generation,
+                    compression.tableOffset, compression.tableSize, static_cast<u32>(section.raw.header.encryptionType)));
+        }
         const u64 filesOffset{namesOffset + pfsHeader[2]};
         std::vector<u8> names(pfsHeader[2]);
         if (data->Read(names, namesOffset) != names.size())
