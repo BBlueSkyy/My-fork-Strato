@@ -442,6 +442,7 @@ namespace skyline::gpu::interconnect {
             diagnosticRenderTargets.clear();
             diagnosticSampledInputs.clear();
             diagnosticSampledInputsCaptured = false;
+            diagnosticSampledInputRenderPass.reset();
             diagnosticDrawTraceLines.clear();
             diagnosticDrawTraceFlushedCount = 0;
             diagnosticCaptureIndex = 0;
@@ -466,9 +467,12 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::TrackDiagnosticSampledInputs(span<TextureView *> sampledImages) {
-        if (!IsDiagnosticDrawTraceActive() ||
-            diagnosticSampledInputsCaptured ||
-            renderPassIndex != 7)
+        if (!IsDiagnosticDrawTraceActive() || diagnosticSampledInputsCaptured)
+            return;
+
+        if (!diagnosticSampledInputRenderPass)
+            diagnosticSampledInputRenderPass = renderPassIndex;
+        else if (*diagnosticSampledInputRenderPass != renderPassIndex)
             return;
 
         for (auto *view : sampledImages) {
@@ -482,11 +486,15 @@ namespace skyline::gpu::interconnect {
                              }) == diagnosticSampledInputs.end())
                 diagnosticSampledInputs.emplace_back(std::move(texture));
         }
+
+        LOGI("MINIRD Marvel gameplay target detected at render pass {} with {} unique sampled inputs",
+             renderPassIndex, diagnosticSampledInputs.size());
     }
 
     void CommandExecutor::QueueDiagnosticSampledInputCaptures() {
         if (diagnosticSampledInputsCaptured ||
-            renderPassIndex != 7 ||
+            !diagnosticSampledInputRenderPass ||
+            renderPassIndex != *diagnosticSampledInputRenderPass ||
             diagnosticCaptureState != DiagnosticCaptureState::Capturing ||
             diagnosticCaptureDirectory.empty() ||
             diagnosticSampledInputs.empty())
@@ -508,10 +516,10 @@ namespace skyline::gpu::interconnect {
             const auto height{texture->dimensions.height};
             const auto depth{texture->dimensions.depth};
             const auto formatName{vk::to_string(texture->format->vkFormat)};
-            const auto fileName{fmt::format("rp7_input_{:02}_{}x{}x{}_{}.raw",
+            const auto fileName{fmt::format("gameplay_input_{:02}_{}x{}x{}_{}.raw",
                                             inputIndex, width, height, depth, formatName)};
             const auto rawPath{captureDirectory / fileName};
-            const auto metadataPath{captureDirectory / fmt::format("rp7_input_{:02}.txt", inputIndex)};
+            const auto metadataPath{captureDirectory / fmt::format("gameplay_input_{:02}.txt", inputIndex)};
 
             uintptr_t guestMap{};
             size_t guestMapSize{};
@@ -552,7 +560,7 @@ namespace skyline::gpu::interconnect {
                 [stagingBuffer, rawPath, metadataPath, metadata, inputIndex] {
                     std::ofstream raw{rawPath, std::ios::out | std::ios::binary | std::ios::trunc};
                     if (!raw) {
-                        LOGE("MINIRD failed to open rp7 input {}", inputIndex);
+                        LOGE("MINIRD failed to open gameplay input {}", inputIndex);
                         return;
                     }
                     raw.write(reinterpret_cast<const char *>(stagingBuffer->data()),
@@ -563,14 +571,14 @@ namespace skyline::gpu::interconnect {
                     if (meta)
                         meta << metadata;
 
-                    LOGI("MINIRD wrote rp7 sampled input {}: {}", inputIndex, rawPath.string());
+                    LOGI("MINIRD wrote gameplay sampled input {}: {}", inputIndex, rawPath.string());
                 });
 
             ++inputIndex;
         }
 
         diagnosticSampledInputsCaptured = true;
-        LOGI("MINIRD queued {} unique rp7 sampled inputs", inputIndex);
+        LOGI("MINIRD queued {} unique gameplay sampled inputs", inputIndex);
     }
 
     void CommandExecutor::FlushDiagnosticDrawTrace() {
@@ -650,7 +658,7 @@ namespace skyline::gpu::interconnect {
                 << "stop=32 eligible color snapshots\n"
                 << "max_snapshot_bytes=67108864\n"
                 << "guest_memory_modified=false\n"
-                << "phase=1_output_chain_and_draw_state\n"
+                << "phase=2_wait_for_gameplay_shader_and_capture_inputs\n"
                 << "columns=index,file,render_pass,submission,texture,width,height,depth,format,layout,size,levels,layers,guest_map,guest_map_size,tile,bh,bd\n";
             manifest.close();
 
@@ -676,6 +684,12 @@ namespace skyline::gpu::interconnect {
         }
 
         if (!EnsureDiagnosticCaptureDirectory()) {
+            diagnosticRenderTargets.clear();
+            return;
+        }
+
+        if (!diagnosticSampledInputRenderPass ||
+            renderPassIndex != *diagnosticSampledInputRenderPass) {
             diagnosticRenderTargets.clear();
             return;
         }
@@ -768,14 +782,13 @@ namespace skyline::gpu::interconnect {
                     LOGI("MINIRD wrote snapshot {}: {}", captureIndex, rawPath.string());
                 });
 
-            if (diagnosticCaptureIndex >= 32) {
-                diagnosticCaptureState = DiagnosticCaptureState::Complete;
-                captureComplete = true;
-                break;
-            }
         }
 
         QueueDiagnosticSampledInputCaptures();
+        if (diagnosticSampledInputsCaptured) {
+            diagnosticCaptureState = DiagnosticCaptureState::Complete;
+            captureComplete = true;
+        }
         diagnosticRenderTargets.clear();
 
         if (captureComplete) {
