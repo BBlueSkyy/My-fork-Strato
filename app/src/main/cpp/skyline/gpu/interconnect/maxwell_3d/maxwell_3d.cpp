@@ -330,6 +330,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         for (size_t index{}; index < activeDescriptorSetSampledImages.size(); ++index)
             appendView("sampled", index, activeDescriptorSetSampledImages[index]);
 
+        ctx.executor.TrackDiagnosticSampledInputs(activeDescriptorSetSampledImages);
+
         if (auto *depth{activeState.GetDepthAttachment()})
             appendView("depth_attachment", 0, depth);
 
