@@ -29,7 +29,7 @@ namespace skyline::loader {
         : nsp(std::make_shared<vfs::PartitionFileSystem>(backing)) {
         ExtractTickets(nsp, keyStore);
 
-        const auto ncaParseMode{loadMode == NspLoadMode::MetadataOnly ? vfs::NCAParseMode::MetadataOnly : vfs::NCAParseMode::Full};
+        const auto ncaParseMode{loadMode == NspLoadMode::MetadataOnly ? vfs::NCAParseMode::MetadataOnly : vfs::NCAParseMode::ProgramDeferred};
         std::vector<ProgramNcaCandidate> programs;
         std::vector<vfs::CNMT> metadata;
 
