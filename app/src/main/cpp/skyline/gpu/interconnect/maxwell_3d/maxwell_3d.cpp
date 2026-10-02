@@ -336,7 +336,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
         for (size_t index{}; index < activeDescriptorSetSampledImages.size(); ++index)
             appendView("sampled", index, activeDescriptorSetSampledImages[index]);
 
-        ctx.executor.TrackDiagnosticSampledInputs(activeDescriptorSetSampledImages);
+        constexpr u64 MarvelGameplayVertex{0x382850889BD45FFBULL};
+        constexpr u64 MarvelGameplayFragment{0x5D696B49F0491509ULL};
+        if (packed.shaderHashes[1] == MarvelGameplayVertex &&
+            packed.shaderHashes[5] == MarvelGameplayFragment)
+            ctx.executor.TrackDiagnosticSampledInputs(activeDescriptorSetSampledImages);
 
         if (auto *depth{activeState.GetDepthAttachment()})
             appendView("depth_attachment", 0, depth);
