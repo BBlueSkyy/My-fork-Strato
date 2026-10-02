@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <string>
 #include <boost/container/stable_vector.hpp>
 #include <renderdoc_app.h>
 #include <common/linear_allocator.h>
@@ -219,7 +220,33 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
+        enum class DiagnosticCaptureState {
+            WaitingForHdr,
+            WaitingForFrameStart,
+            Capturing,
+            Complete,
+        };
+
+        std::vector<std::shared_ptr<Texture>> diagnosticRenderTargets;
+        std::vector<std::shared_ptr<Texture>> diagnosticSampledInputs;
+        std::vector<std::function<void()>> pendingDiagnosticCaptureCallbacks;
+        std::vector<std::string> diagnosticDrawTraceLines;
+        size_t diagnosticDrawTraceFlushedCount{};
+        DiagnosticCaptureState diagnosticCaptureState{DiagnosticCaptureState::WaitingForHdr};
+        bool diagnosticCaptureArmed{};
+        bool diagnosticSampledInputsCaptured{};
+        size_t diagnosticCaptureIndex{};
+        size_t diagnosticFullHdCount{};
+        std::string diagnosticCaptureDirectory;
+
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
+
+        void TrackDiagnosticRenderTargets(span<TextureView *> colorAttachments);
+        void QueueDiagnosticRenderTargetCaptures();
+        void QueueDiagnosticSampledInputCaptures();
+        void FlushDiagnosticDrawTrace();
+        bool CheckDiagnosticCaptureArm();
+        bool EnsureDiagnosticCaptureDirectory();
 
         void RotateRecordSlot();
 
@@ -369,6 +396,21 @@ namespace skyline::gpu::interconnect {
         void NotifyPipelineChange();
 
         std::optional<u32> GetRenderPassIndex();
+
+        /**
+         * @brief Returns whether the targeted rp8 diagnostic trace is currently armed
+         */
+        bool IsDiagnosticDrawTraceActive() const;
+
+        /**
+         * @brief Buffers one textual draw trace for the targeted rp8 diagnostic pass
+         */
+        void AppendDiagnosticDrawTrace(std::string trace);
+
+        /**
+         * @brief Tracks the sampled images used by the targeted rp8 draw for one-shot readback
+         */
+        void TrackDiagnosticSampledInputs(span<TextureView *> sampledImages);
 
         /**
          * @brief Records a checkpoint into the GPU command stream at the current
