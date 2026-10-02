@@ -24,9 +24,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
           samplers{manager, registerBundle.samplerPoolRegisters},
           samplerBinding{registerBundle.samplerBinding},
           diagnosticBlend{registerBundle.activeStateRegisters.pipelineRegisters.colorBlendRegisters.blend},
+          diagnosticVertexStreams{registerBundle.activeStateRegisters.pipelineRegisters.vertexInputRegisters.vertexStreams},
+          diagnosticVertexStreamInstances{registerBundle.activeStateRegisters.pipelineRegisters.vertexInputRegisters.vertexStreamInstance},
+          diagnosticVertexAttributes{registerBundle.activeStateRegisters.pipelineRegisters.vertexInputRegisters.vertexAttributes},
+          diagnosticIndexBuffer{registerBundle.activeStateRegisters.indexBufferRegisters.indexBuffer},
           textures{manager, registerBundle.texturePoolRegisters},
           directState{activeState.directState},
           queries{gpu} {
+        for (size_t index{}; index < diagnosticVertexStreamLimits.size(); ++index)
+            diagnosticVertexStreamLimits[index] = &registerBundle.activeStateRegisters.vertexBuffersRegisters[index].vertexStreamLimit;
+
         ctx.executor.AddFlushCallback([this] {
             if (attachedDescriptorSets) {
                 ctx.executor.AttachDependency(attachedDescriptorSets);
