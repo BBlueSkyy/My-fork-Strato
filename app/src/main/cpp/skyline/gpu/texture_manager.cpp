@@ -3,6 +3,7 @@
 
 #include <common/trace.h>
 #include "texture/layout.h"
+#include "texture/compatibility.h"
 #include "texture_manager.h"
 
 namespace skyline::gpu {
@@ -63,8 +64,8 @@ namespace skyline::gpu {
             if (firstHostMapping == hostMappings.begin() && firstHostMapping->begin() == guestMapping.begin() && mappingMatch && lastHostMapping == hostMappings.end() && lastGuestMapping.end() == std::prev(lastHostMapping)->end()) {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
                 auto &matchGuestTexture{*hostMapping->texture->guest};
-
-                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
+                auto formatCompatibility{texture::ClassifyCompatibility(*matchGuestTexture.format, *guestTexture.format)};
+                if (texture::CanShareStorage(formatCompatibility) &&
                     ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                         matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
                         matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
@@ -76,6 +77,7 @@ namespace skyline::gpu {
                 }
             } else {
                 auto &matchGuestTexture{*hostMapping->texture->guest};
+                auto formatCompatibility{texture::ClassifyCompatibility(*matchGuestTexture.format, *guestTexture.format)};
 
                 // A render target may describe an individual Z slice of a block-linear
                 // 3D texture. Its guest address starts inside the parent mip rather than
@@ -91,7 +93,7 @@ namespace skyline::gpu {
                     guestTexture.mipLevelCount == 1 &&
                     guestTexture.viewMipBase == 0 &&
                     guestTexture.viewMipCount == 1 &&
-                    matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
+                    texture::CanShareStorage(formatCompatibility) &&
                     matchGuestTexture.tileConfig.mode == texture::TileMode::Block &&
                     guestTexture.tileConfig.mode == texture::TileMode::Block) {
                     size_t memOffset{};
@@ -136,7 +138,7 @@ namespace skyline::gpu {
 
                 }
 
-                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                if (texture::CanShareStorage(formatCompatibility) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
                         (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
                     size_t memOffset{static_cast<size_t>(guestMapping.data() - hostMapping->texture->guest->mappings.front().data())};
                     size_t layerMemOffset{};
