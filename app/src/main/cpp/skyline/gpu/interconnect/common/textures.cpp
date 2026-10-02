@@ -262,24 +262,29 @@ namespace skyline::gpu::interconnect {
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
 
-        // Diagnostic-only: the Marvel Cosmic Invasion gameplay capture isolated a 176x104
-        // sampled input. Record the guest TIC verbatim before any cache fast-path so we can
-        // distinguish intended color-key state from bad texture data or descriptor reuse.
-        if (index < textureHeaders.size()) {
+        auto recordMarvelTic{[&](TextureView *view) -> TextureView * {
+            if (!view || index >= textureHeaders.size() || !view->texture)
+                return view;
+
             const auto &tic{textureHeaders[index]};
-            if (tic.widthMinusOne == 175 && tic.heightMinusOne == 103) {
-                const auto raw{std::bit_cast<std::array<u32, 8>>(tic)};
-                LOGI("MINIRD Marvel TIC index={} iova=0x{:X} "
-                     "raw={:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X} "
-                     "header={} format=0x{:08X} tile=0x{:04X} type={} srgb={} "
-                     "color_key_op={} view=0x{:08X} mip_levels={}",
-                     index, tic.Iova(),
-                     raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
-                     static_cast<u32>(tic.headerType), tic.formatWord.Raw(), tic.tileConfig.raw,
-                     static_cast<u32>(tic.textureType), tic.isSrgb,
-                     tic.colorKeyOp, tic.viewConfig.raw, tic.mipMaxLevels);
-            }
-        }
+            if (tic.widthMinusOne != 175 || tic.heightMinusOne != 103)
+                return view;
+
+            auto *backing{view->texture.get()};
+            const auto raw{std::bit_cast<std::array<u32, 8>>(tic)};
+            backing->diagnosticTicValid = true;
+            backing->diagnosticTicIndex = index;
+            backing->diagnosticTicIova = tic.Iova();
+            backing->diagnosticTicRaw = raw;
+            backing->diagnosticTicHeaderType = static_cast<u32>(tic.headerType);
+            backing->diagnosticTicFormatWord = tic.formatWord.Raw();
+            backing->diagnosticTicTileConfig = tic.tileConfig.raw;
+            backing->diagnosticTicTextureType = static_cast<u32>(tic.textureType);
+            backing->diagnosticTicColorKeyOp = tic.colorKeyOp;
+            backing->diagnosticTicViewConfig = tic.viewConfig.raw;
+            backing->diagnosticTicSrgb = tic.isSrgb;
+            return view;
+        }};
 
         if (textureHeaderCache.size() != textureHeaders.size()) {
             textureHeaderCache.resize(textureHeaders.size());
@@ -287,11 +292,11 @@ namespace skyline::gpu::interconnect {
         } else if (textureHeaders.size() > index && textureHeaderCache[index].view) {
             auto &cached{textureHeaderCache[index]};
             if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber)
-                return cached.view;
+                return recordMarvelTic(cached.view);
 
             if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
                 cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
-                return cached.view;
+                return recordMarvelTic(cached.view);
             }
         }
 
@@ -401,7 +406,7 @@ namespace skyline::gpu::interconnect {
         }
 
         textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber};
-        return texture.get();
+        return recordMarvelTic(texture.get());
     }
 
     Shader::TextureType Textures::GetTextureType(InterconnectContext &ctx, u32 index) {
