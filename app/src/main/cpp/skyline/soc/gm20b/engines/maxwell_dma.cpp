@@ -90,6 +90,93 @@ namespace skyline::soc::gm20b::engine {
     }
 
     void MaxwellDma::DmaCopy() {
+        // Diagnostic-only tracing for the 176x104 Marvel Cosmic Invasion sampled atlas.
+        // The current capture places it at IOVA 0x50A368000..0x50A37E000. Also trace
+        // 104-line/block-linear transfers so the diagnostic survives small IOVA changes.
+        constexpr u64 MarvelAtlasBegin{0x50A368000ULL};
+        constexpr u64 MarvelAtlasEnd{0x50A37E000ULL};
+
+        const u64 dstAddress{u64{*registers.offsetOut}};
+        size_t conservativeDstSize{};
+        if (registers.launchDma->multiLineEnable) {
+            if (registers.launchDma->dstMemoryLayout == Registers::LaunchDma::MemoryLayout::Pitch) {
+                size_t bytesPerElement{1};
+                if (registers.launchDma->remapEnable) {
+                    auto &remap{*registers.remapComponents};
+                    bytesPerElement = static_cast<size_t>(remap.NumDstComponents()) * remap.ComponentSize();
+                }
+                const size_t lineBytes{static_cast<size_t>(*registers.lineLengthIn) * bytesPerElement};
+                conservativeDstSize = *registers.lineCount
+                    ? static_cast<size_t>(*registers.pitchOut) * (*registers.lineCount - 1) + lineBytes
+                    : 0;
+            } else {
+                size_t bytesPerElement{1};
+                if (registers.launchDma->remapEnable) {
+                    auto &remap{*registers.remapComponents};
+                    bytesPerElement = static_cast<size_t>(remap.NumDstComponents()) * remap.ComponentSize();
+                }
+                gpu::texture::Dimensions dims{
+                    static_cast<u32>(registers.dstSurface->width * bytesPerElement),
+                    registers.dstSurface->height,
+                    registers.dstSurface->depth
+                };
+                conservativeDstSize = gpu::texture::GetBlockLinearLayerSize(
+                    dims, 1, 1, 1,
+                    registers.dstSurface->blockSize.Height(),
+                    registers.dstSurface->blockSize.Depth()
+                );
+            }
+        } else {
+            size_t bytesPerElement{1};
+            if (registers.launchDma->remapEnable) {
+                auto &remap{*registers.remapComponents};
+                bytesPerElement = static_cast<size_t>(remap.NumDstComponents()) * remap.ComponentSize();
+            }
+            conservativeDstSize = static_cast<size_t>(*registers.lineLengthIn) * bytesPerElement;
+        }
+
+        const bool overlapsMarvelAtlas{
+            conservativeDstSize &&
+            dstAddress < MarvelAtlasEnd &&
+            dstAddress + conservativeDstSize > MarvelAtlasBegin
+        };
+        const bool looksLikeMarvelAtlasTransfer{
+            registers.launchDma->multiLineEnable &&
+            (*registers.lineCount == 104 || registers.dstSurface->height == 104)
+        };
+
+        if (overlapsMarvelAtlas || looksLikeMarvelAtlasTransfer) {
+            auto &remap{*registers.remapComponents};
+            LOGI("MINIRD Marvel DMA dst_overlap={} "
+                 "src=0x{:X} dst=0x{:X} dst_span=0x{:X} "
+                 "multi={} remap={} src_layout={} dst_layout={} "
+                 "line_len={} lines={} pitch_in={} pitch_out={} "
+                 "src_surface={}x{}x{} layer={} origin={},{} block={}x{}x{} "
+                 "dst_surface={}x{}x{} layer={} origin={},{} block={}x{}x{} "
+                 "remap_comp_size={} remap_src_count={} remap_dst_count={} "
+                 "remap_swizzle={},{},{},{} const_a=0x{:08X} const_b=0x{:08X}",
+                 overlapsMarvelAtlas,
+                 u64{*registers.offsetIn}, dstAddress, conservativeDstSize,
+                 registers.launchDma->multiLineEnable,
+                 registers.launchDma->remapEnable,
+                 static_cast<u32>(registers.launchDma->srcMemoryLayout),
+                 static_cast<u32>(registers.launchDma->dstMemoryLayout),
+                 *registers.lineLengthIn, *registers.lineCount,
+                 *registers.pitchIn, *registers.pitchOut,
+                 registers.srcSurface->width, registers.srcSurface->height, registers.srcSurface->depth,
+                 registers.srcSurface->layer,
+                 registers.srcSurface->origin.x, registers.srcSurface->origin.y,
+                 registers.srcSurface->blockSize.Width(), registers.srcSurface->blockSize.Height(), registers.srcSurface->blockSize.Depth(),
+                 registers.dstSurface->width, registers.dstSurface->height, registers.dstSurface->depth,
+                 registers.dstSurface->layer,
+                 registers.dstSurface->origin.x, registers.dstSurface->origin.y,
+                 registers.dstSurface->blockSize.Width(), registers.dstSurface->blockSize.Height(), registers.dstSurface->blockSize.Depth(),
+                 remap.ComponentSize(), remap.NumSrcComponents(), remap.NumDstComponents(),
+                 static_cast<u32>(remap.dstX), static_cast<u32>(remap.dstY),
+                 static_cast<u32>(remap.dstZ), static_cast<u32>(remap.dstW),
+                 *registers.remapConstA, *registers.remapConstB);
+        }
+
         if (registers.launchDma->multiLineEnable) {
             if (registers.launchDma->remapEnable) [[unlikely]] {
                 const bool usesBlockLinear{
