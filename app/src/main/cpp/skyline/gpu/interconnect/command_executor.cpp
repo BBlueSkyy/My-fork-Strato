@@ -1164,6 +1164,22 @@ namespace skyline::gpu::interconnect {
                         submissionNumber, renderPassIndex, std::move(trace)));
     }
 
+    bool CommandExecutor::WriteDiagnosticBlob(std::string_view fileName, span<const u8> data) {
+        if (!IsDiagnosticDrawTraceActive() || !EnsureDiagnosticCaptureDirectory())
+            return false;
+
+        const auto path{std::filesystem::path(diagnosticCaptureDirectory) / std::string{fileName}};
+        std::ofstream output{path, std::ios::out | std::ios::binary | std::ios::trunc};
+        if (!output) {
+            LOGE("MINIRD failed to open diagnostic blob '{}'", path.string());
+            return false;
+        }
+
+        output.write(reinterpret_cast<const char *>(data.data()),
+                     static_cast<std::streamsize>(data.size()));
+        return output.good();
+    }
+
     u32 CommandExecutor::AddCheckpointImpl(std::string_view annotation) {
         if (renderPass)
             FinishRenderPass();
