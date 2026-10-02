@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <string>
 #include <boost/container/stable_vector.hpp>
 #include <renderdoc_app.h>
 #include <common/linear_allocator.h>
