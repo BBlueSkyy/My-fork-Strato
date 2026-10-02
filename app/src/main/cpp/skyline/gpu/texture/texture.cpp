@@ -511,8 +511,10 @@ namespace skyline::gpu {
             guest->tileConfig.blockDepth == 1
         };
         if (retainMarvelGameplayInput) {
-            LOGI("MINIRD retaining Marvel gameplay input guest backing: map={} bytes={} mirror={} linear={}",
-                 guest->mappings.empty() ? nullptr : guest->mappings.front().data(),
+            LOGI("MINIRD retaining Marvel gameplay input guest backing: map=0x{:X} bytes={} mirror={} linear={}",
+                 guest->mappings.empty()
+                     ? uintptr_t{}
+                     : reinterpret_cast<uintptr_t>(guest->mappings.front().data()),
                  guest->GetSize(), mirror.size(), deswizzledSurfaceSize);
             return;
         }
