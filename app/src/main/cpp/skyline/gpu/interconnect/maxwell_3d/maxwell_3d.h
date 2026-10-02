@@ -61,7 +61,20 @@ namespace skyline::gpu::interconnect::maxwell3d {
         DescriptorAllocator::ActiveDescriptorSet *activeDescriptorSet{};
         std::vector<TextureView *> activeDescriptorSetSampledImages{};
 
+        enum class DiagnosticDescriptorMode {
+            Full,
+            Quick,
+            Reuse,
+        };
+
+        DiagnosticDescriptorMode diagnosticDescriptorMode{DiagnosticDescriptorMode::Full};
+        std::string diagnosticDescriptorWrites;
+
         size_t UpdateQuadConversionBuffer(u32 count, u32 firstVertex);
+
+        void TraceDiagnosticDraw(std::string_view drawKind, vk::Rect2D scissor,
+                                 bool indexed, u32 count, u32 instanceCount,
+                                 u32 first, u32 vertexOffset, u32 firstInstance);
 
         /**
          * @brief A scissor derived from the current clear register state
