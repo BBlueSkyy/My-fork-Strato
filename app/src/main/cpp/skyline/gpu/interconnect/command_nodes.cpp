@@ -94,7 +94,7 @@ namespace skyline::gpu::interconnect::node {
                 }
 
                 auto &subpassPreserveAttachments{preserveAttachmentReferences[static_cast<size_t>(std::distance(subpassDescriptions.begin(), it))]};
-                if (std::find(subpassPreserveAttachments.begin(), subpassPreserveAttachments.end(), attachmentIndex) != subpassPreserveAttachments.end())
+                if (std::find(subpassPreserveAttachments.begin(), subpassPreserveAttachments.end(), attachmentIndex) == subpassPreserveAttachments.end())
                     subpassPreserveAttachments.push_back(attachmentIndex);
             }
 
