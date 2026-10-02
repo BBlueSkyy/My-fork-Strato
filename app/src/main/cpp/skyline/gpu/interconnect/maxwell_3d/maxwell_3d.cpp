@@ -203,20 +203,47 @@ namespace skyline::gpu::interconnect::maxwell3d {
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
              if (((oldPipeline == pipeline) || (oldPipeline && oldPipeline->CheckBindingMatch(pipeline))) && constantBuffers.quickBindEnabled) {
                  // If bindings between the old and new pipelines are the same we can reuse the descriptor sets given that quick bind is enabled (meaning that no buffer updates or calls to non-graphics engines have occurred that could invalidate them)
-                 if (constantBuffers.quickBind)
+                 if (constantBuffers.quickBind) {
+                     diagnosticDescriptorMode = DiagnosticDescriptorMode::Quick;
                      // If only a single constant buffer has been rebound between draws we can perform a partial descriptor update
                      return pipeline->SyncDescriptorsQuickBind(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
                                                                *constantBuffers.quickBind, activeDescriptorSetSampledImages,
                                                                srcStageMask, dstStageMask);
-                 else
+                 } else {
+                     diagnosticDescriptorMode = DiagnosticDescriptorMode::Reuse;
                      return nullptr;
+                 }
              } else {
+                 diagnosticDescriptorMode = DiagnosticDescriptorMode::Full;
                  // If bindings have changed or quick bind is disabled, perform a full descriptor update
                  return pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
                                                   activeDescriptorSetSampledImages,
                                                   srcStageMask, dstStageMask);
              }
          }()};
+
+         diagnosticDescriptorWrites.clear();
+         if (descUpdateInfo) {
+             for (const auto &write : descUpdateInfo->writes) {
+                 diagnosticDescriptorWrites += fmt::format(
+                     "descriptor_write binding={} type={} count={}\n",
+                     write.dstBinding, vk::to_string(write.descriptorType), write.descriptorCount);
+
+                 if (write.pImageInfo) {
+                     for (u32 imageIndex{}; imageIndex < write.descriptorCount; ++imageIndex) {
+                         const auto &imageInfo{write.pImageInfo[imageIndex]};
+                         diagnosticDescriptorWrites += fmt::format(
+                             "  image[{}] view={} sampler={} layout={}\n",
+                             imageIndex,
+                             fmt::ptr(static_cast<VkImageView>(imageInfo.imageView)),
+                             fmt::ptr(static_cast<VkSampler>(imageInfo.sampler)),
+                             vk::to_string(imageInfo.imageLayout));
+                     }
+                 }
+             }
+         } else {
+             diagnosticDescriptorWrites = "descriptor_write none (reused current descriptor set)\n";
+         }
 
          if (oldPipeline != pipeline)
              // If the pipeline has changed, we need to update the pipeline state
