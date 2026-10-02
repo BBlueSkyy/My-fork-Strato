@@ -303,14 +303,15 @@ namespace skyline::gpu::interconnect {
             const bool ticMatches{cached.tic == textureHeaders[index]};
             const bool viewValid{!cached.view->texture->replaced};
 
-            // A TIC pool entry is guest memory and may be rewritten without advancing the
-            // channel sequence. The old fast-path returned the cached view solely because
-            // the sequence matched, which could bind a stale texture. Always validate the
-            // current 32-byte TIC before reusing the cached view.
-            if (sameSequence && (!ticMatches || !viewValid)) {
-                diagnosticSameSequenceMismatch = true;
-                diagnosticCachedTicRaw = std::bit_cast<std::array<u32, 8>>(cached.tic);
-                diagnosticCurrentTicRaw = std::bit_cast<std::array<u32, 8>>(textureHeaders[index]);
+            if (sameSequence) {
+                // Diagnostic-only: record whether the historical same-sequence fast-path
+                // would reuse a TIC that changed in guest memory, without changing behavior.
+                if (!ticMatches || !viewValid) {
+                    diagnosticSameSequenceMismatch = true;
+                    diagnosticCachedTicRaw = std::bit_cast<std::array<u32, 8>>(cached.tic);
+                    diagnosticCurrentTicRaw = std::bit_cast<std::array<u32, 8>>(textureHeaders[index]);
+                }
+                return recordMarvelTic(cached.view);
             }
 
             if (ticMatches && viewValid) {
