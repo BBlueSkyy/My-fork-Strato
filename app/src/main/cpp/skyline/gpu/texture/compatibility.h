@@ -12,7 +12,7 @@ namespace skyline::gpu::texture {
      * CopyCompatible is intentionally not produced yet. It is reserved for formats that
      * require an explicit conversion/copy path rather than sharing the same host image.
      */
-    enum class Compatibility : u8 {
+    enum class FormatCompatibility : u8 {
         Exact,
         ViewCompatible,
         CopyCompatible,
@@ -25,20 +25,20 @@ namespace skyline::gpu::texture {
      * This preserves the existing TextureManager semantics while separating format
      * compatibility from cache/aliasing policy.
      */
-    constexpr Compatibility ClassifyCompatibility(const FormatBase &lhs, const FormatBase &rhs) {
+    constexpr FormatCompatibility ClassifyFormatCompatibility(const FormatBase &lhs, const FormatBase &rhs) {
         if (lhs == rhs)
-            return Compatibility::Exact;
+            return FormatCompatibility::Exact;
 
         if (lhs.IsCompatible(rhs))
-            return Compatibility::ViewCompatible;
+            return FormatCompatibility::ViewCompatible;
 
-        return Compatibility::Incompatible;
+        return FormatCompatibility::Incompatible;
     }
 
     /**
      * @return Whether both formats can currently share the same host image storage
      */
-    constexpr bool CanShareStorage(Compatibility compatibility) {
-        return compatibility == Compatibility::Exact || compatibility == Compatibility::ViewCompatible;
+    constexpr bool CanShareStorage(FormatCompatibility compatibility) {
+        return compatibility == FormatCompatibility::Exact || compatibility == FormatCompatibility::ViewCompatible;
     }
 }
