@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <string_view>
+
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include <gpu/texture_manager.h>
@@ -389,6 +391,24 @@ namespace skyline::gpu::interconnect {
             }
 
         throw exception("Invalid TIC texture type: {}", static_cast<u32>(textureHeaders[index].textureType));
+    }
+
+    bool Textures::IsTexturePixelFormatInteger(InterconnectContext &ctx, u32 index) {
+        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        if (index >= textureHeaders.size()) {
+            LOGW("Texture pixel format requested for out-of-range TIC index {}", index);
+            return false;
+        }
+
+        const auto &textureHeader{textureHeaders[index]};
+        const auto format{ConvertTicFormat(textureHeader.formatWord, textureHeader.isSrgb)};
+        if (!format) {
+            LOGW("Texture pixel format requested for unsupported TIC index {}", index);
+            return false;
+        }
+
+        const std::string_view numericFormat{vk::componentNumericFormat(format->vkFormat, 0)};
+        return numericFormat == "SINT" || numericFormat == "UINT";
     }
 
     vk::raii::BufferView *Textures::GetOrCreateTexelBufferView(
