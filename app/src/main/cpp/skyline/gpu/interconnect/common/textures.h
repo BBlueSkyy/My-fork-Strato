@@ -4,6 +4,7 @@
 #pragma once
 
 #include <functional>
+#include <unordered_set>
 #include <tsl/robin_map.h>
 #include <shader_compiler/shader_info.h>
 #include <gpu/texture/texture.h>
@@ -54,6 +55,7 @@ namespace skyline::gpu::interconnect {
         };
 
         std::shared_ptr<TextureView> nullTextureView{};
+        std::unordered_set<u64> loggedUnmappedTextureIovas;
         dirty::ManualDirtyState<TexturePoolState> texturePool;
 
         tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
