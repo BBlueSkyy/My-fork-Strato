@@ -118,6 +118,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+    TraceDiagnosticDraw("draw_inline_index", scissor, true, count, instanceCount, 0, 0, 0);
           ctx.executor.AddCheckpoint("After inline index draw");
      }    
    
@@ -185,6 +186,147 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
 
         return scissor;
+    }
+
+    void Maxwell3D::TraceDiagnosticDraw(std::string_view drawKind, vk::Rect2D scissor,
+                                          bool indexed, u32 count, u32 instanceCount,
+                                          u32 first, u32 vertexOffset, u32 firstInstance) {
+        if (!ctx.executor.IsDiagnosticDrawTraceActive())
+            return;
+
+        Pipeline *pipeline{activeState.GetPipeline()};
+        if (!pipeline)
+            return;
+
+        const auto &packed{pipeline->sourcePackedState};
+        const char *descriptorMode{[&] {
+            switch (diagnosticDescriptorMode) {
+                case DiagnosticDescriptorMode::Full:
+                    return "full";
+                case DiagnosticDescriptorMode::Quick:
+                    return "quick";
+                case DiagnosticDescriptorMode::Reuse:
+                    return "reuse";
+            }
+            return "unknown";
+        }()};
+
+        std::string trace{fmt::format(
+            "DRAW kind={} pipeline={} descriptor_mode={} indexed={} count={} instances={} "
+            "first={} vertex_offset={} first_instance={} scissor={},{},{}x{}\n",
+            drawKind, fmt::ptr(pipeline), descriptorMode, indexed, count, instanceCount,
+            first, vertexOffset, firstInstance,
+            scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height)};
+
+        for (size_t shaderIndex{}; shaderIndex < packed.shaderHashes.size(); ++shaderIndex) {
+            trace += fmt::format("shader_hash[{}]=0x{:016X}\n",
+                                 shaderIndex, packed.shaderHashes[shaderIndex]);
+        }
+
+        const auto blend{packed.GetAttachmentBlendState(0)};
+        trace += fmt::format(
+            "pipeline_state raster_discard={} cull={} front_cw={} depth_test={} depth_write={} "
+            "depth_func={} depth_bounds={} stencil={} logic_enable={} logic_op={} "
+            "alpha_test={} alpha_ref={} blend_enable={} color_write_mask=0x{:X} "
+            "color_blend_op={} src_color={} dst_color={} alpha_blend_op={} src_alpha={} dst_alpha={}\n",
+            packed.rasterizerDiscardEnable,
+            vk::to_string(vk::CullModeFlags{packed.cullMode}),
+            packed.frontFaceClockwise,
+            packed.depthTestEnable,
+            packed.depthWriteEnable,
+            vk::to_string(packed.GetDepthFunc()),
+            packed.depthBoundsTestEnable,
+            packed.stencilTestEnable,
+            packed.logicOpEnable,
+            vk::to_string(packed.GetLogicOp()),
+            packed.alphaTestEnable,
+            packed.alphaRef,
+            static_cast<bool>(blend.blendEnable),
+            static_cast<u32>(blend.colorWriteMask),
+            vk::to_string(blend.colorBlendOp),
+            vk::to_string(blend.srcColorBlendFactor),
+            vk::to_string(blend.dstColorBlendFactor),
+            vk::to_string(blend.alphaBlendOp),
+            vk::to_string(blend.srcAlphaBlendFactor),
+            vk::to_string(blend.dstAlphaBlendFactor));
+
+        trace += diagnosticDescriptorWrites;
+
+        auto appendView{[&](std::string_view label, size_t index, TextureView *view) {
+            if (!view) {
+                trace += fmt::format("{}[{}]=null\n", label, index);
+                return;
+            }
+
+            auto *texture{view->texture.get()};
+            if (!texture) {
+                trace += fmt::format("{}[{}] view_ptr={} texture=null\n",
+                                     label, index, fmt::ptr(view));
+                return;
+            }
+
+            uintptr_t guestMap{};
+            size_t guestMapSize{};
+            if (texture->guest) {
+                if (!texture->guest->mappings.empty())
+                    guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                for (const auto &mapping : texture->guest->mappings)
+                    guestMapSize += mapping.size();
+            }
+
+            const auto viewFormat{
+                view->format ? vk::to_string(view->format->vkFormat) : std::string{"Undefined"}
+            };
+            const auto backingFormat{
+                texture->format ? vk::to_string(texture->format->vkFormat) : std::string{"Undefined"}
+            };
+            const bool hdrCandidate{
+                texture->dimensions.width == 1280 &&
+                texture->dimensions.height == 720 &&
+                texture->format &&
+                texture->format->vkFormat == vk::Format::eR16G16B16A16Sfloat
+            };
+
+            trace += fmt::format(
+                "{}[{}] view_ptr={} vk_view={} texture_ptr={} vk_image={} "
+                "dims={}x{}x{} view_format={} backing_format={} layout={} "
+                "aspect=0x{:X} base_mip={} levels={} base_layer={} layers={} "
+                "guest_map=0x{:X} guest_size={} last_usage={} replaced={} hdr_candidate={}\n",
+                label, index,
+                fmt::ptr(view),
+                fmt::ptr(static_cast<VkImageView>(view->GetView())),
+                fmt::ptr(texture),
+                fmt::ptr(static_cast<VkImage>(texture->GetBacking())),
+                texture->dimensions.width,
+                texture->dimensions.height,
+                texture->dimensions.depth,
+                viewFormat,
+                backingFormat,
+                vk::to_string(texture->layout),
+                static_cast<u32>(static_cast<VkImageAspectFlags>(view->range.aspectMask)),
+                view->range.baseMipLevel,
+                view->range.levelCount,
+                view->range.baseArrayLayer,
+                view->range.layerCount,
+                guestMap,
+                guestMapSize,
+                static_cast<u32>(texture->GetLastRenderPassUsage()),
+                texture->replaced,
+                hdrCandidate);
+        }};
+
+        const auto colorAttachments{activeState.GetColorAttachments()};
+        for (size_t index{}; index < colorAttachments.size(); ++index)
+            appendView("color_attachment", index, colorAttachments[index]);
+
+        for (size_t index{}; index < activeDescriptorSetSampledImages.size(); ++index)
+            appendView("sampled", index, activeDescriptorSetSampledImages[index]);
+
+        if (auto *depth{activeState.GetDepthAttachment()})
+            appendView("depth_attachment", 0, depth);
+
+        trace += "END_DRAW\n";
+        ctx.executor.AppendDiagnosticDrawTrace(std::move(trace));
     }
 
      void Maxwell3D::PrepareDraw(StateUpdateBuilder &builder,
@@ -434,6 +576,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        TraceDiagnosticDraw("draw", scissor, indexed, count, instanceCount, first, vertexOffset, firstInstance);
         ctx.executor.AddCheckpoint("After draw");
     }
 
@@ -497,6 +640,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        TraceDiagnosticDraw("draw_indirect", scissor, indexed, count, 0, 0, 0, 0);
         ctx.executor.AddCheckpoint("After indirect draw");
     }
 
