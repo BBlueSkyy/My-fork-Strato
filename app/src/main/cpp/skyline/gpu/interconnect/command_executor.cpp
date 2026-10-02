@@ -561,14 +561,32 @@ namespace skyline::gpu::interconnect {
                 "host_surface_size={}\nguest_linear_size={}\nlevels={}\nlayers={}\n"
                 "guest_map=0x{:X}\nguest_map_size={}\ntile={}\nbh={}\nbd={}\n"
                 "guest_block_width={}\nguest_block_height={}\nguest_bpb={}\n"
-                "guest_swizzle={},{},{},{}\n",
+                "guest_swizzle={},{},{},{}\n"
+                "tic_valid={}\ntic_index={}\ntic_iova=0x{:X}\n"
+                "tic_raw={:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X}\n"
+                "tic_header_type={}\ntic_format_word=0x{:08X}\ntic_tile_config=0x{:04X}\n"
+                "tic_texture_type={}\ntic_srgb={}\ntic_color_key_op={}\ntic_view_config=0x{:08X}\n",
                 inputIndex, fileName, renderPassIndex, submissionNumber, textureAddress,
                 width, height, depth, formatName, guestFormatName, vk::to_string(texture->layout),
                 texture->surfaceSize, texture->deswizzledSurfaceSize,
                 texture->levelCount, texture->layerCount,
                 guestMap, guestMapSize, tileMode, blockHeight, blockDepth,
                 guestBlockWidth, guestBlockHeight, guestBpb,
-                guestSwizzleR, guestSwizzleG, guestSwizzleB, guestSwizzleA)};
+                guestSwizzleR, guestSwizzleG, guestSwizzleB, guestSwizzleA,
+                texture->diagnosticTicValid,
+                texture->diagnosticTicIndex,
+                texture->diagnosticTicIova,
+                texture->diagnosticTicRaw[0], texture->diagnosticTicRaw[1],
+                texture->diagnosticTicRaw[2], texture->diagnosticTicRaw[3],
+                texture->diagnosticTicRaw[4], texture->diagnosticTicRaw[5],
+                texture->diagnosticTicRaw[6], texture->diagnosticTicRaw[7],
+                texture->diagnosticTicHeaderType,
+                texture->diagnosticTicFormatWord,
+                texture->diagnosticTicTileConfig,
+                texture->diagnosticTicTextureType,
+                texture->diagnosticTicSrgb,
+                texture->diagnosticTicColorKeyOp,
+                texture->diagnosticTicViewConfig)};
 
             slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
                 [texture, stagingBuffer](vk::raii::CommandBuffer &commandBuffer,
