@@ -3,22 +3,10 @@
 
 #pragma once
 
+#include "resource_compatibility.h"
 #include "texture.h"
 
 namespace skyline::gpu::texture {
-    /**
-     * @brief Describes how two guest texture formats can share a host representation
-     *
-     * CopyCompatible is intentionally not produced yet. It is reserved for formats that
-     * require an explicit conversion/copy path rather than sharing the same host image.
-     */
-    enum class FormatCompatibility : u8 {
-        Exact,
-        ViewCompatible,
-        CopyCompatible,
-        Incompatible,
-    };
-
     /**
      * @brief Classifies format compatibility without making resource lifetime decisions
      *
