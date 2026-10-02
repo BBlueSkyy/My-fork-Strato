@@ -345,10 +345,45 @@ namespace skyline::gpu::interconnect {
             }
 
 
-            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
+            const size_t guestSize{guest.GetSize()};
+            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guestSize)};
             guest.mappings.assign(mappings.begin(), mappings.end());
             if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
-                LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
+                if (loggedUnmappedTextureIovas.insert(textureHeader.Iova()).second) {
+                    size_t mappedBytes{};
+                    size_t unmappedBytes{};
+                    size_t firstInvalidOffset{guestSize};
+                    size_t mappingOffset{};
+
+                    for (auto mapping : guest.mappings) {
+                        if (mapping.valid()) {
+                            mappedBytes += mapping.size();
+                        } else {
+                            unmappedBytes += mapping.size();
+                            firstInvalidOffset = std::min(firstInvalidOffset, mappingOffset);
+                        }
+                        mappingOffset += mapping.size();
+                    }
+
+                    auto [blockMapping, blockOffset]{ctx.channelCtx.asCtx->gmmu.LookupBlock(textureHeader.Iova())};
+                    const u64 blockStart{textureHeader.Iova() - blockOffset};
+                    const u64 blockEnd{blockStart + blockMapping.size()};
+
+                    LOGW("Unmapped TIC: index={} iova=0x{:X} size=0x{:X} dims={}x{}x{} layers={} baseLayer={} mips={} viewMip={}+{} format=0x{:X} textureType={} headerType={} sparse={} tile=0x{:X} shaderType={} block=[0x{:X},0x{:X}) blockValid={} blockOffset=0x{:X} mappings={} mapped=0x{:X} unmapped=0x{:X} firstInvalid=0x{:X}",
+                         index, textureHeader.Iova(), guestSize,
+                         guest.dimensions.width, guest.dimensions.height, guest.dimensions.depth,
+                         guest.layerCount, guest.baseArrayLayer, guest.mipLevelCount,
+                         guest.viewMipBase, guest.viewMipCount,
+                         static_cast<u32>(textureHeader.formatWord.format),
+                         static_cast<u32>(textureHeader.textureType),
+                         static_cast<u32>(textureHeader.headerType),
+                         static_cast<u32>(textureHeader.isSparse),
+                         static_cast<u32>(textureHeader.tileConfig.raw),
+                         static_cast<u32>(shaderType),
+                         blockStart, blockEnd, blockMapping.valid(), blockOffset,
+                         guest.mappings.size(), mappedBytes, unmappedBytes, firstInvalidOffset);
+                }
+
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
 
