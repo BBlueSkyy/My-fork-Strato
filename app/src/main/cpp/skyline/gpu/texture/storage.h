@@ -54,4 +54,43 @@ namespace skyline::gpu::texture {
         group->Attach(storage);
         return storage;
     }
+
+    /**
+     * @brief Places a newly created storage in the same alias group as overlapping storages
+     *
+     * This only records resource relationships. It deliberately does not synchronize,
+     * copy, invalidate, or otherwise alter texture contents.
+     */
+    template<typename Range>
+    inline void JoinTextureStorageGroups(const std::shared_ptr<TextureStorage> &storage, const Range &overlaps) {
+        std::shared_ptr<TextureGroup> targetGroup{};
+
+        for (const auto &overlap : overlaps) {
+            if (overlap && overlap->group) {
+                targetGroup = overlap->group;
+                break;
+            }
+        }
+
+        if (!targetGroup)
+            return;
+
+        storage->group = targetGroup;
+        targetGroup->Attach(storage);
+
+        for (const auto &overlap : overlaps) {
+            if (!overlap || !overlap->group || overlap->group == targetGroup)
+                continue;
+
+            auto sourceGroup{overlap->group};
+            for (const auto &weakStorage : sourceGroup->GetStorages()) {
+                auto member{weakStorage.lock()};
+                if (!member || member->group == targetGroup)
+                    continue;
+
+                member->group = targetGroup;
+                targetGroup->Attach(member);
+            }
+        }
+    }
 }
