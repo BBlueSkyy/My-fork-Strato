@@ -224,6 +224,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         DescriptorInfo descriptorInfo; //!< Info about all descriptors used in each stage of the pipeline
         u8 transitionCacheNextIdx{}; //!< The next index to insert into the transition cache
         u8 stageMask{}; //!< Bitmask of active shader stages
+        bool usesRenderArea{}; //!< Whether any shader stage reads the render-area push constant
         u16 sampledImageCount{};
 
         std::array<Pipeline *, 6> transitionCache{};
@@ -250,6 +251,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         bool CheckBindingMatch(Pipeline *other);
 
         u32 GetTotalSampledImageCount() const;
+
+        bool UsesRenderArea() const {
+            return usesRenderArea;
+        }
 
         /**
          * @brief Creates a descriptor set update from the current GPU state
