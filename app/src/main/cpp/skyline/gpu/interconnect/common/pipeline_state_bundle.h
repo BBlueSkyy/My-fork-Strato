@@ -49,6 +49,16 @@ namespace skyline::gpu::interconnect {
         static_assert(sizeof(TextureTypeEntry) == 0x8);
 
         /**
+         * @brief Holds whether a TIC entry uses an integer pixel format
+         * @note This struct *MUST* not be modified without a pipeline cache version bump
+         */
+        struct TexturePixelFormatEntry {
+            u32 index;
+            u32 isInteger;
+        };
+        static_assert(sizeof(TexturePixelFormatEntry) == 0x8);
+
+        /**
          * @brief Holds the comparison function of a TSC entry read at pipeline creation time
          * @note This struct *MUST* not be modified without a pipeline cache version bump
          */
@@ -60,6 +70,7 @@ namespace skyline::gpu::interconnect {
 
         boost::container::small_vector<ConstantBufferValue, 4> constantBufferValues;
         boost::container::small_vector<TextureTypeEntry, 4> textureTypes;
+        boost::container::small_vector<TexturePixelFormatEntry, 4> texturePixelFormats;
         boost::container::small_vector<TextureCompareFunctionEntry, 4> textureCompareFunctions;
 
         std::vector<PipelineStage> pipelineStages{};
@@ -86,6 +97,11 @@ namespace skyline::gpu::interconnect {
          * @brief Adds a texture type value for a given offset to the bundle
          */
         void AddTextureType(u32 index, Shader::TextureType type);
+
+        /**
+         * @brief Adds whether a TIC entry uses an integer pixel format
+         */
+        void AddTexturePixelFormatInteger(u32 index, bool isInteger);
 
         /**
          * @brief Adds a texture comparison function to the bundle
@@ -116,6 +132,11 @@ namespace skyline::gpu::interconnect {
          * @brief Returns the texture type for a given offset
          */
         Shader::TextureType LookupTextureType(u32 index);
+
+        /**
+         * @brief Returns whether the TIC entry at the given index uses an integer pixel format
+         */
+        bool LookupTexturePixelFormatInteger(u32 index);
 
         /**
          * @brief Returns the texture comparison function for a given bindless handle
