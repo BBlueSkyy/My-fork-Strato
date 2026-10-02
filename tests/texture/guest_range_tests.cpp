@@ -63,6 +63,12 @@ int main() {
     assert(!IsCompleteGuestAlias(parent, GuestResourceRanges(badTail)));
     assert(IsCompleteGuestAlias(parent, child));
     assert(!IsCompleteGuestAlias(parent, one));
+    const std::array<std::span<std::uint8_t>, 2> secondSpanOnly{
+        std::span{memory}.subspan(2000, 16),
+        std::span{memory}.subspan(1000, 16),
+    };
+    assert(parent.Overlaps(GuestResourceRanges(secondSpanOnly)));
+    assert(!IsCompleteGuestAlias(parent, GuestResourceRanges(secondSpanOnly)));
 
     const std::array<std::span<std::uint8_t>, 2> repeated{
         std::span{memory}.subspan(100, 32),

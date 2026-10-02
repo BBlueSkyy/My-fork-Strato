@@ -13,7 +13,7 @@ namespace skyline::gpu::texture {
     class TextureStorage;
 
     /**
-     * @brief Groups host texture storages that represent overlapping/aliased guest memory
+     * @brief Groups storages whose complete guest ranges have a physical alias relationship
      *
      * Group membership is currently metadata-only. It exists as a behavior-neutral
      * foundation for sharing validity/dirty state and explicit alias dependencies later.
@@ -59,7 +59,7 @@ namespace skyline::gpu::texture {
     }
 
     /**
-     * @brief Places a newly created storage in the same alias group as overlapping storages
+     * @brief Joins storages only when one complete ordered guest range is contained in the other
      *
      * This only records resource relationships. It deliberately does not synchronize,
      * copy, invalidate, or otherwise alter texture contents.
@@ -69,7 +69,7 @@ namespace skyline::gpu::texture {
         std::shared_ptr<TextureGroup> targetGroup{};
 
         for (const auto &overlap : overlaps) {
-            if (overlap && overlap->group) {
+            if (overlap && overlap->group && IsCompleteGuestAlias(storage->ranges, overlap->ranges)) {
                 targetGroup = overlap->group;
                 break;
             }
@@ -82,7 +82,8 @@ namespace skyline::gpu::texture {
         targetGroup->Attach(storage);
 
         for (const auto &overlap : overlaps) {
-            if (!overlap || !overlap->group || overlap->group == targetGroup)
+            if (!overlap || !overlap->group || overlap->group == targetGroup ||
+                !IsCompleteGuestAlias(storage->ranges, overlap->ranges))
                 continue;
 
             auto sourceGroup{overlap->group};
