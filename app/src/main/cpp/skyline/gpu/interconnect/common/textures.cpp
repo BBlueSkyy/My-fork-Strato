@@ -391,6 +391,18 @@ namespace skyline::gpu::interconnect {
         throw exception("Invalid TIC texture type: {}", static_cast<u32>(textureHeaders[index].textureType));
     }
 
+    bool Textures::IsTexturePixelFormatInteger(InterconnectContext &ctx, u32 index) {
+        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        if (index >= textureHeaders.size()) {
+            LOGW("Texture pixel format requested for out-of-range TIC index {}", index);
+            return false;
+        }
+
+        const auto &format{textureHeaders[index].formatWord};
+        using Component = TextureImageControl::ImageComponent;
+        return format.componentR == Component::Sint || format.componentR == Component::Uint;
+    }
+
     vk::raii::BufferView *Textures::GetOrCreateTexelBufferView(
         InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format) {
         auto binding{cachedView.view.GetBinding(ctx.gpu)};
