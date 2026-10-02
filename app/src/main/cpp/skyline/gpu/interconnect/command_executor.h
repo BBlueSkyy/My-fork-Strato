@@ -228,6 +228,8 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::shared_ptr<Texture>> diagnosticRenderTargets;
         std::vector<std::function<void()>> pendingDiagnosticCaptureCallbacks;
+        std::vector<std::string> diagnosticDrawTraceLines;
+        size_t diagnosticDrawTraceFlushedCount{};
         DiagnosticCaptureState diagnosticCaptureState{DiagnosticCaptureState::WaitingForHdr};
         bool diagnosticCaptureArmed{};
         size_t diagnosticCaptureIndex{};
@@ -238,6 +240,7 @@ namespace skyline::gpu::interconnect {
 
         void TrackDiagnosticRenderTargets(span<TextureView *> colorAttachments);
         void QueueDiagnosticRenderTargetCaptures();
+        void FlushDiagnosticDrawTrace();
         bool CheckDiagnosticCaptureArm();
         bool EnsureDiagnosticCaptureDirectory();
 
@@ -389,6 +392,16 @@ namespace skyline::gpu::interconnect {
         void NotifyPipelineChange();
 
         std::optional<u32> GetRenderPassIndex();
+
+        /**
+         * @brief Returns whether the targeted rp8 diagnostic trace is currently armed
+         */
+        bool IsDiagnosticDrawTraceActive() const;
+
+        /**
+         * @brief Buffers one textual draw trace for the targeted rp8 diagnostic pass
+         */
+        void AppendDiagnosticDrawTrace(std::string trace);
 
         /**
          * @brief Records a checkpoint into the GPU command stream at the current
