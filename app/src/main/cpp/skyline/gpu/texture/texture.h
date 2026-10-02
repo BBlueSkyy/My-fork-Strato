@@ -503,6 +503,7 @@ namespace skyline::gpu {
         u32 diagnosticTicViewConfig{};
         bool diagnosticTicSrgb{};
         std::atomic<u32> diagnosticCpuWriteTrapCount{};
+        u64 diagnosticInitialGuestHash{};
 
         /**
          * @brief Creates a texture object wrapping the supplied backing with the supplied attributes
