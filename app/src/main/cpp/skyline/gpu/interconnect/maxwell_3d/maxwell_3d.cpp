@@ -288,6 +288,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
             const auto backingFormat{
                 texture->format ? vk::to_string(texture->format->vkFormat) : std::string{"Undefined"}
             };
+            const auto guestFormat{
+                texture->guest && texture->guest->format
+                    ? vk::to_string(texture->guest->format->vkFormat)
+                    : std::string{"none"}
+            };
             const bool captureCandidate{
                 texture->format &&
                 !texture->format->IsCompressed() &&
@@ -303,7 +308,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             trace += fmt::format(
                 "{}[{}] view_ptr={} vk_view={} texture_ptr={} vk_image={} "
-                "dims={}x{}x{} view_format={} backing_format={} layout={} "
+                "dims={}x{}x{} view_format={} backing_format={} guest_format={} layout={} "
+                "view_swizzle={},{},{},{} "
                 "aspect=0x{:X} base_mip={} levels={} base_layer={} layers={} "
                 "guest_map=0x{:X} guest_size={} last_usage={} replaced={} capture_candidate={}\n",
                 label, index,
@@ -316,7 +322,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 texture->dimensions.depth,
                 viewFormat,
                 backingFormat,
+                guestFormat,
                 vk::to_string(texture->layout),
+                vk::to_string(view->mapping.r),
+                vk::to_string(view->mapping.g),
+                vk::to_string(view->mapping.b),
+                vk::to_string(view->mapping.a),
                 static_cast<u32>(static_cast<VkImageAspectFlags>(view->range.aspectMask)),
                 view->range.baseMipLevel,
                 view->range.levelCount,
