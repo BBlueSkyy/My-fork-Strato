@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <string>
+#include <string_view>
 #include <gpu/descriptor_allocator.h>
 #include <gpu/interconnect/common/samplers.h>
 #include <gpu/interconnect/common/textures.h>
