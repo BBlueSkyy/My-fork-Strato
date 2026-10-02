@@ -23,6 +23,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
           constantBuffers{manager, registerBundle.constantBufferSelectorRegisters},
           samplers{manager, registerBundle.samplerPoolRegisters},
           samplerBinding{registerBundle.samplerBinding},
+          diagnosticBlend{registerBundle.activeStateRegisters.pipelineRegisters.colorBlendRegisters.blend},
           textures{manager, registerBundle.texturePoolRegisters},
           directState{activeState.directState},
           queries{gpu} {
@@ -236,7 +237,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             "pipeline_state raster_discard={} cull={} front_cw={} depth_test={} depth_write={} "
             "depth_func={} depth_bounds={} stencil={} logic_enable={} logic_op={} "
             "alpha_test={} alpha_ref={} blend_enable={} color_write_mask=0x{:X} "
-            "color_blend_op={} src_color={} dst_color={} alpha_blend_op={} src_alpha={} dst_alpha={}\n",
+            "color_blend_op={} src_color={} dst_color={} alpha_blend_op={} src_alpha={} dst_alpha={} "
+            "global_color_key_enable={}\n",
             packed.rasterizerDiscardEnable,
             vk::to_string(vk::CullModeFlags{packed.cullMode}),
             packed.frontFaceClockwise,
@@ -256,7 +258,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             vk::to_string(blend.dstColorBlendFactor),
             vk::to_string(blend.alphaBlendOp),
             vk::to_string(blend.srcAlphaBlendFactor),
-            vk::to_string(blend.dstAlphaBlendFactor));
+            vk::to_string(blend.dstAlphaBlendFactor),
+            diagnosticBlend.globalColorKeyEnable);
 
         trace += diagnosticDescriptorWrites;
 
