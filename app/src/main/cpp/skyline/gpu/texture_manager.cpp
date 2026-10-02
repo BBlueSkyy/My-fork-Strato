@@ -330,7 +330,7 @@ namespace skyline::gpu {
         texture->SetupGuestMappings();
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto storage{skyline::gpu::texture::CreateTextureStorage(texture)};
-        texture::JoinTextureStorageGroups(storage, overlappingStorages);
+        skyline::gpu::texture::JoinTextureStorageGroups(storage, overlappingStorages);
         auto it{texture->guest->mappings.begin()};
         textures.emplace(mappingEnd, TextureMapping{storage, it, guestMapping});
         while ((++it) != texture->guest->mappings.end()) {
