@@ -566,7 +566,7 @@ namespace skyline::gpu::interconnect {
                 "tic_raw={:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X}\n"
                 "tic_header_type={}\ntic_format_word=0x{:08X}\ntic_tile_config=0x{:04X}\n"
                 "tic_texture_type={}\ntic_srgb={}\ntic_color_key_op={}\ntic_view_config=0x{:08X}\n"
-                "cpu_write_traps={}\n",
+                "cpu_write_traps={}\ninitial_guest_hash=0x{:016X}\n",
                 inputIndex, fileName, renderPassIndex, submissionNumber, textureAddress,
                 width, height, depth, formatName, guestFormatName, vk::to_string(texture->layout),
                 texture->surfaceSize, texture->deswizzledSurfaceSize,
@@ -588,7 +588,8 @@ namespace skyline::gpu::interconnect {
                 texture->diagnosticTicSrgb,
                 texture->diagnosticTicColorKeyOp,
                 texture->diagnosticTicViewConfig,
-                texture->diagnosticCpuWriteTrapCount.load(std::memory_order_relaxed))};
+                texture->diagnosticCpuWriteTrapCount.load(std::memory_order_relaxed),
+                texture->diagnosticInitialGuestHash)};
 
             slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
                 [texture, stagingBuffer](vk::raii::CommandBuffer &commandBuffer,
