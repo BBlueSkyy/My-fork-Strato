@@ -219,7 +219,25 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
+        enum class DiagnosticCaptureState {
+            WaitingForHdr,
+            WaitingForFrameStart,
+            Capturing,
+            Complete,
+        };
+
+        std::vector<std::shared_ptr<Texture>> diagnosticRenderTargets;
+        std::vector<std::function<void()>> pendingDiagnosticCaptureCallbacks;
+        DiagnosticCaptureState diagnosticCaptureState{DiagnosticCaptureState::WaitingForHdr};
+        size_t diagnosticCaptureIndex{};
+        size_t diagnosticFullHdCount{};
+        std::string diagnosticCaptureDirectory;
+
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
+
+        void TrackDiagnosticRenderTargets(span<TextureView *> colorAttachments);
+        void QueueDiagnosticRenderTargetCaptures();
+        bool EnsureDiagnosticCaptureDirectory();
 
         void RotateRecordSlot();
 
