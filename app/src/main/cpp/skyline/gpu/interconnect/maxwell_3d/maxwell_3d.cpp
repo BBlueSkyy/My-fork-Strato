@@ -218,9 +218,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
             first, vertexOffset, firstInstance,
             scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height)};
 
+        static constexpr std::array<std::string_view, engine::PipelineCount> ShaderNames{
+            "vertex_cull_before_fetch",
+            "vertex",
+            "tessellation_init",
+            "tessellation",
+            "geometry",
+            "fragment",
+        };
         for (size_t shaderIndex{}; shaderIndex < packed.shaderHashes.size(); ++shaderIndex) {
-            trace += fmt::format("shader_hash[{}]=0x{:016X}\n",
-                                 shaderIndex, packed.shaderHashes[shaderIndex]);
+            trace += fmt::format("shader_hash[{}:{}]=0x{:016X}\n",
+                                 shaderIndex, ShaderNames[shaderIndex], packed.shaderHashes[shaderIndex]);
         }
 
         const auto blend{packed.GetAttachmentBlendState(0)};
@@ -384,7 +392,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
                  }
              }
          } else {
-             diagnosticDescriptorWrites = "descriptor_write none (reused current descriptor set)\n";
+             diagnosticDescriptorWrites =
+                 diagnosticDescriptorMode == DiagnosticDescriptorMode::Reuse
+                     ? "descriptor_write none (reused current descriptor set)\n"
+                     : "descriptor_write none (quick bind produced no descriptor writes)\n";
          }
 
          if (oldPipeline != pipeline)
