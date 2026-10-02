@@ -38,7 +38,7 @@ extern "C" JNIEXPORT jint JNICALL Java_org_stratoemu_strato_loader_RomFile_popul
                 loader = std::make_unique<skyline::loader::XciLoader>(backing, keyStore);
                 break;
             case skyline::loader::RomFormat::NSP:
-                loader = std::make_unique<skyline::loader::NspLoader>(backing, keyStore, diagnosticsPath);
+                // Library population only needs the title metadata. Fully parsing every Program/Data NCA here can reject\n                // otherwise valid titles because of content that is only needed when the game is actually launched.\n                loader = std::make_unique<skyline::loader::NspLoader>(backing, keyStore, diagnosticsPath, skyline::loader::NspLoadMode::MetadataOnly);
                 break;
             default:
                 return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);
