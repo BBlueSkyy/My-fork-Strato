@@ -428,6 +428,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
                  }
              }
          }
+
+         if (pipeline->UsesRenderArea()) {
+             const auto &surfaceClip{clearEngineRegisters.surfaceClip};
+             builder.SetRenderArea(
+                 *pipeline->compiledPipeline.pipelineLayout,
+                 {
+                     static_cast<f32>(surfaceClip.horizontal.width),
+                     static_cast<f32>(surfaceClip.vertical.height),
+                     0.0f,
+                     0.0f,
+                 });
+         }
     }
 
     void Maxwell3D::LoadConstantBuffer(span<u32> data, u32 offset) {
