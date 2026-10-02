@@ -261,6 +261,26 @@ namespace skyline::gpu::interconnect {
 
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+
+        // Diagnostic-only: the Marvel Cosmic Invasion gameplay capture isolated a 176x104
+        // sampled input. Record the guest TIC verbatim before any cache fast-path so we can
+        // distinguish intended color-key state from bad texture data or descriptor reuse.
+        if (index < textureHeaders.size()) {
+            const auto &tic{textureHeaders[index]};
+            if (tic.widthMinusOne == 175 && tic.heightMinusOne == 103) {
+                const auto raw{std::bit_cast<std::array<u32, 8>>(tic)};
+                LOGI("MINIRD Marvel TIC index={} iova=0x{:X} "
+                     "raw={:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X} "
+                     "header={} format=0x{:08X} tile=0x{:04X} type={} srgb={} "
+                     "color_key_op={} view=0x{:08X} mip_levels={}",
+                     index, tic.Iova(),
+                     raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+                     static_cast<u32>(tic.headerType), tic.formatWord.Raw(), tic.tileConfig.raw,
+                     static_cast<u32>(tic.textureType), tic.isSrgb,
+                     tic.colorKeyOp, tic.viewConfig.raw, tic.mipMaxLevels);
+            }
+        }
+
         if (textureHeaderCache.size() != textureHeaders.size()) {
             textureHeaderCache.resize(textureHeaders.size());
             std::fill(textureHeaderCache.begin(), textureHeaderCache.end(), CacheEntry{});
