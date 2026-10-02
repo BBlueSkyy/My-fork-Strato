@@ -618,6 +618,13 @@ namespace skyline::gpu {
         if (format->vkAspect & (vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil))
             usage |= vk::ImageUsageFlagBits::eDepthStencilAttachment;
 
+        // Storage-image descriptors require VK_IMAGE_USAGE_STORAGE_BIT on the
+        // backing image. Only request it when the host reports storage-image
+        // support for this optimal-tiling format.
+        const auto formatFeatures{gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat).optimalTilingFeatures};
+        if (formatFeatures & vk::FormatFeatureFlagBits::eStorageImage)
+            usage |= vk::ImageUsageFlagBits::eStorage;
+
         auto imageType{guest->GetImageType()};
         if (imageType == vk::ImageType::e2D && dimensions.width == dimensions.height && layerCount >= 6)
             flags |= vk::ImageCreateFlagBits::eCubeCompatible;
@@ -743,13 +750,6 @@ namespace skyline::gpu {
         for (auto mapping : guest->mappings)
             if (mapping.valid())
                 usageTracker.dirtyIntervals.Insert(mapping);
-
-        // Storage-image writes are declared while descriptors are prepared, before the
-        // executor has synchronized any CPU-dirty contents into the host image. Remember
-        // that write intent separately so SynchronizeHostInline can upload first and only
-        // then leave the texture GPU-dirty for future guest/alias synchronization.
-        std::scoped_lock lock{stateMutex};
-        gpuWritePending = true;
     }
 
     void Texture::SynchronizeHost(bool gpuDirty) {
@@ -804,21 +804,12 @@ namespace skyline::gpu {
             return;
 
         TRACE_EVENT("gpu", "Texture::SynchronizeHostInline");
+        // FIXME (TEXMAN): This should really be tracked on the texture usage side
+        if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsRt)
+            gpuDirty = false;
 
         {
             std::scoped_lock lock{stateMutex};
-
-            // Render targets already keep GPU dirtiness through everUsedAsRt. Storage
-            // images do not, so preserve an explicitly declared shader write even when
-            // guest texture memory is retained. The pending bit is consumed only here,
-            // after descriptor preparation and immediately before command submission.
-            const bool explicitGpuWrite{std::exchange(gpuWritePending, false)};
-            gpuDirty = gpuDirty || explicitGpuWrite;
-
-            // FIXME (TEXMAN): This should really be tracked on the texture usage side
-            if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsRt && !explicitGpuWrite)
-                gpuDirty = false;
-
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 dirtyState = DirtyState::GpuDirty;
                 gpu.state.process->trap.TrapRegions(*trapHandle, false);
