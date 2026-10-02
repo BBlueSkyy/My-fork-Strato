@@ -104,4 +104,17 @@ int main() {
     lookup = cache.Lookup(GuestResourceRanges(nested));
     assert(lookup.storages.size() == 2); // Nested ranges must not hide the parent.
     assert(lookup.firstMappingOverlaps.size() == 2);
+
+    // Slice sources must follow the complete cache's physical order, including
+    // a storage whose earliest segment is outside the requested 3D parent.
+    TextureMappingCache sliceCache;
+    const std::array<std::span<std::uint8_t>, 2> splitSlice{
+        std::span{memory}.subspan(2000, 16),
+        std::span{memory}.subspan(100, 16),
+    };
+    sliceCache.Insert(unrelated, GuestResourceRanges(splitSlice));
+    sliceCache.Insert(storage, parent);
+    const auto sliceStorages = sliceCache.StoragesInMappingOrder();
+    assert(sliceStorages.size() == 2);
+    assert(sliceStorages[0] == unrelated && sliceStorages[1] == storage);
 }

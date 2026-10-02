@@ -29,6 +29,15 @@ namespace skyline::gpu::texture {
         std::vector<Mapping> mappings; //!< Ordered by physical start address.
 
       public:
+        /** Retain the legacy slice-source scan order without exposing the mapping index. */
+        std::vector<std::shared_ptr<TextureStorage>> StoragesInMappingOrder() const {
+            std::vector<std::shared_ptr<TextureStorage>> result;
+            for (const auto &mapping : mappings)
+                if (std::find(result.begin(), result.end(), mapping.storage) == result.end())
+                    result.push_back(mapping.storage);
+            return result;
+        }
+
         LookupResult Lookup(const GuestResourceRanges &resource) const {
             LookupResult result{};
             if (!resource.Valid())

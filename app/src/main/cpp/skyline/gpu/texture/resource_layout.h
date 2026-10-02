@@ -121,4 +121,18 @@ namespace skyline::gpu::texture {
         return resolved ? ClassifiedResourceView{relation, resolved}
                         : ClassifiedResourceView{TextureViewCompatibility::LayoutIncompatible, std::nullopt};
     }
+
+    /**
+     * Confirm that a Full classification resolves to the subresource selected by the active
+     * lookup policy. Until alias validity is tracked, another compatible representation cannot
+     * safely replace that selection because its host contents may be older.
+     */
+    inline std::optional<ResolvedViewBase> ConfirmFullViewAgainstLegacy(
+        const ClassifiedResourceView &classified, ResolvedViewBase legacySelection) {
+        if (classified.relation != TextureViewCompatibility::Full || !classified.sharedView ||
+            classified.sharedView->mip != legacySelection.mip ||
+            classified.sharedView->layer != legacySelection.layer)
+            return std::nullopt;
+        return classified.sharedView;
+    }
 }

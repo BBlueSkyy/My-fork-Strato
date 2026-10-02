@@ -107,6 +107,15 @@ int main() {
            layerMipResult.sharedView->mip == 1 && layerMipResult.sharedView->layer == 1);
     assert(parentRanges.FindContainedOffset(GuestResourceRanges{layerMipMapping}) == 256);
 
+    // Multiple representations may all classify as Full while carrying different host data.
+    // Until alias validity is tracked, Full may only intercept the backing and subresource that
+    // the active legacy lookup selected. In this case the legacy layer/mip match wins over an
+    // otherwise valid exact candidate.
+    const auto exactResult = ClassifyAndResolveView(full, full, FormatCompatibility::Exact, true);
+    assert(!ConfirmFullViewAgainstLegacy(exactResult, {.mip = 1, .layer = 1}));
+    const auto confirmedLayerMip = ConfirmFullViewAgainstLegacy(layerMipResult, {.mip = 1, .layer = 1});
+    assert(confirmedLayerMip && confirmedLayerMip->mip == 1 && confirmedLayerMip->layer == 1);
+
     const std::array<std::span<std::uint8_t>, 2> largerMappings{
         std::span{memory}.subspan(128, 80), std::span{memory}.subspan(2048, 496),
     };
