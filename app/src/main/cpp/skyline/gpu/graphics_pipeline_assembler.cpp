@@ -243,7 +243,7 @@ namespace skyline::gpu {
         };
 
         vk::raii::DescriptorSetLayout descriptorSetLayout{gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
-            .flags = usesPushDescriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR : vk::DescriptorSetLayoutCreateFlags{},
+            .flags = usesPushDescriptors ? vk::DescriptorSetLayoutCreateFlags{vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR} : vk::DescriptorSetLayoutCreateFlags{},
             .pBindings = layoutBindings.data(),
             .bindingCount = static_cast<u32>(layoutBindings.size()),
         }};
