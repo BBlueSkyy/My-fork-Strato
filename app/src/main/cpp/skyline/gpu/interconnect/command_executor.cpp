@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
@@ -431,11 +432,51 @@ namespace skyline::gpu::interconnect {
                 continue;
 
             std::shared_ptr<Texture> texture{view->texture};
-            if (ranges::find_if(diagnosticRenderTargets, [&](const auto &existing) {
+            if (std::find_if(diagnosticRenderTargets.begin(), diagnosticRenderTargets.end(), [&](const auto &existing) {
                     return existing.get() == texture.get();
                 }) == diagnosticRenderTargets.end())
                 diagnosticRenderTargets.emplace_back(std::move(texture));
         }
+    }
+
+    bool CommandExecutor::CheckDiagnosticCaptureArm() {
+        if (diagnosticCaptureArmed)
+            return true;
+
+        std::filesystem::path base{state.os->publicAppFilesPath};
+        base /= "gpu_capture";
+        base /= "nine_sols";
+
+        std::error_code error;
+        std::filesystem::create_directories(base, error);
+        if (error) {
+            LOGE("MINIRD failed to create arm directory '{}': {}", base.string(), error.message());
+            return false;
+        }
+
+        const auto armPath{base / "ARM_CAPTURE"};
+        error.clear();
+        if (std::filesystem::exists(armPath, error) && !error) {
+            std::filesystem::remove(armPath, error);
+            diagnosticCaptureArmed = true;
+            diagnosticCaptureState = DiagnosticCaptureState::WaitingForHdr;
+            LOGI("MINIRD arm marker consumed; waiting for the next HDR chain");
+            return true;
+        }
+
+        const auto readyPath{base / "ARM_CAPTURE.rename_this_file_when_ready"};
+        error.clear();
+        if (!std::filesystem::exists(readyPath, error) && !error) {
+            std::ofstream ready{readyPath, std::ios::out | std::ios::trunc};
+            if (ready) {
+                ready
+                    << "Reach the Nine Sols black scene, switch to a file manager,\n"
+                    << "rename this file to exactly ARM_CAPTURE, then return to Strato.\n"
+                    << "The capture starts on the next complete render chain and stops automatically.\n";
+            }
+        }
+
+        return false;
     }
 
     bool CommandExecutor::EnsureDiagnosticCaptureDirectory() {
@@ -481,6 +522,7 @@ namespace skyline::gpu::interconnect {
                 << "raw_layout=linear host image bytes\n"
                 << "mips=1\n"
                 << "layers=1\n"
+                << "arm=ARM_CAPTURE marker consumed\n"
                 << "trigger=first 1280x720 RGBA8 pass after observing 1280x720 RGBA16F\n"
                 << "stop=second 1920x1080 RGBA8 snapshot or 32 snapshots\n"
                 << "guest_memory_modified=false\n"
@@ -499,6 +541,11 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::QueueDiagnosticRenderTargetCaptures() {
         if (diagnosticRenderTargets.empty() ||
             diagnosticCaptureState == DiagnosticCaptureState::Complete) {
+            diagnosticRenderTargets.clear();
+            return;
+        }
+
+        if (!CheckDiagnosticCaptureArm()) {
             diagnosticRenderTargets.clear();
             return;
         }
@@ -565,8 +612,10 @@ namespace skyline::gpu::interconnect {
                 for (const auto &mapping : texture->guest->mappings)
                     guestMapSize += mapping.size();
                 tileMode = static_cast<u32>(texture->guest->tileConfig.mode);
-                blockHeight = texture->guest->tileConfig.blockHeight;
-                blockDepth = texture->guest->tileConfig.blockDepth;
+                if (texture->guest->tileConfig.mode == texture::TileMode::Block) {
+                    blockHeight = texture->guest->tileConfig.blockHeight;
+                    blockDepth = texture->guest->tileConfig.blockDepth;
+                }
             }
 
             const auto textureAddress{reinterpret_cast<uintptr_t>(texture.get())};
