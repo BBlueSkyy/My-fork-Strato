@@ -467,9 +467,18 @@ namespace skyline::vfs {
         std::array<u64, 2> dataLevel{};
         std::memcpy(dataLevel.data(), section.raw.blockData.data() + 0x28 + (count - 1) * 0x10, sizeof(dataLevel));
         auto raw{OpenRawSection(index)};
-        if (dataLevel[1] == 0 || !InRange(dataLevel[0], dataLevel[1], raw->size))
-            throw loader_exception(LoaderResult::ParsingError, "PFS0 data level is outside the section");
-        auto data{CreateCompressedBacking(section, std::make_shared<RegionBacking>(raw, dataLevel[0], dataLevel[1]), dataLevel[1])};
+
+        std::shared_ptr<Backing> data;
+        if (section.raw.sparseInfo.generation != 0) {
+            // Sparse NCA storage already exposes the filesystem's logical data view. Horizon's
+            // NCA filesystem driver skips the hierarchical hash-layer slicing for sparse sections;
+            // applying dataLevel.offset a second time shifts the PFS0 into unrelated data.
+            data = raw;
+        } else {
+            if (dataLevel[1] == 0 || !InRange(dataLevel[0], dataLevel[1], raw->size))
+                throw loader_exception(LoaderResult::ParsingError, "PFS0 data level is outside the section");
+            data = CreateCompressedBacking(section, std::make_shared<RegionBacking>(raw, dataLevel[0], dataLevel[1]), dataLevel[1]);
+        }
         // Validate names and file extents before PartitionFileSystem indexes the name table.
         const auto pfsHeader{ReadExact<std::array<u32, 4>>(data)};
         const u64 namesOffset{0x10 + static_cast<u64>(pfsHeader[1]) * 0x18};
