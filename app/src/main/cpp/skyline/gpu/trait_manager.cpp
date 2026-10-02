@@ -187,7 +187,10 @@ namespace skyline::gpu {
 
         auto &subgroupProperties{deviceProperties2.get<vk::PhysicalDeviceSubgroupProperties>()};
         supportsSubgroupVote = static_cast<bool>(subgroupProperties.supportedOperations & vk::SubgroupFeatureFlagBits::eVote);
-        subgroupSize = deviceProperties2.get<vk::PhysicalDeviceSubgroupProperties>().subgroupSize;
+        subgroupSize = subgroupProperties.subgroupSize;
+
+        if (supportsPushDescriptors)
+            maxPushDescriptors = deviceProperties2.get<vk::PhysicalDevicePushDescriptorPropertiesKHR>().maxPushDescriptors;
 
         auto isFormatSupported{[&physicalDevice](vk::Format format) {
             auto features{physicalDevice.getFormatProperties(format)};

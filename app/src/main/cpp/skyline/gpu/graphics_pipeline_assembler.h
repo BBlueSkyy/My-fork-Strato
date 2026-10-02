@@ -133,15 +133,18 @@ namespace skyline::gpu {
             vk::raii::DescriptorSetLayout descriptorSetLayout;
             vk::raii::PipelineLayout pipelineLayout;
             std::shared_future<vk::raii::Pipeline> pipeline;
+            bool usesPushDescriptors{};
 
             CompiledPipeline() : descriptorSetLayout{nullptr}, pipelineLayout{nullptr} {};
 
             CompiledPipeline(vk::raii::DescriptorSetLayout descriptorSetLayout,
                              vk::raii::PipelineLayout pipelineLayout,
-                             std::shared_future<vk::raii::Pipeline> pipeline)
+                             std::shared_future<vk::raii::Pipeline> pipeline,
+                             bool usesPushDescriptors)
                 : descriptorSetLayout{std::move(descriptorSetLayout)},
                   pipelineLayout{std::move(pipelineLayout)},
-                  pipeline{std::move(pipeline)} {};
+                  pipeline{std::move(pipeline)},
+                  usesPushDescriptors{usesPushDescriptors} {};
         };
 
         /**

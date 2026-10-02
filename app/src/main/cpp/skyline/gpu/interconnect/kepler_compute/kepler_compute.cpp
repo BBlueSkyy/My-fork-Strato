@@ -43,7 +43,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         auto *descUpdateInfo{pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures, srcStageMask, dstStageMask)};
         builder.SetPipeline(*pipeline->compiledPipeline.pipeline, vk::PipelineBindPoint::eCompute);
 
-        if (ctx.gpu.traits.supportsPushDescriptors) {
+        if (pipeline->compiledPipeline.usesPushDescriptors) {
             builder.SetDescriptorSetWithPush(descUpdateInfo);
         } else {
             auto set{std::make_shared<DescriptorAllocator::ActiveDescriptorSet>(ctx.gpu.descriptor.AllocateSet(descUpdateInfo->descriptorSetLayout))};
