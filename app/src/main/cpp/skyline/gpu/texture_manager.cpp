@@ -134,8 +134,8 @@ namespace skyline::gpu {
         if (!guestRanges.Valid())
             throw exception("Invalid guest texture mapping ranges");
 
-        // The resolved Full path precedes the legacy fallback. Other relations
-        // retain separate backings until copy and dirty tracking are implemented.
+        // A proven Full view can reuse the backing. Every other result must still
+        // pass through the original lookup and synchronization decisions below.
 
         boost::container::small_vector<std::shared_ptr<Texture>, 4> matches{};
         auto mappingLookup{mappingCache.Lookup(guestRanges)};
@@ -151,7 +151,6 @@ namespace skyline::gpu {
         };
 
         const auto requestedLayout = DescribeGuestLayout(guestTexture, guestRanges);
-        std::vector<std::shared_ptr<texture::TextureStorage>> classifiedStorages;
         std::shared_ptr<texture::TextureStorage> sharedStorage;
         texture::ResolvedViewBase sharedBase{};
         bool sharedExact{};
@@ -165,7 +164,6 @@ namespace skyline::gpu {
                 if (!backingLayout)
                     continue; // Unresolved layout keeps the old lookup behavior.
 
-                classifiedStorages.push_back(storage);
                 const auto format = texture::ClassifyFormatCompatibility(
                     *storage->texture->guest->format, *guestTexture.format);
                 const auto relation = texture::ClassifyAndResolveView(backingLayout->Layout(),
@@ -225,19 +223,6 @@ namespace skyline::gpu {
             visitedStorages.push_back(candidateStorage);
             if (candidateStorage->texture->replaced)
                 continue;
-
-            if (std::find(classifiedStorages.begin(), classifiedStorages.end(), candidateStorage) != classifiedStorages.end()) {
-                // The classifier ruled out Full. Preserve the old readback only for
-                // exact mappings that the old mismatch path would have synchronized.
-                const auto matched = candidateStorage->ranges.FindContainedOffset(guestRanges);
-                if (matched == 0 && candidateStorage->ranges.Size() == guestRanges.Size()) {
-                    const auto &existing = *candidateStorage->texture->guest;
-                    const auto format = texture::ClassifyFormatCompatibility(*existing.format, *guestTexture.format);
-                    if (!legacyExactMatch(existing, format))
-                        matches.push_back(candidateStorage->texture);
-                }
-                continue;
-            }
 
             auto matchedOffset{candidateStorage->ranges.FindContainedOffset(guestRanges)};
             if (!matchedOffset)
