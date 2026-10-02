@@ -407,6 +407,11 @@ namespace skyline::gpu::interconnect {
         void AppendDiagnosticDrawTrace(std::string trace);
 
         /**
+         * @brief Writes one diagnostic binary blob into the active mini-RenderDoc capture.
+         */
+        bool WriteDiagnosticBlob(std::string_view fileName, span<const u8> data);
+
+        /**
          * @brief Tracks sampled images from the first corrupt Marvel gameplay pass.
          */
         void TrackDiagnosticSampledInputs(span<TextureView *> sampledImages);
