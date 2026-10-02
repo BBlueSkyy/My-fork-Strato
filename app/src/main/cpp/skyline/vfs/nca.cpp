@@ -102,6 +102,13 @@ namespace skyline::vfs {
         if (parseMode == NCAParseMode::MetadataOnly && contentType != NCAContentType::Meta && contentType != NCAContentType::Control)
             return;
 
+        if (parseMode == NCAParseMode::ProgramDeferred && contentType == NCAContentType::Program) {
+            for (size_t i{}; i < sections.size(); ++i)
+                if (HasSection(i))
+                    ValidateNCA(sections[i]);
+            return;
+        }
+
         for (size_t i{}; i < sections.size(); ++i) {
             if (!HasSection(i))
                 continue;
@@ -595,6 +602,43 @@ namespace skyline::vfs {
         return result;
     }
 
+    std::shared_ptr<FileSystem> NCA::OpenExeFs() {
+        if (exeFs)
+            return exeFs;
+        if (contentType != NCAContentType::Program)
+            return {};
+
+        for (size_t i{}; i < sections.size(); ++i) {
+            if (!HasSection(i) || sections[i].raw.header.fsType != NcaSectionFsType::PFS0)
+                continue;
+            auto pfs{OpenPfs0(i)};
+            if (pfs->FileExists("main") && pfs->FileExists("main.npdm")) {
+                exeFs = pfs;
+                return exeFs;
+            }
+            if (!logo && pfs->FileExists("NintendoLogo.png") && pfs->FileExists("StartupMovie.gif"))
+                logo = pfs;
+        }
+        return {};
+    }
+
+    std::shared_ptr<Backing> NCA::OpenRomFs() {
+        if (romFs)
+            return romFs;
+        if (contentType != NCAContentType::Program && contentType != NCAContentType::Data &&
+            contentType != NCAContentType::PublicData)
+            return {};
+
+        for (size_t i{}; i < sections.size(); ++i) {
+            if (!HasSection(i) || sections[i].raw.header.fsType != NcaSectionFsType::RomFs ||
+                sections[i].bktr.relocation.size != 0)
+                continue;
+            romFs = BuildRomFsBacking(i);
+            return romFs;
+        }
+        return {};
+    }
+
     std::shared_ptr<FileSystem> NCA::OpenExeFsWithPatch(NCA &base) {
         if (contentType != NCAContentType::Program || header.titleId != base.header.titleId)
             throw loader_exception(LoaderResult::ParsingError, "Program patch does not match base Program");
@@ -608,7 +652,7 @@ namespace skyline::vfs {
             }
         }
         LOGI("Program patch has no executable partition; using base ExeFS");
-        return base.exeFs;
+        return base.OpenExeFs();
     }
 
     std::shared_ptr<Backing> NCA::OpenRomFsWithPatch(NCA &base) {
@@ -623,7 +667,7 @@ namespace skyline::vfs {
             romFs = result;
             return result;
         }
-        return base.romFs;
+        return base.OpenRomFs();
     }
 
     std::shared_ptr<Backing> NCA::CreateBacking(const NCASectionHeader &sectionHeader, std::shared_ptr<Backing> rawBacking, size_t offset) {
