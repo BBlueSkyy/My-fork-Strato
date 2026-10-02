@@ -77,7 +77,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         };
 
         vk::raii::DescriptorSetLayout descriptorSetLayout{ctx.gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
-            .flags = usesPushDescriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR : vk::DescriptorSetLayoutCreateFlags{},
+            .flags = usesPushDescriptors ? vk::DescriptorSetLayoutCreateFlags{vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR} : vk::DescriptorSetLayoutCreateFlags{},
             .pBindings = layoutBindings.data(),
             .bindingCount = static_cast<u32>(layoutBindings.size()),
         }};
