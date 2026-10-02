@@ -2,6 +2,7 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/trace.h>
+#include <limits>
 #include <gpu.h>
 #include "texture/compatibility.h"
 #include "texture/layout.h"
@@ -70,9 +71,14 @@ namespace skyline::gpu {
                 const auto &levels = backing ? backing->mipLayouts : calculated;
                 if (levels.size() != guest.mipLevelCount)
                     return std::nullopt;
-                for (const auto &level : levels)
+                for (const auto &level : levels) {
+                    if (level.blockHeight > std::numeric_limits<u32>::max() ||
+                        level.blockDepth > std::numeric_limits<u32>::max())
+                        return std::nullopt;
                     mips.push_back({level.dimensions.width, level.dimensions.height,
-                        level.dimensions.depth, level.blockLinearSize});
+                        level.dimensions.depth, level.blockLinearSize,
+                        static_cast<u32>(level.blockHeight), static_cast<u32>(level.blockDepth)});
+                }
             } else {
                 // The existing upload path does not support linear/pitch mip chains.
                 if (guest.mipLevelCount != 1)
@@ -172,6 +178,10 @@ namespace skyline::gpu {
                     case texture::TextureViewCompatibility::Full: {
                         const auto base = *relation.sharedView;
                         const auto &image = *storage->texture;
+                        // Matching selected mips is insufficient if the rest of the
+                        // requested guest resource maps different physical bytes.
+                        if (!storage->ranges.FindContainedOffset(guestRanges))
+                            break;
                         if (base.mip >= image.levelCount || guestTexture.viewMipCount > image.levelCount - base.mip ||
                             base.layer >= image.layerCount || guestTexture.GetViewLayerCount() > image.layerCount - base.layer)
                             break;

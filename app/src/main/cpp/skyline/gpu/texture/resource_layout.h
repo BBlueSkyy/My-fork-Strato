@@ -12,6 +12,7 @@ namespace skyline::gpu::texture {
     struct MipDescription {
         std::uint32_t width{}, height{}, depth{};
         std::size_t guestSize{};
+        std::uint32_t blockHeight{}, blockDepth{};
     };
 
     struct OwnedTextureResourceLayout {
@@ -38,6 +39,12 @@ namespace skyline::gpu::texture {
             info.layerStride > std::numeric_limits<std::size_t>::max() / layerCount)
             return std::nullopt;
 
+        if (info.tile.mode == TileKind::Block &&
+            (!info.tile.blockHeight || !info.tile.blockDepth ||
+             mips.front().blockHeight != info.tile.blockHeight ||
+             mips.front().blockDepth != info.tile.blockDepth))
+            return std::nullopt;
+
         OwnedTextureResourceLayout result{info};
         result.subresources.reserve(mips.size() * layerCount);
         for (std::uint32_t layer{}; layer < layerCount; ++layer) {
@@ -46,6 +53,7 @@ namespace skyline::gpu::texture {
             for (std::size_t mip{}; mip < mips.size(); ++mip) {
                 const auto &level = mips[mip];
                 if (!level.width || !level.height || !level.depth || !level.guestSize ||
+                    (info.tile.mode == TileKind::Block && (!level.blockHeight || !level.blockDepth)) ||
                     level.guestSize > info.layerStride - levelOffset ||
                     base > ranges.Size() || levelOffset > ranges.Size() - base ||
                     level.guestSize > ranges.Size() - base - levelOffset)
@@ -57,7 +65,8 @@ namespace skyline::gpu::texture {
                 result.subresources.push_back({.offset = segments.front().address,
                     .size = level.guestSize, .width = level.width, .height = level.height,
                     .depth = level.depth, .mip = static_cast<std::uint32_t>(mip), .layer = layer,
-                    .segments = std::move(segments)});
+                    .segments = std::move(segments),
+                    .blockHeight = level.blockHeight, .blockDepth = level.blockDepth});
                 levelOffset += level.guestSize;
             }
         }

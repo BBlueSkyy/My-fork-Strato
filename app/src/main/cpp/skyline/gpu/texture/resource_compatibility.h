@@ -52,6 +52,7 @@ namespace skyline::gpu::texture {
         // Populated by real guest layouts. An empty list preserves the single-span
         // representation used by existing, contiguous compatibility fixtures.
         std::vector<GuestResourceRanges::Segment> segments{};
+        std::uint32_t blockHeight{}, blockDepth{}; //!< Effective GOB blocks at this mip, when block-linear.
     };
 
     /**
@@ -120,6 +121,20 @@ namespace skyline::gpu::texture {
         return li == left.size() && ri == right.size();
     }
 
+    /** A mip zero descriptor must agree with its resource's initial GOB configuration. */
+    inline bool ValidBaseBlock(const TextureResourceLayout &layout) {
+        bool found{};
+        for (const auto &subresource : layout.subresources) {
+            if (subresource.mip != 0 || !subresource.blockHeight || !subresource.blockDepth)
+                continue;
+            found = true;
+            if (subresource.blockHeight != layout.tile.blockHeight ||
+                subresource.blockDepth != layout.tile.blockDepth)
+                return false;
+        }
+        return found;
+    }
+
     /**
      * Classify a requested view against the backing image's complete subresource layout.
      * This only reports possible relationships: it does not grant a Vulkan view, schedule a
@@ -137,6 +152,7 @@ namespace skyline::gpu::texture {
 
         bool overlaps{};
         bool aligned{true};
+        bool effectiveBlockLayout{backing.tile.mode == TileKind::Block && requested.tile.mode == TileKind::Block};
         std::uint64_t selected{};
         for (std::size_t index{}; index < requested.subresources.size(); ++index) {
             const auto &subresource{requested.subresources[index]};
@@ -159,8 +175,17 @@ namespace skyline::gpu::texture {
                 overlaps = true;
                 if (SameGuestBytes(subresource, candidate) &&
                     subresource.width == candidate.width && subresource.height == candidate.height &&
-                    subresource.depth == candidate.depth)
+                    subresource.depth == candidate.depth) {
                     matched = true;
+                    if (effectiveBlockLayout) {
+                        if (!subresource.blockHeight || !subresource.blockDepth ||
+                            !candidate.blockHeight || !candidate.blockDepth)
+                            effectiveBlockLayout = false;
+                        else if (subresource.blockHeight != candidate.blockHeight ||
+                                 subresource.blockDepth != candidate.blockDepth)
+                            aligned = false;
+                    }
+                }
             }
             if (!matched)
                 aligned = false;
@@ -169,8 +194,10 @@ namespace skyline::gpu::texture {
         if (!overlaps)
             return TextureViewCompatibility::Incompatible;
 
+        const bool sameTile = effectiveBlockLayout && ValidBaseBlock(backing) && ValidBaseBlock(requested)
+            ? true : backing.tile == requested.tile;
         if (selected != std::uint64_t{requested.viewMipCount} * requested.viewLayerCount ||
-            !aligned || backing.tile != requested.tile ||
+            !aligned || !sameTile ||
             backing.imageType != requested.imageType ||
             !ValidViewType(backing.imageType, backing.viewType) ||
             !ValidViewType(backing.imageType, requested.viewType) ||
