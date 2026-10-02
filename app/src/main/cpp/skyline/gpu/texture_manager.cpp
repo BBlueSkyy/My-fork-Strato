@@ -30,6 +30,7 @@ namespace skyline::gpu {
 
         std::shared_ptr<Texture> match{};
         boost::container::small_vector<std::shared_ptr<Texture>, 4> matches{};
+        boost::container::small_vector<std::shared_ptr<texture::TextureStorage>, 4> overlappingStorages{};
         auto mappingEnd{std::upper_bound(textures.begin(), textures.end(), guestMapping, [guestMapping](const auto &value, const auto &element) {
             return guestMapping.end() < element.end();
         })}, hostMapping{std::lower_bound(mappingEnd, textures.end(), guestMapping, [guestMapping](const auto &value, const auto &element) {
@@ -46,8 +47,12 @@ namespace skyline::gpu {
         u32 depthSliceParentDepth{};
 
         while (hostMapping != textures.begin() && (--hostMapping)->end() > guestMapping.begin()) {
-            auto &hostMappings{hostMapping->storage->texture->guest->mappings};
-            if (!hostMapping->contains(guestMapping) || hostMapping->storage->texture->replaced)
+            auto &candidateStorage{hostMapping->storage};
+            if (std::find(overlappingStorages.begin(), overlappingStorages.end(), candidateStorage) == overlappingStorages.end())
+                overlappingStorages.push_back(candidateStorage);
+
+            auto &hostMappings{candidateStorage->texture->guest->mappings};
+            if (!hostMapping->contains(guestMapping) || candidateStorage->texture->replaced)
                 continue;
 
             // We need to check that all corresponding mappings in the candidate texture and the guest texture match up
@@ -63,7 +68,7 @@ namespace skyline::gpu {
 
             if (firstHostMapping == hostMappings.begin() && firstHostMapping->begin() == guestMapping.begin() && mappingMatch && lastHostMapping == hostMappings.end() && lastGuestMapping.end() == std::prev(lastHostMapping)->end()) {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
-                auto &matchGuestTexture{*hostMapping->storage->texture->guest};
+                auto &matchGuestTexture{*candidateStorage->texture->guest};
                 auto formatCompatibility{texture::ClassifyCompatibility(*matchGuestTexture.format, *guestTexture.format)};
                 if (texture::CanShareStorage(formatCompatibility) &&
                     ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
@@ -71,12 +76,12 @@ namespace skyline::gpu {
                         matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
                         || matchGuestTexture.viewMipBase > 0)
                     && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
-                    fullMatch = hostMapping->storage->texture;
+                    fullMatch = candidateStorage->texture;
                 } else {
-                    matches.push_back(hostMapping->storage->texture);
+                    matches.push_back(candidateStorage->texture);
                 }
             } else {
-                auto &matchGuestTexture{*hostMapping->storage->texture->guest};
+                auto &matchGuestTexture{*candidateStorage->texture->guest};
                 auto formatCompatibility{texture::ClassifyCompatibility(*matchGuestTexture.format, *guestTexture.format)};
 
                 // A render target may describe an individual Z slice of a block-linear
@@ -140,14 +145,14 @@ namespace skyline::gpu {
 
                 if (texture::CanShareStorage(formatCompatibility) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
                         (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
-                    size_t memOffset{static_cast<size_t>(guestMapping.data() - hostMapping->storage->texture->guest->mappings.front().data())};
+                    size_t memOffset{static_cast<size_t>(guestMapping.data() - candidateStorage->texture->guest->mappings.front().data())};
                     size_t layerMemOffset{};
                     bool matched{};
-                    for (u32 layer{}; layer < hostMapping->storage->texture->layerCount; layer++) {
+                    for (u32 layer{}; layer < candidateStorage->texture->layerCount; layer++) {
                         u32 level{};
                         size_t levelMemOffset{};
 
-                        for (auto &mipLevel : hostMapping->storage->texture->mipLayouts) {
+                        for (auto &mipLevel : candidateStorage->texture->mipLayouts) {
                             if (layerMemOffset + levelMemOffset == memOffset) {
                                 if (mipLevel.blockLinearSize == guestTexture.CalculateLayerSize()) {
                                     matched = true;
@@ -172,7 +177,7 @@ namespace skyline::gpu {
                         if (fullMatch)
                             fullMatch->replaced = true;
 
-                        layerMipMatch = hostMapping->storage->texture;
+                        layerMipMatch = candidateStorage->texture;
                     }
                 }
             }
@@ -325,6 +330,7 @@ namespace skyline::gpu {
         texture->SetupGuestMappings();
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto storage{skyline::gpu::texture::CreateTextureStorage(texture)};
+        texture::JoinTextureStorageGroups(storage, overlappingStorages);
         auto it{texture->guest->mappings.begin()};
         textures.emplace(mappingEnd, TextureMapping{storage, it, guestMapping});
         while ((++it) != texture->guest->mappings.end()) {
