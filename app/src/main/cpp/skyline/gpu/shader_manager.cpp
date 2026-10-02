@@ -59,14 +59,30 @@ namespace skyline::gpu {
             return it->second;
         }
 
-        if (DumpShaders) {
+        constexpr u64 MarvelFinalBlitVertex{0xAD0412E01E9E7673ULL};
+        constexpr u64 MarvelFinalBlitFragment{0x32E936B33B4DE075ULL};
+        constexpr u64 MarvelGameplayVertex{0x382850889BD45FFBULL};
+        constexpr u64 MarvelGameplayFragment{0x5D696B49F0491509ULL};
+        const bool dumpMarvelTarget{
+            hash == MarvelFinalBlitVertex || hash == MarvelFinalBlitFragment ||
+            hash == MarvelGameplayVertex || hash == MarvelGameplayFragment
+        };
+
+        if (DumpShaders || dumpMarvelTarget) {
             std::scoped_lock lock{dumpMutex};
+
+            if (!std::filesystem::exists(dumpPath))
+                std::filesystem::create_directories(dumpPath);
 
             auto shaderPath{dumpPath / fmt::format("{:016X}{}", hash, spv ? ".spv" : "")};
             if (!std::filesystem::exists(shaderPath)) {
                 std::ofstream file{shaderPath, std::ios::binary};
                 file.write(reinterpret_cast<const char *>(binary.data()), static_cast<std::streamsize>(binary.size()));
             }
+
+            if (dumpMarvelTarget)
+                LOGI("MINIRD dumped Marvel target shader 0x{:016X} ({}) to {}",
+                     hash, spv ? "SPIR-V" : "guest", shaderPath.string());
         }
 
         return binary;

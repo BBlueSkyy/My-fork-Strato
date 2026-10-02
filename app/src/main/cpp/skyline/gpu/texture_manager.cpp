@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
-#include <common/trace.h>
+#include <common/trace.h>\n#include <common/utils.h>
 #include "texture/layout.h"
 #include "texture_manager.h"
 
@@ -12,6 +12,16 @@ namespace skyline::gpu {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
         auto guestMapping{guestTexture.mappings.front()};
+
+        const bool diagnosticMarvelTarget{
+            guestTexture.dimensions == texture::Dimensions{176, 104, 1} &&
+            guestTexture.format &&
+            guestTexture.format->vkFormat == vk::Format::eR8G8B8A8Unorm &&
+            guestTexture.tileConfig.mode == texture::TileMode::Block
+        };
+        u64 diagnosticPreFindGuestHash{};
+        if (diagnosticMarvelTarget && guestTexture.mappings.size() == 1)
+            diagnosticPreFindGuestHash = XXH64(guestMapping.data(), guestMapping.size(), 0);
 
         /*
          * Iterate over all textures that overlap with the first mapping of the guest texture and compare the mappings:
@@ -313,13 +323,24 @@ namespace skyline::gpu {
             }
         }
 
-        for (auto &texture : matches)
+        u32 diagnosticOverlapSyncCount{};
+        for (auto &texture : matches) {
+            if (diagnosticMarvelTarget)
+                ++diagnosticOverlapSyncCount;
             texture->SynchronizeGuest(false, true);
+        }
+
+        u64 diagnosticPostOverlapGuestHash{};
+        if (diagnosticMarvelTarget && guestTexture.mappings.size() == 1)
+            diagnosticPostOverlapGuestHash = XXH64(guestMapping.data(), guestMapping.size(), 0);
 
         // Create a texture as we cannot find one that matches
-
-
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
+        if (diagnosticMarvelTarget) {
+            texture->diagnosticPreFindGuestHash = diagnosticPreFindGuestHash;
+            texture->diagnosticPostOverlapGuestHash = diagnosticPostOverlapGuestHash;
+            texture->diagnosticOverlapSyncCount = diagnosticOverlapSyncCount;
+        }
         texture->SetupGuestMappings();
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto it{texture->guest->mappings.begin()};

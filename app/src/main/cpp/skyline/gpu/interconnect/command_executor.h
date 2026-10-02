@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <string>
 #include <boost/container/stable_vector.hpp>
 #include <renderdoc_app.h>
 #include <common/linear_allocator.h>
@@ -219,7 +220,32 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
+        enum class DiagnosticCaptureState {
+            WaitingForArm,
+            Capturing,
+            Complete,
+        };
+
+        std::vector<std::shared_ptr<Texture>> diagnosticRenderTargets;
+        std::vector<std::shared_ptr<Texture>> diagnosticSampledInputs;
+        std::vector<std::function<void()>> pendingDiagnosticCaptureCallbacks;
+        std::vector<std::string> diagnosticDrawTraceLines;
+        size_t diagnosticDrawTraceFlushedCount{};
+        DiagnosticCaptureState diagnosticCaptureState{DiagnosticCaptureState::WaitingForArm};
+        bool diagnosticCaptureArmed{};
+        bool diagnosticSampledInputsCaptured{};
+        std::optional<u32> diagnosticSampledInputRenderPass;
+        size_t diagnosticCaptureIndex{};
+        std::string diagnosticCaptureDirectory;
+
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
+
+        void TrackDiagnosticRenderTargets(span<TextureView *> colorAttachments);
+        void QueueDiagnosticRenderTargetCaptures();
+        void QueueDiagnosticSampledInputCaptures();
+        void FlushDiagnosticDrawTrace();
+        bool CheckDiagnosticCaptureArm();
+        bool EnsureDiagnosticCaptureDirectory();
 
         void RotateRecordSlot();
 
@@ -369,6 +395,26 @@ namespace skyline::gpu::interconnect {
         void NotifyPipelineChange();
 
         std::optional<u32> GetRenderPassIndex();
+
+        /**
+         * @brief Returns whether the mini-RenderDoc diagnostic trace is currently active
+         */
+        bool IsDiagnosticDrawTraceActive() const;
+
+        /**
+         * @brief Buffers one textual draw trace for the active diagnostic capture
+         */
+        void AppendDiagnosticDrawTrace(std::string trace);
+
+        /**
+         * @brief Writes one diagnostic binary blob into the active mini-RenderDoc capture.
+         */
+        bool WriteDiagnosticBlob(std::string_view fileName, span<const u8> data);
+
+        /**
+         * @brief Tracks sampled images from the first corrupt Marvel gameplay pass.
+         */
+        void TrackDiagnosticSampledInputs(span<TextureView *> sampledImages);
 
         /**
          * @brief Records a checkpoint into the GPU command stream at the current
