@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <vector>
+#include "guest_range.h"
 
 namespace skyline::gpu::texture {
     /** CopyCompatible is reserved for formats with a verified explicit conversion path. */
@@ -41,18 +43,20 @@ namespace skyline::gpu::texture {
         constexpr bool operator==(const TileLayout &) const = default;
     };
 
-    /** Physical guest address and layout for one mip and array layer. */
+    /** Physical guest spans and layout for one mip and array layer. */
     struct GuestSubresource {
         std::uint64_t offset{};
         std::uint64_t size{};
         std::uint32_t width{}, height{}, depth{};
         std::uint32_t mip{}, layer{};
+        // Populated by real guest layouts. An empty list preserves the single-span
+        // representation used by existing, contiguous compatibility fixtures.
+        std::vector<GuestResourceRanges::Segment> segments{};
     };
 
     /**
-     * Subresources use resolved physical guest addresses, not offsets in a virtual mapping.
+     * Subresources use resolved physical guest spans, never a fabricated continuous address.
      * Callers must resolve all mappings and the exact mip/layer offsets before classifying.
-     * An unresolved or non-contiguous guest mapping must never be assumed contiguous here.
      */
     struct TextureResourceLayout {
         TileLayout tile{};
@@ -78,13 +82,42 @@ namespace skyline::gpu::texture {
         return false;
     }
 
-    constexpr bool Overlaps(const GuestSubresource &lhs, const GuestSubresource &rhs) {
-        // Subresource ranges are validated by the caller; avoid wrapping their end addresses.
-        if (!lhs.size || !rhs.size ||
-            lhs.size > std::numeric_limits<std::uint64_t>::max() - lhs.offset ||
-            rhs.size > std::numeric_limits<std::uint64_t>::max() - rhs.offset)
+    inline bool Overlaps(const GuestSubresource &lhs, const GuestSubresource &rhs) {
+        const auto lhsSingle = GuestResourceRanges::Segment{lhs.offset, lhs.size, 0};
+        const auto rhsSingle = GuestResourceRanges::Segment{rhs.offset, rhs.size, 0};
+        const auto left = lhs.segments.empty() ? std::span{&lhsSingle, 1} : std::span{lhs.segments};
+        const auto right = rhs.segments.empty() ? std::span{&rhsSingle, 1} : std::span{rhs.segments};
+        for (const auto &a : left)
+            for (const auto &b : right)
+                if (a.size && b.size && a.size <= std::numeric_limits<std::uintptr_t>::max() - a.address &&
+                    b.size <= std::numeric_limits<std::uintptr_t>::max() - b.address &&
+                    a.address < b.address + b.size && b.address < a.address + a.size)
+                    return true;
+        return false;
+    }
+
+    inline bool SameGuestBytes(const GuestSubresource &lhs, const GuestSubresource &rhs) {
+        if (!lhs.size || lhs.size != rhs.size)
             return false;
-        return lhs.offset < rhs.offset + rhs.size && rhs.offset < lhs.offset + lhs.size;
+        const auto lhsSingle = GuestResourceRanges::Segment{lhs.offset, lhs.size, 0};
+        const auto rhsSingle = GuestResourceRanges::Segment{rhs.offset, rhs.size, 0};
+        const auto left = lhs.segments.empty() ? std::span{&lhsSingle, 1} : std::span{lhs.segments};
+        const auto right = rhs.segments.empty() ? std::span{&rhsSingle, 1} : std::span{rhs.segments};
+        std::size_t li{}, ri{}, lo{}, ro{}, compared{};
+        while (compared < lhs.size) {
+            if (li >= left.size() || ri >= right.size() ||
+                left[li].size > std::numeric_limits<std::uintptr_t>::max() - left[li].address ||
+                right[ri].size > std::numeric_limits<std::uintptr_t>::max() - right[ri].address ||
+                left[li].address + lo != right[ri].address + ro)
+                return false;
+            const auto amount = std::min({left[li].size - lo, right[ri].size - ro, lhs.size - compared});
+            if (!amount)
+                return false;
+            compared += amount;
+            if ((lo += amount) == left[li].size) { ++li; lo = 0; }
+            if ((ro += amount) == right[ri].size) { ++ri; ro = 0; }
+        }
+        return li == left.size() && ri == right.size();
     }
 
     /**
@@ -124,7 +157,7 @@ namespace skyline::gpu::texture {
                 if (!Overlaps(subresource, candidate))
                     continue;
                 overlaps = true;
-                if (subresource.offset == candidate.offset && subresource.size == candidate.size &&
+                if (SameGuestBytes(subresource, candidate) &&
                     subresource.width == candidate.width && subresource.height == candidate.height &&
                     subresource.depth == candidate.depth)
                     matched = true;
