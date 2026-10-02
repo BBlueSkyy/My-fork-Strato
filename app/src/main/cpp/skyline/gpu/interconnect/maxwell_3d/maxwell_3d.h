@@ -52,6 +52,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
         Samplers samplers;
         const engine::SamplerBinding &samplerBinding;
         const engine::Blend &diagnosticBlend;
+        const std::array<engine::VertexStream, engine::VertexStreamCount> &diagnosticVertexStreams;
+        const std::array<engine::VertexStreamInstance, engine::VertexStreamCount> &diagnosticVertexStreamInstances;
+        const std::array<engine::VertexAttribute, engine::VertexAttributeCount> &diagnosticVertexAttributes;
+        const engine::IndexBuffer &diagnosticIndexBuffer;
+        std::array<const soc::gm20b::engine::Address *, engine::VertexStreamCount> diagnosticVertexStreamLimits{};
+        bool diagnosticGameplayGeometryCaptured{};
         Textures textures;
         std::shared_ptr<memory::Buffer> quadConversionBuffer{};
         bool quadConversionBufferAttached{};
