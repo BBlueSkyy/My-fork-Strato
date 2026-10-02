@@ -460,6 +460,8 @@ namespace skyline::gpu::interconnect {
             std::filesystem::remove(armPath, error);
             diagnosticCaptureArmed = true;
             diagnosticCaptureState = DiagnosticCaptureState::WaitingForHdr;
+            diagnosticDrawTraceLines.clear();
+            diagnosticDrawTraceFlushedCount = 0;
             LOGI("MINIRD arm marker consumed; waiting for the next HDR chain");
             return true;
         }
@@ -477,6 +479,40 @@ namespace skyline::gpu::interconnect {
         }
 
         return false;
+    }
+
+    void CommandExecutor::FlushDiagnosticDrawTrace() {
+        if (diagnosticCaptureDirectory.empty() ||
+            diagnosticDrawTraceFlushedCount >= diagnosticDrawTraceLines.size())
+            return;
+
+        const std::filesystem::path tracePath{
+            std::filesystem::path(diagnosticCaptureDirectory) / "rp8_draws.txt"
+        };
+
+        const bool createHeader{diagnosticDrawTraceFlushedCount == 0};
+        std::ofstream trace{tracePath, std::ios::out | std::ios::app};
+        if (!trace) {
+            LOGE("MINIRD failed to open rp8 draw trace '{}'", tracePath.string());
+            return;
+        }
+
+        if (createHeader) {
+            trace
+                << "Strato mini-RenderDoc targeted draw trace\n"
+                << "target=render_pass_8\n"
+                << "purpose=shader_descriptor_state_and_sampled_view_identity\n"
+                << "note=diagnostic_only_no_guest_memory_writes\n\n";
+        }
+
+        for (; diagnosticDrawTraceFlushedCount < diagnosticDrawTraceLines.size();
+             ++diagnosticDrawTraceFlushedCount) {
+            trace << diagnosticDrawTraceLines[diagnosticDrawTraceFlushedCount];
+            if (!diagnosticDrawTraceLines[diagnosticDrawTraceFlushedCount].empty() &&
+                diagnosticDrawTraceLines[diagnosticDrawTraceFlushedCount].back() != '\n')
+                trace << '\n';
+            trace << '\n';
+        }
     }
 
     bool CommandExecutor::EnsureDiagnosticCaptureDirectory() {
@@ -550,6 +586,8 @@ namespace skyline::gpu::interconnect {
             return;
         }
 
+        FlushDiagnosticDrawTrace();
+
         if (diagnosticCaptureState == DiagnosticCaptureState::WaitingForHdr) {
             if (ranges::any_of(diagnosticRenderTargets, [](const auto &texture) {
                     return IsMiniRenderDocHdrTrigger(*texture);
@@ -575,6 +613,7 @@ namespace skyline::gpu::interconnect {
             }
 
             diagnosticCaptureState = DiagnosticCaptureState::Capturing;
+            FlushDiagnosticDrawTrace();
             LOGI("MINIRD starting capture at render pass {}", renderPassIndex);
         }
 
@@ -680,6 +719,7 @@ namespace skyline::gpu::interconnect {
         diagnosticRenderTargets.clear();
 
         if (captureComplete) {
+            FlushDiagnosticDrawTrace();
             const std::filesystem::path captureDirectory{diagnosticCaptureDirectory};
             const auto completePath{captureDirectory / "capture_complete.txt"};
             const auto captureCount{diagnosticCaptureIndex};
@@ -940,6 +980,22 @@ namespace skyline::gpu::interconnect {
 
     std::optional<u32> CommandExecutor::GetRenderPassIndex() {
         return renderPassIndex;
+    }
+
+    bool CommandExecutor::IsDiagnosticDrawTraceActive() const {
+        return diagnosticCaptureArmed &&
+               renderPassIndex == 8 &&
+               (diagnosticCaptureState == DiagnosticCaptureState::WaitingForFrameStart ||
+                diagnosticCaptureState == DiagnosticCaptureState::Capturing);
+    }
+
+    void CommandExecutor::AppendDiagnosticDrawTrace(std::string trace) {
+        if (!IsDiagnosticDrawTraceActive())
+            return;
+
+        diagnosticDrawTraceLines.emplace_back(
+            fmt::format("submission={} render_pass={}\n{}",
+                        submissionNumber, renderPassIndex, std::move(trace)));
     }
 
     u32 CommandExecutor::AddCheckpointImpl(std::string_view annotation) {
