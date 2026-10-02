@@ -216,6 +216,9 @@ namespace skyline::gpu {
             if (!texture)
                 return true;
 
+            if (texture->dimensions == texture::Dimensions{176, 104, 1})
+                texture->diagnosticCpuWriteTrapCount.fetch_add(1, std::memory_order_relaxed);
+
             std::unique_lock stateLock{texture->stateMutex, std::try_to_lock};
             if (!stateLock)
                 return false;
