@@ -137,6 +137,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 return GetIndexBufferSize(engine->indexBuffer.indexSize, firstIndex + elementCount);
         }()};
 
+        if (size == 0) [[unlikely]]
+            LOGE("Zero-sized index buffer: address=0x{:X}, limit=0x{:X}, estimateSize={}, firstIndex={}, elementCount={}, indexSize={}",
+                 static_cast<u64>(engine->indexBuffer.address), static_cast<u64>(engine->indexBuffer.limit),
+                 estimateSize, firstIndex, elementCount, static_cast<u32>(engine->indexBuffer.indexSize));
+
         view.Update(ctx, engine->indexBuffer.address, size, !estimateSize);
         if (!*view) {
             LOGD("Unmapped index buffer: 0x{:X}", engine->indexBuffer.address);

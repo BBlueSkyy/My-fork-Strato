@@ -8,6 +8,13 @@
 
 namespace skyline::gpu::interconnect {
     void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn) {
+        // A zero-sized view cannot back a GPU buffer. Passing it to BufferManager would
+        // page-align an empty range and eventually attempt a zero-sized mirror mapping.
+        if (size == 0) {
+            view = {};
+            return;
+        }
+
         // Ignore size for the mapping end check here as we don't support buffers split across multiple mappings so only the first one would be used anyway. It's also impossible for the mapping to have been remapped with a larger one since the original lookup because the we force the mapping to be reset after semaphores
         if (address < blockMappingStartAddr || address >= blockMappingEndAddr) {
             u64 blockOffset{};
