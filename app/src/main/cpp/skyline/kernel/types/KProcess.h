@@ -9,6 +9,7 @@
 #include "KTransferMemory.h"
 #include "KSession.h"
 #include "KEvent.h"
+#include "KResourceLimit.h"
 
 namespace skyline {
     namespace constant {
@@ -66,6 +67,7 @@ namespace skyline {
             std::vector<std::shared_ptr<TlsPage>> tlsPages; //!< All TLS pages allocated by this process
             vfs::NPDM npdm;
             span<u8> mainThreadStack;
+            std::shared_ptr<KResourceLimit> resourceLimit;
           private:
             std::shared_mutex handleMutex;
             std::vector<std::shared_ptr<KObject>> handles;
@@ -103,6 +105,11 @@ namespace skyline {
              * @return A 0x200 TLS slot allocated inside the TLS/IO region
              */
             u8 *AllocateTlsSlot();
+
+            /**
+             * @brief Refreshes the queryable current/limit values of this process' resource-limit object.
+             */
+            void RefreshResourceLimitValues();
 
             /**
              * @return A shared pointer to a KThread initialized with the specified values or nullptr, if thread creation has been disabled
@@ -150,6 +157,19 @@ namespace skyline {
                 return static_cast<KHandle>((constant::BaseHandleIndex + handles.size()) - 1);
             }
 
+            /**
+             * @brief Creates a real handle-table entry referring to this process.
+             * @note The handle table is owned by the process itself, so storing an owning shared_ptr back to
+             * the process would create a reference cycle. The non-owning entry is safe for the process's own
+             * table and behaves as a normal (non-pseudo) process handle to SVCs.
+             */
+            KHandle InsertSelfHandle() {
+                std::unique_lock lock(handleMutex);
+
+                handles.emplace_back(static_cast<KObject *>(this), [](KObject *) {});
+                return static_cast<KHandle>((constant::BaseHandleIndex + handles.size()) - 1);
+            }
+
             template<typename objectClass = KObject>
             std::shared_ptr<objectClass> GetHandle(KHandle handle) {
                 std::shared_lock lock(handleMutex);
@@ -173,6 +193,8 @@ namespace skyline {
                     objectType = KType::KSession;
                 } else if constexpr (std::is_same<objectClass, KEvent>()) {
                     objectType = KType::KEvent;
+                } else if constexpr (std::is_same<objectClass, KResourceLimit>()) {
+                    objectType = KType::KResourceLimit;
                 } else {
                     throw exception("KProcess::GetHandle couldn't determine object type");
                 }

@@ -23,6 +23,7 @@ namespace skyline::loader {
             Argv = 5,
             SyscallAvailableHint = 6,
             AppletType = 7,
+            ProcessHandle = 10,
         };
 
         constexpr u64 AppletTypeSystemApplication{4};
@@ -113,12 +114,17 @@ namespace skyline::loader {
 
         const u64 programAddress{reinterpret_cast<u64>(loadInfo.entry)};
         homebrewConfigAddress = programAddress + executable.data.offset + homebrewDataOffset;
-        mainThreadHandleAddress = homebrewConfigAddress + offsetof(HomebrewConfigEntry, value);
 
         std::vector<HomebrewConfigEntry> entries;
+        const size_t mainThreadEntryIndex{entries.size()};
         entries.push_back({static_cast<u32>(HomebrewConfigKey::MainThreadHandle), 0, {0, 0}});
+        const size_t processEntryIndex{entries.size()};
+        entries.push_back({static_cast<u32>(HomebrewConfigKey::ProcessHandle), 0, {0, 0}});
         entries.push_back({static_cast<u32>(HomebrewConfigKey::AppletType), 0,
                            {AppletTypeSystemApplication, EnvAppletFlagApplicationOverride}});
+
+        mainThreadHandleAddress = homebrewConfigAddress + mainThreadEntryIndex * sizeof(HomebrewConfigEntry) + offsetof(HomebrewConfigEntry, value);
+        processHandleAddress = homebrewConfigAddress + processEntryIndex * sizeof(HomebrewConfigEntry) + offsetof(HomebrewConfigEntry, value);
 
         const auto syscallHints{GetSyscallHints()};
         entries.push_back({static_cast<u32>(HomebrewConfigKey::SyscallAvailableHint), 0,
@@ -179,10 +185,15 @@ namespace skyline::loader {
     }
 
     void NroLoader::OnMainThreadCreated(const std::shared_ptr<kernel::type::KProcess> &process, KHandle handle) {
-        if (!mainThreadHandleAddress)
-            return;
+        if (mainThreadHandleAddress) {
+            auto *mainThreadHandle{process->memory.TranslateVirtualPointer<u64 *>(mainThreadHandleAddress)};
+            *mainThreadHandle = handle;
+        }
 
-        auto *mainThreadHandle{process->memory.TranslateVirtualPointer<u64 *>(mainThreadHandleAddress)};
-        *mainThreadHandle = handle;
+        if (processHandleAddress) {
+            const KHandle processHandle{process->InsertSelfHandle()};
+            auto *processHandleValue{process->memory.TranslateVirtualPointer<u64 *>(processHandleAddress)};
+            *processHandleValue = processHandle;
+        }
     }
 }

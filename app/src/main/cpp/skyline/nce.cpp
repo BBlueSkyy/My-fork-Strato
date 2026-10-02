@@ -242,6 +242,53 @@ namespace skyline::nce {
     constexpr size_t TrampolineSize{18}; // Size of the main SVC trampoline function in u32 units
 
     /**
+     * @brief Encodes ADRP using the page-relative distance between two locations in the
+     *        generated NCE image.
+     *
+     * The patch and text aliases have identical page-relative layout, so the encoded
+     * distance remains valid when the guest executes the mapped alias rather than the
+     * host address used while generating the patch.
+     */
+    u32 EncodeAdrp(registers::X destination, const u32 *instruction, const u32 *target) {
+        const i64 instructionPage{static_cast<i64>(reinterpret_cast<uintptr_t>(instruction) >> 12)};
+        const i64 targetPage{static_cast<i64>(reinterpret_cast<uintptr_t>(target) >> 12)};
+        const i64 pageDelta{targetPage - instructionPage};
+
+        constexpr i64 MinPageDelta{-(1LL << 20)};
+        constexpr i64 MaxPageDelta{(1LL << 20) - 1};
+        if (pageDelta < MinPageDelta || pageDelta > MaxPageDelta)
+            throw exception("NCE ADRP target out of range: {} pages", pageDelta);
+
+        const u32 immediate{static_cast<u32>(pageDelta) & 0x1FFFFF};
+        return 0x90000000U |
+               ((immediate & 0x3U) << 29) |
+               (((immediate >> 2) & 0x7FFFFU) << 5) |
+               static_cast<u32>(destination);
+    }
+
+    /**
+     * @brief Stores the architectural resume PC for an emulated SVC.
+     *
+     * The original SVC is replaced with an ordinary B, deliberately preserving the
+     * guest X30. SaveCtx therefore cannot derive the SVC resume PC from LR: LR still
+     * contains the guest function's return address. Compute SVC+4 explicitly from the
+     * generated trampoline's PC-relative layout and keep LR and PC as distinct state.
+     *
+     * X0/X1 are safe scratch registers here because SaveCtx has already copied the
+     * guest values to ThreadContext and LoadCtx restores them before guest execution.
+     */
+    u32 *WriteSvcResumePc(u32 *code, const u32 *resumePc) {
+        *code++ = 0xD53BD040; // MRS X0, TPIDR_EL0
+        *code = EncodeAdrp(registers::X1, code, resumePc); // ADRP X1, resumePc
+        code++;
+
+        const u32 pageOffset{static_cast<u32>(reinterpret_cast<uintptr_t>(resumePc) & 0xFFF)};
+        *code++ = 0x91000021U | (pageOffset << 10); // ADD X1, X1, #pageOffset
+        *code++ = 0xF901A401; // STR X1, [X0, #0x348] (ThreadContext::pc)
+        return code;
+    }
+
+    /**
      * @brief Writes a trampoline to the given target address that saves the current context and calls the given function
      */
     u32 *WriteTrampoline(u32 *code, u64 target) {
@@ -351,7 +398,9 @@ namespace skyline::nce {
             auto instructionOffset{static_cast<size_t>(instruction - start)};
 
             if (svc.Verify()) {
-                size += 7;
+                // Seven original trampoline instructions plus four instructions that
+                // preserve the architectural SVC resume PC separately from guest X30.
+                size += 11;
                 offsets.push_back(instructionOffset);
             } else if (mrs.Verify()) {
                 if (mrs.srcReg == TpidrroEl0 || mrs.srcReg == TpidrEl0) {
@@ -409,6 +458,14 @@ namespace skyline::nce {
                 *patch++ = 0xF81F0FFE; // STR LR, [SP, #-16]!
                 *patch = instructions::BL(static_cast<i32>(startOffset())).raw;
                 patch++;
+
+                /*
+                 * SaveCtx preserves the guest LR from the caller stack. For an SVC,
+                 * the architectural PC exposed by GetThreadContext3 is the resume
+                 * address (the instruction after the original SVC), not that LR.
+                 */
+                const u32 *resumePc{end + (textOffset / sizeof(u32)) + offset + 1};
+                patch = WriteSvcResumePc(patch, resumePc);
 
                 /* Jump to main SVC trampoline */
                 *patch++ = instructions::Movz(registers::W0, static_cast<u16>(svc.value)).raw;

@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <unistd.h>
+#include <asm/sigcontext.h>
 #include <common/signal.h>
 #include <common/trace.h>
 #include <jit/halt_reason.h>
@@ -27,7 +28,42 @@ namespace skyline::kernel {
         TRACE_EVENT_END("guest");
         {
             TRACE_EVENT_FMT("scheduler", "{} Signal", signal == PreemptionSignal ? "Preemption" : "Yield");
-            const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
+
+            auto *guestContext{reinterpret_cast<nce::ThreadContext *>(*tls)};
+            auto &machineContext{ctx->uc_mcontext};
+
+            // A signal can interrupt NCE at any guest instruction, so this is the
+            // authoritative full user-register snapshot for GetThreadContext3.
+            for (size_t i{}; i < guestContext->gpr.regs.size(); i++)
+                guestContext->gpr.regs[i] = machineContext.regs[i];
+            for (size_t i{}; i < guestContext->calleeSavedGpr.size(); i++)
+                guestContext->calleeSavedGpr[i] = machineContext.regs[19 + i];
+            guestContext->fp = machineContext.regs[29];
+            guestContext->lr = machineContext.regs[30];
+            guestContext->sp = machineContext.sp;
+            guestContext->pc = machineContext.pc;
+            guestContext->nzcv = static_cast<u32>(machineContext.pstate & 0xF0000000U);
+
+            // Linux/Android stores the interrupted FP/SIMD state in the extensible
+            // AArch64 signal-context area. Copy FPSIMD when present so a paused
+            // thread's ThreadContext is not stale relative to its GP registers.
+            auto *record{reinterpret_cast<_aarch64_ctx *>(machineContext.__reserved)};
+            auto *recordEnd{machineContext.__reserved + sizeof(machineContext.__reserved)};
+            while (reinterpret_cast<u8 *>(record) + sizeof(_aarch64_ctx) <= recordEnd &&
+                   record->magic && record->size >= sizeof(_aarch64_ctx) &&
+                   reinterpret_cast<u8 *>(record) + record->size <= recordEnd) {
+                if (record->magic == FPSIMD_MAGIC && record->size >= sizeof(fpsimd_context)) {
+                    auto *fpsimd{reinterpret_cast<fpsimd_context *>(record)};
+                    guestContext->fpsr = fpsimd->fpsr;
+                    guestContext->fpcr = fpsimd->fpcr;
+                    for (size_t i{}; i < guestContext->fpr.regs.size(); i++)
+                        guestContext->fpr.regs[i] = fpsimd->vregs[i];
+                    break;
+                }
+                record = reinterpret_cast<_aarch64_ctx *>(reinterpret_cast<u8 *>(record) + record->size);
+            }
+
+            const auto &state{*guestContext->state};
             if (signal == PreemptionSignal)
                 state.thread->isPreempted = false;
             state.scheduler->Rotate();
@@ -266,7 +302,12 @@ namespace skyline::kernel {
             throw exception("T{} called Rotate while not being in C{}'s queue", thread->id, thread->coreId);
         }
 
-        thread->averageTimeslice = (thread->averageTimeslice / 4) + (3 * (util::GetTimeTicks() - thread->timesliceStart / 4));
+        const u64 currentTick{util::GetTimeTicks()};
+        if (thread->timesliceStart) {
+            thread->AddCpuTime(thread->coreId, currentTick - thread->timesliceStart);
+            thread->averageTimeslice = (thread->averageTimeslice / 4) + (3 * (currentTick - thread->timesliceStart / 4));
+            thread->timesliceStart = 0;
+        }
 
         thread->DisarmPreemptionTimer(); // If a preemptive thread did a cooperative yield then we need to disarm the preemptive timer
         thread->pendingYield = false;
@@ -284,9 +325,14 @@ namespace skyline::kernel {
                 if (it != core.queue.end()) {
                     it = core.queue.erase(it);
                     if (it == core.queue.begin()) {
-                        // We need to update the averageTimeslice accordingly, if we've been unscheduled by this
-                        if (thread->timesliceStart)
-                            thread->averageTimeslice = (thread->averageTimeslice / 4) + (3 * (util::GetTimeTicks() - thread->timesliceStart / 4));
+                        // This thread has stopped being the running thread on this core. Account the
+                        // completed slice before making the accumulated value visible through GetInfo.
+                        if (thread->timesliceStart) {
+                            const u64 currentTick{util::GetTimeTicks()};
+                            thread->AddCpuTime(thread->coreId, currentTick - thread->timesliceStart);
+                            thread->averageTimeslice = (thread->averageTimeslice / 4) + (3 * (currentTick - thread->timesliceStart / 4));
+                            thread->timesliceStart = 0;
+                        }
 
                         if (it != core.queue.end())
                             (*it)->scheduleCondition.notify(); // We need to wake the thread at the front of the queue, if we were at the front previously
