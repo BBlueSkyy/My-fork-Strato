@@ -336,6 +336,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         for (size_t index{}; index < activeDescriptorSetSampledImages.size(); ++index)
             appendView("sampled", index, activeDescriptorSetSampledImages[index]);
 
+        ctx.executor.TrackDiagnosticSampledInputs(activeDescriptorSetSampledImages);
 
         if (auto *depth{activeState.GetDepthAttachment()})
             appendView("depth_attachment", 0, depth);
@@ -556,14 +557,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         PrepareDraw(builder, topology, indexed, false, first, count, srcStageMask, dstStageMask);
 
-        Pipeline *diagnosticPipeline{activeState.GetPipeline()};
-        const bool diagnosticMarvelFinalBlit{
-            ctx.executor.IsDiagnosticDrawTraceActive() &&
-            diagnosticPipeline &&
-            diagnosticPipeline->sourcePackedState.shaderHashes[1] == 0xAD0412E01E9E7673ULL &&
-            diagnosticPipeline->sourcePackedState.shaderHashes[5] == 0x32E936B33B4DE075ULL
-        };
-
         if (directState.inputAssembly.NeedsQuadConversion()) {
             count = conversion::quads::GetIndexCount(count);
             first = 0;
@@ -600,21 +593,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");
-        ctx.executor.AddSubpass([drawParams, scissor, diagnosticMarvelFinalBlit](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
+        ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
-
-            if (diagnosticMarvelFinalBlit) {
-                const vk::ClearColorValue diagnosticClear{std::array<float, 4>{1.0f, 0.0f, 1.0f, 1.0f}};
-                commandBuffer.clearAttachments(vk::ClearAttachment{
-                    .aspectMask = vk::ImageAspectFlagBits::eColor,
-                    .colorAttachment = 0,
-                    .clearValue = diagnosticClear,
-                }, vk::ClearRect{
-                    .rect = scissor,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                });
-            }
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.beginTransformFeedbackEXT(0, {}, {});
@@ -627,8 +607,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
-        if (diagnosticMarvelFinalBlit)
-            LOGI("MINIRD Marvel final blit precleared magenta before draw");
         TraceDiagnosticDraw("draw", scissor, indexed, count, instanceCount, first, vertexOffset, firstInstance);
         ctx.executor.AddCheckpoint("After draw");
     }
