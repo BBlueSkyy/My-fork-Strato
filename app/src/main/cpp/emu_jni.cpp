@@ -131,13 +131,17 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
             SettingsWeak = settings;
             jvmManager->InitializeControllers();
 
-            {
-                std::scoped_lock lock{SurfaceMutex};
-                if (CurrentSurface)
-                    os->state.gpu->presentation.UpdateSurface(CurrentSurface);
-            }
-
-            os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
+            os->Execute(
+                romFd,
+                dlcFdsVector,
+                updateFd,
+                static_cast<skyline::loader::RomFormat>(romType),
+                [&] {
+                    std::scoped_lock lock{SurfaceMutex};
+                    if (CurrentSurface)
+                        os->state.gpu->presentation.UpdateSurface(CurrentSurface);
+                }
+            );
             executeNextProgram = os->CommitProgramExecutionRequest().has_value();
 
             if (executeNextProgram) {
