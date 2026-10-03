@@ -69,6 +69,8 @@ Registration is rejected unless all of the following hold:
 - one complete ordered guest resource is contained in the other, as required by
   `IsCompleteGuestAlias`;
 - every mapping names a distinct exact subresource on each side;
+- every mip and layer exists in its representation's real `TextureResourceLayout` and every
+  depth slice is less than the depth of that specific mip/layer;
 - any already tracked endpoint is current when the caller declares the representations
   synchronized.
 
@@ -109,8 +111,11 @@ Failure leaves the graph unchanged.
 
 ### Write
 
-`MarkWritten(representation, subresources)` allocates one fresh generation for the write and assigns
-it only to the named, tracked endpoints. Other endpoints retain their previous generations.
+`MarkWritten(representation, subresources)` first validates and deduplicates the complete batch.
+An empty batch, an invalid coordinate, or any untracked endpoint rejects the whole operation without
+changing a generation. After successful validation it allocates one fresh generation for the write
+and assigns it only to the unique named endpoints. Other endpoints retain their previous
+generations.
 
 Consequences:
 
@@ -159,7 +164,9 @@ live endpoints therefore remain stale and `PrepareRead` returns `Unavailable`. A
 never causes the next-oldest endpoint to become current.
 
 Repeated group merges preserve weak ownership identities, endpoint generations, and edges. Merging
-the same dependency metadata twice is idempotent.
+the same dependency metadata twice is idempotent. After every merge, `nextGeneration` is strictly
+greater than every generation imported or already present, so the next write cannot tie an older
+authority accidentally.
 
 ## TextureGroup API
 
@@ -202,8 +209,12 @@ Host tests must cover:
    synchronized.
 10. Partial physical overlap does not register shared validity.
 11. Relationship registration is atomic on invalid input.
-12. Group metadata merge is idempotent and preserves generations.
-13. Existing Full classification, resolved view selection, and legacy-precedence tests remain
+12. Mip, layer, and depth slice registration is rejected when it exceeds the real layout, including
+    the smaller depth of higher 3D mips.
+13. Batched writes deduplicate coordinates and reject invalid or untracked input atomically.
+14. Group metadata merge is idempotent, preserves generations, and advances `nextGeneration`
+    beyond every imported generation.
+15. Existing Full classification, resolved view selection, and legacy-precedence tests remain
     unchanged and passing.
 
 ## Expected Code Scope
