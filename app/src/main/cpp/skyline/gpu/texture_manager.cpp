@@ -2,80 +2,228 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/trace.h>
+#include <limits>
+#include <gpu.h>
+#include "texture/compatibility.h"
 #include "texture/layout.h"
+#include "texture/resource_layout.h"
 #include "texture_manager.h"
 
 namespace skyline::gpu {
+    namespace {
+        std::optional<texture::ImageKind> ImageKindOf(vk::ImageType type) {
+            switch (type) {
+                case vk::ImageType::e1D: return texture::ImageKind::OneDimensional;
+                case vk::ImageType::e2D: return texture::ImageKind::TwoDimensional;
+                case vk::ImageType::e3D: return texture::ImageKind::ThreeDimensional;
+            }
+            return std::nullopt;
+        }
+
+        std::optional<texture::ViewKind> ViewKindOf(vk::ImageViewType type) {
+            switch (type) {
+                case vk::ImageViewType::e1D: return texture::ViewKind::OneDimensional;
+                case vk::ImageViewType::e1DArray: return texture::ViewKind::OneDimensionalArray;
+                case vk::ImageViewType::e2D: return texture::ViewKind::TwoDimensional;
+                case vk::ImageViewType::e2DArray: return texture::ViewKind::TwoDimensionalArray;
+                case vk::ImageViewType::eCube: return texture::ViewKind::Cube;
+                case vk::ImageViewType::eCubeArray: return texture::ViewKind::CubeArray;
+                case vk::ImageViewType::e3D: return texture::ViewKind::ThreeDimensional;
+            }
+            return std::nullopt;
+        }
+
+        std::optional<texture::OwnedTextureResourceLayout> DescribeGuestLayout(
+            const GuestTexture &guest, const texture::GuestResourceRanges &ranges, const Texture *backing = nullptr) {
+            // A nonzero baseArrayLayer currently changes the translated mapping length;
+            // its origin relative to the VkImage is not recorded in GuestTexture.
+            if (!guest.format || guest.baseArrayLayer || !guest.mipLevelCount ||
+                !guest.layerCount || !guest.viewMipCount)
+                return std::nullopt;
+            auto imageKind = ImageKindOf(guest.GetImageType());
+            auto viewKind = ViewKindOf(guest.viewType);
+            if (!imageKind || !viewKind)
+                return std::nullopt;
+
+            texture::TileLayout tile{};
+            switch (guest.tileConfig.mode) {
+                case texture::TileMode::Linear: tile.mode = texture::TileKind::Linear; break;
+                case texture::TileMode::Pitch:
+                    tile.mode = texture::TileKind::Pitch;
+                    tile.pitch = guest.tileConfig.pitch;
+                    break;
+                case texture::TileMode::Block:
+                    tile.mode = texture::TileKind::Block;
+                    tile.blockHeight = guest.tileConfig.blockHeight;
+                    tile.blockDepth = guest.tileConfig.blockDepth;
+                    if (!tile.blockHeight || !tile.blockDepth)
+                        return std::nullopt;
+                    break;
+            }
+
+            std::vector<texture::MipDescription> mips;
+            if (tile.mode == texture::TileKind::Block) {
+                auto calculated = backing ? std::vector<texture::MipLevelLayout>{} :
+                    texture::GetBlockLinearMipLayout(guest.dimensions,
+                        guest.format->blockHeight, guest.format->blockWidth, guest.format->bpb,
+                        guest.format->blockHeight, guest.format->blockWidth, guest.format->bpb,
+                        guest.tileConfig.blockHeight, guest.tileConfig.blockDepth, guest.mipLevelCount);
+                const auto &levels = backing ? backing->mipLayouts : calculated;
+                if (levels.size() != guest.mipLevelCount)
+                    return std::nullopt;
+                for (const auto &level : levels) {
+                    if (level.blockHeight > std::numeric_limits<u32>::max() ||
+                        level.blockDepth > std::numeric_limits<u32>::max())
+                        return std::nullopt;
+                    mips.push_back({level.dimensions.width, level.dimensions.height,
+                        level.dimensions.depth, level.blockLinearSize,
+                        static_cast<u32>(level.blockHeight), static_cast<u32>(level.blockDepth)});
+                }
+            } else {
+                // The existing upload path does not support linear/pitch mip chains.
+                if (guest.mipLevelCount != 1)
+                    return std::nullopt;
+                mips.push_back({guest.dimensions.width, guest.dimensions.height,
+                    guest.dimensions.depth, guest.CalculateLayerSize()});
+            }
+
+            const auto layerStride = guest.layerStride ? guest.layerStride : guest.CalculateLayerSize();
+            texture::TextureResourceLayout info{
+                .tile = tile,
+                .imageType = *imageKind,
+                .viewType = *viewKind,
+                .cubeCompatible = backing && static_cast<bool>(backing->flags & vk::ImageCreateFlagBits::eCubeCompatible),
+                .layerStride = layerStride,
+                .viewMipBase = guest.viewMipBase,
+                .viewMipCount = guest.viewMipCount,
+                .viewLayerBase = guest.baseArrayLayer,
+                .viewLayerCount = guest.GetViewLayerCount(),
+            };
+            return texture::BuildResourceLayout(ranges, mips, guest.layerCount, info);
+        }
+
+        // Restrict the new path to known Vulkan compatibility classes and image flags.
+        bool VerifiedFormatClass(vk::Format lhs, vk::Format rhs) {
+            const auto rgba = [](vk::Format format) {
+                return format == vk::Format::eR8G8B8A8Unorm || format == vk::Format::eR8G8B8A8Srgb;
+            };
+            const auto bgra = [](vk::Format format) {
+                return format == vk::Format::eB8G8R8A8Unorm || format == vk::Format::eB8G8R8A8Srgb;
+            };
+            return (rgba(lhs) && rgba(rhs)) || (bgra(lhs) && bgra(rhs));
+        }
+
+        bool SupportsHostFormatView(const GPU &gpu, const Texture &backing, const GuestTexture &requested) {
+            const auto viewFormat = requested.format == backing.guest->format
+                ? backing.format->vkFormat : requested.format->vkFormat;
+            if (viewFormat == backing.format->vkFormat)
+                return true;
+            if (!(backing.flags & vk::ImageCreateFlagBits::eMutableFormat) ||
+                !VerifiedFormatClass(backing.format->vkFormat, viewFormat) ||
+                requested.format->vkAspect != backing.format->vkAspect)
+                return false;
+
+            auto properties = gpu.vkPhysicalDevice.getFormatProperties(viewFormat);
+            auto required = vk::FormatFeatureFlags{vk::FormatFeatureFlagBits::eSampledImage};
+            if (backing.usage & vk::ImageUsageFlagBits::eColorAttachment)
+                required |= vk::FormatFeatureFlagBits::eColorAttachment;
+            return (properties.optimalTilingFeatures & required) == required;
+        }
+    }
+
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
-        auto guestMapping{guestTexture.mappings.front()};
+        texture::GuestResourceRanges guestRanges{guestTexture.mappings};
+        if (!guestRanges.Valid())
+            throw exception("Invalid guest texture mapping ranges");
 
-        /*
-         * Iterate over all textures that overlap with the first mapping of the guest texture and compare the mappings:
-         * 1) All mappings match up perfectly, we check that the rest of the supplied mappings correspond to mappings in the texture
-         * 1.1) If they match as well, we check for format/dimensions/tiling config matching the texture and return or move onto (3)
-         * 2) Only a contiguous range of mappings match, we check for if the overlap is meaningful with layout math, it can go two ways:
-         * 2.1) If there is a meaningful overlap, we check for format/dimensions/tiling config compatibility and return or move onto (3)
-         * 2.2) If there isn't, we move onto (3)
-         * 3) If there's another overlap we go back to (1) with it else we go to (4)
-         * 4) We check all the overlapping texture for if they're in the texture pool:
-         * 4.1) If they are, we do nothing to them
-         * 4.2) If they aren't, we delete them from the map
-         * 5) Create a new texture and insert it in the map then return it
-         */
+        // A proven Full view can reuse the backing. Every other result must still
+        // pass through the original lookup and synchronization decisions below.
 
-        std::shared_ptr<Texture> match{};
         boost::container::small_vector<std::shared_ptr<Texture>, 4> matches{};
-        auto mappingEnd{std::upper_bound(textures.begin(), textures.end(), guestMapping, [guestMapping](const auto &value, const auto &element) {
-            return guestMapping.end() < element.end();
-        })}, hostMapping{std::lower_bound(mappingEnd, textures.end(), guestMapping, [guestMapping](const auto &value, const auto &element) {
-            return guestMapping.begin() < element.end();
-        })};
+        auto mappingLookup{mappingCache.Lookup(guestRanges)};
+        boost::container::small_vector<std::shared_ptr<texture::TextureStorage>, 4> visitedStorages{};
+
+        const auto legacyExactMatch = [&guestTexture](const GuestTexture &existing, texture::FormatCompatibility format) {
+            return texture::CanShareStorage(format) &&
+                (((existing.dimensions.width == guestTexture.dimensions.width &&
+                    existing.dimensions.height == guestTexture.dimensions.height) ||
+                    existing.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
+                    existing.GetViewDepth() <= guestTexture.GetViewDepth() || existing.viewMipBase > 0) &&
+                existing.tileConfig == guestTexture.tileConfig;
+        };
+
+        struct ClassifiedStorage {
+            std::shared_ptr<texture::TextureStorage> storage;
+            texture::ClassifiedResourceView view;
+        };
+
+        const auto requestedLayout = DescribeGuestLayout(guestTexture, guestRanges);
+        boost::container::small_vector<ClassifiedStorage, 4> classifiedStorages{};
+
+        if (requestedLayout) {
+            for (const auto &storage : mappingLookup.storages) {
+                if (!storage || storage->texture->replaced || !storage->texture->guest)
+                    continue;
+                const auto backingLayout = DescribeGuestLayout(*storage->texture->guest,
+                    storage->ranges, storage->texture.get());
+                if (!backingLayout)
+                    continue; // Unresolved layout keeps the old lookup behavior.
+
+                const auto format = texture::ClassifyFormatCompatibility(
+                    *storage->texture->guest->format, *guestTexture.format);
+                const auto relation = texture::ClassifyAndResolveView(backingLayout->Layout(),
+                    requestedLayout->Layout(), format, SupportsHostFormatView(gpu, *storage->texture, guestTexture));
+                classifiedStorages.push_back({storage, relation});
+            }
+        }
+
+        const auto classifiedView = [&classifiedStorages](const std::shared_ptr<texture::TextureStorage> &storage)
+                -> const texture::ClassifiedResourceView * {
+            const auto entry = std::find_if(classifiedStorages.begin(), classifiedStorages.end(),
+                [&storage](const ClassifiedStorage &candidate) { return candidate.storage == storage; });
+            return entry == classifiedStorages.end() ? nullptr : &entry->view;
+        };
 
         std::shared_ptr<Texture> fullMatch{};
+        std::shared_ptr<texture::TextureStorage> fullMatchStorage{};
         std::shared_ptr<Texture> layerMipMatch{};
         std::shared_ptr<Texture> depthSliceMatch{};
+        std::shared_ptr<texture::TextureStorage> layerMipMatchStorage{};
         u32 matchLevel{};
         u32 matchLayer{};
         u32 depthSliceLevel{};
         u32 depthSlice{};
         u32 depthSliceParentDepth{};
 
-        while (hostMapping != textures.begin() && (--hostMapping)->end() > guestMapping.begin()) {
-            auto &hostMappings{hostMapping->texture->guest->mappings};
-            if (!hostMapping->contains(guestMapping) || hostMapping->texture->replaced)
+        for (const auto *hostMapping : mappingLookup.firstMappingOverlaps) {
+            auto &candidateStorage{hostMapping->storage};
+            if (std::find(visitedStorages.begin(), visitedStorages.end(), candidateStorage) != visitedStorages.end())
+                continue;
+            visitedStorages.push_back(candidateStorage);
+            if (candidateStorage->texture->replaced)
                 continue;
 
-            // We need to check that all corresponding mappings in the candidate texture and the guest texture match up
-            // Only the start of the first matched mapping and the end of the last mapping can not match up as this is the case for views
-            auto firstHostMapping{hostMapping->iterator};
-            auto lastGuestMapping{guestTexture.mappings.back()};
-            auto lastHostMapping{std::find_if(firstHostMapping, hostMappings.end(), [&lastGuestMapping](const span<u8> &it) {
-                return lastGuestMapping.begin() > it.begin() && lastGuestMapping.end() > it.end();
-            })}; //!< A past-the-end iterator for the last host mapping, the final valid mapping is prior to this iterator
-            bool mappingMatch{std::equal(firstHostMapping, lastHostMapping, guestTexture.mappings.begin(), guestTexture.mappings.end(), [](const span<u8> &lhs, const span<u8> &rhs) {
-                return lhs.end() == rhs.end(); // We check end() here to implicitly ignore any offset from the first mapping
-            })};
+            auto matchedOffset{candidateStorage->ranges.FindContainedOffset(guestRanges)};
+            if (!matchedOffset)
+                continue;
 
-            if (firstHostMapping == hostMappings.begin() && firstHostMapping->begin() == guestMapping.begin() && mappingMatch && lastHostMapping == hostMappings.end() && lastGuestMapping.end() == std::prev(lastHostMapping)->end()) {
-                // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
-                auto &matchGuestTexture{*hostMapping->texture->guest};
-
-                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                    ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
-                        matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
-                        matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
-                        || matchGuestTexture.viewMipBase > 0)
-                    && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
-                    fullMatch = hostMapping->texture;
+            if (*matchedOffset == 0 && candidateStorage->ranges.Size() == guestRanges.Size()) {
+                // An exact physical match, including all spans in their logical order.
+                auto &matchGuestTexture{*candidateStorage->texture->guest};
+                auto formatCompatibility{texture::ClassifyFormatCompatibility(*matchGuestTexture.format, *guestTexture.format)};
+                if (legacyExactMatch(matchGuestTexture, formatCompatibility)) {
+                    fullMatch = candidateStorage->texture;
+                    fullMatchStorage = candidateStorage;
                 } else {
-                    matches.push_back(hostMapping->texture);
+                    matches.push_back(candidateStorage->texture);
                 }
             } else {
-                auto &matchGuestTexture{*hostMapping->texture->guest};
+                auto &matchGuestTexture{*candidateStorage->texture->guest};
+                auto formatCompatibility{texture::ClassifyFormatCompatibility(*matchGuestTexture.format, *guestTexture.format)};
 
                 // A render target may describe an individual Z slice of a block-linear
                 // 3D texture. Its guest address starts inside the parent mip rather than
@@ -91,17 +239,14 @@ namespace skyline::gpu {
                     guestTexture.mipLevelCount == 1 &&
                     guestTexture.viewMipBase == 0 &&
                     guestTexture.viewMipCount == 1 &&
-                    matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
+                    texture::CanShareStorage(formatCompatibility) &&
                     matchGuestTexture.tileConfig.mode == texture::TileMode::Block &&
                     guestTexture.tileConfig.mode == texture::TileMode::Block) {
-                    size_t memOffset{};
-                    for (auto it{hostMappings.begin()}; it != hostMapping->iterator; ++it)
-                        memOffset += it->size();
-                    memOffset += static_cast<size_t>(guestMapping.data() - hostMapping->iterator->data());
+                    const size_t memOffset{*matchedOffset};
 
                     size_t levelMemOffset{};
                     u32 level{};
-                    for (const auto &mipLevel : hostMapping->texture->mipLayouts) {
+                    for (const auto &mipLevel : candidateStorage->texture->mipLayouts) {
                         if (mipLevel.dimensions.width == guestTexture.dimensions.width &&
                             mipLevel.dimensions.height == guestTexture.dimensions.height &&
                             mipLevel.blockHeight == guestTexture.tileConfig.blockHeight &&
@@ -120,7 +265,7 @@ namespace skyline::gpu {
                                 if (sliceOffset && levelMemOffset + *sliceOffset == memOffset &&
                                     viewLayerCount && viewLayerCount <= mipLevel.dimensions.depth - slice) {
                                     if (!depthSliceMatch || mipLevel.dimensions.depth > depthSliceParentDepth) {
-                                        depthSliceMatch = hostMapping->texture;
+                                        depthSliceMatch = candidateStorage->texture;
                                         depthSliceLevel = level;
                                         depthSlice = slice;
                                         depthSliceParentDepth = mipLevel.dimensions.depth;
@@ -136,41 +281,26 @@ namespace skyline::gpu {
 
                 }
 
-                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                if (texture::CanShareStorage(formatCompatibility) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
                         (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
-                    size_t memOffset{static_cast<size_t>(guestMapping.data() - hostMapping->texture->guest->mappings.front().data())};
-                    size_t layerMemOffset{};
-                    bool matched{};
-                    for (u32 layer{}; layer < hostMapping->texture->layerCount; layer++) {
-                        u32 level{};
-                        size_t levelMemOffset{};
+                    boost::container::small_vector<size_t, 16> mipSizes{};
+                    for (const auto &level : candidateStorage->texture->mipLayouts)
+                        mipSizes.push_back(level.blockLinearSize);
+                    const auto subresource{texture::LocateSubresource(*matchedOffset, matchGuestTexture.GetLayerStride(),
+                        std::span<const size_t>{mipSizes.data(), mipSizes.size()}, candidateStorage->texture->layerCount)};
 
-                        for (auto &mipLevel : hostMapping->texture->mipLayouts) {
-                            if (layerMemOffset + levelMemOffset == memOffset) {
-                                if (mipLevel.blockLinearSize == guestTexture.CalculateLayerSize()) {
-                                    matched = true;
-                                    matchLayer = layer;
-                                    matchLevel = level;
-                                    break;
-                                }
-                                level++;
-                                levelMemOffset += mipLevel.blockLinearSize;
-                            }
-                        }
-
-                        if (matched)
-                            break;
-                        layerMemOffset += matchGuestTexture.GetLayerStride();
-                    }
-
-                    if (matched) {
+                    if (subresource && subresource->offsetWithinMip == 0 &&
+                        mipSizes[subresource->mip] == guestTexture.CalculateLayerSize()) {
                         if (layerMipMatch)
                             layerMipMatch->replaced = true;
 
                         if (fullMatch)
                             fullMatch->replaced = true;
 
-                        layerMipMatch = hostMapping->texture;
+                        layerMipMatch = candidateStorage->texture;
+                        layerMipMatchStorage = candidateStorage;
+                        matchLayer = static_cast<u32>(subresource->layer);
+                        matchLevel = static_cast<u32>(subresource->mip);
                     }
                 }
             }
@@ -193,20 +323,36 @@ namespace skyline::gpu {
             }, guestTexture.format, guestTexture.swizzle);
         } else if (layerMipMatch) {
             ContextLock textureLock{tag, *layerMipMatch};
+            const texture::ResolvedViewBase legacyBase{
+                .mip = guestTexture.viewMipBase + matchLevel,
+                .layer = guestTexture.baseArrayLayer + matchLayer,
+            };
+            const auto classified = classifiedView(layerMipMatchStorage);
+            const auto sharedBase = classified
+                ? texture::ConfirmFullViewAgainstLegacy(*classified, legacyBase)
+                : std::nullopt;
             return layerMipMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
                 .aspectMask = guestTexture.aspect,
-                .baseMipLevel = guestTexture.viewMipBase + matchLevel,
+                .baseMipLevel = sharedBase ? sharedBase->mip : legacyBase.mip,
                 .levelCount = guestTexture.viewMipCount,
-                .baseArrayLayer = guestTexture.baseArrayLayer + matchLayer,
+                .baseArrayLayer = sharedBase ? sharedBase->layer : legacyBase.layer,
                 .layerCount = guestTexture.GetViewLayerCount(),
             }, guestTexture.format, guestTexture.swizzle);
         } else if (fullMatch) {
             ContextLock textureLock{tag, *fullMatch};
+            const texture::ResolvedViewBase legacyBase{
+                .mip = guestTexture.viewMipBase,
+                .layer = guestTexture.baseArrayLayer,
+            };
+            const auto classified = classifiedView(fullMatchStorage);
+            const auto sharedBase = classified
+                ? texture::ConfirmFullViewAgainstLegacy(*classified, legacyBase)
+                : std::nullopt;
             return fullMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
                 .aspectMask = guestTexture.aspect,
-                .baseMipLevel = guestTexture.viewMipBase,
+                .baseMipLevel = sharedBase ? sharedBase->mip : legacyBase.mip,
                 .levelCount = guestTexture.viewMipCount,
-                .baseArrayLayer = guestTexture.baseArrayLayer,
+                .baseArrayLayer = sharedBase ? sharedBase->layer : legacyBase.layer,
                 .layerCount = guestTexture.GetViewLayerCount(),
             }, guestTexture.format, guestTexture.swizzle);
         }
@@ -221,19 +367,6 @@ namespace skyline::gpu {
                 guestTexture.mipLevelCount
             )};
 
-            auto getGuestOffset{[&](const u8 *address) -> std::optional<size_t> {
-                auto addressValue{reinterpret_cast<uintptr_t>(address)};
-                size_t mappingBase{};
-                for (const auto &mapping : guestTexture.mappings) {
-                    auto begin{reinterpret_cast<uintptr_t>(mapping.data())};
-                    auto end{begin + mapping.size()};
-                    if (addressValue >= begin && addressValue < end)
-                        return mappingBase + static_cast<size_t>(addressValue - begin);
-                    mappingBase += mapping.size();
-                }
-                return std::nullopt;
-            }};
-
             struct SliceSource {
                 std::shared_ptr<Texture> texture;
                 u32 level;
@@ -241,8 +374,8 @@ namespace skyline::gpu {
             };
             boost::container::small_vector<SliceSource, 16> sliceSources;
 
-            for (const auto &mapping : textures) {
-                auto source{mapping.texture};
+            for (const auto &sourceStorage : mappingCache.StoragesInMappingOrder()) {
+                auto source{sourceStorage->texture};
                 if (!source || source->replaced || !source->guest)
                     continue;
 
@@ -262,7 +395,7 @@ namespace skyline::gpu {
                     sourceGuest.tileConfig.blockDepth != guestTexture.tileConfig.blockDepth)
                     continue;
 
-                auto sourceOffset{getGuestOffset(sourceGuest.mappings.front().data())};
+                auto sourceOffset{guestRanges.FindUniqueOffset(sourceGuest.mappings.front().data())};
                 if (!sourceOffset)
                     continue;
 
@@ -317,19 +450,12 @@ namespace skyline::gpu {
             texture->SynchronizeGuest(false, true);
 
         // Create a texture as we cannot find one that matches
-
-
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
-        auto it{texture->guest->mappings.begin()};
-        textures.emplace(mappingEnd, TextureMapping{texture, it, guestMapping});
-        while ((++it) != texture->guest->mappings.end()) {
-            guestMapping = *it;
-            auto mapping{std::upper_bound(textures.begin(), textures.end(), guestMapping)};
-            // TODO: Delete overlapping textures that aren't in texture pool
-            textures.emplace(mapping, TextureMapping{texture, it, guestMapping});
-        }
+        auto storage{texture::CreateTextureStorage(texture, std::move(guestRanges))};
+        texture::JoinTextureStorageGroups(storage, mappingLookup.storages);
+        mappingCache.Insert(storage, storage->ranges);
 
         return texture->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
             .aspectMask = guestTexture.aspect,

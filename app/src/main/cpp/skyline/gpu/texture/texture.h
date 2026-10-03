@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <vulkan/vulkan_format_traits.hpp>
 #include <range/v3/view.hpp>
 #include <range/v3/algorithm.hpp>
 #include <common/spin_lock.h>
