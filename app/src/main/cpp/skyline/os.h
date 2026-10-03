@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <crypto/key_store.h>
@@ -57,7 +58,8 @@ namespace skyline::kernel {
          * @param updateFd A FD to the Update file
          * @param romType The type of the ROM file
          */
-        void Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType);
+        void Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType,
+                     const std::function<void()> &gpuReadyCallback = {});
 
         std::shared_ptr<loader::Loader> GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType,
                                                   u8 programIndex = 0);
