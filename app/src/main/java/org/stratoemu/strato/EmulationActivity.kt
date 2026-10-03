@@ -178,6 +178,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private external fun nativeSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int)
 
     private val softwareKeyboardDialogs = mutableMapOf<Long, SoftwareKeyboardDialog>()
+    private var motionSensorsInitialized = false
 
     var fps : Int = 0
     var averageFrametime : Float = 0.0f
@@ -195,7 +196,10 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     @Suppress("unused")
     private fun initializeControllers() {
         inputHandler.initializeControllers()
-        inputHandler.initialiseMotionSensors(this)
+        if (!motionSensorsInitialized) {
+            inputHandler.initialiseMotionSensors(this)
+            motionSensorsInitialized = true
+        }
     }
 
     /**
