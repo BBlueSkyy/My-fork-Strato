@@ -39,3 +39,10 @@ mkdir -p "$build_dir"
     -o "$build_dir/copy_capability_tests"
 
 "$build_dir/copy_capability_tests"
+
+"${CXX:-c++}" -std=c++20 -Wall -Wextra -Werror \
+    -I"$repo_root/app/src/main/cpp" \
+    "$repo_root/tests/texture/storage_capability_tests.cpp" \
+    -o "$build_dir/storage_capability_tests"
+
+"$build_dir/storage_capability_tests"

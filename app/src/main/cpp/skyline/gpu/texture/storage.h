@@ -6,10 +6,10 @@
 #include <memory>
 #include <utility>
 #include <vector>
-#include "copy_dependency.h"
-#include "texture.h"
+#include "copy_capability.h"
 
 namespace skyline::gpu::texture {
+    class Texture;
     class TextureStorage;
 
     /**
@@ -23,6 +23,7 @@ namespace skyline::gpu::texture {
       private:
         std::vector<std::weak_ptr<TextureStorage>> storages;
         CopyDependencyTracker<TextureStorage> copyDependencies;
+        CopyCapabilityTracker<TextureStorage> copyCapabilities;
 
       public:
         void Attach(const std::shared_ptr<TextureStorage> &storage) {
@@ -44,11 +45,23 @@ namespace skyline::gpu::texture {
             const std::shared_ptr<TextureStorage> &storage, ResolvedSubresource subresource) const;
         PreparedDependencyRead<TextureStorage> PrepareCopyRepresentationRead(
             const std::shared_ptr<TextureStorage> &storage, ResolvedSubresource subresource) const;
+        bool RegisterExactImageCopyCapability(
+            const std::shared_ptr<TextureStorage> &source,
+            const TextureResourceLayout &sourceLayout, const CopyImageInfo &sourceImage,
+            ResolvedSubresource sourceSubresource,
+            const std::shared_ptr<TextureStorage> &destination,
+            const TextureResourceLayout &destinationLayout, const CopyImageInfo &destinationImage,
+            ResolvedSubresource destinationSubresource);
+        PreparedCopySynchronization<TextureStorage> PrepareCopySynchronization(
+            const std::shared_ptr<TextureStorage> &destination,
+            ResolvedSubresource destinationSubresource) const;
         bool CompleteCopySynchronization(
-            const PreparedDependencyRead<TextureStorage> &prepared);
+            const PreparedCopySynchronization<TextureStorage> &prepared,
+            bool executionSucceeded);
 
         void MergeCopyDependenciesFrom(const TextureGroup &other) {
             copyDependencies.MergeFrom(other.copyDependencies);
+            copyCapabilities.MergeFrom(other.copyCapabilities);
         }
     };
 
@@ -97,9 +110,39 @@ namespace skyline::gpu::texture {
         return copyDependencies.PrepareRead(storage, subresource);
     }
 
+    inline bool TextureGroup::RegisterExactImageCopyCapability(
+        const std::shared_ptr<TextureStorage> &source,
+        const TextureResourceLayout &sourceLayout, const CopyImageInfo &sourceImage,
+        ResolvedSubresource sourceSubresource,
+        const std::shared_ptr<TextureStorage> &destination,
+        const TextureResourceLayout &destinationLayout, const CopyImageInfo &destinationImage,
+        ResolvedSubresource destinationSubresource) {
+        return source && destination && source->group.get() == this &&
+            destination->group.get() == this &&
+            copyCapabilities.RegisterExactImageCopy(
+                copyDependencies,
+                source, sourceLayout, sourceImage, sourceSubresource,
+                destination, destinationLayout, destinationImage, destinationSubresource);
+    }
+
+    inline PreparedCopySynchronization<TextureStorage> TextureGroup::PrepareCopySynchronization(
+        const std::shared_ptr<TextureStorage> &destination,
+        ResolvedSubresource destinationSubresource) const {
+        if (!destination || destination->group.get() != this)
+            return {};
+        return copyCapabilities.PrepareSynchronization(
+            copyDependencies, destination, destinationSubresource);
+    }
+
     inline bool TextureGroup::CompleteCopySynchronization(
-        const PreparedDependencyRead<TextureStorage> &prepared) {
-        return copyDependencies.CompleteSynchronization(prepared);
+        const PreparedCopySynchronization<TextureStorage> &prepared,
+        bool executionSucceeded) {
+        if (!prepared.read.source || !prepared.read.destination ||
+            prepared.read.source->group.get() != this ||
+            prepared.read.destination->group.get() != this)
+            return false;
+        return copyCapabilities.CompleteSynchronization(
+            copyDependencies, prepared, executionSucceeded);
     }
 
     inline std::shared_ptr<TextureStorage> CreateTextureStorage(std::shared_ptr<Texture> texture, GuestResourceRanges ranges) {

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "texture/texture.h"
 #include "texture/storage.h"
 #include "texture/mapping_cache.h"
 
