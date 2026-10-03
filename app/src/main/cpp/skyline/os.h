@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <mutex>
+#include <optional>
 #include <crypto/key_store.h>
 #include <common/language.h>
 #include "vfs/filesystem.h"
@@ -10,6 +12,14 @@
 #include "services/serviceman.h"
 
 namespace skyline::kernel {
+    struct ProgramLaunchState {
+        std::mutex mutex;
+        u8 currentProgramIndex{};
+        i32 previousProgramIndex{-1};
+        std::optional<u8> pendingProgramIndex;
+        std::vector<std::vector<u8>> userChannel;
+    };
+
     /**
      * @brief The OS class manages the interaction between the various Skyline components
      */
@@ -21,6 +31,7 @@ namespace skyline::kernel {
         std::string deviceTimeZone; //!< The timezone name (e.g. Europe/London)
         std::shared_ptr<vfs::FileSystem> assetFileSystem; //!< A filesystem to be used for accessing emulator assets (like tzdata)
         std::shared_ptr<crypto::KeyStore> keyStore;
+        std::shared_ptr<ProgramLaunchState> programLaunchState;
         DeviceState state;
         service::ServiceManager serviceManager;
 
@@ -35,7 +46,8 @@ namespace skyline::kernel {
             std::string privateAppFilesPath,
             std::string deviceTimeZone,
             std::string nativeLibraryPath,
-            std::shared_ptr<vfs::FileSystem> assetFileSystem
+            std::shared_ptr<vfs::FileSystem> assetFileSystem,
+            std::shared_ptr<ProgramLaunchState> programLaunchState = {}
         );
 
         /**
@@ -47,6 +59,15 @@ namespace skyline::kernel {
          */
         void Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType);
 
-        std::shared_ptr<loader::Loader> GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType);
+        std::shared_ptr<loader::Loader> GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType,
+                                                  u8 programIndex = 0);
+
+        u8 GetCurrentProgramIndex();
+        i32 GetPreviousProgramIndex();
+        void RequestProgramExecution(u8 programIndex);
+        std::optional<u8> CommitProgramExecutionRequest();
+        void ClearUserChannel();
+        void PushUserChannel(std::vector<u8> data);
+        std::optional<std::vector<u8>> PopUserChannel();
     };
 }
