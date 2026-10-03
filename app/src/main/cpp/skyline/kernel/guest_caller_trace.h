@@ -23,6 +23,7 @@ namespace skyline::kernel::diagnostic {
     inline std::atomic_size_t guestCallerTraceThread{NoGuestCallerTraceThread};
     inline std::atomic_uint32_t guestCallerTraceGeneration{};
     inline std::atomic_uint32_t guestCallerSvcSequence{};
+    inline std::atomic_bool guestCallerReturnPending{};
 
     inline void RegisterSwkbdIndirectAccessor() {
         swkbdIndirectAccessorCount.fetch_add(1, std::memory_order_acq_rel);
@@ -46,6 +47,7 @@ namespace skyline::kernel::diagnostic {
 
         guestCallerTraceThread.store(threadId, std::memory_order_release);
         guestCallerSvcSequence.store(0, std::memory_order_relaxed);
+        guestCallerReturnPending.store(false, std::memory_order_relaxed);
         const auto generation{guestCallerTraceGeneration.fetch_add(1, std::memory_order_acq_rel) + 1};
         guestCallerTracePhase.store(
             static_cast<std::uint8_t>(GuestCallerTracePhase::AwaitingCmd2460Return),
@@ -58,9 +60,27 @@ namespace skyline::kernel::diagnostic {
             return false;
 
         auto expected{static_cast<std::uint8_t>(GuestCallerTracePhase::AwaitingCmd2460Return)};
-        return guestCallerTracePhase.compare_exchange_strong(
+        const bool activated{guestCallerTracePhase.compare_exchange_strong(
             expected, static_cast<std::uint8_t>(GuestCallerTracePhase::Active),
-            std::memory_order_acq_rel);
+            std::memory_order_acq_rel)};
+        if (activated)
+            guestCallerReturnPending.store(true, std::memory_order_release);
+        return activated;
+    }
+
+    inline bool ConsumeGuestCallerReturnPoint(std::size_t threadId) {
+        if (guestCallerTraceThread.load(std::memory_order_acquire) != threadId)
+            return false;
+
+        bool expected{true};
+        return guestCallerReturnPending.compare_exchange_strong(
+            expected, false, std::memory_order_acq_rel);
+    }
+
+    inline bool IsGuestCallerTraceActive(std::size_t threadId) {
+        return guestCallerTraceThread.load(std::memory_order_acquire) == threadId &&
+               guestCallerTracePhase.load(std::memory_order_acquire) ==
+                   static_cast<std::uint8_t>(GuestCallerTracePhase::Active);
     }
 
     inline std::uint32_t BeginGuestCallerSvc(std::size_t threadId) {
