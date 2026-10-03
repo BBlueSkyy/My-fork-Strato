@@ -57,5 +57,35 @@ int main() {
     assert(group->CompleteCopySynchronization(prepared, true));
     assert(group->GetCopyRepresentationState(destination, mip0) ==
         CopyRepresentationState::Current);
-}
 
+    // Group merge imports a usable directional route and remains idempotent.
+    auto importedGroup = std::make_shared<TextureGroup>();
+    auto importedSource = std::make_shared<TextureStorage>(nullptr, importedGroup, ranges);
+    auto importedDestination = std::make_shared<TextureStorage>(nullptr, importedGroup, ranges);
+    importedGroup->Attach(importedSource);
+    importedGroup->Attach(importedDestination);
+    assert(importedGroup->RegisterSynchronizedCopyDependency(
+        importedSource, layout, importedDestination, layout, copyOnly));
+    assert(importedGroup->RegisterExactImageCopyCapability(
+        importedSource, layout, sourceImage, mip0,
+        importedDestination, layout, destinationImage, mip0));
+
+    auto mergedGroup = std::make_shared<TextureGroup>();
+    mergedGroup->MergeCopyDependenciesFrom(*importedGroup);
+    mergedGroup->MergeCopyDependenciesFrom(*importedGroup);
+    importedSource->group = mergedGroup;
+    importedDestination->group = mergedGroup;
+    mergedGroup->Attach(importedSource);
+    mergedGroup->Attach(importedDestination);
+
+    assert(mergedGroup->MarkCopyRepresentationWritten(importedSource, write));
+    const auto imported = mergedGroup->PrepareCopySynchronization(importedDestination, mip0);
+    assert(imported.state == CopySynchronizationState::Ready);
+    assert(mergedGroup->CompleteCopySynchronization(imported, true));
+    assert(mergedGroup->GetCopyRepresentationState(importedDestination, mip0) ==
+        CopyRepresentationState::Current);
+
+    assert(mergedGroup->MarkCopyRepresentationWritten(importedDestination, write));
+    assert(mergedGroup->PrepareCopySynchronization(importedSource, mip0).state ==
+        CopySynchronizationState::CapabilityUnavailable);
+}

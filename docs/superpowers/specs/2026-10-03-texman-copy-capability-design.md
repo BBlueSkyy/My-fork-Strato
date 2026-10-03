@@ -51,4 +51,3 @@ destination endpoint named by that plan.
 metadata-only forwarding methods. Group merges merge directional routes idempotently. No code
 in `TextureManager`, `Texture`, Vulkan submission, `CommandExecutor`, `UsageTracker`, or
 `BufferManager` calls these methods in this stage.
-

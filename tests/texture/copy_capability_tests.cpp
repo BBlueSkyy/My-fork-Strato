@@ -207,4 +207,3 @@ int main() {
     merged.MergeFrom(capabilities);
     assert(merged.RouteCount() == 1);
 }
-

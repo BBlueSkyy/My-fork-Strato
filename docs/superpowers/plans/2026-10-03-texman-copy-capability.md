@@ -74,4 +74,3 @@
 - [ ] Verify `rg -n "RegisterExactImageCopy|PrepareCopySynchronization" app/src/main/cpp/skyline/gpu` shows definitions only and no `TextureManager`/executor call site.
 - [ ] Run `git diff --check` and review `git diff 9690ba5b --`.
 - [ ] Commit as `texman: expose copy capability metadata on texture groups`.
-
