@@ -201,6 +201,42 @@ int main() {
         dependencies, first, layout, sourceImage, mip1,
         second, mismatchedLayout, destinationImage, mip1));
 
+    // Classification records neither an executable route nor a pending synchronization.
+    const std::array dimensionalSubresource{
+        GuestSubresource{.offset = 0x1000, .size = 64, .width = 64, .height = 1,
+                         .depth = 1, .mip = 0, .layer = 0},
+    };
+    const TextureResourceLayout oneDimensional{
+        .tile = {.mode = TileKind::Pitch, .pitch = 64},
+        .imageType = ImageKind::OneDimensional,
+        .viewType = ViewKind::OneDimensional,
+        .layerStride = 64,
+        .viewMipCount = 1,
+        .viewLayerCount = 1,
+        .subresources = dimensionalSubresource,
+    };
+    auto heightOneTwoDimensional{oneDimensional};
+    heightOneTwoDimensional.imageType = ImageKind::TwoDimensional;
+    heightOneTwoDimensional.viewType = ViewKind::TwoDimensional;
+    const auto dimensionalRelation = ClassifyAndResolveView(
+        oneDimensional, heightOneTwoDimensional, FormatCompatibility::Exact, true);
+    assert(dimensionalRelation.relation == TextureViewCompatibility::CopyOnly);
+
+    const std::array<std::span<std::uint8_t>, 1> dimensionalMapping{
+        std::span{memory}.subspan(0, 64),
+    };
+    const GuestResourceRanges dimensionalRanges{dimensionalMapping};
+    CopyDependencyTracker<Representation> classifiedDependencies;
+    assert(classifiedDependencies.RegisterSynchronized(
+        first, dimensionalRanges, oneDimensional,
+        second, dimensionalRanges, heightOneTwoDimensional, dimensionalRelation));
+    CopyCapabilityTracker<Representation> classifiedCapabilities;
+    assert(classifiedCapabilities.RouteCount() == 0);
+    assert(classifiedDependencies.MarkWritten(first, mip0Write));
+    assert(classifiedCapabilities.PrepareSynchronization(
+        classifiedDependencies, second, mip0).state ==
+        CopySynchronizationState::CapabilityUnavailable);
+
     // Merge preserves direction and is idempotent.
     CopyCapabilityTracker<Representation> merged;
     merged.MergeFrom(capabilities);
