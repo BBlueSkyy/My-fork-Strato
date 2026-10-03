@@ -63,7 +63,8 @@ namespace skyline::kernel {
           state(this, jvmManager, settings),
           serviceManager(state) {}
 
-    void OS::Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType) {
+    void OS::Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType,
+                     const std::function<void()> &gpuReadyCallback) {
         auto romFile{std::make_shared<vfs::OsBacking>(romFd)};
         keyStore = std::make_shared<crypto::KeyStore>(privateAppFilesPath + "keys/");
 
@@ -109,6 +110,8 @@ namespace skyline::kernel {
         }
 
         state.gpu->Initialise();
+        if (gpuReadyCallback)
+            gpuReadyCallback();
 
         auto &process{state.process};
         process = std::make_shared<kernel::type::KProcess>(state);
