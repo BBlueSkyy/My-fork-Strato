@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <kernel/types/KProcess.h>
+#include <kernel/guest_caller_trace.h>
 #include <applet/applet_creator.h>
 #include <cstring>
 #include <utility>
@@ -25,9 +26,19 @@ namespace skyline::service::am {
         stateChangeEventHandle = state.process->InsertItem(stateChangeEvent);
         popNormalOutDataEventHandle = state.process->InsertItem(popNormalOutDataEvent);
         popInteractiveOutDataEventHandle = state.process->InsertItem(popInteractiveOutDataEvent);
+
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd &&
+            appletMode == applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay) {
+            kernel::diagnostic::RegisterSwkbdIndirectAccessor();
+            LOGI("[SWKBD-CALLER] indirect accessor registered: stateChanged=0x{:X} normalOut=0x{:X} interactiveOut=0x{:X}",
+                 stateChangeEventHandle, popNormalOutDataEventHandle, popInteractiveOutDataEventHandle);
+        }
     }
 
     ILibraryAppletAccessor::~ILibraryAppletAccessor() {
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd &&
+            appletMode == applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay)
+            kernel::diagnostic::UnregisterSwkbdIndirectAccessor();
         indirectLayers->Unregister(indirectLayerHandle);
     }
     Result ILibraryAppletAccessor::StartApplet() {
