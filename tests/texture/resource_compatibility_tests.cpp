@@ -56,6 +56,52 @@ int main() {
     Check(ClassifyTextureViewCompatibility(parent, mipView, FormatCompatibility::CopyCompatible), TextureViewCompatibility::CopyOnly, "copyable format requires separate storage");
     Check(ClassifyTextureViewCompatibility(parent, mipView, FormatCompatibility::Incompatible), TextureViewCompatibility::Incompatible, "incompatible format");
 
+    const std::array oneDimensionalSubresource{
+        GuestSubresource{.offset = 0x3000, .size = 0x100, .width = 64, .height = 1, .depth = 1, .mip = 0, .layer = 0},
+    };
+    const TextureResourceLayout oneDimensional{
+        .tile = {.mode = TileKind::Pitch, .pitch = 0x100},
+        .imageType = ImageKind::OneDimensional,
+        .viewType = ViewKind::OneDimensional,
+        .layerStride = 0x100,
+        .viewMipCount = 1,
+        .viewLayerCount = 1,
+        .subresources = oneDimensionalSubresource,
+    };
+    auto heightOneTwoDimensional{oneDimensional};
+    heightOneTwoDimensional.imageType = ImageKind::TwoDimensional;
+    heightOneTwoDimensional.viewType = ViewKind::TwoDimensional;
+    Check(ClassifyTextureViewCompatibility(oneDimensional, heightOneTwoDimensional, FormatCompatibility::Exact),
+          TextureViewCompatibility::CopyOnly, "1D and height-one 2D require separate copy-related images");
+    Check(ClassifyTextureViewCompatibility(heightOneTwoDimensional, oneDimensional, FormatCompatibility::Exact),
+          TextureViewCompatibility::CopyOnly, "1D/2D semantic equivalence is independent of copy direction");
+    Check(ClassifyTextureViewCompatibility(oneDimensional, heightOneTwoDimensional, FormatCompatibility::Incompatible),
+          TextureViewCompatibility::Incompatible, "image dimensionality does not override incompatible formats");
+    Check(ClassifyTextureViewCompatibility(oneDimensional, oneDimensional, FormatCompatibility::Exact),
+          TextureViewCompatibility::Full, "same 1D image remains full");
+
+    const std::array partialOneDimensional{
+        GuestSubresource{.offset = 0x3080, .size = 0x80, .width = 32, .height = 1, .depth = 1, .mip = 0, .layer = 0},
+    };
+    heightOneTwoDimensional.subresources = partialOneDimensional;
+    Check(ClassifyTextureViewCompatibility(oneDimensional, heightOneTwoDimensional, FormatCompatibility::Exact),
+          TextureViewCompatibility::LayoutIncompatible, "partial 1D/2D overlap is not copy-equivalent");
+    heightOneTwoDimensional.subresources = oneDimensionalSubresource;
+
+    const std::array heightTwoSubresource{
+        GuestSubresource{.offset = 0x3000, .size = 0x100, .width = 64, .height = 2, .depth = 1, .mip = 0, .layer = 0},
+    };
+    heightOneTwoDimensional.subresources = heightTwoSubresource;
+    Check(ClassifyTextureViewCompatibility(oneDimensional, heightOneTwoDimensional, FormatCompatibility::Exact),
+          TextureViewCompatibility::LayoutIncompatible, "non-unit 2D height is not 1D copy-equivalent");
+    heightOneTwoDimensional.subresources = oneDimensionalSubresource;
+
+    auto threeDimensionalSlice{heightOneTwoDimensional};
+    threeDimensionalSlice.imageType = ImageKind::ThreeDimensional;
+    threeDimensionalSlice.viewType = ViewKind::ThreeDimensional;
+    Check(ClassifyTextureViewCompatibility(heightOneTwoDimensional, threeDimensionalSlice, FormatCompatibility::Exact),
+          TextureViewCompatibility::LayoutIncompatible, "3D slice handling remains outside CopyOnly classification");
+
     mipView.tile.blockHeight = 4;
     Check(ClassifyTextureViewCompatibility(parent, mipView, FormatCompatibility::Exact), TextureViewCompatibility::LayoutIncompatible, "different block geometry");
     mipView.tile.blockHeight = 2;

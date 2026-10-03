@@ -50,6 +50,36 @@ int main() {
     assert(mipBase && mipBase->mip == 1 && mipBase->layer == 0);
     assert(ClassifyTextureViewCompatibility(full, mip->Layout(), FormatCompatibility::CopyCompatible) == TextureViewCompatibility::CopyOnly);
 
+    const std::array<std::span<std::uint8_t>, 1> lineMapping{std::span{memory}.subspan(3072, 64)};
+    const std::array<MipDescription, 1> lineLevel{{{64, 1, 1, 64, 0, 0}}};
+    TextureResourceLayout lineInfo{
+        .tile = {.mode = TileKind::Pitch, .pitch = 64},
+        .imageType = ImageKind::OneDimensional,
+        .viewType = ViewKind::OneDimensional,
+        .layerStride = 64,
+        .viewMipCount = 1,
+        .viewLayerCount = 1,
+    };
+    auto line = BuildResourceLayout(GuestResourceRanges{lineMapping}, lineLevel, 1, lineInfo);
+    assert(line);
+    auto heightOneInfo{lineInfo};
+    heightOneInfo.imageType = ImageKind::TwoDimensional;
+    heightOneInfo.viewType = ViewKind::TwoDimensional;
+    auto heightOne = BuildResourceLayout(GuestResourceRanges{lineMapping}, lineLevel, 1, heightOneInfo);
+    assert(heightOne);
+    const auto dimensionalCopy = ClassifyAndResolveView(
+        line->Layout(), heightOne->Layout(), FormatCompatibility::Exact, true);
+    assert(dimensionalCopy.relation == TextureViewCompatibility::CopyOnly);
+    assert(!dimensionalCopy.sharedView && dimensionalCopy.copyRegion);
+    assert(dimensionalCopy.copyRegion->subresources.size() == 1);
+    assert((dimensionalCopy.copyRegion->subresources[0].backing ==
+            ResolvedSubresource{.mip = 0, .layer = 0, .depthSlice = 0}));
+    assert((dimensionalCopy.copyRegion->subresources[0].requested ==
+            ResolvedSubresource{.mip = 0, .layer = 0, .depthSlice = 0}));
+    assert(!ContainsSubresource(line->Layout(), {.mip = 1, .layer = 0, .depthSlice = 0}));
+    assert(!ContainsSubresource(line->Layout(), {.mip = 0, .layer = 1, .depthSlice = 0}));
+    assert(!ContainsSubresource(line->Layout(), {.mip = 0, .layer = 0, .depthSlice = 1}));
+
     // Identical bytes and dimensions are insufficient when the effective GOB layout differs.
     auto wrongHeightInfo = mipInfo;
     wrongHeightInfo.tile.blockHeight = 2;

@@ -152,6 +152,7 @@ namespace skyline::gpu::texture {
 
         bool overlaps{};
         bool aligned{true};
+        bool unitHeightDepth{true};
         bool effectiveBlockLayout{backing.tile.mode == TileKind::Block && requested.tile.mode == TileKind::Block};
         std::uint64_t selected{};
         for (std::size_t index{}; index < requested.subresources.size(); ++index) {
@@ -163,6 +164,8 @@ namespace skyline::gpu::texture {
                 continue;
 
             ++selected;
+            if (subresource.height != 1 || subresource.depth != 1)
+                unitHeightDepth = false;
             for (std::size_t previous{}; previous < index; ++previous) {
                 const auto &other{requested.subresources[previous]};
                 if (subresource.mip == other.mip && subresource.layer == other.layer)
@@ -196,11 +199,16 @@ namespace skyline::gpu::texture {
 
         const bool sameTile = effectiveBlockLayout && ValidBaseBlock(backing) && ValidBaseBlock(requested)
             ? true : backing.tile == requested.tile;
+        // Vulkan copies between 1D and 2D images by treating the 1D extent as height one.
+        // They remain separate host images because their image/view dimensionality differs.
+        const bool oneDimensionalCopy = format == FormatCompatibility::Exact && unitHeightDepth &&
+            ((backing.imageType == ImageKind::OneDimensional && requested.imageType == ImageKind::TwoDimensional) ||
+             (backing.imageType == ImageKind::TwoDimensional && requested.imageType == ImageKind::OneDimensional));
         if (selected != std::uint64_t{requested.viewMipCount} * requested.viewLayerCount ||
             !aligned || !sameTile ||
-            backing.imageType != requested.imageType ||
             !ValidViewType(backing.imageType, backing.viewType) ||
-            !ValidViewType(backing.imageType, requested.viewType) ||
+            !ValidViewType(requested.imageType, requested.viewType) ||
+            (backing.imageType != requested.imageType && !oneDimensionalCopy) ||
             (format == FormatCompatibility::ViewCompatible && !supportsFormatView) ||
             ((requested.viewType == ViewKind::Cube || requested.viewType == ViewKind::CubeArray) &&
                 (!backing.cubeCompatible || requested.viewLayerBase % 6 ||
@@ -208,7 +216,7 @@ namespace skyline::gpu::texture {
             (requested.viewLayerCount > 1 && backing.layerStride != requested.layerStride))
             return TextureViewCompatibility::LayoutIncompatible;
 
-        return format == FormatCompatibility::CopyCompatible
+        return oneDimensionalCopy || format == FormatCompatibility::CopyCompatible
             ? TextureViewCompatibility::CopyOnly
             : TextureViewCompatibility::Full;
     }
