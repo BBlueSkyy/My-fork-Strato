@@ -268,12 +268,17 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_nativeSoft
 
 extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_00024Companion_setController(JNIEnv *, jobject, jint index, jint type, jint partnerIndex) {
     auto input{InputWeak.lock()};
+    if (!input)
+        return;
     std::lock_guard guard(input->npad.mutex);
     input->npad.controllers[static_cast<size_t>(index)] = skyline::input::GuestController{static_cast<skyline::input::NpadControllerType>(type), static_cast<skyline::i8>(partnerIndex)};
 }
 
 extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_00024Companion_updateControllers(JNIEnv *, jobject) {
-    InputWeak.lock()->npad.Update();
+    auto input{InputWeak.lock()};
+    if (!input)
+        return;
+    input->npad.Update();
 }
 
 extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_00024Companion_setButtonState(JNIEnv *, jobject, jint index, jlong mask, jboolean pressed) {
