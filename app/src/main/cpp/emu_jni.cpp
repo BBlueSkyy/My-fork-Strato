@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <csignal>
+#include <mutex>
 #include <pthread.h>
 #include <android/asset_manager_jni.h>
 #include <sys/system_properties.h>
@@ -29,6 +30,8 @@ std::weak_ptr<skyline::gpu::GPU> GpuWeak;
 std::weak_ptr<skyline::audio::Audio> AudioWeak;
 std::weak_ptr<skyline::input::Input> InputWeak;
 std::weak_ptr<skyline::Settings> SettingsWeak;
+std::mutex SurfaceMutex;
+jobject CurrentSurface{};
 
 // https://cs.android.com/android/platform/superproject/+/master:bionic/libc/tzcode/bionic.cpp;l=43;drc=master;bpv=1;bpt=1
 static std::string GetTimeZoneName() {
@@ -104,25 +107,46 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
 
         // Host signal handlers need to be set before NCE is initialized, this is the only place where we can do that
         skyline::signal::SetHostSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, skyline::signal::ExceptionalSignalHandler);
-        auto os{std::make_shared<skyline::kernel::OS>(
-            jvmManager,
-            settings,
-            publicAppFilesPath,
-            privateAppFilesPath,
-            nativeLibraryPath,
-            GetTimeZoneName(),
-            std::make_shared<skyline::vfs::AndroidAssetFileSystem>(AAssetManager_fromJava(env, assetManager))
-        )};
-        OsWeak = os;
-        GpuWeak = os->state.gpu;
-        AudioWeak = os->state.audio;
-        InputWeak = os->state.input;
-        SettingsWeak = settings;
-        jvmManager->InitializeControllers();
+        auto assetFileSystem{std::make_shared<skyline::vfs::AndroidAssetFileSystem>(AAssetManager_fromJava(env, assetManager))};
+        auto programLaunchState{std::make_shared<skyline::kernel::ProgramLaunchState>()};
 
         LOGDNF("Launching ROM {}", skyline::JniString(env, romUriJstring));
 
-        os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
+        bool executeNextProgram{};
+        do {
+            auto os{std::make_shared<skyline::kernel::OS>(
+                jvmManager,
+                settings,
+                publicAppFilesPath,
+                privateAppFilesPath,
+                nativeLibraryPath,
+                GetTimeZoneName(),
+                assetFileSystem,
+                programLaunchState
+            )};
+            OsWeak = os;
+            GpuWeak = os->state.gpu;
+            AudioWeak = os->state.audio;
+            InputWeak = os->state.input;
+            SettingsWeak = settings;
+            jvmManager->InitializeControllers();
+
+            {
+                std::scoped_lock lock{SurfaceMutex};
+                if (CurrentSurface)
+                    os->state.gpu->presentation.UpdateSurface(CurrentSurface);
+            }
+
+            os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
+            executeNextProgram = os->CommitProgramExecutionRequest().has_value();
+
+            if (executeNextProgram) {
+                InputWeak.reset();
+                AudioWeak.reset();
+                GpuWeak.reset();
+                OsWeak.reset();
+            }
+        } while (executeNextProgram);
     } catch (std::exception &e) {
         LOGENF("An uncaught exception has occurred: {}", e.what());
     } catch (const skyline::signal::SignalException &e) {
@@ -134,6 +158,9 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
     perfetto::TrackEvent::Flush();
 
     InputWeak.reset();
+    AudioWeak.reset();
+    GpuWeak.reset();
+    OsWeak.reset();
 
     auto end{std::chrono::steady_clock::now()};
     LOGINF("Emulation has ended in {}ms", std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
@@ -160,11 +187,21 @@ extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_stopEm
     return true;
 }
 
-extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_setSurface(JNIEnv *, jobject, jobject surface) {
+extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_setSurface(JNIEnv *env, jobject, jobject surface) {
+    std::scoped_lock lock{SurfaceMutex};
+
+    if (CurrentSurface) {
+        env->DeleteGlobalRef(CurrentSurface);
+        CurrentSurface = nullptr;
+    }
+    if (surface)
+        CurrentSurface = env->NewGlobalRef(surface);
+
     auto gpu{GpuWeak.lock()};
     if (!gpu)
         return false;
-    gpu->presentation.UpdateSurface(surface);
+
+    gpu->presentation.UpdateSurface(CurrentSurface);
     return true;
 }
 
