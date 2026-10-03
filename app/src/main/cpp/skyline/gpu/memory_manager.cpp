@@ -10,7 +10,7 @@ namespace skyline::gpu::memory {
      */
     void ThrowOnFail(VkResult result, const char *function = __builtin_FUNCTION()) {
         if (result != VK_SUCCESS)
-            vk::throwResultException(vk::Result(result), function);
+            vk::resultCheck(vk::Result(result), function);
     }
 
     Buffer::~Buffer() {
