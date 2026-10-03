@@ -7,9 +7,9 @@
 #include <utility>
 #include <vector>
 #include "copy_capability.h"
+#include "texture.h"
 
 namespace skyline::gpu::texture {
-    class Texture;
     class TextureStorage;
 
     /**
