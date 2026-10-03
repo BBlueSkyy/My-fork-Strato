@@ -619,10 +619,5 @@ class MainActivity : AppCompatActivity() {
                 adapter.currentItems.size
             )
         }
-
-        viewModel.checkRomHash(
-            getSearchLocations(),
-            EmulationSettings.global.systemLanguage
-        )
     }
 }
