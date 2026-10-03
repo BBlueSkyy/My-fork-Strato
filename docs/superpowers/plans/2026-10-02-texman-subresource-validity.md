@@ -19,6 +19,10 @@
 - Registration and batched writes are atomic on validation failure.
 - `nextGeneration` remains strictly greater than every local or imported endpoint generation.
 - Validate every registered coordinate against the real layout and the depth of that exact mip/layer.
+- Graph edges express undirected semantic equivalence only; they do not imply directional Vulkan
+  copy capability.
+- Joining existing components advances every endpoint on each proven-current frontier, not only
+  the two endpoints named by the new edge.
 
 ## Review Focus
 
@@ -101,7 +105,7 @@
 
 - [ ] **Step 4: Implement ownership nodes, endpoint states, and direct edges**
 
-  Replace representation-wide nodes with exact endpoint states. Preserve weak control-block identity after expiration. Validate the complete relationship on a temporary tracker copy, including both real layouts, before committing it to `*this`. Support new-to-new, current-to-new, and current-component-to-current-component synchronized registration; reject stale endpoints and contradictory mappings.
+  Replace representation-wide nodes with exact endpoint states. Preserve weak control-block identity after expiration. Validate the complete relationship on a temporary tracker copy, including both real layouts, before committing it to `*this`. Support new-to-new, current-to-new, and current-component-to-current-component synchronized registration; when joining existing components, move every endpoint on both current frontiers to the fresh merge generation. Reject stale endpoints and contradictory mappings. Store equivalence without any Vulkan-direction capability flag.
 
 - [ ] **Step 5: Add the exact state query**
 
@@ -172,7 +176,7 @@
 - Modify: `tests/texture/copy_dependency_tests.cpp`
 
 **Interfaces:**
-- Produces: `PrepareRead(representation, subresource) -> PreparedCopyRead<Representation>` containing the exact source and destination subresources.
+- Produces: `PrepareRead(representation, subresource) -> PreparedDependencyRead<Representation>` containing the exact source and destination subresources as metadata, without promising a directional Vulkan route.
 - Produces: `CompleteSynchronization(destination, destinationSubresource, source, sourceSubresource) -> bool`.
 
 - [ ] **Step 1: Write failing direct-read tests**
@@ -195,7 +199,7 @@
 
 - [ ] **Step 5: Implement direct read preparation and completion**
 
-  Traverse the exact endpoint component to find its current generation, but accept as a copy source only a live endpoint connected by one registered direct edge. `PrepareRead` performs no mutation. Completion copies only the source generation to the named destination endpoint after validating the directed mapping and current source.
+  Traverse the exact endpoint component to find its current generation, but report a synchronization source only when a live authoritative endpoint is connected by one direct equivalence edge. `PrepareRead` performs no mutation and does not validate Vulkan capability. Completion copies only the source generation to the named destination endpoint after validating the exact edge and current source; its caller asserts that a valid external synchronization already occurred.
 
 - [ ] **Step 6: Run tests and confirm GREEN**
 

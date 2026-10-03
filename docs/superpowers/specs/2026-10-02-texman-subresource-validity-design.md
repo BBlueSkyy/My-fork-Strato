@@ -78,10 +78,12 @@ A physical partial overlap alone never creates shared validity.
 
 ## Graph and Generation Model
 
-Each graph vertex is an exact subresource endpoint. Each edge is one direct CopyOnly mapping
-between equivalent regions in two distinct storages. A storage may participate in multiple edges,
-including several representations of the same region and independent edges for different mips,
-layers, or depth slices.
+Each graph vertex is an exact subresource endpoint. Each edge is one direct CopyOnly equivalence
+between regions in two distinct storages. Equivalence edges are undirected validity metadata; they
+do not claim that a Vulkan copy or conversion is supported in either direction. Directional copy
+capability will be a separate concern when concrete Vulkan routes are introduced. A storage may
+participate in multiple edges, including several representations of the same region and independent
+edges for different mips, layers, or depth slices.
 
 Every endpoint stores a monotonically increasing generation. For one connected component:
 
@@ -103,8 +105,10 @@ Registration is atomic across every pair in the relationship.
 - If one endpoint is already tracked, it must be current; the new endpoint inherits that current
   generation because `RegisterSynchronized` asserts equivalent contents.
 - If both endpoints belong to different existing components, both must be current. Their current
-  frontiers receive one fresh generation before the edge joins the components. Older stale
-  endpoints remain stale.
+  frontiers receive one fresh generation before the edge joins the components. Every endpoint at
+  the former maximum generation in either component is part of that frontier and receives the new
+  generation; registration must not make an already-current equivalent representation stale.
+  Older stale endpoints remain stale.
 - A repeated identical relationship is idempotent; contradictory mappings are rejected.
 
 Failure leaves the graph unchanged.
@@ -136,7 +140,8 @@ Untracked subresources remain outside this metadata model and continue to use le
 - Return `Untracked` when the endpoint has no CopyOnly validity state.
 - Return `Current` when its generation equals the component generation.
 - Return `SynchronizationRequired` only when a directly connected, live endpoint has the component
-  generation. The result contains that source and the exact source/destination subresource pair.
+  generation. The result contains that source and the exact source/destination subresource pair as
+  a metadata obligation, not as proof that a Vulkan operation supports that direction.
 - Return `Unavailable` when the newest endpoint has expired, when no direct authoritative neighbor
   exists, or when the only path crosses a stale intermediate representation.
 
@@ -155,6 +160,8 @@ only when:
 
 Completion assigns the source generation only to the destination endpoint. It does not mark the
 rest of either storage current and does not affect other mappings in the same relationship.
+Calling completion asserts that an external mechanism already performed a semantically valid
+synchronization; the tracker itself does not select or validate a Vulkan copy route.
 
 ## Representation Lifetime
 
