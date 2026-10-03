@@ -75,12 +75,37 @@ namespace skyline::gpu::texture {
 
     struct ResolvedViewBase { std::uint32_t mip{}, layer{}; };
 
+    struct ResolvedSubresource {
+        std::uint32_t mip{}, layer{}, depthSlice{};
+
+        bool operator==(const ResolvedSubresource &) const = default;
+    };
+
+    struct ResolvedCopySubresource {
+        ResolvedSubresource backing{};
+        ResolvedSubresource requested{};
+
+        bool operator==(const ResolvedCopySubresource &) const = default;
+    };
+
     /** A proven subresource-to-subresource relationship between separate host images. */
     struct ResolvedCopyRegion {
+        std::vector<ResolvedCopySubresource> subresources{};
+
+        // Transitional representation-wide summary used by the conservative dependency
+        // tracker. The subresource graph replaces it in the next implementation step.
         ResolvedViewBase backing{};
         ResolvedViewBase requested{};
         std::uint32_t mipCount{}, layerCount{};
     };
+
+    inline bool ContainsSubresource(const TextureResourceLayout &layout,
+                                    ResolvedSubresource resolved) {
+        for (const auto &subresource : layout.subresources)
+            if (subresource.mip == resolved.mip && subresource.layer == resolved.layer)
+                return resolved.depthSlice < subresource.depth;
+        return false;
+    }
 
     /** Resolve the same backing mip/layer for every selected guest subresource. */
     inline std::optional<ResolvedViewBase> ResolveFullView(const TextureResourceLayout &backing,
@@ -113,6 +138,42 @@ namespace skyline::gpu::texture {
         return base;
     }
 
+    /** Resolve every selected requested mip/layer to one exact backing subresource. */
+    inline std::optional<ResolvedCopyRegion> ResolveCopyRegion(const TextureResourceLayout &backing,
+                                                                const TextureResourceLayout &requested) {
+        ResolvedCopyRegion region;
+        region.subresources.reserve(std::size_t{requested.viewMipCount} * requested.viewLayerCount);
+        for (const auto &view : requested.subresources) {
+            if (view.mip < requested.viewMipBase || view.mip - requested.viewMipBase >= requested.viewMipCount ||
+                view.layer < requested.viewLayerBase || view.layer - requested.viewLayerBase >= requested.viewLayerCount)
+                continue;
+            const GuestSubresource *found{};
+            for (const auto &candidate : backing.subresources)
+                if (SameGuestBytes(view, candidate) && view.width == candidate.width &&
+                    view.height == candidate.height && view.depth == candidate.depth) {
+                    if (found)
+                        return std::nullopt;
+                    found = &candidate;
+                }
+            if (!found)
+                return std::nullopt;
+            region.subresources.push_back({
+                .backing = {.mip = found->mip, .layer = found->layer, .depthSlice = 0},
+                .requested = {.mip = view.mip, .layer = view.layer, .depthSlice = 0},
+            });
+        }
+        if (region.subresources.size() != std::size_t{requested.viewMipCount} * requested.viewLayerCount)
+            return std::nullopt;
+
+        // Keep the old tracker operational until it is replaced by the exact endpoint graph.
+        const auto &first = region.subresources.front();
+        region.backing = {.mip = first.backing.mip, .layer = first.backing.layer};
+        region.requested = {.mip = first.requested.mip, .layer = first.requested.layer};
+        region.mipCount = requested.viewMipCount;
+        region.layerCount = requested.viewLayerCount;
+        return region;
+    }
+
     struct ClassifiedResourceView {
         TextureViewCompatibility relation{};
         std::optional<ResolvedViewBase> sharedView{};
@@ -125,18 +186,18 @@ namespace skyline::gpu::texture {
         auto relation = ClassifyTextureViewCompatibility(backing, requested, format, supportsFormatView);
         if (relation != TextureViewCompatibility::Full && relation != TextureViewCompatibility::CopyOnly)
             return {relation, std::nullopt, std::nullopt};
-        auto resolved = ResolveFullView(backing, requested);
-        if (!resolved)
-            return {TextureViewCompatibility::LayoutIncompatible, std::nullopt, std::nullopt};
-        if (relation == TextureViewCompatibility::Full)
+        if (relation == TextureViewCompatibility::Full) {
+            auto resolved = ResolveFullView(backing, requested);
+            if (!resolved)
+                return {TextureViewCompatibility::LayoutIncompatible, std::nullopt, std::nullopt};
             return {relation, resolved, std::nullopt};
-        if (relation == TextureViewCompatibility::CopyOnly)
-            return {relation, std::nullopt, ResolvedCopyRegion{
-                .backing = *resolved,
-                .requested = {.mip = requested.viewMipBase, .layer = requested.viewLayerBase},
-                .mipCount = requested.viewMipCount,
-                .layerCount = requested.viewLayerCount,
-            }};
+        }
+        if (relation == TextureViewCompatibility::CopyOnly) {
+            auto resolved = ResolveCopyRegion(backing, requested);
+            if (!resolved)
+                return {TextureViewCompatibility::LayoutIncompatible, std::nullopt, std::nullopt};
+            return {relation, std::nullopt, std::move(resolved)};
+        }
         return {relation, std::nullopt, std::nullopt};
     }
 

@@ -146,9 +146,26 @@ int main() {
     assert(selected.relation == TextureViewCompatibility::Full && selected.sharedView && selected.sharedView->mip == 1);
     const auto copy = ClassifyAndResolveView(full, mip->Layout(), FormatCompatibility::CopyCompatible, true);
     assert(copy.relation == TextureViewCompatibility::CopyOnly && !copy.sharedView);
-    assert(copy.copyRegion && copy.copyRegion->backing.mip == 1 && copy.copyRegion->backing.layer == 0);
-    assert(copy.copyRegion->requested.mip == 0 && copy.copyRegion->requested.layer == 0);
-    assert(copy.copyRegion->mipCount == 1 && copy.copyRegion->layerCount == 1);
+    assert(copy.copyRegion && copy.copyRegion->subresources.size() == 1);
+    assert((copy.copyRegion->subresources[0].backing == ResolvedSubresource{.mip = 1, .layer = 0, .depthSlice = 0}));
+    assert((copy.copyRegion->subresources[0].requested == ResolvedSubresource{.mip = 0, .layer = 0, .depthSlice = 0}));
+
+    auto twoLayerInfo = parentInfo;
+    twoLayerInfo.viewMipCount = 1;
+    auto twoLayer = BuildResourceLayout(parentRanges, levels, 2, twoLayerInfo);
+    assert(twoLayer);
+    const auto layerCopies = ClassifyAndResolveView(full, twoLayer->Layout(), FormatCompatibility::CopyCompatible, true);
+    assert(layerCopies.relation == TextureViewCompatibility::CopyOnly && layerCopies.copyRegion);
+    assert(layerCopies.copyRegion->subresources.size() == 2);
+    assert((layerCopies.copyRegion->subresources[0].backing == ResolvedSubresource{.mip = 0, .layer = 0, .depthSlice = 0}));
+    assert((layerCopies.copyRegion->subresources[0].requested == ResolvedSubresource{.mip = 0, .layer = 0, .depthSlice = 0}));
+    assert((layerCopies.copyRegion->subresources[1].backing == ResolvedSubresource{.mip = 0, .layer = 1, .depthSlice = 0}));
+    assert((layerCopies.copyRegion->subresources[1].requested == ResolvedSubresource{.mip = 0, .layer = 1, .depthSlice = 0}));
+
+    assert(ContainsSubresource(full, {.mip = 1, .layer = 1, .depthSlice = 0}));
+    assert(!ContainsSubresource(full, {.mip = 2, .layer = 1, .depthSlice = 0}));
+    assert(!ContainsSubresource(full, {.mip = 1, .layer = 2, .depthSlice = 0}));
+    assert(!ContainsSubresource(full, {.mip = 1, .layer = 1, .depthSlice = 1}));
     const auto unsupported = ClassifyAndResolveView(full, mip->Layout(), FormatCompatibility::ViewCompatible, false);
     assert(unsupported.relation == TextureViewCompatibility::LayoutIncompatible && !unsupported.sharedView);
     const auto partialRelation = ClassifyAndResolveView(full, partial->Layout(), FormatCompatibility::Exact, true);
