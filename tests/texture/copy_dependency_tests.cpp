@@ -1,6 +1,7 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <span>
 #include <skyline/gpu/texture/copy_dependency.h>
@@ -8,89 +9,109 @@
 using namespace skyline::gpu::texture;
 
 namespace {
-    struct Representation {
-        std::shared_ptr<std::uint32_t> backing;
-    };
+    struct Representation {};
+
+    ClassifiedResourceView CopyOnly(std::initializer_list<ResolvedCopySubresource> subresources) {
+        return {
+            .relation = TextureViewCompatibility::CopyOnly,
+            .copyRegion = ResolvedCopyRegion{.subresources = subresources},
+        };
+    }
+
+    constexpr ResolvedSubresource Subresource(std::uint32_t mip, std::uint32_t layer = 0,
+                                               std::uint32_t depthSlice = 0) {
+        return {.mip = mip, .layer = layer, .depthSlice = depthSlice};
+    }
 }
 
 int main() {
     std::array<std::uint8_t, 512> memory{};
-    const std::array<std::span<std::uint8_t>, 1> parentMapping{std::span{memory}.subspan(0, 256)};
-    const std::array<std::span<std::uint8_t>, 1> childMapping{std::span{memory}.subspan(64, 64)};
+    const std::array<std::span<std::uint8_t>, 1> completeMapping{std::span{memory}.subspan(0, 256)};
     const std::array<std::span<std::uint8_t>, 1> partialMapping{std::span{memory}.subspan(224, 64)};
-    GuestResourceRanges parentRanges{parentMapping};
-    GuestResourceRanges childRanges{childMapping};
+    GuestResourceRanges completeRanges{completeMapping};
     GuestResourceRanges partialRanges{partialMapping};
 
-    auto parent = std::make_shared<Representation>(Representation{std::make_shared<std::uint32_t>(1)});
-    auto child = std::make_shared<Representation>(Representation{std::make_shared<std::uint32_t>(2)});
-    auto third = std::make_shared<Representation>(Representation{std::make_shared<std::uint32_t>(3)});
-
-    const ClassifiedResourceView copyOnly{
-        .relation = TextureViewCompatibility::CopyOnly,
-        .copyRegion = ResolvedCopyRegion{
-            .backing = {.mip = 2, .layer = 1},
-            .requested = {.mip = 0, .layer = 0},
-            .mipCount = 1,
-            .layerCount = 1,
-        },
+    const std::array<GuestSubresource, 4> subresources{
+        GuestSubresource{.depth = 4, .mip = 0, .layer = 0},
+        GuestSubresource{.depth = 2, .mip = 1, .layer = 0},
+        GuestSubresource{.depth = 4, .mip = 0, .layer = 1},
+        GuestSubresource{.depth = 2, .mip = 1, .layer = 1},
     };
+    const TextureResourceLayout layout{.subresources = subresources};
+
+    auto first = std::make_shared<Representation>();
+    auto second = std::make_shared<Representation>();
+    auto third = std::make_shared<Representation>();
+    auto fourth = std::make_shared<Representation>();
+    const auto mip0 = Subresource(0);
+    const auto mip1 = Subresource(1);
+    const auto layer1 = Subresource(0, 1);
+    const auto slice1 = Subresource(1, 0, 1);
 
     CopyDependencyTracker<Representation> dependencies;
-    assert(dependencies.RegisterSynchronized(parent, parentRanges, child, childRanges, copyOnly));
-    assert(parent->backing != child->backing); // Registration never aliases host representations.
-    assert(dependencies.RelationCount() == 1);
-    assert(dependencies.GetState(parent) == CopyRepresentationState::Current);
-    assert(dependencies.GetState(child) == CopyRepresentationState::Current);
+    assert(dependencies.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{mip0, mip0}, {mip1, mip1}, {layer1, layer1}, {slice1, slice1}})));
+    assert(dependencies.RelationCount() == 4);
+    assert(dependencies.GetState(first, mip0) == CopyRepresentationState::Current);
+    assert(dependencies.GetState(second, mip1) == CopyRepresentationState::Current);
+    assert(dependencies.GetState(first, layer1) == CopyRepresentationState::Current);
+    assert(dependencies.GetState(second, slice1) == CopyRepresentationState::Current);
 
-    // A GPU write makes the writer authoritative and every related representation stale.
-    assert(dependencies.MarkWritten(child));
-    assert(dependencies.GetState(child) == CopyRepresentationState::Current);
-    assert(dependencies.GetState(parent) == CopyRepresentationState::Stale);
-    assert(!dependencies.CompleteSynchronization(child, parent)); // Never copy from a stale source.
+    // One storage can have another peer for one region without joining unrelated regions.
+    assert(dependencies.RegisterSynchronized(first, completeRanges, layout, third, completeRanges, layout,
+        CopyOnly({{mip0, mip0}})));
+    assert(dependencies.RelationCount() == 5);
+    assert(dependencies.GetState(third, mip0) == CopyRepresentationState::Current);
+    assert(dependencies.GetState(third, mip1) == CopyRepresentationState::Untracked);
 
-    // A stale representation cannot be read until the exact dependency is synchronized.
-    const auto parentRead = dependencies.PrepareRead(parent);
-    assert(parentRead.state == CopyReadState::SynchronizationRequired);
-    assert(parentRead.source == child);
-    assert(parentRead.region.source.mip == 0 && parentRead.region.source.layer == 0);
-    assert(parentRead.region.destination.mip == 2 && parentRead.region.destination.layer == 1);
-    assert(dependencies.CompleteSynchronization(parent, child));
-    assert(dependencies.PrepareRead(parent).state == CopyReadState::Current);
+    // Repeating an exact relationship is idempotent.
+    assert(dependencies.RegisterSynchronized(first, completeRanges, layout, third, completeRanges, layout,
+        CopyOnly({{mip0, mip0}})));
+    assert(dependencies.RelationCount() == 5);
 
-    // Representation-wide validity cannot safely express multiple independent mip/layer
-    // aliases yet, so an additional dependency remains on the legacy path.
-    assert(!dependencies.RegisterSynchronized(child, childRanges, third, childRanges, copyOnly));
-    assert(dependencies.MarkWritten(parent));
-    assert(dependencies.GetState(child) == CopyRepresentationState::Stale);
-    const auto childRead = dependencies.PrepareRead(child);
-    assert(childRead.state == CopyReadState::SynchronizationRequired && childRead.source == parent);
-    assert(childRead.region.source.mip == 2 && childRead.region.destination.mip == 0);
-    assert(dependencies.GetState(third) == CopyRepresentationState::Untracked);
-    assert(dependencies.PrepareRead(third).state == CopyReadState::Untracked);
-    assert(dependencies.CompleteSynchronization(child, parent));
+    // A later relation cannot remap an existing endpoint within the same representation pair.
+    assert(!dependencies.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{mip0, mip1}})));
+    assert(dependencies.RelationCount() == 5);
 
-    // Physical overlap alone, Full sharing, and CopyOnly without a resolved plan are rejected.
+    // Joining two existing components preserves every endpoint on both current frontiers.
+    CopyDependencyTracker<Representation> joined;
+    assert(joined.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{mip0, mip0}})));
+    assert(joined.RegisterSynchronized(third, completeRanges, layout, fourth, completeRanges, layout,
+        CopyOnly({{mip0, mip0}})));
+    assert(joined.RegisterSynchronized(second, completeRanges, layout, third, completeRanges, layout,
+        CopyOnly({{mip0, mip0}})));
+    assert(joined.GetState(first, mip0) == CopyRepresentationState::Current);
+    assert(joined.GetState(second, mip0) == CopyRepresentationState::Current);
+    assert(joined.GetState(third, mip0) == CopyRepresentationState::Current);
+    assert(joined.GetState(fourth, mip0) == CopyRepresentationState::Current);
+
+    // Physical partial overlap and unresolved or Full classifications never create validity.
     CopyDependencyTracker<Representation> rejected;
-    assert(!rejected.RegisterSynchronized(parent, parentRanges, child, partialRanges, copyOnly));
-    auto full = copyOnly;
+    const auto onePair = CopyOnly({{mip0, mip0}});
+    assert(!rejected.RegisterSynchronized(first, completeRanges, layout, second, partialRanges, layout, onePair));
+    auto full = onePair;
     full.relation = TextureViewCompatibility::Full;
-    assert(!rejected.RegisterSynchronized(parent, parentRanges, child, childRanges, full));
+    assert(!rejected.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout, full));
     const ClassifiedResourceView unresolved{.relation = TextureViewCompatibility::CopyOnly};
-    assert(!rejected.RegisterSynchronized(parent, parentRanges, child, childRanges, unresolved));
+    assert(!rejected.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout, unresolved));
     assert(rejected.RelationCount() == 0);
 
-    // Losing the authoritative representation cannot silently make stale data current.
-    auto surviving = std::make_shared<Representation>(Representation{std::make_shared<std::uint32_t>(4)});
-    auto temporary = std::make_shared<Representation>(Representation{std::make_shared<std::uint32_t>(5)});
-    CopyDependencyTracker<Representation> expiredSource;
-    assert(expiredSource.RegisterSynchronized(surviving, parentRanges, temporary, childRanges, copyOnly));
-    assert(expiredSource.MarkWritten(temporary));
-    CopyDependencyTracker<Representation> merged;
-    merged.MergeFrom(expiredSource);
-    merged.MergeFrom(expiredSource);
-    assert(merged.RelationCount() == 1);
-    temporary.reset();
-    assert(merged.GetState(surviving) == CopyRepresentationState::Stale);
-    assert(merged.PrepareRead(surviving).state == CopyReadState::Unavailable);
+    // Duplicate/conflicting mappings and exact layout-bound failures are atomic.
+    assert(!rejected.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{mip0, mip0}, {mip0, mip0}})));
+    assert(!rejected.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{mip0, mip0}, {mip0, mip1}})));
+    assert(!rejected.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{Subresource(2), mip0}})));
+    assert(!rejected.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{Subresource(0, 2), mip0}})));
+    assert(!rejected.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{mip0, Subresource(1, 0, 2)}})));
+    assert(!rejected.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{mip0, mip0}, {mip1, Subresource(3)}})));
+    assert(rejected.RelationCount() == 0);
+    assert(rejected.GetState(first, mip0) == CopyRepresentationState::Untracked);
+    assert(rejected.GetState(second, mip0) == CopyRepresentationState::Untracked);
 }

@@ -91,12 +91,6 @@ namespace skyline::gpu::texture {
     /** A proven subresource-to-subresource relationship between separate host images. */
     struct ResolvedCopyRegion {
         std::vector<ResolvedCopySubresource> subresources{};
-
-        // Transitional representation-wide summary used by the conservative dependency
-        // tracker. The subresource graph replaces it in the next implementation step.
-        ResolvedViewBase backing{};
-        ResolvedViewBase requested{};
-        std::uint32_t mipCount{}, layerCount{};
     };
 
     inline bool ContainsSubresource(const TextureResourceLayout &layout,
@@ -165,12 +159,6 @@ namespace skyline::gpu::texture {
         if (region.subresources.size() != std::size_t{requested.viewMipCount} * requested.viewLayerCount)
             return std::nullopt;
 
-        // Keep the old tracker operational until it is replaced by the exact endpoint graph.
-        const auto &first = region.subresources.front();
-        region.backing = {.mip = first.backing.mip, .layer = first.backing.layer};
-        region.requested = {.mip = first.requested.mip, .layer = first.requested.layer};
-        region.mipCount = requested.viewMipCount;
-        region.layerCount = requested.viewLayerCount;
         return region;
     }
 
