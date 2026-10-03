@@ -9,6 +9,7 @@
 #include "types/KThread.h"
 #include "types/KProcess.h"
 #include "scheduler.h"
+#include "guest_caller_trace.h"
 
 namespace skyline::kernel {
     Scheduler::CoreContext::CoreContext(u8 id, i8 preemptionPriority) : id(id), preemptionPriority(preemptionPriority) {}
@@ -125,7 +126,16 @@ namespace skyline::kernel {
         auto &core{cores.at(thread->coreId)};
         std::unique_lock lock{core.mutex};
 
+        const bool traceGuestCaller{diagnostic::IsGuestCallerTraceActive(thread->id)};
+        if (traceGuestCaller)
+            LOGI("[SWKBD-SCHED] InsertThread begin thread={} core={} priority={} paused={} queueSize={} frontThread={} frontPriority={}",
+                 thread->id, core.id, thread->priority.load(), thread->isPaused, core.queue.size(),
+                 core.queue.empty() ? -1 : static_cast<i64>(core.queue.front()->id),
+                 core.queue.empty() ? -1 : static_cast<i32>(core.queue.front()->priority.load()));
+
         if (thread->isPaused) {
+            if (traceGuestCaller)
+                LOGI("[SWKBD-SCHED] InsertThread deferred thread={} because paused", thread->id);
             // We cannot insert a thread that is paused, so we just let the resuming thread insert it
             thread->insertThreadOnResume = true;
             return;
@@ -160,6 +170,15 @@ namespace skyline::kernel {
         } else {
             core.queue.insert(nextThread, thread);
         }
+
+        if (traceGuestCaller) {
+            const auto inserted{std::find(core.queue.begin(), core.queue.end(), thread)};
+            const i64 position{inserted == core.queue.end() ? -1 : static_cast<i64>(std::distance(core.queue.begin(), inserted))};
+            LOGI("[SWKBD-SCHED] InsertThread end thread={} core={} queueSize={} position={} frontThread={} frontPriority={}",
+                 thread->id, core.id, core.queue.size(), position,
+                 core.queue.empty() ? -1 : static_cast<i64>(core.queue.front()->id),
+                 core.queue.empty() ? -1 : static_cast<i32>(core.queue.front()->priority.load()));
+        }
     }
 
     void Scheduler::MigrateToCore(const std::shared_ptr<type::KThread> &thread, CoreContext *&currentCore, CoreContext *targetCore, std::unique_lock<SpinLock> &lock) {
@@ -188,6 +207,14 @@ namespace skyline::kernel {
         CoreContext *core{&cores.at(thread->coreId)};
         std::unique_lock lock(core->mutex);
 
+        const bool traceGuestCaller{diagnostic::IsGuestCallerTraceActive(thread->id)};
+        bool loggedGuestCallerBlocked{};
+        if (traceGuestCaller)
+            LOGI("[SWKBD-SCHED] WaitSchedule enter thread={} core={} priority={} loadBalance={} queueSize={} frontThread={} frontPriority={}",
+                 thread->id, core->id, thread->priority.load(), loadBalance, core->queue.size(),
+                 core->queue.empty() ? -1 : static_cast<i64>(core->queue.front()->id),
+                 core->queue.empty() ? -1 : static_cast<i32>(core->queue.front()->priority.load()));
+
         auto wakeFunction{[&]() {
             if (!thread->affinityMask.test(thread->coreId)) [[unlikely]] {
                 lock.unlock(); // If the core migration mutex is locked by a thread seeking the core mutex, it'll result in a deadlock
@@ -196,7 +223,15 @@ namespace skyline::kernel {
                 if (!thread->affinityMask.test(thread->coreId)) // We need to retest in case the thread was migrated while the core was unlocked
                     MigrateToCore(thread, core, &cores.at(thread->idealCore), lock);
             }
-            return !core->queue.empty() && core->queue.front() == thread;
+            const bool ready{!core->queue.empty() && core->queue.front() == thread};
+            if (traceGuestCaller && !ready && !loggedGuestCallerBlocked) {
+                LOGI("[SWKBD-SCHED] WaitSchedule blocked thread={} core={} queueSize={} frontThread={} frontPriority={}",
+                     thread->id, core->id, core->queue.size(),
+                     core->queue.empty() ? -1 : static_cast<i64>(core->queue.front()->id),
+                     core->queue.empty() ? -1 : static_cast<i32>(core->queue.front()->priority.load()));
+                loggedGuestCallerBlocked = true;
+            }
+            return ready;
         }};
 
         TRACE_EVENT("scheduler", "WaitSchedule");
@@ -221,6 +256,11 @@ namespace skyline::kernel {
             thread->ArmPreemptionTimer(PreemptiveTimeslice);
 
         thread->timesliceStart = util::GetTimeTicks();
+
+        if (traceGuestCaller)
+            LOGI("[SWKBD-SCHED] WaitSchedule resume thread={} core={} queueSize={} frontThread={}",
+                 thread->id, core->id, core->queue.size(),
+                 core->queue.empty() ? -1 : static_cast<i64>(core->queue.front()->id));
     }
 
     bool Scheduler::TimedWaitSchedule(std::chrono::nanoseconds timeout) {
