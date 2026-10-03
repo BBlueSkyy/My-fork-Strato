@@ -12,6 +12,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.stratoemu.strato.loader.AppEntry
 import org.stratoemu.strato.loader.RomType
 import org.stratoemu.strato.utils.fromFile
@@ -35,12 +36,28 @@ class MainViewModel @Inject constructor(
         private val TAG = MainViewModel::class.java.simpleName
     }
 
+    @Volatile
+    private var currentState: MainState? = null
+
     private var state: MainState?
-        get() = _stateData.value
-        set(value) = _stateData.postValue(value!!)
+        get() = currentState
+        set(value) {
+            currentState = value
+            _stateData.postValue(value!!)
+        }
 
     private val _stateData = MutableLiveData<MainState>()
     val stateData: LiveData<MainState> = _stateData
+
+    private data class RomLoadRequest(
+        val context: Context,
+        val loadFromFile: Boolean,
+        val searchLocations: List<Uri>,
+        val systemLanguage: Int
+    )
+
+    private var isLoadingRoms = false
+    private var pendingRomLoadRequest: RomLoadRequest? = null
 
     fun loadRoms(
         context: Context,
@@ -48,9 +65,26 @@ class MainViewModel @Inject constructor(
         searchLocations: List<Uri>,
         systemLanguage: Int
     ) {
-        if (state == MainState.Loading)
-            return
+        val request = RomLoadRequest(
+            context.applicationContext,
+            loadFromFile,
+            searchLocations.toList(),
+            systemLanguage
+        )
 
+        if (isLoadingRoms) {
+            // Coalesce refreshes while a scan is active. The latest request must
+            // run afterwards so a newly selected folder or imported keys cannot
+            // be lost behind an older scan.
+            pendingRomLoadRequest = request
+            return
+        }
+
+        startRomLoad(request)
+    }
+
+    private fun startRomLoad(request: RomLoadRequest) {
+        isLoadingRoms = true
         state = MainState.Loading
 
         val romsFile = File(
@@ -58,20 +92,26 @@ class MainViewModel @Inject constructor(
         )
 
         viewModelScope.launch(Dispatchers.IO) {
-            if (loadFromFile && romsFile.exists()) {
-                try {
-                    state = MainState.Loaded(fromFile(romsFile))
-                    checkRomHash(searchLocations, systemLanguage)
-                    return@launch
-                } catch (e: Exception) {
-                    Log.w(TAG, "Ran into exception while loading: ${e.message}")
-                }
-            }
+            var loadedFromFile = false
 
-            state = try {
-                    searchLocations.forEach { searchLocation ->
+            try {
+                if (request.loadFromFile && romsFile.exists()) {
+                    try {
+                        state = MainState.Loaded(fromFile(romsFile))
+                        loadedFromFile = true
+                        return@launch
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Ran into exception while loading: ${e.message}")
+                    }
+                }
+
+                state = try {
+                    request.searchLocations.forEach { searchLocation ->
                         try {
-                            KeyReader.importFromLocation(context, searchLocation)
+                            KeyReader.importFromLocation(
+                                request.context,
+                                searchLocation
+                            )
                         } catch (e: Exception) {
                             Log.w(
                                 TAG,
@@ -81,7 +121,10 @@ class MainViewModel @Inject constructor(
                     }
 
                     val romElements =
-                        romProvider.loadRoms(searchLocations, systemLanguage)
+                        romProvider.loadRoms(
+                            request.searchLocations,
+                            request.systemLanguage
+                        )
 
                     val gameTitleIds = romElements
                         .filter {
@@ -95,7 +138,7 @@ class MainViewModel @Inject constructor(
                         try {
                             val (removedUpdates, removedDlcs) =
                                 ContentManager.cleanupNonExistentContent(
-                                    context,
+                                    request.context,
                                     titleId
                                 )
 
@@ -122,6 +165,23 @@ class MainViewModel @Inject constructor(
                     Log.w(TAG, "Ran into exception while saving: ${e.message}")
                     MainState.Error(e)
                 }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    isLoadingRoms = false
+
+                    val pendingRequest = pendingRomLoadRequest
+                    pendingRomLoadRequest = null
+
+                    if (pendingRequest != null) {
+                        startRomLoad(pendingRequest)
+                    } else if (loadedFromFile) {
+                        checkRomHash(
+                            request.searchLocations,
+                            request.systemLanguage
+                        )
+                    }
+                }
+            }
         }
     }
 
