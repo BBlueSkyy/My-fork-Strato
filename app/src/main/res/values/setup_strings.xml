@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="initial_setup_title">Set up Strato</string>
+    <string name="initial_setup_description">Configure the data Strato needs before loading your library. The setup uses the same import paths as Settings.</string>
+    <string name="initial_setup_keys_description">Import your production keys. They are required to decrypt retail game content and to validate firmware.</string>
+    <string name="initial_setup_firmware_description">Firmware is recommended for system applets and other Horizon OS resources. It can be installed after production keys.</string>
+    <string name="initial_setup_games_description">Choose the folder that contains your Switch games. More folders can be added later in Settings.</string>
+    <string name="initial_setup_import_keys">Import production keys</string>
+    <string name="initial_setup_import_firmware">Install firmware</string>
+    <string name="initial_setup_status_ready">Ready</string>
+    <string name="initial_setup_status_required">Required</string>
+    <string name="initial_setup_firmware_version">Installed: %1$s</string>
+    <string name="initial_setup_game_folder_added">Game folder added</string>
+    <string name="initial_setup_requirement">Production keys and at least one game folder are required to finish setup. Firmware is optional.</string>
+    <string name="initial_setup_finish">Finish setup</string>
+</resources>
