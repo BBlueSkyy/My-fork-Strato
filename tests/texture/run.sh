@@ -42,7 +42,16 @@ mkdir -p "$build_dir"
 
 "${CXX:-c++}" -std=c++20 -Wall -Wextra -Werror \
     -I"$repo_root/app/src/main/cpp" \
+    -I"$repo_root/app/libraries/vkhpp" \
+    -I"$repo_root/app/libraries/vkhpp/Vulkan-Headers/include" \
     "$repo_root/tests/texture/storage_capability_tests.cpp" \
     -o "$build_dir/storage_capability_tests"
 
 "$build_dir/storage_capability_tests"
+
+"${CXX:-c++}" -std=c++20 -Wall -Wextra -Werror \
+    -I"$repo_root/app/src/main/cpp/skyline" \
+    "$repo_root/tests/texture/maintenance5_support_tests.cpp" \
+    -o "$build_dir/maintenance5_support_tests"
+
+"$build_dir/maintenance5_support_tests"
