@@ -173,6 +173,37 @@ int main() {
     assert(lifetime.GetState(replacement, mip0) == CopyRepresentationState::Untracked);
     assert(lifetime.PrepareRead(replacement, mip0).state == CopyReadState::Untracked);
 
+    // Merge preserves exact graph state, is idempotent, and advances the generation allocator.
+    auto importedFirst = std::make_shared<Representation>();
+    auto importedSecond = std::make_shared<Representation>();
+    CopyDependencyTracker<Representation> imported;
+    assert(imported.RegisterSynchronized(importedFirst, completeRanges, layout,
+        importedSecond, completeRanges, layout, CopyOnly({{mip0, mip0}})));
+    for (std::size_t write{}; write < 4; ++write)
+        assert(imported.MarkWritten(importedFirst, mip0Write));
+
+    CopyDependencyTracker<Representation> merged;
+    assert(merged.RegisterSynchronized(third, completeRanges, layout,
+        fourth, completeRanges, layout, CopyOnly({{mip1, mip1}})));
+    merged.MergeFrom(imported);
+    assert(merged.RelationCount() == 2);
+    assert(merged.GetState(importedFirst, mip0) == CopyRepresentationState::Current);
+    assert(merged.GetState(importedSecond, mip0) == CopyRepresentationState::Stale);
+    assert(merged.GetState(third, mip1) == CopyRepresentationState::Current);
+    merged.MergeFrom(imported);
+    assert(merged.RelationCount() == 2);
+    assert(merged.GetState(importedFirst, mip0) == CopyRepresentationState::Current);
+    assert(merged.GetState(importedSecond, mip0) == CopyRepresentationState::Stale);
+
+    // This write must allocate beyond every imported generation, not tie or trail it.
+    assert(merged.MarkWritten(importedSecond, mip0Write));
+    assert(merged.GetState(importedSecond, mip0) == CopyRepresentationState::Current);
+    assert(merged.GetState(importedFirst, mip0) == CopyRepresentationState::Stale);
+    merged.MergeFrom(imported);
+    assert(merged.RelationCount() == 2);
+    assert(merged.GetState(importedSecond, mip0) == CopyRepresentationState::Current);
+    assert(merged.GetState(importedFirst, mip0) == CopyRepresentationState::Stale);
+
     // Joining two existing components preserves every endpoint on both current frontiers.
     CopyDependencyTracker<Representation> joined;
     assert(joined.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,

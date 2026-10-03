@@ -34,13 +34,20 @@ namespace skyline::gpu::texture {
         }
 
         bool RegisterSynchronizedCopyDependency(const std::shared_ptr<TextureStorage> &backing,
+                                                const TextureResourceLayout &backingLayout,
                                                 const std::shared_ptr<TextureStorage> &requested,
+                                                const TextureResourceLayout &requestedLayout,
                                                 const ClassifiedResourceView &classified);
-        bool MarkCopyRepresentationWritten(const std::shared_ptr<TextureStorage> &storage);
-        CopyRepresentationState GetCopyRepresentationState(const std::shared_ptr<TextureStorage> &storage) const;
-        PreparedCopyRead<TextureStorage> PrepareCopyRepresentationRead(const std::shared_ptr<TextureStorage> &storage) const;
+        bool MarkCopyRepresentationWritten(const std::shared_ptr<TextureStorage> &storage,
+                                           std::span<const ResolvedSubresource> subresources);
+        CopyRepresentationState GetCopyRepresentationState(
+            const std::shared_ptr<TextureStorage> &storage, ResolvedSubresource subresource) const;
+        PreparedDependencyRead<TextureStorage> PrepareCopyRepresentationRead(
+            const std::shared_ptr<TextureStorage> &storage, ResolvedSubresource subresource) const;
         bool CompleteCopySynchronization(const std::shared_ptr<TextureStorage> &destination,
-                                         const std::shared_ptr<TextureStorage> &source);
+                                         ResolvedSubresource destinationSubresource,
+                                         const std::shared_ptr<TextureStorage> &source,
+                                         ResolvedSubresource sourceSubresource);
 
         void MergeCopyDependenciesFrom(const TextureGroup &other) {
             copyDependencies.MergeFrom(other.copyDependencies);
@@ -67,30 +74,36 @@ namespace skyline::gpu::texture {
     };
 
     inline bool TextureGroup::RegisterSynchronizedCopyDependency(
-        const std::shared_ptr<TextureStorage> &backing, const std::shared_ptr<TextureStorage> &requested,
+        const std::shared_ptr<TextureStorage> &backing, const TextureResourceLayout &backingLayout,
+        const std::shared_ptr<TextureStorage> &requested, const TextureResourceLayout &requestedLayout,
         const ClassifiedResourceView &classified) {
         return backing && requested && backing->group.get() == this && requested->group.get() == this &&
             copyDependencies.RegisterSynchronized(
-            backing, backing->ranges, requested, requested->ranges, classified);
+                backing, backing->ranges, backingLayout,
+                requested, requested->ranges, requestedLayout, classified);
     }
 
-    inline bool TextureGroup::MarkCopyRepresentationWritten(const std::shared_ptr<TextureStorage> &storage) {
-        return copyDependencies.MarkWritten(storage);
+    inline bool TextureGroup::MarkCopyRepresentationWritten(
+        const std::shared_ptr<TextureStorage> &storage,
+        std::span<const ResolvedSubresource> subresources) {
+        return copyDependencies.MarkWritten(storage, subresources);
     }
 
     inline CopyRepresentationState TextureGroup::GetCopyRepresentationState(
-        const std::shared_ptr<TextureStorage> &storage) const {
-        return copyDependencies.GetState(storage);
+        const std::shared_ptr<TextureStorage> &storage, ResolvedSubresource subresource) const {
+        return copyDependencies.GetState(storage, subresource);
     }
 
-    inline PreparedCopyRead<TextureStorage> TextureGroup::PrepareCopyRepresentationRead(
-        const std::shared_ptr<TextureStorage> &storage) const {
-        return copyDependencies.PrepareRead(storage);
+    inline PreparedDependencyRead<TextureStorage> TextureGroup::PrepareCopyRepresentationRead(
+        const std::shared_ptr<TextureStorage> &storage, ResolvedSubresource subresource) const {
+        return copyDependencies.PrepareRead(storage, subresource);
     }
 
     inline bool TextureGroup::CompleteCopySynchronization(
-        const std::shared_ptr<TextureStorage> &destination, const std::shared_ptr<TextureStorage> &source) {
-        return copyDependencies.CompleteSynchronization(destination, source);
+        const std::shared_ptr<TextureStorage> &destination, ResolvedSubresource destinationSubresource,
+        const std::shared_ptr<TextureStorage> &source, ResolvedSubresource sourceSubresource) {
+        return copyDependencies.CompleteSynchronization(
+            destination, destinationSubresource, source, sourceSubresource);
     }
 
     inline std::shared_ptr<TextureStorage> CreateTextureStorage(std::shared_ptr<Texture> texture, GuestResourceRanges ranges) {

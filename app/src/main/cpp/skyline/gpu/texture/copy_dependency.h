@@ -14,19 +14,6 @@ namespace skyline::gpu::texture {
     enum class CopyRepresentationState : std::uint8_t { Untracked, Current, Stale };
     enum class CopyReadState : std::uint8_t { Untracked, Current, SynchronizationRequired, Unavailable };
 
-    struct CopyTransferRegion {
-        ResolvedViewBase source{};
-        ResolvedViewBase destination{};
-        std::uint32_t mipCount{}, layerCount{};
-    };
-
-    template<typename Representation>
-    struct PreparedCopyRead {
-        CopyReadState state{CopyReadState::Untracked};
-        std::shared_ptr<Representation> source{};
-        CopyTransferRegion region{};
-    };
-
     template<typename Representation>
     struct PreparedDependencyRead {
         CopyReadState state{CopyReadState::Untracked};
@@ -81,6 +68,13 @@ namespace skyline::gpu::texture {
         }
 
         std::size_t FindOrAddNode(const std::shared_ptr<Representation> &representation) {
+            if (const auto existing = FindNode(representation))
+                return *existing;
+            nodes.push_back({representation});
+            return nodes.size() - 1;
+        }
+
+        std::size_t FindOrAddNode(const std::weak_ptr<Representation> &representation) {
             if (const auto existing = FindNode(representation))
                 return *existing;
             nodes.push_back({representation});
@@ -365,34 +359,39 @@ namespace skyline::gpu::texture {
             return edges.size();
         }
 
-        // Transitional representation-wide entry points keep storage.h source-compatible
-        // until its subresource wrappers are replaced after the graph behavior is complete.
-        bool RegisterSynchronized(const std::shared_ptr<Representation> &,
-                                  const GuestResourceRanges &,
-                                  const std::shared_ptr<Representation> &,
-                                  const GuestResourceRanges &,
-                                  const ClassifiedResourceView &) {
-            return false;
-        }
+        void MergeFrom(const CopyDependencyTracker &other) {
+            std::vector<std::size_t> nodeMap;
+            nodeMap.reserve(other.nodes.size());
+            for (const auto &node : other.nodes)
+                nodeMap.push_back(FindOrAddNode(node.representation));
 
-        bool MarkWritten(const std::shared_ptr<Representation> &) {
-            return false;
-        }
+            std::vector<std::size_t> endpointMap;
+            endpointMap.reserve(other.endpoints.size());
+            for (const auto &otherEndpoint : other.endpoints) {
+                const auto node = nodeMap[otherEndpoint.node];
+                if (const auto existing = FindEndpoint(node, otherEndpoint.subresource)) {
+                    endpoints[*existing].generation = std::max(
+                        endpoints[*existing].generation, otherEndpoint.generation);
+                    endpointMap.push_back(*existing);
+                } else {
+                    endpointMap.push_back(AddEndpoint(
+                        node, otherEndpoint.subresource, otherEndpoint.generation));
+                }
+            }
 
-        CopyRepresentationState GetState(const std::shared_ptr<Representation> &) const {
-            return CopyRepresentationState::Untracked;
-        }
+            for (const auto &otherEdge : other.edges) {
+                const auto first = endpointMap[otherEdge.first];
+                const auto second = endpointMap[otherEdge.second];
+                if (!FindEdge(first, second))
+                    edges.push_back({first, second});
+            }
 
-        PreparedCopyRead<Representation> PrepareRead(
-            const std::shared_ptr<Representation> &) const {
-            return {};
+            auto maximumGeneration = std::uint64_t{};
+            for (const auto &endpoint : endpoints)
+                maximumGeneration = std::max(maximumGeneration, endpoint.generation);
+            nextGeneration = std::max(nextGeneration, other.nextGeneration);
+            if (nextGeneration <= maximumGeneration)
+                nextGeneration = maximumGeneration + 1;
         }
-
-        bool CompleteSynchronization(const std::shared_ptr<Representation> &,
-                                     const std::shared_ptr<Representation> &) {
-            return false;
-        }
-
-        void MergeFrom(const CopyDependencyTracker &) {}
     };
 }
