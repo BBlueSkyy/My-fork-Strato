@@ -18,8 +18,11 @@ namespace skyline::gpu::texture {
     struct PreparedDependencyRead {
         CopyReadState state{CopyReadState::Untracked};
         std::shared_ptr<Representation> source{};
+        std::shared_ptr<Representation> destination{};
         ResolvedSubresource sourceSubresource{};
         ResolvedSubresource destinationSubresource{};
+        std::uint64_t sourceGeneration{};
+        std::uint64_t destinationGeneration{};
     };
 
     /**
@@ -330,26 +333,34 @@ namespace skyline::gpu::texture {
                     return {
                         .state = CopyReadState::SynchronizationRequired,
                         .source = std::move(source),
+                        .destination = representation,
                         .sourceSubresource = endpoints[*sourceEndpoint].subresource,
                         .destinationSubresource = subresource,
+                        .sourceGeneration = endpoints[*sourceEndpoint].generation,
+                        .destinationGeneration = endpoints[*endpoint].generation,
                     };
             }
             return {.state = CopyReadState::Unavailable};
         }
 
-        bool CompleteSynchronization(
-            const std::shared_ptr<Representation> &destination,
-            ResolvedSubresource destinationSubresource,
-            const std::shared_ptr<Representation> &source,
-            ResolvedSubresource sourceSubresource) {
-            const auto destinationNode = FindNode(destination);
-            const auto sourceNode = FindNode(source);
+        bool CompleteSynchronization(const PreparedDependencyRead<Representation> &prepared) {
+            if (prepared.state != CopyReadState::SynchronizationRequired ||
+                !prepared.source || !prepared.destination ||
+                !prepared.sourceGeneration || !prepared.destinationGeneration)
+                return false;
+
+            const auto destinationNode = FindNode(prepared.destination);
+            const auto sourceNode = FindNode(prepared.source);
             if (!destinationNode || !sourceNode)
                 return false;
-            const auto destinationEndpoint = FindEndpoint(*destinationNode, destinationSubresource);
-            const auto sourceEndpoint = FindEndpoint(*sourceNode, sourceSubresource);
+            const auto destinationEndpoint = FindEndpoint(
+                *destinationNode, prepared.destinationSubresource);
+            const auto sourceEndpoint = FindEndpoint(*sourceNode, prepared.sourceSubresource);
             if (!destinationEndpoint || !sourceEndpoint ||
-                !FindEdge(*destinationEndpoint, *sourceEndpoint) || !IsCurrent(*sourceEndpoint))
+                !FindEdge(*destinationEndpoint, *sourceEndpoint) ||
+                endpoints[*sourceEndpoint].generation != prepared.sourceGeneration ||
+                endpoints[*destinationEndpoint].generation != prepared.destinationGeneration ||
+                !IsCurrent(*sourceEndpoint) || IsCurrent(*destinationEndpoint))
                 return false;
             endpoints[*destinationEndpoint].generation = endpoints[*sourceEndpoint].generation;
             return true;

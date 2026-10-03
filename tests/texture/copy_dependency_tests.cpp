@@ -129,19 +129,46 @@ int main() {
     const auto firstRead = direct.PrepareRead(first, mip0);
     assert(firstRead.state == CopyReadState::SynchronizationRequired);
     assert(firstRead.source == second);
+    assert(firstRead.destination == first);
     assert(firstRead.sourceSubresource == mip0);
     assert(firstRead.destinationSubresource == mip0);
+    assert(firstRead.sourceGeneration != 0);
+    assert(firstRead.destinationGeneration != 0);
+    assert(firstRead.sourceGeneration != firstRead.destinationGeneration);
     assert(direct.GetState(first, mip0) == CopyRepresentationState::Stale);
     assert(direct.PrepareRead(first, mip0).state == CopyReadState::SynchronizationRequired);
     assert(direct.GetState(first, mip0) == CopyRepresentationState::Stale);
 
-    // Completion rejects stale or unrelated sources and changes only the named destination.
-    assert(!direct.CompleteSynchronization(second, mip0, first, mip0));
-    assert(!direct.CompleteSynchronization(first, mip0, second, mip1));
-    assert(direct.CompleteSynchronization(first, mip0, second, mip0));
+    // Completion accepts exactly the prepared generations and changes only the named destination.
+    assert(!direct.CompleteSynchronization(PreparedDependencyRead<Representation>{}));
+    assert(direct.CompleteSynchronization(firstRead));
     assert(direct.GetState(first, mip0) == CopyRepresentationState::Current);
     assert(direct.GetState(first, mip1) == CopyRepresentationState::Current);
     assert(direct.GetState(second, mip1) == CopyRepresentationState::Current);
+
+    // A later source write invalidates a prepared copy even though the source remains current.
+    CopyDependencyTracker<Representation> sourceRace;
+    assert(sourceRace.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{mip0, mip0}})));
+    assert(sourceRace.MarkWritten(second, mip0Write));
+    const auto sourceRaceRead = sourceRace.PrepareRead(first, mip0);
+    assert(sourceRaceRead.state == CopyReadState::SynchronizationRequired);
+    assert(sourceRace.MarkWritten(second, mip0Write));
+    assert(!sourceRace.CompleteSynchronization(sourceRaceRead));
+    assert(sourceRace.GetState(first, mip0) == CopyRepresentationState::Stale);
+    assert(sourceRace.GetState(second, mip0) == CopyRepresentationState::Current);
+
+    // A destination write after preparation also invalidates the prepared copy.
+    CopyDependencyTracker<Representation> destinationRace;
+    assert(destinationRace.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{mip0, mip0}})));
+    assert(destinationRace.MarkWritten(second, mip0Write));
+    const auto destinationRaceRead = destinationRace.PrepareRead(first, mip0);
+    assert(destinationRaceRead.state == CopyReadState::SynchronizationRequired);
+    assert(destinationRace.MarkWritten(first, mip0Write));
+    assert(!destinationRace.CompleteSynchronization(destinationRaceRead));
+    assert(destinationRace.GetState(first, mip0) == CopyRepresentationState::Current);
+    assert(destinationRace.GetState(second, mip0) == CopyRepresentationState::Stale);
 
     // A transitive current endpoint is unavailable until the stale intermediate is synchronized.
     CopyDependencyTracker<Representation> transitive;
@@ -153,10 +180,10 @@ int main() {
     assert(transitive.PrepareRead(third, mip0).state == CopyReadState::Unavailable);
     const auto intermediateRead = transitive.PrepareRead(second, mip0);
     assert(intermediateRead.state == CopyReadState::SynchronizationRequired && intermediateRead.source == first);
-    assert(transitive.CompleteSynchronization(second, mip0, first, mip0));
+    assert(transitive.CompleteSynchronization(intermediateRead));
     const auto thirdRead = transitive.PrepareRead(third, mip0);
     assert(thirdRead.state == CopyReadState::SynchronizationRequired && thirdRead.source == second);
-    assert(transitive.CompleteSynchronization(third, mip0, second, mip0));
+    assert(transitive.CompleteSynchronization(thirdRead));
     assert(transitive.PrepareRead(third, mip0).state == CopyReadState::Current);
 
     // Expiration of the sole authority never promotes stale data or aliases a new allocation.

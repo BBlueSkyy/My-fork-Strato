@@ -44,10 +44,8 @@ namespace skyline::gpu::texture {
             const std::shared_ptr<TextureStorage> &storage, ResolvedSubresource subresource) const;
         PreparedDependencyRead<TextureStorage> PrepareCopyRepresentationRead(
             const std::shared_ptr<TextureStorage> &storage, ResolvedSubresource subresource) const;
-        bool CompleteCopySynchronization(const std::shared_ptr<TextureStorage> &destination,
-                                         ResolvedSubresource destinationSubresource,
-                                         const std::shared_ptr<TextureStorage> &source,
-                                         ResolvedSubresource sourceSubresource);
+        bool CompleteCopySynchronization(
+            const PreparedDependencyRead<TextureStorage> &prepared);
 
         void MergeCopyDependenciesFrom(const TextureGroup &other) {
             copyDependencies.MergeFrom(other.copyDependencies);
@@ -100,10 +98,8 @@ namespace skyline::gpu::texture {
     }
 
     inline bool TextureGroup::CompleteCopySynchronization(
-        const std::shared_ptr<TextureStorage> &destination, ResolvedSubresource destinationSubresource,
-        const std::shared_ptr<TextureStorage> &source, ResolvedSubresource sourceSubresource) {
-        return copyDependencies.CompleteSynchronization(
-            destination, destinationSubresource, source, sourceSubresource);
+        const PreparedDependencyRead<TextureStorage> &prepared) {
+        return copyDependencies.CompleteSynchronization(prepared);
     }
 
     inline std::shared_ptr<TextureStorage> CreateTextureStorage(std::shared_ptr<Texture> texture, GuestResourceRanges ranges) {
