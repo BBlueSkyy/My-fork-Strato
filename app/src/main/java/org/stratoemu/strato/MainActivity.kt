@@ -598,13 +598,6 @@ class MainActivity : AppCompatActivity() {
 
         GpuDriverHelper.forceMaxGpuClocks(false)
 
-        loadRoms(false)
-
-        viewModel.checkRomHash(
-            getSearchLocations(),
-            EmulationSettings.global.systemLanguage
-        )
-
         var layoutTypeChanged = false
 
         for (
@@ -626,10 +619,5 @@ class MainActivity : AppCompatActivity() {
                 adapter.currentItems.size
             )
         }
-
-        viewModel.checkRomHash(
-            getSearchLocations(),
-            EmulationSettings.global.systemLanguage
-        )
     }
 }
