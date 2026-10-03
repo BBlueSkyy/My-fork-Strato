@@ -35,13 +35,13 @@ namespace skyline::nce {
             };
         }
 
-        void LogGuestCallerPoint(const DeviceState &state, const ThreadContext &ctx, u32 sequence,
+        void LogGuestCallerPoint(const DeviceState &state, const ThreadContext &ctx, size_t threadId, u32 sequence,
                                  u16 svcId, const char *svcName, const char *phase) {
             const auto location{ResolveGuestCodeLocation(state, ctx.diagnosticGuestPc)};
             LOGI("[SWKBD-CALLER] gen={} seq={} {} thread={} svc=0x{:X} {} pc=0x{:X} module={} symbol={} returnPc=0x{:X} sp=0x{:X} fp=0x{:X} "
                  "x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X} x5=0x{:X}",
                  kernel::diagnostic::CurrentGuestCallerGeneration(), sequence, phase,
-                 state.thread->id, svcId, svcName ? svcName : "<unimplemented>",
+                 threadId, svcId, svcName ? svcName : "<unimplemented>",
                  ctx.diagnosticGuestPc, location.module, location.symbol, ctx.diagnosticGuestLr,
                  ctx.diagnosticGuestSp, ctx.diagnosticGuestFp,
                  ctx.gpr.x0, ctx.gpr.x1, ctx.gpr.x2, ctx.gpr.x3, ctx.gpr.x4, ctx.gpr.x5);
@@ -62,24 +62,24 @@ namespace skyline::nce {
         try {
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
+                const size_t svcThreadId{state.thread->id};
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
-                const u32 callerSequence{kernel::diagnostic::BeginGuestCallerSvc(state.thread->id)};
+                const u32 callerSequence{kernel::diagnostic::BeginGuestCallerSvc(svcThreadId)};
                 if (callerSequence)
-                    LogGuestCallerPoint(state, *ctx, callerSequence, svcId, svc.name, "begin");
+                    LogGuestCallerPoint(state, *ctx, svcThreadId, callerSequence, svcId, svc.name, "begin");
 
                 (svc.function)(state, svcContext);
 
                 if (callerSequence) {
-                    LogGuestCallerPoint(state, *ctx, callerSequence, svcId, svc.name, "end");
-                    kernel::diagnostic::FinishGuestCallerSvc(state.thread->id, callerSequence);
+                    LogGuestCallerPoint(state, *ctx, svcThreadId, callerSequence, svcId, svc.name, "end");
+                    kernel::diagnostic::FinishGuestCallerSvc(svcThreadId, callerSequence);
                 }
 
-                if (svcId == 0x21 &&
-                    kernel::diagnostic::ActivateGuestCallerTraceAfterCmd2460(state.thread->id)) {
+                if (svcId == 0x21 && kernel::diagnostic::ConsumeGuestCallerReturnPoint(svcThreadId)) {
                     const auto location{ResolveGuestCodeLocation(state, ctx->diagnosticGuestPc)};
                     LOGI("[SWKBD-CALLER] gen={} cmd2460-return thread={} pc=0x{:X} module={} symbol={} returnPc=0x{:X} "
                          "sp=0x{:X} fp=0x{:X} resultX0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X}",
-                         kernel::diagnostic::CurrentGuestCallerGeneration(), state.thread->id,
+                         kernel::diagnostic::CurrentGuestCallerGeneration(), svcThreadId,
                          ctx->diagnosticGuestPc, location.module, location.symbol, ctx->diagnosticGuestLr,
                          ctx->diagnosticGuestSp, ctx->diagnosticGuestFp,
                          ctx->gpr.x0, ctx->gpr.x1, ctx->gpr.x2, ctx->gpr.x3);
