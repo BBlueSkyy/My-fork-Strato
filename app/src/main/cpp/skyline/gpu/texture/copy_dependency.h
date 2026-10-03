@@ -279,6 +279,29 @@ namespace skyline::gpu::texture {
                 ? CopyRepresentationState::Current : CopyRepresentationState::Stale;
         }
 
+        bool MarkWritten(const std::shared_ptr<Representation> &representation,
+                         std::span<const ResolvedSubresource> subresources) {
+            const auto node = FindNode(representation);
+            if (!node || subresources.empty())
+                return false;
+
+            std::vector<std::size_t> writtenEndpoints;
+            writtenEndpoints.reserve(subresources.size());
+            for (const auto subresource : subresources) {
+                const auto endpoint = FindEndpoint(*node, subresource);
+                if (!endpoint)
+                    return false;
+                if (std::find(writtenEndpoints.begin(), writtenEndpoints.end(), *endpoint) ==
+                    writtenEndpoints.end())
+                    writtenEndpoints.push_back(*endpoint);
+            }
+
+            const auto generation = AllocateGeneration();
+            for (const auto endpoint : writtenEndpoints)
+                endpoints[endpoint].generation = generation;
+            return true;
+        }
+
         std::size_t RelationCount() const {
             return edges.size();
         }

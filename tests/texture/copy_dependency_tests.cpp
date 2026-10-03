@@ -74,6 +74,52 @@ int main() {
         CopyOnly({{mip0, mip1}})));
     assert(dependencies.RelationCount() == 5);
 
+    // Writes affect only the exact endpoint component and make the latest writer authoritative.
+    const std::array mip0Write{mip0};
+    assert(dependencies.MarkWritten(first, mip0Write));
+    assert(dependencies.GetState(first, mip0) == CopyRepresentationState::Current);
+    assert(dependencies.GetState(second, mip0) == CopyRepresentationState::Stale);
+    assert(dependencies.GetState(third, mip0) == CopyRepresentationState::Stale);
+    assert(dependencies.GetState(first, mip1) == CopyRepresentationState::Current);
+    assert(dependencies.GetState(second, layer1) == CopyRepresentationState::Current);
+
+    assert(dependencies.MarkWritten(second, mip0Write));
+    assert(dependencies.GetState(second, mip0) == CopyRepresentationState::Current);
+    assert(dependencies.GetState(first, mip0) == CopyRepresentationState::Stale);
+    assert(dependencies.GetState(third, mip0) == CopyRepresentationState::Stale);
+
+    const std::array layerWrite{layer1};
+    assert(dependencies.MarkWritten(first, layerWrite));
+    assert(dependencies.GetState(first, layer1) == CopyRepresentationState::Current);
+    assert(dependencies.GetState(second, layer1) == CopyRepresentationState::Stale);
+    assert(dependencies.GetState(first, mip1) == CopyRepresentationState::Current);
+
+    const std::array sliceWrite{slice1};
+    assert(dependencies.MarkWritten(first, sliceWrite));
+    assert(dependencies.GetState(first, slice1) == CopyRepresentationState::Current);
+    assert(dependencies.GetState(second, slice1) == CopyRepresentationState::Stale);
+    assert(dependencies.GetState(first, mip1) == CopyRepresentationState::Current);
+    assert(dependencies.GetState(second, mip1) == CopyRepresentationState::Current);
+
+    // The whole batch is validated and deduplicated before one generation is assigned.
+    const std::array duplicateBatch{mip1, mip1, layer1};
+    assert(dependencies.MarkWritten(second, duplicateBatch));
+    assert(dependencies.GetState(second, mip1) == CopyRepresentationState::Current);
+    assert(dependencies.GetState(first, mip1) == CopyRepresentationState::Stale);
+    assert(dependencies.GetState(second, layer1) == CopyRepresentationState::Current);
+    assert(dependencies.GetState(first, layer1) == CopyRepresentationState::Stale);
+
+    CopyDependencyTracker<Representation> atomicWrite;
+    assert(atomicWrite.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{mip0, mip0}, {mip1, mip1}})));
+    assert(atomicWrite.MarkWritten(second, mip0Write));
+    const std::array invalidBatch{mip0, Subresource(9)};
+    assert(!atomicWrite.MarkWritten(first, invalidBatch));
+    assert(atomicWrite.GetState(first, mip0) == CopyRepresentationState::Stale);
+    assert(atomicWrite.GetState(second, mip0) == CopyRepresentationState::Current);
+    assert(atomicWrite.GetState(first, mip1) == CopyRepresentationState::Current);
+    assert(!atomicWrite.MarkWritten(first, std::span<const ResolvedSubresource>{}));
+
     // Joining two existing components preserves every endpoint on both current frontiers.
     CopyDependencyTracker<Representation> joined;
     assert(joined.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
