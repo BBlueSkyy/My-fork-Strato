@@ -7,6 +7,7 @@
 #include <loader/loader.h>
 #include <common/settings.h>
 #include <kernel/types/KProcess.h>
+#include <nce.h>
 #include <os.h>
 #include <services/account/IAccountServiceForApplication.h>
 #include <services/am/storage/VectorIStorage.h>
@@ -34,8 +35,13 @@ namespace skyline::service::am {
 
         std::shared_ptr<IStorage> storageService;
         switch (launchParameterKind) {
-            case LaunchParameterKind::UserChannel:
-                return result::NotAvailable;
+            case LaunchParameterKind::UserChannel: {
+                auto data{state.os->PopUserChannel()};
+                if (!data)
+                    return result::NotAvailable;
+                storageService = std::make_shared<VectorIStorage>(state, manager, std::move(*data));
+                break;
+            }
 
             case LaunchParameterKind::PreselectedUser: {
                 storageService = std::make_shared<VectorIStorage>(state, manager, LaunchParameterSize);
@@ -256,8 +262,62 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result IApplicationFunctions::GetPreviousProgramIndex(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<i32>(previousProgramIndex);
+    Result IApplicationFunctions::ExecuteProgram(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        enum class ProgramSpecifyKind : u32 {
+            ExecuteProgram = 0,
+            JumpToSubApplicationProgramForDevelopment = 1,
+            RestartProgram = 2,
+        };
+
+        struct ExecuteProgramInput {
+            ProgramSpecifyKind kind;
+            u32 padding;
+            u64 value;
+        };
+        static_assert(sizeof(ExecuteProgramInput) == 0x10);
+
+        if (!request.cmdArg || request.cmdArgSz < sizeof(ExecuteProgramInput))
+            return result::InvalidInput;
+
+        ExecuteProgramInput input{};
+        std::memcpy(&input, request.cmdArg, sizeof(input));
+
+        u8 programIndex{};
+        switch (input.kind) {
+            case ProgramSpecifyKind::ExecuteProgram:
+                programIndex = static_cast<u8>(input.value);
+                break;
+            case ProgramSpecifyKind::RestartProgram:
+                if (input.value != 0)
+                    return result::InvalidInput;
+                programIndex = state.os->GetCurrentProgramIndex();
+                break;
+            case ProgramSpecifyKind::JumpToSubApplicationProgramForDevelopment:
+            default:
+                return result::InvalidInput;
+        }
+
+        state.os->RequestProgramExecution(programIndex);
+        throw nce::NCE::ExitException(true);
+    }
+
+    Result IApplicationFunctions::ClearUserChannel(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        state.os->ClearUserChannel();
+        return {};
+    }
+
+    Result IApplicationFunctions::UnpopToUserChannel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        auto storage{request.PopService<IStorage>(0, session)};
+        if (!storage)
+            return result::InvalidInput;
+
+        auto data{storage->GetSpan()};
+        state.os->PushUserChannel(std::vector<u8>{data.begin(), data.end()});
+        return {};
+    }
+
+    Result IApplicationFunctions::GetPreviousProgramIndex(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        response.Push<i32>(state.os->GetPreviousProgramIndex());
         return {};
     }
 
