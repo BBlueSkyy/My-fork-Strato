@@ -27,6 +27,14 @@ namespace skyline::gpu::texture {
         CopyTransferRegion region{};
     };
 
+    template<typename Representation>
+    struct PreparedDependencyRead {
+        CopyReadState state{CopyReadState::Untracked};
+        std::shared_ptr<Representation> source{};
+        ResolvedSubresource sourceSubresource{};
+        ResolvedSubresource destinationSubresource{};
+    };
+
     /**
      * Tracks validity between exact subresources of separate host representations.
      *
@@ -299,6 +307,57 @@ namespace skyline::gpu::texture {
             const auto generation = AllocateGeneration();
             for (const auto endpoint : writtenEndpoints)
                 endpoints[endpoint].generation = generation;
+            return true;
+        }
+
+        PreparedDependencyRead<Representation> PrepareRead(
+            const std::shared_ptr<Representation> &representation,
+            ResolvedSubresource subresource) const {
+            const auto node = FindNode(representation);
+            if (!node)
+                return {};
+            const auto endpoint = FindEndpoint(*node, subresource);
+            if (!endpoint)
+                return {};
+            if (IsCurrent(*endpoint))
+                return {.state = CopyReadState::Current};
+
+            const auto currentGeneration = ComponentGeneration(*endpoint);
+            for (const auto &edge : edges) {
+                std::optional<std::size_t> sourceEndpoint;
+                if (edge.first == *endpoint)
+                    sourceEndpoint = edge.second;
+                else if (edge.second == *endpoint)
+                    sourceEndpoint = edge.first;
+                if (!sourceEndpoint || endpoints[*sourceEndpoint].generation != currentGeneration)
+                    continue;
+                auto source = nodes[endpoints[*sourceEndpoint].node].representation.lock();
+                if (source)
+                    return {
+                        .state = CopyReadState::SynchronizationRequired,
+                        .source = std::move(source),
+                        .sourceSubresource = endpoints[*sourceEndpoint].subresource,
+                        .destinationSubresource = subresource,
+                    };
+            }
+            return {.state = CopyReadState::Unavailable};
+        }
+
+        bool CompleteSynchronization(
+            const std::shared_ptr<Representation> &destination,
+            ResolvedSubresource destinationSubresource,
+            const std::shared_ptr<Representation> &source,
+            ResolvedSubresource sourceSubresource) {
+            const auto destinationNode = FindNode(destination);
+            const auto sourceNode = FindNode(source);
+            if (!destinationNode || !sourceNode)
+                return false;
+            const auto destinationEndpoint = FindEndpoint(*destinationNode, destinationSubresource);
+            const auto sourceEndpoint = FindEndpoint(*sourceNode, sourceSubresource);
+            if (!destinationEndpoint || !sourceEndpoint ||
+                !FindEdge(*destinationEndpoint, *sourceEndpoint) || !IsCurrent(*sourceEndpoint))
+                return false;
+            endpoints[*destinationEndpoint].generation = endpoints[*sourceEndpoint].generation;
             return true;
         }
 

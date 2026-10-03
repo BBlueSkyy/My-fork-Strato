@@ -120,6 +120,59 @@ int main() {
     assert(atomicWrite.GetState(first, mip1) == CopyRepresentationState::Current);
     assert(!atomicWrite.MarkWritten(first, std::span<const ResolvedSubresource>{}));
 
+    // Read preparation is observational and reports only a direct authoritative neighbor.
+    CopyDependencyTracker<Representation> direct;
+    assert(direct.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{mip0, mip0}, {mip1, mip1}})));
+    assert(direct.PrepareRead(first, mip0).state == CopyReadState::Current);
+    assert(direct.MarkWritten(second, mip0Write));
+    const auto firstRead = direct.PrepareRead(first, mip0);
+    assert(firstRead.state == CopyReadState::SynchronizationRequired);
+    assert(firstRead.source == second);
+    assert(firstRead.sourceSubresource == mip0);
+    assert(firstRead.destinationSubresource == mip0);
+    assert(direct.GetState(first, mip0) == CopyRepresentationState::Stale);
+    assert(direct.PrepareRead(first, mip0).state == CopyReadState::SynchronizationRequired);
+    assert(direct.GetState(first, mip0) == CopyRepresentationState::Stale);
+
+    // Completion rejects stale or unrelated sources and changes only the named destination.
+    assert(!direct.CompleteSynchronization(second, mip0, first, mip0));
+    assert(!direct.CompleteSynchronization(first, mip0, second, mip1));
+    assert(direct.CompleteSynchronization(first, mip0, second, mip0));
+    assert(direct.GetState(first, mip0) == CopyRepresentationState::Current);
+    assert(direct.GetState(first, mip1) == CopyRepresentationState::Current);
+    assert(direct.GetState(second, mip1) == CopyRepresentationState::Current);
+
+    // A transitive current endpoint is unavailable until the stale intermediate is synchronized.
+    CopyDependencyTracker<Representation> transitive;
+    assert(transitive.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
+        CopyOnly({{mip0, mip0}})));
+    assert(transitive.RegisterSynchronized(second, completeRanges, layout, third, completeRanges, layout,
+        CopyOnly({{mip0, mip0}})));
+    assert(transitive.MarkWritten(first, mip0Write));
+    assert(transitive.PrepareRead(third, mip0).state == CopyReadState::Unavailable);
+    const auto intermediateRead = transitive.PrepareRead(second, mip0);
+    assert(intermediateRead.state == CopyReadState::SynchronizationRequired && intermediateRead.source == first);
+    assert(transitive.CompleteSynchronization(second, mip0, first, mip0));
+    const auto thirdRead = transitive.PrepareRead(third, mip0);
+    assert(thirdRead.state == CopyReadState::SynchronizationRequired && thirdRead.source == second);
+    assert(transitive.CompleteSynchronization(third, mip0, second, mip0));
+    assert(transitive.PrepareRead(third, mip0).state == CopyReadState::Current);
+
+    // Expiration of the sole authority never promotes stale data or aliases a new allocation.
+    auto surviving = std::make_shared<Representation>();
+    auto temporary = std::make_shared<Representation>();
+    CopyDependencyTracker<Representation> lifetime;
+    assert(lifetime.RegisterSynchronized(surviving, completeRanges, layout, temporary, completeRanges, layout,
+        CopyOnly({{mip0, mip0}})));
+    assert(lifetime.MarkWritten(temporary, mip0Write));
+    temporary.reset();
+    assert(lifetime.GetState(surviving, mip0) == CopyRepresentationState::Stale);
+    assert(lifetime.PrepareRead(surviving, mip0).state == CopyReadState::Unavailable);
+    auto replacement = std::make_shared<Representation>();
+    assert(lifetime.GetState(replacement, mip0) == CopyRepresentationState::Untracked);
+    assert(lifetime.PrepareRead(replacement, mip0).state == CopyReadState::Untracked);
+
     // Joining two existing components preserves every endpoint on both current frontiers.
     CopyDependencyTracker<Representation> joined;
     assert(joined.RegisterSynchronized(first, completeRanges, layout, second, completeRanges, layout,
