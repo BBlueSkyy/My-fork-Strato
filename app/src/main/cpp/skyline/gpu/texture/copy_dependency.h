@@ -238,6 +238,21 @@ namespace skyline::gpu::texture {
         }
 
       public:
+        bool HasDirectRelation(
+            const std::shared_ptr<Representation> &first,
+            ResolvedSubresource firstSubresource,
+            const std::shared_ptr<Representation> &second,
+            ResolvedSubresource secondSubresource) const {
+            const auto firstNode = FindNode(first);
+            const auto secondNode = FindNode(second);
+            if (!firstNode || !secondNode)
+                return false;
+            const auto firstEndpoint = FindEndpoint(*firstNode, firstSubresource);
+            const auto secondEndpoint = FindEndpoint(*secondNode, secondSubresource);
+            return firstEndpoint && secondEndpoint &&
+                FindEdge(*firstEndpoint, *secondEndpoint).has_value();
+        }
+
         bool RegisterSynchronized(const std::shared_ptr<Representation> &backing,
                                   const GuestResourceRanges &backingRanges,
                                   const TextureResourceLayout &backingLayout,
