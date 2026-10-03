@@ -3,6 +3,7 @@
 
 #include <common/uuid.h>
 #include <cstring>
+#include <limits>
 #include <mbedtls/sha1.h>
 #include <loader/loader.h>
 #include <common/settings.h>
@@ -285,6 +286,8 @@ namespace skyline::service::am {
         u8 programIndex{};
         switch (input.kind) {
             case ProgramSpecifyKind::ExecuteProgram:
+                if (input.value > std::numeric_limits<u8>::max())
+                    return result::InvalidInput;
                 programIndex = static_cast<u8>(input.value);
                 break;
             case ProgramSpecifyKind::RestartProgram:
