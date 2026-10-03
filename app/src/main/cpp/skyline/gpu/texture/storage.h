@@ -6,7 +6,7 @@
 #include <memory>
 #include <utility>
 #include <vector>
-#include "guest_range.h"
+#include "copy_dependency.h"
 #include "texture.h"
 
 namespace skyline::gpu::texture {
@@ -15,12 +15,14 @@ namespace skyline::gpu::texture {
     /**
      * @brief Groups storages whose complete guest ranges have a physical alias relationship
      *
-     * Group membership is currently metadata-only. It exists as a behavior-neutral
-     * foundation for sharing validity/dirty state and explicit alias dependencies later.
+     * Group membership and copy dependency state are metadata-only. Runtime registration
+     * remains disabled until a concrete Vulkan transfer and storage-level read/write hooks
+     * have both been verified for the relation.
      */
     class TextureGroup {
       private:
         std::vector<std::weak_ptr<TextureStorage>> storages;
+        CopyDependencyTracker<TextureStorage> copyDependencies;
 
       public:
         void Attach(const std::shared_ptr<TextureStorage> &storage) {
@@ -29,6 +31,19 @@ namespace skyline::gpu::texture {
 
         const std::vector<std::weak_ptr<TextureStorage>> &GetStorages() const {
             return storages;
+        }
+
+        bool RegisterSynchronizedCopyDependency(const std::shared_ptr<TextureStorage> &backing,
+                                                const std::shared_ptr<TextureStorage> &requested,
+                                                const ClassifiedResourceView &classified);
+        bool MarkCopyRepresentationWritten(const std::shared_ptr<TextureStorage> &storage);
+        CopyRepresentationState GetCopyRepresentationState(const std::shared_ptr<TextureStorage> &storage) const;
+        PreparedCopyRead<TextureStorage> PrepareCopyRepresentationRead(const std::shared_ptr<TextureStorage> &storage) const;
+        bool CompleteCopySynchronization(const std::shared_ptr<TextureStorage> &destination,
+                                         const std::shared_ptr<TextureStorage> &source);
+
+        void MergeCopyDependenciesFrom(const TextureGroup &other) {
+            copyDependencies.MergeFrom(other.copyDependencies);
         }
     };
 
@@ -50,6 +65,33 @@ namespace skyline::gpu::texture {
               group(std::move(group)),
               ranges(std::move(ranges)) {}
     };
+
+    inline bool TextureGroup::RegisterSynchronizedCopyDependency(
+        const std::shared_ptr<TextureStorage> &backing, const std::shared_ptr<TextureStorage> &requested,
+        const ClassifiedResourceView &classified) {
+        return backing && requested && backing->group.get() == this && requested->group.get() == this &&
+            copyDependencies.RegisterSynchronized(
+            backing, backing->ranges, requested, requested->ranges, classified);
+    }
+
+    inline bool TextureGroup::MarkCopyRepresentationWritten(const std::shared_ptr<TextureStorage> &storage) {
+        return copyDependencies.MarkWritten(storage);
+    }
+
+    inline CopyRepresentationState TextureGroup::GetCopyRepresentationState(
+        const std::shared_ptr<TextureStorage> &storage) const {
+        return copyDependencies.GetState(storage);
+    }
+
+    inline PreparedCopyRead<TextureStorage> TextureGroup::PrepareCopyRepresentationRead(
+        const std::shared_ptr<TextureStorage> &storage) const {
+        return copyDependencies.PrepareRead(storage);
+    }
+
+    inline bool TextureGroup::CompleteCopySynchronization(
+        const std::shared_ptr<TextureStorage> &destination, const std::shared_ptr<TextureStorage> &source) {
+        return copyDependencies.CompleteSynchronization(destination, source);
+    }
 
     inline std::shared_ptr<TextureStorage> CreateTextureStorage(std::shared_ptr<Texture> texture, GuestResourceRanges ranges) {
         auto group{std::make_shared<TextureGroup>()};
@@ -87,6 +129,7 @@ namespace skyline::gpu::texture {
                 continue;
 
             auto sourceGroup{overlap->group};
+            targetGroup->MergeCopyDependenciesFrom(*sourceGroup);
             for (const auto &weakStorage : sourceGroup->GetStorages()) {
                 auto member{weakStorage.lock()};
                 if (!member || member->group == targetGroup)

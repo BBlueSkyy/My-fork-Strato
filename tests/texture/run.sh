@@ -25,3 +25,10 @@ mkdir -p "$build_dir"
     -o "$build_dir/resource_layout_tests"
 
 "$build_dir/resource_layout_tests"
+
+"${CXX:-c++}" -std=c++20 -Wall -Wextra -Werror \
+    -I"$repo_root/app/src/main/cpp" \
+    "$repo_root/tests/texture/copy_dependency_tests.cpp" \
+    -o "$build_dir/copy_dependency_tests"
+
+"$build_dir/copy_dependency_tests"
