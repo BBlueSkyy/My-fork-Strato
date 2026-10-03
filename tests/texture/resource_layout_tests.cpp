@@ -146,6 +146,9 @@ int main() {
     assert(selected.relation == TextureViewCompatibility::Full && selected.sharedView && selected.sharedView->mip == 1);
     const auto copy = ClassifyAndResolveView(full, mip->Layout(), FormatCompatibility::CopyCompatible, true);
     assert(copy.relation == TextureViewCompatibility::CopyOnly && !copy.sharedView);
+    assert(copy.copyRegion && copy.copyRegion->backing.mip == 1 && copy.copyRegion->backing.layer == 0);
+    assert(copy.copyRegion->requested.mip == 0 && copy.copyRegion->requested.layer == 0);
+    assert(copy.copyRegion->mipCount == 1 && copy.copyRegion->layerCount == 1);
     const auto unsupported = ClassifyAndResolveView(full, mip->Layout(), FormatCompatibility::ViewCompatible, false);
     assert(unsupported.relation == TextureViewCompatibility::LayoutIncompatible && !unsupported.sharedView);
     const auto partialRelation = ClassifyAndResolveView(full, partial->Layout(), FormatCompatibility::Exact, true);

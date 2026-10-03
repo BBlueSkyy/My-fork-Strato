@@ -75,6 +75,13 @@ namespace skyline::gpu::texture {
 
     struct ResolvedViewBase { std::uint32_t mip{}, layer{}; };
 
+    /** A proven subresource-to-subresource relationship between separate host images. */
+    struct ResolvedCopyRegion {
+        ResolvedViewBase backing{};
+        ResolvedViewBase requested{};
+        std::uint32_t mipCount{}, layerCount{};
+    };
+
     /** Resolve the same backing mip/layer for every selected guest subresource. */
     inline std::optional<ResolvedViewBase> ResolveFullView(const TextureResourceLayout &backing,
                                                             const TextureResourceLayout &requested) {
@@ -109,17 +116,28 @@ namespace skyline::gpu::texture {
     struct ClassifiedResourceView {
         TextureViewCompatibility relation{};
         std::optional<ResolvedViewBase> sharedView{};
+        std::optional<ResolvedCopyRegion> copyRegion{};
     };
 
     inline ClassifiedResourceView ClassifyAndResolveView(const TextureResourceLayout &backing,
                                                           const TextureResourceLayout &requested,
                                                           FormatCompatibility format, bool supportsFormatView) {
         auto relation = ClassifyTextureViewCompatibility(backing, requested, format, supportsFormatView);
-        if (relation != TextureViewCompatibility::Full)
-            return {relation, std::nullopt};
+        if (relation != TextureViewCompatibility::Full && relation != TextureViewCompatibility::CopyOnly)
+            return {relation, std::nullopt, std::nullopt};
         auto resolved = ResolveFullView(backing, requested);
-        return resolved ? ClassifiedResourceView{relation, resolved}
-                        : ClassifiedResourceView{TextureViewCompatibility::LayoutIncompatible, std::nullopt};
+        if (!resolved)
+            return {TextureViewCompatibility::LayoutIncompatible, std::nullopt, std::nullopt};
+        if (relation == TextureViewCompatibility::Full)
+            return {relation, resolved, std::nullopt};
+        if (relation == TextureViewCompatibility::CopyOnly)
+            return {relation, std::nullopt, ResolvedCopyRegion{
+                .backing = *resolved,
+                .requested = {.mip = requested.viewMipBase, .layer = requested.viewLayerBase},
+                .mipCount = requested.viewMipCount,
+                .layerCount = requested.viewLayerCount,
+            }};
+        return {relation, std::nullopt, std::nullopt};
     }
 
     /**
