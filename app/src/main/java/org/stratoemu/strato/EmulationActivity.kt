@@ -239,6 +239,63 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * background that can survive the old emulation process being killed.
      */
     private fun showProgramRelaunchLoadingAndLaunch(targetIntent : Intent) {
+        /*
+         * Snapshot the last guest frame as early as possible. ExecuteProgram has already
+         * requested a session switch at this point, so waiting for the loading overlay to draw
+         * first can let teardown advance far enough for the Surface to become black.
+         *
+         * The UI is still installed immediately; the trampoline starts only after both the
+         * overlay and the PixelCopy result are ready.
+         */
+        var overlayDrawn = false
+        var snapshotResolved = false
+        var snapshotPath : String? = null
+        var handoffStarted = false
+
+        fun maybeStartHandoff() {
+            if (handoffStarted || !overlayDrawn || !snapshotResolved)
+                return
+            handoffStarted = true
+            launchProgramRelaunch(targetIntent, snapshotPath)
+        }
+
+        val surface = gameSurface
+        val width = binding.gameView.width
+        val height = binding.gameView.height
+        if (surface != null && surface.isValid && width > 0 && height > 0) {
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            PixelCopy.request(surface, bitmap, { result ->
+                if (result == PixelCopy.SUCCESS) {
+                    val snapshotFile = File(cacheDir, "program_relaunch_snapshot_${Process.myPid()}.jpg")
+                    try {
+                        FileOutputStream(snapshotFile).use { output ->
+                            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
+                            output.fd.sync()
+                        }
+                        snapshotPath = snapshotFile.absolutePath
+                        ProgramRelaunchTrace.write(this, "snapshot_captured_early size=${width}x$height")
+                    } catch (exception : Exception) {
+                        Log.w(Tag, "Failed to persist Program relaunch frame", exception)
+                        ProgramRelaunchTrace.write(this, "snapshot_persist_failed ${exception.javaClass.simpleName}")
+                    } finally {
+                        bitmap.recycle()
+                    }
+                } else {
+                    bitmap.recycle()
+                    ProgramRelaunchTrace.write(this, "snapshot_pixelcopy_failed result=$result")
+                }
+
+                snapshotResolved = true
+                maybeStartHandoff()
+            }, Handler(Looper.getMainLooper()))
+        } else {
+            snapshotResolved = true
+            ProgramRelaunchTrace.write(
+                this,
+                "snapshot_unavailable surface=${surface != null} valid=${surface?.isValid == true} size=${width}x$height"
+            )
+        }
+
         changeAudioStatus(false)
 
         val loadingBinding = ProgramRelaunchLoadingBinding.inflate(layoutInflater)
@@ -256,59 +313,22 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         )
         ProgramRelaunchTrace.write(this, "old_emulation_loading_ui_installed orientation=$requestedOrientation")
 
-        var captureStarted = false
         val observer = overlay.viewTreeObserver
         val drawListener = object : ViewTreeObserver.OnDrawListener {
             override fun onDraw() {
-                if (captureStarted)
+                if (overlayDrawn)
                     return
-                captureStarted = true
+                overlayDrawn = true
                 overlay.post {
                     if (observer.isAlive)
                         observer.removeOnDrawListener(this)
                     ProgramRelaunchTrace.write(this@EmulationActivity, "old_emulation_loading_ui_drawn")
-                    captureProgramRelaunchSnapshot(targetIntent)
+                    maybeStartHandoff()
                 }
             }
         }
         observer.addOnDrawListener(drawListener)
         overlay.invalidate()
-    }
-
-    private fun captureProgramRelaunchSnapshot(targetIntent : Intent) {
-        val surface = gameSurface
-        val width = binding.gameView.width
-        val height = binding.gameView.height
-        if (surface == null || !surface.isValid || width <= 0 || height <= 0) {
-            ProgramRelaunchTrace.write(this, "snapshot_unavailable surface=${surface != null} valid=${surface?.isValid == true} size=${width}x$height")
-            launchProgramRelaunch(targetIntent, null)
-            return
-        }
-
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        PixelCopy.request(surface, bitmap, { result ->
-            if (result == PixelCopy.SUCCESS) {
-                val snapshotFile = File(cacheDir, "program_relaunch_snapshot_${Process.myPid()}.jpg")
-                try {
-                    FileOutputStream(snapshotFile).use { output ->
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
-                        output.fd.sync()
-                    }
-                    ProgramRelaunchTrace.write(this, "snapshot_captured size=${width}x$height")
-                    launchProgramRelaunch(targetIntent, snapshotFile.absolutePath)
-                } catch (exception : Exception) {
-                    Log.w(Tag, "Failed to persist Program relaunch frame", exception)
-                    ProgramRelaunchTrace.write(this, "snapshot_persist_failed ${exception.javaClass.simpleName}")
-                    launchProgramRelaunch(targetIntent, null)
-                } finally {
-                    bitmap.recycle()
-                }
-            } else {
-                bitmap.recycle()
-                ProgramRelaunchTrace.write(this, "snapshot_pixelcopy_failed result=$result")
-                launchProgramRelaunch(targetIntent, null)
-            }
-        }, Handler(Looper.getMainLooper()))
     }
 
     private fun launchProgramRelaunch(targetIntent : Intent, snapshotPath : String?) {
