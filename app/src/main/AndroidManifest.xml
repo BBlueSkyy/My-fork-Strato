@@ -85,9 +85,8 @@
             android:name=".ProgramRelaunchActivity"
             android:excludeFromRecents="true"
             android:exported="false"
-            android:launchMode="singleTask"
+            android:launchMode="singleTop"
             android:process=":programRelaunch"
-            android:taskAffinity="${applicationId}.programRelaunch"
             android:screenOrientation="locked"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
             android:theme="@style/ProgramRelaunchTrampolineTheme" />
@@ -97,9 +96,8 @@
             android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
             android:exported="true"
-            android:launchMode="singleTask"
+            android:launchMode="singleTop"
             android:process="${emulationProcess}"
-            android:taskAffinity="${applicationId}.emulation"
             android:parentActivityName=".MainActivity">
 
             <intent-filter>
