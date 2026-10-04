@@ -191,6 +191,8 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     @Suppress("unused")
     fun requestProgramRelaunch(programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray) : Boolean {
+        if (isFinishing || isDestroyed)
+            return false
         if (programRelaunchRequested)
             return true
 
@@ -211,6 +213,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             putExtra(ProgramIndexTag, programIndex)
             putExtra(PreviousProgramIndexTag, previousProgramIndex)
             putExtra(ProgramUserChannelPathTag, stateFile.absolutePath)
+            removeExtra(ProgramRelaunchSnapshotPathTag)
         }
 
         runOnUiThread {
