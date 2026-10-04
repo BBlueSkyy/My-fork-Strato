@@ -39,7 +39,6 @@ class ProgramRelaunchActivity : Activity() {
         const val FirstFrameReadyReceiverTag = "programRelaunchFirstFrameReadyReceiver"
         const val TrampolineReadyReceiverTag = "programRelaunchTrampolineReadyReceiver"
         const val OldActivityFinishReceiverTag = "programRelaunchOldActivityFinishReceiver"
-        const val OldActivityFinishAckReceiverTag = "programRelaunchOldActivityFinishAckReceiver"
         const val FinishOldActivityRequest = 1
     }
 
@@ -211,25 +210,18 @@ class ProgramRelaunchActivity : Activity() {
             return
         }
 
-        val finishAckReceiver = object : ResultReceiver(mainHandler) {
-            override fun onReceiveResult(resultCode : Int, resultData : Bundle?) {
-                if (resultCode != RESULT_OK)
-                    return
-                ProgramRelaunchTrace.write(this@ProgramRelaunchActivity, "old_emulation_activity_finished")
-                killOldProcess(oldPid)
-            }
-        }
-        val finishBundle = Bundle().apply {
-            putParcelable(OldActivityFinishAckReceiverTag, finishAckReceiver)
-        }
         ProgramRelaunchTrace.write(this, "old_emulation_activity_finish_requested")
-        oldActivityFinishReceiver.send(FinishOldActivityRequest, finishBundle)
+        oldActivityFinishReceiver.send(FinishOldActivityRequest, null)
+        /*
+         * No external SIGKILL here. The old EmulationActivity exits its own process after
+         * onDestroy, and linkToDeath above is the only signal that advances the relaunch.
+         */
     }
 
     private fun killOldProcess(oldPid : Int) {
         if (oldProcessDead)
             return
-        ProgramRelaunchTrace.write(this, "old_process_kill_requested old_pid=$oldPid")
+        ProgramRelaunchTrace.write(this, "old_process_kill_requested_fallback old_pid=$oldPid")
         Process.killProcess(oldPid)
     }
 
