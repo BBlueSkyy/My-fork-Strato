@@ -90,7 +90,6 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         const val ProgramIndexTag = "programIndex"
         const val PreviousProgramIndexTag = "previousProgramIndex"
         const val ProgramUserChannelPathTag = "programUserChannelPath"
-        const val ProgramRelaunchOrientationTag = "programRelaunchOrientation"
         const val ProgramRelaunchOrientationPolicyTag = "programRelaunchOrientationPolicy"
         const val ProgramRelaunchSnapshotPathTag = "programRelaunchSnapshotPath"
 
@@ -214,48 +213,6 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     private external fun nativeSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int)
 
-    /**
-     * Convert the display's current physical rotation into a fixed Activity orientation.
-     * This is used only for the relaunch handoff so sensor-based settings cannot flip to the
-     * opposite landscape/portrait side while Android is replacing the emulation process.
-     */
-    private fun currentFixedRelaunchOrientation() : Int {
-        val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            display?.rotation ?: Surface.ROTATION_0
-        } else {
-            @Suppress("DEPRECATION")
-            windowManager.defaultDisplay.rotation
-        }
-
-        return when (rotation) {
-            Surface.ROTATION_0 ->
-                if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
-                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                else
-                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-
-            Surface.ROTATION_90 ->
-                if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
-                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                else
-                    ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
-
-            Surface.ROTATION_180 ->
-                if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
-                    ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
-                else
-                    ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
-
-            Surface.ROTATION_270 ->
-                if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
-                    ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
-                else
-                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-
-            else -> ActivityInfo.SCREEN_ORIENTATION_LOCKED
-        }
-    }
-
     @Suppress("unused")
     fun requestProgramRelaunch(kind : Int, value : Long, programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray) : Boolean {
         ProgramRelaunchTrace.write(this, "execute_program_request kind=$kind value=${java.lang.Long.toUnsignedString(value)} current=$previousProgramIndex target=$programIndex")
@@ -287,7 +244,6 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             putExtra(ProgramIndexTag, programIndex)
             putExtra(PreviousProgramIndexTag, previousProgramIndex)
             putExtra(ProgramUserChannelPathTag, stateFile.absolutePath)
-            putExtra(ProgramRelaunchOrientationTag, currentFixedRelaunchOrientation())
             putExtra(ProgramRelaunchOrientationPolicyTag, emulationSettings.orientation)
         }
 
@@ -452,14 +408,6 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                             ProgramRelaunchTrace.write(this@EmulationActivity, "emulation_first_frame_drawn")
                             programRelaunchReadyReceiver?.send(Activity.RESULT_OK, null)
                             programRelaunchReadyReceiver = null
-
-                            /*
-                             * The handoff is over. Return to the user's normal orientation
-                             * preference (sensorLandscape by default) only after the new game
-                             * is already drawable, so the relaunch itself cannot choose the
-                             * opposite side.
-                             */
-                            requestedOrientation = emulationSettings.orientation
 
                             programRelaunchSnapshotPath?.let { File(it).delete() }
                             programRelaunchSnapshotPath = null
@@ -703,11 +651,15 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         populateAppItem()
         emulationSettings = EmulationSettings.forEmulation(item.titleId ?: item.key())
 
-        val handoffOrientation = intent.getIntExtra(ProgramRelaunchOrientationTag, ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
-        requestedOrientation = if (isProgramRelaunch && handoffOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
-            handoffOrientation
-        else
-            emulationSettings.orientation
+        val relaunchOrientationPolicy = intent.getIntExtra(
+            ProgramRelaunchOrientationPolicyTag,
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        )
+        requestedOrientation =
+            if (isProgramRelaunch && relaunchOrientationPolicy != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
+                relaunchOrientationPolicy
+            else
+                emulationSettings.orientation
         window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         inputHandler = InputHandler(inputManager, emulationSettings)
         setContentView(binding.root)
