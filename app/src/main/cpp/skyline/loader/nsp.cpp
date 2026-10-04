@@ -25,7 +25,7 @@ namespace skyline::loader {
     }
 
     NspLoader::NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore,
-                         const std::string &diagnosticsPath, NspLoadMode loadMode)
+                         const std::string &diagnosticsPath, NspLoadMode loadMode, u8 programIndex)
         : nsp(std::make_shared<vfs::PartitionFileSystem>(backing)) {
         ExtractTickets(nsp, keyStore);
 
@@ -66,7 +66,7 @@ namespace skyline::loader {
             }
         }
 
-        auto selection{SelectProgramNcas(std::move(programs), metadata)};
+        auto selection{SelectProgramNcas(std::move(programs), metadata, programIndex)};
         programNca = std::move(selection.base);
         programPatchNca = std::move(selection.patch);
         if (programNca)
