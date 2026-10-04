@@ -8,7 +8,6 @@ package org.stratoemu.strato
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
-import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -55,10 +54,9 @@ class ProgramRelaunchActivity : Activity() {
         targetIntent = readTargetIntent()
         val handoffOrientation = targetIntent?.getIntExtra(
             EmulationActivity.ProgramRelaunchOrientationTag,
-            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        ) ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        if (handoffOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
-            requestedOrientation = handoffOrientation
+            Int.MIN_VALUE
+        ) ?: Int.MIN_VALUE
+        ProgramRelaunchTrace.write(this, "trampoline_window_setup orientation=$handoffOrientation")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false)
@@ -79,8 +77,22 @@ class ProgramRelaunchActivity : Activity() {
         }
 
         val binding = PipelineLoadingBinding.inflate(layoutInflater)
-        val item = targetIntent?.serializable<BaseAppItem>(AppItemTag)
-        PipelineLoadingUi.configureIndeterminate(binding, item, PipelineLoadingUi.Mode.LoadingGame)
+        ProgramRelaunchTrace.write(this, "trampoline_loading_ui_inflated")
+
+        val item = try {
+            targetIntent?.serializable<BaseAppItem>(AppItemTag)
+        } catch (exception : Exception) {
+            ProgramRelaunchTrace.write(this, "trampoline_item_decode_failed ${exception.javaClass.simpleName}")
+            null
+        }
+
+        try {
+            PipelineLoadingUi.configureIndeterminate(binding, item, PipelineLoadingUi.Mode.LoadingGame)
+        } catch (exception : Exception) {
+            ProgramRelaunchTrace.write(this, "trampoline_item_ui_failed ${exception.javaClass.simpleName}")
+            PipelineLoadingUi.configureIndeterminate(binding, null, PipelineLoadingUi.Mode.LoadingGame)
+        }
+
         setContentView(binding.root)
         ProgramRelaunchTrace.write(this, "trampoline_loading_ui_installed item=${item != null} orientation=$handoffOrientation")
 
