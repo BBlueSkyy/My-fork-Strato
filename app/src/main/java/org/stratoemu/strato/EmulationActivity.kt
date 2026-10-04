@@ -639,8 +639,23 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     @SuppressLint("SetTextI18n", "ClickableViewAccessibility")
     override fun onCreate(savedInstanceState : Bundle?) {
         val isProgramRelaunch = intent.hasExtra(PreviousProgramIndexTag)
-        if (isProgramRelaunch)
+        val relaunchOrientationPolicy = intent.getIntExtra(
+            ProgramRelaunchOrientationPolicyTag,
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        )
+
+        if (isProgramRelaunch) {
             setTheme(R.style.ProgramRelaunchTheme)
+
+            /*
+             * Apply the relaunch orientation before Activity/Window creation. Setting it after
+             * super.onCreate() makes Android animate a configuration rotation exactly when the
+             * trampoline hands the task to this Activity.
+             */
+            if (relaunchOrientationPolicy != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
+                requestedOrientation = relaunchOrientationPolicy
+        }
+
         super.onCreate(savedInstanceState)
 
         val relaunchProgramIndex = intent.getIntExtra(ProgramIndexTag, 0)
@@ -651,15 +666,8 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         populateAppItem()
         emulationSettings = EmulationSettings.forEmulation(item.titleId ?: item.key())
 
-        val relaunchOrientationPolicy = intent.getIntExtra(
-            ProgramRelaunchOrientationPolicyTag,
-            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        )
-        requestedOrientation =
-            if (isProgramRelaunch && relaunchOrientationPolicy != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
-                relaunchOrientationPolicy
-            else
-                emulationSettings.orientation
+        if (!isProgramRelaunch || relaunchOrientationPolicy == ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
+            requestedOrientation = emulationSettings.orientation
         window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         inputHandler = InputHandler(inputManager, emulationSettings)
         setContentView(binding.root)
@@ -730,7 +738,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         force60HzRefreshRate(!emulationSettings.maxRefreshRate)
         getSystemService<DisplayManager>()?.registerDisplayListener(this, null)
 
-        if (!emulationSettings.isGlobal && emulationSettings.useCustomSettings)
+        if (!isProgramRelaunch && !emulationSettings.isGlobal && emulationSettings.useCustomSettings)
             Toast.makeText(this, getString(R.string.per_game_settings_active_message), Toast.LENGTH_SHORT).show()
 
         binding.gameView.setOnTouchListener(this)
