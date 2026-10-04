@@ -15,11 +15,12 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Process
 import android.os.RemoteException
+import android.os.ResultReceiver
 import android.view.WindowManager
 import org.stratoemu.strato.data.AppItemTag
 import org.stratoemu.strato.data.BaseAppItem
-import org.stratoemu.strato.databinding.PipelineLoadingBinding
-import org.stratoemu.strato.emulation.PipelineLoadingUi
+import org.stratoemu.strato.databinding.ProgramRelaunchLoadingBinding
+import org.stratoemu.strato.emulation.ProgramRelaunchUi
 import org.stratoemu.strato.utils.serializable
 
 /**
@@ -29,13 +30,21 @@ import org.stratoemu.strato.utils.serializable
 class ProgramRelaunchActivity : Activity() {
     companion object {
         const val TargetIntentTag = "programRelaunchTargetIntent"
-        const val SnapshotPathTag = "programRelaunchSnapshotPath"
         const val OldProcessIdTag = "programRelaunchOldProcessId"
         const val ProcessDeathTokenBundleTag = "programRelaunchDeathTokenBundle"
         const val ProcessDeathTokenTag = "programRelaunchDeathToken"
+        const val OverlayReadyReceiverTag = "programRelaunchOverlayReadyReceiver"
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val overlayReadyReceiver = object : ResultReceiver(mainHandler) {
+        override fun onReceiveResult(resultCode : Int, resultData : Bundle?) {
+            if (resultCode != RESULT_OK || !launchCompleted)
+                return
+            ProgramRelaunchTrace.write(this@ProgramRelaunchActivity, "new_emulation_overlay_ready")
+            finishAndRemoveTask()
+        }
+    }
     private var relaunchStarted = false
     private var launchCompleted = false
     private var targetIntent : Intent? = null
@@ -60,7 +69,7 @@ class ProgramRelaunchActivity : Activity() {
         // visible until this activity submits its first real frame.
         ProgramRelaunchTrace.write(this, "trampoline_window_ready")
 
-        val binding = PipelineLoadingBinding.inflate(layoutInflater)
+        val binding = ProgramRelaunchLoadingBinding.inflate(layoutInflater)
         ProgramRelaunchTrace.write(this, "trampoline_loading_ui_inflated")
 
         val item = try {
@@ -69,12 +78,23 @@ class ProgramRelaunchActivity : Activity() {
             ProgramRelaunchTrace.write(this, "trampoline_item_decode_failed ${exception.javaClass.simpleName}")
             null
         }
+        val snapshotPath = targetIntent?.getStringExtra(EmulationActivity.ProgramRelaunchSnapshotPathTag)
 
         try {
-            PipelineLoadingUi.configureIndeterminate(binding, item, PipelineLoadingUi.Mode.LoadingGame)
+            ProgramRelaunchUi.configure(
+                binding,
+                item,
+                snapshotPath = snapshotPath,
+                transparentBackground = false
+            )
         } catch (exception : Exception) {
             ProgramRelaunchTrace.write(this, "trampoline_item_ui_failed ${exception.javaClass.simpleName}")
-            PipelineLoadingUi.configureIndeterminate(binding, null, PipelineLoadingUi.Mode.LoadingGame)
+            ProgramRelaunchUi.configure(
+                binding,
+                null,
+                snapshotPath = snapshotPath,
+                transparentBackground = false
+            )
         }
 
         setContentView(binding.root)
@@ -141,17 +161,10 @@ class ProgramRelaunchActivity : Activity() {
         targetIntent.flags = targetIntent.flags and
             (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
                 Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+        targetIntent.putExtra(OverlayReadyReceiverTag, overlayReadyReceiver)
         targetIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         ProgramRelaunchTrace.write(this, "new_emulation_activity_requested from_task=$taskId")
         startActivity(targetIntent)
         overridePendingTransition(0, 0)
-    }
-
-    override fun onStop() {
-        super.onStop()
-        if (launchCompleted) {
-            ProgramRelaunchTrace.write(this, "trampoline_stopped_after_target_visible")
-            finishAndRemoveTask()
-        }
     }
 }
