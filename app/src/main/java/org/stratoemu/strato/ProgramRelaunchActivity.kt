@@ -15,9 +15,6 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Process
 import android.os.RemoteException
-import android.view.View
-import android.view.WindowInsets
-import android.view.WindowInsetsController
 import android.view.WindowManager
 import org.stratoemu.strato.data.AppItemTag
 import org.stratoemu.strato.data.BaseAppItem
@@ -58,23 +55,10 @@ class ProgramRelaunchActivity : Activity() {
         ) ?: Int.MIN_VALUE
         ProgramRelaunchTrace.write(this, "trampoline_window_setup orientation=$handoffOrientation")
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(false)
-            window.insetsController?.let {
-                it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                it.hide(WindowInsets.Type.systemBars())
-            }
-        } else {
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = (
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
-                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                    View.SYSTEM_UI_FLAG_FULLSCREEN
-                )
-        }
+        // Keep window/insets manipulation out of the handoff critical path. The old
+        // emulation activity is already fullscreen, and windowDisablePreview keeps it
+        // visible until this activity submits its first real frame.
+        ProgramRelaunchTrace.write(this, "trampoline_window_ready")
 
         val binding = PipelineLoadingBinding.inflate(layoutInflater)
         ProgramRelaunchTrace.write(this, "trampoline_loading_ui_inflated")
