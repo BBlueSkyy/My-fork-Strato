@@ -73,6 +73,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.CountDownLatch
 import javax.inject.Inject
 import kotlin.math.abs
 
@@ -250,9 +251,23 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             putExtra(ProgramRelaunchOrientationTag, requestedOrientation)
         }
 
-        runOnUiThread {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
             showProgramRelaunchLoadingAndLaunch(targetIntent)
+            return true
         }
+
+        /*
+         * ExecuteProgram returns into native code immediately after this JNI callback. Keep
+         * that native call parked until PixelCopy has resolved so guest teardown cannot clear
+         * the last presented Surface before the frontend has preserved it.
+         */
+        val snapshotReady = CountDownLatch(1)
+        runOnUiThread {
+            showProgramRelaunchLoadingAndLaunch(targetIntent) {
+                snapshotReady.countDown()
+            }
+        }
+        snapshotReady.await()
         return true
     }
 
@@ -261,7 +276,10 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * game Surface underneath it. This keeps the UI responsive while producing a stable
      * background that can survive the old emulation process being killed.
      */
-    private fun showProgramRelaunchLoadingAndLaunch(targetIntent : Intent) {
+    private fun showProgramRelaunchLoadingAndLaunch(
+        targetIntent : Intent,
+        onSnapshotResolved : (() -> Unit)? = null
+    ) {
         /*
          * Snapshot the last guest frame as early as possible. ExecuteProgram has already
          * requested a session switch at this point, so waiting for the loading overlay to draw
@@ -309,10 +327,12 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                 }
 
                 snapshotResolved = true
+                onSnapshotResolved?.invoke()
                 maybeStartHandoff()
             }, Handler(Looper.getMainLooper()))
         } else {
             snapshotResolved = true
+            onSnapshotResolved?.invoke()
             ProgramRelaunchTrace.write(
                 this,
                 "snapshot_unavailable surface=${surface != null} valid=${surface?.isValid == true} size=${width}x$height"
