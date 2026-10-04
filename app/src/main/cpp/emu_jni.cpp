@@ -124,6 +124,8 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
                 assetFileSystem,
                 programLaunchState
             )};
+            LOGI("[MULTIPROGRAM] launch cycle begin index={} previousIndex={}",
+                 os->GetCurrentProgramIndex(), os->GetPreviousProgramIndex());
             OsWeak = os;
             GpuWeak = os->state.gpu;
             AudioWeak = os->state.audio;
@@ -142,7 +144,14 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
                         os->state.gpu->presentation.UpdateSurface(CurrentSurface);
                 }
             );
-            executeNextProgram = os->CommitProgramExecutionRequest().has_value();
+            LOGI("[MULTIPROGRAM] OS::Execute returned for index={}", os->GetCurrentProgramIndex());
+            auto nextProgramIndex{os->CommitProgramExecutionRequest()};
+            executeNextProgram = nextProgramIndex.has_value();
+            if (nextProgramIndex)
+                LOGI("[MULTIPROGRAM] relaunch committed targetIndex={} previousIndex={}",
+                     *nextProgramIndex, os->GetPreviousProgramIndex());
+            else
+                LOGI("[MULTIPROGRAM] no pending relaunch request");
 
             if (executeNextProgram) {
                 InputWeak.reset();
