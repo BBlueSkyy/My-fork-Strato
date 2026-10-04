@@ -7,8 +7,8 @@ package org.stratoemu.strato
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -16,6 +16,10 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Process
 import android.os.RemoteException
+import android.view.View
+import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.view.WindowManager
 import org.stratoemu.strato.data.AppItemTag
 import org.stratoemu.strato.data.BaseAppItem
 import org.stratoemu.strato.databinding.PipelineLoadingBinding
@@ -46,14 +50,39 @@ class ProgramRelaunchActivity : Activity() {
 
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
+        window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
 
         targetIntent = readTargetIntent()
+        val handoffOrientation = targetIntent?.getIntExtra(
+            EmulationActivity.ProgramRelaunchOrientationTag,
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        ) ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        if (handoffOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
+            requestedOrientation = handoffOrientation
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+            window.insetsController?.let {
+                it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                it.hide(WindowInsets.Type.systemBars())
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_FULLSCREEN
+                )
+        }
+
         val binding = PipelineLoadingBinding.inflate(layoutInflater)
         val item = targetIntent?.serializable<BaseAppItem>(AppItemTag)
-        val fallbackBackground = intent.getStringExtra(SnapshotPathTag)?.let(BitmapFactory::decodeFile)
-        PipelineLoadingUi.configureIndeterminate(binding, item, fallbackBackground)
+        PipelineLoadingUi.configureIndeterminate(binding, item)
         setContentView(binding.root)
-        ProgramRelaunchTrace.write(this, "trampoline_loading_ui_installed item=${item != null}")
+        ProgramRelaunchTrace.write(this, "trampoline_loading_ui_installed item=${item != null} orientation=$handoffOrientation")
 
         // Do not kill the old emulation process until this window has submitted at least one draw.
         binding.root.viewTreeObserver.addOnDrawListener {
@@ -120,6 +149,13 @@ class ProgramRelaunchActivity : Activity() {
         ProgramRelaunchTrace.write(this, "new_emulation_activity_requested from_task=$taskId")
         startActivity(targetIntent)
         overridePendingTransition(0, 0)
-        finish()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (launchCompleted) {
+            ProgramRelaunchTrace.write(this, "trampoline_stopped_after_target_visible")
+            finishAndRemoveTask()
+        }
     }
 }
