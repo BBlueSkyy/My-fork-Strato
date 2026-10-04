@@ -305,31 +305,38 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         val height = binding.gameView.height
         if (surface != null && surface.isValid && width > 0 && height > 0) {
             val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            PixelCopy.request(surface, bitmap, { result ->
-                if (result == PixelCopy.SUCCESS) {
-                    val snapshotFile = File(cacheDir, "program_relaunch_snapshot_${Process.myPid()}.jpg")
-                    try {
-                        FileOutputStream(snapshotFile).use { output ->
-                            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
-                            output.fd.sync()
+            try {
+                PixelCopy.request(surface, bitmap, { result ->
+                    if (result == PixelCopy.SUCCESS) {
+                        val snapshotFile = File(cacheDir, "program_relaunch_snapshot_${Process.myPid()}.jpg")
+                        try {
+                            FileOutputStream(snapshotFile).use { output ->
+                                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
+                                output.fd.sync()
+                            }
+                            snapshotPath = snapshotFile.absolutePath
+                            ProgramRelaunchTrace.write(this, "snapshot_captured_early size=${width}x$height")
+                        } catch (exception : Exception) {
+                            Log.w(Tag, "Failed to persist Program relaunch frame", exception)
+                            ProgramRelaunchTrace.write(this, "snapshot_persist_failed ${exception.javaClass.simpleName}")
+                        } finally {
+                            bitmap.recycle()
                         }
-                        snapshotPath = snapshotFile.absolutePath
-                        ProgramRelaunchTrace.write(this, "snapshot_captured_early size=${width}x$height")
-                    } catch (exception : Exception) {
-                        Log.w(Tag, "Failed to persist Program relaunch frame", exception)
-                        ProgramRelaunchTrace.write(this, "snapshot_persist_failed ${exception.javaClass.simpleName}")
-                    } finally {
+                    } else {
                         bitmap.recycle()
+                        ProgramRelaunchTrace.write(this, "snapshot_pixelcopy_failed result=$result")
                     }
-                } else {
-                    bitmap.recycle()
-                    ProgramRelaunchTrace.write(this, "snapshot_pixelcopy_failed result=$result")
-                }
 
+                    snapshotResolved = true
+                    onSnapshotResolved?.invoke()
+                    maybeStartHandoff()
+                }, Handler(Looper.getMainLooper()))
+            } catch (exception : IllegalArgumentException) {
+                bitmap.recycle()
                 snapshotResolved = true
                 onSnapshotResolved?.invoke()
-                maybeStartHandoff()
-            }, Handler(Looper.getMainLooper()))
+                ProgramRelaunchTrace.write(this, "snapshot_pixelcopy_rejected ${exception.javaClass.simpleName}")
+            }
         } else {
             snapshotResolved = true
             onSnapshotResolved?.invoke()
