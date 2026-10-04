@@ -116,7 +116,7 @@ namespace skyline::loader {
         std::optional<vfs::NCA> metaNca; //!< The main meta NCA within the secure partition
 
       public:
-        XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore);
+        XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore, u8 programIndex = 0);
 
         std::vector<u8> GetIcon(language::ApplicationLanguage language) override;
 
