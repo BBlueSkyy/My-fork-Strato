@@ -62,7 +62,7 @@ class ProgramRelaunchActivity : Activity() {
             intent.getParcelableExtra(TargetIntentTag, Intent::class.java)
         } else {
             @Suppress("DEPRECATION")
-            intent.getParcelableExtra(TargetIntentTag)
+            intent.getParcelableExtra<Intent>(TargetIntentTag)
         } ?: run {
             finish()
             return
