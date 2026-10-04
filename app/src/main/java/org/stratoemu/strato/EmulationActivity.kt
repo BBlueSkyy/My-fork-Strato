@@ -279,7 +279,8 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             putExtra(ProgramRelaunchActivity.ProcessDeathTokenBundleTag, deathTokenBundle)
             snapshotPath?.let { putExtra(ProgramRelaunchActivity.SnapshotPathTag, it) }
         }
-        ProgramRelaunchTrace.write(this, "trampoline_start_requested old_pid=${Process.myPid()}")
+        trampolineIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        ProgramRelaunchTrace.write(this, "trampoline_start_requested old_pid=${Process.myPid()} task_id=$taskId")
         startActivity(trampolineIntent)
         overridePendingTransition(0, 0)
     }
@@ -537,7 +538,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         val relaunchPreviousProgramIndex = intent.getIntExtra(PreviousProgramIndexTag, -1)
         if (relaunchPreviousProgramIndex < 0 && !intent.hasExtra(ProgramUserChannelPathTag))
             ProgramRelaunchTrace.reset(this)
-        ProgramRelaunchTrace.write(this, "emulation_activity_created program=$relaunchProgramIndex previous=$relaunchPreviousProgramIndex")
+        ProgramRelaunchTrace.write(this, "emulation_activity_created program=$relaunchProgramIndex previous=$relaunchPreviousProgramIndex task_id=$taskId task_root=$isTaskRoot")
         populateAppItem()
         emulationSettings = EmulationSettings.forEmulation(item.titleId ?: item.key())
 
