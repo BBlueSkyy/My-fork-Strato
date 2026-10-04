@@ -9,6 +9,7 @@
 #include <common/settings.h>
 #include <loader/loader.h>
 #include <gpu.h>
+#include <gpu/texture/storage.h>
 #include <dlfcn.h>
 #include "command_executor.h"
 #include <nce.h>
@@ -425,8 +426,10 @@ namespace skyline::gpu::interconnect {
         renderPass->UpdateDependency(srcStageMask, dstStageMask);
 
         for (auto view : outputAttachmentViews)
-            if (view)
+            if (view) {
                 view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget);
+                MarkCopyOnlyWritten(view);
+            }
 
         for (auto view : sampledImages)
             view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
@@ -462,7 +465,177 @@ namespace skyline::gpu::interconnect {
             texture->unlock();
     }
 
+    namespace {
+        template<typename Function>
+        void ForEachViewSubresource(TextureView *view, Function &&function) {
+            const auto baseMip{view->range.baseMipLevel};
+            const auto levelCount{view->range.levelCount == VK_REMAINING_MIP_LEVELS
+                ? view->texture->levelCount - baseMip : view->range.levelCount};
+            const auto baseLayer{view->range.baseArrayLayer};
+            const auto layerCount{view->range.layerCount == VK_REMAINING_ARRAY_LAYERS
+                ? view->texture->layerCount - baseLayer : view->range.layerCount};
+            for (u32 mip{}; mip < levelCount; ++mip)
+                for (u32 layer{}; layer < layerCount; ++layer)
+                    function(texture::ResolvedSubresource{
+                        .mip = baseMip + mip,
+                        .layer = baseLayer + layer,
+                        .depthSlice = 0,
+                    });
+        }
+    }
+
+    void CommandExecutor::SynchronizeCopyOnly(TextureView *view) {
+        auto destinationStorage{view->texture->storage.lock()};
+        auto destinationGroup{destinationStorage ? destinationStorage->GetGroup() : nullptr};
+        if (!destinationGroup ||
+            view->texture->layout != vk::ImageLayout::eGeneral)
+            return;
+
+        ForEachViewSubresource(view, [&](texture::ResolvedSubresource destinationSubresource) {
+            auto scheduled{destinationGroup->ScheduleCopySynchronization(
+                destinationStorage, destinationSubresource)};
+            if (scheduled.state != texture::CopySynchronizationState::Ready || !scheduled.pending)
+                return;
+
+            const auto &prepared{scheduled.pending->Prepared()};
+            auto sourceStorage{prepared.read.source};
+            auto sourceTexture{sourceStorage ? sourceStorage->texture : nullptr};
+            if (!sourceTexture)
+                return;
+
+            if (sourceTexture->LockWithTag(tag))
+                attachedTextures.emplace_back(sourceTexture);
+            if (sourceTexture->layout != vk::ImageLayout::eGeneral)
+                return;
+
+            const auto sourceImage{sourceTexture->GetBacking()};
+            const auto destinationImage{view->texture->GetBacking()};
+            if (!sourceImage || !destinationImage)
+                return;
+
+            auto pending{std::move(scheduled.pending)};
+            const auto region{prepared.copyRegion};
+            AddOutsideRpCommand([
+                sourceImage, destinationImage, region, pending
+            ](vk::raii::CommandBuffer &commandBuffer,
+              const std::shared_ptr<FenceCycle> &recordingCycle, GPU &) {
+                const vk::ImageSubresourceRange sourceRange{
+                    .aspectMask = vk::ImageAspectFlags{region.aspectMask},
+                    .baseMipLevel = region.sourceSubresource.mip,
+                    .levelCount = 1,
+                    .baseArrayLayer = region.sourceSubresource.layer,
+                    .layerCount = 1,
+                };
+                const vk::ImageSubresourceRange destinationRange{
+                    .aspectMask = vk::ImageAspectFlags{region.aspectMask},
+                    .baseMipLevel = region.destinationSubresource.mip,
+                    .levelCount = 1,
+                    .baseArrayLayer = region.destinationSubresource.layer,
+                    .layerCount = 1,
+                };
+                const std::array before{
+                    vk::ImageMemoryBarrier{
+                        .srcAccessMask = vk::AccessFlagBits::eMemoryRead |
+                            vk::AccessFlagBits::eMemoryWrite,
+                        .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                        .oldLayout = vk::ImageLayout::eGeneral,
+                        .newLayout = vk::ImageLayout::eGeneral,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = sourceImage,
+                        .subresourceRange = sourceRange,
+                    },
+                    vk::ImageMemoryBarrier{
+                        .srcAccessMask = vk::AccessFlagBits::eMemoryRead |
+                            vk::AccessFlagBits::eMemoryWrite,
+                        .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+                        .oldLayout = vk::ImageLayout::eGeneral,
+                        .newLayout = vk::ImageLayout::eGeneral,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = destinationImage,
+                        .subresourceRange = destinationRange,
+                    },
+                };
+                commandBuffer.pipelineBarrier(
+                    vk::PipelineStageFlagBits::eAllCommands,
+                    vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, before);
+
+                const std::array copyRegion{vk::ImageCopy{
+                    .srcSubresource = {
+                        .aspectMask = vk::ImageAspectFlags{region.aspectMask},
+                        .mipLevel = region.sourceSubresource.mip,
+                        .baseArrayLayer = region.sourceSubresource.layer,
+                        .layerCount = 1,
+                    },
+                    .srcOffset = {},
+                    .dstSubresource = {
+                        .aspectMask = vk::ImageAspectFlags{region.aspectMask},
+                        .mipLevel = region.destinationSubresource.mip,
+                        .baseArrayLayer = region.destinationSubresource.layer,
+                        .layerCount = 1,
+                    },
+                    .dstOffset = {},
+                    .extent = {region.width, region.height, region.depth},
+                }};
+                commandBuffer.copyImage(
+                    sourceImage, vk::ImageLayout::eGeneral,
+                    destinationImage, vk::ImageLayout::eGeneral, copyRegion);
+
+                const std::array after{
+                    vk::ImageMemoryBarrier{
+                        .srcAccessMask = vk::AccessFlagBits::eTransferRead,
+                        .dstAccessMask = vk::AccessFlagBits::eMemoryRead |
+                            vk::AccessFlagBits::eMemoryWrite,
+                        .oldLayout = vk::ImageLayout::eGeneral,
+                        .newLayout = vk::ImageLayout::eGeneral,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = sourceImage,
+                        .subresourceRange = sourceRange,
+                    },
+                    vk::ImageMemoryBarrier{
+                        .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                        .dstAccessMask = vk::AccessFlagBits::eMemoryRead |
+                            vk::AccessFlagBits::eMemoryWrite,
+                        .oldLayout = vk::ImageLayout::eGeneral,
+                        .newLayout = vk::ImageLayout::eGeneral,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = destinationImage,
+                        .subresourceRange = destinationRange,
+                    },
+                };
+                commandBuffer.pipelineBarrier(
+                    vk::PipelineStageFlagBits::eTransfer,
+                    vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, after);
+                recordingCycle->AttachObject(pending);
+            });
+            pendingGpuCompletionCallbacks.emplace_back(
+                [pending = std::move(pending)] { pending->Complete(); });
+        });
+    }
+
+    void CommandExecutor::MarkCopyOnlyWritten(TextureView *view) {
+        auto storage{view->texture->storage.lock()};
+        auto group{storage ? storage->GetGroup() : nullptr};
+        if (!group)
+            return;
+        ForEachViewSubresource(view, [&](texture::ResolvedSubresource subresource) {
+            const std::array exact{subresource};
+            group->MarkCopyRepresentationWritten(storage, exact);
+        });
+    }
+
     bool CommandExecutor::AttachTexture(TextureView *view) {
+        if (!copyOnlyRuntimeLock.owns_lock()) {
+            auto storage{view->texture->storage.lock()};
+            auto group{storage ? storage->GetGroup() : nullptr};
+            if (group && group->HasExecutableCopyRoutes())
+                copyOnlyRuntimeLock = std::unique_lock{
+                    texture::TextureGroup::RuntimeSynchronizationMutex()};
+        }
+
         bool didLock{view->LockWithTag(tag)};
         if (didLock) {
             // TODO: fixup remaining bugs with this and add better heuristics to avoid pauses
@@ -472,7 +645,13 @@ namespace skyline::gpu::interconnect {
             //    preserveAttachedTextures.emplace_back(view->texture);
         }
 
+        SynchronizeCopyOnly(view);
+
         return didLock;
+    }
+
+    void CommandExecutor::MarkTextureWritten(TextureView *view) {
+        MarkCopyOnlyWritten(view);
     }
 
     CommandExecutor::LockedBuffer::LockedBuffer(std::shared_ptr<Buffer> buffer) : buffer{std::move(buffer)} {}
@@ -689,6 +868,8 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::ResetInternal() {
         attachedTextures.clear();
         attachedBuffers.clear();
+        if (copyOnlyRuntimeLock.owns_lock())
+            copyOnlyRuntimeLock.unlock();
         allocator->Reset();
         renderPassIndex = 0;
         usageTracker.sequencedIntervals.Clear();
@@ -723,8 +904,15 @@ namespace skyline::gpu::interconnect {
 
         if (!slot->nodes.empty()) {
             TRACE_EVENT("gpu", "CommandExecutor::Submit");
+            auto submittedCycle{cycle};
             SubmitInternal();
+            for (auto &completion : pendingGpuCompletionCallbacks)
+                waiterThread.Queue(submittedCycle, std::move(completion));
+            pendingGpuCompletionCallbacks.clear();
             submissionNumber++;
+        } else {
+            // No Vulkan submission owns these reservations, so their tickets cancel them.
+            pendingGpuCompletionCallbacks.clear();
         }
 
         if (!*state.settings->useDirectMemoryImport) {

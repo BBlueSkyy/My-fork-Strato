@@ -21,11 +21,19 @@ namespace skyline::gpu::texture {
         bool transferDestination{};
     };
 
+    struct ExactImageCopyRegion {
+        ResolvedSubresource sourceSubresource{};
+        ResolvedSubresource destinationSubresource{};
+        std::uint32_t width{}, height{}, depth{};
+        std::uint32_t aspectMask{};
+    };
+
     enum class CopySynchronizationState : std::uint8_t {
         Untracked,
         Current,
         SourceUnavailable,
         CapabilityUnavailable,
+        Pending,
         Ready,
     };
 
@@ -34,6 +42,7 @@ namespace skyline::gpu::texture {
         CopySynchronizationState state{CopySynchronizationState::Untracked};
         CopyCapability capability{CopyCapability::ExactImageCopy};
         PreparedDependencyRead<Representation> read{};
+        ExactImageCopyRegion copyRegion{};
     };
 
     /**
@@ -51,9 +60,20 @@ namespace skyline::gpu::texture {
             std::weak_ptr<Representation> destination;
             ResolvedSubresource destinationSubresource{};
             CopyCapability capability{};
+            ExactImageCopyRegion copyRegion{};
+        };
+
+        struct PendingSynchronization {
+            std::weak_ptr<Representation> source;
+            ResolvedSubresource sourceSubresource{};
+            std::weak_ptr<Representation> destination;
+            ResolvedSubresource destinationSubresource{};
+            std::uint64_t sourceGeneration{};
+            std::uint64_t destinationGeneration{};
         };
 
         std::vector<Route> routes;
+        std::vector<PendingSynchronization> pendingSynchronizations;
 
         static bool SameOwner(const std::weak_ptr<Representation> &lhs,
                               const std::weak_ptr<Representation> &rhs) {
@@ -77,9 +97,17 @@ namespace skyline::gpu::texture {
             const TextureResourceLayout &sourceLayout, const CopyImageInfo &sourceImage,
             ResolvedSubresource sourceSubresource,
             const TextureResourceLayout &destinationLayout, const CopyImageInfo &destinationImage,
-            ResolvedSubresource destinationSubresource) {
-            if (sourceLayout.imageType != destinationLayout.imageType ||
+            ResolvedSubresource destinationSubresource, bool supportsMaintenance5) {
+            const bool dimensionalCopy{
+                (sourceLayout.imageType == ImageKind::OneDimensional &&
+                 destinationLayout.imageType == ImageKind::TwoDimensional) ||
+                (sourceLayout.imageType == ImageKind::TwoDimensional &&
+                 destinationLayout.imageType == ImageKind::OneDimensional)
+            };
+            if ((sourceLayout.imageType != destinationLayout.imageType &&
+                 (!dimensionalCopy || !supportsMaintenance5)) ||
                 sourceLayout.imageType == ImageKind::ThreeDimensional ||
+                destinationLayout.imageType == ImageKind::ThreeDimensional ||
                 sourceSubresource.depthSlice || destinationSubresource.depthSlice ||
                 !sourceImage.hostFormat || sourceImage.hostFormat != destinationImage.hostFormat ||
                 !sourceImage.aspectMask || sourceImage.aspectMask != destinationImage.aspectMask ||
@@ -95,16 +123,17 @@ namespace skyline::gpu::texture {
                 source->width != destination->width || source->height != destination->height)
                 return false;
 
-            return sourceLayout.imageType != ImageKind::OneDimensional || source->height == 1;
+            return (!dimensionalCopy && sourceLayout.imageType != ImageKind::OneDimensional) ||
+                source->height == 1;
         }
 
-        bool HasRoute(const std::shared_ptr<Representation> &source,
-                      ResolvedSubresource sourceSubresource,
-                      const std::shared_ptr<Representation> &destination,
-                      ResolvedSubresource destinationSubresource,
-                      CopyCapability capability = CopyCapability::ExactImageCopy) const {
+        const Route *FindRoute(const std::shared_ptr<Representation> &source,
+                               ResolvedSubresource sourceSubresource,
+                               const std::shared_ptr<Representation> &destination,
+                               ResolvedSubresource destinationSubresource,
+                               CopyCapability capability = CopyCapability::ExactImageCopy) const {
             if (!source || !destination)
-                return false;
+                return nullptr;
             const std::weak_ptr<Representation> weakSource{source};
             const std::weak_ptr<Representation> weakDestination{destination};
             for (const auto &route : routes)
@@ -113,8 +142,36 @@ namespace skyline::gpu::texture {
                     SameOwner(route.destination, weakDestination) &&
                     route.sourceSubresource == sourceSubresource &&
                     route.destinationSubresource == destinationSubresource)
-                    return true;
-            return false;
+                    return &route;
+            return nullptr;
+        }
+
+        bool IsPending(const PreparedDependencyRead<Representation> &read) const {
+            const std::weak_ptr<Representation> weakSource{read.source};
+            const std::weak_ptr<Representation> weakDestination{read.destination};
+            return std::any_of(pendingSynchronizations.begin(), pendingSynchronizations.end(),
+                [&](const PendingSynchronization &pending) {
+                    return SameOwner(pending.source, weakSource) &&
+                        SameOwner(pending.destination, weakDestination) &&
+                        pending.sourceSubresource == read.sourceSubresource &&
+                        pending.destinationSubresource == read.destinationSubresource &&
+                        pending.sourceGeneration == read.sourceGeneration &&
+                        pending.destinationGeneration == read.destinationGeneration;
+                });
+        }
+
+        auto FindPending(const PreparedDependencyRead<Representation> &read) {
+            const std::weak_ptr<Representation> weakSource{read.source};
+            const std::weak_ptr<Representation> weakDestination{read.destination};
+            return std::find_if(pendingSynchronizations.begin(), pendingSynchronizations.end(),
+                [&](const PendingSynchronization &pending) {
+                    return SameOwner(pending.source, weakSource) &&
+                        SameOwner(pending.destination, weakDestination) &&
+                        pending.sourceSubresource == read.sourceSubresource &&
+                        pending.destinationSubresource == read.destinationSubresource &&
+                        pending.sourceGeneration == read.sourceGeneration &&
+                        pending.destinationGeneration == read.destinationGeneration;
+                });
         }
 
       public:
@@ -125,20 +182,30 @@ namespace skyline::gpu::texture {
             ResolvedSubresource sourceSubresource,
             const std::shared_ptr<Representation> &destination,
             const TextureResourceLayout &destinationLayout, const CopyImageInfo &destinationImage,
-            ResolvedSubresource destinationSubresource) {
+            ResolvedSubresource destinationSubresource, bool supportsMaintenance5 = false) {
             if (!source || !destination || source == destination ||
                 !dependencies.HasDirectRelation(
                     source, sourceSubresource, destination, destinationSubresource) ||
                 !SupportsExactImageCopy(
                     sourceLayout, sourceImage, sourceSubresource,
-                    destinationLayout, destinationImage, destinationSubresource))
+                    destinationLayout, destinationImage, destinationSubresource,
+                    supportsMaintenance5))
                 return false;
 
-            if (HasRoute(source, sourceSubresource, destination, destinationSubresource))
+            if (FindRoute(source, sourceSubresource, destination, destinationSubresource))
                 return true;
+            const auto sourceDescription = FindExactSubresource(sourceLayout, sourceSubresource);
             routes.push_back({
                 source, sourceSubresource, destination, destinationSubresource,
                 CopyCapability::ExactImageCopy,
+                {
+                    .sourceSubresource = sourceSubresource,
+                    .destinationSubresource = destinationSubresource,
+                    .width = sourceDescription->width,
+                    .height = sourceDescription->height,
+                    .depth = sourceDescription->depth,
+                    .aspectMask = sourceImage.aspectMask,
+                },
             });
             return true;
         }
@@ -156,32 +223,62 @@ namespace skyline::gpu::texture {
                 case CopyReadState::Unavailable:
                     return {.state = CopySynchronizationState::SourceUnavailable};
                 case CopyReadState::SynchronizationRequired:
-                    if (!HasRoute(read.source, read.sourceSubresource,
-                                  read.destination, read.destinationSubresource))
+                    const auto route = FindRoute(read.source, read.sourceSubresource,
+                                                 read.destination, read.destinationSubresource);
+                    if (!route)
                         return {.state = CopySynchronizationState::CapabilityUnavailable};
+                    if (IsPending(read))
+                        return {.state = CopySynchronizationState::Pending};
                     return {
                         .state = CopySynchronizationState::Ready,
                         .capability = CopyCapability::ExactImageCopy,
                         .read = std::move(read),
+                        .copyRegion = route->copyRegion,
                     };
             }
             return {};
         }
 
+        bool BeginSynchronization(
+            const PreparedCopySynchronization<Representation> &prepared) {
+            if (prepared.state != CopySynchronizationState::Ready ||
+                prepared.capability != CopyCapability::ExactImageCopy ||
+                !FindRoute(prepared.read.source, prepared.read.sourceSubresource,
+                           prepared.read.destination, prepared.read.destinationSubresource) ||
+                IsPending(prepared.read))
+                return false;
+            pendingSynchronizations.push_back({
+                prepared.read.source, prepared.read.sourceSubresource,
+                prepared.read.destination, prepared.read.destinationSubresource,
+                prepared.read.sourceGeneration, prepared.read.destinationGeneration,
+            });
+            return true;
+        }
+
         bool CompleteSynchronization(
             CopyDependencyTracker<Representation> &dependencies,
             const PreparedCopySynchronization<Representation> &prepared,
-            bool executionSucceeded) const {
-            if (!executionSucceeded || prepared.state != CopySynchronizationState::Ready ||
+            bool executionSucceeded) {
+            if (prepared.state != CopySynchronizationState::Ready ||
                 prepared.capability != CopyCapability::ExactImageCopy ||
-                !HasRoute(prepared.read.source, prepared.read.sourceSubresource,
-                          prepared.read.destination, prepared.read.destinationSubresource))
+                !FindRoute(prepared.read.source, prepared.read.sourceSubresource,
+                           prepared.read.destination, prepared.read.destinationSubresource))
+                return false;
+            const auto pending = FindPending(prepared.read);
+            if (pending == pendingSynchronizations.end())
+                return false;
+            pendingSynchronizations.erase(pending);
+            if (!executionSucceeded)
                 return false;
             return dependencies.CompleteSynchronization(prepared.read);
         }
 
         std::size_t RouteCount() const {
             return routes.size();
+        }
+
+        bool HasPendingSynchronizations() const {
+            return !pendingSynchronizations.empty();
         }
 
         void MergeFrom(const CopyCapabilityTracker &other) {

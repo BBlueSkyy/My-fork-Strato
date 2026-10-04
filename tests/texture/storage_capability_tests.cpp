@@ -51,12 +51,49 @@ int main() {
     assert(group->MarkCopyRepresentationWritten(source, write));
     const auto prepared = group->PrepareCopySynchronization(destination, mip0);
     assert(prepared.state == CopySynchronizationState::Ready);
+    assert(group->BeginCopySynchronization(prepared));
+    assert(group->PrepareCopySynchronization(destination, mip0).state ==
+        CopySynchronizationState::Pending);
+    assert(group->GetCopyRepresentationState(destination, mip0) ==
+        CopyRepresentationState::Stale);
     assert(!group->CompleteCopySynchronization(prepared, false));
     assert(group->GetCopyRepresentationState(destination, mip0) ==
         CopyRepresentationState::Stale);
-    assert(group->CompleteCopySynchronization(prepared, true));
+    const auto retried = group->PrepareCopySynchronization(destination, mip0);
+    assert(retried.state == CopySynchronizationState::Ready);
+    assert(group->BeginCopySynchronization(retried));
+    assert(group->CompleteCopySynchronization(retried, true));
     assert(group->GetCopyRepresentationState(destination, mip0) ==
         CopyRepresentationState::Current);
+
+    // A runtime ticket owns the reservation until a real submit completes. Dropping
+    // it before submission cancels only the pending state and never promotes metadata.
+    assert(group->MarkCopyRepresentationWritten(source, write));
+    auto abandoned = group->ScheduleCopySynchronization(destination, mip0);
+    assert(abandoned.state == CopySynchronizationState::Ready && abandoned.pending);
+    assert(group->GetCopyRepresentationState(destination, mip0) ==
+        CopyRepresentationState::Stale);
+    assert(group->ScheduleCopySynchronization(destination, mip0).state ==
+        CopySynchronizationState::Pending);
+    abandoned.pending.reset();
+    auto submitted = group->ScheduleCopySynchronization(destination, mip0);
+    assert(submitted.state == CopySynchronizationState::Ready && submitted.pending);
+    assert(group->GetCopyRepresentationState(destination, mip0) ==
+        CopyRepresentationState::Stale);
+    assert(submitted.pending->Complete());
+    assert(group->GetCopyRepresentationState(destination, mip0) ==
+        CopyRepresentationState::Current);
+
+    // Group migration is deferred while a post-fence reservation is outstanding.
+    assert(group->MarkCopyRepresentationWritten(source, write));
+    auto inFlight = group->ScheduleCopySynchronization(destination, mip0);
+    assert(inFlight.state == CopySynchronizationState::Ready && inFlight.pending);
+    auto blockedMerge = std::make_shared<TextureGroup>();
+    assert(!blockedMerge->TryMergeCopyDependenciesFrom(*group));
+    assert(source->GetGroup() == group && destination->GetGroup() == group);
+    assert(!inFlight.pending->Complete(false));
+    assert(blockedMerge->TryMergeCopyDependenciesFrom(*group));
+    assert(source->GetGroup() == blockedMerge && destination->GetGroup() == blockedMerge);
 
     // Group merge imports a usable directional route and remains idempotent.
     auto importedGroup = std::make_shared<TextureGroup>();
@@ -71,16 +108,15 @@ int main() {
         importedDestination, layout, destinationImage, mip0));
 
     auto mergedGroup = std::make_shared<TextureGroup>();
-    mergedGroup->MergeCopyDependenciesFrom(*importedGroup);
-    mergedGroup->MergeCopyDependenciesFrom(*importedGroup);
-    importedSource->group = mergedGroup;
-    importedDestination->group = mergedGroup;
-    mergedGroup->Attach(importedSource);
-    mergedGroup->Attach(importedDestination);
+    assert(mergedGroup->TryMergeCopyDependenciesFrom(*importedGroup));
+    assert(mergedGroup->TryMergeCopyDependenciesFrom(*importedGroup));
+    assert(importedSource->GetGroup() == mergedGroup);
+    assert(importedDestination->GetGroup() == mergedGroup);
 
     assert(mergedGroup->MarkCopyRepresentationWritten(importedSource, write));
     const auto imported = mergedGroup->PrepareCopySynchronization(importedDestination, mip0);
     assert(imported.state == CopySynchronizationState::Ready);
+    assert(mergedGroup->BeginCopySynchronization(imported));
     assert(mergedGroup->CompleteCopySynchronization(imported, true));
     assert(mergedGroup->GetCopyRepresentationState(importedDestination, mip0) ==
         CopyRepresentationState::Current);
@@ -88,4 +124,46 @@ int main() {
     assert(mergedGroup->MarkCopyRepresentationWritten(importedDestination, write));
     assert(mergedGroup->PrepareCopySynchronization(importedSource, mip0).state ==
         CopySynchronizationState::CapabilityUnavailable);
+
+    // Production registration is transactional: an unsupported pair records no dependency.
+    const std::array dimensionalSubresources{
+        GuestSubresource{.width = 8, .height = 1, .depth = 1},
+    };
+    const TextureResourceLayout oneDimensional{
+        .imageType = ImageKind::OneDimensional,
+        .subresources = dimensionalSubresources,
+    };
+    const TextureResourceLayout twoDimensional{
+        .imageType = ImageKind::TwoDimensional,
+        .subresources = dimensionalSubresources,
+    };
+    auto unsupportedGroup = std::make_shared<TextureGroup>();
+    auto unsupportedSource = std::make_shared<TextureStorage>(nullptr, unsupportedGroup, ranges);
+    auto unsupportedDestination = std::make_shared<TextureStorage>(nullptr, unsupportedGroup, ranges);
+    unsupportedGroup->Attach(unsupportedSource);
+    unsupportedGroup->Attach(unsupportedDestination);
+    auto unsupportedSourceImage{sourceImage};
+    unsupportedSourceImage.aspectMask = 3;
+    auto unsupportedDestinationImage{destinationImage};
+    unsupportedDestinationImage.aspectMask = 3;
+    assert(!unsupportedGroup->RegisterMaintenance5CopyOnly(
+        unsupportedSource, oneDimensional, unsupportedSourceImage,
+        unsupportedDestination, twoDimensional, unsupportedDestinationImage, copyOnly));
+    assert(unsupportedGroup->GetCopyRepresentationState(unsupportedSource, mip0) ==
+        CopyRepresentationState::Untracked);
+
+    // A partially executable pair is not activated: each direction is validated
+    // independently, but the undirected semantic dependency requires both routes.
+    auto directionalGroup = std::make_shared<TextureGroup>();
+    auto directionalSource = std::make_shared<TextureStorage>(nullptr, directionalGroup, ranges);
+    auto directionalDestination = std::make_shared<TextureStorage>(nullptr, directionalGroup, ranges);
+    directionalGroup->Attach(directionalSource);
+    directionalGroup->Attach(directionalDestination);
+    assert(!directionalGroup->RegisterMaintenance5CopyOnly(
+        directionalSource, oneDimensional, sourceImage,
+        directionalDestination, twoDimensional, destinationImage, copyOnly));
+    assert(directionalGroup->GetCopyRepresentationState(directionalSource, mip0) ==
+        CopyRepresentationState::Untracked);
+    assert(directionalGroup->GetCopyRepresentationState(directionalDestination, mip0) ==
+        CopyRepresentationState::Untracked);
 }

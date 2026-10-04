@@ -129,6 +129,29 @@ namespace skyline::gpu {
                 required |= vk::FormatFeatureFlagBits::eColorAttachment;
             return (properties.optimalTilingFeatures & required) == required;
         }
+
+        texture::CopyImageInfo DescribeCopyImage(const Texture &texture) {
+            return {
+                .hostFormat = static_cast<std::uint64_t>(
+                    static_cast<VkFormat>(texture.format->vkFormat)),
+                .aspectMask = static_cast<std::uint32_t>(
+                    static_cast<VkImageAspectFlags>(texture.format->vkAspect)),
+                .sampleCount = static_cast<std::uint32_t>(
+                    static_cast<VkSampleCountFlagBits>(texture.sampleCount)),
+                .transferSource = static_cast<bool>(
+                    texture.usage & vk::ImageUsageFlagBits::eTransferSrc),
+                .transferDestination = static_cast<bool>(
+                    texture.usage & vk::ImageUsageFlagBits::eTransferDst),
+            };
+        }
+
+        bool IsMaintenance5DimensionalPair(const texture::TextureResourceLayout &first,
+                                           const texture::TextureResourceLayout &second) {
+            return (first.imageType == texture::ImageKind::OneDimensional &&
+                    second.imageType == texture::ImageKind::TwoDimensional) ||
+                (first.imageType == texture::ImageKind::TwoDimensional &&
+                 second.imageType == texture::ImageKind::OneDimensional);
+        }
     }
 
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
@@ -159,6 +182,7 @@ namespace skyline::gpu {
         struct ClassifiedStorage {
             std::shared_ptr<texture::TextureStorage> storage;
             texture::ClassifiedResourceView view;
+            texture::OwnedTextureResourceLayout layout;
         };
 
         const auto requestedLayout = DescribeGuestLayout(guestTexture, guestRanges);
@@ -177,7 +201,7 @@ namespace skyline::gpu {
                     *storage->texture->guest->format, *guestTexture.format);
                 const auto relation = texture::ClassifyAndResolveView(backingLayout->Layout(),
                     requestedLayout->Layout(), format, SupportsHostFormatView(gpu, *storage->texture, guestTexture));
-                classifiedStorages.push_back({storage, relation});
+                classifiedStorages.push_back({storage, relation, std::move(*backingLayout)});
             }
         }
 
@@ -455,6 +479,26 @@ namespace skyline::gpu {
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto storage{texture::CreateTextureStorage(texture, std::move(guestRanges))};
         texture::JoinTextureStorageGroups(storage, mappingLookup.storages);
+
+        if (requestedLayout && gpu.traits.supportsMaintenance5) {
+            const auto requestedImage{DescribeCopyImage(*texture)};
+            for (const auto &classified : classifiedStorages) {
+                if (!classified.storage ||
+                    classified.view.relation != texture::TextureViewCompatibility::CopyOnly ||
+                    !classified.view.copyRegion ||
+                    !IsMaintenance5DimensionalPair(
+                        classified.layout.Layout(), requestedLayout->Layout()))
+                    continue;
+
+                const auto backingImage{DescribeCopyImage(*classified.storage->texture)};
+                const auto group{storage->GetGroup()};
+                if (group)
+                    group->RegisterMaintenance5CopyOnly(
+                        classified.storage, classified.layout.Layout(), backingImage,
+                        storage, requestedLayout->Layout(), requestedImage,
+                        classified.view);
+            }
+        }
         mappingCache.Insert(storage, storage->ranges);
 
         return texture->GetView(guestTexture.viewType, vk::ImageSubresourceRange{

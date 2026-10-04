@@ -200,8 +200,10 @@ namespace skyline::gpu::interconnect {
             texture->texture->TransitionLayout(vk::ImageLayout::eGeneral);
             texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
-            if (desc.is_written)
+            if (desc.is_written) {
                 texture->texture->MarkGpuDirty(ctx.executor.usageTracker);
+                ctx.executor.MarkTextureWritten(texture);
+            }
         }
 
         return {

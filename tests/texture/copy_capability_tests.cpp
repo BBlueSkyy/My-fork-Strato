@@ -89,12 +89,21 @@ int main() {
     assert(prepared.read.destination == second);
     assert(prepared.read.sourceGeneration != prepared.read.destinationGeneration);
 
-    // A failed execution never completes metadata; success updates only the exact endpoint.
+    // Scheduling reserves the exact generations, keeps metadata stale, and suppresses duplicates.
+    assert(capabilities.BeginSynchronization(prepared));
+    assert(dependencies.GetState(second, mip0) == CopyRepresentationState::Stale);
+    assert(capabilities.PrepareSynchronization(dependencies, second, mip0).state ==
+        CopySynchronizationState::Pending);
+
+    // A failed execution never completes metadata or leaves a stale pending reservation.
     assert(!capabilities.CompleteSynchronization(dependencies, prepared, false));
     assert(dependencies.GetState(second, mip0) == CopyRepresentationState::Stale);
     assert(dependencies.GetState(second, mip1) == CopyRepresentationState::Current);
     assert(dependencies.GetState(second, layer1) == CopyRepresentationState::Current);
-    assert(capabilities.CompleteSynchronization(dependencies, prepared, true));
+    const auto retried = capabilities.PrepareSynchronization(dependencies, second, mip0);
+    assert(retried.state == CopySynchronizationState::Ready);
+    assert(capabilities.BeginSynchronization(retried));
+    assert(capabilities.CompleteSynchronization(dependencies, retried, true));
     assert(dependencies.GetState(second, mip0) == CopyRepresentationState::Current);
     assert(dependencies.GetState(second, mip1) == CopyRepresentationState::Current);
     assert(dependencies.GetState(second, layer1) == CopyRepresentationState::Current);
@@ -146,6 +155,7 @@ int main() {
     const auto sourceRace = sourceRaceCapabilities.PrepareSynchronization(
         sourceRaceDependencies, second, mip0);
     assert(sourceRace.state == CopySynchronizationState::Ready);
+    assert(sourceRaceCapabilities.BeginSynchronization(sourceRace));
     assert(sourceRaceDependencies.MarkWritten(first, mip0Write));
     assert(!sourceRaceCapabilities.CompleteSynchronization(sourceRaceDependencies, sourceRace, true));
     assert(sourceRaceDependencies.GetState(second, mip0) == CopyRepresentationState::Stale);
@@ -161,6 +171,7 @@ int main() {
     const auto destinationRace = destinationRaceCapabilities.PrepareSynchronization(
         destinationRaceDependencies, second, mip0);
     assert(destinationRace.state == CopySynchronizationState::Ready);
+    assert(destinationRaceCapabilities.BeginSynchronization(destinationRace));
     assert(destinationRaceDependencies.MarkWritten(second, mip0Write));
     assert(!destinationRaceCapabilities.CompleteSynchronization(
         destinationRaceDependencies, destinationRace, true));
@@ -201,7 +212,7 @@ int main() {
         dependencies, first, layout, sourceImage, mip1,
         second, mismatchedLayout, destinationImage, mip1));
 
-    // Classification records neither an executable route nor a pending synchronization.
+    // The classified 1D/height-one 2D pair becomes executable only with maintenance5.
     const std::array dimensionalSubresource{
         GuestSubresource{.offset = 0x1000, .size = 64, .width = 64, .height = 1,
                          .depth = 1, .mip = 0, .layer = 0},
@@ -231,11 +242,95 @@ int main() {
         first, dimensionalRanges, oneDimensional,
         second, dimensionalRanges, heightOneTwoDimensional, dimensionalRelation));
     CopyCapabilityTracker<Representation> classifiedCapabilities;
-    assert(classifiedCapabilities.RouteCount() == 0);
+    assert(!classifiedCapabilities.RegisterExactImageCopy(
+        classifiedDependencies, first, oneDimensional, sourceImage, mip0,
+        second, heightOneTwoDimensional, destinationImage, mip0, false));
+    auto reverseSourceImage = destinationImage;
+    reverseSourceImage.transferSource = true;
+    auto reverseDestinationImage = sourceImage;
+    reverseDestinationImage.transferDestination = true;
+    assert(!classifiedCapabilities.RegisterExactImageCopy(
+        classifiedDependencies, second, heightOneTwoDimensional, reverseSourceImage, mip0,
+        first, oneDimensional, reverseDestinationImage, mip0, false));
+    assert(classifiedCapabilities.RegisterExactImageCopy(
+        classifiedDependencies, first, oneDimensional, sourceImage, mip0,
+        second, heightOneTwoDimensional, destinationImage, mip0, true));
+    assert(classifiedCapabilities.RouteCount() == 1);
+    assert(classifiedCapabilities.RegisterExactImageCopy(
+        classifiedDependencies, second, heightOneTwoDimensional, reverseSourceImage, mip0,
+        first, oneDimensional, reverseDestinationImage, mip0, true));
+    assert(classifiedCapabilities.RouteCount() == 2);
+
     assert(classifiedDependencies.MarkWritten(first, mip0Write));
-    assert(classifiedCapabilities.PrepareSynchronization(
-        classifiedDependencies, second, mip0).state ==
-        CopySynchronizationState::CapabilityUnavailable);
+    const auto oneToTwo = classifiedCapabilities.PrepareSynchronization(
+        classifiedDependencies, second, mip0);
+    assert(oneToTwo.state == CopySynchronizationState::Ready);
+    assert(oneToTwo.copyRegion.sourceSubresource == mip0);
+    assert(oneToTwo.copyRegion.destinationSubresource == mip0);
+    assert(oneToTwo.copyRegion.width == 64);
+    assert(oneToTwo.copyRegion.height == 1);
+    assert(oneToTwo.copyRegion.depth == 1);
+    assert(oneToTwo.copyRegion.aspectMask == sourceImage.aspectMask);
+    assert(classifiedCapabilities.BeginSynchronization(oneToTwo));
+    assert(classifiedCapabilities.CompleteSynchronization(
+        classifiedDependencies, oneToTwo, true));
+
+    assert(classifiedDependencies.MarkWritten(second, mip0Write));
+    const auto twoToOne = classifiedCapabilities.PrepareSynchronization(
+        classifiedDependencies, first, mip0);
+    assert(twoToOne.state == CopySynchronizationState::Ready);
+    assert(twoToOne.copyRegion.sourceSubresource == mip0);
+    assert(twoToOne.copyRegion.destinationSubresource == mip0);
+    assert(classifiedCapabilities.BeginSynchronization(twoToOne));
+    assert(classifiedCapabilities.CompleteSynchronization(
+        classifiedDependencies, twoToOne, true));
+
+    // The executable plan preserves independent source/destination mip and layer indices.
+    const auto sourceMipLayer = Subresource(2, 3);
+    const auto destinationMipLayer = Subresource(4, 5);
+    const std::array independentSourceSubresources{
+        GuestSubresource{.width = 64, .height = 1, .depth = 1, .mip = 2, .layer = 3},
+    };
+    const std::array independentDestinationSubresources{
+        GuestSubresource{.width = 64, .height = 1, .depth = 1, .mip = 4, .layer = 5},
+    };
+    auto independentSourceLayout{oneDimensional};
+    independentSourceLayout.subresources = independentSourceSubresources;
+    auto independentDestinationLayout{heightOneTwoDimensional};
+    independentDestinationLayout.subresources = independentDestinationSubresources;
+    CopyDependencyTracker<Representation> independentDependencies;
+    assert(independentDependencies.RegisterSynchronized(
+        first, dimensionalRanges, independentSourceLayout,
+        second, dimensionalRanges, independentDestinationLayout,
+        CopyOnly({{sourceMipLayer, destinationMipLayer}})));
+    CopyCapabilityTracker<Representation> independentCapabilities;
+    assert(independentCapabilities.RegisterExactImageCopy(
+        independentDependencies,
+        first, independentSourceLayout, sourceImage, sourceMipLayer,
+        second, independentDestinationLayout, destinationImage, destinationMipLayer, true));
+    const std::array independentWrite{sourceMipLayer};
+    assert(independentDependencies.MarkWritten(first, independentWrite));
+    const auto independent = independentCapabilities.PrepareSynchronization(
+        independentDependencies, second, destinationMipLayer);
+    assert(independent.state == CopySynchronizationState::Ready);
+    assert(independent.copyRegion.sourceSubresource == sourceMipLayer);
+    assert(independent.copyRegion.destinationSubresource == destinationMipLayer);
+    assert(independent.copyRegion.width == 64 && independent.copyRegion.height == 1 &&
+        independent.copyRegion.depth == 1);
+
+    // Other dimensional pairs and non-unit 2D heights remain unavailable.
+    auto heightTwoTwoDimensional{heightOneTwoDimensional};
+    auto heightTwoSubresource = dimensionalSubresource;
+    heightTwoSubresource[0].height = 2;
+    heightTwoTwoDimensional.subresources = heightTwoSubresource;
+    assert(!classifiedCapabilities.RegisterExactImageCopy(
+        classifiedDependencies, first, oneDimensional, sourceImage, mip0,
+        second, heightTwoTwoDimensional, destinationImage, mip0, true));
+    auto threeDimensionalAlias{heightOneTwoDimensional};
+    threeDimensionalAlias.imageType = ImageKind::ThreeDimensional;
+    assert(!classifiedCapabilities.RegisterExactImageCopy(
+        classifiedDependencies, first, oneDimensional, sourceImage, mip0,
+        second, threeDimensionalAlias, destinationImage, mip0, true));
 
     // Merge preserves direction and is idempotent.
     CopyCapabilityTracker<Representation> merged;

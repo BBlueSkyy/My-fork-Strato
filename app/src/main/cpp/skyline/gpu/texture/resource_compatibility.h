@@ -199,8 +199,8 @@ namespace skyline::gpu::texture {
 
         const bool sameTile = effectiveBlockLayout && ValidBaseBlock(backing) && ValidBaseBlock(requested)
             ? true : backing.tile == requested.tile;
-        // Vulkan copies between 1D and 2D images by treating the 1D extent as height one.
-        // They remain separate host images because their image/view dimensionality differs.
+        // Height-one 1D/2D aliases are semantically copy-related. Executing that relation
+        // as an image copy still requires the appropriate Vulkan capability (maintenance5).
         const bool oneDimensionalCopy = format == FormatCompatibility::Exact && unitHeightDepth &&
             ((backing.imageType == ImageKind::OneDimensional && requested.imageType == ImageKind::TwoDimensional) ||
              (backing.imageType == ImageKind::TwoDimensional && requested.imageType == ImageKind::OneDimensional));
