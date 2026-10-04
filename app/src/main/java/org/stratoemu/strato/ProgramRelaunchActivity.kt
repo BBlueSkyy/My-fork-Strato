@@ -8,6 +8,7 @@ package org.stratoemu.strato
 import android.app.Activity
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.ActivityInfo
 import android.content.Context
 import android.content.ComponentName
 import android.graphics.Color
@@ -90,8 +91,10 @@ class ProgramRelaunchActivity : Activity() {
         targetIntent = readTargetIntent()
         val handoffOrientation = targetIntent?.getIntExtra(
             EmulationActivity.ProgramRelaunchOrientationTag,
-            Int.MIN_VALUE
-        ) ?: Int.MIN_VALUE
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        ) ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        if (handoffOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
+            requestedOrientation = handoffOrientation
         ProgramRelaunchTrace.write(this, "trampoline_window_setup orientation=$handoffOrientation")
 
         // Keep window/insets manipulation out of the handoff critical path. The old
