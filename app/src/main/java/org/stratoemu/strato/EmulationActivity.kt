@@ -17,8 +17,6 @@ import android.content.pm.ActivityInfo
 import android.content.res.AssetManager
 import android.content.res.Configuration
 import android.content.res.Resources
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.PointF
 import android.graphics.drawable.Icon
 import android.hardware.display.DisplayManager
@@ -30,7 +28,6 @@ import android.util.Log
 import android.util.Rational
 import android.util.TypedValue
 import android.view.*
-import android.widget.ImageView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
@@ -90,7 +87,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         const val ProgramIndexTag = "programIndex"
         const val PreviousProgramIndexTag = "previousProgramIndex"
         const val ProgramUserChannelPathTag = "programUserChannelPath"
-        const val ProgramRelaunchSnapshotPathTag = "programRelaunchSnapshotPath"
+        const val ProgramRelaunchOrientationTag = "programRelaunchOrientation"
 
         /**
          * The Kotlin thread on which emulation code executes
@@ -155,7 +152,6 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private var programRelaunchRequested = false
     private val programRelaunchDeathToken = Binder()
     private var programRelaunchOverlay : View? = null
-    private var programRelaunchSnapshotPath : String? = null
 
     /**
      * This is the entry point into the emulation code for libskyline
@@ -223,55 +219,53 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             putExtra(ProgramIndexTag, programIndex)
             putExtra(PreviousProgramIndexTag, previousProgramIndex)
             putExtra(ProgramUserChannelPathTag, stateFile.absolutePath)
-            removeExtra(ProgramRelaunchSnapshotPathTag)
+            putExtra(ProgramRelaunchOrientationTag, requestedOrientation)
         }
 
         runOnUiThread {
-            ProgramRelaunchTrace.write(this, "snapshot_capture_requested")
-            captureProgramRelaunchSnapshot(targetIntent)
+            showProgramRelaunchLoadingAndLaunch(targetIntent)
         }
         return true
     }
 
-    private fun captureProgramRelaunchSnapshot(targetIntent : Intent) {
+    /**
+     * Installs Strato's existing pipeline-loading UI in the still-alive old activity first.
+     * The trampoline is launched only after that UI has actually participated in a draw, so
+     * Android never needs to expose the game surface, launcher wallpaper, or a blank task.
+     */
+    private fun showProgramRelaunchLoadingAndLaunch(targetIntent : Intent) {
         changeAudioStatus(false)
 
-        val surface = gameSurface
-        val width = binding.gameView.width
-        val height = binding.gameView.height
-        if (surface == null || !surface.isValid || width <= 0 || height <= 0) {
-            ProgramRelaunchTrace.write(this, "snapshot_unavailable surface=${surface != null} valid=${surface?.isValid == true} size=${width}x$height")
-            launchProgramRelaunch(targetIntent, null)
-            return
-        }
+        val loadingBinding = PipelineLoadingBinding.inflate(layoutInflater)
+        PipelineLoadingUi.configureIndeterminate(loadingBinding, item)
+        val overlay = loadingBinding.root
+        programRelaunchOverlay = overlay
+        binding.emulationFragment.addView(
+            overlay,
+            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+        ProgramRelaunchTrace.write(this, "old_emulation_loading_ui_installed orientation=$requestedOrientation")
 
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        PixelCopy.request(surface, bitmap, { result ->
-            if (result == PixelCopy.SUCCESS) {
-                val snapshotFile = File(cacheDir, "program_relaunch_snapshot_${Process.myPid()}.png")
-                try {
-                    snapshotFile.outputStream().use { output ->
-                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
-                    }
-                    targetIntent.putExtra(ProgramRelaunchSnapshotPathTag, snapshotFile.absolutePath)
-                    ProgramRelaunchTrace.write(this, "snapshot_captured size=${width}x$height")
-                    launchProgramRelaunch(targetIntent, snapshotFile.absolutePath)
-                } catch (exception : Exception) {
-                    Log.w(Tag, "Failed to persist Program relaunch frame", exception)
-                    ProgramRelaunchTrace.write(this, "snapshot_persist_failed ${exception.javaClass.simpleName}")
-                    launchProgramRelaunch(targetIntent, null)
-                } finally {
-                    bitmap.recycle()
+        var handoffStarted = false
+        val observer = overlay.viewTreeObserver
+        val drawListener = object : ViewTreeObserver.OnDrawListener {
+            override fun onDraw() {
+                if (handoffStarted)
+                    return
+                handoffStarted = true
+                overlay.post {
+                    if (observer.isAlive)
+                        observer.removeOnDrawListener(this)
+                    ProgramRelaunchTrace.write(this@EmulationActivity, "old_emulation_loading_ui_drawn")
+                    launchProgramRelaunch(targetIntent)
                 }
-            } else {
-                bitmap.recycle()
-                ProgramRelaunchTrace.write(this, "snapshot_pixelcopy_failed result=$result")
-                launchProgramRelaunch(targetIntent, null)
             }
-        }, Handler(Looper.getMainLooper()))
+        }
+        observer.addOnDrawListener(drawListener)
+        overlay.invalidate()
     }
 
-    private fun launchProgramRelaunch(targetIntent : Intent, snapshotPath : String?) {
+    private fun launchProgramRelaunch(targetIntent : Intent) {
         val deathTokenBundle = Bundle().apply {
             putBinder(ProgramRelaunchActivity.ProcessDeathTokenTag, programRelaunchDeathToken)
         }
@@ -279,10 +273,9 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             putExtra(ProgramRelaunchActivity.TargetIntentTag, targetIntent)
             putExtra(ProgramRelaunchActivity.OldProcessIdTag, Process.myPid())
             putExtra(ProgramRelaunchActivity.ProcessDeathTokenBundleTag, deathTokenBundle)
-            snapshotPath?.let { putExtra(ProgramRelaunchActivity.SnapshotPathTag, it) }
         }
         trampolineIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-        ProgramRelaunchTrace.write(this, "trampoline_start_requested old_pid=${Process.myPid()} task_id=$taskId")
+        ProgramRelaunchTrace.write(this, "trampoline_start_requested old_pid=${Process.myPid()} task_id=$taskId orientation=$requestedOrientation")
         startActivity(trampolineIntent)
         overridePendingTransition(0, 0)
     }
@@ -291,7 +284,6 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         if (!intent.hasExtra(PreviousProgramIndexTag))
             return
 
-        programRelaunchSnapshotPath = intent.getStringExtra(ProgramRelaunchSnapshotPathTag)
         val loadingBinding = PipelineLoadingBinding.inflate(layoutInflater)
         PipelineLoadingUi.configureIndeterminate(loadingBinding, item)
 
@@ -301,7 +293,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             overlay,
             ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
-        ProgramRelaunchTrace.write(this, "emulation_loading_ui_installed")
+        ProgramRelaunchTrace.write(this, "emulation_loading_ui_installed orientation=$requestedOrientation")
     }
 
     @Suppress("unused")
@@ -312,8 +304,6 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                 (overlay.parent as? ViewGroup)?.removeView(overlay)
                 programRelaunchOverlay = null
             }
-            programRelaunchSnapshotPath?.let { File(it).delete() }
-            programRelaunchSnapshotPath = null
         }
     }
 
@@ -535,7 +525,11 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     @SuppressLint("SetTextI18n", "ClickableViewAccessibility")
     override fun onCreate(savedInstanceState : Bundle?) {
+        val isProgramRelaunch = intent.hasExtra(PreviousProgramIndexTag)
+        if (isProgramRelaunch)
+            setTheme(R.style.ProgramRelaunchTheme)
         super.onCreate(savedInstanceState)
+
         val relaunchProgramIndex = intent.getIntExtra(ProgramIndexTag, 0)
         val relaunchPreviousProgramIndex = intent.getIntExtra(PreviousProgramIndexTag, -1)
         if (relaunchPreviousProgramIndex < 0 && !intent.hasExtra(ProgramUserChannelPathTag))
@@ -544,7 +538,11 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         populateAppItem()
         emulationSettings = EmulationSettings.forEmulation(item.titleId ?: item.key())
 
-        requestedOrientation = emulationSettings.orientation
+        val handoffOrientation = intent.getIntExtra(ProgramRelaunchOrientationTag, ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
+        requestedOrientation = if (isProgramRelaunch && handoffOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
+            handoffOrientation
+        else
+            emulationSettings.orientation
         window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         inputHandler = InputHandler(inputManager, emulationSettings)
         setContentView(binding.root)
