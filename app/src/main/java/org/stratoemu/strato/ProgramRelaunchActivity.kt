@@ -9,6 +9,7 @@ import android.app.Activity
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.content.Context
 import android.content.ComponentName
 import android.graphics.Color
@@ -20,6 +21,7 @@ import android.os.Looper
 import android.os.Process
 import android.os.RemoteException
 import android.os.ResultReceiver
+import android.view.Surface
 import android.view.WindowManager
 import org.stratoemu.strato.data.AppItemTag
 import org.stratoemu.strato.data.BaseAppItem
@@ -89,13 +91,13 @@ class ProgramRelaunchActivity : Activity() {
             )
 
         targetIntent = readTargetIntent()
-        val handoffOrientation = targetIntent?.getIntExtra(
-            EmulationActivity.ProgramRelaunchOrientationTag,
+        val orientationPolicy = targetIntent?.getIntExtra(
+            EmulationActivity.ProgramRelaunchOrientationPolicyTag,
             ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         ) ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        if (handoffOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
-            requestedOrientation = handoffOrientation
-        ProgramRelaunchTrace.write(this, "trampoline_window_setup orientation=$handoffOrientation")
+        if (orientationPolicy != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
+            requestedOrientation = orientationPolicy
+        ProgramRelaunchTrace.write(this, "trampoline_window_setup orientation_policy=$orientationPolicy")
 
         // Keep window/insets manipulation out of the handoff critical path. The old
         // emulation activity is already fullscreen, and windowDisablePreview keeps it
@@ -252,6 +254,47 @@ class ProgramRelaunchActivity : Activity() {
         }
     }
 
+    /**
+     * Freeze the fresh EmulationActivity to the trampoline's current physical side for its
+     * hidden startup. The trampoline itself remains sensor-driven and can rotate freely.
+     */
+    private fun currentFixedOrientation() : Int {
+        val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            display?.rotation ?: Surface.ROTATION_0
+        } else {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.rotation
+        }
+
+        return when (rotation) {
+            Surface.ROTATION_0 ->
+                if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
+                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                else
+                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+
+            Surface.ROTATION_90 ->
+                if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
+                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                else
+                    ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
+
+            Surface.ROTATION_180 ->
+                if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
+                    ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+                else
+                    ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
+
+            Surface.ROTATION_270 ->
+                if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
+                    ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+                else
+                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+
+            else -> ActivityInfo.SCREEN_ORIENTATION_LOCKED
+        }
+    }
+
     private fun launchTargetNow(targetIntent : Intent) {
         if (launchCompleted)
             return
@@ -262,8 +305,15 @@ class ProgramRelaunchActivity : Activity() {
         targetIntent.flags = targetIntent.flags and
             (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
                 Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+        targetIntent.putExtra(
+            EmulationActivity.ProgramRelaunchOrientationTag,
+            currentFixedOrientation()
+        )
         targetIntent.putExtra(FirstFrameReadyReceiverTag, firstFrameReadyReceiver)
-        ProgramRelaunchTrace.write(this, "new_emulation_activity_requested from_task=$taskId")
+        ProgramRelaunchTrace.write(
+            this,
+            "new_emulation_activity_requested from_task=$taskId orientation=${targetIntent.getIntExtra(EmulationActivity.ProgramRelaunchOrientationTag, ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)}"
+        )
         startActivity(targetIntent)
         overridePendingTransition(0, 0)
     }
