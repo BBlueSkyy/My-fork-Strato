@@ -17,6 +17,8 @@ import android.content.pm.ActivityInfo
 import android.content.res.AssetManager
 import android.content.res.Configuration
 import android.content.res.Resources
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.PointF
 import android.graphics.drawable.Icon
 import android.hardware.display.DisplayManager
@@ -28,6 +30,7 @@ import android.util.Log
 import android.util.Rational
 import android.util.TypedValue
 import android.view.*
+import android.widget.ImageView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
@@ -82,6 +85,10 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     companion object {
         private val Tag = EmulationActivity::class.java.simpleName
         const val ReturnToMainTag = "returnToMain"
+        const val ProgramIndexTag = "programIndex"
+        const val PreviousProgramIndexTag = "previousProgramIndex"
+        const val ProgramUserChannelPathTag = "programUserChannelPath"
+        const val ProgramRelaunchSnapshotPathTag = "programRelaunchSnapshotPath"
 
         /**
          * The Kotlin thread on which emulation code executes
@@ -142,6 +149,11 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     private var gameSurface : Surface? = null
 
+    @Volatile
+    private var programRelaunchRequested = false
+    private var programRelaunchOverlay : ImageView? = null
+    private var programRelaunchSnapshotPath : String? = null
+
     /**
      * This is the entry point into the emulation code for libskyline
      *
@@ -154,7 +166,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * @param nativeLibraryPath The full path to the app native library directory
      * @param assetManager The asset manager used for accessing app assets
      */
-    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, dlcFds : IntArray?, updateFd : Int, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager)
+    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, dlcFds : IntArray?, updateFd : Int, programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray?, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager)
 
     /**
      * @param join If the function should only return after all the threads join or immediately
@@ -176,6 +188,107 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private external fun changeAudioStatus(play : Boolean)
 
     private external fun nativeSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int)
+
+    @Suppress("unused")
+    fun requestProgramRelaunch(programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray) {
+        if (programRelaunchRequested)
+            return
+
+        programRelaunchRequested = true
+        shouldFinish = false
+
+        val stateFile = File(cacheDir, "program_relaunch_state_${Process.myPid()}.bin")
+        try {
+            stateFile.writeBytes(userChannel)
+        } catch (exception : Exception) {
+            Log.e(Tag, "Failed to preserve Program UserChannel", exception)
+            programRelaunchRequested = false
+            return
+        }
+
+        val targetIntent = Intent(intent).apply {
+            setClass(this@EmulationActivity, EmulationActivity::class.java)
+            putExtra(ProgramIndexTag, programIndex)
+            putExtra(PreviousProgramIndexTag, previousProgramIndex)
+            putExtra(ProgramUserChannelPathTag, stateFile.absolutePath)
+        }
+
+        runOnUiThread {
+            captureProgramRelaunchSnapshot(targetIntent)
+        }
+    }
+
+    private fun captureProgramRelaunchSnapshot(targetIntent : Intent) {
+        changeAudioStatus(false)
+
+        val surface = gameSurface
+        val width = binding.gameView.width
+        val height = binding.gameView.height
+        if (surface == null || !surface.isValid || width <= 0 || height <= 0) {
+            launchProgramRelaunch(targetIntent, null)
+            return
+        }
+
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        PixelCopy.request(surface, bitmap, { result ->
+            if (result == PixelCopy.SUCCESS) {
+                val snapshotFile = File(cacheDir, "program_relaunch_snapshot_${Process.myPid()}.png")
+                try {
+                    snapshotFile.outputStream().use { output ->
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+                    }
+                    targetIntent.putExtra(ProgramRelaunchSnapshotPathTag, snapshotFile.absolutePath)
+                    launchProgramRelaunch(targetIntent, snapshotFile.absolutePath)
+                } catch (exception : Exception) {
+                    Log.w(Tag, "Failed to persist Program relaunch frame", exception)
+                    launchProgramRelaunch(targetIntent, null)
+                } finally {
+                    bitmap.recycle()
+                }
+            } else {
+                bitmap.recycle()
+                launchProgramRelaunch(targetIntent, null)
+            }
+        }, Handler(Looper.getMainLooper()))
+    }
+
+    private fun launchProgramRelaunch(targetIntent : Intent, snapshotPath : String?) {
+        val trampolineIntent = Intent(this, ProgramRelaunchActivity::class.java).apply {
+            putExtra(ProgramRelaunchActivity.TargetIntentTag, targetIntent)
+            putExtra(ProgramRelaunchActivity.OldProcessIdTag, Process.myPid())
+            snapshotPath?.let { putExtra(ProgramRelaunchActivity.SnapshotPathTag, it) }
+        }
+        startActivity(trampolineIntent)
+        overridePendingTransition(0, 0)
+    }
+
+    private fun installProgramRelaunchOverlay(intent : Intent) {
+        val path = intent.getStringExtra(ProgramRelaunchSnapshotPathTag) ?: return
+        val bitmap = BitmapFactory.decodeFile(path) ?: return
+
+        programRelaunchSnapshotPath = path
+        programRelaunchOverlay = ImageView(this).apply {
+            setBackgroundColor(android.graphics.Color.BLACK)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setImageBitmap(bitmap)
+        }
+        addContentView(
+            programRelaunchOverlay,
+            ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+    }
+
+    @Suppress("unused")
+    fun onFirstFramePresented() {
+        runOnUiThread {
+            programRelaunchOverlay?.let { overlay ->
+                (overlay.parent as? ViewGroup)?.removeView(overlay)
+                programRelaunchOverlay = null
+            }
+            programRelaunchSnapshotPath?.let { File(it).delete() }
+            programRelaunchSnapshotPath = null
+        }
+    }
 
     private val softwareKeyboardDialogs = mutableMapOf<Long, SoftwareKeyboardDialog>()
 
@@ -260,6 +373,20 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         shouldFinish = true
         returnToMain = intent.getBooleanExtra(ReturnToMainTag, false)
 
+        val programIndex = intent.getIntExtra(ProgramIndexTag, 0)
+        val previousProgramIndex = intent.getIntExtra(PreviousProgramIndexTag, -1)
+        val userChannelPath = intent.getStringExtra(ProgramUserChannelPathTag)
+        val userChannel = userChannelPath?.let { path ->
+            try {
+                File(path).takeIf { it.exists() }?.readBytes()
+            } catch (exception : Exception) {
+                Log.w(Tag, "Failed to restore Program UserChannel", exception)
+                null
+            } finally {
+                File(path).delete()
+            }
+        }
+
         val rom = item.uri
         val romType = item.format.ordinal
 
@@ -322,7 +449,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         }
         
         emulationThread = Thread {
-            executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
+            executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, programIndex, previousProgramIndex, userChannel, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
             returnFromEmulation()
         }
 
@@ -387,6 +514,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         inputHandler = InputHandler(inputManager, emulationSettings)
         setContentView(binding.root)
+        installProgramRelaunchOverlay(intent)
 
         builtinVibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
