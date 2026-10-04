@@ -190,9 +190,9 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private external fun nativeSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int)
 
     @Suppress("unused")
-    fun requestProgramRelaunch(programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray) {
+    fun requestProgramRelaunch(programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray) : Boolean {
         if (programRelaunchRequested)
-            return
+            return true
 
         programRelaunchRequested = true
         shouldFinish = false
@@ -203,7 +203,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         } catch (exception : Exception) {
             Log.e(Tag, "Failed to preserve Program UserChannel", exception)
             programRelaunchRequested = false
-            return
+            return false
         }
 
         val targetIntent = Intent(intent).apply {
@@ -216,6 +216,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         runOnUiThread {
             captureProgramRelaunchSnapshot(targetIntent)
         }
+        return true
     }
 
     private fun captureProgramRelaunchSnapshot(targetIntent : Intent) {
@@ -267,13 +268,14 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         val bitmap = BitmapFactory.decodeFile(path) ?: return
 
         programRelaunchSnapshotPath = path
-        programRelaunchOverlay = ImageView(this).apply {
+        val overlay = ImageView(this).apply {
             setBackgroundColor(android.graphics.Color.BLACK)
             scaleType = ImageView.ScaleType.FIT_CENTER
             setImageBitmap(bitmap)
         }
+        programRelaunchOverlay = overlay
         addContentView(
-            programRelaunchOverlay,
+            overlay,
             ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
     }
