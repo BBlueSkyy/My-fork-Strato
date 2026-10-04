@@ -7,6 +7,7 @@
 #include <common/trace.h>
 #include <kernel/results.h>
 #include <kernel/thread_tls.h>
+#include <logger/logger.h>
 #include "KProcess.h"
 
 namespace skyline::kernel::type {
@@ -46,21 +47,31 @@ namespace skyline::kernel::type {
             alreadyKilled.store(true);
 
         std::scoped_lock guard{threadMutex};
+        LOGI("[MULTIPROGRAM] KProcess::Kill begin join={} all={} disableCreation={} threads={}",
+             join, all, disableCreation, threads.size());
         if (disableCreation)
             disableThreadCreation = true;
         if (all) {
             // Signal every thread before waiting for any of them to exit. Waiting inline here can
             // deadlock process teardown if an early thread is blocked while later threads still
             // need to observe the process-wide exit signal.
-            for (const auto &thread : threads)
+            for (const auto &thread : threads) {
+                LOGI("[MULTIPROGRAM] signal HOS-{}", thread->id);
                 thread->Kill(false);
+            }
 
-            if (join)
-                for (const auto &thread : threads)
+            if (join) {
+                for (const auto &thread : threads) {
+                    LOGI("[MULTIPROGRAM] join HOS-{} begin", thread->id);
                     thread->Kill(true);
+                    LOGI("[MULTIPROGRAM] join HOS-{} complete", thread->id);
+                }
+            }
         } else if (!threads.empty()) {
+            LOGI("[MULTIPROGRAM] kill main HOS-{} join={}", threads[0]->id, join);
             threads[0]->Kill(join);
         }
+        LOGI("[MULTIPROGRAM] KProcess::Kill complete");
     }
 
     void KProcess::InitializeHeapTls() {
