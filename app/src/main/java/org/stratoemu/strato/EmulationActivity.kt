@@ -151,6 +151,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     @Volatile
     private var programRelaunchRequested = false
+    private val programRelaunchDeathToken = Binder()
     private var programRelaunchOverlay : ImageView? = null
     private var programRelaunchSnapshotPath : String? = null
 
@@ -190,11 +191,16 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private external fun nativeSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int)
 
     @Suppress("unused")
-    fun requestProgramRelaunch(programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray) : Boolean {
-        if (isFinishing || isDestroyed)
+    fun requestProgramRelaunch(kind : Int, value : Long, programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray) : Boolean {
+        ProgramRelaunchTrace.write(this, "execute_program_request kind=$kind value=${java.lang.Long.toUnsignedString(value)} current=$previousProgramIndex target=$programIndex")
+        if (isFinishing || isDestroyed) {
+            ProgramRelaunchTrace.write(this, "request_rejected activity_finishing_or_destroyed")
             return false
-        if (programRelaunchRequested)
+        }
+        if (programRelaunchRequested) {
+            ProgramRelaunchTrace.write(this, "request_already_in_progress")
             return true
+        }
 
         programRelaunchRequested = true
         shouldFinish = false
@@ -202,8 +208,10 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         val stateFile = File(cacheDir, "program_relaunch_state_${Process.myPid()}.bin")
         try {
             stateFile.writeBytes(userChannel)
+            ProgramRelaunchTrace.write(this, "user_channel_persisted bytes=${userChannel.size}")
         } catch (exception : Exception) {
             Log.e(Tag, "Failed to preserve Program UserChannel", exception)
+            ProgramRelaunchTrace.write(this, "user_channel_persist_failed ${exception.javaClass.simpleName}")
             programRelaunchRequested = false
             return false
         }
@@ -217,6 +225,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         }
 
         runOnUiThread {
+            ProgramRelaunchTrace.write(this, "snapshot_capture_requested")
             captureProgramRelaunchSnapshot(targetIntent)
         }
         return true
@@ -229,6 +238,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         val width = binding.gameView.width
         val height = binding.gameView.height
         if (surface == null || !surface.isValid || width <= 0 || height <= 0) {
+            ProgramRelaunchTrace.write(this, "snapshot_unavailable surface=${surface != null} valid=${surface?.isValid == true} size=${width}x$height")
             launchProgramRelaunch(targetIntent, null)
             return
         }
@@ -242,26 +252,34 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                         bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
                     }
                     targetIntent.putExtra(ProgramRelaunchSnapshotPathTag, snapshotFile.absolutePath)
+                    ProgramRelaunchTrace.write(this, "snapshot_captured size=${width}x$height")
                     launchProgramRelaunch(targetIntent, snapshotFile.absolutePath)
                 } catch (exception : Exception) {
                     Log.w(Tag, "Failed to persist Program relaunch frame", exception)
+                    ProgramRelaunchTrace.write(this, "snapshot_persist_failed ${exception.javaClass.simpleName}")
                     launchProgramRelaunch(targetIntent, null)
                 } finally {
                     bitmap.recycle()
                 }
             } else {
                 bitmap.recycle()
+                ProgramRelaunchTrace.write(this, "snapshot_pixelcopy_failed result=$result")
                 launchProgramRelaunch(targetIntent, null)
             }
         }, Handler(Looper.getMainLooper()))
     }
 
     private fun launchProgramRelaunch(targetIntent : Intent, snapshotPath : String?) {
+        val deathTokenBundle = Bundle().apply {
+            putBinder(ProgramRelaunchActivity.ProcessDeathTokenTag, programRelaunchDeathToken)
+        }
         val trampolineIntent = Intent(this, ProgramRelaunchActivity::class.java).apply {
             putExtra(ProgramRelaunchActivity.TargetIntentTag, targetIntent)
             putExtra(ProgramRelaunchActivity.OldProcessIdTag, Process.myPid())
+            putExtra(ProgramRelaunchActivity.ProcessDeathTokenBundleTag, deathTokenBundle)
             snapshotPath?.let { putExtra(ProgramRelaunchActivity.SnapshotPathTag, it) }
         }
+        ProgramRelaunchTrace.write(this, "trampoline_start_requested old_pid=${Process.myPid()}")
         startActivity(trampolineIntent)
         overridePendingTransition(0, 0)
     }
@@ -285,6 +303,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     @Suppress("unused")
     fun onFirstFramePresented() {
+        ProgramRelaunchTrace.write(this, "first_frame_presented")
         runOnUiThread {
             programRelaunchOverlay?.let { overlay ->
                 (overlay.parent as? ViewGroup)?.removeView(overlay)
@@ -380,6 +399,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
         val programIndex = intent.getIntExtra(ProgramIndexTag, 0)
         val previousProgramIndex = intent.getIntExtra(PreviousProgramIndexTag, -1)
+        ProgramRelaunchTrace.write(this, "native_session_start_requested program=$programIndex previous=$previousProgramIndex")
         val userChannelPath = intent.getStringExtra(ProgramUserChannelPathTag)
         val userChannel = userChannelPath?.let { path ->
             try {
@@ -455,6 +475,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         
         emulationThread = Thread {
             executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, programIndex, previousProgramIndex, userChannel, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
+            ProgramRelaunchTrace.write(this, "native_session_returned program=$programIndex")
             returnFromEmulation()
         }
 
@@ -512,6 +533,11 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     @SuppressLint("SetTextI18n", "ClickableViewAccessibility")
     override fun onCreate(savedInstanceState : Bundle?) {
         super.onCreate(savedInstanceState)
+        val relaunchProgramIndex = intent.getIntExtra(ProgramIndexTag, 0)
+        val relaunchPreviousProgramIndex = intent.getIntExtra(PreviousProgramIndexTag, -1)
+        if (relaunchPreviousProgramIndex < 0 && !intent.hasExtra(ProgramUserChannelPathTag))
+            ProgramRelaunchTrace.reset(this)
+        ProgramRelaunchTrace.write(this, "emulation_activity_created program=$relaunchProgramIndex previous=$relaunchPreviousProgramIndex")
         populateAppItem()
         emulationSettings = EmulationSettings.forEmulation(item.titleId ?: item.key())
 
