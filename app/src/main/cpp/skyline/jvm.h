@@ -185,7 +185,7 @@ namespace skyline {
         /**
          * @brief Requests an Android-side full-process relaunch for another ProgramIndex.
          */
-        void RequestProgramRelaunch(i32 programIndex, i32 previousProgramIndex, span<const u8> userChannel);
+        bool RequestProgramRelaunch(i32 programIndex, i32 previousProgramIndex, span<const u8> userChannel);
         void NotifyFirstFramePresented();
 
         /**
