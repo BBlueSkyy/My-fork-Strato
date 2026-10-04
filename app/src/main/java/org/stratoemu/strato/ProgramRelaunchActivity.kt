@@ -133,7 +133,7 @@ class ProgramRelaunchActivity : Activity() {
         }
 
         setContentView(binding.root)
-        ProgramRelaunchTrace.write(this, "trampoline_loading_ui_installed item=${item != null} orientation=$handoffOrientation")
+        ProgramRelaunchTrace.write(this, "trampoline_loading_ui_installed item=${item != null} orientation_policy=$orientationPolicy")
 
         // The trampoline is the single visible loading screen. Confirm its first real
         // draw before allowing the old native process to disappear.
