@@ -80,7 +80,7 @@ class ProgramRelaunchActivity : Activity() {
 
         val binding = PipelineLoadingBinding.inflate(layoutInflater)
         val item = targetIntent?.serializable<BaseAppItem>(AppItemTag)
-        PipelineLoadingUi.configureIndeterminate(binding, item)
+        PipelineLoadingUi.configureIndeterminate(binding, item, PipelineLoadingUi.Mode.LoadingGame)
         setContentView(binding.root)
         ProgramRelaunchTrace.write(this, "trampoline_loading_ui_installed item=${item != null} orientation=$handoffOrientation")
 
