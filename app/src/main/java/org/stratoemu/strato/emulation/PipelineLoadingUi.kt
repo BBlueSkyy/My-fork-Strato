@@ -20,9 +20,15 @@ import org.stratoemu.strato.databinding.PipelineLoadingBinding
  * This never controls emulation lifecycle; it only configures the existing layout.
  */
 object PipelineLoadingUi {
+    enum class Mode {
+        LoadingGame,
+        CompilingPipelines,
+    }
+
     fun configureIndeterminate(
         binding : PipelineLoadingBinding,
         item : BaseAppItem?,
+        mode : Mode,
         fallbackBackground : Bitmap? = null
     ) {
         if (item != null) {
@@ -51,6 +57,12 @@ object PipelineLoadingUi {
                 binding.backgroundImage.setImageResource(R.drawable.default_icon)
         }
 
+        binding.pipelinesCompiling.setText(
+            when (mode) {
+                Mode.LoadingGame -> R.string.loading_game
+                Mode.CompilingPipelines -> R.string.compiling_cached_pipelines
+            }
+        )
         binding.progressBar.isIndeterminate = true
         binding.progressLabel.isGone = true
     }
