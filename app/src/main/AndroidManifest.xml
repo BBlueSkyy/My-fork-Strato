@@ -97,7 +97,8 @@
             android:exported="true"
             android:launchMode="singleTop"
             android:process="${emulationProcess}"
-            android:parentActivityName=".MainActivity">
+            android:parentActivityName=".MainActivity"
+            android:screenOrientation="behind">
 
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
