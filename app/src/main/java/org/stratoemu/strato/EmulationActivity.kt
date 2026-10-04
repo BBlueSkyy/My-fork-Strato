@@ -237,7 +237,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         changeAudioStatus(false)
 
         val loadingBinding = PipelineLoadingBinding.inflate(layoutInflater)
-        PipelineLoadingUi.configureIndeterminate(loadingBinding, item)
+        PipelineLoadingUi.configureIndeterminate(loadingBinding, item, PipelineLoadingUi.Mode.LoadingGame)
         val overlay = loadingBinding.root
         programRelaunchOverlay = overlay
         binding.emulationFragment.addView(
@@ -285,7 +285,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             return
 
         val loadingBinding = PipelineLoadingBinding.inflate(layoutInflater)
-        PipelineLoadingUi.configureIndeterminate(loadingBinding, item)
+        PipelineLoadingUi.configureIndeterminate(loadingBinding, item, PipelineLoadingUi.Mode.LoadingGame)
 
         val overlay = loadingBinding.root
         programRelaunchOverlay = overlay
