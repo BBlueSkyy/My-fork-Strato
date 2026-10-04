@@ -38,8 +38,11 @@ namespace skyline::service::am {
         switch (launchParameterKind) {
             case LaunchParameterKind::UserChannel: {
                 auto data{state.os->PopUserChannel()};
-                if (!data)
+                if (!data) {
+                    LOGI("[MULTIPROGRAM] PopLaunchParameter(UserChannel): empty");
                     return result::NotAvailable;
+                }
+                LOGI("[MULTIPROGRAM] PopLaunchParameter(UserChannel): size={}", data->size());
                 storageService = std::make_shared<VectorIStorage>(state, manager, std::move(*data));
                 break;
             }
@@ -300,11 +303,15 @@ namespace skyline::service::am {
                 return result::InvalidInput;
         }
 
+        LOGI("[MULTIPROGRAM] ExecuteProgram kind={} value={} currentIndex={} targetIndex={}",
+             static_cast<u32>(input.kind), input.value, state.os->GetCurrentProgramIndex(), programIndex);
         state.os->RequestProgramExecution(programIndex);
+        LOGI("[MULTIPROGRAM] ExecuteProgram request stored; exiting current process");
         throw nce::NCE::ExitException(true);
     }
 
     Result IApplicationFunctions::ClearUserChannel(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        LOGI("[MULTIPROGRAM] ClearUserChannel");
         state.os->ClearUserChannel();
         return {};
     }
@@ -315,6 +322,7 @@ namespace skyline::service::am {
             return result::InvalidInput;
 
         auto data{storage->GetSpan()};
+        LOGI("[MULTIPROGRAM] UnpopToUserChannel size={}", data.size());
         state.os->PushUserChannel(std::vector<u8>{data.begin(), data.end()});
         return {};
     }
