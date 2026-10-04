@@ -7,6 +7,9 @@ package org.stratoemu.strato
 
 import android.app.Activity
 import android.content.Intent
+import android.content.ServiceConnection
+import android.content.Context
+import android.content.ComponentName
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -45,8 +48,20 @@ class ProgramRelaunchActivity : Activity() {
             if (resultCode != RESULT_OK || !launchCompleted)
                 return
             ProgramRelaunchTrace.write(this@ProgramRelaunchActivity, "new_emulation_overlay_ready")
+            unbindPrewarmService()
             finish()
             overridePendingTransition(0, 0)
+        }
+    }
+    private var prewarmBound = false
+    private var pendingTargetIntent : Intent? = null
+    private val prewarmConnection = object : ServiceConnection {
+        override fun onServiceConnected(name : ComponentName?, service : IBinder?) {
+            ProgramRelaunchTrace.write(this@ProgramRelaunchActivity, "new_emulation_process_ready")
+            pendingTargetIntent?.let(::launchTargetNow)
+        }
+
+        override fun onServiceDisconnected(name : ComponentName?) {
         }
     }
     private var relaunchStarted = false
@@ -199,9 +214,25 @@ class ProgramRelaunchActivity : Activity() {
     }
 
     private fun launchTarget(targetIntent : Intent) {
+        if (launchCompleted || pendingTargetIntent != null)
+            return
+
+        pendingTargetIntent = targetIntent
+        val prewarmIntent = Intent(this, ProgramRelaunchPrewarmService::class.java)
+        prewarmBound = bindService(prewarmIntent, prewarmConnection, Context.BIND_AUTO_CREATE)
+        if (prewarmBound) {
+            ProgramRelaunchTrace.write(this, "new_emulation_process_prewarm_requested")
+        } else {
+            ProgramRelaunchTrace.write(this, "new_emulation_process_prewarm_unavailable")
+            launchTargetNow(targetIntent)
+        }
+    }
+
+    private fun launchTargetNow(targetIntent : Intent) {
         if (launchCompleted)
             return
         launchCompleted = true
+        pendingTargetIntent = null
 
         targetIntent.setClass(this, EmulationActivity::class.java)
         targetIntent.flags = targetIntent.flags and
@@ -211,5 +242,20 @@ class ProgramRelaunchActivity : Activity() {
         ProgramRelaunchTrace.write(this, "new_emulation_activity_requested from_task=$taskId")
         startActivity(targetIntent)
         overridePendingTransition(0, 0)
+    }
+
+    private fun unbindPrewarmService() {
+        if (!prewarmBound)
+            return
+        prewarmBound = false
+        try {
+            unbindService(prewarmConnection)
+        } catch (_ : IllegalArgumentException) {
+        }
+    }
+
+    override fun onDestroy() {
+        unbindPrewarmService()
+        super.onDestroy()
     }
 }
