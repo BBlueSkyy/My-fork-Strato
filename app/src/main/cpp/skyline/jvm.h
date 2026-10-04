@@ -183,6 +183,11 @@ namespace skyline {
         void reportCrash();
 
         /**
+         * @brief Requests an Android-side full-process relaunch for another ProgramIndex.
+         */
+        void RequestProgramRelaunch(i32 programIndex, i32 previousProgramIndex, span<const u8> userChannel);
+
+        /**
          * @brief A call to EmulationActivity.showPipelineLoadingScreen in Kotlin
          */
         void ShowPipelineLoadingScreen(u32 totalPipelineCount);
@@ -227,6 +232,7 @@ namespace skyline {
         jmethodID hideSoftwareKeyboardId;
         jmethodID closeSoftwareKeyboardId;
         jmethodID reportCrashId;
+        jmethodID requestProgramRelaunchId;
 
         jmethodID showPipelineLoadingScreenId;
         jmethodID updatePipelineLoadingProgressId;
