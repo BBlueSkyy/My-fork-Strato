@@ -88,7 +88,8 @@
             android:launchMode="singleTask"
             android:process=":programRelaunch"
             android:taskAffinity="${applicationId}.programRelaunch"
-            android:theme="@style/AppTheme" />
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:theme="@style/ProgramRelaunchTheme" />
 
         <activity
             android:name=".EmulationActivity"
