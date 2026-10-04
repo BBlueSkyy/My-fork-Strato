@@ -11,7 +11,11 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
 import android.os.Process
+import android.os.RemoteException
 import android.view.ViewGroup
 import android.widget.ImageView
 
@@ -24,12 +28,17 @@ class ProgramRelaunchActivity : Activity() {
         const val TargetIntentTag = "programRelaunchTargetIntent"
         const val SnapshotPathTag = "programRelaunchSnapshotPath"
         const val OldProcessIdTag = "programRelaunchOldProcessId"
+        const val ProcessDeathTokenBundleTag = "programRelaunchDeathTokenBundle"
+        const val ProcessDeathTokenTag = "programRelaunchDeathToken"
     }
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var relaunchStarted = false
+    private var launchCompleted = false
 
     override fun onCreate(savedInstanceState : Bundle?) {
         super.onCreate(savedInstanceState)
+        ProgramRelaunchTrace.write(this, "trampoline_created")
 
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
@@ -64,14 +73,45 @@ class ProgramRelaunchActivity : Activity() {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra<Intent>(TargetIntentTag)
         } ?: run {
+            ProgramRelaunchTrace.write(this, "trampoline_missing_target_intent")
             finish()
             return
         }
 
+        val deathToken = intent.getBundleExtra(ProcessDeathTokenBundleTag)?.getBinder(ProcessDeathTokenTag)
         val oldPid = intent.getIntExtra(OldProcessIdTag, -1)
-        if (oldPid > 0 && oldPid != Process.myPid())
-            Process.killProcess(oldPid)
+        if (deathToken == null || oldPid <= 0 || oldPid == Process.myPid()) {
+            ProgramRelaunchTrace.write(this, "trampoline_invalid_handoff token=${deathToken != null} old_pid=$oldPid self=${Process.myPid()}")
+            finish()
+            return
+        }
 
+        val deathRecipient = IBinder.DeathRecipient {
+            ProgramRelaunchTrace.write(this, "binder_died old_pid=$oldPid")
+            mainHandler.post {
+                launchTarget(targetIntent)
+            }
+        }
+
+        try {
+            deathToken.linkToDeath(deathRecipient, 0)
+            ProgramRelaunchTrace.write(this, "death_recipient_registered old_pid=$oldPid")
+        } catch (_ : RemoteException) {
+            ProgramRelaunchTrace.write(this, "death_token_already_dead old_pid=$oldPid")
+            launchTarget(targetIntent)
+            return
+        }
+
+        ProgramRelaunchTrace.write(this, "old_process_kill_requested old_pid=$oldPid")
+        Process.killProcess(oldPid)
+    }
+
+    private fun launchTarget(targetIntent : Intent) {
+        if (launchCompleted)
+            return
+        launchCompleted = true
+
+        ProgramRelaunchTrace.write(this, "new_emulation_activity_requested")
         targetIntent.setClass(this, EmulationActivity::class.java)
         targetIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         startActivity(targetIntent)
