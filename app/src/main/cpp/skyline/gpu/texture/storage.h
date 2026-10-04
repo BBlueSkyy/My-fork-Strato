@@ -106,7 +106,7 @@ namespace skyline::gpu::texture {
         GuestResourceRanges ranges;
 
       private:
-        std::atomic<std::shared_ptr<TextureGroup>> group;
+        std::shared_ptr<TextureGroup> group;
 
       public:
 
@@ -117,18 +117,19 @@ namespace skyline::gpu::texture {
               group(std::move(group)) {}
 
         std::shared_ptr<TextureGroup> GetGroup() const {
-            return group.load(std::memory_order_acquire);
+            return std::atomic_load_explicit(&group, std::memory_order_acquire);
         }
 
         void SetGroup(std::shared_ptr<TextureGroup> newGroup) {
-            group.store(std::move(newGroup), std::memory_order_release);
+            std::atomic_store_explicit(&group, std::move(newGroup), std::memory_order_release);
         }
 
         bool MoveFromGroup(const std::shared_ptr<TextureGroup> &source,
                            const std::shared_ptr<TextureGroup> &destination) {
             auto expected{source};
-            return group.compare_exchange_strong(
-                expected, destination, std::memory_order_acq_rel);
+            return std::atomic_compare_exchange_strong_explicit(
+                &group, &expected, destination,
+                std::memory_order_acq_rel, std::memory_order_acquire);
         }
     };
 
