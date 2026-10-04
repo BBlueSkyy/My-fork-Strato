@@ -145,6 +145,12 @@
         </provider>
 
         <service
+            android:name=".ProgramRelaunchPrewarmService"
+            android:exported="false"
+            android:process="${emulationProcess}"
+            android:stopWithTask="false" />
+
+        <service
             android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"
             android:enabled="false"
             android:exported="false">
