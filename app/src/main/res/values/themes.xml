@@ -52,4 +52,10 @@
         <item name="android:windowLightNavigationBar">true</item>
         <item name="android:enforceNavigationBarContrast">false</item>
     </style>
+
+    <!-- Keep the previously visible activity on screen until the real relaunch UI has drawn. -->
+    <style name="ProgramRelaunchTheme" parent="AppTheme">
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
 </resources>
