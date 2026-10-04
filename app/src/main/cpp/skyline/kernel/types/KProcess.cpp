@@ -49,8 +49,15 @@ namespace skyline::kernel::type {
         if (disableCreation)
             disableThreadCreation = true;
         if (all) {
+            // Signal every thread before waiting for any of them to exit. Waiting inline here can
+            // deadlock process teardown if an early thread is blocked while later threads still
+            // need to observe the process-wide exit signal.
             for (const auto &thread : threads)
-                thread->Kill(join);
+                thread->Kill(false);
+
+            if (join)
+                for (const auto &thread : threads)
+                    thread->Kill(true);
         } else if (!threads.empty()) {
             threads[0]->Kill(join);
         }
