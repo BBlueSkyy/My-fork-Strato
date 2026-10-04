@@ -38,9 +38,14 @@ namespace skyline::service::am {
         std::shared_ptr<IStorage> storageService;
         switch (launchParameterKind) {
             case LaunchParameterKind::UserChannel: {
+                LOGI("Multiprogram trace: PopLaunchParameter(UserChannel) begin current={} previous={}",
+                     state.os->GetCurrentProgramIndex(), state.os->GetPreviousProgramIndex());
                 auto data{state.os->PopUserChannel()};
-                if (!data)
+                if (!data) {
+                    LOGI("Multiprogram trace: PopLaunchParameter(UserChannel) -> NotAvailable");
                     return result::NotAvailable;
+                }
+                LOGI("Multiprogram trace: PopLaunchParameter(UserChannel) -> {} bytes", data->size());
                 storageService = std::make_shared<VectorIStorage>(state, manager, std::move(*data));
                 break;
             }
@@ -265,6 +270,9 @@ namespace skyline::service::am {
     }
 
     Result IApplicationFunctions::ExecuteProgram(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        LOGI("Multiprogram trace: ExecuteProgram IPC entered cmdArgSz={} current={} previous={}",
+             request.cmdArgSz, state.os->GetCurrentProgramIndex(), state.os->GetPreviousProgramIndex());
+
         enum class ProgramSpecifyKind : u32 {
             ExecuteProgram = 0,
             JumpToSubApplicationProgramForDevelopment = 1,
@@ -335,22 +343,31 @@ namespace skyline::service::am {
     }
 
     Result IApplicationFunctions::ClearUserChannel(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        LOGI("Multiprogram trace: ClearUserChannel current={} previous={}",
+             state.os->GetCurrentProgramIndex(), state.os->GetPreviousProgramIndex());
         state.os->ClearUserChannel();
         return {};
     }
 
     Result IApplicationFunctions::UnpopToUserChannel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        LOGI("Multiprogram trace: UnpopToUserChannel begin current={} previous={}",
+             state.os->GetCurrentProgramIndex(), state.os->GetPreviousProgramIndex());
         auto storage{request.PopService<IStorage>(0, session)};
-        if (!storage)
+        if (!storage) {
+            LOGI("Multiprogram trace: UnpopToUserChannel -> InvalidInput (missing storage)");
             return result::InvalidInput;
+        }
 
         auto data{storage->GetSpan()};
+        LOGI("Multiprogram trace: UnpopToUserChannel push {} bytes", data.size());
         state.os->PushUserChannel(std::vector<u8>{data.begin(), data.end()});
         return {};
     }
 
     Result IApplicationFunctions::GetPreviousProgramIndex(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        response.Push<i32>(state.os->GetPreviousProgramIndex());
+        const auto previous{state.os->GetPreviousProgramIndex()};
+        LOGI("Multiprogram trace: GetPreviousProgramIndex -> {}", previous);
+        response.Push<i32>(previous);
         return {};
     }
 
