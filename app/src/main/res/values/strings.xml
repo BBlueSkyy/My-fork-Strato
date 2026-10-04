@@ -324,6 +324,7 @@
     <!-- Software Keyboard -->
     <string name="input_hint">Input Text</string>
     <!-- Misc -->
+    <string name="loading_game">Loading game</string>
     <string name="compiling_cached_pipelines">Compiling cached pipelines...</string>
     <!--suppress AndroidLintUnusedResources -->
     <string name="expand_button_title" tools:override="true">Expand</string>
