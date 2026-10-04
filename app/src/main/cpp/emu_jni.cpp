@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <csignal>
+#include <limits>
 #include <pthread.h>
 #include <android/asset_manager_jni.h>
 #include <sys/system_properties.h>
@@ -63,6 +64,9 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
     jint romFd,
     jintArray dlcFds,
     jint updateFd,
+    jint programIndex,
+    jint previousProgramIndex,
+    jbyteArray userChannelData,
     jobject settingsInstance,
     jstring publicAppFilesPathJstring,
     jstring privateAppFilesPathJstring,
@@ -104,6 +108,49 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
 
         // Host signal handlers need to be set before NCE is initialized, this is the only place where we can do that
         skyline::signal::SetHostSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, skyline::signal::ExceptionalSignalHandler);
+
+        if (programIndex < 0 || programIndex > std::numeric_limits<skyline::u8>::max())
+            throw skyline::exception("Invalid ProgramIndex {}", programIndex);
+
+        auto programLaunchState{std::make_shared<skyline::kernel::ProgramLaunchState>()};
+        programLaunchState->currentProgramIndex = static_cast<skyline::u8>(programIndex);
+        programLaunchState->previousProgramIndex = previousProgramIndex;
+
+        if (userChannelData) {
+            const jsize payloadSize{env->GetArrayLength(userChannelData)};
+            std::vector<skyline::u8> payload(static_cast<size_t>(payloadSize));
+            if (payloadSize)
+                env->GetByteArrayRegion(userChannelData, 0, payloadSize, reinterpret_cast<jbyte *>(payload.data()));
+
+            size_t offset{};
+            auto popU32{[&]() -> skyline::u32 {
+                if (payload.size() - offset < sizeof(skyline::u32))
+                    throw skyline::exception("Truncated Program UserChannel state");
+                const skyline::u32 value{
+                    static_cast<skyline::u32>(payload[offset]) |
+                    (static_cast<skyline::u32>(payload[offset + 1]) << 8) |
+                    (static_cast<skyline::u32>(payload[offset + 2]) << 16) |
+                    (static_cast<skyline::u32>(payload[offset + 3]) << 24)
+                };
+                offset += sizeof(u32);
+                return value;
+            }};
+
+            const skyline::u32 count{popU32()};
+            if (count > (payload.size() - offset) / sizeof(skyline::u32))
+                throw skyline::exception("Invalid Program UserChannel entry count");
+            programLaunchState->userChannel.reserve(count);
+            for (skyline::u32 index{}; index < count; index++) {
+                const skyline::u32 size{popU32()};
+                if (size > payload.size() - offset)
+                    throw skyline::exception("Invalid Program UserChannel entry size");
+                programLaunchState->userChannel.emplace_back(payload.begin() + offset, payload.begin() + offset + size);
+                offset += size;
+            }
+            if (offset != payload.size())
+                throw skyline::exception("Trailing bytes in Program UserChannel state");
+        }
+
         auto os{std::make_shared<skyline::kernel::OS>(
             jvmManager,
             settings,
@@ -111,7 +158,8 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
             privateAppFilesPath,
             nativeLibraryPath,
             GetTimeZoneName(),
-            std::make_shared<skyline::vfs::AndroidAssetFileSystem>(AAssetManager_fromJava(env, assetManager))
+            std::make_shared<skyline::vfs::AndroidAssetFileSystem>(AAssetManager_fromJava(env, assetManager)),
+            programLaunchState
         )};
         OsWeak = os;
         GpuWeak = os->state.gpu;
@@ -120,7 +168,8 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
         SettingsWeak = settings;
         jvmManager->InitializeControllers();
 
-        LOGDNF("Launching ROM {}", skyline::JniString(env, romUriJstring));
+        LOGDNF("Launching ROM {} with ProgramIndex {} (previous {})",
+               skyline::JniString(env, romUriJstring), programIndex, previousProgramIndex);
 
         os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
     } catch (std::exception &e) {

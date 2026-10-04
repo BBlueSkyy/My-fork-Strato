@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <limits>
 #include "jvm.h"
 
 namespace skyline {
@@ -66,6 +67,8 @@ namespace skyline {
           hideSoftwareKeyboardId{environ->GetMethodID(instanceClass, "hideSoftwareKeyboard", "(J)V")},
           closeSoftwareKeyboardId{environ->GetMethodID(instanceClass, "closeSoftwareKeyboard", "(J)V")},
           reportCrashId{environ->GetMethodID(instanceClass, "reportCrash", "()V")},
+          requestProgramRelaunchId{environ->GetMethodID(instanceClass, "requestProgramRelaunch", "(IJII[B)Z")},
+          firstFramePresentedId{environ->GetMethodID(instanceClass, "onFirstFramePresented", "()V")},
           showPipelineLoadingScreenId{environ->GetMethodID(instanceClass, "showPipelineLoadingScreen", "(I)V")},
           updatePipelineLoadingProgressId{environ->GetMethodID(instanceClass, "updatePipelineLoadingProgress", "(I)V")},
           hidePipelineLoadingScreenId{environ->GetMethodID(instanceClass, "hidePipelineLoadingScreen", "()V")},
@@ -230,6 +233,34 @@ namespace skyline {
 
     void JvmManager::reportCrash() {
         env->CallVoidMethod(instance, reportCrashId);
+    }
+
+    bool JvmManager::RequestProgramRelaunch(i32 kind, u64 value, i32 programIndex, i32 previousProgramIndex, span<const u8> userChannel) {
+        JNIEnv *environment{GetEnv()};
+        if (userChannel.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
+            throw exception("Program relaunch UserChannel payload is too large");
+
+        auto payload{environment->NewByteArray(static_cast<jsize>(userChannel.size()))};
+        if (!payload)
+            throw exception("Failed to allocate Program relaunch UserChannel payload");
+
+        if (!userChannel.empty())
+            environment->SetByteArrayRegion(payload, 0, static_cast<jsize>(userChannel.size()),
+                                            reinterpret_cast<const jbyte *>(userChannel.data()));
+
+        const bool accepted{environment->CallBooleanMethod(instance, requestProgramRelaunchId,
+                                                           static_cast<jint>(kind),
+                                                           static_cast<jlong>(value),
+                                                           static_cast<jint>(programIndex),
+                                                           static_cast<jint>(previousProgramIndex),
+                                                           payload) == JNI_TRUE};
+        environment->DeleteLocalRef(payload);
+        return accepted;
+    }
+
+    void JvmManager::NotifyFirstFramePresented() {
+        JNIEnv *environment{GetEnv()};
+        environment->CallVoidMethod(instance, firstFramePresentedId);
     }
 
     void JvmManager::ShowPipelineLoadingScreen(u32 totalPipelineCount) {

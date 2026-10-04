@@ -9,7 +9,7 @@
 #include "program_content.h"
 
 namespace skyline::loader {
-    XciLoader::XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore) {
+    XciLoader::XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore, u8 programIndex) {
         header = backing->Read<GamecardHeader>();
 
         if (header.magic != util::MakeMagic<u32>("HEAD"))
@@ -59,7 +59,7 @@ namespace skyline::loader {
             throw exception("Corrupted secure partition");
         }
 
-        auto selection{SelectProgramNcas(std::move(programs), metadata)};
+        auto selection{SelectProgramNcas(std::move(programs), metadata, programIndex)};
         programNca = std::move(selection.base);
         programPatchNca = std::move(selection.patch);
         if (programNca)

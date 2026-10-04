@@ -225,7 +225,7 @@ void TestDataNca() {
     Check(!dlc.exeFs && ReadBytes(dlc.romFs) == RomBytes(), "Standalone DLC/PublicData RomFS requires an unrelated Program base");
 }
 
-CNMT MakeProgramMeta(u64 programId, u8 contentByte, ContentMetaType type, u32 version = 1) {
+CNMT MakeProgramMeta(u64 programId, u8 contentByte, ContentMetaType type, u32 version = 1, u8 idOffset = 0) {
     std::vector<u8> bytes(sizeof(PackagedContentMetaHeader) + sizeof(OptionalHeader) + sizeof(PackagedContentInfo));
     PackagedContentMetaHeader header{};
     header.id = type == ContentMetaType::Patch ? programId + 1 : programId;
@@ -234,7 +234,7 @@ CNMT MakeProgramMeta(u64 programId, u8 contentByte, ContentMetaType type, u32 ve
     header.extendedHeaderSize = sizeof(OptionalHeader); header.contentCount = 1;
     Put(bytes, 0, header);
     Put(bytes, sizeof(header), OptionalHeader{programId, 0});
-    PackagedContentInfo info{}; info.contentId.fill(contentByte); info.contentType = ContentType::Program;
+    PackagedContentInfo info{}; info.contentId.fill(contentByte); info.contentType = ContentType::Program; info.idOffset = idOffset;
     Put(bytes, sizeof(header) + sizeof(OptionalHeader), info);
     auto pfsBytes{PfsBytes({{"fixture.cnmt", bytes}})};
     auto pfs{std::make_shared<MemoryBacking>(pfsBytes.size())}; pfs->data = pfsBytes;
@@ -261,6 +261,52 @@ void TestProgramSelection() {
     try { loader::SelectProgramNcas(candidates, {app, MakeProgramMeta(base.header.titleId + 5, 0x22, ContentMetaType::Patch)}); }
     catch (const std::exception &) { rejected = true; }
     Check(rejected, "Mismatched Program update was accepted");
+}
+
+void TestProgramIndexSelection() {
+    auto keys{std::make_shared<crypto::KeyStore>("")};
+
+    NcaFixture p0;
+    auto exe0{ExeBytes(0x41)};
+    p0.Add(0, ExeHeader(exe0.size()), WithPrefix(exe0));
+    p0.Finalize();
+
+    NcaFixture p1;
+    p1.header.titleId = p0.header.titleId + 1;
+    auto exe1{ExeBytes(0x42)};
+    p1.Add(0, ExeHeader(exe1.size()), WithPrefix(exe1));
+    p1.Finalize();
+
+    auto p1Patch{PatchFixture(false)};
+    p1Patch.header.titleId = p0.header.titleId + 1;
+    p1Patch.Finalize();
+
+    NCA program0(p0.backing, keys), program1(p1.backing, keys), patch1(p1Patch.backing, keys);
+    std::vector<loader::ProgramNcaCandidate> candidates{
+        {std::string(32, '1') + ".nca", program0},
+        {std::string(32, '3') + ".nca", program1},
+        {std::string(32, '4') + ".nca", patch1},
+    };
+
+    auto app0{MakeProgramMeta(p0.header.titleId, 0x11, ContentMetaType::Application, 1, 0)};
+    auto app1{MakeProgramMeta(p0.header.titleId, 0x33, ContentMetaType::Application, 1, 1)};
+    auto update1{MakeProgramMeta(p0.header.titleId, 0x44, ContentMetaType::Patch, 2, 1)};
+
+    auto selection{loader::SelectProgramNcas(candidates, {app0, app1, update1}, 1)};
+    Check(selection.base && selection.base->header.titleId == p0.header.titleId + 1,
+          "ProgramIndex 1 did not select its base Program NCA");
+    Check(selection.patch && selection.patch->header.titleId == p0.header.titleId + 1,
+          "ProgramIndex 1 did not select its patch Program NCA");
+
+    selection = loader::SelectProgramNcas(candidates, {app0, app1, update1}, 0);
+    Check(selection.base && selection.base->header.titleId == p0.header.titleId && !selection.patch,
+          "ProgramIndex 0 selection changed when additional programs were present");
+
+    selection = loader::SelectProgramNcas(candidates, {app0, app1, update1}, 2);
+    Check(!selection.base && !selection.patch, "Missing ProgramIndex selected unrelated content");
+
+    selection = loader::SelectProgramNcas({candidates[1]}, {}, 1);
+    Check(!selection.base && !selection.patch, "Header-only fallback selected a nonzero ProgramIndex without CNMT");
 }
 
 class FixtureLoader : public loader::Loader {
@@ -322,6 +368,7 @@ int main() {
     run("reject malformed IVFC/RomFS/relocations", TestInvalidMetadata);
     run("DLC/PublicData storage independence", TestDataNca);
     run("CNMT selection, container order, incomplete candidates", TestProgramSelection);
+    run("CNMT ProgramIndex selection", TestProgramIndexSelection);
     run("persistent resolution, lifetime, fingerprints", TestPersistentResolution);
     run("base-only/ExeFS-only update patch-data absence", TestPatchDataAbsence);
     return failures ? 1 : 0;
