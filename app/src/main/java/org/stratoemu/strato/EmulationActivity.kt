@@ -155,6 +155,29 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     @Volatile
     private var programRelaunchRequested = false
     private val programRelaunchDeathToken = Binder()
+    private val programRelaunchFinishReceiver = object : ResultReceiver(Handler(Looper.getMainLooper())) {
+        override fun onReceiveResult(resultCode : Int, resultData : Bundle?) {
+            if (resultCode != ProgramRelaunchActivity.FinishOldActivityRequest)
+                return
+
+            val ackReceiver = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                resultData?.getParcelable(
+                    ProgramRelaunchActivity.OldActivityFinishAckReceiverTag,
+                    ResultReceiver::class.java
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                resultData?.getParcelable<ResultReceiver>(
+                    ProgramRelaunchActivity.OldActivityFinishAckReceiverTag
+                )
+            }
+
+            ProgramRelaunchTrace.write(this@EmulationActivity, "old_emulation_activity_finish_requested")
+            finish()
+            overridePendingTransition(0, 0)
+            ackReceiver?.send(Activity.RESULT_OK, null)
+        }
+    }
     private var programRelaunchOverlay : View? = null
     private var programRelaunchSnapshotPath : String? = null
 
@@ -341,8 +364,8 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             putExtra(ProgramRelaunchActivity.TargetIntentTag, targetIntent)
             putExtra(ProgramRelaunchActivity.OldProcessIdTag, Process.myPid())
             putExtra(ProgramRelaunchActivity.ProcessDeathTokenBundleTag, deathTokenBundle)
+            putExtra(ProgramRelaunchActivity.OldActivityFinishReceiverTag, programRelaunchFinishReceiver)
         }
-        trampolineIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         ProgramRelaunchTrace.write(this, "trampoline_start_requested old_pid=${Process.myPid()} task_id=$taskId orientation=$requestedOrientation")
         startActivity(trampolineIntent)
         overridePendingTransition(0, 0)
