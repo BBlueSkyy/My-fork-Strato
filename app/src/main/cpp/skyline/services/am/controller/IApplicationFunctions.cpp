@@ -8,6 +8,7 @@
 #include <loader/loader.h>
 #include <common/settings.h>
 #include <kernel/types/KProcess.h>
+#include <jvm.h>
 #include <nce.h>
 #include <os.h>
 #include <services/account/IAccountServiceForApplication.h>
