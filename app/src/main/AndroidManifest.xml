@@ -87,6 +87,7 @@
             android:exported="false"
             android:launchMode="singleTop"
             android:process=":programRelaunch"
+            android:screenOrientation="behind"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
             android:theme="@style/ProgramRelaunchTrampolineTheme" />
 
