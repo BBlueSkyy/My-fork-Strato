@@ -74,6 +74,7 @@ import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import javax.inject.Inject
 import kotlin.math.abs
+import kotlin.system.exitProcess
 
 
 private const val ActionPause = "${BuildConfig.APPLICATION_ID}.ACTION_EMULATOR_PAUSE"
@@ -154,27 +155,22 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     @Volatile
     private var programRelaunchRequested = false
     private val programRelaunchDeathToken = Binder()
+    @Volatile
+    private var programRelaunchSelfTerminate = false
     private val programRelaunchFinishReceiver = object : ResultReceiver(Handler(Looper.getMainLooper())) {
         override fun onReceiveResult(resultCode : Int, resultData : Bundle?) {
             if (resultCode != ProgramRelaunchActivity.FinishOldActivityRequest)
                 return
 
-            val ackReceiver = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                resultData?.getParcelable(
-                    ProgramRelaunchActivity.OldActivityFinishAckReceiverTag,
-                    ResultReceiver::class.java
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                resultData?.getParcelable<ResultReceiver>(
-                    ProgramRelaunchActivity.OldActivityFinishAckReceiverTag
-                )
-            }
-
+            /*
+             * Let the old emulation process terminate itself after its Activity is removed.
+             * Externally SIGKILLing a process that still owns Android lifecycle state can be
+             * reported as an app crash by the system, even though the relaunch itself succeeds.
+             */
+            programRelaunchSelfTerminate = true
             ProgramRelaunchTrace.write(this@EmulationActivity, "old_emulation_activity_finish_requested")
             finish()
             overridePendingTransition(0, 0)
-            ackReceiver?.send(Activity.RESULT_OK, null)
         }
     }
     private var programRelaunchSnapshotPath : String? = null
@@ -248,7 +244,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             putExtra(ProgramIndexTag, programIndex)
             putExtra(PreviousProgramIndexTag, previousProgramIndex)
             putExtra(ProgramUserChannelPathTag, stateFile.absolutePath)
-            putExtra(ProgramRelaunchOrientationTag, requestedOrientation)
+            putExtra(ProgramRelaunchOrientationTag, ActivityInfo.SCREEN_ORIENTATION_LOCKED)
         }
 
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -934,6 +930,27 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     override fun onDestroy() {
+        if (programRelaunchSelfTerminate) {
+            /*
+             * The whole emulation process is the session boundary for ExecuteProgram.
+             * Do not race stopEmulation/native teardown against the process relaunch path:
+             * remove the Activity, release frontend-only resources, then exit normally.
+             * Binder death remains the authoritative signal used by the trampoline.
+             */
+            super.onDestroy()
+            shouldFinish = false
+
+            getSystemService<DisplayManager>()?.unregisterDisplayListener(this)
+            if (::emulationSettings.isInitialized && emulationSettings.forceMaxGpuClocks)
+                GpuDriverHelper.forceMaxGpuClocks(false)
+
+            vibrators.forEach { (_, vibrator) -> vibrator.cancel() }
+            vibrators.clear()
+
+            ProgramRelaunchTrace.write(this, "old_emulation_process_exit")
+            exitProcess(0)
+        }
+
         softwareKeyboardDialogs.toMap().also { softwareKeyboardDialogs.clear() }.forEach { (sessionId, dialog) ->
             dialog.closeFromFrontend()
             nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
