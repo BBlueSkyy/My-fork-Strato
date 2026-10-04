@@ -16,11 +16,14 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Process
 import android.os.RemoteException
-import android.view.ViewGroup
-import android.widget.ImageView
+import org.stratoemu.strato.data.AppItemTag
+import org.stratoemu.strato.data.BaseAppItem
+import org.stratoemu.strato.databinding.PipelineLoadingBinding
+import org.stratoemu.strato.emulation.PipelineLoadingUi
+import org.stratoemu.strato.utils.serializable
 
 /**
- * Lives in a dedicated Android process so it can keep the transition frame visible while the
+ * Lives in a dedicated Android process so it can keep the transition UI visible while the
  * emulation process is killed and recreated from a completely clean native state.
  */
 class ProgramRelaunchActivity : Activity() {
@@ -35,6 +38,7 @@ class ProgramRelaunchActivity : Activity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var relaunchStarted = false
     private var launchCompleted = false
+    private var targetIntent : Intent? = null
 
     override fun onCreate(savedInstanceState : Bundle?) {
         super.onCreate(savedInstanceState)
@@ -43,36 +47,33 @@ class ProgramRelaunchActivity : Activity() {
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
 
-        val imageView = ImageView(this).apply {
-            setBackgroundColor(Color.BLACK)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-
-        intent.getStringExtra(SnapshotPathTag)?.let { path ->
-            BitmapFactory.decodeFile(path)?.let(imageView::setImageBitmap)
-        }
-        setContentView(imageView)
+        targetIntent = readTargetIntent()
+        val binding = PipelineLoadingBinding.inflate(layoutInflater)
+        val item = targetIntent?.serializable<BaseAppItem>(AppItemTag)
+        val fallbackBackground = intent.getStringExtra(SnapshotPathTag)?.let(BitmapFactory::decodeFile)
+        PipelineLoadingUi.configureIndeterminate(binding, item, fallbackBackground)
+        setContentView(binding.root)
+        ProgramRelaunchTrace.write(this, "trampoline_loading_ui_installed item=${item != null}")
 
         // Do not kill the old emulation process until this window has submitted at least one draw.
-        imageView.viewTreeObserver.addOnDrawListener {
+        binding.root.viewTreeObserver.addOnDrawListener {
             if (!relaunchStarted) {
                 relaunchStarted = true
-                imageView.post(::relaunch)
+                binding.root.post(::relaunch)
             }
         }
     }
 
-    private fun relaunch() {
-        val targetIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    private fun readTargetIntent() : Intent? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(TargetIntentTag, Intent::class.java)
         } else {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra<Intent>(TargetIntentTag)
-        } ?: run {
+        }
+
+    private fun relaunch() {
+        val targetIntent = targetIntent ?: readTargetIntent() ?: run {
             ProgramRelaunchTrace.write(this, "trampoline_missing_target_intent")
             finish()
             return
