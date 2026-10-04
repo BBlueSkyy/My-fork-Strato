@@ -219,7 +219,16 @@ class ProgramRelaunchActivity : Activity() {
 
         pendingTargetIntent = targetIntent
         val prewarmIntent = Intent(this, ProgramRelaunchPrewarmService::class.java)
-        prewarmBound = bindService(prewarmIntent, prewarmConnection, Context.BIND_AUTO_CREATE)
+        prewarmBound = try {
+            bindService(prewarmIntent, prewarmConnection, Context.BIND_AUTO_CREATE)
+        } catch (exception : RuntimeException) {
+            ProgramRelaunchTrace.write(
+                this,
+                "new_emulation_process_prewarm_failed ${exception.javaClass.simpleName}"
+            )
+            false
+        }
+
         if (prewarmBound) {
             ProgramRelaunchTrace.write(this, "new_emulation_process_prewarm_requested")
         } else {
