@@ -68,6 +68,7 @@ namespace skyline {
           closeSoftwareKeyboardId{environ->GetMethodID(instanceClass, "closeSoftwareKeyboard", "(J)V")},
           reportCrashId{environ->GetMethodID(instanceClass, "reportCrash", "()V")},
           requestProgramRelaunchId{environ->GetMethodID(instanceClass, "requestProgramRelaunch", "(II[B)V")},
+          firstFramePresentedId{environ->GetMethodID(instanceClass, "onFirstFramePresented", "()V")},
           showPipelineLoadingScreenId{environ->GetMethodID(instanceClass, "showPipelineLoadingScreen", "(I)V")},
           updatePipelineLoadingProgressId{environ->GetMethodID(instanceClass, "updatePipelineLoadingProgress", "(I)V")},
           hidePipelineLoadingScreenId{environ->GetMethodID(instanceClass, "hidePipelineLoadingScreen", "()V")},
@@ -252,6 +253,11 @@ namespace skyline {
                                     static_cast<jint>(previousProgramIndex),
                                     payload);
         environment->DeleteLocalRef(payload);
+    }
+
+    void JvmManager::NotifyFirstFramePresented() {
+        JNIEnv *environment{GetEnv()};
+        environment->CallVoidMethod(instance, firstFramePresentedId);
     }
 
     void JvmManager::ShowPipelineLoadingScreen(u32 totalPipelineCount) {
