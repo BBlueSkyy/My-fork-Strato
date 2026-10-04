@@ -38,7 +38,7 @@ class ProgramRelaunchActivity : Activity() {
 
     override fun onCreate(savedInstanceState : Bundle?) {
         super.onCreate(savedInstanceState)
-        ProgramRelaunchTrace.write(this, "trampoline_created")
+        ProgramRelaunchTrace.write(this, "trampoline_created task_id=$taskId task_root=$isTaskRoot")
 
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
@@ -111,9 +111,12 @@ class ProgramRelaunchActivity : Activity() {
             return
         launchCompleted = true
 
-        ProgramRelaunchTrace.write(this, "new_emulation_activity_requested")
         targetIntent.setClass(this, EmulationActivity::class.java)
-        targetIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        targetIntent.flags = targetIntent.flags and
+            (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+        targetIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        ProgramRelaunchTrace.write(this, "new_emulation_activity_requested from_task=$taskId")
         startActivity(targetIntent)
         overridePendingTransition(0, 0)
         finish()
