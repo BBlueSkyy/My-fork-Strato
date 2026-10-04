@@ -71,6 +71,8 @@ namespace skyline::kernel {
         LOGI("OS::Execute - romFd: {}, updateFd: {}, dlcFds count: {}", romFd, updateFd, dlcFds.size());
 
         const u8 programIndex{GetCurrentProgramIndex()};
+        LOGI("[MULTIPROGRAM] OS::Execute begin programIndex={} previousProgramIndex={}",
+             programIndex, GetPreviousProgramIndex());
         state.loader = GetLoader(romFd, keyStore, romType, programIndex);
 
         if (updateFd >= 0) {
@@ -151,7 +153,9 @@ namespace skyline::kernel {
             state.loader->OnMainThreadCreated(process, thread->handle);
             LOGI("Starting main HOS thread");
             thread->Start(true);
+            LOGI("[MULTIPROGRAM] main HOS thread returned; beginning full process teardown");
             process->Kill(true, true, true);
+            LOGI("[MULTIPROGRAM] full process teardown complete; OS::Execute returning");
         }
     }
 
