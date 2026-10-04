@@ -324,7 +324,8 @@ namespace skyline::service::am {
 
         LOGI("ExecuteProgram: current ProgramIndex {}, target ProgramIndex {}",
              state.os->GetCurrentProgramIndex(), programIndex);
-        state.jvm->RequestProgramRelaunch(programIndex, state.os->GetCurrentProgramIndex(), serialized);
+        if (!state.jvm->RequestProgramRelaunch(programIndex, state.os->GetCurrentProgramIndex(), serialized))
+            throw exception("Android frontend rejected Program relaunch request");
 
         // The Android relaunch trampoline owns termination from this point onward. Exit the
         // requesting guest process path while the trampoline captures the last presented frame.
