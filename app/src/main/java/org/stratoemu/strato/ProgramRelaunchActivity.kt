@@ -36,18 +36,19 @@ class ProgramRelaunchActivity : Activity() {
         const val OldProcessIdTag = "programRelaunchOldProcessId"
         const val ProcessDeathTokenBundleTag = "programRelaunchDeathTokenBundle"
         const val ProcessDeathTokenTag = "programRelaunchDeathToken"
-        const val OverlayReadyReceiverTag = "programRelaunchOverlayReadyReceiver"
+        const val FirstFrameReadyReceiverTag = "programRelaunchFirstFrameReadyReceiver"
+        const val TrampolineReadyReceiverTag = "programRelaunchTrampolineReadyReceiver"
         const val OldActivityFinishReceiverTag = "programRelaunchOldActivityFinishReceiver"
         const val OldActivityFinishAckReceiverTag = "programRelaunchOldActivityFinishAckReceiver"
         const val FinishOldActivityRequest = 1
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val overlayReadyReceiver = object : ResultReceiver(mainHandler) {
+    private val firstFrameReadyReceiver = object : ResultReceiver(mainHandler) {
         override fun onReceiveResult(resultCode : Int, resultData : Bundle?) {
             if (resultCode != RESULT_OK || !launchCompleted)
                 return
-            ProgramRelaunchTrace.write(this@ProgramRelaunchActivity, "new_emulation_overlay_ready")
+            ProgramRelaunchTrace.write(this@ProgramRelaunchActivity, "new_emulation_first_frame_ready")
             unbindPrewarmService()
             finish()
             overridePendingTransition(0, 0)
@@ -130,13 +131,32 @@ class ProgramRelaunchActivity : Activity() {
         setContentView(binding.root)
         ProgramRelaunchTrace.write(this, "trampoline_loading_ui_installed item=${item != null} orientation=$handoffOrientation")
 
-        // Do not kill the old emulation process until this window has submitted at least one draw.
-        binding.root.viewTreeObserver.addOnDrawListener {
-            if (!relaunchStarted) {
+        // The trampoline is the single visible loading screen. Confirm its first real
+        // draw before allowing the old native process to disappear.
+        val trampolineReadyReceiver = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(TrampolineReadyReceiverTag, ResultReceiver::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra<ResultReceiver>(TrampolineReadyReceiverTag)
+        }
+
+        val observer = binding.root.viewTreeObserver
+        val drawListener = object : android.view.ViewTreeObserver.OnDrawListener {
+            override fun onDraw() {
+                if (relaunchStarted)
+                    return
                 relaunchStarted = true
-                binding.root.post(::relaunch)
+                binding.root.post {
+                    if (observer.isAlive)
+                        observer.removeOnDrawListener(this)
+                    ProgramRelaunchTrace.write(this@ProgramRelaunchActivity, "trampoline_first_draw")
+                    trampolineReadyReceiver?.send(RESULT_OK, null)
+                    relaunch()
+                }
             }
         }
+        observer.addOnDrawListener(drawListener)
+        binding.root.invalidate()
     }
 
     private fun readTargetIntent() : Intent? =
@@ -247,7 +267,7 @@ class ProgramRelaunchActivity : Activity() {
         targetIntent.flags = targetIntent.flags and
             (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
                 Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
-        targetIntent.putExtra(OverlayReadyReceiverTag, overlayReadyReceiver)
+        targetIntent.putExtra(FirstFrameReadyReceiverTag, firstFrameReadyReceiver)
         ProgramRelaunchTrace.write(this, "new_emulation_activity_requested from_task=$taskId")
         startActivity(targetIntent)
         overridePendingTransition(0, 0)
