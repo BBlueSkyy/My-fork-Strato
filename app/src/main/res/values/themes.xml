@@ -60,13 +60,14 @@
     </style>
 
     <!--
-        The trampoline lives in another task/process. Keep its launch window translucent so
-        Android cannot cover the still-visible old emulation activity with a black starting
-        window before the persisted relaunch frame has actually been drawn.
+        The trampoline owns the entire visible program-switch interval. Keep its window opaque
+        so activities deeper in the task (for example the per-game settings screen) can never
+        become visible while the old emulation process exits or the fresh one is still blocked
+        waiting for its first guest frame. windowDisablePreview in ProgramRelaunchTheme keeps
+        Android from inserting a separate starting window before this activity draws.
     -->
     <style name="ProgramRelaunchTrampolineTheme" parent="ProgramRelaunchTheme">
-        <item name="android:windowIsTranslucent">true</item>
-        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowBackground">@android:color/black</item>
         <item name="android:backgroundDimEnabled">false</item>
     </style>
 </resources>
