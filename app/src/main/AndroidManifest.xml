@@ -82,6 +82,13 @@
         </activity>
 
         <activity
+            android:name=".ProgramRelaunchActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:process=":programRelaunch"
+            android:theme="@style/AppTheme" />
+
+        <activity
             android:name=".EmulationActivity"
             android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
