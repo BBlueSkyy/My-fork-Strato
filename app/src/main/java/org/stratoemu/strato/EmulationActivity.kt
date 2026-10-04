@@ -56,7 +56,9 @@ import org.stratoemu.strato.data.AppItem
 import org.stratoemu.strato.data.BaseAppItem
 import org.stratoemu.strato.data.AppItemTag
 import org.stratoemu.strato.databinding.EmuActivityBinding
+import org.stratoemu.strato.databinding.PipelineLoadingBinding
 import org.stratoemu.strato.emulation.PipelineLoadingFragment
+import org.stratoemu.strato.emulation.PipelineLoadingUi
 import org.stratoemu.strato.input.*
 import org.stratoemu.strato.loader.RomFile
 import org.stratoemu.strato.loader.getRomFormat
@@ -152,7 +154,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     @Volatile
     private var programRelaunchRequested = false
     private val programRelaunchDeathToken = Binder()
-    private var programRelaunchOverlay : ImageView? = null
+    private var programRelaunchOverlay : View? = null
     private var programRelaunchSnapshotPath : String? = null
 
     /**
@@ -286,20 +288,20 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     private fun installProgramRelaunchOverlay(intent : Intent) {
-        val path = intent.getStringExtra(ProgramRelaunchSnapshotPathTag) ?: return
-        val bitmap = BitmapFactory.decodeFile(path) ?: return
+        if (!intent.hasExtra(PreviousProgramIndexTag))
+            return
 
-        programRelaunchSnapshotPath = path
-        val overlay = ImageView(this).apply {
-            setBackgroundColor(android.graphics.Color.BLACK)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            setImageBitmap(bitmap)
-        }
+        programRelaunchSnapshotPath = intent.getStringExtra(ProgramRelaunchSnapshotPathTag)
+        val loadingBinding = PipelineLoadingBinding.inflate(layoutInflater)
+        PipelineLoadingUi.configureIndeterminate(loadingBinding, item)
+
+        val overlay = loadingBinding.root
         programRelaunchOverlay = overlay
-        addContentView(
+        binding.emulationFragment.addView(
             overlay,
             ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
+        ProgramRelaunchTrace.write(this, "emulation_loading_ui_installed")
     }
 
     @Suppress("unused")
