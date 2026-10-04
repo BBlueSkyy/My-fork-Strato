@@ -72,6 +72,20 @@ class ProgramRelaunchActivity : Activity() {
     private var targetIntent : Intent? = null
 
     override fun onCreate(savedInstanceState : Bundle?) {
+        targetIntent = readTargetIntent()
+        val orientationPolicy = targetIntent?.getIntExtra(
+            EmulationActivity.ProgramRelaunchOrientationPolicyTag,
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        ) ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+
+        /*
+         * Match the emulation Activity orientation policy before the trampoline window exists.
+         * Applying it after super.onCreate() can create a visible rotation animation during
+         * the Activity handoff even when both Activities ultimately use sensorLandscape.
+         */
+        if (orientationPolicy != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
+            requestedOrientation = orientationPolicy
+
         super.onCreate(savedInstanceState)
         ProgramRelaunchTrace.write(this, "trampoline_created task_id=$taskId task_root=$isTaskRoot")
 
@@ -88,13 +102,6 @@ class ProgramRelaunchActivity : Activity() {
                 android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
             )
 
-        targetIntent = readTargetIntent()
-        val orientationPolicy = targetIntent?.getIntExtra(
-            EmulationActivity.ProgramRelaunchOrientationPolicyTag,
-            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        ) ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        if (orientationPolicy != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
-            requestedOrientation = orientationPolicy
         ProgramRelaunchTrace.write(this, "trampoline_window_setup orientation_policy=$orientationPolicy")
 
         // Keep window/insets manipulation out of the handoff critical path. The old
