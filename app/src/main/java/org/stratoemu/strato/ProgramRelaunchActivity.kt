@@ -34,6 +34,9 @@ class ProgramRelaunchActivity : Activity() {
         const val ProcessDeathTokenBundleTag = "programRelaunchDeathTokenBundle"
         const val ProcessDeathTokenTag = "programRelaunchDeathToken"
         const val OverlayReadyReceiverTag = "programRelaunchOverlayReadyReceiver"
+        const val OldActivityFinishReceiverTag = "programRelaunchOldActivityFinishReceiver"
+        const val OldActivityFinishAckReceiverTag = "programRelaunchOldActivityFinishAckReceiver"
+        const val FinishOldActivityRequest = 1
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -42,11 +45,14 @@ class ProgramRelaunchActivity : Activity() {
             if (resultCode != RESULT_OK || !launchCompleted)
                 return
             ProgramRelaunchTrace.write(this@ProgramRelaunchActivity, "new_emulation_overlay_ready")
-            finishAndRemoveTask()
+            finish()
+            overridePendingTransition(0, 0)
         }
     }
     private var relaunchStarted = false
     private var launchCompleted = false
+    @Volatile
+    private var oldProcessDead = false
     private var targetIntent : Intent? = null
 
     override fun onCreate(savedInstanceState : Bundle?) {
@@ -56,6 +62,15 @@ class ProgramRelaunchActivity : Activity() {
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
         window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = (
+            android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+            )
 
         targetIntent = readTargetIntent()
         val handoffOrientation = targetIntent?.getIntExtra(
@@ -133,6 +148,7 @@ class ProgramRelaunchActivity : Activity() {
         }
 
         val deathRecipient = IBinder.DeathRecipient {
+            oldProcessDead = true
             ProgramRelaunchTrace.write(this, "binder_died old_pid=$oldPid")
             mainHandler.post {
                 launchTarget(targetIntent)
@@ -148,6 +164,36 @@ class ProgramRelaunchActivity : Activity() {
             return
         }
 
+        val oldActivityFinishReceiver = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(OldActivityFinishReceiverTag, ResultReceiver::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra<ResultReceiver>(OldActivityFinishReceiverTag)
+        }
+
+        if (oldActivityFinishReceiver == null) {
+            killOldProcess(oldPid)
+            return
+        }
+
+        val finishAckReceiver = object : ResultReceiver(mainHandler) {
+            override fun onReceiveResult(resultCode : Int, resultData : Bundle?) {
+                if (resultCode != RESULT_OK)
+                    return
+                ProgramRelaunchTrace.write(this@ProgramRelaunchActivity, "old_emulation_activity_finished")
+                killOldProcess(oldPid)
+            }
+        }
+        val finishBundle = Bundle().apply {
+            putParcelable(OldActivityFinishAckReceiverTag, finishAckReceiver)
+        }
+        ProgramRelaunchTrace.write(this, "old_emulation_activity_finish_requested")
+        oldActivityFinishReceiver.send(FinishOldActivityRequest, finishBundle)
+    }
+
+    private fun killOldProcess(oldPid : Int) {
+        if (oldProcessDead)
+            return
         ProgramRelaunchTrace.write(this, "old_process_kill_requested old_pid=$oldPid")
         Process.killProcess(oldPid)
     }
@@ -162,7 +208,6 @@ class ProgramRelaunchActivity : Activity() {
             (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
                 Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
         targetIntent.putExtra(OverlayReadyReceiverTag, overlayReadyReceiver)
-        targetIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         ProgramRelaunchTrace.write(this, "new_emulation_activity_requested from_task=$taskId")
         startActivity(targetIntent)
         overridePendingTransition(0, 0)
