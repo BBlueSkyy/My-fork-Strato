@@ -67,7 +67,7 @@ namespace skyline {
           hideSoftwareKeyboardId{environ->GetMethodID(instanceClass, "hideSoftwareKeyboard", "(J)V")},
           closeSoftwareKeyboardId{environ->GetMethodID(instanceClass, "closeSoftwareKeyboard", "(J)V")},
           reportCrashId{environ->GetMethodID(instanceClass, "reportCrash", "()V")},
-          requestProgramRelaunchId{environ->GetMethodID(instanceClass, "requestProgramRelaunch", "(II[B)V")},
+          requestProgramRelaunchId{environ->GetMethodID(instanceClass, "requestProgramRelaunch", "(II[B)Z")},
           firstFramePresentedId{environ->GetMethodID(instanceClass, "onFirstFramePresented", "()V")},
           showPipelineLoadingScreenId{environ->GetMethodID(instanceClass, "showPipelineLoadingScreen", "(I)V")},
           updatePipelineLoadingProgressId{environ->GetMethodID(instanceClass, "updatePipelineLoadingProgress", "(I)V")},
@@ -235,7 +235,7 @@ namespace skyline {
         env->CallVoidMethod(instance, reportCrashId);
     }
 
-    void JvmManager::RequestProgramRelaunch(i32 programIndex, i32 previousProgramIndex, span<const u8> userChannel) {
+    bool JvmManager::RequestProgramRelaunch(i32 programIndex, i32 previousProgramIndex, span<const u8> userChannel) {
         JNIEnv *environment{GetEnv()};
         if (userChannel.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
             throw exception("Program relaunch UserChannel payload is too large");
@@ -248,11 +248,12 @@ namespace skyline {
             environment->SetByteArrayRegion(payload, 0, static_cast<jsize>(userChannel.size()),
                                             reinterpret_cast<const jbyte *>(userChannel.data()));
 
-        environment->CallVoidMethod(instance, requestProgramRelaunchId,
-                                    static_cast<jint>(programIndex),
-                                    static_cast<jint>(previousProgramIndex),
-                                    payload);
+        const bool accepted{environment->CallBooleanMethod(instance, requestProgramRelaunchId,
+                                                           static_cast<jint>(programIndex),
+                                                           static_cast<jint>(previousProgramIndex),
+                                                           payload) == JNI_TRUE};
         environment->DeleteLocalRef(payload);
+        return accepted;
     }
 
     void JvmManager::NotifyFirstFramePresented() {
