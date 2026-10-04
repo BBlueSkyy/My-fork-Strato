@@ -11,6 +11,8 @@
 
 namespace skyline::gpu {
     namespace {
+        constexpr bool EnableCopyOnlyRuntime{false};
+
         std::optional<texture::ImageKind> ImageKindOf(vk::ImageType type) {
             switch (type) {
                 case vk::ImageType::e1D: return texture::ImageKind::OneDimensional;
@@ -480,7 +482,7 @@ namespace skyline::gpu {
         auto storage{texture::CreateTextureStorage(texture, std::move(guestRanges))};
         texture::JoinTextureStorageGroups(storage, mappingLookup.storages);
 
-        if (requestedLayout && gpu.traits.supportsMaintenance5) {
+        if (EnableCopyOnlyRuntime && requestedLayout && gpu.traits.supportsMaintenance5) {
             const auto requestedImage{DescribeCopyImage(*texture)};
             for (const auto &classified : classifiedStorages) {
                 if (!classified.storage ||
