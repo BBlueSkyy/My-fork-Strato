@@ -17,6 +17,7 @@ import android.content.pm.ActivityInfo
 import android.content.res.AssetManager
 import android.content.res.Configuration
 import android.content.res.Resources
+import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.drawable.Icon
 import android.hardware.display.DisplayManager
@@ -53,9 +54,9 @@ import org.stratoemu.strato.data.AppItem
 import org.stratoemu.strato.data.BaseAppItem
 import org.stratoemu.strato.data.AppItemTag
 import org.stratoemu.strato.databinding.EmuActivityBinding
-import org.stratoemu.strato.databinding.PipelineLoadingBinding
+import org.stratoemu.strato.databinding.ProgramRelaunchLoadingBinding
 import org.stratoemu.strato.emulation.PipelineLoadingFragment
-import org.stratoemu.strato.emulation.PipelineLoadingUi
+import org.stratoemu.strato.emulation.ProgramRelaunchUi
 import org.stratoemu.strato.input.*
 import org.stratoemu.strato.loader.RomFile
 import org.stratoemu.strato.loader.getRomFormat
@@ -68,6 +69,7 @@ import org.stratoemu.strato.utils.ByteBufferSerializable
 import org.stratoemu.strato.utils.GpuDriverHelper
 import org.stratoemu.strato.utils.serializable
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import javax.inject.Inject
@@ -88,6 +90,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         const val PreviousProgramIndexTag = "previousProgramIndex"
         const val ProgramUserChannelPathTag = "programUserChannelPath"
         const val ProgramRelaunchOrientationTag = "programRelaunchOrientation"
+        const val ProgramRelaunchSnapshotPathTag = "programRelaunchSnapshotPath"
 
         /**
          * The Kotlin thread on which emulation code executes
@@ -152,6 +155,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private var programRelaunchRequested = false
     private val programRelaunchDeathToken = Binder()
     private var programRelaunchOverlay : View? = null
+    private var programRelaunchSnapshotPath : String? = null
 
     /**
      * This is the entry point into the emulation code for libskyline
@@ -229,15 +233,20 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     /**
-     * Installs Strato's existing pipeline-loading UI in the still-alive old activity first.
-     * The trampoline is launched only after that UI has actually participated in a draw, so
-     * Android never needs to expose the game surface, launcher wallpaper, or a blank task.
+     * Show the relaunch card immediately over the still-running game, then capture only the
+     * game Surface underneath it. This keeps the UI responsive while producing a stable
+     * background that can survive the old emulation process being killed.
      */
     private fun showProgramRelaunchLoadingAndLaunch(targetIntent : Intent) {
         changeAudioStatus(false)
 
-        val loadingBinding = PipelineLoadingBinding.inflate(layoutInflater)
-        PipelineLoadingUi.configureIndeterminate(loadingBinding, item, PipelineLoadingUi.Mode.LoadingGame)
+        val loadingBinding = ProgramRelaunchLoadingBinding.inflate(layoutInflater)
+        ProgramRelaunchUi.configure(
+            loadingBinding,
+            item,
+            snapshotPath = null,
+            transparentBackground = true
+        )
         val overlay = loadingBinding.root
         programRelaunchOverlay = overlay
         binding.emulationFragment.addView(
@@ -246,18 +255,18 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         )
         ProgramRelaunchTrace.write(this, "old_emulation_loading_ui_installed orientation=$requestedOrientation")
 
-        var handoffStarted = false
+        var captureStarted = false
         val observer = overlay.viewTreeObserver
         val drawListener = object : ViewTreeObserver.OnDrawListener {
             override fun onDraw() {
-                if (handoffStarted)
+                if (captureStarted)
                     return
-                handoffStarted = true
+                captureStarted = true
                 overlay.post {
                     if (observer.isAlive)
                         observer.removeOnDrawListener(this)
                     ProgramRelaunchTrace.write(this@EmulationActivity, "old_emulation_loading_ui_drawn")
-                    launchProgramRelaunch(targetIntent)
+                    captureProgramRelaunchSnapshot(targetIntent)
                 }
             }
         }
@@ -265,7 +274,45 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         overlay.invalidate()
     }
 
-    private fun launchProgramRelaunch(targetIntent : Intent) {
+    private fun captureProgramRelaunchSnapshot(targetIntent : Intent) {
+        val surface = gameSurface
+        val width = binding.gameView.width
+        val height = binding.gameView.height
+        if (surface == null || !surface.isValid || width <= 0 || height <= 0) {
+            ProgramRelaunchTrace.write(this, "snapshot_unavailable surface=${surface != null} valid=${surface?.isValid == true} size=${width}x$height")
+            launchProgramRelaunch(targetIntent, null)
+            return
+        }
+
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        PixelCopy.request(surface, bitmap, { result ->
+            if (result == PixelCopy.SUCCESS) {
+                val snapshotFile = File(cacheDir, "program_relaunch_snapshot_${Process.myPid()}.jpg")
+                try {
+                    FileOutputStream(snapshotFile).use { output ->
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
+                        output.fd.sync()
+                    }
+                    ProgramRelaunchTrace.write(this, "snapshot_captured size=${width}x$height")
+                    launchProgramRelaunch(targetIntent, snapshotFile.absolutePath)
+                } catch (exception : Exception) {
+                    Log.w(Tag, "Failed to persist Program relaunch frame", exception)
+                    ProgramRelaunchTrace.write(this, "snapshot_persist_failed ${exception.javaClass.simpleName}")
+                    launchProgramRelaunch(targetIntent, null)
+                } finally {
+                    bitmap.recycle()
+                }
+            } else {
+                bitmap.recycle()
+                ProgramRelaunchTrace.write(this, "snapshot_pixelcopy_failed result=$result")
+                launchProgramRelaunch(targetIntent, null)
+            }
+        }, Handler(Looper.getMainLooper()))
+    }
+
+    private fun launchProgramRelaunch(targetIntent : Intent, snapshotPath : String?) {
+        snapshotPath?.let { targetIntent.putExtra(ProgramRelaunchSnapshotPathTag, it) }
+
         val deathTokenBundle = Bundle().apply {
             putBinder(ProgramRelaunchActivity.ProcessDeathTokenTag, programRelaunchDeathToken)
         }
@@ -284,8 +331,14 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         if (!intent.hasExtra(PreviousProgramIndexTag))
             return
 
-        val loadingBinding = PipelineLoadingBinding.inflate(layoutInflater)
-        PipelineLoadingUi.configureIndeterminate(loadingBinding, item, PipelineLoadingUi.Mode.LoadingGame)
+        programRelaunchSnapshotPath = intent.getStringExtra(ProgramRelaunchSnapshotPathTag)
+        val loadingBinding = ProgramRelaunchLoadingBinding.inflate(layoutInflater)
+        ProgramRelaunchUi.configure(
+            loadingBinding,
+            item,
+            snapshotPath = programRelaunchSnapshotPath,
+            transparentBackground = false
+        )
 
         val overlay = loadingBinding.root
         programRelaunchOverlay = overlay
@@ -294,6 +347,34 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
         ProgramRelaunchTrace.write(this, "emulation_loading_ui_installed orientation=$requestedOrientation")
+
+        val readyReceiver = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(ProgramRelaunchActivity.OverlayReadyReceiverTag, ResultReceiver::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra<ResultReceiver>(ProgramRelaunchActivity.OverlayReadyReceiverTag)
+        }
+
+        if (readyReceiver != null) {
+            var notified = false
+            val observer = overlay.viewTreeObserver
+            val drawListener = object : ViewTreeObserver.OnDrawListener {
+                override fun onDraw() {
+                    if (notified)
+                        return
+                    notified = true
+                    overlay.post {
+                        if (observer.isAlive)
+                            observer.removeOnDrawListener(this)
+                        ProgramRelaunchTrace.write(this@EmulationActivity, "emulation_loading_ui_drawn")
+                        readyReceiver.send(Activity.RESULT_OK, null)
+                        intent.removeExtra(ProgramRelaunchActivity.OverlayReadyReceiverTag)
+                    }
+                }
+            }
+            observer.addOnDrawListener(drawListener)
+            overlay.invalidate()
+        }
     }
 
     @Suppress("unused")
@@ -304,6 +385,8 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                 (overlay.parent as? ViewGroup)?.removeView(overlay)
                 programRelaunchOverlay = null
             }
+            programRelaunchSnapshotPath?.let { File(it).delete() }
+            programRelaunchSnapshotPath = null
         }
     }
 
