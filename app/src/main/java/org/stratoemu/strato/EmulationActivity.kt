@@ -91,6 +91,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         const val PreviousProgramIndexTag = "previousProgramIndex"
         const val ProgramUserChannelPathTag = "programUserChannelPath"
         const val ProgramRelaunchOrientationTag = "programRelaunchOrientation"
+        const val ProgramRelaunchOrientationPolicyTag = "programRelaunchOrientationPolicy"
         const val ProgramRelaunchSnapshotPathTag = "programRelaunchSnapshotPath"
 
         /**
@@ -287,6 +288,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             putExtra(PreviousProgramIndexTag, previousProgramIndex)
             putExtra(ProgramUserChannelPathTag, stateFile.absolutePath)
             putExtra(ProgramRelaunchOrientationTag, currentFixedRelaunchOrientation())
+            putExtra(ProgramRelaunchOrientationPolicyTag, emulationSettings.orientation)
         }
 
         if (Looper.myLooper() == Looper.getMainLooper()) {
