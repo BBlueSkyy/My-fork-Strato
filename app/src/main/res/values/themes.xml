@@ -53,9 +53,20 @@
         <item name="android:enforceNavigationBarContrast">false</item>
     </style>
 
-    <!-- Keep the previously visible activity on screen until the real relaunch UI has drawn. -->
+    <!-- Opaque theme used by the newly created emulation process. -->
     <style name="ProgramRelaunchTheme" parent="AppTheme">
         <item name="android:windowDisablePreview">true</item>
         <item name="android:windowBackground">@android:color/black</item>
+    </style>
+
+    <!--
+        The trampoline lives in another task/process. Keep its launch window translucent so
+        Android cannot cover the still-visible old emulation activity with a black starting
+        window before the persisted relaunch frame has actually been drawn.
+    -->
+    <style name="ProgramRelaunchTrampolineTheme" parent="ProgramRelaunchTheme">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">false</item>
     </style>
 </resources>
