@@ -31,11 +31,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 ctx.executor.AttachBuffer(*view);
                 view->GetBuffer()->PopulateReadBarrier(vk::PipelineStageFlagBits::eVertexInput, srcStageMask, dstStageMask);
 
-                if (megaBufferBinding = view->TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag);
-                    megaBufferBinding)
-                    builder.SetVertexBuffer(index, megaBufferBinding, ctx.gpu.traits.supportsExtendedDynamicState, engine->vertexStream.format.stride);
-                else
-                    builder.SetVertexBuffer(index, *view, ctx.gpu.traits.supportsExtendedDynamicState, engine->vertexStream.format.stride);
+                // Diagnostic experiment: keep dynamic vertex input on the source BufferView.
+                // This isolates stale MegaBuffer copies without changing index buffers or other buffer users.
+                megaBufferBinding = {};
+                builder.SetVertexBuffer(index, *view, ctx.gpu.traits.supportsExtendedDynamicState, engine->vertexStream.format.stride);
 
                 return;
             } else {
