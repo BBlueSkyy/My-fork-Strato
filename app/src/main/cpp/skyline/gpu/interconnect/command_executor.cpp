@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <range/v3/view.hpp>
 #include <adrenotools/driver.h>
 #include <common/settings.h>
 #include <loader/loader.h>
 #include <gpu.h>
+#include <os.h>
 #include <dlfcn.h>
 #include "command_executor.h"
 #include <nce.h>
@@ -382,7 +386,304 @@ namespace skyline::gpu::interconnect {
         return (!a && !b) || (a && b && b->GetView() == a);
     }
 
+
+    static constexpr size_t MaxDiagnosticSnapshots{32};
+
+    static bool IsMiniRenderDocTarget(const Texture &texture) {
+        constexpr size_t MaxCaptureBytes{64ULL * 1024 * 1024};
+
+        if (texture.levelCount != 1 ||
+            texture.sampleCount != vk::SampleCountFlagBits::e1 ||
+            !(texture.format->vkAspect & vk::ImageAspectFlagBits::eColor) ||
+            texture.format->IsCompressed() ||
+            !texture.surfaceSize ||
+            texture.surfaceSize > MaxCaptureBytes)
+            return false;
+
+        const auto width{texture.dimensions.width};
+        const auto height{texture.dimensions.height};
+        return width >= 64 && height >= 64 && width <= 4096 && height <= 4096;
+    }
+
+    void CommandExecutor::TrackDiagnosticRenderTargets(span<TextureView *> colorAttachments) {
+        if (diagnosticCaptureState == DiagnosticCaptureState::Complete)
+            return;
+
+        for (auto *view : colorAttachments) {
+            if (!view || !view->texture)
+                continue;
+
+            std::shared_ptr<Texture> texture{view->texture};
+            if (std::find_if(diagnosticRenderTargets.begin(), diagnosticRenderTargets.end(),
+                             [&](const auto &existing) {
+                                 return existing.get() == texture.get();
+                             }) == diagnosticRenderTargets.end())
+                diagnosticRenderTargets.emplace_back(std::move(texture));
+        }
+    }
+
+    bool CommandExecutor::CheckDiagnosticCaptureArm() {
+        if (diagnosticCaptureArmed)
+            return true;
+
+        std::filesystem::path base{state.os->publicAppFilesPath};
+        base /= "gpu_capture";
+        base /= "dragon_ball_fighterz";
+
+        std::error_code error;
+        std::filesystem::create_directories(base, error);
+        if (error) {
+            LOGE("MINIRD DBFZ failed to create arm directory '{}': {}", base.string(), error.message());
+            return false;
+        }
+
+        const auto armPath{base / "ARM_CAPTURE"};
+        error.clear();
+        if (std::filesystem::exists(armPath, error) && !error) {
+            std::filesystem::remove(armPath, error);
+            diagnosticCaptureArmed = true;
+            diagnosticCaptureState = DiagnosticCaptureState::Capturing;
+            diagnosticRenderTargets.clear();
+            diagnosticDrawTraceLines.clear();
+            diagnosticDrawTraceFlushedCount = 0;
+            diagnosticCaptureIndex = 0;
+            diagnosticCaptureDirectory.clear();
+            LOGI("MINIRD DBFZ arm marker consumed; capturing render chain");
+            return true;
+        }
+
+        const auto readyPath{base / "ARM_CAPTURE.rename_this_file_when_ready"};
+        error.clear();
+        if (!std::filesystem::exists(readyPath, error) && !error) {
+            std::ofstream ready{readyPath, std::ios::out | std::ios::trunc};
+            if (ready) {
+                ready
+                    << "Reach the Dragon Ball FighterZ character-select screen where the VS/UI bug can be judged.\n"
+                    << "Switch to a file manager, rename this file to exactly ARM_CAPTURE, then return to Strato.\n"
+                    << "The next 32 eligible color render-target snapshots and their draw state will be captured.\n";
+            }
+        }
+
+        return false;
+    }
+
+    void CommandExecutor::FlushDiagnosticDrawTrace() {
+        if (diagnosticCaptureDirectory.empty() ||
+            diagnosticDrawTraceFlushedCount >= diagnosticDrawTraceLines.size())
+            return;
+
+        const auto tracePath{
+            std::filesystem::path(diagnosticCaptureDirectory) / "draws.txt"
+        };
+
+        const bool createHeader{diagnosticDrawTraceFlushedCount == 0};
+        std::ofstream trace{tracePath, std::ios::out | std::ios::app};
+        if (!trace) {
+            LOGE("MINIRD DBFZ failed to open draw trace '{}'", tracePath.string());
+            return;
+        }
+
+        if (createHeader) {
+            trace
+                << "Strato mini-RenderDoc draw trace\n"
+                << "scope=Dragon Ball FighterZ character-select render chain\n"
+                << "purpose=compare_good_and_bad_boots_and_locate_first_divergent_pass\n"
+                << "note=diagnostic_only_no_guest_memory_writes\n\n";
+        }
+
+        for (; diagnosticDrawTraceFlushedCount < diagnosticDrawTraceLines.size();
+             ++diagnosticDrawTraceFlushedCount) {
+            trace << diagnosticDrawTraceLines[diagnosticDrawTraceFlushedCount];
+            if (!diagnosticDrawTraceLines[diagnosticDrawTraceFlushedCount].empty() &&
+                diagnosticDrawTraceLines[diagnosticDrawTraceFlushedCount].back() != '\n')
+                trace << '\n';
+            trace << '\n';
+        }
+    }
+
+    bool CommandExecutor::EnsureDiagnosticCaptureDirectory() {
+        if (!diagnosticCaptureDirectory.empty())
+            return true;
+
+        std::filesystem::path base{state.os->publicAppFilesPath};
+        base /= "gpu_capture";
+        base /= "dragon_ball_fighterz";
+
+        std::error_code error;
+        std::filesystem::create_directories(base, error);
+        if (error) {
+            LOGE("MINIRD DBFZ failed to create capture root '{}': {}", base.string(), error.message());
+            diagnosticCaptureState = DiagnosticCaptureState::Complete;
+            return false;
+        }
+
+        for (u32 index{1}; index <= 999; ++index) {
+            auto candidate{base / fmt::format("capture_{:03}", index)};
+            error.clear();
+            const bool exists{std::filesystem::exists(candidate, error)};
+            if (error || exists)
+                continue;
+
+            std::filesystem::create_directories(candidate, error);
+            if (error)
+                continue;
+
+            diagnosticCaptureDirectory = candidate.string();
+            std::ofstream manifest{candidate / "manifest.txt", std::ios::out | std::ios::trunc};
+            if (!manifest) {
+                LOGE("MINIRD DBFZ failed to create manifest in '{}'", diagnosticCaptureDirectory);
+                diagnosticCaptureState = DiagnosticCaptureState::Complete;
+                return false;
+            }
+
+            manifest
+                << "Strato mini-RenderDoc diagnostic capture\n"
+                << "scope=Dragon Ball FighterZ character-select render-target chain\n"
+                << "raw_layout=linear host image bytes\n"
+                << "trigger=manual ARM_CAPTURE marker\n"
+                << "stop=32 eligible color snapshots\n"
+                << "max_snapshot_bytes=67108864\n"
+                << "guest_memory_modified=false\n"
+                << "compare=one aligned VS boot against one misaligned VS boot\n"
+                << "columns=index,file,render_pass,submission,texture,width,height,depth,format,layout,size,levels,layers,guest_map,guest_map_size\n";
+            manifest.close();
+
+            LOGI("MINIRD DBFZ capture directory: {}", diagnosticCaptureDirectory);
+            return true;
+        }
+
+        LOGE("MINIRD DBFZ could not allocate a capture directory under '{}'", base.string());
+        diagnosticCaptureState = DiagnosticCaptureState::Complete;
+        return false;
+    }
+
+    void CommandExecutor::QueueDiagnosticRenderTargetCaptures() {
+        if (diagnosticRenderTargets.empty() ||
+            diagnosticCaptureState == DiagnosticCaptureState::Complete) {
+            diagnosticRenderTargets.clear();
+            return;
+        }
+
+        if (!CheckDiagnosticCaptureArm()) {
+            diagnosticRenderTargets.clear();
+            return;
+        }
+
+        if (!EnsureDiagnosticCaptureDirectory()) {
+            diagnosticRenderTargets.clear();
+            return;
+        }
+
+        FlushDiagnosticDrawTrace();
+
+        for (const auto &texture : diagnosticRenderTargets) {
+            if (diagnosticCaptureIndex >= MaxDiagnosticSnapshots)
+                break;
+
+            if (diagnosticCaptureState != DiagnosticCaptureState::Capturing ||
+                !texture ||
+                !IsMiniRenderDocTarget(*texture) ||
+                texture->layout == vk::ImageLayout::eUndefined)
+                continue;
+
+            auto stagingBuffer{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+            const size_t captureIndex{diagnosticCaptureIndex++};
+            const auto width{texture->dimensions.width};
+            const auto height{texture->dimensions.height};
+            const auto depth{texture->dimensions.depth};
+            const auto formatName{vk::to_string(texture->format->vkFormat)};
+            const auto layoutName{vk::to_string(texture->layout)};
+            const auto fileName{fmt::format("{:03}_rp{}_{}x{}x{}_{}.raw",
+                                           captureIndex, renderPassIndex,
+                                           width, height, depth, formatName)};
+            const std::filesystem::path captureDirectory{diagnosticCaptureDirectory};
+            const auto rawPath{captureDirectory / fileName};
+            const auto metadataPath{
+                captureDirectory / fmt::format("{:03}_rp{}.txt", captureIndex, renderPassIndex)
+            };
+            const auto manifestPath{captureDirectory / "manifest.txt"};
+
+            uintptr_t guestMap{};
+            size_t guestMapSize{};
+            if (texture->guest) {
+                if (!texture->guest->mappings.empty())
+                    guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                for (const auto &mapping : texture->guest->mappings)
+                    guestMapSize += mapping.size();
+            }
+
+            const auto textureAddress{reinterpret_cast<uintptr_t>(texture.get())};
+            const auto metadata{fmt::format(
+                "index={}\nfile={}\nrender_pass={}\nsubmission={}\ntexture=0x{:X}\n"
+                "width={}\nheight={}\ndepth={}\nformat={}\nlayout={}\nsize={}\n"
+                "levels={}\nlayers={}\nguest_map=0x{:X}\nguest_map_size={}\n",
+                captureIndex, fileName, renderPassIndex, submissionNumber, textureAddress,
+                width, height, depth, formatName, layoutName, texture->surfaceSize,
+                texture->levelCount, texture->layerCount, guestMap, guestMapSize)};
+
+            const auto manifestLine{fmt::format(
+                "{},{},{},{},0x{:X},{},{},{},{},{},{},{},{},0x{:X},{}\n",
+                captureIndex, fileName, renderPassIndex, submissionNumber, textureAddress,
+                width, height, depth, formatName, layoutName, texture->surfaceSize,
+                texture->levelCount, texture->layerCount, guestMap, guestMapSize)};
+
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [texture, stagingBuffer](vk::raii::CommandBuffer &commandBuffer,
+                                         const std::shared_ptr<FenceCycle> &cycle,
+                                         GPU &) {
+                    cycle->AttachObjects(texture, stagingBuffer);
+                    texture->CopyIntoStagingBuffer(commandBuffer, stagingBuffer);
+                });
+
+            pendingDiagnosticCaptureCallbacks.emplace_back(
+                [stagingBuffer, rawPath, metadataPath, manifestPath, metadata, manifestLine, captureIndex] {
+                    std::ofstream raw{rawPath, std::ios::out | std::ios::binary | std::ios::trunc};
+                    if (!raw) {
+                        LOGE("MINIRD DBFZ failed to open raw snapshot {}", captureIndex);
+                        return;
+                    }
+
+                    raw.write(reinterpret_cast<const char *>(stagingBuffer->data()),
+                              static_cast<std::streamsize>(stagingBuffer->size()));
+                    raw.close();
+
+                    std::ofstream meta{metadataPath, std::ios::out | std::ios::trunc};
+                    if (meta)
+                        meta << metadata;
+
+                    std::ofstream manifest{manifestPath, std::ios::out | std::ios::app};
+                    if (manifest)
+                        manifest << manifestLine;
+
+                    LOGI("MINIRD DBFZ wrote snapshot {}: {}", captureIndex, rawPath.string());
+                });
+        }
+
+        diagnosticRenderTargets.clear();
+
+        if (diagnosticCaptureIndex >= MaxDiagnosticSnapshots &&
+            diagnosticCaptureState == DiagnosticCaptureState::Capturing) {
+            diagnosticCaptureState = DiagnosticCaptureState::Complete;
+            FlushDiagnosticDrawTrace();
+
+            const std::filesystem::path captureDirectory{diagnosticCaptureDirectory};
+            const auto completePath{captureDirectory / "capture_complete.txt"};
+            const auto captureCount{diagnosticCaptureIndex};
+            pendingDiagnosticCaptureCallbacks.emplace_back([completePath, captureCount] {
+                std::ofstream complete{completePath, std::ios::out | std::ios::trunc};
+                if (complete)
+                    complete << "capture_complete=true\nsnapshots=" << captureCount << "\n";
+                LOGI("MINIRD DBFZ capture complete with {} snapshots", captureCount);
+            });
+        }
+    }
+
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
+        if (CheckDiagnosticCaptureArm() &&
+            diagnosticCaptureState == DiagnosticCaptureState::Capturing &&
+            diagnosticCaptureDirectory.empty())
+            EnsureDiagnosticCaptureDirectory();
+
         auto addSubpass{[&] {
             renderPass->AddSubpass(inputAttachments, colorAttachments, depthStencilAttachment, gpu);
             lastSubpassColorAttachments.clear();
@@ -391,6 +692,7 @@ namespace skyline::gpu::interconnect {
             ranges::transform(colorAttachments, std::back_inserter(lastSubpassColorAttachments), [](TextureView *view){ return view ? view->GetView() : vk::ImageView{};});
             ranges::transform(inputAttachments, std::back_inserter(lastSubpassInputAttachments), [](TextureView *view){ return view ? view->GetView() : vk::ImageView{};});
             lastSubpassDepthStencilAttachment = depthStencilAttachment ? depthStencilAttachment->GetView() : vk::ImageView{};
+            TrackDiagnosticRenderTargets(colorAttachments);
         }};
 
         span<TextureView *> depthStencilAttachmentSpan{depthStencilAttachment ? span<TextureView *>(depthStencilAttachment) : span<TextureView *>()};
@@ -408,6 +710,7 @@ namespace skyline::gpu::interconnect {
             // We need to create a render pass if one doesn't already exist or the current one isn't compatible
             if (renderPass != nullptr) {
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
+                QueueDiagnosticRenderTargetCaptures();
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
                 renderPassIndex++;
             }
@@ -437,6 +740,7 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::FinishRenderPass() {
         if (renderPass) {
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
+            QueueDiagnosticRenderTargetCaptures();
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
             renderPassIndex++;
 
@@ -629,6 +933,20 @@ namespace skyline::gpu::interconnect {
         return renderPassIndex;
     }
 
+    bool CommandExecutor::IsDiagnosticDrawTraceActive() const {
+        return diagnosticCaptureArmed &&
+               diagnosticCaptureState == DiagnosticCaptureState::Capturing;
+    }
+
+    void CommandExecutor::AppendDiagnosticDrawTrace(std::string trace) {
+        if (!IsDiagnosticDrawTraceActive())
+            return;
+
+        diagnosticDrawTraceLines.emplace_back(
+            fmt::format("submission={} render_pass={}\n{}",
+                        submissionNumber, renderPassIndex, std::move(trace)));
+    }
+
     u32 CommandExecutor::AddCheckpointImpl(std::string_view annotation) {
         if (renderPass)
             FinishRenderPass();
@@ -707,8 +1025,12 @@ namespace skyline::gpu::interconnect {
         executionTag = AllocateTag();
 
         // Ensure all pushed callbacks wait for the submission to have finished GPU execution
-        if (!slot->nodes.empty())
+        if (!slot->nodes.empty()) {
             waiterThread.Queue(cycle, {});
+            for (auto &captureCallback : pendingDiagnosticCaptureCallbacks)
+                waiterThread.Queue(cycle, std::move(captureCallback));
+            pendingDiagnosticCaptureCallbacks.clear();
+        }
 
         if (*state.settings->useDirectMemoryImport) {
             // When DMI is in use, callbacks and deferred actions should be executed in sequence with the host GPU
