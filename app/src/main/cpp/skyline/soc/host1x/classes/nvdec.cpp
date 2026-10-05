@@ -79,7 +79,22 @@ namespace skyline::soc::host1x {
         }
 
         try {
+            std::array<u32, 14> statusBefore{};
+            const u64 statusAddress{stream.registers.frameStatsOffset.Address()};
+            if (statusAddress) {
+                statusBefore = state.soc->smmu.Read<std::array<u32, 14>>(static_cast<u32>(statusAddress));
+                LOGI("[GrandiaNvdecDiag] status-before addr=0x{:X} mbsOk={} mbsErr={} cycles={} error=0x{:X} sliceError=0x{:X}",
+                     statusAddress, statusBefore[0], statusBefore[1], statusBefore[2], statusBefore[3], statusBefore[13]);
+            }
+
             stream.codec->Decode(frameQueue, streamId);
+
+            if (statusAddress) {
+                const auto statusAfter{state.soc->smmu.Read<std::array<u32, 14>>(static_cast<u32>(statusAddress))};
+                LOGI("[GrandiaNvdecDiag] status-after addr=0x{:X} mbsOk={} mbsErr={} cycles={} error=0x{:X} sliceError=0x{:X} changed={}",
+                     statusAddress, statusAfter[0], statusAfter[1], statusAfter[2], statusAfter[3], statusAfter[13],
+                     statusAfter != statusBefore);
+            }
         } catch (const std::exception &e) {
             LOGE("NVDEC execute failed for stream {}: {}", streamId, e.what());
         }
