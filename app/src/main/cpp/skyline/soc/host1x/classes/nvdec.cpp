@@ -79,9 +79,11 @@ namespace skyline::soc::host1x {
         }
 
         try {
-            LOGI("[VideoDiag] nvdec-execute-begin stream={} codec={} pictureInfo=0x{:X} bitstream=0x{:X}",
+            LOGI("[VideoDiag] nvdec-execute-begin stream={} codec={} pictureInfo=0x{:X} bitstream=0x{:X} stats=0x{:X} mvDump=0x{:X} frame={} control=0x{:X}",
                  streamId, static_cast<u64>(stream.registers.codecId),
-                 stream.registers.pictureInfoOffset.Address(), stream.registers.frameBitstreamOffset.Address());
+                 stream.registers.pictureInfoOffset.Address(), stream.registers.frameBitstreamOffset.Address(),
+                 stream.registers.frameStatsOffset.Address(), stream.registers.h264MvDumpOffset.Address(),
+                 stream.registers.frameNumber, stream.registers.controlParams);
             stream.codec->Decode(frameQueue, streamId);
             LOGI("[VideoDiag] nvdec-execute-end stream={} codec={}",
                  streamId, static_cast<u64>(stream.registers.codecId));
