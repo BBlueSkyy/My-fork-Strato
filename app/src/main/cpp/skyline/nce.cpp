@@ -10,6 +10,7 @@
 #include "jvm.h"
 #include "kernel/types/KProcess.h"
 #include "kernel/svc.h"
+#include "kernel/swkbd_inline_trace.h"
 #include "nce/guest.h"
 #include "nce/instructions.h"
 #include "nce.h"
@@ -28,18 +29,48 @@ namespace skyline::nce {
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
-                TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
+                const size_t threadId{state.thread->id};
+                const u32 traceSequence{kernel::diagnostic::BeginSwkbdPostCmd2460Svc(threadId)};
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
+                if (traceSequence) {
+                    LOGI("[SWKBD-CALLER] seq={} begin thread={} svc=0x{:X} {} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X} x5=0x{:X}",
+                         traceSequence, threadId, svcId, svc.name,
+                         svcContext.x0, svcContext.x1, svcContext.x2, svcContext.x3, svcContext.x4, svcContext.x5);
+                }
+
+                TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 (svc.function)(state, svcContext);
+
+                const bool cmd2460Returned{
+                    svcId == 0x21 && kernel::diagnostic::ActivateSwkbdPostCmd2460Trace(threadId)};
+                if (cmd2460Returned) {
+                    LOGI("[SWKBD-CALLER] cmd2460 send-sync-return thread={} resultX0=0x{:X}",
+                         threadId, svcContext.x0);
+                }
+                if (traceSequence) {
+                    LOGI("[SWKBD-CALLER] seq={} end thread={} svc=0x{:X} {} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X} x5=0x{:X}",
+                         traceSequence, threadId, svcId, svc.name,
+                         svcContext.x0, svcContext.x1, svcContext.x2, svcContext.x3, svcContext.x4, svcContext.x5);
+                    kernel::diagnostic::FinishSwkbdPostCmd2460Svc(threadId, traceSequence);
+                }
+
+                const bool traceScheduling{
+                    cmd2460Returned || kernel::diagnostic::IsSwkbdPostCmd2460TraceActive(threadId)};
+                while (kernel::Scheduler::YieldPending) [[unlikely]] {
+                    if (traceScheduling)
+                        LOGI("[SWKBD-CALLER] yield-pending thread={} before Rotate/WaitSchedule", threadId);
+                    state.scheduler->Rotate();
+                    kernel::Scheduler::YieldPending = false;
+                    if (traceScheduling)
+                        LOGI("[SWKBD-CALLER] wait-schedule enter thread={}", threadId);
+                    state.scheduler->WaitSchedule();
+                    if (traceScheduling)
+                        LOGI("[SWKBD-CALLER] wait-schedule return thread={}", threadId);
+                }
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
             }
 
-            while (kernel::Scheduler::YieldPending) [[unlikely]] {
-                state.scheduler->Rotate();
-                kernel::Scheduler::YieldPending = false;
-                state.scheduler->WaitSchedule();
-            }
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 LOGENF("{} (SVC: {})\nStack Trace:{}", e.what(), svc.name, state.loader->GetStackTrace(e.frames));
