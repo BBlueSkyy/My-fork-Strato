@@ -11,38 +11,18 @@
 #include "kernel/types/KProcess.h"
 #include "kernel/svc.h"
 #include "kernel/swkbd_inline_trace.h"
-#include "loader/loader.h"
 #include "nce/guest.h"
 #include "nce/instructions.h"
 #include "nce.h"
 
 namespace skyline::nce {
     namespace {
-        struct GuestCodeLocation {
-            std::string_view module{"<unknown>"};
-            std::string_view symbol{};
-        };
-
-        GuestCodeLocation ResolveGuestCodeLocation(const DeviceState &state, u64 guestPc) {
-            if (!guestPc || !state.process || !state.loader)
-                return {};
-
-            const auto hostPc{state.process->memory.TranslateVirtualPointer<u8 *>(guestPc)};
-            const auto symbol{state.loader->ResolveSymbol64(hostPc)};
-            return {
-                .module = symbol.executableName.empty() ? std::string_view{"<unknown>"} : symbol.executableName,
-                .symbol = symbol.name ? std::string_view{symbol.name} : std::string_view{},
-            };
-        }
-
-        void LogSwkbdGuestCallerPoint(const DeviceState &state, const ThreadContext &ctx, size_t threadId,
+        void LogSwkbdGuestCallerPoint(const ThreadContext &ctx, size_t threadId,
                                       u32 sequence, u16 svcId, const char *svcName, const char *phase) {
-            const auto location{ResolveGuestCodeLocation(state, ctx.diagnosticGuestPc)};
-            LOGI("[SWKBD-CALLER] seq={} {} thread={} svc=0x{:X} {} pc=0x{:X} module={} symbol={} returnPc=0x{:X} sp=0x{:X} fp=0x{:X} "
+            LOGI("[SWKBD-CALLER] seq={} {} thread={} svc=0x{:X} {} pc=0x{:X} returnPc=0x{:X} sp=0x{:X} fp=0x{:X} "
                  "x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X} x5=0x{:X}",
                  sequence, phase, threadId, svcId, svcName ? svcName : "<unimplemented>",
-                 ctx.diagnosticGuestPc, location.module, location.symbol, ctx.diagnosticGuestLr,
-                 ctx.diagnosticGuestSp, ctx.diagnosticGuestFp,
+                 ctx.diagnosticGuestPc, ctx.diagnosticGuestLr, ctx.diagnosticGuestSp, ctx.diagnosticGuestFp,
                  ctx.gpr.x0, ctx.gpr.x1, ctx.gpr.x2, ctx.gpr.x3, ctx.gpr.x4, ctx.gpr.x5);
         }
     }
@@ -65,7 +45,7 @@ namespace skyline::nce {
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
 
                 if (traceSequence) {
-                    LogSwkbdGuestCallerPoint(state, *ctx, threadId, traceSequence, svcId, svc.name, "begin");
+                    LogSwkbdGuestCallerPoint(*ctx, threadId, traceSequence, svcId, svc.name, "begin");
                     if (svcId == 0x1C)
                         kernel::diagnostic::ObserveSwkbdPostCmd2460Cv(threadId, svcContext.x1);
                 }
@@ -78,7 +58,7 @@ namespace skyline::nce {
                     LOGI("[SWKBD-WAKER] targetThread={} cv=0x{:X} count={} wakingThread={}",
                          kernel::diagnostic::GetSwkbdPostCmd2460TraceThread(), observedCv,
                          static_cast<i32>(svcContext.w1), threadId);
-                    LogSwkbdGuestCallerPoint(state, *ctx, threadId, 0, svcId, svc.name, "signal-begin");
+                    LogSwkbdGuestCallerPoint(*ctx, threadId, 0, svcId, svc.name, "signal-begin");
                 }
 
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
@@ -87,15 +67,14 @@ namespace skyline::nce {
                 const bool cmd2460Returned{
                     svcId == 0x21 && kernel::diagnostic::ActivateSwkbdPostCmd2460Trace(threadId)};
                 if (cmd2460Returned) {
-                    const auto location{ResolveGuestCodeLocation(state, ctx->diagnosticGuestPc)};
-                    LOGI("[SWKBD-CALLER] cmd2460 send-sync-return thread={} pc=0x{:X} module={} symbol={} returnPc=0x{:X} sp=0x{:X} fp=0x{:X} resultX0=0x{:X}",
-                         threadId, ctx->diagnosticGuestPc, location.module, location.symbol,
-                         ctx->diagnosticGuestLr, ctx->diagnosticGuestSp, ctx->diagnosticGuestFp, svcContext.x0);
+                    LOGI("[SWKBD-CALLER] cmd2460 send-sync-return thread={} pc=0x{:X} returnPc=0x{:X} sp=0x{:X} fp=0x{:X} resultX0=0x{:X}",
+                         threadId, ctx->diagnosticGuestPc, ctx->diagnosticGuestLr,
+                         ctx->diagnosticGuestSp, ctx->diagnosticGuestFp, svcContext.x0);
                 }
                 if (matchingCvSignal)
-                    LogSwkbdGuestCallerPoint(state, *ctx, threadId, 0, svcId, svc.name, "signal-end");
+                    LogSwkbdGuestCallerPoint(*ctx, threadId, 0, svcId, svc.name, "signal-end");
                 if (traceSequence) {
-                    LogSwkbdGuestCallerPoint(state, *ctx, threadId, traceSequence, svcId, svc.name, "end");
+                    LogSwkbdGuestCallerPoint(*ctx, threadId, traceSequence, svcId, svc.name, "end");
                     kernel::diagnostic::FinishSwkbdPostCmd2460Svc(threadId, traceSequence);
                 }
 
