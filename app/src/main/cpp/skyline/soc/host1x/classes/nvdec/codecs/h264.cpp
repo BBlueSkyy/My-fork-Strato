@@ -11,7 +11,11 @@ namespace skyline::soc::host1x::nvdec {
     }
 
     u64 H264::GetOutputLumaAddress() {
-        return registers.surfaceLumaOffsets[context.parameterSet.currPicIdx].Address() + context.parameterSet.lumaFrameOffset.Address();
+        return GetOutputSurface().luma[0];
+    }
+
+    OutputSurface H264::GetOutputSurface() {
+        return GetH264OutputSurface(registers, context.parameterSet);
     }
 
     span<const u8> H264::ComposeBitstream() {
@@ -21,9 +25,6 @@ namespace skyline::soc::host1x::nvdec {
             LOGW("Invalid bitstream, offset: 0x{:X}, length: 0x{:X}", registers.frameBitstreamOffset.Address(), context.streamLength);
             return {};
         }
-
-        if (context.parameterSet.fieldPic || context.parameterSet.lumaTopOffset.raw || context.parameterSet.lumaBotOffset.raw)
-            LOGW("Interlaced H264 content is unsupported, output will be treated as progressive");
 
         // Frames after the first IDR frame carry their own headers within the guest slice data
         if (!firstFrame && context.parameterSet.frameNumber != 0) {
@@ -71,7 +72,9 @@ namespace skyline::soc::host1x::nvdec {
         }
 
         i32 picHeightInMbs{static_cast<i32>(parameterSet.frameHeightInMbs) / (parameterSet.frameMbsOnlyFlag ? 1 : 2)};
-        u32 maxNumRefFrames{static_cast<u32>(std::max(std::max(parameterSet.numRefIdxL0DefaultActive, parameterSet.numRefIdxL1DefaultActive) + 1, 4))};
+        // Packed guest fields may be unaligned; std::max binds references.
+        i32 refL0{parameterSet.numRefIdxL0DefaultActive}, refL1{parameterSet.numRefIdxL1DefaultActive};
+        u32 maxNumRefFrames{static_cast<u32>(std::max(std::max(refL0, refL1) + 1, 4))};
 
         writer.WriteUe(maxNumRefFrames);
         writer.WriteBit(false); // gaps_in_frame_num_value_allowed_flag

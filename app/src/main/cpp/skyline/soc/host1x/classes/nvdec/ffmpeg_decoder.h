@@ -18,6 +18,11 @@ namespace skyline::soc::host1x::nvdec {
       private:
         AVCodecContext *context{};
         AVPacket *packet{};
+        bool captureDecodedSurfaces{};
+        u64 decodeToken{};
+        std::vector<AVFramePtr> decodedSurfaces;
+
+        static int AllocateFrame(AVCodecContext *context, AVFrame *frame, int flags);
 
       public:
         ~FfmpegDecoder();
@@ -30,15 +35,24 @@ namespace skyline::soc::host1x::nvdec {
 
         /**
          * @brief Submits a composed bitstream packet to the decoder
-         * @param surfaceKey Submission luma IOVA retained in the resulting frame's PTS as diagnostic metadata across decoder reordering
+         * @param submissionToken Unique submission identity retained in PTS across decoder reordering
          * @return If the packet was accepted
          */
-        bool SendPacket(span<const u8> data, u64 surfaceKey, bool hidden);
+        bool SendPacket(span<const u8> data, u64 submissionToken, bool hidden = false);
 
         /**
          * @brief Retrieves the next decoded frame from the decoder
          * @return The next decoded frame in FFmpeg presentation order, with submission metadata in PTS, or an empty pointer when no frame is available yet
          */
         AVFramePtr ReceiveFrame();
+
+        /**
+         * @brief Takes buffers for pictures completed by the most recent decode operation.
+         *
+         * H.264 pictures are captured in decode order independently from receive_frame()
+         * presentation order. Invisible VP9 reference pictures use the same path because
+         * libavcodec intentionally does not expose them through receive_frame().
+         */
+        std::vector<AVFramePtr> TakeDecodedSurfaces();
     };
 }

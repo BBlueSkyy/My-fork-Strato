@@ -6,6 +6,7 @@
 #include <common.h>
 
 namespace skyline::soc::host1x::nvdec {
+    #pragma pack(push, 1)
     /**
      * @brief A 256-byte aligned IOVA as held within decoder picture information structures
      */
@@ -17,8 +18,7 @@ namespace skyline::soc::host1x::nvdec {
         }
     };
     static_assert(sizeof(PictureOffset) == sizeof(u32));
-
-    #pragma pack(push, 1)
+    static_assert(alignof(PictureOffset) == 1);
 
     /**
      * @brief The H.264 sequence/picture parameter fields the guest driver supplies for a decode operation

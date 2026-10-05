@@ -276,6 +276,9 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/soc/host1x/classes/host1x.cpp
         ${source_DIR}/skyline/soc/host1x/classes/vic.cpp
         ${source_DIR}/skyline/soc/host1x/classes/vic/surface_writer.cpp
+        ${source_DIR}/skyline/soc/host1x/surface_writer.cpp
+        ${source_DIR}/skyline/soc/host1x/classes/nvdec/output_surface.cpp
+        ${source_DIR}/skyline/soc/host1x/classes/nvdec/surface_writer.cpp
         ${source_DIR}/skyline/soc/host1x/classes/nvdec.cpp
         ${source_DIR}/skyline/soc/host1x/classes/nvdec/ffmpeg_decoder.cpp
         ${source_DIR}/skyline/soc/host1x/classes/nvdec/codecs/codec.cpp

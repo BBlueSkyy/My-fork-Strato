@@ -4,6 +4,8 @@
 #pragma once
 
 #include <common.h>
+#include <map>
+#include <soc/host1x/classes/nvdec/output_surface.h>
 #include <soc/host1x/classes/nvdec/ffmpeg_decoder.h>
 #include <soc/host1x/classes/nvdec/registers.h>
 
@@ -18,6 +20,18 @@ namespace skyline::soc::host1x::nvdec {
         const DeviceState &state;
         const Registers &registers;
         FfmpegDecoder decoder;
+        struct Submission {
+            u64 surfaceKey;
+            OutputSurface output;
+            bool hidden;
+            bool materialized{};
+        };
+        u64 nextSubmission{1};
+        // H.264 has at most 16 reference frames (32 field pictures). Keep
+        // twice that window for decoder delay/paired fields, retiring packets
+        // FFmpeg accepts but drops without ever returning a frame.
+        constexpr static size_t MaxPendingSubmissions{64};
+        std::map<u64, Submission> submissions;
         bool initialized{}; //!< If the underlying FFmpeg decoder could be created
         bool hiddenFrame{}; //!< If the current frame is decode-only and produces no visible output (VP9 show_existing_frame handling)
 
@@ -32,6 +46,8 @@ namespace skyline::soc::host1x::nvdec {
          * @return The IOVA of the luma plane of the surface this operation decodes into, used as the frame's queue key
          */
         virtual u64 GetOutputLumaAddress() = 0;
+
+        virtual OutputSurface GetOutputSurface() = 0;
 
       public:
         virtual ~Codec() = default;
