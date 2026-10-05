@@ -8,7 +8,7 @@ extern "C" {
 }
 
 #include <soc.h>
-#include <gpu/texture/layout.h>
+#include <soc/host1x/surface_writer.h>
 #include "surface_writer.h"
 
 namespace skyline::soc::host1x::vic {
@@ -17,16 +17,18 @@ namespace skyline::soc::host1x::vic {
      * @param linear A linear buffer holding the plane at a tight stride for block-linear surfaces or the aligned output stride for pitch surfaces
      */
     static void WritePlane(const DeviceState &state, u64 iova, span<u8> linear, u32 width, u32 height, u32 bpb, BlkKind blkKind, u32 blkHeightLog2) {
-        if (blkKind == BlkKind::Pitch) {
-            state.soc->smmu.Write(static_cast<u32>(iova), linear);
+        bool blockLinear{blkKind != BlkKind::Pitch};
+        u32 sourcePitch{blkKind == BlkKind::Pitch ? util::AlignUp(width * bpb, 0x10) : width * bpb};
+        u32 pitch{blockLinear ? util::AlignUp(width * bpb, 64U) : sourcePitch};
+        SurfacePlane plane{iova, width * bpb, height, pitch, blockLinear, blkHeightLog2};
+        if (pitch == sourcePitch) {
+            WriteSurfacePlane(state, plane, linear);
         } else {
-            gpu::texture::Dimensions dimensions{width, height, 1};
-            size_t gobBlockHeight{1UL << blkHeightLog2};
-
-            std::vector<u8> swizzled(gpu::texture::GetBlockLinearLayerSize(dimensions, 1, 1, bpb, gobBlockHeight, 1));
-            gpu::texture::CopyLinearToBlockLinear(dimensions, 1, 1, bpb, gobBlockHeight, 1, linear.data(), swizzled.data());
-
-            state.soc->smmu.Write(static_cast<u32>(iova), span<u8>(swizzled));
+            std::vector<u8> padded(static_cast<size_t>(pitch) * height);
+            for (u32 y{}; y < height; y++)
+                std::memcpy(padded.data() + static_cast<size_t>(y) * pitch,
+                            linear.data() + static_cast<size_t>(y) * sourcePitch, width * bpb);
+            WriteSurfacePlane(state, plane, span<u8>(padded));
         }
     }
 

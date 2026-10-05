@@ -76,6 +76,8 @@ namespace skyline::soc::host1x::nvdec {
 
         u64 GetOutputLumaAddress() override;
 
+        OutputSurface GetOutputSurface() override;
+
       public:
         Vp8(const DeviceState &state, const Registers &registers);
     };

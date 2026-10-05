@@ -51,6 +51,10 @@ namespace skyline::soc::host1x::nvdec {
         // stops libavcodec buffering reordered frames so every submitted packet yields its frame immediately
         context->flags |= AV_CODEC_FLAG_LOW_DELAY;
 
+        // NVDEC writes the complete coded surface, including SPS crop margins.
+        // Apply the visible crop only after materialization, before VIC handoff.
+        context->apply_cropping = 0;
+
         if (int result{avcodec_open2(context, codec, nullptr)}; result < 0) {
             LOGE("Failed to open the decoder: {}", result);
             avcodec_free_context(&context);
@@ -61,16 +65,15 @@ namespace skyline::soc::host1x::nvdec {
         return packet != nullptr;
     }
 
-    bool FfmpegDecoder::SendPacket(span<const u8> data, u64 surfaceKey, bool hidden) {
+    bool FfmpegDecoder::SendPacket(span<const u8> data, u64 submissionToken) {
         if (!context || !packet)
             return false;
 
         packet->data = const_cast<u8 *>(data.data());
         packet->size = static_cast<int>(data.size());
-        // Visible frames retain their submission luma IOVA in PTS as metadata across FFmpeg
-        // reordering. Presentation itself follows avcodec_receive_frame() order. Decode-only
-        // frames intentionally carry no PTS so they cannot enter the presentation queue.
-        packet->pts = hidden ? AV_NOPTS_VALUE : static_cast<i64>(surfaceKey);
+        // Every returned frame identifies its decode destination. Presentation
+        // eligibility belongs to the submission, not to the existence of its surface.
+        packet->pts = static_cast<i64>(submissionToken);
 
         if (int result{avcodec_send_packet(context, packet)}; result < 0) {
             LOGW("Failed to send a packet to the decoder: {}", result);
