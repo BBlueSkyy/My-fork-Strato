@@ -387,7 +387,7 @@ namespace skyline::gpu::interconnect {
     }
 
 
-    static constexpr size_t MaxDiagnosticSnapshots{32};
+    static constexpr size_t MaxDiagnosticSnapshots{128};
 
     static bool IsMiniRenderDocTarget(const Texture &texture) {
         constexpr size_t MaxCaptureBytes{64ULL * 1024 * 1024};
@@ -460,7 +460,7 @@ namespace skyline::gpu::interconnect {
                 ready
                     << "Reach the Dragon Ball FighterZ character-select screen where the VS/UI bug can be judged.\n"
                     << "Switch to a file manager, rename this file to exactly ARM_CAPTURE, then return to Strato.\n"
-                    << "The next 32 eligible color render-target snapshots and their draw state will be captured.\n";
+                    << "The next 128 eligible color render-target snapshots and their draw state will be captured.\n";
             }
         }
 
@@ -541,7 +541,7 @@ namespace skyline::gpu::interconnect {
                 << "scope=Dragon Ball FighterZ character-select render-target chain\n"
                 << "raw_layout=linear host image bytes\n"
                 << "trigger=manual ARM_CAPTURE marker\n"
-                << "stop=32 eligible color snapshots\n"
+                << "stop=128 eligible color snapshots\n"
                 << "max_snapshot_bytes=67108864\n"
                 << "guest_memory_modified=false\n"
                 << "compare=one aligned VS boot against one misaligned VS boot\n"
