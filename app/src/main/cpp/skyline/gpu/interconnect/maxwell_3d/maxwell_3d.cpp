@@ -118,6 +118,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+          TraceDiagnosticDraw("draw_inline_index", scissor, true, count, instanceCount, 0, 0, 0);
           ctx.executor.AddCheckpoint("After inline index draw");
      }    
    
@@ -187,6 +188,159 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return scissor;
     }
 
+
+    void Maxwell3D::TraceDiagnosticDraw(std::string_view drawKind, vk::Rect2D scissor,
+                                        bool indexed, u32 count, u32 instanceCount,
+                                        u32 first, u32 vertexOffset, u32 firstInstance) {
+        if (!ctx.executor.IsDiagnosticDrawTraceActive())
+            return;
+
+        Pipeline *pipeline{activeState.GetPipeline()};
+        if (!pipeline)
+            return;
+
+        const auto &packed{pipeline->sourcePackedState};
+        const char *descriptorMode{[&] {
+            switch (diagnosticDescriptorMode) {
+                case DiagnosticDescriptorMode::Full:
+                    return "full";
+                case DiagnosticDescriptorMode::Quick:
+                    return "quick";
+                case DiagnosticDescriptorMode::Reuse:
+                    return "reuse";
+            }
+            return "unknown";
+        }()};
+
+        const auto &surfaceClip{clearEngineRegisters.surfaceClip};
+        std::string trace{fmt::format(
+            "DRAW kind={} pipeline={} descriptor_mode={} indexed={} count={} instances={} "
+            "first={} vertex_offset={} first_instance={} scissor={},{},{}x{} "
+            "surface_clip={},{},{}x{}\n",
+            drawKind, fmt::ptr(pipeline), descriptorMode, indexed, count, instanceCount,
+            first, vertexOffset, firstInstance,
+            scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height,
+            surfaceClip.horizontal.x, surfaceClip.vertical.y,
+            surfaceClip.horizontal.width, surfaceClip.vertical.height)};
+
+        static constexpr std::array<std::string_view, engine::PipelineCount> ShaderNames{
+            "vertex_cull_before_fetch",
+            "vertex",
+            "tessellation_init",
+            "tessellation",
+            "geometry",
+            "fragment",
+        };
+        for (size_t shaderIndex{}; shaderIndex < packed.shaderHashes.size(); ++shaderIndex) {
+            trace += fmt::format("shader_hash[{}:{}]=0x{:016X}\n",
+                                 shaderIndex, ShaderNames[shaderIndex], packed.shaderHashes[shaderIndex]);
+        }
+
+        const auto blend{packed.GetAttachmentBlendState(0)};
+        trace += fmt::format(
+            "pipeline_state raster_discard={} cull={} front_cw={} depth_test={} depth_write={} "
+            "depth_func={} depth_bounds={} stencil={} logic_enable={} logic_op={} "
+            "alpha_test={} alpha_ref={} blend_enable={} color_write_mask=0x{:X} "
+            "color_blend_op={} src_color={} dst_color={} alpha_blend_op={} src_alpha={} dst_alpha={}\n",
+            packed.rasterizerDiscardEnable,
+            vk::to_string(vk::CullModeFlags{packed.cullMode}),
+            packed.frontFaceClockwise,
+            packed.depthTestEnable,
+            packed.depthWriteEnable,
+            vk::to_string(packed.GetDepthFunc()),
+            packed.depthBoundsTestEnable,
+            packed.stencilTestEnable,
+            packed.logicOpEnable,
+            vk::to_string(packed.GetLogicOp()),
+            packed.alphaTestEnable,
+            packed.alphaRef,
+            static_cast<bool>(blend.blendEnable),
+            static_cast<u32>(blend.colorWriteMask),
+            vk::to_string(blend.colorBlendOp),
+            vk::to_string(blend.srcColorBlendFactor),
+            vk::to_string(blend.dstColorBlendFactor),
+            vk::to_string(blend.alphaBlendOp),
+            vk::to_string(blend.srcAlphaBlendFactor),
+            vk::to_string(blend.dstAlphaBlendFactor));
+
+        auto appendView{[&](std::string_view label, size_t index, TextureView *view) {
+            if (!view) {
+                trace += fmt::format("{}[{}]=null\n", label, index);
+                return;
+            }
+
+            auto *texture{view->texture.get()};
+            if (!texture) {
+                trace += fmt::format("{}[{}] view_ptr={} texture=null\n",
+                                     label, index, fmt::ptr(view));
+                return;
+            }
+
+            uintptr_t guestMap{};
+            size_t guestMapSize{};
+            if (texture->guest) {
+                if (!texture->guest->mappings.empty())
+                    guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                for (const auto &mapping : texture->guest->mappings)
+                    guestMapSize += mapping.size();
+            }
+
+            const auto viewFormat{
+                view->format ? vk::to_string(view->format->vkFormat) : std::string{"Undefined"}
+            };
+            const auto backingFormat{
+                texture->format ? vk::to_string(texture->format->vkFormat) : std::string{"Undefined"}
+            };
+            const auto guestFormat{
+                texture->guest && texture->guest->format
+                    ? vk::to_string(texture->guest->format->vkFormat)
+                    : std::string{"none"}
+            };
+
+            trace += fmt::format(
+                "{}[{}] view_ptr={} vk_view={} texture_ptr={} "
+                "dims={}x{}x{} view_format={} backing_format={} guest_format={} layout={} "
+                "view_swizzle={},{},{},{} aspect=0x{:X} base_mip={} levels={} "
+                "base_layer={} layers={} guest_map=0x{:X} guest_size={} replaced={}\n",
+                label, index,
+                fmt::ptr(view),
+                fmt::ptr(static_cast<VkImageView>(view->GetView())),
+                fmt::ptr(texture),
+                texture->dimensions.width,
+                texture->dimensions.height,
+                texture->dimensions.depth,
+                viewFormat,
+                backingFormat,
+                guestFormat,
+                vk::to_string(texture->layout),
+                vk::to_string(view->mapping.r),
+                vk::to_string(view->mapping.g),
+                vk::to_string(view->mapping.b),
+                vk::to_string(view->mapping.a),
+                static_cast<u32>(static_cast<VkImageAspectFlags>(view->range.aspectMask)),
+                view->range.baseMipLevel,
+                view->range.levelCount,
+                view->range.baseArrayLayer,
+                view->range.layerCount,
+                guestMap,
+                guestMapSize,
+                texture->replaced);
+        }};
+
+        const auto colorAttachments{activeState.GetColorAttachments()};
+        for (size_t index{}; index < colorAttachments.size(); ++index)
+            appendView("color_attachment", index, colorAttachments[index]);
+
+        for (size_t index{}; index < activeDescriptorSetSampledImages.size(); ++index)
+            appendView("sampled", index, activeDescriptorSetSampledImages[index]);
+
+        if (auto *depth{activeState.GetDepthAttachment()})
+            appendView("depth_attachment", 0, depth);
+
+        trace += "END_DRAW\n";
+        ctx.executor.AppendDiagnosticDrawTrace(std::move(trace));
+    }
+
      void Maxwell3D::PrepareDraw(StateUpdateBuilder &builder,
                                  engine::DrawTopology topology, bool indexed, bool estimateIndexBufferSize, u32 firstIndex, u32 count,
                                  vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
@@ -203,14 +357,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
              if (((oldPipeline == pipeline) || (oldPipeline && oldPipeline->CheckBindingMatch(pipeline))) && constantBuffers.quickBindEnabled) {
                  // If bindings between the old and new pipelines are the same we can reuse the descriptor sets given that quick bind is enabled (meaning that no buffer updates or calls to non-graphics engines have occurred that could invalidate them)
-                 if (constantBuffers.quickBind)
+                 if (constantBuffers.quickBind) {
+                     diagnosticDescriptorMode = DiagnosticDescriptorMode::Quick;
                      // If only a single constant buffer has been rebound between draws we can perform a partial descriptor update
                      return pipeline->SyncDescriptorsQuickBind(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
                                                                *constantBuffers.quickBind, activeDescriptorSetSampledImages,
                                                                srcStageMask, dstStageMask);
-                 else
+                 } else {
+                     diagnosticDescriptorMode = DiagnosticDescriptorMode::Reuse;
                      return nullptr;
+                 }
              } else {
+                 diagnosticDescriptorMode = DiagnosticDescriptorMode::Full;
                  // If bindings have changed or quick bind is disabled, perform a full descriptor update
                  return pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
                                                   activeDescriptorSetSampledImages,
@@ -407,6 +565,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        TraceDiagnosticDraw("draw", scissor, indexed, count, instanceCount, first, vertexOffset, firstInstance);
         ctx.executor.AddCheckpoint("After draw");
     }
 
@@ -470,6 +629,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        TraceDiagnosticDraw("draw_indirect", scissor, indexed, count, 0, 0, 0, 0);
         ctx.executor.AddCheckpoint("After indirect draw");
     }
 
