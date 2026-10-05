@@ -14,19 +14,20 @@ namespace skyline::soc::host1x::nvdec {
         if (result < 0)
             return result;
         auto &decoder{*static_cast<FfmpegDecoder *>(context->opaque)};
-        if (!decoder.captureReferences)
+        if (!decoder.captureDecodedSurfaces)
             return 0;
 
-        // libavcodec does not export invisible VP9 frames via receive_frame.
-        // Retain its allocated buffers, then read them only after synchronous
-        // slice decoding has completed. Allocation and reference ownership stay
-        // with FFmpeg; the bitstream's show_frame and reference state are unchanged.
-        AVFramePtr reference{av_frame_clone(frame), [](AVFrame *ptr) { av_frame_free(&ptr); }};
-        if (!reference)
+        // Retain the buffer allocated for the picture being decoded. With frame
+        // threading disabled, draining receive_frame() to EAGAIN completes the
+        // current packet before these shared buffers are consumed by the caller.
+        // This preserves H.264 decode order even when presentation is delayed by
+        // B-frame reordering. Invisible VP9 reference frames use the same path.
+        AVFramePtr decoded{av_frame_clone(frame), [](AVFrame *ptr) { av_frame_free(&ptr); }};
+        if (!decoded)
             return AVERROR(ENOMEM);
-        reference->pts = static_cast<i64>(decoder.referenceToken);
+        decoded->pts = static_cast<i64>(decoder.decodeToken);
         try {
-            decoder.decodedReferences.push_back(std::move(reference));
+            decoder.decodedSurfaces.push_back(std::move(decoded));
         } catch (const std::bad_alloc &) {
             return AVERROR(ENOMEM);
         }
@@ -72,8 +73,8 @@ namespace skyline::soc::host1x::nvdec {
         context->thread_count = 0;
         context->thread_type &= ~FF_THREAD_FRAME;
 
-        // Hardware decodes in bitstream order and the guest handles display reordering itself, low delay
-        // stops libavcodec buffering reordered frames so every submitted packet yields its frame immediately
+        // Preserve the existing low-delay decoder behavior, but do not rely on it
+        // for NVDEC completion: H.264 may still retain B-frames for presentation.
         context->flags |= AV_CODEC_FLAG_LOW_DELAY;
 
         // NVDEC writes the complete coded surface, including SPS crop margins.
@@ -96,9 +97,13 @@ namespace skyline::soc::host1x::nvdec {
         if (!context || !packet)
             return false;
 
-        decodedReferences.clear();
-        referenceToken = submissionToken;
-        captureReferences = hidden && context->codec_id == AV_CODEC_ID_VP9;
+        decodedSurfaces.clear();
+        decodeToken = submissionToken;
+        // NVDEC writes H.264 picture surfaces in decode order, while libavcodec
+        // receive_frame() reports them in presentation order. Capture the decode
+        // target independently. VP9 needs this only for invisible reference frames.
+        captureDecodedSurfaces = context->codec_id == AV_CODEC_ID_H264 ||
+                                 (hidden && context->codec_id == AV_CODEC_ID_VP9);
         packet->data = const_cast<u8 *>(data.data());
         packet->size = static_cast<int>(data.size());
         // Every returned frame identifies its decode destination. Presentation
@@ -106,8 +111,8 @@ namespace skyline::soc::host1x::nvdec {
         packet->pts = static_cast<i64>(submissionToken);
 
         if (int result{avcodec_send_packet(context, packet)}; result < 0) {
-            captureReferences = false;
-            decodedReferences.clear();
+            captureDecodedSurfaces = false;
+            decodedSurfaces.clear();
             LOGW("Failed to send a packet to the decoder: {}", result);
             return false;
         }
@@ -119,9 +124,9 @@ namespace skyline::soc::host1x::nvdec {
         AVFramePtr frame{av_frame_alloc(), [](AVFrame *ptr) { av_frame_free(&ptr); }};
 
         if (int result{avcodec_receive_frame(context, frame.get())}; result < 0) {
-            captureReferences = false;
+            captureDecodedSurfaces = false;
             if (result != AVERROR(EAGAIN)) {
-                decodedReferences.clear();
+                decodedSurfaces.clear();
                 LOGW("Failed to receive a frame from the decoder: {}", result);
             }
             return AVFramePtr{nullptr, nullptr};
@@ -130,8 +135,8 @@ namespace skyline::soc::host1x::nvdec {
         return frame;
     }
 
-    std::vector<AVFramePtr> FfmpegDecoder::TakeDecodedReferences() {
-        captureReferences = false;
-        return std::exchange(decodedReferences, {});
+    std::vector<AVFramePtr> FfmpegDecoder::TakeDecodedSurfaces() {
+        captureDecodedSurfaces = false;
+        return std::exchange(decodedSurfaces, {});
     }
 }
