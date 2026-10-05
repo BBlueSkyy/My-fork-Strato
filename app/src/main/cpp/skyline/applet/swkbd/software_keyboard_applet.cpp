@@ -477,8 +477,8 @@ namespace skyline::applet::swkbd {
         if (!sessionId && action.type != InlineFrontendActionType::Close)
             return;
 
-        LOGI("[SWKBD-FLOW] execute frontend action={} session={} state={}",
-             static_cast<u32>(action.type), sessionId ? *sessionId : 0, static_cast<u32>(inlineState));
+        LOGI("[SWKBD-FLOW] execute frontend action={} session={}",
+             static_cast<u32>(action.type), sessionId ? *sessionId : 0);
         switch (action.type) {
             case InlineFrontendActionType::Show: {
                 if (!state.jvm->ShowSoftwareKeyboard(*sessionId, action.config, action.text, true)) {
