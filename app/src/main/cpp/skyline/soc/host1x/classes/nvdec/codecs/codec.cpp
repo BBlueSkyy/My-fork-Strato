@@ -32,26 +32,49 @@ namespace skyline::soc::host1x::nvdec {
         while (submissions.size() > MaxPendingSubmissions)
             submissions.erase(submissions.begin());
 
-        const auto materialize{[&](const Submission &metadata, const AVFrame *frame) {
+        const auto materialize{[&](const Submission &metadata, const AVFrame *frame) -> bool {
             try {
                 WriteDecodedSurface(state, metadata.output, frame);
+                return true;
             } catch (const std::exception &e) {
                 // Retain the software VIC path for invalid guest destinations.
                 LOGW("NVDEC output surface write failed: {}", e.what());
+                return false;
             }
         }};
 
-        // A unique token carries the complete originating destination through FFmpeg
-        // reordering. An IOVA alone cannot identify submissions that reuse a surface.
-        while (auto frame{decoder.ReceiveFrame()}) {
+        // Drain presentation output completely. For H.264 this also completes the
+        // current decode operation even when its picture remains in the DPB for
+        // presentation reordering.
+        std::vector<AVFramePtr> presentationFrames;
+        while (auto frame{decoder.ReceiveFrame()})
+            presentationFrames.push_back(std::move(frame));
+
+        // NVDEC picture/reference surfaces become visible in decode order, not in
+        // display order. get_buffer2 retains the current H.264 decode target, whose
+        // storage is complete once receive_frame() has been drained to EAGAIN.
+        for (auto &frame : decoder.TakeDecodedSurfaces()) {
+            auto submission{submissions.find(static_cast<u64>(frame->pts))};
+            if (submission == submissions.end())
+                continue;
+
+            submission->second.materialized |= materialize(submission->second, frame.get());
+        }
+
+        // Presentation remains in libavcodec output order. Keep its metadata until
+        // the delayed frame arrives so VIC can still select the originating surface.
+        for (auto &frame : presentationFrames) {
             auto submission{submissions.find(static_cast<u64>(frame->pts))};
             if (submission == submissions.end()) {
                 LOGW("NVDEC frame has no matching decode submission");
                 continue;
             }
+
             auto metadata{submission->second};
+            if (!metadata.materialized)
+                materialize(metadata, frame.get());
             submissions.erase(submission);
-            materialize(metadata, frame.get());
+
             if (metadata.hidden)
                 continue;
             if (av_frame_apply_cropping(frame.get(), 0) < 0) {
@@ -66,13 +89,13 @@ namespace skyline::soc::host1x::nvdec {
             frameQueue.PushPresentationFrame(streamId, metadata.surfaceKey, std::move(frame));
         }
 
-        for (auto &frame : decoder.TakeDecodedReferences()) {
-            auto submission{submissions.find(static_cast<u64>(frame->pts))};
-            // A returned decode-only AVFrame was already written above.
-            if (submission == submissions.end())
-                continue;
-            materialize(submission->second, frame.get());
-            submissions.erase(submission);
+        // Decode-only pictures have no future presentation event to retire their
+        // bookkeeping. Once their guest surface is complete they are finished.
+        for (auto submission{submissions.begin()}; submission != submissions.end();) {
+            if (submission->second.hidden && submission->second.materialized)
+                submission = submissions.erase(submission);
+            else
+                ++submission;
         }
     }
 }
