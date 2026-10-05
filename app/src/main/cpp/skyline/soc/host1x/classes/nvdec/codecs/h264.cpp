@@ -21,11 +21,13 @@ namespace skyline::soc::host1x::nvdec {
     span<const u8> H264::ComposeBitstream() {
         context = state.soc->smmu.Read<H264DecoderContext>(static_cast<u32>(registers.pictureInfoOffset.Address()));
 
-        const u32 displayFlags{context.displayParam[0]};
+        std::array<u32, 5> displayParams{};
+        std::memcpy(displayParams.data(), context.displayParam.data(), sizeof(displayParams));
+        const u32 displayFlags{displayParams[0]};
         LOGI("[GrandiaNvdecDiag] h264-display enableTF={} outStride={} tiling={} structure={} top=[0x{:X},0x{:X}] bottom=[0x{:X},0x{:X}] displayLuma=0x{:X} displayChroma=0x{:X} status=0x{:X}",
              displayFlags & 1U, (displayFlags >> 9) & 0xFFU, (displayFlags >> 17) & 0x7U,
              (displayFlags >> 20) & 1U,
-             context.displayParam[1], context.displayParam[2], context.displayParam[3], context.displayParam[4],
+             displayParams[1], displayParams[2], displayParams[3], displayParams[4],
              registers.h264LastSurfaceLumaOffset.Address(), registers.h264LastSurfaceChromaOffset.Address(),
              registers.frameStatsOffset.Address());
 
