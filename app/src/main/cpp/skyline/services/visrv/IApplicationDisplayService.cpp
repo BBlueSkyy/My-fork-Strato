@@ -4,6 +4,7 @@
 
 #include <gpu.h>
 #include <kernel/types/KProcess.h>
+#include <kernel/swkbd_inline_trace.h>
 #include <services/am/applet/IApplet.h>
 #include <services/serviceman.h>
 #include <services/hosbinder/IHOSBinderDriver.h>
@@ -174,6 +175,10 @@ namespace skyline::service::visrv {
         response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
         LOGI("[SWKBD-FLOW] cmd2460 required-memory dimensions={}x{} size=0x{:X} alignment=0x{:X}",
              width, height, layout.requiredSize, IndirectLayerAlignment);
+        if (state.thread) {
+            kernel::diagnostic::ArmSwkbdPostCmd2460Trace(state.thread->id);
+            LOGI("[SWKBD-CALLER] armed post-cmd2460 trace thread={}", state.thread->id);
+        }
 
         return {};
     }
