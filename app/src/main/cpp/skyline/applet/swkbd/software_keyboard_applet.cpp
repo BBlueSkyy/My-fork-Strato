@@ -264,12 +264,15 @@ namespace skyline::applet::swkbd {
             inlineState = InlineState::Uninitialized;
             inlineStarted = true;
         }
+        LOGI("[SWKBD-FLOW] StartInline mode=0x{:X} partialForeground={} session={}",
+             static_cast<u32>(mode), partialForeground, sessionId);
         return {};
     }
 
     void SoftwareKeyboardApplet::ChangeInlineStateLocked(InlineState newState) {
         if (inlineState == newState)
             return;
+        LOGI("[SWKBD-FLOW] inline state {} -> {}", static_cast<u32>(inlineState), static_cast<u32>(newState));
         inlineState = newState;
         SendInlineReplyLocked(InlineReply::Default);
     }
@@ -279,6 +282,8 @@ namespace skyline::applet::swkbd {
         std::vector<u8> response(size);
         WriteInlineValue(response, 0, inlineState);
         WriteInlineValue(response, sizeof(u32), reply);
+        LOGI("[SWKBD-FLOW] inline reply state={} reply=0x{:X} bytes=0x{:X}",
+             static_cast<u32>(inlineState), static_cast<u32>(reply), response.size());
         PushInteractiveDataAndSignal(std::make_shared<service::am::VectorIStorage>(state, manager, std::move(response)));
     }
 
@@ -370,6 +375,8 @@ namespace skyline::applet::swkbd {
         }
 
         const u64 flags{ReadInlineValue<u64>(calc, 0x8)};
+        LOGI("[SWKBD-FLOW] Calc size=0x{:X} flags=0x{:X} state={} extendedLayout={} newLayout={}",
+             calcArgSize, flags, static_cast<u32>(inlineState), extendedInputLayout, newLayout);
         const size_t cursorOffset{newLayout ? 0x8CU : 0x1CU};
         const size_t inputTextOffset{extendedInputLayout ? 0x90U : 0x68U};
         const size_t utf8Offset{extendedInputLayout ? 0x484U : 0x45CU};
@@ -397,6 +404,8 @@ namespace skyline::applet::swkbd {
             action.config = CopyFrontendConfig();
             action.text = inlineText;
             action.cursor = std::clamp(inlineCursorPosition, 0, static_cast<i32>(inlineText.size()));
+            LOGI("[SWKBD-FLOW] Appear -> frontend Show state={} cursor={} utf8={}",
+                 static_cast<u32>(inlineState), action.cursor, inlineUseUtf8);
             return action;
         }
         if ((flags & InlineFlagDisappear) && (inlineState == InlineState::Shown || inlineState == InlineState::Appearing)) {
@@ -419,6 +428,8 @@ namespace skyline::applet::swkbd {
             return action;
         }
         const auto request{ReadInlineValue<InlineRequest>(data, 0)};
+        LOGI("[SWKBD-FLOW] inline request=0x{:X} bytes=0x{:X} state={}",
+             static_cast<u32>(request), data.size(), static_cast<u32>(inlineState));
         switch (request) {
             case InlineRequest::Finalize:
                 inlineStarted = false;
@@ -466,6 +477,8 @@ namespace skyline::applet::swkbd {
         if (!sessionId && action.type != InlineFrontendActionType::Close)
             return;
 
+        LOGI("[SWKBD-FLOW] execute frontend action={} session={} state={}",
+             static_cast<u32>(action.type), sessionId ? *sessionId : 0, static_cast<u32>(inlineState));
         switch (action.type) {
             case InlineFrontendActionType::Show: {
                 if (!state.jvm->ShowSoftwareKeyboard(*sessionId, action.config, action.text, true)) {
@@ -546,6 +559,8 @@ namespace skyline::applet::swkbd {
     }
 
     void SoftwareKeyboardApplet::OnSoftwareKeyboardFrontendEvent(FrontendEvent event) {
+        LOGI("[SWKBD-FLOW] frontend -> HLE event={} session={} mode=0x{:X}",
+             static_cast<u32>(event.type), event.sessionId, static_cast<u32>(mode));
         if (mode == service::applet::LibraryAppletMode::PartialForeground ||
             mode == service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay) {
             InlineFrontendAction action;
