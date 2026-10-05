@@ -24,6 +24,7 @@ namespace skyline::soc::host1x::nvdec {
             u64 surfaceKey;
             OutputSurface output;
             bool hidden;
+            bool materialized{};
         };
         u64 nextSubmission{1};
         // H.264 has at most 16 reference frames (32 field pictures). Keep
