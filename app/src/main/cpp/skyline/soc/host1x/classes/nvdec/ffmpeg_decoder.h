@@ -18,9 +18,9 @@ namespace skyline::soc::host1x::nvdec {
       private:
         AVCodecContext *context{};
         AVPacket *packet{};
-        bool captureReferences{};
-        u64 referenceToken{};
-        std::vector<AVFramePtr> decodedReferences;
+        bool captureDecodedSurfaces{};
+        u64 decodeToken{};
+        std::vector<AVFramePtr> decodedSurfaces;
 
         static int AllocateFrame(AVCodecContext *context, AVFrame *frame, int flags);
 
@@ -46,7 +46,13 @@ namespace skyline::soc::host1x::nvdec {
          */
         AVFramePtr ReceiveFrame();
 
-        /** @brief Takes completed VP9 reference buffers after ReceiveFrame has been drained. */
-        std::vector<AVFramePtr> TakeDecodedReferences();
+        /**
+         * @brief Takes buffers for pictures completed by the most recent decode operation.
+         *
+         * H.264 pictures are captured in decode order independently from receive_frame()
+         * presentation order. Invisible VP9 reference pictures use the same path because
+         * libavcodec intentionally does not expose them through receive_frame().
+         */
+        std::vector<AVFramePtr> TakeDecodedSurfaces();
     };
 }
