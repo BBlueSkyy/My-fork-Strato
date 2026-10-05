@@ -57,8 +57,15 @@ namespace skyline::soc::host1x::nvdec {
                 sws_getContext(frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
                                frame->width, frame->height, planarFormat, SWS_POINT, nullptr, nullptr, nullptr),
                 sws_freeContext};
-            if (!converter || sws_scale(converter.get(), frame->data, frame->linesize, 0, frame->height,
-                                        converted->data, converted->linesize) != frame->height)
+            // Changing chroma sampling/layout must not remap decoded YUV
+            // sample ranges. In particular YUVJ input must remain full-range.
+            int fullRange{frame->color_range == AVCOL_RANGE_JPEG || frame->format == AV_PIX_FMT_YUVJ420P ||
+                          frame->format == AV_PIX_FMT_YUVJ422P || frame->format == AV_PIX_FMT_YUVJ444P};
+            const int *coefficients{sws_getCoefficients(SWS_CS_DEFAULT)};
+            if (!converter || sws_setColorspaceDetails(converter.get(), coefficients, fullRange, coefficients,
+                                                       fullRange, 0, 1 << 16, 1 << 16) < 0 ||
+                sws_scale(converter.get(), frame->data, frame->linesize, 0, frame->height,
+                          converted->data, converted->linesize) != frame->height)
                 throw std::invalid_argument("Unsupported NVDEC decoded pixel format");
             frame = converted.get();
         }

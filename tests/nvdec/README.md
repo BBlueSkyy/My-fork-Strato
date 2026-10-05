@@ -11,7 +11,7 @@ storage, not decoding, conversion or tiling algorithms.
 
 Coverage includes real H.264/VP9 decode without VIC, byte comparisons against
 queued frames, independent streams, reused IOVAs, B-frame destination snapshots,
-SPS cropping, bounded non-output submissions, NV12/NV24, picture-relative
+SPS cropping, bounded non-output submissions, NV12/NV24 and full-range chroma conversion, picture-relative
 offsets, woven/split fields, negative source strides, invalid/overlapping plane
 ranges, and the existing VIC pitch/block-linear output.
 

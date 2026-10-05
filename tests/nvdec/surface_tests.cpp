@@ -188,6 +188,14 @@ int main(int argc,char **argv) {
   Check(mem[0x28000+BlockOffset(x*2+1,y,192)]==u8(255-x-y),"NV24 V sample");
  }
  av_frame_free(&full);
+ // NV24 chroma expansion must not change the decoded full-range luma values.
+ frame->format=AV_PIX_FMT_YUVJ420P;frame->color_range=AVCOL_RANGE_JPEG;
+ nvdec::WriteDecodedSurface(state,nv24,frame);
+ for(u32 y=0;y<64;y++) for(u32 x=0;x<80;x++) {
+  Check(mem[0x20000+BlockOffset(x,y,128)]==u8(x+3*y),"NV24 conversion preserves full-range luma");
+  Check(mem[0x28000+BlockOffset(x*2,y,192)]==u8(17+x/2+y/2),"NV24 chroma expansion preserves full-range samples");
+ }
+ frame->format=AV_PIX_FMT_YUV420P;frame->color_range=AVCOL_RANGE_UNSPECIFIED;
  // MBAFF/interlaced sequences may leave every field offset zero and use
  // a woven frame, as on the real nvtegra driver.
  p.frameMbsOnlyFlag=0;p.frameSurfaces=0;
