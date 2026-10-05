@@ -50,7 +50,9 @@ namespace skyline::service::am {
 
     Result ISelfController::GetLibraryAppletLaunchableEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         appletState->libraryAppletLaunchableEvent->Signal();
-        response.copyHandles.push_back(state.process->InsertItem(appletState->libraryAppletLaunchableEvent));
+        const KHandle handle{state.process->InsertItem(appletState->libraryAppletLaunchableEvent)};
+        response.copyHandles.push_back(handle);
+        LOGI("[SWKBD-IPC] GetLibraryAppletLaunchableEvent handle=0x{:X} signalled=true", handle);
         return {};
     }
 
