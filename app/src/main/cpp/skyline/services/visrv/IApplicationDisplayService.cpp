@@ -172,6 +172,8 @@ namespace skyline::service::visrv {
 
         response.Push<i64>(static_cast<i64>(layout.requiredSize));
         response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
+        LOGI("[SWKBD-FLOW] cmd2460 required-memory dimensions={}x{} size=0x{:X} alignment=0x{:X}",
+             width, height, layout.requiredSize, IndirectLayerAlignment);
 
         return {};
     }
