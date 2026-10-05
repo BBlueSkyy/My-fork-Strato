@@ -82,8 +82,8 @@ namespace skyline::soc::host1x {
             if (gather.size() <= 4)
                 LOGI("[VideoDiag] fifo-header stream={} raw=0x{:08X} opcode=0x{:X} class=0x{:X} method=0x{:X} count={} mask=0x{:X}",
                      streamId, methodHeader.raw, static_cast<u8>(methodHeader.opcode),
-                     static_cast<u16>(methodHeader.classId), methodHeader.methodAddress,
-                     methodHeader.methodCount, methodHeader.offsetMask);
+                     static_cast<u16>(methodHeader.classId), static_cast<u16>(methodHeader.methodAddress),
+                     static_cast<u16>(methodHeader.methodCount), static_cast<u16>(methodHeader.offsetMask));
 
             switch (methodHeader.opcode) {
                 case Host1xOpcode::SetClass:
