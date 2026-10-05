@@ -6,6 +6,7 @@
 package org.stratoemu.strato
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
 import android.app.RemoteAction
@@ -17,6 +18,7 @@ import android.content.pm.ActivityInfo
 import android.content.res.AssetManager
 import android.content.res.Configuration
 import android.content.res.Resources
+import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.drawable.Icon
 import android.hardware.display.DisplayManager
@@ -66,11 +68,13 @@ import org.stratoemu.strato.utils.ByteBufferSerializable
 import org.stratoemu.strato.utils.GpuDriverHelper
 import org.stratoemu.strato.utils.serializable
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.CountDownLatch
 import javax.inject.Inject
 import kotlin.math.abs
-
+import kotlin.system.exitProcess
 
 private const val ActionPause = "${BuildConfig.APPLICATION_ID}.ACTION_EMULATOR_PAUSE"
 private const val ActionMute = "${BuildConfig.APPLICATION_ID}.ACTION_EMULATOR_MUTE"
@@ -82,6 +86,11 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     companion object {
         private val Tag = EmulationActivity::class.java.simpleName
         const val ReturnToMainTag = "returnToMain"
+        const val ProgramIndexTag = "programIndex"
+        const val PreviousProgramIndexTag = "previousProgramIndex"
+        const val ProgramUserChannelPathTag = "programUserChannelPath"
+        const val ProgramRelaunchOrientationPolicyTag = "programRelaunchOrientationPolicy"
+        const val ProgramRelaunchSnapshotPathTag = "programRelaunchSnapshotPath"
 
         /**
          * The Kotlin thread on which emulation code executes
@@ -142,6 +151,27 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     private var gameSurface : Surface? = null
 
+    @Volatile
+    private var programRelaunchRequested = false
+    private val programRelaunchDeathToken = Binder()
+    @Volatile
+    private var programRelaunchSelfTerminate = false
+    private val programRelaunchFinishReceiver = object : ResultReceiver(Handler(Looper.getMainLooper())) {
+        override fun onReceiveResult(resultCode : Int, resultData : Bundle?) {
+            if (resultCode != ProgramRelaunchActivity.FinishOldActivityRequest)
+                return
+
+            // The old emulation process terminates itself after its Activity is removed.
+            programRelaunchSelfTerminate = true
+            finish()
+            overridePendingTransition(0, 0)
+        }
+    }
+    private var programRelaunchSnapshotPath : String? = null
+    private var programRelaunchFirstFrameReady = false
+    private var programRelaunchDrawGate : ViewTreeObserver.OnPreDrawListener? = null
+    private var programRelaunchReadyReceiver : ResultReceiver? = null
+
     /**
      * This is the entry point into the emulation code for libskyline
      *
@@ -154,7 +184,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * @param nativeLibraryPath The full path to the app native library directory
      * @param assetManager The asset manager used for accessing app assets
      */
-    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, dlcFds : IntArray?, updateFd : Int, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager)
+    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, dlcFds : IntArray?, updateFd : Int, programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray?, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager)
 
     /**
      * @param join If the function should only return after all the threads join or immediately
@@ -176,6 +206,184 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private external fun changeAudioStatus(play : Boolean)
 
     private external fun nativeSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int)
+
+    @Suppress("unused", "UNUSED_PARAMETER")
+    fun requestProgramRelaunch(kind : Int, value : Long, programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray) : Boolean {
+        if (isFinishing || isDestroyed) {
+            return false
+        }
+        if (programRelaunchRequested) {
+            return true
+        }
+
+        programRelaunchRequested = true
+        shouldFinish = false
+
+        val stateFile = File(cacheDir, "program_relaunch_state_${Process.myPid()}.bin")
+        try {
+            stateFile.writeBytes(userChannel)
+        } catch (exception : Exception) {
+            Log.e(Tag, "Failed to preserve Program UserChannel", exception)
+            programRelaunchRequested = false
+            return false
+        }
+
+        val targetIntent = Intent(intent).apply {
+            setClass(this@EmulationActivity, EmulationActivity::class.java)
+            putExtra(ProgramIndexTag, programIndex)
+            putExtra(PreviousProgramIndexTag, previousProgramIndex)
+            putExtra(ProgramUserChannelPathTag, stateFile.absolutePath)
+            putExtra(ProgramRelaunchOrientationPolicyTag, emulationSettings.orientation)
+        }
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            showProgramRelaunchLoadingAndLaunch(targetIntent)
+            return true
+        }
+
+        // Keep the native request parked until the loading window has drawn.
+        val trampolineDrawn = CountDownLatch(1)
+        runOnUiThread {
+            showProgramRelaunchLoadingAndLaunch(targetIntent) {
+                trampolineDrawn.countDown()
+            }
+        }
+        trampolineDrawn.await()
+        return true
+    }
+
+    /** Captures the last guest frame and starts the relaunch trampoline. */
+    private fun showProgramRelaunchLoadingAndLaunch(
+        targetIntent : Intent,
+        onTrampolineDrawn : (() -> Unit)? = null
+    ) {
+        val surface = gameSurface
+        val width = binding.gameView.width
+        val height = binding.gameView.height
+
+        fun launch(snapshotPath : String?) {
+            launchProgramRelaunch(targetIntent, snapshotPath, onTrampolineDrawn)
+        }
+
+        if (surface == null || !surface.isValid || width <= 0 || height <= 0) {
+            launch(null)
+            return
+        }
+
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        try {
+            PixelCopy.request(surface, bitmap, { result ->
+                var snapshotPath : String? = null
+                if (result == PixelCopy.SUCCESS) {
+                    val snapshotFile = File(cacheDir, "program_relaunch_snapshot_${Process.myPid()}.jpg")
+                    try {
+                        FileOutputStream(snapshotFile).use { output ->
+                            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
+                            output.fd.sync()
+                        }
+                        snapshotPath = snapshotFile.absolutePath
+                    } catch (exception : Exception) {
+                        Log.w(Tag, "Failed to persist Program relaunch frame", exception)
+                    } finally {
+                        bitmap.recycle()
+                    }
+                } else {
+                    bitmap.recycle()
+                }
+
+                launch(snapshotPath)
+            }, Handler(Looper.getMainLooper()))
+        } catch (exception : IllegalArgumentException) {
+            bitmap.recycle()
+            launch(null)
+        }
+    }
+
+    private fun launchProgramRelaunch(
+        targetIntent : Intent,
+        snapshotPath : String?,
+        onTrampolineDrawn : (() -> Unit)?
+    ) {
+        snapshotPath?.let { targetIntent.putExtra(ProgramRelaunchSnapshotPathTag, it) }
+
+        val deathTokenBundle = Bundle().apply {
+            putBinder(ProgramRelaunchActivity.ProcessDeathTokenTag, programRelaunchDeathToken)
+        }
+        val trampolineReadyReceiver = object : ResultReceiver(Handler(Looper.getMainLooper())) {
+            override fun onReceiveResult(resultCode : Int, resultData : Bundle?) {
+                if (resultCode != Activity.RESULT_OK)
+                    return
+                onTrampolineDrawn?.invoke()
+            }
+        }
+        val trampolineIntent = Intent(this, ProgramRelaunchActivity::class.java).apply {
+            putExtra(ProgramRelaunchActivity.TargetIntentTag, targetIntent)
+            putExtra(ProgramRelaunchActivity.OldProcessIdTag, Process.myPid())
+            putExtra(ProgramRelaunchActivity.ProcessDeathTokenBundleTag, deathTokenBundle)
+            putExtra(ProgramRelaunchActivity.OldActivityFinishReceiverTag, programRelaunchFinishReceiver)
+            putExtra(ProgramRelaunchActivity.TrampolineReadyReceiverTag, trampolineReadyReceiver)
+        }
+        startActivity(trampolineIntent)
+        overridePendingTransition(0, 0)
+    }
+
+    /** Keeps the fresh emulation window hidden until its first guest frame is ready. */
+    private fun installProgramRelaunchDrawGate(intent : Intent) {
+        if (!intent.hasExtra(PreviousProgramIndexTag))
+            return
+
+        programRelaunchSnapshotPath = intent.getStringExtra(ProgramRelaunchSnapshotPathTag)
+        programRelaunchReadyReceiver = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(
+                ProgramRelaunchActivity.FirstFrameReadyReceiverTag,
+                ResultReceiver::class.java
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra<ResultReceiver>(ProgramRelaunchActivity.FirstFrameReadyReceiverTag)
+        }
+
+        programRelaunchFirstFrameReady = false
+        val root = binding.root
+        val gate = ViewTreeObserver.OnPreDrawListener {
+            programRelaunchFirstFrameReady
+        }
+        programRelaunchDrawGate = gate
+        root.viewTreeObserver.addOnPreDrawListener(gate)
+    }
+
+    @Suppress("unused")
+    fun onFirstFramePresented() {
+        runOnUiThread {
+            if (intent.hasExtra(PreviousProgramIndexTag) && !programRelaunchFirstFrameReady) {
+                programRelaunchFirstFrameReady = true
+
+                val root = binding.root
+                val observer = root.viewTreeObserver
+                val drawListener = object : ViewTreeObserver.OnDrawListener {
+                    override fun onDraw() {
+                        root.post {
+                            if (observer.isAlive)
+                                observer.removeOnDrawListener(this)
+                            programRelaunchDrawGate?.let { gate ->
+                                if (root.viewTreeObserver.isAlive)
+                                    root.viewTreeObserver.removeOnPreDrawListener(gate)
+                            }
+                            programRelaunchDrawGate = null
+
+                            programRelaunchReadyReceiver?.send(Activity.RESULT_OK, null)
+                            programRelaunchReadyReceiver = null
+
+                            programRelaunchSnapshotPath?.let { File(it).delete() }
+                            programRelaunchSnapshotPath = null
+                        }
+                    }
+                }
+                observer.addOnDrawListener(drawListener)
+                root.invalidate()
+            }
+        }
+    }
 
     private val softwareKeyboardDialogs = mutableMapOf<Long, SoftwareKeyboardDialog>()
 
@@ -260,6 +468,20 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         shouldFinish = true
         returnToMain = intent.getBooleanExtra(ReturnToMainTag, false)
 
+        val programIndex = intent.getIntExtra(ProgramIndexTag, 0)
+        val previousProgramIndex = intent.getIntExtra(PreviousProgramIndexTag, -1)
+        val userChannelPath = intent.getStringExtra(ProgramUserChannelPathTag)
+        val userChannel = userChannelPath?.let { path ->
+            try {
+                File(path).takeIf { it.exists() }?.readBytes()
+            } catch (exception : Exception) {
+                Log.w(Tag, "Failed to restore Program UserChannel", exception)
+                null
+            } finally {
+                File(path).delete()
+            }
+        }
+
         val rom = item.uri
         val romType = item.format.ordinal
 
@@ -322,7 +544,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         }
         
         emulationThread = Thread {
-            executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
+            executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, programIndex, previousProgramIndex, userChannel, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
             returnFromEmulation()
         }
 
@@ -379,14 +601,30 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     @SuppressLint("SetTextI18n", "ClickableViewAccessibility")
     override fun onCreate(savedInstanceState : Bundle?) {
+        val isProgramRelaunch = intent.hasExtra(PreviousProgramIndexTag)
+        val relaunchOrientationPolicy = intent.getIntExtra(
+            ProgramRelaunchOrientationPolicyTag,
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        )
+
+        if (isProgramRelaunch) {
+            setTheme(R.style.ProgramRelaunchTheme)
+
+            if (relaunchOrientationPolicy != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
+                requestedOrientation = relaunchOrientationPolicy
+        }
+
         super.onCreate(savedInstanceState)
+
         populateAppItem()
         emulationSettings = EmulationSettings.forEmulation(item.titleId ?: item.key())
 
-        requestedOrientation = emulationSettings.orientation
+        if (!isProgramRelaunch || relaunchOrientationPolicy == ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
+            requestedOrientation = emulationSettings.orientation
         window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         inputHandler = InputHandler(inputManager, emulationSettings)
         setContentView(binding.root)
+        installProgramRelaunchDrawGate(intent)
 
         builtinVibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
@@ -453,7 +691,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         force60HzRefreshRate(!emulationSettings.maxRefreshRate)
         getSystemService<DisplayManager>()?.registerDisplayListener(this, null)
 
-        if (!emulationSettings.isGlobal && emulationSettings.useCustomSettings)
+        if (!isProgramRelaunch && !emulationSettings.isGlobal && emulationSettings.useCustomSettings)
             Toast.makeText(this, getString(R.string.per_game_settings_active_message), Toast.LENGTH_SHORT).show()
 
         binding.gameView.setOnTouchListener(this)
@@ -657,6 +895,21 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     override fun onDestroy() {
+        if (programRelaunchSelfTerminate) {
+            // Binder process death is the relaunch session boundary.
+            super.onDestroy()
+            shouldFinish = false
+
+            getSystemService<DisplayManager>()?.unregisterDisplayListener(this)
+            if (::emulationSettings.isInitialized && emulationSettings.forceMaxGpuClocks)
+                GpuDriverHelper.forceMaxGpuClocks(false)
+
+            vibrators.forEach { (_, vibrator) -> vibrator.cancel() }
+            vibrators.clear()
+
+            exitProcess(0)
+        }
+
         softwareKeyboardDialogs.toMap().also { softwareKeyboardDialogs.clear() }.forEach { (sessionId, dialog) ->
             dialog.closeFromFrontend()
             nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)

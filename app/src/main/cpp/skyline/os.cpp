@@ -52,12 +52,14 @@ namespace skyline::kernel {
         std::string privateAppFilesPath,
         std::string nativeLibraryPath,
         std::string deviceTimeZone,
-        std::shared_ptr<vfs::FileSystem> assetFileSystem)
+        std::shared_ptr<vfs::FileSystem> assetFileSystem,
+        std::shared_ptr<ProgramLaunchState> programLaunchState)
         : nativeLibraryPath(std::move(nativeLibraryPath)),
           publicAppFilesPath(std::move(publicAppFilesPath)),
           privateAppFilesPath(std::move(privateAppFilesPath)),
           deviceTimeZone(std::move(deviceTimeZone)),
           assetFileSystem(std::move(assetFileSystem)),
+          programLaunchState(programLaunchState ? std::move(programLaunchState) : std::make_shared<ProgramLaunchState>()),
           state(this, jvmManager, settings),
           serviceManager(state) {}
 
@@ -67,12 +69,14 @@ namespace skyline::kernel {
 
         LOGI("OS::Execute - romFd: {}, updateFd: {}, dlcFds count: {}", romFd, updateFd, dlcFds.size());
 
-        state.loader = GetLoader(romFd, keyStore, romType);
+        const u8 programIndex{GetCurrentProgramIndex()};
+        LOGI("Launching ProgramIndex {} (previous {})", programIndex, GetPreviousProgramIndex());
+        state.loader = GetLoader(romFd, keyStore, romType, programIndex);
 
         if (updateFd >= 0) {
             LOGI("OS::Execute - Loading update from FD: {}", updateFd);
             // ManageContentActivity imports updates/DLC via NspFilePicker, even for an XCI base.
-            state.updateLoader = GetLoader(updateFd, keyStore, loader::RomFormat::NSP);
+            state.updateLoader = GetLoader(updateFd, keyStore, loader::RomFormat::NSP, programIndex);
             LOGI("OS::Execute - Update loader created successfully");
         } else {
             LOGI("OS::Execute - No update to load (updateFd: {})", updateFd);
@@ -150,7 +154,8 @@ namespace skyline::kernel {
         }
     }
 
-    std::shared_ptr<loader::Loader> OS::GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType) {
+    std::shared_ptr<loader::Loader> OS::GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType,
+                                                  u8 programIndex) {
         auto file{std::make_shared<vfs::OsBacking>(fd)};
         switch (romType) {
             case loader::RomFormat::NRO: {
@@ -166,11 +171,46 @@ namespace skyline::kernel {
             case loader::RomFormat::NCA:
                 return std::make_shared<loader::NcaLoader>(std::move(file), std::move(keyStore));
             case loader::RomFormat::NSP:
-                return std::make_shared<loader::NspLoader>(file, keyStore);
+                return std::make_shared<loader::NspLoader>(file, keyStore, std::string{}, loader::NspLoadMode::Full, programIndex);
             case loader::RomFormat::XCI:
-                return std::make_shared<loader::XciLoader>(file, keyStore);
+                return std::make_shared<loader::XciLoader>(file, keyStore, programIndex);
             default:
                 throw exception("Unsupported ROM extension.");
         }
+    }
+
+    u8 OS::GetCurrentProgramIndex() const {
+        std::scoped_lock lock{programLaunchState->mutex};
+        return programLaunchState->currentProgramIndex;
+    }
+
+    i32 OS::GetPreviousProgramIndex() const {
+        std::scoped_lock lock{programLaunchState->mutex};
+        return programLaunchState->previousProgramIndex;
+    }
+
+    void OS::ClearUserChannel() {
+        std::scoped_lock lock{programLaunchState->mutex};
+        programLaunchState->userChannel.clear();
+    }
+
+    void OS::PushUserChannel(std::vector<u8> data) {
+        std::scoped_lock lock{programLaunchState->mutex};
+        programLaunchState->userChannel.push_back(std::move(data));
+    }
+
+    std::optional<std::vector<u8>> OS::PopUserChannel() {
+        std::scoped_lock lock{programLaunchState->mutex};
+        if (programLaunchState->userChannel.empty())
+            return std::nullopt;
+
+        auto data{std::move(programLaunchState->userChannel.back())};
+        programLaunchState->userChannel.pop_back();
+        return data;
+    }
+
+    std::vector<std::vector<u8>> OS::GetUserChannelSnapshot() const {
+        std::scoped_lock lock{programLaunchState->mutex};
+        return programLaunchState->userChannel;
     }
 }
