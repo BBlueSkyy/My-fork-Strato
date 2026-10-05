@@ -99,9 +99,11 @@ static void ReorderTest(const char *path) {
  PacketCodec codec(state,regs,nvdec::CodecId::H264);nvdec::FfmpegDecoder reference;Check(reference.Initialize(nvdec::CodecId::H264),"reference decoder");
  std::vector<nvdec::OutputSurface> targets;size_t outputs{};
  for(size_t i=0;i<packets.size();i++) {
-  // All packets reuse luma while pitches and chroma addresses vary. Delayed
-  // output must still use the originating submission, never the current one.
-  nvdec::OutputSurface dest{64,48,u32(64+(i%2)*64),u32(64+(i%3)*64),false,false,{0x10000,0},{0x20000+i*0x8000,0}};
+  // Use a distinct guest destination per decode. A real NVDEC surface may be
+  // overwritten by a later decode before an older B-frame is presented, so
+  // presentation-time validation must not assume reused memory still holds it.
+  const u64 base{0x10000+i*0x10000};
+  nvdec::OutputSurface dest{64,48,u32(64+(i%2)*64),u32(64+(i%3)*64),false,false,{base,0},{base+0x8000,0}};
   targets.push_back(dest);codec.output=dest;codec.packet=packets[i];
   auto writesBefore=state.soc->smmu.writes.size();
   codec.Decode(queue,11);
