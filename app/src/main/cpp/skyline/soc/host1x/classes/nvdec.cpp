@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <soc.h>
 #include <soc/host1x/frame_queue.h>
 #include "nvdec/codecs/h264.h"
 #include "nvdec/codecs/vp8.h"
