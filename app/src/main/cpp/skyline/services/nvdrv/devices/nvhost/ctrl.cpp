@@ -80,6 +80,12 @@ namespace skyline::service::nvdrv::device::nvhost {
         if (fence.id >= soc::host1x::SyncpointCount)
             return PosixResult::InvalidArgument;
 
+        if (fence.threshold)
+            LOGI("[VideoDiag] syncpoint-wait id={} threshold={} timeout={} allocate={} trackedMin={} host={}",
+                 fence.id, fence.threshold, timeout, allocate,
+                 core.syncpointManager.IsSyncpointAllocated(fence.id) ? core.syncpointManager.ReadSyncpointMinValue(fence.id) : 0,
+                 state.soc->host1x.syncpoints.at(fence.id).host.Load());
+
         // No need to wait since syncpoints start at 0
         if (fence.threshold == 0) {
             // oss-nvjpg waits on syncpoint 0 during initialisation without reserving it, this is technically valid with a zero threshold but could also be a sign of a bug on our side in other cases, hence the warn
@@ -92,19 +98,28 @@ namespace skyline::service::nvdrv::device::nvhost {
         // Check if the syncpoint has already expired using the last known values
         if (core.syncpointManager.IsFenceSignalled(fence)) {
             value.val = core.syncpointManager.ReadSyncpointMinValue(fence.id);
+            LOGI("[VideoDiag] syncpoint-wait-fast-signalled id={} threshold={} value={}",
+                 fence.id, fence.threshold, value.val);
             return PosixResult::Success;
         }
 
         // Sync the syncpoint with the GPU then check again
         auto minVal{core.syncpointManager.UpdateMin(fence.id)};
+        LOGI("[VideoDiag] syncpoint-wait-after-update id={} threshold={} min={} host={}",
+             fence.id, fence.threshold, minVal, state.soc->host1x.syncpoints.at(fence.id).host.Load());
         if (core.syncpointManager.IsFenceSignalled(fence)) {
             value.val = minVal;
+            LOGI("[VideoDiag] syncpoint-wait-signalled id={} threshold={} value={}",
+                 fence.id, fence.threshold, value.val);
             return PosixResult::Success;
         }
 
         // Don't try to register any waits if there is no timeout for them
-        if (!timeout)
+        if (!timeout) {
+            LOGI("[VideoDiag] syncpoint-wait-poll-miss id={} threshold={} min={}",
+                 fence.id, fence.threshold, minVal);
             return PosixResult::TryAgain;
+        }
 
         std::scoped_lock lock{syncpointEventMutex};
 
@@ -125,7 +140,8 @@ namespace skyline::service::nvdrv::device::nvhost {
             return PosixResult::InvalidArgument;
 
         if (!event->IsInUse()) {
-            LOGD("Waiting on syncpoint event: {} with fence: ({}, {})", slot, fence.id, fence.threshold);
+            LOGI("[VideoDiag] syncpoint-wait-register slot={} id={} threshold={} host={}",
+                 slot, fence.id, fence.threshold, state.soc->host1x.syncpoints.at(fence.id).host.Load());
             event->RegisterWaiter(state.soc->host1x, fence);
 
             value.val = 0;
