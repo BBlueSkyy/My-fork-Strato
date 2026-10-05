@@ -22,11 +22,16 @@ namespace skyline::service::nvdrv::device::nvhost {
           channelType(channelType),
           streamId(state.soc->host1x.AllocateStreamId()) {
         state.soc->host1x.channels[static_cast<size_t>(channelType)].Start();
+
+        if (IsChannelImplemented(channelType))
+            LOGI("[VideoDiag] channel-open type={} stream={}", static_cast<u32>(channelType), streamId);
     }
 
     Host1xChannel::~Host1xChannel() {
-        if (IsChannelImplemented(channelType))
+        if (IsChannelImplemented(channelType)) {
+            LOGI("[VideoDiag] channel-close type={} stream={}", static_cast<u32>(channelType), streamId);
             state.soc->host1x.channels[static_cast<size_t>(channelType)].CloseStream(streamId);
+        }
     }
 
     PosixResult Host1xChannel::SetNvmapFd(In<FileDescriptor> fd) {
@@ -47,6 +52,12 @@ namespace skyline::service::nvdrv::device::nvhost {
             return PosixResult::InvalidArgument;
 
         std::scoped_lock lock(channelMutex);
+
+        bool channelImplemented{IsChannelImplemented(channelType)};
+        if (channelImplemented)
+            LOGI("[VideoDiag] submit type={} stream={} cmdBufs={} relocs={} syncpointIncrs={} fences={}",
+                 static_cast<u32>(channelType), streamId, cmdBufs.size(), relocs.size(),
+                 syncpointIncrs.size(), fenceThresholds.size());
 
         // Apply relocations: each one patches the pinned SMMU address (IOVA) of `pinMem` (offset by `pinOffset`
         // and shifted by the corresponding entry in `relocShifts`) into `patchMem` at `patchOffset`, so the
@@ -72,12 +83,14 @@ namespace skyline::service::nvdrv::device::nvhost {
             *patchAddress = word;
         }
 
-        bool channelImplemented{IsChannelImplemented(channelType)};
-
         for (size_t i{}; i < syncpointIncrs.size(); i++) {
             const auto &incr{syncpointIncrs[i]};
 
             u32 max{core.syncpointManager.IncrementSyncpointMaxExt(incr.syncpointId, incr.numIncrs)};
+
+            if (channelImplemented)
+                LOGI("[VideoDiag] reserve-syncpoint type={} stream={} id={} increments={} max={}",
+                     static_cast<u32>(channelType), streamId, incr.syncpointId, incr.numIncrs, max);
 
             if (!channelImplemented) {
                 // Increment syncpoints on the CPU for channels whose engines aren't implemented, the fence would never signal otherwise
@@ -96,6 +109,9 @@ namespace skyline::service::nvdrv::device::nvhost {
 
             u64 gatherAddress{handleDesc->address + cmdBuf.offset};
             LOGD("Submit gather, CPU address: 0x{:X}, words: 0x{:X}", gatherAddress, cmdBuf.words);
+            if (channelImplemented)
+                LOGI("[VideoDiag] queue-gather type={} stream={} cpu=0x{:X} words=0x{:X}",
+                     static_cast<u32>(channelType), streamId, gatherAddress, cmdBuf.words);
 
             span gather(state.process->memory.TranslateVirtualPointer<u32 *>(gatherAddress), cmdBuf.words);
             // Note: The gather aliases guest memory rather than copying it, correctly synchronised guests won't reuse the cmdbuf before its fence signals

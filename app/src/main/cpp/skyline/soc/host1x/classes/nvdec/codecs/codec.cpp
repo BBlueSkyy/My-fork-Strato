@@ -21,24 +21,32 @@ namespace skyline::soc::host1x::nvdec {
             return;
 
         u64 surfaceKey{GetOutputLumaAddress()};
-        LOGD("NVDEC submit, surface: 0x{:X}, hidden: {}, packet size: 0x{:X}",
-             surfaceKey, hiddenFrame, packet.size());
-        if (!decoder.SendPacket(packet, surfaceKey, hiddenFrame))
+        LOGI("[VideoDiag] nvdec-packet stream={} surface=0x{:X} hidden={} size=0x{:X}",
+             streamId, surfaceKey, hiddenFrame, packet.size());
+        if (!decoder.SendPacket(packet, surfaceKey, hiddenFrame)) {
+            LOGI("[VideoDiag] nvdec-send-failed stream={} surface=0x{:X}", streamId, surfaceKey);
             return;
+        }
+
+        size_t decodedFrames{};
 
         // Drain every frame the decoder has ready. Visible frames carry the target surface IOVA
         // in PTS across decoder reordering; decode-only frames deliberately have no PTS and must
         // never be exposed to VIC as presentation frames.
         while (auto frame{decoder.ReceiveFrame()}) {
+            decodedFrames++;
+
             if (frame->pts == AV_NOPTS_VALUE) {
-                LOGD("NVDEC decoded a hidden frame, not queueing it for VIC");
+                LOGI("[VideoDiag] nvdec-frame-hidden stream={} index={}", streamId, decodedFrames);
                 continue;
             }
 
-            LOGD("NVDEC decoded presentation frame, submitted surface: 0x{:X}, format: {}, dimensions: {}x{}, linesizes: [{}, {}, {}]",
-                 static_cast<u64>(frame->pts), frame->format, frame->width, frame->height,
+            LOGI("[VideoDiag] nvdec-frame stream={} index={} surface=0x{:X} format={} size={}x{} lines=[{},{},{}]",
+                 streamId, decodedFrames, static_cast<u64>(frame->pts), frame->format, frame->width, frame->height,
                  frame->linesize[0], frame->linesize[1], frame->linesize[2]);
             frameQueue.PushPresentationFrame(streamId, static_cast<u64>(frame->pts), std::move(frame));
         }
+
+        LOGI("[VideoDiag] nvdec-drain-complete stream={} decoded={}", streamId, decodedFrames);
     }
 }

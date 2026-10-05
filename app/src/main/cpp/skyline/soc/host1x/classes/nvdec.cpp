@@ -20,7 +20,7 @@ namespace skyline::soc::host1x {
         if (inserted) {
             it->second = std::make_unique<StreamState>();
             frameQueue.OpenStream(streamId);
-            LOGD("Created NVDEC stream state: {}", streamId);
+            LOGI("[VideoDiag] nvdec-stream-open stream={}", streamId);
         }
         return *it->second;
     }
@@ -68,7 +68,7 @@ namespace skyline::soc::host1x {
         }
 
         if (stream.codec)
-            LOGD("Created NVDEC codec: {} for stream: {}",
+            LOGI("[VideoDiag] nvdec-codec-create codec={} stream={}",
                  static_cast<u64>(stream.registers.codecId), streamId);
     }
 
@@ -79,7 +79,12 @@ namespace skyline::soc::host1x {
         }
 
         try {
+            LOGI("[VideoDiag] nvdec-execute-begin stream={} codec={} pictureInfo=0x{:X} bitstream=0x{:X}",
+                 streamId, static_cast<u64>(stream.registers.codecId),
+                 stream.registers.pictureInfoOffset.Address(), stream.registers.frameBitstreamOffset.Address());
             stream.codec->Decode(frameQueue, streamId);
+            LOGI("[VideoDiag] nvdec-execute-end stream={} codec={}",
+                 streamId, static_cast<u64>(stream.registers.codecId));
         } catch (const std::exception &e) {
             LOGE("NVDEC execute failed for stream {}: {}", streamId, e.what());
         }
@@ -88,6 +93,6 @@ namespace skyline::soc::host1x {
     void NvDecClass::CloseStream(u64 streamId) {
         streams.erase(streamId);
         frameQueue.CloseStream(streamId);
-        LOGD("Destroyed NVDEC stream state: {}", streamId);
+        LOGI("[VideoDiag] nvdec-stream-close stream={}", streamId);
     }
 }

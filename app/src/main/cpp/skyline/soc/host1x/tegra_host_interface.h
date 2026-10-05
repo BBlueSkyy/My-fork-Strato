@@ -38,7 +38,7 @@ namespace skyline::soc::host1x {
                 u32 syncpointId{incrQueue.front()};
                 incrQueue.pop();
 
-                LOGD("Increment syncpoint: {}", syncpointId);
+                LOGI("[VideoDiag] thi-syncpoint-commit id={}", syncpointId);
                 syncpoints.at(syncpointId).Increment();
             }
         }
@@ -68,11 +68,11 @@ namespace skyline::soc::host1x {
 
                     switch (incrSyncpoint.condition) {
                         case IncrementSyncpointMethod::Condition::Immediate:
-                            LOGD("Increment syncpoint: {}", incrSyncpoint.index);
+                            LOGI("[VideoDiag] thi-syncpoint-immediate id={}", incrSyncpoint.index);
                             syncpoints.at(incrSyncpoint.index).Increment();
                             break;
                         case IncrementSyncpointMethod::Condition::OpDone:
-                            LOGD("Queue syncpoint for OpDone: {}", incrSyncpoint.index);
+                            LOGI("[VideoDiag] thi-syncpoint-opdone id={}", incrSyncpoint.index);
                             AddIncr(incrSyncpoint.index);
                             // Submitting immediately is correct as class operations execute synchronously within the FIFO thread,
                             // by the time this method is processed any prior operation has already completed; the opDoneCallback

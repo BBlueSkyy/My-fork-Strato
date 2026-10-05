@@ -43,7 +43,7 @@ namespace skyline::soc::host1x {
             u64 inputLumaIova{registers.surfaces[0][0].luma.Address()};
             auto frame{frameQueue.PopPresentationFrame(inputLumaIova)};
 
-            LOGD("VIC execute, input luma: 0x{:X}, frame: {}, format: {}, dimensions: {}x{}, layout: {}, output luma: 0x{:X}",
+            LOGI("[VideoDiag] vic-execute inputLuma=0x{:X} frame={} format={} size={}x{} layout={} outputLuma=0x{:X}",
                  inputLumaIova, frame ? "present" : "missing", static_cast<u32>(surfaceConfig.outPixelFormat),
                  u32{surfaceConfig.outLumaWidth} + 1, u32{surfaceConfig.outLumaHeight} + 1,
                  surfaceConfig.outBlkKind == vic::BlkKind::Pitch ? "pitch" : "block-linear",
@@ -52,7 +52,7 @@ namespace skyline::soc::host1x {
             if (!frame) {
                 // VIC may run before the matching decode becomes available. Do not overwrite the
                 // guest surface with diagnostic pixels or with a frame belonging to another surface.
-                LOGD("VIC preserving output surface because decoded frame 0x{:X} is unavailable", inputLumaIova);
+                LOGI("[VideoDiag] vic-frame-missing inputLuma=0x{:X}", inputLumaIova);
                 return;
             }
 

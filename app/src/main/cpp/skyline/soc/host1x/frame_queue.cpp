@@ -8,11 +8,13 @@ namespace skyline::soc::host1x {
     void FrameQueue::OpenStream(u64 streamId) {
         std::scoped_lock lock(mutex);
         presentationStreams.try_emplace(streamId);
+        LOGI("[VideoDiag] frame-queue-open stream={}", streamId);
     }
 
     void FrameQueue::CloseStream(u64 streamId) {
         std::scoped_lock lock(mutex);
         presentationStreams.erase(streamId);
+        LOGI("[VideoDiag] frame-queue-close stream={}", streamId);
     }
 
     void FrameQueue::PushPresentationFrame(u64 streamId, u64 lumaIova, AVFramePtr frame) {
@@ -26,6 +28,8 @@ namespace skyline::soc::host1x {
         }
 
         frames.emplace_back(lumaIova, std::move(frame));
+        LOGI("[VideoDiag] frame-queue-push stream={} luma=0x{:X} queued={}",
+             streamId, lumaIova, frames.size());
     }
 
     AVFramePtr FrameQueue::PopPresentationFrame(u64 requestedLumaIova) {
@@ -62,13 +66,13 @@ namespace skyline::soc::host1x {
         }
 
         if (!selected) {
-            LOGD("No unambiguous presentation stream for VIC luma IOVA: 0x{:X}, active streams: {}",
+            LOGI("[VideoDiag] frame-queue-miss vicLuma=0x{:X} activeNonEmptyStreams={}",
                  requestedLumaIova, nonEmptyStreams);
             return AVFramePtr{nullptr, nullptr};
         }
 
         auto &[submittedLumaIova, queuedFrame]{selected->front()};
-        LOGD("Presentation frame dequeue, stream: {}, VIC luma: 0x{:X}, submitted luma: 0x{:X}, queued frames: {}",
+        LOGI("[VideoDiag] frame-queue-pop stream={} vicLuma=0x{:X} submittedLuma=0x{:X} queuedBefore={}",
              selectedStream, requestedLumaIova, submittedLumaIova, selected->size());
 
         auto frame{std::move(queuedFrame)};

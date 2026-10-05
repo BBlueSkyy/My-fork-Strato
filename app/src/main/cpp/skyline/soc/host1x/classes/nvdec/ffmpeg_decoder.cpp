@@ -84,11 +84,15 @@ namespace skyline::soc::host1x::nvdec {
         AVFramePtr frame{av_frame_alloc(), [](AVFrame *ptr) { av_frame_free(&ptr); }};
 
         if (int result{avcodec_receive_frame(context, frame.get())}; result < 0) {
-            if (result != AVERROR(EAGAIN))
+            if (result == AVERROR(EAGAIN))
+                LOGI("[VideoDiag] ffmpeg-receive EAGAIN");
+            else
                 LOGW("Failed to receive a frame from the decoder: {}", result);
             return AVFramePtr{nullptr, nullptr};
         }
 
+        LOGI("[VideoDiag] ffmpeg-receive frame pts={} format={} size={}x{}",
+             frame->pts, frame->format, frame->width, frame->height);
         return frame;
     }
 }
