@@ -102,7 +102,10 @@ static void ReorderTest(const char *path) {
   // All packets reuse luma while pitches and chroma addresses vary. Delayed
   // output must still use the originating submission, never the current one.
   nvdec::OutputSurface dest{64,48,u32(64+(i%2)*64),u32(64+(i%3)*64),false,false,{0x10000,0},{0x20000+i*0x8000,0}};
-  targets.push_back(dest);codec.output=dest;codec.packet=packets[i];codec.Decode(queue,11);
+  targets.push_back(dest);codec.output=dest;codec.packet=packets[i];
+  auto writesBefore=state.soc->smmu.writes.size();
+  codec.Decode(queue,11);
+  Check(state.soc->smmu.writes.size()==writesBefore+2,"H264 decode-order surface completes before presentation");
   Check(reference.SendPacket(packets[i],i+1),"reference packet");
   while(auto expected=reference.ReceiveFrame()) {
    auto token=size_t(expected->pts);Check(token && token<=targets.size(),"submission token");const auto &original=targets[token-1];
