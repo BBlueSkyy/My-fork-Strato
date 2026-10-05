@@ -17,6 +17,22 @@ namespace skyline::soc::host1x::nvdec {
     span<const u8> H264::ComposeBitstream() {
         context = state.soc->smmu.Read<H264DecoderContext>(static_cast<u32>(registers.pictureInfoOffset.Address()));
 
+        const auto &diagParams{context.parameterSet};
+        const u32 diagPicIndex{static_cast<u32>(diagParams.currPicIdx)};
+        const u64 diagLuma{diagPicIndex < registers.surfaceLumaOffsets.size()
+                               ? registers.surfaceLumaOffsets[diagPicIndex].Address() + diagParams.lumaFrameOffset.Address()
+                               : 0};
+        const u64 diagChroma{diagPicIndex < registers.surfaceChromaOffsets.size()
+                                 ? registers.surfaceChromaOffsets[diagPicIndex].Address() + diagParams.chromaFrameOffset.Address()
+                                 : 0};
+
+        LOGI("[VideoDiag] h264-output pic={} size={}x{} tile={} gob={} pitchLuma={} pitchChroma={} layout={} frameSurfaces={} luma=0x{:X} chroma=0x{:X} stats=0x{:X}",
+             diagPicIndex, diagParams.picWidthInMbs * 16, diagParams.frameHeightInMbs * 16,
+             static_cast<u32>(diagParams.tileFormat), static_cast<u32>(diagParams.gobHeight),
+             diagParams.pitchLuma, diagParams.pitchChroma,
+             static_cast<u32>(diagParams.outputMemoryLayout), static_cast<u32>(diagParams.frameSurfaces),
+             diagLuma, diagChroma, registers.frameStatsOffset.Address());
+
         if (!registers.frameBitstreamOffset.raw || context.streamLength > MaxBitstreamSize) {
             LOGW("Invalid bitstream, offset: 0x{:X}, length: 0x{:X}", registers.frameBitstreamOffset.Address(), context.streamLength);
             return {};
