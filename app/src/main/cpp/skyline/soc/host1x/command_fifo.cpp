@@ -50,6 +50,13 @@ namespace skyline::soc::host1x {
     void ChannelCommandFifo::Send(ClassId targetClass, u32 method, u32 argument, u64 streamId) {
         LOGV("Calling method in class: 0x{:X}, method: 0x{:X}, argument: 0x{:X}", targetClass, method, argument);
 
+        if (method == IncrementSyncpointMethodId) {
+            IncrementSyncpointMethod increment{.raw = argument};
+            LOGI("[VideoDiag] fifo-syncpoint-method stream={} class=0x{:X} raw=0x{:08X} id={} condition={}",
+                 streamId, static_cast<u16>(targetClass), argument, increment.index,
+                 static_cast<u8>(increment.condition));
+        }
+
         switch (targetClass) {
             case ClassId::Host1x:
                 host1XClass.CallMethod(method, argument);
@@ -71,6 +78,12 @@ namespace skyline::soc::host1x {
 
         for (auto entry{gather.begin()}; entry != gather.end(); entry++) {
             ChannelCommandFifoMethodHeader methodHeader{.raw = *entry};
+
+            if (gather.size() <= 4)
+                LOGI("[VideoDiag] fifo-header stream={} raw=0x{:08X} opcode=0x{:X} class=0x{:X} method=0x{:X} count={} mask=0x{:X}",
+                     streamId, methodHeader.raw, static_cast<u8>(methodHeader.opcode),
+                     static_cast<u16>(methodHeader.classId), methodHeader.methodAddress,
+                     methodHeader.methodCount, methodHeader.offsetMask);
 
             switch (methodHeader.opcode) {
                 case Host1xOpcode::SetClass:
