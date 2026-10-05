@@ -21,9 +21,11 @@ namespace skyline::kernel::diagnostic {
     inline std::atomic_size_t swkbdPostCmd2460Thread{NoSwkbdTraceThread};
     inline std::atomic_uint8_t swkbdPostCmd2460Phase{static_cast<std::uint8_t>(SwkbdPostCmd2460Phase::Idle)};
     inline std::atomic_uint32_t swkbdPostCmd2460Sequence{};
+    inline std::atomic_uint64_t swkbdObservedCvKey{};
 
     inline void ArmSwkbdPostCmd2460Trace(std::size_t threadId) {
         swkbdPostCmd2460Sequence.store(0, std::memory_order_relaxed);
+        swkbdObservedCvKey.store(0, std::memory_order_relaxed);
         swkbdPostCmd2460Thread.store(threadId, std::memory_order_release);
         swkbdPostCmd2460Phase.store(
             static_cast<std::uint8_t>(SwkbdPostCmd2460Phase::AwaitingSendSyncReturn),
@@ -44,6 +46,25 @@ namespace skyline::kernel::diagnostic {
         return swkbdPostCmd2460Thread.load(std::memory_order_acquire) == threadId &&
                swkbdPostCmd2460Phase.load(std::memory_order_acquire) ==
                    static_cast<std::uint8_t>(SwkbdPostCmd2460Phase::Active);
+    }
+
+
+    inline bool IsSwkbdPostCmd2460TraceActive() {
+        return swkbdPostCmd2460Phase.load(std::memory_order_acquire) ==
+               static_cast<std::uint8_t>(SwkbdPostCmd2460Phase::Active);
+    }
+
+    inline std::size_t GetSwkbdPostCmd2460TraceThread() {
+        return swkbdPostCmd2460Thread.load(std::memory_order_acquire);
+    }
+
+    inline void ObserveSwkbdPostCmd2460Cv(std::size_t threadId, std::uint64_t key) {
+        if (IsSwkbdPostCmd2460TraceActive(threadId))
+            swkbdObservedCvKey.store(key, std::memory_order_release);
+    }
+
+    inline std::uint64_t GetSwkbdPostCmd2460Cv() {
+        return swkbdObservedCvKey.load(std::memory_order_acquire);
     }
 
     inline std::uint32_t BeginSwkbdPostCmd2460Svc(std::size_t threadId) {
