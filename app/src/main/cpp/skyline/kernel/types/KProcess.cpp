@@ -390,14 +390,6 @@ namespace skyline::kernel::type {
 
                     syncWaiters.erase(it);
                     waiterCount--;
-
-                    // Horizon clears the userspace waiter flag as soon as the
-                    // last waiter for this condition variable is consumed.
-                    // Without this, count-limited signals can leave the flag
-                    // stale until a later SignalProcessWideKey call.
-                    auto remaining{syncWaiters.equal_range(key)};
-                    if (remaining.first == remaining.second)
-                        __atomic_store_n(key, false, __ATOMIC_SEQ_CST);
                 } else if (queue.first == queue.second) {
                     // If we didn't find a thread then we need to clear the boolean flag denoting that there are no more threads waiting on this conditional variable
                     __atomic_store_n(key, false, __ATOMIC_SEQ_CST);
