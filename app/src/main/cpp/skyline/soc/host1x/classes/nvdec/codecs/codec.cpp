@@ -26,11 +26,20 @@ namespace skyline::soc::host1x::nvdec {
              surfaceKey, hiddenFrame, packet.size());
         u64 token{nextSubmission++};
         auto output{GetOutputSurface()};
-        if (!decoder.SendPacket(packet, token))
+        if (!decoder.SendPacket(packet, token, hiddenFrame))
             return;
         submissions.emplace(token, Submission{surfaceKey, output, hiddenFrame});
         while (submissions.size() > MaxPendingSubmissions)
             submissions.erase(submissions.begin());
+
+        const auto materialize{[&](const Submission &metadata, const AVFrame *frame) {
+            try {
+                WriteDecodedSurface(state, metadata.output, frame);
+            } catch (const std::exception &e) {
+                // Retain the software VIC path for invalid guest destinations.
+                LOGW("NVDEC output surface write failed: {}", e.what());
+            }
+        }};
 
         // A unique token carries the complete originating destination through FFmpeg
         // reordering. An IOVA alone cannot identify submissions that reuse a surface.
@@ -42,13 +51,7 @@ namespace skyline::soc::host1x::nvdec {
             }
             auto metadata{submission->second};
             submissions.erase(submission);
-            try {
-                WriteDecodedSurface(state, metadata.output, frame.get());
-            } catch (const std::exception &e) {
-                // Preserve the software VIC path even if a guest supplies an invalid
-                // NVDEC destination. Never synthesize a surface or a completion marker.
-                LOGW("NVDEC output surface write failed: {}", e.what());
-            }
+            materialize(metadata, frame.get());
             if (metadata.hidden)
                 continue;
             if (av_frame_apply_cropping(frame.get(), 0) < 0) {
@@ -61,6 +64,15 @@ namespace skyline::soc::host1x::nvdec {
                  static_cast<u64>(frame->pts), frame->format, frame->width, frame->height,
                  frame->linesize[0], frame->linesize[1], frame->linesize[2]);
             frameQueue.PushPresentationFrame(streamId, metadata.surfaceKey, std::move(frame));
+        }
+
+        for (auto &frame : decoder.TakeDecodedReferences()) {
+            auto submission{submissions.find(static_cast<u64>(frame->pts))};
+            // A returned decode-only AVFrame was already written above.
+            if (submission == submissions.end())
+                continue;
+            materialize(submission->second, frame.get());
+            submissions.erase(submission);
         }
     }
 }

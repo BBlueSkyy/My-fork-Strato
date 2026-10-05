@@ -44,7 +44,7 @@
 
 - [x] Add failing integration tests with real H.264/VP9 decoding, repeated addresses and independent streams.
 - [x] Materialize received H.264/VP8/VP9 frames and then retain their AVFrame for VIC.
-- [x] Keep VP9 descriptors alongside its buffered picture; preserve hidden-frame presentation eligibility.
+- [x] Keep VP9 descriptors alongside its buffered picture; preserve hidden-frame presentation eligibility; retain invisible VP9 reference buffers through get_buffer2 and materialize them after synchronous decoding.
 - [x] Run tests; inspect failures before changing behavior.
 
 ### Task 3: Verification and publication

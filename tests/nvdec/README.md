@@ -20,9 +20,10 @@ packet supplier. A production H.264 test also reads guest picture info and
 registers and composes a packet containing a complete fixture bitstream.
 VP8/VP9 header reconstruction is compiled but is not validated with captured
 guest picture/entropy data. Field tests verify
-plane row parity, not FFmpeg PAFF field-pair decoding. Decode-only AVFrames are written without entering the VIC queue. Hidden
-VP9 reference frames for which libavcodec returns no AVFrame retain the existing
-behavior; exporting those internal reference buffers is outside this patch. T210 NVDEC output is block-linear with two GOBs; newer NVDEC3 tiling
+plane row parity, not FFmpeg PAFF field-pair decoding. Decode-only AVFrames are written without entering the VIC queue. Invisible
+VP9 reference buffers are retained through FFmpeg's public get_buffer2 callback
+and materialized after synchronous decoding, without modifying show_frame or
+reference state. Failed decode buffers are discarded. T210 NVDEC output is block-linear with two GOBs; newer NVDEC3 tiling
 controls are not emulated. VIC retains its separately configured layouts.
 
 Android device validation remains necessary: Grandia 1 must pass the previous

@@ -61,6 +61,23 @@ static void DecodeTest(const char *h264,const char *vp9) {
  Check(b.Pending()<=64,"dropped/non-output submission metadata is bounded");
  b.packet[0]|=2;b.Decode(queue,2);
  Check(queue.PopPresentationFrame(0x30000)!=nullptr,"visible output after dropped packets");
+ // A non-show VP9 reference must also exist in guest memory even though
+ // avcodec_receive_frame deliberately returns no presentation AVFrame.
+ b.packet[0]&=~2;b.SetHidden(true);auto writeCount=state.soc->smmu.writes.size();
+ b.Decode(queue,2);b.SetHidden(false);b.packet[0]|=2;
+ Check(state.soc->smmu.writes.size()==writeCount+2,"hidden VP9 reference materializes without presentation");
+ Check(!queue.PopPresentationFrame(0x30000),"hidden VP9 reference stays out of VIC");
+ for(u32 y=0;y<48;y++) for(u32 x=0;x<64;x++)
+  Check(state.soc->smmu.bytes[0x30000+BlockOffset(x,y,64)]==fb->data[0][y*fb->linesize[0]+x],"hidden VP9 reference pixels");
+ Check(b.Pending()<=64,"hidden VP9 metadata retired");
+ for(u32 y=0;y<24;y++) for(u32 x=0;x<32;x++) {
+  Check(state.soc->smmu.bytes[0x40000+BlockOffset(x*2,y,64)]==fb->data[1][y*fb->linesize[1]+x],"hidden VP9 reference U pixels");
+  Check(state.soc->smmu.bytes[0x40000+BlockOffset(x*2+1,y,64)]==fb->data[2][y*fb->linesize[2]+x],"hidden VP9 reference V pixels");
+ }
+ auto validPacket=b.packet;auto unchanged=state.soc->smmu.bytes;writeCount=state.soc->smmu.writes.size();
+ b.SetHidden(true);b.packet[0]&=~2;b.packet.resize(32);b.Decode(queue,2);
+ Check(state.soc->smmu.writes.size()==writeCount && state.soc->smmu.bytes==unchanged,"failed hidden decode must not expose unfinished buffers");
+ b.SetHidden(false);b.packet=std::move(validPacket);
  // Reusing a destination is a second presentation event, not a cache hit.
  a.Decode(queue,1); a.Decode(queue,1);
  Check(queue.PopPresentationFrame(0x10000)!=nullptr && queue.PopPresentationFrame(0x10000)!=nullptr,"repeated surface queue entries");

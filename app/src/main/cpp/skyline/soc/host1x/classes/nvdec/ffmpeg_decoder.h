@@ -18,6 +18,11 @@ namespace skyline::soc::host1x::nvdec {
       private:
         AVCodecContext *context{};
         AVPacket *packet{};
+        bool captureReferences{};
+        u64 referenceToken{};
+        std::vector<AVFramePtr> decodedReferences;
+
+        static int AllocateFrame(AVCodecContext *context, AVFrame *frame, int flags);
 
       public:
         ~FfmpegDecoder();
@@ -33,12 +38,15 @@ namespace skyline::soc::host1x::nvdec {
          * @param submissionToken Unique submission identity retained in PTS across decoder reordering
          * @return If the packet was accepted
          */
-        bool SendPacket(span<const u8> data, u64 submissionToken);
+        bool SendPacket(span<const u8> data, u64 submissionToken, bool hidden = false);
 
         /**
          * @brief Retrieves the next decoded frame from the decoder
          * @return The next decoded frame in FFmpeg presentation order, with submission metadata in PTS, or an empty pointer when no frame is available yet
          */
         AVFramePtr ReceiveFrame();
+
+        /** @brief Takes completed VP9 reference buffers after ReceiveFrame has been drained. */
+        std::vector<AVFramePtr> TakeDecodedReferences();
     };
 }

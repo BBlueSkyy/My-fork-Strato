@@ -5,9 +5,34 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 }
 
+#include <utility>
 #include "ffmpeg_decoder.h"
 
 namespace skyline::soc::host1x::nvdec {
+    int FfmpegDecoder::AllocateFrame(AVCodecContext *context, AVFrame *frame, int flags) {
+        int result{avcodec_default_get_buffer2(context, frame, flags)};
+        if (result < 0)
+            return result;
+        auto &decoder{*static_cast<FfmpegDecoder *>(context->opaque)};
+        if (!decoder.captureReferences)
+            return 0;
+
+        // libavcodec does not export invisible VP9 frames via receive_frame.
+        // Retain its allocated buffers, then read them only after synchronous
+        // slice decoding has completed. Allocation and reference ownership stay
+        // with FFmpeg; the bitstream's show_frame and reference state are unchanged.
+        AVFramePtr reference{av_frame_clone(frame), [](AVFrame *ptr) { av_frame_free(&ptr); }};
+        if (!reference)
+            return AVERROR(ENOMEM);
+        reference->pts = static_cast<i64>(decoder.referenceToken);
+        try {
+            decoder.decodedReferences.push_back(std::move(reference));
+        } catch (const std::bad_alloc &) {
+            return AVERROR(ENOMEM);
+        }
+        return 0;
+    }
+
     FfmpegDecoder::~FfmpegDecoder() {
         if (packet)
             av_packet_free(&packet);
@@ -54,6 +79,8 @@ namespace skyline::soc::host1x::nvdec {
         // NVDEC writes the complete coded surface, including SPS crop margins.
         // Apply the visible crop only after materialization, before VIC handoff.
         context->apply_cropping = 0;
+        context->opaque = this;
+        context->get_buffer2 = AllocateFrame;
 
         if (int result{avcodec_open2(context, codec, nullptr)}; result < 0) {
             LOGE("Failed to open the decoder: {}", result);
@@ -65,10 +92,13 @@ namespace skyline::soc::host1x::nvdec {
         return packet != nullptr;
     }
 
-    bool FfmpegDecoder::SendPacket(span<const u8> data, u64 submissionToken) {
+    bool FfmpegDecoder::SendPacket(span<const u8> data, u64 submissionToken, bool hidden) {
         if (!context || !packet)
             return false;
 
+        decodedReferences.clear();
+        referenceToken = submissionToken;
+        captureReferences = hidden && context->codec_id == AV_CODEC_ID_VP9;
         packet->data = const_cast<u8 *>(data.data());
         packet->size = static_cast<int>(data.size());
         // Every returned frame identifies its decode destination. Presentation
@@ -76,6 +106,8 @@ namespace skyline::soc::host1x::nvdec {
         packet->pts = static_cast<i64>(submissionToken);
 
         if (int result{avcodec_send_packet(context, packet)}; result < 0) {
+            captureReferences = false;
+            decodedReferences.clear();
             LOGW("Failed to send a packet to the decoder: {}", result);
             return false;
         }
@@ -87,11 +119,19 @@ namespace skyline::soc::host1x::nvdec {
         AVFramePtr frame{av_frame_alloc(), [](AVFrame *ptr) { av_frame_free(&ptr); }};
 
         if (int result{avcodec_receive_frame(context, frame.get())}; result < 0) {
-            if (result != AVERROR(EAGAIN))
+            captureReferences = false;
+            if (result != AVERROR(EAGAIN)) {
+                decodedReferences.clear();
                 LOGW("Failed to receive a frame from the decoder: {}", result);
+            }
             return AVFramePtr{nullptr, nullptr};
         }
 
         return frame;
+    }
+
+    std::vector<AVFramePtr> FfmpegDecoder::TakeDecodedReferences() {
+        captureReferences = false;
+        return std::exchange(decodedReferences, {});
     }
 }
