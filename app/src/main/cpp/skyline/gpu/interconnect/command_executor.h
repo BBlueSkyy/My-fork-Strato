@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <string>
 #include <boost/container/stable_vector.hpp>
 #include <renderdoc_app.h>
 #include <common/linear_allocator.h>
@@ -219,7 +220,29 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
+
+        enum class DiagnosticCaptureState {
+            WaitingForArm,
+            Capturing,
+            Complete,
+        };
+
+        std::vector<std::shared_ptr<Texture>> diagnosticRenderTargets;
+        std::vector<std::function<void()>> pendingDiagnosticCaptureCallbacks;
+        std::vector<std::string> diagnosticDrawTraceLines;
+        size_t diagnosticDrawTraceFlushedCount{};
+        DiagnosticCaptureState diagnosticCaptureState{DiagnosticCaptureState::WaitingForArm};
+        bool diagnosticCaptureArmed{};
+        size_t diagnosticCaptureIndex{};
+        std::string diagnosticCaptureDirectory;
+
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
+
+        void TrackDiagnosticRenderTargets(span<TextureView *> colorAttachments);
+        void QueueDiagnosticRenderTargetCaptures();
+        void FlushDiagnosticDrawTrace();
+        bool CheckDiagnosticCaptureArm();
+        bool EnsureDiagnosticCaptureDirectory();
 
         void RotateRecordSlot();
 
@@ -369,6 +392,16 @@ namespace skyline::gpu::interconnect {
         void NotifyPipelineChange();
 
         std::optional<u32> GetRenderPassIndex();
+
+        /**
+         * @brief Returns whether the DBFZ mini-RenderDoc draw trace is active
+         */
+        bool IsDiagnosticDrawTraceActive() const;
+
+        /**
+         * @brief Buffers one draw-state record for the active diagnostic capture
+         */
+        void AppendDiagnosticDrawTrace(std::string trace);
 
         /**
          * @brief Records a checkpoint into the GPU command stream at the current
