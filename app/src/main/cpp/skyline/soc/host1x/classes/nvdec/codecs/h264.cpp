@@ -21,6 +21,14 @@ namespace skyline::soc::host1x::nvdec {
     span<const u8> H264::ComposeBitstream() {
         context = state.soc->smmu.Read<H264DecoderContext>(static_cast<u32>(registers.pictureInfoOffset.Address()));
 
+        const u32 displayFlags{context.displayParam[0]};
+        LOGI("[GrandiaNvdecDiag] h264-display enableTF={} outStride={} tiling={} structure={} top=[0x{:X},0x{:X}] bottom=[0x{:X},0x{:X}] displayLuma=0x{:X} displayChroma=0x{:X} status=0x{:X}",
+             displayFlags & 1U, (displayFlags >> 9) & 0xFFU, (displayFlags >> 17) & 0x7U,
+             (displayFlags >> 20) & 1U,
+             context.displayParam[1], context.displayParam[2], context.displayParam[3], context.displayParam[4],
+             registers.h264LastSurfaceLumaOffset.Address(), registers.h264LastSurfaceChromaOffset.Address(),
+             registers.frameStatsOffset.Address());
+
         if (!registers.frameBitstreamOffset.raw || context.streamLength > MaxBitstreamSize) {
             LOGW("Invalid bitstream, offset: 0x{:X}, length: 0x{:X}", registers.frameBitstreamOffset.Address(), context.streamLength);
             return {};
