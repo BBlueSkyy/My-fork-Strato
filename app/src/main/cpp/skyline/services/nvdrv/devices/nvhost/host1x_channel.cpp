@@ -89,8 +89,10 @@ namespace skyline::service::nvdrv::device::nvhost {
             u32 max{core.syncpointManager.IncrementSyncpointMaxExt(incr.syncpointId, incr.numIncrs)};
 
             if (channelImplemented)
-                LOGI("[VideoDiag] reserve-syncpoint type={} stream={} id={} increments={} max={}",
-                     static_cast<u32>(channelType), streamId, incr.syncpointId, incr.numIncrs, max);
+                LOGI("[VideoDiag] reserve-syncpoint type={} stream={} id={} increments={} max={} trackedMin={} host={}",
+                     static_cast<u32>(channelType), streamId, incr.syncpointId, incr.numIncrs, max,
+                     core.syncpointManager.ReadSyncpointMinValue(incr.syncpointId),
+                     state.soc->host1x.syncpoints[incr.syncpointId].host.Load());
 
             if (!channelImplemented) {
                 // Increment syncpoints on the CPU for channels whose engines aren't implemented, the fence would never signal otherwise
@@ -114,6 +116,11 @@ namespace skyline::service::nvdrv::device::nvhost {
                      static_cast<u32>(channelType), streamId, gatherAddress, cmdBuf.words);
 
             span gather(state.process->memory.TranslateVirtualPointer<u32 *>(gatherAddress), cmdBuf.words);
+            if (channelImplemented && gather.size() <= 4)
+                for (size_t wordIndex{}; wordIndex < gather.size(); wordIndex++)
+                    LOGI("[VideoDiag] gather-word type={} stream={} index={} raw=0x{:08X}",
+                         static_cast<u32>(channelType), streamId, wordIndex, gather[wordIndex]);
+
             // Note: The gather aliases guest memory rather than copying it, correctly synchronised guests won't reuse the cmdbuf before its fence signals
             if (channelImplemented)
                 state.soc->host1x.channels[static_cast<size_t>(channelType)].Push(gather, streamId);
