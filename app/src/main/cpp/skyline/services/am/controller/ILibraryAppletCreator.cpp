@@ -20,6 +20,9 @@ namespace skyline::service::am {
     Result ILibraryAppletCreator::CreateLibraryApplet(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto appletId{request.Pop<skyline::applet::AppletId>()};
         const auto appletMode{request.Pop<applet::LibraryAppletMode>()};
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] CreateLibraryApplet mode=0x{:X} aruid=0x{:X}",
+                 static_cast<u32>(appletMode), appletState->appletResourceUserId);
         auto accessor{SRVREG(ILibraryAppletAccessor, appletId, appletMode, appletState->appletResourceUserId)};
         manager.RegisterService(accessor, session, response);
         appletState->libraryAppletLaunchableEvent->Signal();
