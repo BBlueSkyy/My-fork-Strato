@@ -83,6 +83,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                      u32 count, u32 instanceCount) {
      TRACE_EVENT("gpu", "DrawWithInlineIndex", "count", count, "instanceCount", instanceCount);
 
+       if (constantBuffers.RequiresHostReadSynchronization(ctx))
+           ctx.executor.Submit();
+
        StateUpdateBuilder builder{*ctx.executor.allocator};
        vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
@@ -352,6 +355,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
     void Maxwell3D::Draw(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, u32 count, u32 first, u32 instanceCount, u32 vertexOffset, u32 firstInstance) {
         TRACE_EVENT("gpu", "Draw", "indexed", indexed, "count", count, "instanceCount", instanceCount);
 
+        if (constantBuffers.RequiresHostReadSynchronization(ctx))
+            ctx.executor.Submit();
+
         StateUpdateBuilder builder{*ctx.executor.allocator};
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
@@ -415,6 +421,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
             return;
 
         TRACE_EVENT("gpu", "Indirect Draw", "buffer", reinterpret_cast<uintptr_t>(indirectBuffer.data()));
+
+        if (constantBuffers.RequiresHostReadSynchronization(ctx))
+            ctx.executor.Submit();
 
         StateUpdateBuilder builder{*ctx.executor.allocator};
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};

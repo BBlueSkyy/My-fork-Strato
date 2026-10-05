@@ -33,9 +33,14 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         TRACE_EVENT("gpu", "KeplerCompute::Dispatch");
 
+        constantBuffers.Update(ctx, qmd);
+        if (constantBuffers.RequiresHostReadSynchronization(ctx)) {
+            ctx.executor.Submit();
+            constantBuffers.Update(ctx, qmd);
+        }
+
         StateUpdateBuilder builder{*ctx.executor.allocator};
 
-        constantBuffers.Update(ctx, qmd);
         samplers.Update(ctx, qmd.samplerIndex == soc::gm20b::engine::kepler_compute::QMD::SamplerIndex::ViaHeaderIndex);
         auto *pipeline{pipelineState.Update(ctx, builder, textures, samplers, constantBuffers.boundConstantBuffers, qmd)};
 

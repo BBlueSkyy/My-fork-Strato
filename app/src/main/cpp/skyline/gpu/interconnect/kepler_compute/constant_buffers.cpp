@@ -15,6 +15,14 @@ namespace skyline::gpu::interconnect::kepler_compute {
         }
     }
 
+    bool ConstantBuffers::RequiresHostReadSynchronization(InterconnectContext &ctx) {
+        for (auto &constantBuffer : boundConstantBuffers)
+            if (constantBuffer.RequiresHostReadSynchronization(ctx.executor))
+                return true;
+
+        return false;
+    }
+
     void ConstantBuffers::MarkAllDirty() {
         for (auto &buffer : cachedBuffers)
             buffer.PurgeCaches();

@@ -21,6 +21,11 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         void Update(InterconnectContext &ctx, const QMD &qmd);
 
+        /**
+         * @return Whether any bound constant buffer requires a submission before host-side state reads
+         */
+        bool RequiresHostReadSynchronization(InterconnectContext &ctx);
+
         void MarkAllDirty();
     };
 }

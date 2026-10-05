@@ -62,6 +62,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
         void Unbind(engine::ShaderStage stage, size_t index);
 
         /**
+         * @return Whether any bound constant buffer requires a submission before host-side state reads
+         */
+        bool RequiresHostReadSynchronization(InterconnectContext &ctx);
+
+        /**
          * @brief Resets quick binding state to be ready store a new bind, this should be called after every draw
          */
         void ResetQuickBind();

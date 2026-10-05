@@ -47,6 +47,14 @@ namespace skyline::gpu::interconnect {
         blockMappingEndAddr = 0; // Will force a retranslate of `blockMapping` on the next `Update()` call
     }
 
+    bool ConstantBuffer::RequiresHostReadSynchronization(CommandExecutor &executor) {
+        if (!view)
+            return false;
+
+        ContextLock lock{executor.tag, view};
+        return view.GetBuffer()->IsCurrentExecutionGpuDirty();
+    }
+
     void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset, std::source_location location) {
         ContextLock lock{executor.tag, view};
         view.Read(lock.IsFirstUsage(), [location, srcOffset, size = dstBuffer.size()] {

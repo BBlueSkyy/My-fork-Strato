@@ -74,6 +74,12 @@ namespace skyline::gpu::interconnect {
     struct ConstantBuffer {
         BufferView view;
 
+        /**
+         * @return Whether this buffer was written by the GPU in the current execution and
+         *         therefore requires a submission boundary before a host-side read.
+         */
+        bool RequiresHostReadSynchronization(CommandExecutor &executor);
+
         void Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset,
                   std::source_location location = std::source_location::current());
 
