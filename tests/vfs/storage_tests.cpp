@@ -306,7 +306,30 @@ void TestProgramIndexSelection() {
     Check(!selection.base && !selection.patch, "Missing ProgramIndex selected unrelated content");
 
     selection = loader::SelectProgramNcas({candidates[1]}, {}, 1);
-    Check(!selection.base && !selection.patch, "Header-only fallback selected a nonzero ProgramIndex without CNMT");
+    Check(selection.base && selection.base->header.titleId == p0.header.titleId + 1,
+          "Program NCA title ID fallback did not select a nonzero ProgramIndex");
+
+    // A Patch CNMT may fail to expose the child through idOffset while the NCA Program ID
+    // still identifies the requested ProgramIndex. Keep the fallback constrained to the
+    // same application base so unrelated Program NCAs are never selected.
+    auto mismatchedOffset{MakeProgramMeta(p0.header.titleId, 0x33, ContentMetaType::Patch, 2, 0)};
+    selection = loader::SelectProgramNcas({candidates[1]}, {mismatchedOffset}, 1);
+    Check(selection.base && selection.base->header.titleId == p0.header.titleId + 1,
+          "Program NCA title ID fallback failed when CNMT idOffset did not expose the child");
+
+    NcaFixture unrelatedFixture;
+    unrelatedFixture.header.titleId = p0.header.titleId + 0x1001;
+    auto unrelatedExe{ExeBytes(0x77)};
+    unrelatedFixture.Add(0, ExeHeader(unrelatedExe.size()), WithPrefix(unrelatedExe));
+    unrelatedFixture.Finalize();
+    NCA unrelated(unrelatedFixture.backing, keys);
+    selection = loader::SelectProgramNcas(
+        {{std::string(32, '5') + ".nca", unrelated}},
+        {mismatchedOffset},
+        1
+    );
+    Check(!selection.base && !selection.patch,
+          "Program NCA title ID fallback crossed application boundaries");
 }
 
 class FixtureLoader : public loader::Loader {

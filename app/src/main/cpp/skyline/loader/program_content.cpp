@@ -56,6 +56,45 @@ namespace skyline::loader {
                 selected = std::move(candidate.nca);
             }
         }
+        // Some multi-program packages do not expose the requested ProgramIndex through
+        // PackagedContentInfo::idOffset even though the Program NCA itself carries the
+        // correct Program ID. HOS/Ryujinx semantics derive the program index from the
+        // low nibble of the Program ID, so use that as a conservative fallback only
+        // when CNMT matching selected nothing.
+        if (!result.base && !result.patch) {
+            std::vector<u64> applicationBases;
+            for (const auto &meta : metadata) {
+                if (meta.header.contentMetaType == vfs::ContentMetaType::Application)
+                    applicationBases.push_back(meta.header.id & ~0xFULL);
+                else if (meta.header.contentMetaType == vfs::ContentMetaType::Patch)
+                    applicationBases.push_back(meta.GetParentProgramId() & ~0xFULL);
+            }
+            std::sort(applicationBases.begin(), applicationBases.end());
+            applicationBases.erase(std::unique(applicationBases.begin(), applicationBases.end()), applicationBases.end());
+
+            ProgramNcaCandidate *fallback{};
+            for (auto &candidate : candidates) {
+                if ((candidate.nca.header.titleId & 0xFULL) != programIndex)
+                    continue;
+
+                const u64 candidateBase{candidate.nca.header.titleId & ~0xFULL};
+                if (!applicationBases.empty() &&
+                    std::find(applicationBases.begin(), applicationBases.end(), candidateBase) == applicationBases.end())
+                    continue;
+
+                if (fallback)
+                    throw exception("Ambiguous Program NCA fallback for ProgramIndex {}", programIndex);
+                fallback = &candidate;
+            }
+
+            if (fallback) {
+                auto &selected{fallback->nca.HasBktrSection() ? result.patch : result.base};
+                selected = fallback->nca;
+                LOGI("Selected ProgramIndex {} by Program NCA title ID fallback (0x{:016X})",
+                     programIndex, fallback->nca.header.titleId);
+            }
+        }
+
         if (result.base && result.patch && result.base->header.titleId != result.patch->header.titleId)
             throw exception("Program patch and base belong to different applications");
         result.metadata = result.base ? selectedMetadata[0] : selectedMetadata[1];
