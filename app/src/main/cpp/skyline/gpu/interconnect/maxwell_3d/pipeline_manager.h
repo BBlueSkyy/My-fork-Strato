@@ -22,6 +22,15 @@ namespace skyline::gpu {
 namespace skyline::gpu::interconnect::maxwell3d {
     class Pipeline {
       public:
+        struct DiagnosticCbufAccess {
+            u8 index;
+            u32 offset;
+            u8 size;
+            bool isFloat;
+
+            auto operator<=>(const DiagnosticCbufAccess &) const = default;
+        };
+
         /**
          * @brief A monolithic struct containing all the descriptor state of the pipeline
          */
@@ -226,11 +235,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
         u8 stageMask{}; //!< Bitmask of active shader stages
         u16 sampledImageCount{};
 
+        u64 fragmentShaderHash{};
+        std::vector<DiagnosticCbufAccess> fragmentCbufAccesses;
+        std::vector<u64> fragmentCbufLastValues;
+        std::vector<u8> fragmentCbufValueValid;
+        u32 fragmentCbufLogEvents{};
+
         std::array<Pipeline *, 6> transitionCache{};
 
         tsl::robin_map<Pipeline *, bool> bindingMatchCache; //!< Cache of which pipelines have bindings that match this pipeline
 
         void SyncCachedStorageBufferViews(ContextTag executionTag);
+        void TraceFragmentConstantBuffers(InterconnectContext &ctx, ConstantBufferSet &constantBuffers);
 
       public:
         GraphicsPipelineAssembler::CompiledPipeline compiledPipeline;

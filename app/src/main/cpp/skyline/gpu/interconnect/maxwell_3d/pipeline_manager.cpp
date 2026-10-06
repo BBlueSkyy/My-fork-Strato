@@ -2,6 +2,8 @@
 // Copyright © 2022 yuzu Team and Contributors (https://github.com/yuzu-emu/)
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
+#include <bit>
 #include <fstream>
 #include <gpu/texture/texture.h>
 #include <gpu/interconnect/command_executor.h>
@@ -21,7 +23,73 @@ namespace skyline::gpu::interconnect::maxwell3d {
         vk::ShaderStageFlagBits stage;
         vk::ShaderModule module;
         Shader::Info info;
+        std::vector<Pipeline::DiagnosticCbufAccess> cbufAccesses;
+        u64 hash{};
+        bool hasDynamicCbufAccess{};
     };
+
+    static std::vector<Pipeline::DiagnosticCbufAccess> CollectCbufAccesses(const Shader::IR::Program &program, bool &hasDynamicAccess) {
+        std::vector<Pipeline::DiagnosticCbufAccess> accesses;
+
+        for (const Shader::IR::Block *block : program.blocks) {
+            for (const auto &inst : *block) {
+                u8 size{};
+                bool isFloat{};
+
+                switch (inst.GetOpcode()) {
+                    case Shader::IR::Opcode::GetCbufU8:
+                    case Shader::IR::Opcode::GetCbufS8:
+                        size = 1;
+                        break;
+                    case Shader::IR::Opcode::GetCbufU16:
+                    case Shader::IR::Opcode::GetCbufS16:
+                        size = 2;
+                        break;
+                    case Shader::IR::Opcode::GetCbufU32:
+                        size = 4;
+                        break;
+                    case Shader::IR::Opcode::GetCbufF32:
+                        size = 4;
+                        isFloat = true;
+                        break;
+                    case Shader::IR::Opcode::GetCbufU32x2:
+                        size = 8;
+                        break;
+                    default:
+                        continue;
+                }
+
+                const auto index{inst.Arg(0)};
+                const auto offset{inst.Arg(1)};
+                if (!index.IsImmediate() || !offset.IsImmediate()) {
+                    hasDynamicAccess = true;
+                    continue;
+                }
+
+                if (index.U32() >= Shader::Info::MAX_CBUFS)
+                    continue;
+
+                accesses.push_back(Pipeline::DiagnosticCbufAccess{
+                    .index = static_cast<u8>(index.U32()),
+                    .offset = offset.U32(),
+                    .size = size,
+                    .isFloat = isFloat,
+                });
+            }
+        }
+
+        std::sort(accesses.begin(), accesses.end(), [](const auto &lhs, const auto &rhs) {
+            if (lhs.index != rhs.index)
+                return lhs.index < rhs.index;
+            if (lhs.offset != rhs.offset)
+                return lhs.offset < rhs.offset;
+            if (lhs.size != rhs.size)
+                return lhs.size < rhs.size;
+            return lhs.isFloat < rhs.isFloat;
+        });
+        accesses.erase(std::unique(accesses.begin(), accesses.end()), accesses.end());
+        return accesses;
+    }
 
     static constexpr Shader::Stage ConvertCompilerShaderStage(engine::Pipeline::Shader::Type stage) {
         switch (stage) {
@@ -254,9 +322,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 continue;
 
             auto runtimeInfo{MakeRuntimeInfo(packedState, programs[i], lastProgram, hasGeometry)};
+            bool hasDynamicCbufAccess{};
+            auto cbufAccesses{programs[i].stage == Shader::Stage::Fragment
+                                 ? CollectCbufAccesses(programs[i], hasDynamicCbufAccess)
+                                 : std::vector<Pipeline::DiagnosticCbufAccess>{}};
             shaderStages[i - (i >= 1 ? 1 : 0)] = {ConvertVkShaderStage(pipelineStage(i)),
                                                   gpu.shader->CompileShader(runtimeInfo, programs[i], bindings, packedState.shaderHashes[i]),
-                                                  programs[i].info};
+                                                  programs[i].info,
+                                                  std::move(cbufAccesses),
+                                                  packedState.shaderHashes[i],
+                                                  hasDynamicCbufAccess};
 
             lastProgram = &programs[i];
         }
@@ -691,9 +766,25 @@ namespace skyline::gpu::interconnect::maxwell3d {
         descriptorInfo = MakePipelineDescriptorInfo(shaderStages, gpu.traits.quirks.needsIndividualTextureBindingWrites);
         compiledPipeline = MakeCompiledPipeline(gpu, sourcePackedState, shaderStages, descriptorInfo.descriptorSetLayoutBindings);
 
-        for (u32 i{}; i < engine::ShaderStageCount; i++)
+        for (u32 i{}; i < engine::ShaderStageCount; i++) {
             if (shaderStages[i].stage != vk::ShaderStageFlagBits{})
                 stageMask |= 1 << i;
+
+            if (shaderStages[i].stage == vk::ShaderStageFlagBits::eFragment) {
+                fragmentShaderHash = shaderStages[i].hash;
+                fragmentCbufAccesses = std::move(shaderStages[i].cbufAccesses);
+                fragmentCbufLastValues.resize(fragmentCbufAccesses.size());
+                fragmentCbufValueValid.resize(fragmentCbufAccesses.size());
+
+                LOGI("NFS_CBUF_MAP FS=0x{:016X} accesses={} dynamic={}",
+                     fragmentShaderHash, fragmentCbufAccesses.size(), shaderStages[i].hasDynamicCbufAccess);
+                for (const auto &access : fragmentCbufAccesses) {
+                    LOGI("NFS_CBUF_MAP FS=0x{:016X} cbuf={} off=0x{:X} size={} kind={}",
+                         fragmentShaderHash, access.index, access.offset, access.size,
+                         access.isFloat ? "f32" : "raw");
+                }
+            }
+        }
 
         storageBufferViews.resize(descriptorInfo.totalStorageBufferCount);
         texelBufferViews.resize(descriptorInfo.totalTexelBufferDescCount);
@@ -707,6 +798,63 @@ namespace skyline::gpu::interconnect::maxwell3d {
             for (auto &view : texelBufferViews)
                 view.PurgeCaches();
             lastExecutionTag = executionTag;
+        }
+    }
+
+    void Pipeline::TraceFragmentConstantBuffers(InterconnectContext &ctx, ConstantBufferSet &constantBuffers) {
+        constexpr u32 MaxLogEvents{256};
+        if (!fragmentShaderHash || fragmentCbufAccesses.empty() || fragmentCbufLogEvents >= MaxLogEvents)
+            return;
+
+        auto &fragmentBuffers{constantBuffers[static_cast<size_t>(engine::ShaderStage::Fragment)]};
+
+        for (size_t i{}; i < fragmentCbufAccesses.size() && fragmentCbufLogEvents < MaxLogEvents; i++) {
+            const auto &access{fragmentCbufAccesses[i]};
+            auto &cbuf{fragmentBuffers[access.index]};
+
+            if (!cbuf.view || access.offset + access.size > cbuf.view.size) {
+                if (fragmentCbufValueValid[i] != 2) {
+                    LOGI("NFS_CBUF_VALUE FS=0x{:016X} cbuf={} off=0x{:X} size={} unavailable",
+                         fragmentShaderHash, access.index, access.offset, access.size);
+                    fragmentCbufValueValid[i] = 2;
+                    fragmentCbufLogEvents++;
+                }
+                continue;
+            }
+
+            u64 raw{};
+            switch (access.size) {
+                case 1:
+                    raw = cbuf.Read<u8>(ctx.executor, access.offset);
+                    break;
+                case 2:
+                    raw = cbuf.Read<u16>(ctx.executor, access.offset);
+                    break;
+                case 4:
+                    raw = cbuf.Read<u32>(ctx.executor, access.offset);
+                    break;
+                case 8:
+                    raw = cbuf.Read<u64>(ctx.executor, access.offset);
+                    break;
+                default:
+                    continue;
+            }
+
+            if (fragmentCbufValueValid[i] == 1 && fragmentCbufLastValues[i] == raw)
+                continue;
+
+            fragmentCbufLastValues[i] = raw;
+            fragmentCbufValueValid[i] = 1;
+            fragmentCbufLogEvents++;
+
+            if (access.isFloat && access.size == 4) {
+                const float value{std::bit_cast<float>(static_cast<u32>(raw))};
+                LOGI("NFS_CBUF_VALUE FS=0x{:016X} cbuf={} off=0x{:X} raw=0x{:08X} f32={}",
+                     fragmentShaderHash, access.index, access.offset, static_cast<u32>(raw), value);
+            } else {
+                LOGI("NFS_CBUF_VALUE FS=0x{:016X} cbuf={} off=0x{:X} size={} raw=0x{:016X}",
+                     fragmentShaderHash, access.index, access.offset, access.size, raw);
+            }
         }
     }
 
@@ -758,6 +906,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
+        TraceFragmentConstantBuffers(ctx, constantBuffers);
 
         u32 writeIdx{};
         auto writes{ctx.executor.allocator->AllocateUntracked<vk::WriteDescriptorSet>(descriptorInfo.totalWriteDescCount)};
@@ -914,6 +1063,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     DescriptorUpdateInfo *Pipeline::SyncDescriptorsQuickBind(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, ConstantBuffers::QuickBind quickBind, span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
+        TraceFragmentConstantBuffers(ctx, constantBuffers);
 
         size_t stageIndex{static_cast<size_t>(quickBind.stage)};
         const auto &stageDescInfo{descriptorInfo.stages[stageIndex]};
