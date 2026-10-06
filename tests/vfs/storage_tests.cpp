@@ -398,8 +398,8 @@ void TestUpdateOnlyProgramResolution() {
     child.ResolveProgramContent(state);
 
     Check(child.programUpdateApplied, "Update-only Program was not marked as update content");
-    Check(child.currentProcessRomFs && !child.patchDataRomFs,
-          "Update-only primary Program exposed patch-data storage");
+    Check(child.currentProcessRomFs && child.patchDataRomFs == child.currentProcessRomFs,
+          "Update-only Program did not expose its Program data through patch storage");
     Check(ReadBytes(child.currentProcessRomFs) == RomBytes(0x1000, 0x64),
           "Standalone update Program RomFS differs");
     for (const auto *name : {"main", "main.npdm", "sdk", "rtld"})
@@ -437,6 +437,8 @@ void TestUpdateOnlyBktrProgramPromotion() {
           "Update-only BKTR Program did not expose its standalone ExeFS");
     Check(child.currentProcessRomFs && ReadBytes(child.currentProcessRomFs) == RomBytes(0x800),
           "Update-only BKTR Program did not expose its standalone RomFS");
+    Check(child.patchDataRomFs == child.currentProcessRomFs,
+          "Update-only BKTR Program did not expose its Program data through patch storage");
 
     auto dependent{PatchFixture()};
     dependent.header.titleId += 1;

@@ -90,7 +90,7 @@ namespace skyline::loader {
             const auto identity{DescribeRomFs(data)};
             processExeFs = std::move(exeFs);
             currentProcessRomFs = data;
-            patchDataRomFs = nullptr;
+            patchDataRomFs = patch->HasRomFsSection() ? data : nullptr;
             romFs = std::move(data);
             currentProcessRomFsIdentity = identity;
             programUpdateApplied = true;
