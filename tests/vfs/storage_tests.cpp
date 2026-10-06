@@ -349,6 +349,37 @@ void TestPatchDataAbsence() {
     Check(ReadBytes(other.currentProcessRomFs) == RomBytes() && !other.patchDataRomFs, "ExeFS-only update fabricated a patch RomFS");
 }
 
+void TestBaseDataWithUpdateExeFsResolution() {
+    auto keys{std::make_shared<crypto::KeyStore>("")};
+
+    NcaFixture baseFixture;
+    baseFixture.Add(1, RomHeader(0x200, 0x1000), WithPrefix(RomBytes()));
+    baseFixture.Finalize();
+
+    NcaFixture updateFixture;
+    auto exe{ExeBytes(0x66)};
+    updateFixture.Add(0, ExeHeader(exe.size()), WithPrefix(exe));
+    updateFixture.Finalize();
+
+    FixtureLoader application;
+    application.programNca.emplace(baseFixture.backing, keys);
+
+    DeviceState state;
+    state.updateLoader = std::make_shared<FixtureLoader>();
+    state.updateLoader->programPatchNca.emplace(updateFixture.backing, keys);
+
+    application.ResolveProgramContent(state);
+
+    Check(application.programUpdateApplied, "Executable-only Program update was not applied");
+    Check(ReadBytes(application.currentProcessRomFs) == RomBytes(),
+          "Executable-only Program update replaced the base RomFS");
+    Check(!application.patchDataRomFs,
+          "Executable-only Program update fabricated patch-data RomFS");
+    for (const auto *name : {"main", "main.npdm", "sdk", "rtld"})
+        Check(ReadBytes(application.processExeFs->OpenFile(name)) == std::vector<u8>{0x66},
+              "Executable-only Program update did not provide the resolved ExeFS");
+}
+
 void TestUpdateOnlyProgramResolution() {
     auto keys{std::make_shared<crypto::KeyStore>("")};
 
@@ -418,6 +449,7 @@ int main() {
     run("CNMT ProgramIndex selection", TestProgramIndexSelection);
     run("persistent resolution, lifetime, fingerprints", TestPersistentResolution);
     run("base-only/ExeFS-only update patch-data absence", TestPatchDataAbsence);
+    run("base data with update ExeFS resolution", TestBaseDataWithUpdateExeFsResolution);
     run("update-only Program replacement resolution", TestUpdateOnlyProgramResolution);
     run("update-only BKTR Program requires base", TestUpdateOnlyBktrRequiresBase);
     return failures ? 1 : 0;
