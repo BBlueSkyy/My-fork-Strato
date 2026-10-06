@@ -198,7 +198,7 @@ namespace skyline::gpu {
                     newBuffer->EnableTrackedShadowDirect();
                     copyBuffer(dstGuest, srcGuest, newBuffer->directTrackedShadow.data(), srcBuffer->directTrackedShadow.data());
                     auto dstOffset{static_cast<size_t>(srcGuest.begin().base() - dstGuest.begin().base())};
-                    mergeTrackedWrites(*newBuffer, *srcBuffer, dstOffset, srcGuest.size());
+                    mergeTrackedWrites(*newBuffer, *srcBuffer.buffer, dstOffset, srcGuest.size());
                 }
             }
 
@@ -285,7 +285,7 @@ namespace skyline::gpu {
                     newBuffer->EnableTrackedShadowDirect();
                     std::memcpy(newBuffer->directTrackedShadow.data() + dstOffset,
                                 srcBuffer->directTrackedShadow.data(), srcSize);
-                    mergeTrackedWrites(*newBuffer, *srcBuffer, dstOffset, srcSize);
+                    mergeTrackedWrites(*newBuffer, *srcBuffer.buffer, dstOffset, srcSize);
                 }
             }
 
