@@ -43,6 +43,20 @@ namespace skyline::gpu::interconnect::maxwell3d {
             u32 lastRenderPassIndex{}; //!< Renderpass index at the last time a query was began
             bool recordOnNextEnd{}; //!< If to record the query copying code upon ending the next query
 
+            // Temporary diagnostics for isolating pathological occlusion-query workloads.
+            u64 diagnosticReports{};
+            u64 diagnosticBegins{};
+            u64 diagnosticEnds{};
+            u64 diagnosticResets{};
+            u64 diagnosticPostRpBatches{};
+            u64 diagnosticResultCopies{};
+            u64 diagnosticTimestampCopies{};
+            u64 diagnosticBufferAttachments{};
+            u64 diagnosticBufferReuses{};
+            u64 diagnosticPoolOverflowAttempts{};
+            u32 diagnosticRenderPasses{};
+            u32 diagnosticMaxQueriesPerRenderPass{};
+
             // A note on the below variables: In Vulkan you can begin/end queries in an RP but you can't copy the results. Since some games perform hundreds of queries in a row it's not ideal to have constantly end the RP. To work around this, queries are performed on a per-RP basis, with a reset of query 0->queryCount before the RP begins, and all the copies after the RP ends. Since per-RP storage is needed for this the below variables are linearly allocated and replaced upon new queries happening in a new RP.
             span<Query> queries{}; //!< A list of queries reports to perform at the end of the current RP, linearly allocated
             u32 *usedQueryCount{}; //!< Number of queries used from the pool in the current RP, linearly allocated
@@ -70,6 +84,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
              * @brief Records a query end
              */
             void End(InterconnectContext &ctx);
+
+            void RecordReset();
+
+            void RecordBufferAttachment(bool newlyAttached);
+
+            void LogAndResetDiagnostics(size_t submissionNumber);
 
         };
 

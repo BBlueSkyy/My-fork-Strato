@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2023 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <gpu.h>
 #include <soc/gm20b/channel.h>
 #include <vulkan/vulkan.hpp>
@@ -17,6 +18,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (ctx.executor.executionTag != lastTag || lastRenderPassIndex != currentRenderPassIndex) {
             lastTag = ctx.executor.executionTag;
             lastRenderPassIndex = currentRenderPassIndex;
+            diagnosticRenderPasses++;
 
             // Allocate per-RP memory for tracking queries
             queries = ctx.executor.allocator->AllocateUntracked<Query>(Counter::QueryPoolSize);
@@ -41,6 +43,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         *queryActive = true;
         (*usedQueryCount)++;
+        diagnosticBegins++;
+        diagnosticMaxQueriesPerRenderPass = std::max(diagnosticMaxQueriesPerRenderPass, *usedQueryCount);
+        if (*usedQueryCount > QueryPoolSize)
+            diagnosticPoolOverflowAttempts++;
 
         // Begin the query with the current query count as index
         auto func{[this, queryIndex = *this->usedQueryCount - 1](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &) {
@@ -62,6 +68,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     // TODO must be called after begin in cmdbuf
     void Queries::Counter::Report(InterconnectContext &ctx, BufferView view, std::optional<u64> timestamp) {
+        diagnosticReports++;
+        diagnosticResultCopies++;
+        if (timestamp)
+            diagnosticTimestampCopies++;
+
         if (ctx.executor.executionTag != lastTag)
             Begin(ctx, true);
 
@@ -77,6 +88,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         queries[*usedQueryCount - 1] = {view, timestampBuffer};
 
         if (recordOnNextEnd) {
+            diagnosticPostRpBatches++;
             ctx.executor.InsertPostRpCommand([this, queriesPtr = this->queries, usedQueryCountPtr = this->usedQueryCount, queryActivePtr = this->queryActive](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) {
                 if (*queryActivePtr)
                     commandBuffer.endQuery(*pool, *usedQueryCountPtr - 1);
@@ -107,6 +119,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (ctx.executor.executionTag != lastTag  || !queryActive || !*queryActive)
             return;
 
+        diagnosticEnds++;
+
         // End the query with the current query count as index
         ctx.executor.AddCommand([=, this, queryIndex = *this->usedQueryCount - 1](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) {
             commandBuffer.endQuery(*pool, queryIndex);
@@ -115,14 +129,47 @@ namespace skyline::gpu::interconnect::maxwell3d {
         *queryActive = false;
     }
 
+    void Queries::Counter::RecordReset() {
+        diagnosticResets++;
+    }
+
+    void Queries::Counter::RecordBufferAttachment(bool newlyAttached) {
+        if (newlyAttached)
+            diagnosticBufferAttachments++;
+        else
+            diagnosticBufferReuses++;
+    }
+
+    void Queries::Counter::LogAndResetDiagnostics(size_t submissionNumber) {
+        if (diagnosticReports || diagnosticBegins || diagnosticEnds || diagnosticResets) {
+            LOGI("GPU_QUERY_DIAG submission={} reports={} begins={} ends={} resets={} render_passes={} max_queries_per_rp={} post_rp_batches={} result_copies={} timestamp_copies={} buffer_attaches={} buffer_reuses={} pool_overflow_attempts={}",
+                 submissionNumber, diagnosticReports, diagnosticBegins, diagnosticEnds, diagnosticResets,
+                 diagnosticRenderPasses, diagnosticMaxQueriesPerRenderPass, diagnosticPostRpBatches,
+                 diagnosticResultCopies, diagnosticTimestampCopies, diagnosticBufferAttachments,
+                 diagnosticBufferReuses, diagnosticPoolOverflowAttempts);
+        }
+
+        diagnosticReports = 0;
+        diagnosticBegins = 0;
+        diagnosticEnds = 0;
+        diagnosticResets = 0;
+        diagnosticPostRpBatches = 0;
+        diagnosticResultCopies = 0;
+        diagnosticTimestampCopies = 0;
+        diagnosticBufferAttachments = 0;
+        diagnosticBufferReuses = 0;
+        diagnosticPoolOverflowAttempts = 0;
+        diagnosticRenderPasses = 0;
+        diagnosticMaxQueriesPerRenderPass = 0;
+    }
+
     Queries::Queries(GPU &gpu) : counters{{{gpu.vkDevice, vk::QueryType::eOcclusion}}} {}
 
     void Queries::Query(InterconnectContext &ctx, soc::gm20b::IOVA address, CounterType type, std::optional<u64> timestamp) {
         view.Update(ctx, address, timestamp ? 16 : 4);
         usedQueryAddresses.emplace(u64{address});
-        ctx.executor.AttachBuffer(*view);
-
         auto &counter{counters[static_cast<u32>(type)]};
+        counter.RecordBufferAttachment(ctx.executor.AttachBuffer(*view));
 
         view->GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
         counter.Report(ctx, *view, timestamp);
@@ -131,14 +178,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     void Queries::ResetCounter(InterconnectContext &ctx, CounterType type) {
         auto &counter{counters[static_cast<u32>(type)]};
+        counter.RecordReset();
         counter.End(ctx);
         counter.Begin(ctx);
     }
 
     void Queries::PurgeCaches(InterconnectContext &ctx) {
         view.PurgeCaches();
-        for (u32 i{}; i < static_cast<u32>(CounterType::MaxValue); i++)
+        for (u32 i{}; i < static_cast<u32>(CounterType::MaxValue); i++) {
             counters[i].End(ctx);
+            counters[i].LogAndResetDiagnostics(ctx.executor.submissionNumber);
+        }
     }
 
     bool Queries::QueryPresentAtAddress(soc::gm20b::IOVA address) {
