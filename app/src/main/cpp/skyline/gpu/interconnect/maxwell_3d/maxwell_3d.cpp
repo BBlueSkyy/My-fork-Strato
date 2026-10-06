@@ -24,6 +24,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
           samplers{manager, registerBundle.samplerPoolRegisters},
           samplerBinding{registerBundle.samplerBinding},
           textures{manager, registerBundle.texturePoolRegisters},
+          sampleCounterEnable{registerBundle.sampleCounterEnable},
           directState{activeState.directState},
           queries{gpu} {
         ctx.executor.AddFlushCallback([this] {
@@ -39,10 +40,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
             textures.MarkAllDirty();
             quadConversionBufferAttached = false;
             constantBuffers.DisableQuickBind();
-            queries.PurgeCaches(ctx);
+        });
+
+        ctx.executor.AddSubpassBoundaryCallback([this] {
+            queries.Pause(ctx);
         });
 
         ctx.executor.AddPipelineChangeCallback([this] {
+            queries.Pause(ctx);
             activeState.MarkAllDirty();
             activeDescriptorSet = nullptr;
         });
@@ -117,7 +122,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (drawParams->transformFeedbackEnable)
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
-         !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+         !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
+         [this](u32 renderPassIndex) {
+             return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
+         });
           ctx.executor.AddCheckpoint("After inline index draw");
      }    
    
@@ -258,12 +266,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
         constantBuffers.DisableQuickBind();
     }
 
+    void Maxwell3D::FlushQueries() {
+        queries.Flush(ctx);
+    }
+
     void Maxwell3D::Clear(engine::ClearSurface &clearSurface) {
         auto scissor{GetClearScissor()};
         if (scissor.extent.width == 0 || scissor.extent.height == 0)
             return;
 
         TRACE_EVENT("gpu", "Maxwell3D::Clear");
+        queries.Pause(ctx);
         ctx.executor.AddCheckpoint("Before clear");
 
         auto needsAttachmentClearCmd{[&](auto &view) {
@@ -406,7 +419,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
-        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
+           [this](u32 renderPassIndex) {
+               return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
+           });
         ctx.executor.AddCheckpoint("After draw");
     }
 
@@ -469,7 +485,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
-        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
+           [this](u32 renderPassIndex) {
+               return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
+           });
         ctx.executor.AddCheckpoint("After indirect draw");
     }
 

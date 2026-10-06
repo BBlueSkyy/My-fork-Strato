@@ -362,6 +362,11 @@ namespace skyline::gpu::interconnect {
         void InsertPostRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function);
 
         /**
+         * @brief Adds a command after the current RP, or immediately if no RP is active
+         */
+        void AddPostRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function);
+
+        /**
          * @brief Adds a full pipeline barrier to the command buffer
          */
         void AddFullBarrier();

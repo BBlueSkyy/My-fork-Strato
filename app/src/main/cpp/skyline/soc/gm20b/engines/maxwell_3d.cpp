@@ -52,7 +52,8 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
             .constantBufferSelectorRegisters = {*registers.constantBufferSelector},
             .samplerPoolRegisters = {*registers.texSamplerPool, *registers.texHeaderPool},
             .samplerBinding = *registers.samplerBinding,
-            .texturePoolRegisters = {*registers.texHeaderPool}
+            .texturePoolRegisters = {*registers.texHeaderPool},
+            .sampleCounterEnable = *registers.sampleCounterEnable
         };
     }
     #undef REGTYPE
@@ -110,7 +111,10 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
           dirtyManager{registers},
           interconnect{*state.gpu, channelCtx, state.process->trap, state.process->memory, dirtyManager, MakeEngineRegisters(registers)},
           channelCtx{channelCtx} {
-        channelCtx.executor.AddFlushCallback([this]() { FlushEngineState(); });
+        channelCtx.executor.AddFlushCallback([this]() {
+            FlushEngineState();
+            interconnect.FlushQueries();
+        });
         InitializeRegisters();
     }
 

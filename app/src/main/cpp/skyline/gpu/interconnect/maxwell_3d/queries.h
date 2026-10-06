@@ -4,15 +4,19 @@
 #pragma once
 
 #include <limits>
+#include <memory>
+#include <optional>
 #include <unordered_set>
+#include <vector>
 #include <soc/gm20b/gmmu.h>
+#include <gpu/buffer.h>
+#include <gpu/interconnect/command_executor.h>
 #include "common.h"
-#include "gpu/buffer.h"
-#include "gpu/interconnect/common/common.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
     /**
-     * @brief Handles using host Vulkan queries
+     * @brief Emulates Maxwell sample counters with Vulkan occlusion queries while preserving
+     *        counter state across host render-pass and submission boundaries.
      */
     class Queries {
       public:
@@ -22,81 +26,85 @@ namespace skyline::gpu::interconnect::maxwell3d {
         };
 
       private:
-        /**
-         * @brief Represents a single query counter type
-         */
         class Counter {
           private:
-            static constexpr size_t QueryPoolSize{0x1000}; //!< Size of the underlying VK query pool to use
+            static constexpr u32 QueryPoolSize{0x400};
 
-            /**
-             * @brief Information required to report a single query with an optional timestamp
-             */
-            struct Query {
-                BufferView view; //!< View to write the query result to
-                BufferBinding timestampBinding; //!< Binding to buffer containing timestamp to write out (optional)
+            struct QueryBank;
+
+            struct SegmentRef {
+                std::shared_ptr<QueryBank> bank;
+                u32 queryIndex;
             };
 
-            vk::raii::QueryPool pool;
+            struct RenderPassBatch {
+                QueryBank *bank;
+                u32 firstQuery;
+                u32 queryCount;
+            };
 
-            ContextTag lastTag{}; //!< Execution tag at the last time a query was began
-            u32 lastRenderPassIndex{}; //!< Renderpass index at the last time a query was began
-            bool recordOnNextEnd{}; //!< If to record the query copying code upon ending the next query
+            struct ActiveSegment {
+                SegmentRef segment;
+                RenderPassBatch *batch;
+            };
 
-            // A note on the below variables: In Vulkan you can begin/end queries in an RP but you can't copy the results. Since some games perform hundreds of queries in a row it's not ideal to have constantly end the RP. To work around this, queries are performed on a per-RP basis, with a reset of query 0->queryCount before the RP begins, and all the copies after the RP ends. Since per-RP storage is needed for this the below variables are linearly allocated and replaced upon new queries happening in a new RP.
-            span<Query> queries{}; //!< A list of queries reports to perform at the end of the current RP, linearly allocated
-            u32 *usedQueryCount{}; //!< Number of queries used from the pool in the current RP, linearly allocated
-            bool *queryActive{}; //!< If a query is active in the current RP, this is used so that the RP end code knows whether it needs to end the final query
+            GPU &gpu;
+            vk::QueryType queryType;
+            memory::Buffer accumulatorBuffer;
 
-            std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> Prepare(InterconnectContext &ctx);
+            std::vector<std::shared_ptr<QueryBank>> banks;
+            std::vector<std::shared_ptr<QueryBank>> executionBanks;
+            ContextTag executionTag{};
+            u32 executionQueryCount{};
+
+            std::optional<ActiveSegment> activeSegment;
+            RenderPassBatch *currentRenderPassBatch{};
+            u32 currentRenderPassIndex{std::numeric_limits<u32>::max()};
+
+            std::vector<SegmentRef> pendingSegments;
+            bool accumulatorResetPending{true};
+
+            void EnsureExecution(InterconnectContext &ctx);
+            std::shared_ptr<QueryBank> AcquireBank(InterconnectContext &ctx, u32 ordinal);
+            SegmentRef AllocateSegment(InterconnectContext &ctx);
+            void EndActive(InterconnectContext &ctx);
+            void ScheduleResolve(InterconnectContext &ctx, std::vector<SegmentRef> segments, bool resetAccumulator,
+                                 std::optional<BufferView> reportView = {}, BufferBinding timestampBuffer = {}, bool report64 = false);
+            void Compact(InterconnectContext &ctx);
 
           public:
-            Counter(vk::raii::Device &device, vk::QueryType type);
+            Counter(GPU &gpu, vk::QueryType type);
+            ~Counter();
 
-            /**
-             * @brief Begins a query in the command stream
-             * @param atExecutionStart Whether to insert the query begin at the start of the current executor or at the current position
-             */
-            void Begin(InterconnectContext &ctx, bool atExecutionStart = false);
-
-            /**
-             * @brief Records a query end, and a copy into the target buffer in the command stream
-             * @param view View to copy the query result into
-             * @param timestamp Optional timestamp to report along with the query
-             */
+            CommandExecutor::SubpassHooks PrepareDraw(InterconnectContext &ctx, bool enabled, u32 renderPassIndex);
             void Report(InterconnectContext &ctx, BufferView view, std::optional<u64> timestamp);
-
-            /**
-             * @brief Records a query end
-             */
-            void End(InterconnectContext &ctx);
-
+            void Reset(InterconnectContext &ctx);
+            void Pause(InterconnectContext &ctx);
+            void Flush(InterconnectContext &ctx);
         };
 
         std::array<Counter, static_cast<u32>(CounterType::MaxValue)> counters;
-
-        CachedMappedBufferView view{}; //!< Cached view for looking up query buffers from IOVAs
-
+        CachedMappedBufferView view{};
         std::unordered_set<u64> usedQueryAddresses;
 
       public:
         Queries(GPU &gpu);
 
-        /**
-         * @brief Records a query of the counter corresponding to `type` and writes the result to the supplied address
-         */
-        void Query(InterconnectContext &ctx, soc::gm20b::IOVA address, CounterType type, std::optional<u64> timestamp);
+        CommandExecutor::SubpassHooks PrepareDraw(InterconnectContext &ctx, CounterType type, bool enabled, u32 renderPassIndex);
 
-        /**
-         * @brief Resets the counter value for `type` to the default
-         */
+        void Query(InterconnectContext &ctx, soc::gm20b::IOVA address, CounterType type, std::optional<u64> timestamp);
         void ResetCounter(InterconnectContext &ctx, CounterType type);
 
-        void PurgeCaches(InterconnectContext &ctx);
+        /**
+         * @brief Ends any active host segment before leaving Maxwell rendering scope.
+         */
+        void Pause(InterconnectContext &ctx);
 
         /**
-         * @return If a query has ever been reported to `address`
+         * @brief Materializes pending segments into the persistent counter accumulator.
          */
+        void Flush(InterconnectContext &ctx);
+
         bool QueryPresentAtAddress(soc::gm20b::IOVA address);
     };
 }

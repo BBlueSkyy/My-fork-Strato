@@ -40,6 +40,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             SamplerPoolState::EngineRegisters samplerPoolRegisters;
             const engine::SamplerBinding &samplerBinding;
             TexturePoolState::EngineRegisters texturePoolRegisters;
+            const u32 &sampleCounterEnable;
         };
 
       private:
@@ -50,6 +51,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         Samplers samplers;
         const engine::SamplerBinding &samplerBinding;
         Textures textures;
+        const u32 &sampleCounterEnable;
         std::shared_ptr<memory::Buffer> quadConversionBuffer{};
         bool quadConversionBufferAttached{};
         BufferView indirectBufferView;
@@ -104,6 +106,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
          * @note See ConstantBuffers::DisableQuickBind
          */
         void DisableQuickConstantBufferBind();
+
+        /**
+         * @brief Flushes pending occlusion-query segments after all deferred Maxwell work is emitted.
+         */
+        void FlushQueries();
 
         void Clear(engine::ClearSurface &clearSurface);
 
