@@ -342,6 +342,11 @@ namespace skyline::gpu::interconnect {
         void AddOutsideRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function);
 
         /**
+         * @brief Finishes the current render pass without submitting the execution
+         */
+        void BreakRenderPass();
+
+        /**
          * @brief Adds a command that can be executed inside or outside of an RP
          */
         void AddCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function);

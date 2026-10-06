@@ -43,7 +43,34 @@ namespace skyline::gpu::interconnect::maxwell3d {
             const u32 &sampleCounterEnable;
         };
 
+        enum class RenderConditionMode : u8 {
+            NonZero,
+            Equal,
+            NotEqual,
+        };
+
       private:
+        struct RenderConditionKey {
+            RenderConditionMode mode;
+            u64 lhs;
+            u64 rhs;
+
+            bool operator==(const RenderConditionKey &other) const {
+                return mode == other.mode && lhs == other.lhs && rhs == other.rhs;
+            }
+        };
+
+        struct RenderConditionBinding {
+            BufferView view{};
+            BufferBinding binding{};
+            bool enabled{};
+            bool useView{};
+
+            BufferBinding Resolve(GPU &gpu) const {
+                return useView ? view.GetBinding(gpu) : binding;
+            }
+        };
+
         InterconnectContext ctx;
         ActiveState activeState;
         ClearEngineRegisters clearEngineRegisters;
@@ -57,6 +84,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
         BufferView indirectBufferView;
         std::shared_ptr<memory::Buffer> inlineIndexBuffer{};
         Queries queries;
+
+        CachedMappedBufferView renderConditionLhsView{};
+        CachedMappedBufferView renderConditionRhsView{};
+        std::optional<memory::Buffer> renderConditionScratch{};
+        std::optional<DescriptorAllocator::ActiveDescriptorSet> renderConditionDescriptorSet{};
+        std::optional<RenderConditionKey> preparedRenderCondition{};
+        ContextTag preparedRenderConditionExecutionTag{};
+        bool renderConditionDirty{true};
+        RenderConditionBinding activeRenderCondition{};
 
         static constexpr size_t DescriptorBatchSize{0x100};
         std::shared_ptr<boost::container::static_vector<DescriptorAllocator::ActiveDescriptorSet, DescriptorBatchSize>> attachedDescriptorSets;
@@ -111,6 +147,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
          * @brief Flushes pending occlusion-query segments after all deferred Maxwell work is emitted.
          */
         void FlushQueries();
+
+        void ClearRenderCondition();
+
+        bool SetRenderCondition(soc::gm20b::IOVA lhs, std::optional<soc::gm20b::IOVA> rhs, RenderConditionMode mode);
 
         void Clear(engine::ClearSurface &clearSurface);
 

@@ -573,6 +573,10 @@ namespace skyline::gpu::interconnect {
         slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::forward<decltype(function)>(function));
     }
 
+    void CommandExecutor::BreakRenderPass() {
+        FinishRenderPass();
+    }
+
     void CommandExecutor::AddCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function) {
         slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::forward<decltype(function)>(function));
     }

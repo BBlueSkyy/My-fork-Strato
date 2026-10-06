@@ -51,6 +51,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
             activeState.MarkAllDirty();
             activeDescriptorSet = nullptr;
         });
+
+        if (gpu.traits.supportsConditionalRendering) {
+            renderConditionScratch.emplace(gpu.memory.AllocateBuffer(sizeof(u32) * 3));
+            renderConditionDescriptorSet.emplace(
+                gpu.helperShaders.conditionalCompareHelperShader.CreateDescriptorSet(
+                    gpu, renderConditionScratch->vkBuffer));
+        }
     }
 
     vk::DeviceSize Maxwell3D::UpdateQuadConversionBuffer(u32 count, u32 firstVertex) {
@@ -268,6 +275,143 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     void Maxwell3D::FlushQueries() {
         queries.Flush(ctx);
+    }
+
+    void Maxwell3D::ClearRenderCondition() {
+        activeRenderCondition = {};
+    }
+
+    bool Maxwell3D::SetRenderCondition(soc::gm20b::IOVA lhs, std::optional<soc::gm20b::IOVA> rhs, RenderConditionMode mode) {
+        activeRenderCondition = {};
+
+        if (!ctx.gpu.traits.supportsConditionalRendering)
+            return false;
+
+        const RenderConditionKey key{
+            .mode = mode,
+            .lhs = u64{lhs},
+            .rhs = rhs ? u64{*rhs} : 0,
+        };
+
+        const bool needsPrepare{
+            !preparedRenderCondition ||
+            !(*preparedRenderCondition == key) ||
+            preparedRenderConditionExecutionTag != ctx.executor.executionTag ||
+            renderConditionDirty
+        };
+
+        renderConditionLhsView.Update(ctx, u64{lhs}, sizeof(u32));
+        if (!renderConditionLhsView.view)
+            return false;
+        ctx.executor.AttachBuffer(*renderConditionLhsView);
+
+        if (mode == RenderConditionMode::NonZero) {
+            if (needsPrepare) {
+                ctx.executor.BreakRenderPass();
+
+                BufferView predicateView{renderConditionLhsView.view};
+                ctx.executor.AddOutsideRpCommand(
+                    [predicateView](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &) mutable {
+                        commandBuffer.pipelineBarrier(
+                            vk::PipelineStageFlagBits::eAllCommands,
+                            vk::PipelineStageFlagBits::eConditionalRenderingEXT,
+                            {},
+                            vk::MemoryBarrier{
+                                .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
+                                .dstAccessMask = vk::AccessFlagBits::eConditionalRenderingReadEXT,
+                            },
+                            {}, {});
+                    });
+            }
+
+            activeRenderCondition = RenderConditionBinding{
+                .view = renderConditionLhsView.view,
+                .enabled = true,
+                .useView = true,
+            };
+        } else {
+            if (!rhs || !renderConditionScratch || !renderConditionDescriptorSet)
+                return false;
+
+            renderConditionRhsView.Update(ctx, u64{*rhs}, sizeof(u32));
+            if (!renderConditionRhsView.view)
+                return false;
+            ctx.executor.AttachBuffer(*renderConditionRhsView);
+
+            if (needsPrepare) {
+                ctx.executor.BreakRenderPass();
+
+                BufferView lhsView{renderConditionLhsView.view};
+                BufferView rhsView{renderConditionRhsView.view};
+                const vk::Buffer scratchBuffer{renderConditionScratch->vkBuffer};
+                const vk::DescriptorSet descriptorSet{renderConditionDescriptorSet->operator*()};
+                const bool notEqual{mode == RenderConditionMode::NotEqual};
+
+                ctx.executor.AddOutsideRpCommand(
+                    [lhsView, rhsView, scratchBuffer, descriptorSet, notEqual]
+                    (vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) mutable {
+                        auto lhsBinding{lhsView.GetBinding(gpu)};
+                        auto rhsBinding{rhsView.GetBinding(gpu)};
+
+                        commandBuffer.pipelineBarrier(
+                            vk::PipelineStageFlagBits::eAllCommands,
+                            vk::PipelineStageFlagBits::eTransfer,
+                            {},
+                            vk::MemoryBarrier{
+                                .srcAccessMask = vk::AccessFlagBits::eMemoryWrite | vk::AccessFlagBits::eConditionalRenderingReadEXT,
+                                .dstAccessMask = vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite,
+                            },
+                            {}, {});
+
+                        commandBuffer.copyBuffer(lhsBinding.buffer, scratchBuffer, vk::BufferCopy{
+                            .srcOffset = lhsBinding.offset,
+                            .dstOffset = 0,
+                            .size = sizeof(u32),
+                        });
+                        commandBuffer.copyBuffer(rhsBinding.buffer, scratchBuffer, vk::BufferCopy{
+                            .srcOffset = rhsBinding.offset,
+                            .dstOffset = sizeof(u32),
+                            .size = sizeof(u32),
+                        });
+
+                        commandBuffer.pipelineBarrier(
+                            vk::PipelineStageFlagBits::eTransfer,
+                            vk::PipelineStageFlagBits::eComputeShader,
+                            {},
+                            vk::MemoryBarrier{
+                                .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                                .dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
+                            },
+                            {}, {});
+
+                        gpu.helperShaders.conditionalCompareHelperShader.Compare(commandBuffer, descriptorSet, notEqual);
+
+                        commandBuffer.pipelineBarrier(
+                            vk::PipelineStageFlagBits::eComputeShader,
+                            vk::PipelineStageFlagBits::eConditionalRenderingEXT,
+                            {},
+                            vk::MemoryBarrier{
+                                .srcAccessMask = vk::AccessFlagBits::eShaderWrite,
+                                .dstAccessMask = vk::AccessFlagBits::eConditionalRenderingReadEXT,
+                            },
+                            {}, {});
+                    });
+            }
+
+            activeRenderCondition = RenderConditionBinding{
+                .binding = BufferBinding{renderConditionScratch->vkBuffer, sizeof(u32) * 2, sizeof(u32)},
+                .enabled = true,
+                .useView = false,
+            };
+        }
+
+        if (needsPrepare) {
+            preparedRenderCondition = key;
+            preparedRenderConditionExecutionTag = ctx.executor.executionTag;
+            renderConditionDirty = false;
+        }
+
+        return true;
     }
 
     void Maxwell3D::Clear(engine::ClearSurface &clearSurface) {
@@ -497,6 +641,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
             LOGE("Unsupported query type: {}", static_cast<u32>(type));
             return;
         }
+
+        if (preparedRenderCondition &&
+            (preparedRenderCondition->lhs == u64{address} || preparedRenderCondition->rhs == u64{address}))
+            renderConditionDirty = true;
 
         queries.Query(ctx, address, Queries::CounterType::Occulusion, timestamp);
     }
