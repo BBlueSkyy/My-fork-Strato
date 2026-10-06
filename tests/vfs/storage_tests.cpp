@@ -349,6 +349,53 @@ void TestPatchDataAbsence() {
     Check(ReadBytes(other.currentProcessRomFs) == RomBytes() && !other.patchDataRomFs, "ExeFS-only update fabricated a patch RomFS");
 }
 
+void TestUpdateOnlyProgramResolution() {
+    auto keys{std::make_shared<crypto::KeyStore>("")};
+
+    NcaFixture replacement;
+    replacement.header.titleId += 1;
+    auto exe{ExeBytes(0x55)};
+    replacement.Add(0, ExeHeader(exe.size()), WithPrefix(exe));
+    replacement.Add(1, RomHeader(0x200, 0x1000), WithPrefix(RomBytes(0x1000, 0x64)));
+    replacement.Finalize();
+
+    FixtureLoader child;
+    DeviceState state;
+    state.updateLoader = std::make_shared<FixtureLoader>();
+    state.updateLoader->programPatchNca.emplace(replacement.backing, keys);
+
+    child.ResolveProgramContent(state);
+
+    Check(child.programUpdateApplied, "Update-only Program was not marked as update content");
+    Check(child.currentProcessRomFs && child.patchDataRomFs == child.currentProcessRomFs,
+          "Standalone update Program did not expose its resolved RomFS");
+    Check(ReadBytes(child.currentProcessRomFs) == RomBytes(0x1000, 0x64),
+          "Standalone update Program RomFS differs");
+    for (const auto *name : {"main", "main.npdm", "sdk", "rtld"})
+        Check(ReadBytes(child.processExeFs->OpenFile(name)) == std::vector<u8>{0x55},
+              "Standalone update Program ExeFS differs");
+}
+
+void TestUpdateOnlyBktrRequiresBase() {
+    auto keys{std::make_shared<crypto::KeyStore>("")};
+    auto patchFixture{PatchFixture()};
+    patchFixture.header.titleId += 1;
+    patchFixture.Finalize();
+
+    FixtureLoader child;
+    DeviceState state;
+    state.updateLoader = std::make_shared<FixtureLoader>();
+    state.updateLoader->programPatchNca.emplace(patchFixture.backing, keys);
+
+    bool rejected{};
+    try {
+        child.ResolveProgramContent(state);
+    } catch (const std::exception &) {
+        rejected = true;
+    }
+    Check(rejected, "Update-only BKTR Program was accepted without its base Program NCA");
+}
+
 int main() {
     int failures{};
     auto run = [&](const char *name, auto test) {
@@ -371,5 +418,7 @@ int main() {
     run("CNMT ProgramIndex selection", TestProgramIndexSelection);
     run("persistent resolution, lifetime, fingerprints", TestPersistentResolution);
     run("base-only/ExeFS-only update patch-data absence", TestPatchDataAbsence);
+    run("update-only Program replacement resolution", TestUpdateOnlyProgramResolution);
+    run("update-only BKTR Program requires base", TestUpdateOnlyBktrRequiresBase);
     return failures ? 1 : 0;
 }

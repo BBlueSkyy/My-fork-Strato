@@ -35,33 +35,75 @@ namespace skyline::loader {
     void Loader::ResolveProgramContent(const DeviceState &state) {
         if (programContentResolved)
             return;
-        if (!programNca) {
-            if (programPatchNca)
-                throw exception("A Program patch requires its base application");
-            currentProcessRomFs = romFs;
-            currentProcessRomFsIdentity = DescribeRomFs(currentProcessRomFs);
+
+        vfs::NCA *base{programNca ? &*programNca : nullptr};
+        vfs::NCA *patch{programPatchNca ? &*programPatchNca : nullptr};
+
+        if (state.updateLoader) {
+            auto &external{*state.updateLoader};
+            auto *externalProgram{
+                external.programPatchNca ? &*external.programPatchNca :
+                external.programNca ? &*external.programNca : nullptr
+            };
+
+            if (!externalProgram) {
+                if (base)
+                    throw exception("Selected update contains no matching Program NCA");
+            } else {
+                patch = externalProgram;
+                LOGI("ResolveProgramContent: selected external Program update");
+            }
+        }
+
+        if (!base) {
+            if (!patch) {
+                currentProcessRomFs = romFs;
+                currentProcessRomFsIdentity = DescribeRomFs(currentProcessRomFs);
+                programContentResolved = true;
+                return;
+            }
+
+            // Patch CNMTs may add a new ProgramIndex as a complete replacement Program NCA.
+            // Such an NCA is self-contained and can be launched without a corresponding base
+            // Program NCA. An indirect/BKTR Program NCA, however, still depends on its base.
+            if (patch->HasBktrSection())
+                throw exception("Selected Program update requires a missing base Program NCA");
+
+            auto exeFs{patch->OpenExeFs()};
+            auto data{patch->OpenRomFs()};
+            if (!exeFs || !exeFs->FileExists("main") || !exeFs->FileExists("main.npdm"))
+                throw exception("Resolved standalone Program update ExeFS lacks main or main.npdm");
+
+            vfs::PatchManager modifications;
+            exeFs = modifications.PatchExeFS(state, exeFs, patch->header.titleId);
+            if (data)
+                data = modifications.PatchRomFS(state, data, patch->header.titleId);
+
+            const auto identity{DescribeRomFs(data)};
+            processExeFs = std::move(exeFs);
+            currentProcessRomFs = data;
+            patchDataRomFs = patch->HasRomFsSection() ? data : nullptr;
+            romFs = std::move(data);
+            currentProcessRomFsIdentity = identity;
+            programUpdateApplied = true;
             programContentResolved = true;
+            LOGI("ResolveProgramContent: launched standalone Program update 0x{:016X}", patch->header.titleId);
+            LOGI("Resolved current-process RomFS: {}", identity);
             return;
         }
 
-        vfs::NCA *patch{programPatchNca ? &*programPatchNca : nullptr};
-        if (state.updateLoader) {
-            auto &external{*state.updateLoader};
-            patch = external.programPatchNca ? &*external.programPatchNca : external.programNca ? &*external.programNca : nullptr;
-            if (!patch || patch->header.titleId != programNca->header.titleId)
-                throw exception("Selected update contains no matching Program NCA");
-            LOGI("ResolveProgramContent: selected external Program update");
-        }
+        if (patch && patch->header.titleId != base->header.titleId)
+            throw exception("Selected update contains no matching Program NCA");
 
-        auto exeFs{patch ? patch->OpenExeFsWithPatch(*programNca) : programNca->OpenExeFs()};
-        auto data{patch ? patch->OpenRomFsWithPatch(*programNca) : programNca->OpenRomFs()};
+        auto exeFs{patch ? patch->OpenExeFsWithPatch(*base) : base->OpenExeFs()};
+        auto data{patch ? patch->OpenRomFsWithPatch(*base) : base->OpenRomFs()};
         if (!exeFs || !exeFs->FileExists("main") || !exeFs->FileExists("main.npdm"))
             throw exception("Resolved Program ExeFS lacks main or main.npdm");
 
         vfs::PatchManager modifications;
-        exeFs = modifications.PatchExeFS(state, exeFs, programNca->header.titleId);
+        exeFs = modifications.PatchExeFS(state, exeFs, base->header.titleId);
         if (data)
-            data = modifications.PatchRomFS(state, data, programNca->header.titleId);
+            data = modifications.PatchRomFS(state, data, base->header.titleId);
         const auto identity{DescribeRomFs(data)};
         processExeFs = std::move(exeFs);
         currentProcessRomFs = data;
