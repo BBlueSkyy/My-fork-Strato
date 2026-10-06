@@ -9,12 +9,11 @@
 #include <common/trap_manager.h>
 #include <gpu/tag_allocator.h>
 #include "usage_tracker.h"
+#include "guest_buffer.h"
 #include "megabuffer.h"
 #include "memory_manager.h"
 
 namespace skyline::gpu {
-    using GuestBuffer = span<u8>; //!< The CPU mapping for the guest buffer, multiple mappings for buffers aren't supported since overlaps cannot be reconciled
-
     class BufferView;
     class BufferManager;
     class BufferDelegate;
@@ -396,6 +395,12 @@ namespace skyline::gpu {
          * @note The buffer **must** be locked prior to calling this
          */
         BufferView TryGetView(span<u8> mapping);
+
+        /**
+         * @return A view containing the supplied ordered guest mappings, or an empty view when
+         *         the mappings are not one contiguous logical subrange of this buffer.
+         */
+        BufferView TryGetView(const GuestBuffer &mapping, vk::DeviceSize viewOffset = 0, vk::DeviceSize viewSize = 0);
 
         /*
          * @brief If megabuffering is determined to be beneficial for this buffer, allocates and copies the given view of buffer into the megabuffer (in case of cache miss), returning a binding of the allocated megabuffer region

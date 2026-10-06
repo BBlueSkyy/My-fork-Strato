@@ -4,6 +4,7 @@
 #include <gpu/buffer_manager.h>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
+#include <limits>
 #include "common.h"
 
 namespace skyline::gpu::interconnect {
@@ -25,18 +26,38 @@ namespace skyline::gpu::interconnect {
         // Mapping from the start of the buffer view to the end of the block
         auto fullMapping{blockMapping.subspan(address - blockMappingStartAddr)};
 
-        if (splitMappingWarn && fullMapping.size() < size)
-            LOGW("Split buffer mappings are not supported");
+        if (fullMapping.size() < size && splitMappingWarn) {
+            if (size > std::numeric_limits<u64>::max() - address) {
+                view = {};
+                return;
+            }
 
-        // Mapping covering just the requested input view (or less in the case of split mappings)
+            const u64 alignedAddress{util::AlignDown(address, constant::PageSize)};
+            const u64 alignedEnd{util::AlignUp(address + size, constant::PageSize)};
+            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(alignedAddress, alignedEnd - alignedAddress)};
+
+            GuestBuffer::Mappings guestMappings{mappings.begin(), mappings.end()};
+            GuestBuffer guest{std::move(guestMappings)};
+            if (!guest.valid()) {
+                view = {};
+                return;
+            }
+
+            view = ctx.gpu.buffer.FindOrCreate(guest, address - alignedAddress, size, ctx.executor.tag,
+                                               [&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
+                                                   ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
+                                               });
+            return;
+        }
+
+        // Some callers intentionally supply an upper-bound size (for example the constant-buffer
+        // selector's default 0x10000). Preserve the legacy clamp when splitMappingWarn is false.
         auto viewMapping{fullMapping.first(std::min(fullMapping.size(), size))};
 
-        // First attempt to skip lookup by trying to reuse the previous view's underlying buffer
         if (view)
             if (view = view.GetBuffer()->TryGetView(viewMapping); view)
                 return;
 
-        // Otherwise perform a full lookup
         view = ctx.gpu.buffer.FindOrCreate(viewMapping, ctx.executor.tag, [&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
             ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
         });
