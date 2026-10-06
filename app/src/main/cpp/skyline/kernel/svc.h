@@ -218,6 +218,16 @@ namespace skyline::kernel::svc {
     void GetInfo(const DeviceState &state, SvcContext &ctx);
 
     /**
+     * @brief Gets a limit value from a KResourceLimit object.
+     */
+    void GetResourceLimitLimitValue(const DeviceState &state, SvcContext &ctx);
+
+    /**
+     * @brief Gets a current-use value from a KResourceLimit object.
+     */
+    void GetResourceLimitCurrentValue(const DeviceState &state, SvcContext &ctx);
+
+    /**
      * @brief Flushes the data cache for a range of process memory
      * @url https://switchbrew.org/wiki/SVC#FlushProcessDataCache
      */

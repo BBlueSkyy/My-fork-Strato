@@ -71,8 +71,24 @@ namespace skyline::kernel {
             u8 coreId; //!< The CPU core on which this thread is running
             CoreMask affinityMask{}; //!< A mask of CPU cores this thread is allowed to run on
 
-            u64 timesliceStart{}; //!< A timestamp in host CNTVCT ticks of when the thread's current timeslice started
+            u64 timesliceStart{}; //!< A timestamp in Tegra X1 system ticks of when the thread's current timeslice started
             u64 averageTimeslice{}; //!< A weighted average of the timeslice duration for this thread
+            std::atomic<u64> cpuTime{}; //!< Accumulated scheduled CPU time in Tegra X1 system ticks
+            std::array<std::atomic<u64>, constant::CoreCount> cpuTimeByCore{}; //!< Per-virtual-core accumulated CPU time
+
+            void AddCpuTime(u8 core, u64 amount) {
+                cpuTime.fetch_add(amount, std::memory_order_relaxed);
+                if (core < constant::CoreCount)
+                    cpuTimeByCore[core].fetch_add(amount, std::memory_order_relaxed);
+            }
+
+            u64 GetCpuTime() const {
+                return cpuTime.load(std::memory_order_relaxed);
+            }
+
+            u64 GetCpuTime(u8 core) const {
+                return core < constant::CoreCount ? cpuTimeByCore[core].load(std::memory_order_relaxed) : 0;
+            }
 
             bool isPreempted{}; //!< If the preemption timer has been armed and will fire
             bool pendingYield{}; //!< If the thread has been yielded and hasn't been acted upon it yet
