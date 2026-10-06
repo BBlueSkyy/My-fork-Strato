@@ -46,8 +46,19 @@ namespace skyline::gpu {
 
         while (hostMapping != textures.begin() && (--hostMapping)->end() > guestMapping.begin()) {
             auto &hostMappings{hostMapping->texture->guest->mappings};
-            if (!hostMapping->contains(guestMapping) || hostMapping->texture->replaced)
+            if (hostMapping->texture->replaced)
                 continue;
+
+            // The scan already guarantees that this mapping overlaps the requested mapping.
+            // If the existing mapping does not fully contain the request, it can still hold
+            // newer GPU data for bytes that the new texture will alias (for example, a render
+            // target mip being followed by a larger sampled texture). Preserve coherency by
+            // flushing that overlapping storage before creating a separate backing.
+            if (!hostMapping->contains(guestMapping)) {
+                if (std::find(matches.begin(), matches.end(), hostMapping->texture) == matches.end())
+                    matches.push_back(hostMapping->texture);
+                continue;
+            }
 
             // We need to check that all corresponding mappings in the candidate texture and the guest texture match up
             // Only the start of the first matched mapping and the end of the last mapping can not match up as this is the case for views
