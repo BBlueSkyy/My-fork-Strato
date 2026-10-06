@@ -398,8 +398,8 @@ void TestUpdateOnlyProgramResolution() {
     child.ResolveProgramContent(state);
 
     Check(child.programUpdateApplied, "Update-only Program was not marked as update content");
-    Check(child.currentProcessRomFs && child.patchDataRomFs == child.currentProcessRomFs,
-          "Standalone update Program did not expose its resolved RomFS");
+    Check(child.currentProcessRomFs && !child.patchDataRomFs,
+          "Update-only primary Program exposed patch-data storage");
     Check(ReadBytes(child.currentProcessRomFs) == RomBytes(0x1000, 0x64),
           "Standalone update Program RomFS differs");
     for (const auto *name : {"main", "main.npdm", "sdk", "rtld"})

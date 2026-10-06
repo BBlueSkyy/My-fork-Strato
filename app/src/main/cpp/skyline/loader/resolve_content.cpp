@@ -63,16 +63,13 @@ namespace skyline::loader {
                 return;
             }
 
-            // Some multi-program applications add a ProgramIndex only in the update.
-            // In that case the update Program NCA is the primary program for this index,
-            // not a patch layered over a non-existent base Program NCA.
-            LOGI("ResolveProgramContent: promoting update-only Program 0x{:016X} to primary Program (BKTR={}, RomFS={})",
-                 patch->header.titleId, patch->HasBktrSection(), patch->HasRomFsSection());
+            // An update may introduce a ProgramIndex that has no base Program NCA.
+            // In that case the update Program is the primary content for this index.
+            LOGI("ResolveProgramContent: using update-only Program 0x{:016X}", patch->header.titleId);
 
             auto exeFs{patch->OpenExeFs()};
-            // A BKTR data section cannot be layered without a base Program NCA. Treat the
-            // update NCA as the primary executable and only expose a directly-openable RomFS.
-            // This matches update-only indexed-program loading semantics used by Ryujinx.
+            // Self-contained BKTR data is resolved directly; OpenRomFs rejects any
+            // indirect entry that still requires a missing base NCA section.
             auto data{patch->OpenRomFs()};
 
             if (!exeFs || !exeFs->FileExists("main") || !exeFs->FileExists("main.npdm"))
@@ -98,35 +95,15 @@ namespace skyline::loader {
             currentProcessRomFsIdentity = identity;
             programUpdateApplied = true;
             programContentResolved = true;
-            LOGI("ResolveProgramContent: launched update-only Program 0x{:016X} (direct RomFS={})",
-                 patch->header.titleId, currentProcessRomFs != nullptr);
             LOGI("Resolved current-process RomFS: {}", identity);
             return;
         }
 
-        LOGI("ResolveProgramContent: base Program 0x{:016X} (BKTR={}, RomFS={})",
-             base->header.titleId, base->HasBktrSection(), base->HasRomFsSection());
-        if (patch)
-            LOGI("ResolveProgramContent: update Program 0x{:016X} (BKTR={}, RomFS={})",
-                 patch->header.titleId, patch->HasBktrSection(), patch->HasRomFsSection());
-
         if (patch && patch->header.titleId != base->header.titleId)
             throw exception("Selected update contains no matching Program NCA");
 
-        std::shared_ptr<vfs::FileSystem> exeFs;
-        std::shared_ptr<vfs::Backing> data;
-        try {
-            LOGI("ResolveProgramContent: opening resolved ExeFS");
-            exeFs = patch ? patch->OpenExeFsWithPatch(*base) : base->OpenExeFs();
-            LOGI("ResolveProgramContent: ExeFS open complete (present={})", exeFs != nullptr);
-
-            LOGI("ResolveProgramContent: opening resolved RomFS");
-            data = patch ? patch->OpenRomFsWithPatch(*base) : base->OpenRomFs();
-            LOGI("ResolveProgramContent: RomFS open complete (present={})", data != nullptr);
-        } catch (const std::exception &e) {
-            LOGE("ResolveProgramContent: Program content open failed: {}", e.what());
-            throw;
-        }
+        auto exeFs{patch ? patch->OpenExeFsWithPatch(*base) : base->OpenExeFs()};
+        auto data{patch ? patch->OpenRomFsWithPatch(*base) : base->OpenRomFs()};
 
         if (!exeFs || !exeFs->FileExists("main") || !exeFs->FileExists("main.npdm"))
             throw exception("Resolved Program ExeFS lacks main or main.npdm");
