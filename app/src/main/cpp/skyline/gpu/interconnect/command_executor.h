@@ -309,7 +309,17 @@ namespace skyline::gpu::interconnect {
          * @param exclusiveSubpass If this subpass should be the only subpass in a render pass
          * @note Any supplied texture should be attached prior and not undergo any persistent layout transitions till execution
          */
-        void AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {});
+        using SubpassFunction = std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)>;
+        using CommandFunction = std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)>;
+
+        struct SubpassHooks {
+            SubpassFunction before;
+            CommandFunction afterRenderPass;
+        };
+
+        using SubpassHookFactory = std::function<SubpassHooks(u32 renderPassIndex)>;
+
+        void AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, SubpassHookFactory hookFactory = {});
 
         /**
          * @brief Adds a subpass that clears the entirety of the specified attachment with a color value, it may utilize VK_ATTACHMENT_LOAD_OP_CLEAR for a more efficient clear when possible
