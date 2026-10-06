@@ -389,42 +389,47 @@ namespace skyline::gpu {
         });
     }
 
+    static vk::raii::DescriptorSetLayout CreateQueryResolveDescriptorSetLayout(GPU &gpu) {
+        std::array<vk::DescriptorSetLayoutBinding, 2> bindings{
+            vk::DescriptorSetLayoutBinding{
+                .binding = 0,
+                .descriptorType = vk::DescriptorType::eStorageBuffer,
+                .descriptorCount = 1,
+                .stageFlags = vk::ShaderStageFlagBits::eCompute,
+            },
+            vk::DescriptorSetLayoutBinding{
+                .binding = 1,
+                .descriptorType = vk::DescriptorType::eStorageBuffer,
+                .descriptorCount = 1,
+                .stageFlags = vk::ShaderStageFlagBits::eCompute,
+            },
+        };
+
+        return vk::raii::DescriptorSetLayout{gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
+            .bindingCount = static_cast<u32>(bindings.size()),
+            .pBindings = bindings.data(),
+        }};
+    }
+
+    static vk::raii::PipelineLayout CreateQueryResolvePipelineLayout(GPU &gpu, vk::DescriptorSetLayout descriptorSetLayout) {
+        vk::PushConstantRange pushConstantRange{
+            .stageFlags = vk::ShaderStageFlagBits::eCompute,
+            .offset = 0,
+            .size = sizeof(QueryResolveHelperShader::PushConstants),
+        };
+
+        return vk::raii::PipelineLayout{gpu.vkDevice, vk::PipelineLayoutCreateInfo{
+            .setLayoutCount = 1,
+            .pSetLayouts = &descriptorSetLayout,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &pushConstantRange,
+        }};
+    }
+
     QueryResolveHelperShader::QueryResolveHelperShader(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem)
         : shaderModule{CreateShaderModule(gpu, *shaderFileSystem->OpenFile("shaders/query_resolve.comp.spv"))},
-          descriptorSetLayout{gpu.vkDevice, [&] {
-              std::array<vk::DescriptorSetLayoutBinding, 2> bindings{
-                  vk::DescriptorSetLayoutBinding{
-                      .binding = 0,
-                      .descriptorType = vk::DescriptorType::eStorageBuffer,
-                      .descriptorCount = 1,
-                      .stageFlags = vk::ShaderStageFlagBits::eCompute,
-                  },
-                  vk::DescriptorSetLayoutBinding{
-                      .binding = 1,
-                      .descriptorType = vk::DescriptorType::eStorageBuffer,
-                      .descriptorCount = 1,
-                      .stageFlags = vk::ShaderStageFlagBits::eCompute,
-                  },
-              };
-              return vk::DescriptorSetLayoutCreateInfo{
-                  .bindingCount = static_cast<u32>(bindings.size()),
-                  .pBindings = bindings.data(),
-              };
-          }()},
-          pipelineLayout{gpu.vkDevice, [&] {
-              vk::DescriptorSetLayout layout{*descriptorSetLayout};
-              vk::PushConstantRange pushConstantRange{
-                  .stageFlags = vk::ShaderStageFlagBits::eCompute,
-                  .offset = 0,
-                  .size = sizeof(PushConstants),
-              };
-              return vk::PipelineLayoutCreateInfo{
-                  .setLayoutCount = 1,
-                  .pSetLayouts = &layout,
-                  .pushConstantRangeCount = 1,
-                  .pPushConstantRanges = &pushConstantRange,
-              };
-          }()},
+          descriptorSetLayout{CreateQueryResolveDescriptorSetLayout(gpu)},
+          pipelineLayout{CreateQueryResolvePipelineLayout(gpu, *descriptorSetLayout)},
           pipeline{gpu.vkDevice, nullptr, vk::ComputePipelineCreateInfo{
               .stage = vk::PipelineShaderStageCreateInfo{
                   .stage = vk::ShaderStageFlagBits::eCompute,
