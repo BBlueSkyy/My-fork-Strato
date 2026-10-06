@@ -63,46 +63,69 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                beginMethodTopology : type::ConvertPrimitiveTopologyToDrawTopology(*registers.primitiveTopology);
     }
 
-    bool Maxwell3D::CheckRenderEnable() {
+    bool Maxwell3D::CheckRenderEnable(bool allowGpuCondition) {
+        using ConditionMode = gpu::interconnect::maxwell3d::Maxwell3D::RenderConditionMode;
+
+        interconnect.ClearRenderCondition();
+
         if (registers.renderEnableOverride->mode == Registers::RenderEnableOverride::Mode::AlwaysRender)
             return true;
         else if (registers.renderEnableOverride->mode == Registers::RenderEnableOverride::Mode::NeverRender)
             return false;
-
-
 
         switch (registers.renderEnable->mode) {
             case Registers::RenderEnable::Mode::True:
                 return true;
             case Registers::RenderEnable::Mode::False:
                 return false;
-            case Registers::RenderEnable::Mode::Conditional:
-                // TODO: Use indirect draws to emulate conditional rendering with queries, for now just ignore such cases as they would decrease performance anyway by forcing a CPU sync
-                if (interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset}))
-                    return true;
+            case Registers::RenderEnable::Mode::Conditional: {
+                const auto address{registers.renderEnable->offset};
+                if (interconnect.QueryPresentAtAddress(u64{address})) {
+                    if (allowGpuCondition &&
+                        interconnect.SetRenderCondition(address, {}, ConditionMode::NonZero))
+                        return true;
 
-                return channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset) != 0;
-            case Registers::RenderEnable::Mode::RenderIfEqual:
-                // TODO: See above
-                if (interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset}) ||
-                    interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset + 16}))
+                    // No CPU readback fallback here: rendering conservatively is preferable to
+                    // stalling the GPU/GPFIFO path on hosts without conditional rendering.
                     return true;
+                }
 
-                return channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset) ==
-                    channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset + 16);
-            case Registers::RenderEnable::Mode::RenderIfNotEqual:
-                // TODO: See above
-                if (interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset}) ||
-                    interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset + 16}))
+                return channelCtx.asCtx->gmmu.Read<u32>(address) != 0;
+            }
+            case Registers::RenderEnable::Mode::RenderIfEqual: {
+                const auto lhs{registers.renderEnable->offset};
+                const auto rhs{registers.renderEnable->offset + 16};
+                if (interconnect.QueryPresentAtAddress(u64{lhs}) ||
+                    interconnect.QueryPresentAtAddress(u64{rhs})) {
+                    if (allowGpuCondition &&
+                        interconnect.SetRenderCondition(lhs, rhs, ConditionMode::Equal))
+                        return true;
+
                     return true;
+                }
 
-                return channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset) !=
-                    channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset + 16);
+                return channelCtx.asCtx->gmmu.Read<u32>(lhs) ==
+                    channelCtx.asCtx->gmmu.Read<u32>(rhs);
+            }
+            case Registers::RenderEnable::Mode::RenderIfNotEqual: {
+                const auto lhs{registers.renderEnable->offset};
+                const auto rhs{registers.renderEnable->offset + 16};
+                if (interconnect.QueryPresentAtAddress(u64{lhs}) ||
+                    interconnect.QueryPresentAtAddress(u64{rhs})) {
+                    if (allowGpuCondition &&
+                        interconnect.SetRenderCondition(lhs, rhs, ConditionMode::NotEqual))
+                        return true;
+
+                    return true;
+                }
+
+                return channelCtx.asCtx->gmmu.Read<u32>(lhs) !=
+                    channelCtx.asCtx->gmmu.Read<u32>(rhs);
+            }
         }
 
         return true;
     }
-
 
     Maxwell3D::Maxwell3D(const DeviceState &state, ChannelContext &channelCtx, MacroState &macroState)
         : MacroEngineBase{macroState},
@@ -309,7 +332,10 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
             })
 
             ENGINE_CASE(clearSurface, {
-                if (CheckRenderEnable())
+                // Vulkan conditional rendering gates draw commands, not attachment/load-op clears.
+                // Keep GPU-backed clear predicates conservative until clear operations are lowered
+                // to a conditionable path.
+                if (CheckRenderEnable(false))
                     interconnect.Clear(clearSurface);
             })
 
