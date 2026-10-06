@@ -38,16 +38,21 @@ namespace skyline::gpu::interconnect {
 
             GuestBuffer::Mappings guestMappings{mappings.begin(), mappings.end()};
             GuestBuffer guest{std::move(guestMappings)};
-            if (!guest.valid()) {
-                view = {};
-                return;
+            if (guest.valid()) {
+                auto splitView{ctx.gpu.buffer.FindOrCreate(guest, address - alignedAddress, size, ctx.executor.tag,
+                                                          [&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
+                                                              ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
+                                                          })};
+                if (splitView) {
+                    view = splitView;
+                    return;
+                }
             }
 
-            view = ctx.gpu.buffer.FindOrCreate(guest, address - alignedAddress, size, ctx.executor.tag,
-                                               [&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
-                                                   ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
-                                               });
-            return;
+            // An unmapped gap or an alias layout which cannot be represented safely by one
+            // BufferDelegate is not a valid multi-mapping candidate. Preserve the legacy clamp
+            // instead of manufacturing contiguity or turning an existing workload into a crash.
+            LOGW("Split buffer mappings could not be resolved safely, using the first mapping");
         }
 
         // Some callers intentionally supply an upper-bound size (for example the constant-buffer

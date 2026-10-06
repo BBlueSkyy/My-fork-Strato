@@ -42,6 +42,10 @@ namespace skyline::gpu {
                 addUnique(entry.buffer);
         }
 
+        std::sort(matches.begin(), matches.end(), [](const auto &lhs, const auto &rhs) {
+            return lhs->id < rhs->id;
+        });
+
         LockedBuffers overlaps;
         overlaps.reserve(matches.size());
         for (auto &buffer : matches)
@@ -69,6 +73,10 @@ namespace skyline::gpu {
                     addUnique(entry.buffer);
             }
         }
+
+        std::sort(matches.begin(), matches.end(), [](const auto &lhs, const auto &rhs) {
+            return lhs->id < rhs->id;
+        });
 
         LockedBuffers overlaps;
         overlaps.reserve(matches.size());
@@ -343,6 +351,13 @@ namespace skyline::gpu {
         for (auto &overlap : overlaps)
             if (auto view{overlap->TryGetView(guest, viewOffset, viewSize)}; view)
                 return view;
+
+        // Existing views can only be redirected when each old logical buffer is an affine
+        // subrange of the new mapping sequence. Refuse reordered/partial aliases here so the
+        // caller can use its conservative legacy path instead of linking delegates incorrectly.
+        for (const auto &overlap : overlaps)
+            if (!guest.Find(*overlap->guest))
+                return {};
 
         if (overlaps.empty()) {
             LockedBuffer buffer{std::make_shared<Buffer>(delegateAllocatorState, gpu, guest, nextBufferId++,

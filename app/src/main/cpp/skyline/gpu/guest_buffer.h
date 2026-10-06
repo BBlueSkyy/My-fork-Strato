@@ -4,6 +4,9 @@
 #pragma once
 
 #include <boost/container/small_vector.hpp>
+#include <cstddef>
+#include <optional>
+#include <utility>
 #include <common/span.h>
 
 namespace skyline::gpu {

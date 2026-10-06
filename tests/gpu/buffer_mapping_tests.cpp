@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include <array>
 #include <iostream>
+#include <stdexcept>
 #include <gpu/guest_buffer.h>
 
 using namespace skyline;
