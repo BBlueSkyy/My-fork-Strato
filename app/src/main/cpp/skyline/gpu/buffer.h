@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <boost/functional/hash.hpp>
 #include <common/linear_allocator.h>
 #include <common/spin_lock.h>
@@ -43,6 +45,17 @@ namespace skyline::gpu {
      * @note This class conforms to the Lockable and BasicLockable C++ named requirements
      */
     class Buffer : public std::enable_shared_from_this<Buffer> {
+      public:
+        enum class GpuWriteSource : u8 {
+            Internal,
+            StorageBuffer,
+            ImageBuffer,
+            Query,
+            TransformFeedback,
+            DmaClear,
+            Count,
+        };
+
       private:
         GPU &gpu;
         RecursiveSpinLock mutex; //!< Synchronizes any mutations to the buffer or its backing
@@ -77,6 +90,7 @@ namespace skyline::gpu {
         RecursiveSpinLock stateMutex; //!< Synchronizes access to the dirty state and backing immutability
 
         bool currentExecutionGpuDirty{}; //!< If the buffer is GPU dirty within the current execution
+        std::shared_ptr<FenceCycle> writeCycle{}; //!< (Staged) The most recent cycle that can modify the GPU backing; later read-only cycles do not replace it
 
         static constexpr u32 InitialSequenceNumber{1}; //!< Sequence number that all buffers start off with
         static constexpr u32 FrequentlySyncedThreshold{6}; //!< Threshold for the sequence number after which the buffer is considered elegible for megabuffering
@@ -105,6 +119,58 @@ namespace skyline::gpu {
         static constexpr std::chrono::nanoseconds FastReadbackHackWaitTimeThreshold{constant::NsInSecond / 4}; //!< (Staged) Threshold for the amount of time buffer texture can be waited on before it should be considered for the readback hack, `SkipReadbackHackWaitCountThreshold` needs to be hit before this
         size_t accumulatedGuestWaitCounter{}; //!< (Staged) Total number of times the buffer has been waited on
         std::chrono::nanoseconds accumulatedGuestWaitTime{}; //!< (Staged) Amount of time the buffer has been waited on for since the `FastReadbackHackWaitTimeThreshold`th wait on it by the guest
+        u64 fastWriteReadbackHits{}; //!< Diagnostic count of conservative fast write readbacks for this buffer
+        u64 fastWriteReadbackBypasses{}; //!< Diagnostic count of later read-only cycles bypassed for this buffer
+        std::array<u64, static_cast<size_t>(GpuWriteSource::Count)> gpuWriteSourceCounts{}; //!< Diagnostic counts of GPU-write origins seen by this buffer
+        u64 storageWriteVertex{};
+        u64 storageWriteTessControl{};
+        u64 storageWriteTessEvaluation{};
+        u64 storageWriteGeometry{};
+        u64 storageWriteFragment{};
+        u64 storageWriteCompute{};
+        u64 storageWriteOther{};
+        size_t storageWriteMinBindingSize{};
+        size_t storageWriteMaxBindingSize{};
+        IntervalList<size_t> currentExecutionStorageWriteRanges;
+        IntervalList<size_t> writeCycleStorageWriteRanges;
+        bool currentExecutionStorageRangeRecorded{};
+        bool currentExecutionStorageRangesComplete{true};
+        bool writeCycleStorageRangesComplete{};
+        u64 writeFaultWriterRangeOverlap{};
+        u64 writeFaultWriterRangeDisjoint{};
+        u64 writeFaultWriterRangeUnknown{};
+        IntervalList<size_t> gpuDirtyPageDiagRanges;
+        bool gpuDirtyPageDiagRangesValid{};
+        bool gpuDirtyPageDiagRangesStarted{};
+        IntervalList<size_t> cpuPageDiagGpuRanges;
+        bool cpuPageDiagGpuRangesValid{};
+        std::vector<u64> cpuPageDiagBaselineHashes;
+        bool cpuPageDiagPrepared{};
+        bool cpuPageDiagActive{};
+        u64 cpuPageDiagWindows{};
+        u64 cpuPageDiagRangeValidWindows{};
+        u64 cpuPageDiagRangeUnknownWindows{};
+        u64 cpuDirtyPages{};
+        u64 gpuDirtyPages{};
+        u64 cpuGpuOverlapPages{};
+        u64 cpuOnlyPages{};
+        u64 gpuOnlyPages{};
+
+        // Experimental page-granular fast readback state. GPU and CPU dirty pages are
+        // intentionally tracked separately so disjoint guest writes never overwrite
+        // pending GPU results.
+        std::vector<u8> currentExecutionStorageWritePages;
+        std::vector<u8> rangeGpuDirtyPageFlags;
+        std::vector<u8> rangeCpuDirtyPageFlags;
+        std::vector<std::shared_ptr<FenceCycle>> rangePageWriteCycles;
+        bool rangeGpuDirtyValid{};
+        bool rangeGpuDirtyStarted{};
+        u64 rangeFastPageHits{};
+        u64 rangeFastPageWaits{};
+        u64 rangeFastPageSyncs{};
+        u64 rangeFastPageFallbacks{};
+        u64 rangeMergeWaits{};
+        u64 rangeMergeWaitNs{};
 
         /**
          * @brief Resets all megabuffer tracking state
@@ -139,6 +205,29 @@ namespace skyline::gpu {
          * @return If GPU writes of indeterminate contents could occur using the buffer at a given moment, when true is returned the backing must not be read/written on the CPU
          */
         bool RefreshGpuWritesActiveDirect(bool wait = false, const std::function<void()> &flushHostCallback = {});
+
+        /**
+         * @return If the conservative fast readback path may be used for a CPU write trap
+         */
+        bool CanUseFastWriteReadback() const;
+
+        /**
+         * @brief Emits a sparse per-buffer diagnostic snapshot for the conservative fast write path
+         */
+        void LogFastWriteReadbackDiag() const;
+
+        void PrepareCpuPageDiag();
+        void BeginCpuPageDiag();
+        void FinalizeCpuPageDiag();
+        void LogCpuGpuPageDiag() const;
+
+        size_t GetGuestPageIndex(const u8 *address) const;
+        bool HasRangeCpuDirtyPages() const;
+        bool HasRangeGpuDirtyPages() const;
+        void ClearCompletedPageWriteCycle(const std::shared_ptr<FenceCycle> &completedCycle);
+        void ClearRangeDirtyTracking();
+        void CopyGpuDirtyPagesToMirror();
+        void CopyCpuDirtyPagesToBacking();
 
         bool ValidateMegaBufferViewImplDirect(vk::DeviceSize size);
 
@@ -176,6 +265,44 @@ namespace skyline::gpu {
         void UpdateCycle(const std::shared_ptr<FenceCycle> &newCycle) {
             newCycle->ChainCycle(cycle);
             cycle = newCycle;
+            if (currentExecutionGpuDirty && !isDirect) {
+                writeCycle = newCycle;
+                writeCycleStorageWriteRanges = currentExecutionStorageWriteRanges;
+                writeCycleStorageRangesComplete = currentExecutionStorageRangesComplete && currentExecutionStorageRangeRecorded;
+
+                const bool currentRangesValid{currentExecutionStorageRangesComplete && currentExecutionStorageRangeRecorded};
+                if (!rangeGpuDirtyStarted) {
+                    rangeGpuDirtyValid = currentRangesValid;
+                    rangeGpuDirtyStarted = true;
+                } else {
+                    rangeGpuDirtyValid = rangeGpuDirtyValid && currentRangesValid;
+                }
+
+                if (currentRangesValid) {
+                    for (size_t page{}; page < currentExecutionStorageWritePages.size(); page++) {
+                        if (!currentExecutionStorageWritePages[page])
+                            continue;
+
+                        rangeGpuDirtyPageFlags[page] = 1;
+                        rangePageWriteCycles[page] = newCycle;
+                    }
+                }
+
+                if (!gpuDirtyPageDiagRangesStarted) {
+                    gpuDirtyPageDiagRangesValid = currentRangesValid;
+                    gpuDirtyPageDiagRangesStarted = true;
+                } else {
+                    gpuDirtyPageDiagRangesValid = gpuDirtyPageDiagRangesValid && currentRangesValid;
+                }
+
+                if (currentExecutionStorageRangeRecorded)
+                    gpuDirtyPageDiagRanges.Merge(currentExecutionStorageWriteRanges);
+            }
+
+            std::fill(currentExecutionStorageWritePages.begin(), currentExecutionStorageWritePages.end(), 0);
+            currentExecutionStorageWriteRanges.Clear();
+            currentExecutionStorageRangeRecorded = false;
+            currentExecutionStorageRangesComplete = true;
         }
 
         constexpr vk::Buffer GetBacking() {
@@ -237,7 +364,12 @@ namespace skyline::gpu {
          * @note This **must** be called after syncing the buffer to the GPU not before
          * @note The buffer **must** be locked prior to calling this
          */
-        void MarkGpuDirty(UsageTracker &usageTracker);
+        void MarkGpuDirty(UsageTracker &usageTracker, GpuWriteSource source = GpuWriteSource::Internal);
+
+        /**
+         * @brief Records shader-stage and binding-size information for writable storage buffers
+         */
+        void RecordStorageWriteBinding(vk::PipelineStageFlagBits stage, size_t bindingOffset, size_t bindingSize);
 
         /**
          * @brief Prevents sequenced writes to this buffer's backing from occuring on the CPU, forcing sequencing on the GPU instead for the duration of the context. Unsequenced writes such as those from the guest can still occur however.

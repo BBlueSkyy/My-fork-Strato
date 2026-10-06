@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
 #include <gpu.h>
 #include <kernel/memory.h>
 #include <kernel/types/KProcess.h>
@@ -13,6 +14,41 @@
 #include "format.h"
 
 namespace skyline::gpu {
+    namespace {
+        constexpr u64 TextureReadbackDiagLogInterval{64};
+
+        std::atomic<u64> textureReadbackDiagEvents{};
+        std::atomic<u64> textureReadPreciseFallbacks{};
+        std::atomic<u64> textureWritePreciseFallbacks{};
+        std::atomic<u64> textureGuestSyncRequests{};
+        std::atomic<u64> textureGuestTransfers{};
+        std::atomic<u64> textureGuestTransferNs{};
+        std::atomic<u64> textureStagingTransfers{};
+        std::atomic<u64> textureLinearTransfers{};
+        std::atomic<u64> textureSkippedTransfers{};
+        std::atomic<u64> texturePreTrapWaits{};
+        std::atomic<u64> texturePreTrapWaitNs{};
+
+        void LogTextureReadbackDiag() {
+            const auto events{textureReadbackDiagEvents.fetch_add(1, std::memory_order_relaxed) + 1};
+            if (events != 1 && (events % TextureReadbackDiagLogInterval) != 0)
+                return;
+
+            LOGI("[FastReadbackDiag][Texture] events={} read_precise={} write_precise={} sync_requests={} transfers={} transfer_us={} staging={} linear={} skipped={} pretrap_waits={} pretrap_wait_us={}",
+                 events,
+                 textureReadPreciseFallbacks.load(std::memory_order_relaxed),
+                 textureWritePreciseFallbacks.load(std::memory_order_relaxed),
+                 textureGuestSyncRequests.load(std::memory_order_relaxed),
+                 textureGuestTransfers.load(std::memory_order_relaxed),
+                 textureGuestTransferNs.load(std::memory_order_relaxed) / 1000,
+                 textureStagingTransfers.load(std::memory_order_relaxed),
+                 textureLinearTransfers.load(std::memory_order_relaxed),
+                 textureSkippedTransfers.load(std::memory_order_relaxed),
+                 texturePreTrapWaits.load(std::memory_order_relaxed),
+                 texturePreTrapWaitNs.load(std::memory_order_relaxed) / 1000);
+        }
+    }
+
     u32 GuestTexture::GetLayerStride() {
         if (layerStride)
             return layerStride;
@@ -169,12 +205,17 @@ namespace skyline::gpu {
                 do {
                     // We need to do a loop here since we can't wait with the texture locked but not doing so means that the texture could have it's cycle changed which we wouldn't wait on, loop until we are sure the cycle hasn't changed to avoid that
                     if (waitCycle) {
-                        i64 startNs{texture->accumulatedGuestWaitCounter > SkipReadbackHackWaitCountThreshold ? util::GetTimeNs() : 0};
+                        i64 startNs{util::GetTimeNs()};
                         waitCycle->Wait();
-                        if (startNs)
-                            texture->accumulatedGuestWaitTime += std::chrono::nanoseconds(util::GetTimeNs() - startNs);
+                        i64 waitNs{util::GetTimeNs() - startNs};
+
+                        if (texture->accumulatedGuestWaitCounter > SkipReadbackHackWaitCountThreshold)
+                            texture->accumulatedGuestWaitTime += std::chrono::nanoseconds(waitNs);
 
                         texture->accumulatedGuestWaitCounter++;
+                        texturePreTrapWaits.fetch_add(1, std::memory_order_relaxed);
+                        texturePreTrapWaitNs.fetch_add(static_cast<u64>(waitNs), std::memory_order_relaxed);
+                        LogTextureReadbackDiag();
                     }
 
                     std::scoped_lock lock{*texture};
@@ -207,6 +248,8 @@ namespace skyline::gpu {
             if (texture->cycle)
                 return false;
 
+            textureReadPreciseFallbacks.fetch_add(1, std::memory_order_relaxed);
+            LogTextureReadbackDiag();
             texture->SynchronizeGuest(false, true); // We can skip trapping since the caller will do it
             return true;
         }, [weakThis] {
@@ -225,11 +268,9 @@ namespace skyline::gpu {
                 return true; // If the texture is already CPU dirty or we can transition it to being CPU dirty then we don't need to do anything
             }
 
-            if (texture->accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *texture->gpu.state.settings->enableFastGpuReadbackHack && !texture->memoryFreed) {
-                texture->dirtyState = DirtyState::Clean;
-                return true;
-            }
-
+            // A texture write fault does not tell us which bytes the guest will overwrite, so
+            // skipping host-to-guest synchronization cannot preserve untouched texels correctly.
+            // Keep the precise path until range-aware write tracking exists.
             std::unique_lock lock{*texture, std::try_to_lock};
             if (!lock)
                 return false;
@@ -237,6 +278,8 @@ namespace skyline::gpu {
             if (texture->cycle)
                 return false;
 
+            textureWritePreciseFallbacks.fetch_add(1, std::memory_order_relaxed);
+            LogTextureReadbackDiag();
             texture->SynchronizeGuest(true, true); // We need to assume the texture is dirty since we don't know what the guest is writing
             return true;
         });
@@ -857,17 +900,24 @@ namespace skyline::gpu {
             memoryFreed = false;
         }
 
-        if (layout == vk::ImageLayout::eUndefined || format != guest->format)
+        textureGuestSyncRequests.fetch_add(1, std::memory_order_relaxed);
+
+        if (layout == vk::ImageLayout::eUndefined || format != guest->format) {
             // If the state of the host texture is undefined then so can the guest
             // If the texture has differing formats on the guest and host, we don't support converting back in that case as it may involve recompression of a decompressed texture
+            textureSkippedTransfers.fetch_add(1, std::memory_order_relaxed);
+            LogTextureReadbackDiag();
             return;
+        }
 
+        i64 syncStartNs{util::GetTimeNs()};
         WaitOnBacking();
 
         if (tiling == vk::ImageTiling::eOptimal || !std::holds_alternative<memory::Image>(backing)) {
             if (!downloadStagingBuffer)
                 downloadStagingBuffer = gpu.memory.AllocateStagingBuffer(surfaceSize);
 
+            textureStagingTransfers.fetch_add(1, std::memory_order_relaxed);
             WaitOnFence();
             auto lCycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commandBuffer) {
                 CopyIntoStagingBuffer(commandBuffer, downloadStagingBuffer);
@@ -877,11 +927,17 @@ namespace skyline::gpu {
             CopyToGuest(downloadStagingBuffer->data());
         } else if (tiling == vk::ImageTiling::eLinear) {
             // We can optimize linear texture sync on a UMA by mapping the texture onto the CPU and copying directly from it rather than using a staging buffer
+            textureLinearTransfers.fetch_add(1, std::memory_order_relaxed);
             WaitOnFence();
             CopyToGuest(std::get<memory::Image>(backing).data());
         } else {
             throw exception("Host -> Guest synchronization of images tiled as '{}' isn't implemented", vk::to_string(tiling));
         }
+
+        i64 syncNs{util::GetTimeNs() - syncStartNs};
+        textureGuestTransfers.fetch_add(1, std::memory_order_relaxed);
+        textureGuestTransferNs.fetch_add(static_cast<u64>(syncNs), std::memory_order_relaxed);
+        LogTextureReadbackDiag();
 
         if (!skipTrap)
             if (cpuDirty)

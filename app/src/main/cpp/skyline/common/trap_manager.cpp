@@ -7,12 +7,26 @@
 #include "trap_manager.h"
 
 namespace skyline {
-    CallbackEntry::CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, writeCallback{std::move(writeCallback)} {}
+    CallbackEntry::CallbackEntry(TrapProtection protection, AccessLockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, writeCallback{std::move(writeCallback)} {}
+    CallbackEntry::CallbackEntry(TrapProtection protection, AccessLockCallback lockCallback, TrapCallback readCallback, PageWriteCallback pageWriteCallback) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, pageWriteCallback{std::move(pageWriteCallback)} {}
 
     constexpr TrapHandle::TrapHandle(const TrapMap::GroupHandle &handle) : TrapMap::GroupHandle(handle) {}
 
     TrapHandle TrapManager::CreateTrap(span<span<u8>> regions, const LockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback) {
+        return CreateTrap(regions, AccessLockCallback{[lockCallback](u8 *, bool) {
+            lockCallback();
+        }}, readCallback, writeCallback);
+    }
+
+    TrapHandle TrapManager::CreateTrap(span<span<u8>> regions, const AccessLockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback) {
         TRACE_EVENT("host", "TrapManager::CreateTrap");
+        std::scoped_lock lock{trapMutex};
+        TrapHandle handle{trapMap.Insert(regions, CallbackEntry{TrapProtection::None, lockCallback, readCallback, writeCallback})};
+        return handle;
+    }
+
+    TrapHandle TrapManager::CreatePageWriteTrap(span<span<u8>> regions, const AccessLockCallback &lockCallback, const TrapCallback &readCallback, const PageWriteCallback &writeCallback) {
+        TRACE_EVENT("host", "TrapManager::CreatePageWriteTrap");
         std::scoped_lock lock{trapMutex};
         TrapHandle handle{trapMap.Insert(regions, CallbackEntry{TrapProtection::None, lockCallback, readCallback, writeCallback})};
         return handle;
@@ -23,6 +37,7 @@ namespace skyline {
         std::scoped_lock lock{trapMutex};
         auto protection{writeOnly ? TrapProtection::WriteOnly : TrapProtection::ReadWrite};
         handle->value.protection = protection;
+        handle->value.writeUnprotectedPages.Clear();
         ReprotectIntervals(handle->intervals, protection);
     }
 
@@ -30,6 +45,7 @@ namespace skyline {
         TRACE_EVENT("host", "TrapManager::RemoveTrap");
         std::scoped_lock lock{trapMutex};
         handle->value.protection = TrapProtection::None;
+        handle->value.writeUnprotectedPages.Clear();
         ReprotectIntervals(handle->intervals, TrapProtection::None);
     }
 
@@ -37,6 +53,7 @@ namespace skyline {
         TRACE_EVENT("host", "TrapManager::DeleteTrap");
         std::scoped_lock lock{trapMutex};
         handle->value.protection = TrapProtection::None;
+        handle->value.writeUnprotectedPages.Clear();
         ReprotectIntervals(handle->intervals, TrapProtection::None);
         trapMap.Remove(handle);
     }
@@ -120,11 +137,11 @@ namespace skyline {
     bool TrapManager::HandleTrap(u8 *address, bool write) {
         TRACE_EVENT("host", "TrapManager::TrapHandler");
 
-        LockCallback lockCallback{};
+        AccessLockCallback lockCallback{};
         while (true) {
             if (lockCallback) {
                 // We want to avoid a deadlock of holding trapMutex while locking the resource inside a callback while another thread holding the resource's mutex waits on trapMutex, we solve this by quitting the loop if a callback would be blocking and attempt to lock the resource externally
-                lockCallback();
+                lockCallback(address, write);
                 lockCallback = {};
             }
 
@@ -137,17 +154,41 @@ namespace skyline {
 
             // Do callbacks for every entry in the intervals
             if (write) {
+                const auto pageStart{reinterpret_cast<u8 *>(reinterpret_cast<uintptr_t>(address) & ~(constant::PageSize - 1))};
+                IntervalList<u8 *>::Interval faultPage{pageStart, pageStart + constant::PageSize};
+
                 for (auto entryRef : entries) {
                     auto &entry{entryRef.get()};
                     if (entry.protection == TrapProtection::None)
                         // We don't need to do the callback if the entry doesn't require any protection already
                         continue;
 
-                    if (!entry.writeCallback()) {
-                        lockCallback = entry.lockCallback;
-                        break;
+                    if (entry.pageWriteCallback) {
+                        if (entry.writeUnprotectedPages.Intersect(faultPage))
+                            continue;
+
+                        switch (entry.pageWriteCallback(address)) {
+                            case TrapWriteResult::Retry:
+                                lockCallback = entry.lockCallback;
+                                break;
+                            case TrapWriteResult::ResolveEntry:
+                                entry.protection = TrapProtection::None;
+                                entry.writeUnprotectedPages.Clear();
+                                break;
+                            case TrapWriteResult::ResolvePage:
+                                entry.writeUnprotectedPages.Insert(faultPage);
+                                break;
+                        }
+
+                        if (lockCallback)
+                            break;
+                    } else {
+                        if (!entry.writeCallback()) {
+                            lockCallback = entry.lockCallback;
+                            break;
+                        }
+                        entry.protection = TrapProtection::None; // We don't need to protect this entry anymore
                     }
-                    entry.protection = TrapProtection::None; // We don't need to protect this entry anymore
                 }
                 if (lockCallback)
                     continue; // We need to retry the loop because a callback was blocking
