@@ -68,6 +68,7 @@ namespace skyline::gpu::interconnect {
           semaphore{gpu.vkDevice, vk::SemaphoreCreateInfo{}},
           cycle{std::make_shared<FenceCycle>(gpu.vkDevice, *fence, *semaphore, true)},
           nodes{allocator},
+          pendingPreRenderPassEndNodes{allocator},
           pendingPostRenderPassNodes{allocator} {
         Begin();
     }
@@ -80,6 +81,7 @@ namespace skyline::gpu::interconnect {
           cycle{std::move(other.cycle)},
           allocator{std::move(other.allocator)},
           nodes{std::move(other.nodes)},
+          pendingPreRenderPassEndNodes{std::move(other.pendingPreRenderPassEndNodes)},
           pendingPostRenderPassNodes{std::move(other.pendingPostRenderPassNodes)},
           ready{other.ready} {}
 
