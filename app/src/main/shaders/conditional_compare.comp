@@ -1,0 +1,18 @@
+#version 450
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer ConditionalScratch {
+    uint lhs;
+    uint rhs;
+    uint predicate;
+} scratchData;
+
+layout(push_constant) uniform PushConstants {
+    uint notEqual;
+} pc;
+
+void main() {
+    bool equal = scratchData.lhs == scratchData.rhs;
+    scratchData.predicate = (pc.notEqual != 0u ? !equal : equal) ? 1u : 0u;
+}

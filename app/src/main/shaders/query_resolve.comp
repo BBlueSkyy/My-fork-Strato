@@ -1,0 +1,30 @@
+#version 450
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer QueryResults {
+    uvec2 values[];
+} queryResults;
+
+layout(set = 0, binding = 1, std430) buffer Accumulator {
+    uvec2 value;
+} accumulator;
+
+layout(push_constant) uniform PushConstants {
+    uint firstIndex;
+    uint count;
+    uint resetAccumulator;
+} pc;
+
+uvec2 add64(uvec2 a, uvec2 b) {
+    uint low = a.x + b.x;
+    uint carry = low < a.x ? 1u : 0u;
+    return uvec2(low, a.y + b.y + carry);
+}
+
+void main() {
+    uvec2 sum = pc.resetAccumulator != 0u ? uvec2(0u) : accumulator.value;
+    for (uint i = 0u; i < pc.count; ++i)
+        sum = add64(sum, queryResults.values[pc.firstIndex + i]);
+    accumulator.value = sum;
+}

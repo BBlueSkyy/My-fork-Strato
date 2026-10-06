@@ -109,11 +109,61 @@ namespace skyline::gpu {
     };
 
     /**
+     * @brief Accumulates 64-bit occlusion-query segments on the GPU without a CPU readback
+     */
+    class QueryResolveHelperShader {
+      private:
+        vk::raii::ShaderModule shaderModule;
+        vk::raii::DescriptorSetLayout descriptorSetLayout;
+        vk::raii::PipelineLayout pipelineLayout;
+        vk::raii::Pipeline pipeline;
+
+      public:
+        struct PushConstants {
+            u32 firstIndex;
+            u32 count;
+            u32 resetAccumulator;
+        };
+
+        QueryResolveHelperShader(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem);
+
+        DescriptorAllocator::ActiveDescriptorSet CreateDescriptorSet(GPU &gpu, vk::Buffer queryResults, vk::DeviceSize queryResultsSize, vk::Buffer accumulator);
+
+        void Resolve(vk::raii::CommandBuffer &commandBuffer, vk::DescriptorSet descriptorSet, u32 firstIndex, u32 count, bool resetAccumulator);
+
+        void PrepareForTransfer(vk::raii::CommandBuffer &commandBuffer);
+    };
+
+    /**
+     * @brief Produces a 32-bit conditional-rendering predicate from two GPU-visible u32 values
+     */
+    class ConditionalCompareHelperShader {
+      private:
+        vk::raii::ShaderModule shaderModule;
+        vk::raii::DescriptorSetLayout descriptorSetLayout;
+        vk::raii::PipelineLayout pipelineLayout;
+        vk::raii::Pipeline pipeline;
+
+      public:
+        struct PushConstants {
+            u32 notEqual;
+        };
+
+        ConditionalCompareHelperShader(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem);
+
+        DescriptorAllocator::ActiveDescriptorSet CreateDescriptorSet(GPU &gpu, vk::Buffer scratchBuffer);
+
+        void Compare(vk::raii::CommandBuffer &commandBuffer, vk::DescriptorSet descriptorSet, bool notEqual);
+    };
+
+    /**
      * @brief Holds all helper shaders to avoid redundantly recreating them on each usage
      */
     struct HelperShaders {
         BlitHelperShader blitHelperShader;
         ClearHelperShader clearHelperShader;
+        QueryResolveHelperShader queryResolveHelperShader;
+        ConditionalCompareHelperShader conditionalCompareHelperShader;
 
         HelperShaders(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem);
     };
