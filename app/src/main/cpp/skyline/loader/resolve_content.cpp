@@ -63,31 +63,43 @@ namespace skyline::loader {
                 return;
             }
 
-            // Patch CNMTs may add a new ProgramIndex as a complete replacement Program NCA.
-            // Such an NCA is self-contained and can be launched without a corresponding base
-            // Program NCA. An indirect/BKTR Program NCA, however, still depends on its base.
-            if (patch->HasBktrSection())
-                throw exception("Selected Program update requires a missing base Program NCA");
+            // Some multi-program applications add a ProgramIndex only in the update.
+            // In that case the update Program NCA is the primary program for this index,
+            // not a patch layered over a non-existent base Program NCA.
+            LOGI("ResolveProgramContent: promoting update-only Program 0x{:016X} to primary Program (BKTR={}, RomFS={})",
+                 patch->header.titleId, patch->HasBktrSection(), patch->HasRomFsSection());
 
             auto exeFs{patch->OpenExeFs()};
+            // A BKTR data section cannot be layered without a base Program NCA. Treat the
+            // update NCA as the primary executable and only expose a directly-openable RomFS.
+            // This matches update-only indexed-program loading semantics used by Ryujinx.
             auto data{patch->OpenRomFs()};
+
             if (!exeFs || !exeFs->FileExists("main") || !exeFs->FileExists("main.npdm"))
-                throw exception("Resolved standalone Program update ExeFS lacks main or main.npdm");
+                throw exception("Resolved update-only Program ExeFS lacks main or main.npdm");
 
             vfs::PatchManager modifications;
             exeFs = modifications.PatchExeFS(state, exeFs, patch->header.titleId);
             if (data)
                 data = modifications.PatchRomFS(state, data, patch->header.titleId);
 
+            if (state.updateLoader) {
+                if (state.updateLoader->nacp)
+                    nacp = state.updateLoader->nacp;
+                if (state.updateLoader->cnmt)
+                    cnmt = state.updateLoader->cnmt;
+            }
+
             const auto identity{DescribeRomFs(data)};
             processExeFs = std::move(exeFs);
             currentProcessRomFs = data;
-            patchDataRomFs = patch->HasRomFsSection() ? data : nullptr;
+            patchDataRomFs = nullptr;
             romFs = std::move(data);
             currentProcessRomFsIdentity = identity;
             programUpdateApplied = true;
             programContentResolved = true;
-            LOGI("ResolveProgramContent: launched standalone Program update 0x{:016X}", patch->header.titleId);
+            LOGI("ResolveProgramContent: launched update-only Program 0x{:016X} (direct RomFS={})",
+                 patch->header.titleId, currentProcessRomFs != nullptr);
             LOGI("Resolved current-process RomFS: {}", identity);
             return;
         }

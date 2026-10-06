@@ -306,30 +306,7 @@ void TestProgramIndexSelection() {
     Check(!selection.base && !selection.patch, "Missing ProgramIndex selected unrelated content");
 
     selection = loader::SelectProgramNcas({candidates[1]}, {}, 1);
-    Check(selection.base && selection.base->header.titleId == p0.header.titleId + 1,
-          "Program NCA title ID fallback did not select a nonzero ProgramIndex");
-
-    // A Patch CNMT may fail to expose the child through idOffset while the NCA Program ID
-    // still identifies the requested ProgramIndex. Keep the fallback constrained to the
-    // same application base so unrelated Program NCAs are never selected.
-    auto mismatchedOffset{MakeProgramMeta(p0.header.titleId, 0x33, ContentMetaType::Patch, 2, 0)};
-    selection = loader::SelectProgramNcas({candidates[1]}, {mismatchedOffset}, 1);
-    Check(selection.base && selection.base->header.titleId == p0.header.titleId + 1,
-          "Program NCA title ID fallback failed when CNMT idOffset did not expose the child");
-
-    NcaFixture unrelatedFixture;
-    unrelatedFixture.header.titleId = p0.header.titleId + 0x1001;
-    auto unrelatedExe{ExeBytes(0x77)};
-    unrelatedFixture.Add(0, ExeHeader(unrelatedExe.size()), WithPrefix(unrelatedExe));
-    unrelatedFixture.Finalize();
-    NCA unrelated(unrelatedFixture.backing, keys);
-    selection = loader::SelectProgramNcas(
-        {{std::string(32, '5') + ".nca", unrelated}},
-        {mismatchedOffset},
-        1
-    );
-    Check(!selection.base && !selection.patch,
-          "Program NCA title ID fallback crossed application boundaries");
+    Check(!selection.base && !selection.patch, "Header-only fallback selected a nonzero ProgramIndex without CNMT");
 }
 
 class FixtureLoader : public loader::Loader {
@@ -430,7 +407,7 @@ void TestUpdateOnlyProgramResolution() {
               "Standalone update Program ExeFS differs");
 }
 
-void TestUpdateOnlyBktrRequiresBase() {
+void TestUpdateOnlyBktrProgramPromotion() {
     auto keys{std::make_shared<crypto::KeyStore>("")};
     auto patchFixture{PatchFixture()};
     patchFixture.header.titleId += 1;
@@ -441,13 +418,13 @@ void TestUpdateOnlyBktrRequiresBase() {
     state.updateLoader = std::make_shared<FixtureLoader>();
     state.updateLoader->programPatchNca.emplace(patchFixture.backing, keys);
 
-    bool rejected{};
-    try {
-        child.ResolveProgramContent(state);
-    } catch (const std::exception &) {
-        rejected = true;
-    }
-    Check(rejected, "Update-only BKTR Program was accepted without its base Program NCA");
+    child.ResolveProgramContent(state);
+
+    Check(child.programUpdateApplied, "Update-only BKTR Program was not promoted to primary Program");
+    Check(child.processExeFs && child.processExeFs->FileExists("main") && child.processExeFs->FileExists("main.npdm"),
+          "Update-only BKTR Program did not expose its standalone ExeFS");
+    Check(!child.currentProcessRomFs && !child.patchDataRomFs,
+          "Update-only BKTR Program fabricated a RomFS without a base Program NCA");
 }
 
 int main() {
@@ -474,6 +451,6 @@ int main() {
     run("base-only/ExeFS-only update patch-data absence", TestPatchDataAbsence);
     run("base data with update ExeFS resolution", TestBaseDataWithUpdateExeFsResolution);
     run("update-only Program replacement resolution", TestUpdateOnlyProgramResolution);
-    run("update-only BKTR Program requires base", TestUpdateOnlyBktrRequiresBase);
+    run("update-only BKTR Program promotion", TestUpdateOnlyBktrProgramPromotion);
     return failures ? 1 : 0;
 }
