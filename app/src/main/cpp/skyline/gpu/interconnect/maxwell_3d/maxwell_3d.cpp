@@ -223,7 +223,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
              builder.SetPipeline(pipeline->compiledPipeline.pipeline, vk::PipelineBindPoint::eGraphics);
 
          if (descUpdateInfo) {
-             if (ctx.gpu.traits.supportsPushDescriptors) {
+             if (pipeline->compiledPipeline.usesPushDescriptors) {
                  builder.SetDescriptorSetWithPush(descUpdateInfo);
              } else {
                  if (!attachedDescriptorSets)

@@ -23,6 +23,7 @@ namespace skyline::gpu {
         bool supportsVertexAttributeDivisor{}; //!< If the device supports a divisor for instance-rate vertex attributes (with VK_EXT_vertex_attribute_divisor)
         bool supportsVertexAttributeZeroDivisor{}; //!< If the device supports a zero divisor for instance-rate vertex attributes (with VK_EXT_vertex_attribute_divisor)
         bool supportsPushDescriptors{}; //!< If the device supports push descriptors (with VK_KHR_push_descriptor)
+        u32 maxPushDescriptors{}; //!< Maximum number of descriptors allowed in a push-descriptor set layout
         bool supportsImageFormatList{}; //!< If the device supports providing a list of formats that can be used with an image (with VK_KHR_image_format_list)
         bool supportsImagelessFramebuffers{}; //!< If the device supports imageless framebuffers (with VK_KHR_imageless_framebuffer)
         bool supportsGlobalPriority{}; //!< If the device supports global priorities for queues (with VK_EXT_global_priority)
@@ -103,7 +104,8 @@ namespace skyline::gpu {
             vk::PhysicalDeviceDriverProperties,
             vk::PhysicalDeviceFloatControlsProperties,
             vk::PhysicalDeviceTransformFeedbackPropertiesEXT,
-            vk::PhysicalDeviceSubgroupProperties>;
+            vk::PhysicalDeviceSubgroupProperties,
+            vk::PhysicalDevicePushDescriptorPropertiesKHR>;
 
         using DeviceFeatures2 = vk::StructureChain<
             vk::PhysicalDeviceFeatures2,
