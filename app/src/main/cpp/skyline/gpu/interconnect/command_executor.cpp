@@ -407,6 +407,9 @@ namespace skyline::gpu::interconnect {
         if (splitRenderPass) {
             // We need to create a render pass if one doesn't already exist or the current one isn't compatible
             if (renderPass != nullptr) {
+                for (auto &callback : subpassBoundaryCallbacks)
+                    callback();
+
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPreRenderPassEndNodes);
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
@@ -418,6 +421,9 @@ namespace skyline::gpu::interconnect {
             subpassCount = 1;
         } else if (!attachmentsMatch) {
             // The last subpass had different attachments, so we need to create a new one
+            for (auto &callback : subpassBoundaryCallbacks)
+                callback();
+
             addSubpass();
             subpassCount++;
             gotoNext = true;
@@ -437,6 +443,9 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::FinishRenderPass() {
         if (renderPass) {
+            for (auto &callback : subpassBoundaryCallbacks)
+                callback();
+
             slot->nodes.splice(slot->nodes.end(), slot->pendingPreRenderPassEndNodes);
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
@@ -644,6 +653,10 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::NotifyPipelineChange() {
         for (auto &callback : pipelineChangeCallbacks)
             callback();
+    }
+
+    void CommandExecutor::AddSubpassBoundaryCallback(std::function<void()> &&callback) {
+        subpassBoundaryCallbacks.emplace_back(std::move(callback));
     }
 
     std::optional<u32> CommandExecutor::GetRenderPassIndex() {

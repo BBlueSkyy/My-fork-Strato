@@ -217,6 +217,7 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> flushCallbacks; //!< Set of persistent callbacks that will be called at the start of Execute in order to flush data required for recording
         std::vector<std::function<void()>> pipelineChangeCallbacks; //!< Set of persistent callbacks that will be called after any non-Maxwell 3D engine changes the active pipeline
+        std::vector<std::function<void()>> subpassBoundaryCallbacks; //!< Called immediately before leaving the current subpass
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
@@ -379,6 +380,11 @@ namespace skyline::gpu::interconnect {
          * @brief Calls all registered pipeline change callbacks
          */
         void NotifyPipelineChange();
+
+        /**
+         * @brief Adds a callback invoked immediately before the current Vulkan subpass is left
+         */
+        void AddSubpassBoundaryCallback(std::function<void()> &&callback);
 
         std::optional<u32> GetRenderPassIndex();
 
