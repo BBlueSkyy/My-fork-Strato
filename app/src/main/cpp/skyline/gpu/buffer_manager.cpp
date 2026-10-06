@@ -352,22 +352,27 @@ namespace skyline::gpu {
             if (auto view{overlap->TryGetView(guest, viewOffset, viewSize)}; view)
                 return view;
 
-        // Existing views can only be redirected when each old logical buffer is an affine
-        // subrange of the new mapping sequence. Refuse reordered/partial aliases here so the
-        // caller can use its conservative legacy path instead of linking delegates incorrectly.
-        for (const auto &overlap : overlaps)
-            if (!guest.Find(*overlap->guest))
+        GuestBuffer mergedGuest{guest};
+        for (const auto &overlap : overlaps) {
+            if (mergedGuest.Find(*overlap->guest))
+                continue;
+
+            auto merged{mergedGuest.Merge(*overlap->guest)};
+            if (!merged)
                 return {};
 
+            mergedGuest = std::move(*merged);
+        }
+
         if (overlaps.empty()) {
-            LockedBuffer buffer{std::make_shared<Buffer>(delegateAllocatorState, gpu, guest, nextBufferId++,
+            LockedBuffer buffer{std::make_shared<Buffer>(delegateAllocatorState, gpu, mergedGuest, nextBufferId++,
                                                          *gpu.state.settings->useDirectMemoryImport), tag};
             buffer->SetupStagedTraps();
             InsertBuffer(*buffer);
             return buffer->TryGetView(guest, viewOffset, viewSize);
         }
 
-        auto buffer{CoalesceMappedBuffers(guest, overlaps, tag)};
+        auto buffer{CoalesceMappedBuffers(mergedGuest, overlaps, tag)};
 
         for (auto &srcBuffer : overlaps) {
             if (!srcBuffer.lock.IsFirstUsage()) {
