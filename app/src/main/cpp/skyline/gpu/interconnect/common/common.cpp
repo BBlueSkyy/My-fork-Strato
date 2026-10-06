@@ -4,6 +4,7 @@
 #include <gpu/buffer_manager.h>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
+#include <atomic>
 #include <limits>
 #include "common.h"
 
@@ -38,6 +39,8 @@ namespace skyline::gpu::interconnect {
 
             GuestBuffer::Mappings guestMappings{mappings.begin(), mappings.end()};
             GuestBuffer guest{std::move(guestMappings)};
+
+            const char *failureReason{};
             if (guest.valid()) {
                 auto splitView{ctx.gpu.buffer.FindOrCreate(guest, address - alignedAddress, size, ctx.executor.tag,
                                                           [&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
@@ -47,12 +50,53 @@ namespace skyline::gpu::interconnect {
                     view = splitView;
                     return;
                 }
+
+                failureReason = "buffer-manager-overlap";
+            } else {
+                bool hasInvalidMapping{};
+                bool hasPhysicalOverlap{};
+                for (size_t i{}; i < guest.mappings.size(); ++i) {
+                    const auto &mapping{guest.mappings[i]};
+                    if (!mapping.data() || !mapping.size()) {
+                        hasInvalidMapping = true;
+                        continue;
+                    }
+
+                    const auto begin{reinterpret_cast<uintptr_t>(mapping.data())};
+                    const auto end{begin + mapping.size()};
+                    for (size_t j{}; j < i; ++j) {
+                        const auto &previous{guest.mappings[j]};
+                        if (!previous.data() || !previous.size())
+                            continue;
+
+                        const auto previousBegin{reinterpret_cast<uintptr_t>(previous.data())};
+                        const auto previousEnd{previousBegin + previous.size()};
+                        if (begin < previousEnd && previousBegin < end) {
+                            hasPhysicalOverlap = true;
+                            break;
+                        }
+                    }
+                }
+
+                failureReason = hasInvalidMapping ? "unmapped-gap" :
+                                hasPhysicalOverlap ? "physical-alias" :
+                                "guest-validation";
             }
 
-            // An unmapped gap or an alias layout which cannot be represented safely by one
-            // BufferDelegate is not a valid multi-mapping candidate. Preserve the legacy clamp
-            // instead of manufacturing contiguity or turning an existing workload into a crash.
-            LOGW("Split buffer mappings could not be resolved safely, using the first mapping");
+            static std::atomic_size_t splitFailureLogs{};
+            auto failureIndex{splitFailureLogs.fetch_add(1, std::memory_order_relaxed)};
+            if (failureIndex < 8) {
+                LOGW("Split buffer mapping diagnostic: reason={}, gpu=0x{:X}, size=0x{:X}, aligned=0x{:X}-0x{:X}, mappings={}",
+                     failureReason, address, size, alignedAddress, alignedEnd, guest.mappings.size());
+
+                for (size_t i{}; i < std::min<size_t>(guest.mappings.size(), 4); ++i) {
+                    const auto &mapping{guest.mappings[i]};
+                    LOGW("Split buffer mapping diagnostic: mapping[{}]=0x{:X}+0x{:X}",
+                         i, reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
+                }
+
+                LOGW("Split buffer mappings could not be resolved safely, using the first mapping");
+            }
         }
 
         // Some callers intentionally supply an upper-bound size (for example the constant-buffer
