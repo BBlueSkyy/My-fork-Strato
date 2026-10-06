@@ -69,8 +69,18 @@ namespace skyline::loader {
         auto selection{SelectProgramNcas(std::move(programs), metadata, programIndex)};
         programNca = std::move(selection.base);
         programPatchNca = std::move(selection.patch);
-        if (programNca)
+        if (programNca) {
+            LOGI("NSP ProgramIndex {} selected base Program 0x{:016X} (BKTR={}, RomFS={})",
+                 programIndex, programNca->header.titleId, programNca->HasBktrSection(), programNca->HasRomFsSection());
             romFs = programNca->romFs;
+        } else {
+            LOGI("NSP ProgramIndex {} selected no base Program", programIndex);
+        }
+        if (programPatchNca)
+            LOGI("NSP ProgramIndex {} selected patch Program 0x{:016X} (BKTR={}, RomFS={})",
+                 programIndex, programPatchNca->header.titleId, programPatchNca->HasBktrSection(), programPatchNca->HasRomFsSection());
+        else
+            LOGI("NSP ProgramIndex {} selected no patch Program", programIndex);
 
         if (controlNca) {
             controlRomFs = std::make_shared<vfs::RomFileSystem>(controlNca->romFs);

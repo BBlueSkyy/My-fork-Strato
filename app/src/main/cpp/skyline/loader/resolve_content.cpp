@@ -92,11 +92,30 @@ namespace skyline::loader {
             return;
         }
 
+        LOGI("ResolveProgramContent: base Program 0x{:016X} (BKTR={}, RomFS={})",
+             base->header.titleId, base->HasBktrSection(), base->HasRomFsSection());
+        if (patch)
+            LOGI("ResolveProgramContent: update Program 0x{:016X} (BKTR={}, RomFS={})",
+                 patch->header.titleId, patch->HasBktrSection(), patch->HasRomFsSection());
+
         if (patch && patch->header.titleId != base->header.titleId)
             throw exception("Selected update contains no matching Program NCA");
 
-        auto exeFs{patch ? patch->OpenExeFsWithPatch(*base) : base->OpenExeFs()};
-        auto data{patch ? patch->OpenRomFsWithPatch(*base) : base->OpenRomFs()};
+        std::shared_ptr<vfs::FileSystem> exeFs;
+        std::shared_ptr<vfs::Backing> data;
+        try {
+            LOGI("ResolveProgramContent: opening resolved ExeFS");
+            exeFs = patch ? patch->OpenExeFsWithPatch(*base) : base->OpenExeFs();
+            LOGI("ResolveProgramContent: ExeFS open complete (present={})", exeFs != nullptr);
+
+            LOGI("ResolveProgramContent: opening resolved RomFS");
+            data = patch ? patch->OpenRomFsWithPatch(*base) : base->OpenRomFs();
+            LOGI("ResolveProgramContent: RomFS open complete (present={})", data != nullptr);
+        } catch (const std::exception &e) {
+            LOGE("ResolveProgramContent: Program content open failed: {}", e.what());
+            throw;
+        }
+
         if (!exeFs || !exeFs->FileExists("main") || !exeFs->FileExists("main.npdm"))
             throw exception("Resolved Program ExeFS lacks main or main.npdm");
 
