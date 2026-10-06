@@ -310,6 +310,9 @@ namespace skyline::gpu {
     };
 
     class TextureManager;
+    namespace interconnect {
+        class CommandExecutor;
+    }
 
     /**
      * @brief A view into a specific subresource of a Texture
@@ -418,6 +421,7 @@ namespace skyline::gpu {
 
         friend TextureManager;
         friend TextureView;
+        friend class interconnect::CommandExecutor;
 
         /**
          * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid
@@ -484,6 +488,28 @@ namespace skyline::gpu {
         size_t surfaceSize{}; //!< The size of the entire surface given linear tiling, this contains all mip levels and layers
         vk::SampleCountFlagBits sampleCount;
         bool replaced{};
+
+        // Diagnostic-only TIC metadata used by the Marvel Cosmic Invasion mini-RenderDoc
+        // capture. Remove these fields together with the rest of PR #294 diagnostics.
+        bool diagnosticTicValid{};
+        u32 diagnosticTicIndex{};
+        u64 diagnosticTicIova{};
+        std::array<u32, 8> diagnosticTicRaw{};
+        u32 diagnosticTicHeaderType{};
+        u32 diagnosticTicFormatWord{};
+        u32 diagnosticTicTileConfig{};
+        u32 diagnosticTicTextureType{};
+        u32 diagnosticTicColorKeyOp{};
+        u32 diagnosticTicViewConfig{};
+        bool diagnosticTicSrgb{};
+        std::atomic<u32> diagnosticCpuWriteTrapCount{};
+        u64 diagnosticInitialGuestHash{};
+        bool diagnosticSameSequenceTicMismatch{};
+        std::array<u32, 8> diagnosticCachedTicRaw{};
+        std::array<u32, 8> diagnosticCurrentTicRaw{};
+        u64 diagnosticPreFindGuestHash{};
+        u64 diagnosticPostOverlapGuestHash{};
+        u32 diagnosticOverlapSyncCount{};
 
         /**
          * @brief Creates a texture object wrapping the supplied backing with the supplied attributes

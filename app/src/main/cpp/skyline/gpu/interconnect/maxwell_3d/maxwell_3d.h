@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <string>
+#include <string_view>
 #include <gpu/descriptor_allocator.h>
 #include <gpu/interconnect/common/samplers.h>
 #include <gpu/interconnect/common/textures.h>
@@ -49,6 +51,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ConstantBuffers constantBuffers;
         Samplers samplers;
         const engine::SamplerBinding &samplerBinding;
+        const engine::Blend &diagnosticBlend;
+        const std::array<engine::VertexStream, engine::VertexStreamCount> &diagnosticVertexStreams;
+        const std::array<engine::VertexStreamInstance, engine::VertexStreamCount> &diagnosticVertexStreamInstances;
+        const std::array<engine::VertexAttribute, engine::VertexAttributeCount> &diagnosticVertexAttributes;
+        const engine::IndexBuffer &diagnosticIndexBuffer;
+        std::array<const soc::gm20b::engine::Address *, engine::VertexStreamCount> diagnosticVertexStreamLimits{};
+        bool diagnosticGameplayGeometryCaptured{};
         Textures textures;
         std::shared_ptr<memory::Buffer> quadConversionBuffer{};
         bool quadConversionBufferAttached{};
@@ -61,7 +70,20 @@ namespace skyline::gpu::interconnect::maxwell3d {
         DescriptorAllocator::ActiveDescriptorSet *activeDescriptorSet{};
         std::vector<TextureView *> activeDescriptorSetSampledImages{};
 
+        enum class DiagnosticDescriptorMode {
+            Full,
+            Quick,
+            Reuse,
+        };
+
+        DiagnosticDescriptorMode diagnosticDescriptorMode{DiagnosticDescriptorMode::Full};
+        std::string diagnosticDescriptorWrites;
+
         size_t UpdateQuadConversionBuffer(u32 count, u32 firstVertex);
+
+        void TraceDiagnosticDraw(std::string_view drawKind, vk::Rect2D scissor,
+                                 bool indexed, u32 count, u32 instanceCount,
+                                 u32 first, u32 vertexOffset, u32 firstInstance);
 
         /**
          * @brief A scissor derived from the current clear register state

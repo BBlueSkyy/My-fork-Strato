@@ -6,6 +6,7 @@
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
 #include <common/settings.h>
+#include <common/utils.h>
 #include "texture.h"
 #include "layout.h"
 #include "adreno_aliasing.h"
@@ -153,6 +154,12 @@ namespace skyline::gpu {
             mirror = alignedMirror.subspan(static_cast<size_t>(frontMapping.data() - alignedData), totalSize);
         }
 
+        if (dimensions == texture::Dimensions{176, 104, 1} && !mirror.empty()) {
+            diagnosticInitialGuestHash = XXH64(mirror.data(), mirror.size(), 0);
+            LOGI("MINIRD Marvel initial guest hash=0x{:016X} bytes={}",
+                 diagnosticInitialGuestHash, mirror.size());
+        }
+
         // We can't just capture `this` in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Texture> weakThis{weak_from_this()};
         trapHandle = gpu.state.process->trap.CreateTrap(mappings, [weakThis] {
@@ -215,6 +222,9 @@ namespace skyline::gpu {
             auto texture{weakThis.lock()};
             if (!texture)
                 return true;
+
+            if (texture->dimensions == texture::Dimensions{176, 104, 1})
+                texture->diagnosticCpuWriteTrapCount.fetch_add(1, std::memory_order_relaxed);
 
             std::unique_lock stateLock{texture->stateMutex, std::try_to_lock};
             if (!stateLock)
@@ -495,6 +505,30 @@ namespace skyline::gpu {
     }
 
     void Texture::FreeGuest() {
+        // Diagnostic-only: retain the exact Marvel Cosmic Invasion gameplay input isolated by
+        // mini-RenderDoc so its guest bytes can be compared against the already-captured host image.
+        // This changes only the lifetime of ~90 KiB of guest backing and must be removed with the
+        // rest of the #294 diagnostics.
+        const bool retainMarvelGameplayInput{
+            guest &&
+            dimensions == texture::Dimensions{176, 104, 1} &&
+            levelCount == 1 &&
+            layerCount == 1 &&
+            guest->format &&
+            guest->format->vkFormat == vk::Format::eR8G8B8A8Unorm &&
+            guest->tileConfig.mode == texture::TileMode::Block &&
+            guest->tileConfig.blockHeight == 16 &&
+            guest->tileConfig.blockDepth == 1
+        };
+        if (retainMarvelGameplayInput) {
+            LOGI("MINIRD retaining Marvel gameplay input guest backing: map=0x{:X} bytes={} mirror={} linear={}",
+                 guest->mappings.empty()
+                     ? uintptr_t{}
+                     : reinterpret_cast<uintptr_t>(guest->mappings.front().data()),
+                 guest->GetSize(), mirror.size(), deswizzledSurfaceSize);
+            return;
+        }
+
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
         if (*gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
             gpu.state.process->memory.FreeMemory(mirror);
