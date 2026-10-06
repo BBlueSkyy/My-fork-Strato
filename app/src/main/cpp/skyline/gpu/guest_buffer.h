@@ -5,6 +5,8 @@
 
 #include <boost/container/small_vector.hpp>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <common/span.h>
@@ -54,9 +56,27 @@ namespace skyline::gpu {
             if (mappings.empty())
                 return false;
 
-            for (const auto &mapping : mappings)
+            // A repeated/overlapping physical region would make a physical address ambiguous:
+            // an existing BufferView could not be redirected to a unique logical offset.
+            // Keep such alias layouts out of this representation rather than guessing.
+            for (size_t i{}; i < mappings.size(); ++i) {
+                const auto &mapping{mappings[i]};
                 if (!mapping.data() || !mapping.size())
                     return false;
+
+                const auto begin{reinterpret_cast<uintptr_t>(mapping.data())};
+                if (mapping.size() > std::numeric_limits<uintptr_t>::max() - begin)
+                    return false;
+                const auto end{begin + mapping.size()};
+
+                for (size_t j{}; j < i; ++j) {
+                    const auto &previous{mappings[j]};
+                    const auto previousBegin{reinterpret_cast<uintptr_t>(previous.data())};
+                    const auto previousEnd{previousBegin + previous.size()};
+                    if (begin < previousEnd && previousBegin < end)
+                        return false;
+                }
+            }
 
             return true;
         }

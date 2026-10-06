@@ -39,6 +39,19 @@ int main() {
     }};
     Check(!split.Find(reordered), "reordered alias was accepted as affine");
 
+    GuestBuffer repeatedAlias{GuestBuffer::Mappings{
+        span<u8>{a.data(), 0x1000},
+        span<u8>{b.data(), 0x1000},
+        span<u8>{a.data(), 0x1000},
+    }};
+    Check(!repeatedAlias.valid(), "repeated physical alias was accepted");
+
+    GuestBuffer overlappingAlias{GuestBuffer::Mappings{
+        span<u8>{a.data(), 0x1000},
+        span<u8>{a.data() + 0x800, 0x1000},
+    }};
+    Check(!overlappingAlias.valid(), "overlapping physical alias was accepted");
+
     GuestBuffer invalid{GuestBuffer::Mappings{
         span<u8>{a.data(), 0x1000},
         span<u8>{nullptr, 0x1000},
