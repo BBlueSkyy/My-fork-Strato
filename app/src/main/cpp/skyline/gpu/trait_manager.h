@@ -18,6 +18,7 @@ namespace skyline::gpu {
         bool supportsSamplerReductionMode{}; //!< If the device supports explicitly specifying a reduction mode for sampling (with VK_EXT_sampler_filter_minmax)
         bool supportsCustomBorderColor{}; //!< If the device supports a custom border color without format (VK_EXT_custom_border_color)
         bool supportsAnisotropicFiltering{}; //!< If the device supports anisotropic filtering for sampling
+        bool supportsOcclusionQueryPrecise{}; //!< If precise occlusion-query sample counts are supported
         bool supportsLastProvokingVertex{}; //!< If the device supports setting the last vertex as the provoking vertex (with VK_EXT_provoking_vertex)
         bool supportsLogicOp{}; //!< If the device supports framebuffer logical operations during blending
         bool supportsVertexAttributeDivisor{}; //!< If the device supports a divisor for instance-rate vertex attributes (with VK_EXT_vertex_attribute_divisor)

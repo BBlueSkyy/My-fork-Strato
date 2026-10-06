@@ -389,8 +389,112 @@ namespace skyline::gpu {
         });
     }
 
+    QueryResolveHelperShader::QueryResolveHelperShader(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem)
+        : shaderModule{CreateShaderModule(gpu, *shaderFileSystem->OpenFile("shaders/query_resolve.comp.spv"))},
+          descriptorSetLayout{gpu.vkDevice, [&] {
+              std::array<vk::DescriptorSetLayoutBinding, 2> bindings{
+                  vk::DescriptorSetLayoutBinding{
+                      .binding = 0,
+                      .descriptorType = vk::DescriptorType::eStorageBuffer,
+                      .descriptorCount = 1,
+                      .stageFlags = vk::ShaderStageFlagBits::eCompute,
+                  },
+                  vk::DescriptorSetLayoutBinding{
+                      .binding = 1,
+                      .descriptorType = vk::DescriptorType::eStorageBuffer,
+                      .descriptorCount = 1,
+                      .stageFlags = vk::ShaderStageFlagBits::eCompute,
+                  },
+              };
+              return vk::DescriptorSetLayoutCreateInfo{
+                  .bindingCount = static_cast<u32>(bindings.size()),
+                  .pBindings = bindings.data(),
+              };
+          }()},
+          pipelineLayout{gpu.vkDevice, [&] {
+              vk::DescriptorSetLayout layout{*descriptorSetLayout};
+              vk::PushConstantRange pushConstantRange{
+                  .stageFlags = vk::ShaderStageFlagBits::eCompute,
+                  .offset = 0,
+                  .size = sizeof(PushConstants),
+              };
+              return vk::PipelineLayoutCreateInfo{
+                  .setLayoutCount = 1,
+                  .pSetLayouts = &layout,
+                  .pushConstantRangeCount = 1,
+                  .pPushConstantRanges = &pushConstantRange,
+              };
+          }()},
+          pipeline{gpu.vkDevice, nullptr, vk::ComputePipelineCreateInfo{
+              .stage = vk::PipelineShaderStageCreateInfo{
+                  .stage = vk::ShaderStageFlagBits::eCompute,
+                  .module = *shaderModule,
+                  .pName = "main",
+              },
+              .layout = *pipelineLayout,
+          }} {}
+
+    DescriptorAllocator::ActiveDescriptorSet QueryResolveHelperShader::CreateDescriptorSet(GPU &gpu, vk::Buffer queryResults, vk::DeviceSize queryResultsSize, vk::Buffer accumulator) {
+        auto descriptorSet{gpu.descriptor.AllocateSet(*descriptorSetLayout)};
+        std::array<vk::DescriptorBufferInfo, 2> bufferInfos{
+            vk::DescriptorBufferInfo{.buffer = queryResults, .offset = 0, .range = queryResultsSize},
+            vk::DescriptorBufferInfo{.buffer = accumulator, .offset = 0, .range = sizeof(u64)},
+        };
+        std::array<vk::WriteDescriptorSet, 2> writes{
+            vk::WriteDescriptorSet{
+                .dstSet = *descriptorSet,
+                .dstBinding = 0,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eStorageBuffer,
+                .pBufferInfo = &bufferInfos[0],
+            },
+            vk::WriteDescriptorSet{
+                .dstSet = *descriptorSet,
+                .dstBinding = 1,
+                .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eStorageBuffer,
+                .pBufferInfo = &bufferInfos[1],
+            },
+        };
+        gpu.vkDevice.updateDescriptorSets(writes, nullptr);
+        return descriptorSet;
+    }
+
+    void QueryResolveHelperShader::Resolve(vk::raii::CommandBuffer &commandBuffer, vk::DescriptorSet descriptorSet, u32 firstIndex, u32 count, bool resetAccumulator) {
+        commandBuffer.pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eComputeShader,
+            vk::PipelineStageFlagBits::eComputeShader,
+            {},
+            vk::MemoryBarrier{
+                .srcAccessMask = vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eShaderWrite,
+                .dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
+            },
+            {}, {});
+
+        commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *pipeline);
+        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *pipelineLayout, 0, descriptorSet, nullptr);
+
+        PushConstants pushConstants{firstIndex, count, resetAccumulator ? 1U : 0U};
+        commandBuffer.pushConstants(*pipelineLayout, vk::ShaderStageFlagBits::eCompute, 0,
+                                    vk::ArrayProxy<const PushConstants>{pushConstants});
+        commandBuffer.dispatch(1, 1, 1);
+    }
+
+    void QueryResolveHelperShader::PrepareForTransfer(vk::raii::CommandBuffer &commandBuffer) {
+        commandBuffer.pipelineBarrier(
+            vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eTransfer,
+            {},
+            vk::MemoryBarrier{
+                .srcAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite,
+                .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+            },
+            {}, {});
+    }
+
     HelperShaders::HelperShaders(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem)
         : blitHelperShader(gpu, shaderFileSystem),
-          clearHelperShader(gpu, shaderFileSystem) {}
+          clearHelperShader(gpu, shaderFileSystem),
+          queryResolveHelperShader(gpu, shaderFileSystem) {}
 
 }
