@@ -194,6 +194,31 @@ inline NcaFixture PatchFixture(bool executable = true) {
     f.counterEntries[1] = {subsection.subsectionEntries.begin(), subsection.subsectionEntries.begin() + 3};
     return f;
 }
+inline NcaFixture StandaloneBktrFixture(bool executable = true) {
+    NcaFixture f;
+    if (executable) {
+        auto exe{ExeBytes(0x42)};
+        f.Add(0, ExeHeader(exe.size()), WithPrefix(exe));
+    }
+
+    auto section{RomHeader(0x200, 0x800)};
+    section.bktr.relocation = {0x1000, 0x8000, util::MakeMagic<u32>("BKTR"), 1, 1, 0};
+
+    std::vector<u8> body(0x9000);
+    auto resolved{WithPrefix(RomBytes(0x800), 0x200)};
+    std::copy(resolved.begin(), resolved.end(), body.begin());
+
+    Put(body, 0x1000, RelocationBlock{0, 1, 0x1000, {0}});
+    RelocationBucketRaw reloc{};
+    reloc.numberEntries = 1;
+    reloc.endOffset = 0x1000;
+    reloc.relocationEntries[0] = {0, 0, 1};
+    Put(body, 0x5000, reloc);
+
+    f.Add(1, section, body);
+    return f;
+}
+
 inline NcaFixture PatchMetaHashFixture(bool executable = true) {
     NcaFixture f;
     if (executable) { auto exe{ExeBytes(0x42)}; f.Add(0, ExeHeader(exe.size()), WithPrefix(exe)); }

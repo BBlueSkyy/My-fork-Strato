@@ -407,24 +407,51 @@ void TestUpdateOnlyProgramResolution() {
               "Standalone update Program ExeFS differs");
 }
 
+void TestStandaloneBktrRomFs() {
+    auto keys{std::make_shared<crypto::KeyStore>("")};
+    auto fixture{StandaloneBktrFixture()};
+    fixture.Finalize();
+
+    NCA nca(fixture.backing, keys);
+    Check(!nca.romFs && nca.HasBktrSection(), "Standalone BKTR fixture was resolved eagerly");
+    Check(ReadBytes(nca.OpenRomFs()) == RomBytes(0x800),
+          "Standalone BKTR Program did not resolve its patch-backed RomFS");
+}
+
 void TestUpdateOnlyBktrProgramPromotion() {
     auto keys{std::make_shared<crypto::KeyStore>("")};
-    auto patchFixture{PatchFixture()};
-    patchFixture.header.titleId += 1;
-    patchFixture.Finalize();
+
+    auto standalone{StandaloneBktrFixture()};
+    standalone.header.titleId += 1;
+    standalone.Finalize();
 
     FixtureLoader child;
     DeviceState state;
     state.updateLoader = std::make_shared<FixtureLoader>();
-    state.updateLoader->programPatchNca.emplace(patchFixture.backing, keys);
+    state.updateLoader->programPatchNca.emplace(standalone.backing, keys);
 
     child.ResolveProgramContent(state);
 
     Check(child.programUpdateApplied, "Update-only BKTR Program was not promoted to primary Program");
     Check(child.processExeFs && child.processExeFs->FileExists("main") && child.processExeFs->FileExists("main.npdm"),
           "Update-only BKTR Program did not expose its standalone ExeFS");
-    Check(!child.currentProcessRomFs && !child.patchDataRomFs,
-          "Update-only BKTR Program fabricated a RomFS without a base Program NCA");
+    Check(child.currentProcessRomFs && ReadBytes(child.currentProcessRomFs) == RomBytes(0x800),
+          "Update-only BKTR Program did not expose its standalone RomFS");
+
+    auto dependent{PatchFixture()};
+    dependent.header.titleId += 1;
+    dependent.Finalize();
+    FixtureLoader invalid;
+    state.updateLoader = std::make_shared<FixtureLoader>();
+    state.updateLoader->programPatchNca.emplace(dependent.backing, keys);
+
+    bool rejected{};
+    try {
+        invalid.ResolveProgramContent(state);
+    } catch (const std::exception &) {
+        rejected = true;
+    }
+    Check(rejected, "Base-dependent BKTR Program was accepted without its base NCA");
 }
 
 int main() {
@@ -451,6 +478,7 @@ int main() {
     run("base-only/ExeFS-only update patch-data absence", TestPatchDataAbsence);
     run("base data with update ExeFS resolution", TestBaseDataWithUpdateExeFsResolution);
     run("update-only Program replacement resolution", TestUpdateOnlyProgramResolution);
+    run("standalone BKTR RomFS", TestStandaloneBktrRomFs);
     run("update-only BKTR Program promotion", TestUpdateOnlyBktrProgramPromotion);
     return failures ? 1 : 0;
 }
