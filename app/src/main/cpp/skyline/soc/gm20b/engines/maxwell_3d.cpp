@@ -63,42 +63,9 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
     }
 
     bool Maxwell3D::CheckRenderEnable() {
-        if (registers.renderEnableOverride->mode == Registers::RenderEnableOverride::Mode::AlwaysRender)
-            return true;
-        else if (registers.renderEnableOverride->mode == Registers::RenderEnableOverride::Mode::NeverRender)
-            return false;
-
-
-
-        switch (registers.renderEnable->mode) {
-            case Registers::RenderEnable::Mode::True:
-                return true;
-            case Registers::RenderEnable::Mode::False:
-                return false;
-            case Registers::RenderEnable::Mode::Conditional:
-                // TODO: Use indirect draws to emulate conditional rendering with queries, for now just ignore such cases as they would decrease performance anyway by forcing a CPU sync
-                if (interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset}))
-                    return true;
-
-                return channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset) != 0;
-            case Registers::RenderEnable::Mode::RenderIfEqual:
-                // TODO: See above
-                if (interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset}) ||
-                    interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset + 16}))
-                    return true;
-
-                return channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset) ==
-                    channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset + 16);
-            case Registers::RenderEnable::Mode::RenderIfNotEqual:
-                // TODO: See above
-                if (interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset}) ||
-                    interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset + 16}))
-                    return true;
-
-                return channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset) !=
-                    channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset + 16);
-        }
-
+        // Diagnostic: restore pre-conditional-rendering behavior. Before conditional
+        // rendering support was added, draws and clears were not gated by render-enable
+        // memory reads. Keep all other modern renderer behavior unchanged.
         return true;
     }
 
