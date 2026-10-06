@@ -25,6 +25,10 @@ namespace skyline::service::am {
         stateChangeEventHandle = state.process->InsertItem(stateChangeEvent);
         popNormalOutDataEventHandle = state.process->InsertItem(popNormalOutDataEvent);
         popInteractiveOutDataEventHandle = state.process->InsertItem(popInteractiveOutDataEvent);
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] accessor created mode=0x{:X} aruid=0x{:X} stateEvent=0x{:X} normalOutEvent=0x{:X} interactiveOutEvent=0x{:X}",
+                 static_cast<u32>(appletMode), appletResourceUserId, stateChangeEventHandle,
+                 popNormalOutDataEventHandle, popInteractiveOutDataEventHandle);
     }
 
     ILibraryAppletAccessor::~ILibraryAppletAccessor() {
@@ -42,6 +46,8 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::GetAppletStateChangedEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         response.copyHandles.push_back(stateChangeEventHandle);
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] GetAppletStateChangedEvent handle=0x{:X}", stateChangeEventHandle);
         return {};
     }
 
@@ -52,7 +58,12 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::Start(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
-        return StartApplet();
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] Start applet mode=0x{:X}", static_cast<u32>(appletMode));
+        const auto result{StartApplet()};
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] Start return result=0x{:X}", result.raw);
+        return result;
     }
 
     Result ILibraryAppletAccessor::RequestExit(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
@@ -78,6 +89,8 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::PresetLibraryAppletGpuTimeSliceZero(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] PresetLibraryAppletGpuTimeSliceZero");
         return {};
     }
 
@@ -86,12 +99,20 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::PushInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] PushInData begin");
         applet->PushNormalDataToApplet(request.PopService<IStorage>(0, session));
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] PushInData end");
         return {};
     }
 
     Result ILibraryAppletAccessor::PushInteractiveInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] PushInteractiveInData begin");
         applet->PushInteractiveDataToApplet(request.PopService<IStorage>(0, session));
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] PushInteractiveInData end");
         return {};
     }
 
@@ -118,6 +139,8 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::GetPopInteractiveOutDataEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
         response.copyHandles.push_back(popInteractiveOutDataEventHandle);
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] GetPopInteractiveOutDataEvent handle=0x{:X}", popInteractiveOutDataEventHandle);
         return {};
     }
 
@@ -129,20 +152,31 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto requestedAppletResourceUserId{request.Pop<u64>()};
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] GetIndirectLayerConsumerHandle request mode=0x{:X} pid=0x{:X} requestedAruid=0x{:X} expectedAruid=0x{:X} exited={}",
+                 static_cast<u32>(appletMode), request.pid, requestedAppletResourceUserId, appletResourceUserId, exited);
         if (exited || appletMode != applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay || !request.pid ||
-            requestedAppletResourceUserId != appletResourceUserId)
+            requestedAppletResourceUserId != appletResourceUserId) {
+            if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+                LOGI("[SWKBD-IPC] GetIndirectLayerConsumerHandle reject ObjectInvalid");
             return result::ObjectInvalid;
+        }
         if (!indirectLayerHandle ||
             !indirectLayers->Get(indirectLayerHandle, request.pid, requestedAppletResourceUserId)) {
             indirectLayers->Unregister(indirectLayerHandle);
             indirectLayerHandle = indirectLayers->Register(applet, request.pid, requestedAppletResourceUserId);
         }
         response.Push<u64>(indirectLayerHandle);
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] GetIndirectLayerConsumerHandle return handle=0x{:X}", indirectLayerHandle);
         return {};
     }
 
     Result ILibraryAppletAccessor::Unknown170(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
-        response.copyHandles.push_back(state.process->InsertItem(unknown170Event));
+        const KHandle handle{state.process->InsertItem(unknown170Event)};
+        response.copyHandles.push_back(handle);
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("[SWKBD-IPC] Unknown170 handle=0x{:X}", handle);
         return {};
     }
 }

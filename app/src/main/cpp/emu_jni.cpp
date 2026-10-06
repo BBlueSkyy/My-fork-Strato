@@ -4,6 +4,7 @@
 #include <csignal>
 #include <limits>
 #include <pthread.h>
+#include <unistd.h>
 #include <android/asset_manager_jni.h>
 #include <sys/system_properties.h>
 #include "skyline/common.h"
@@ -252,6 +253,9 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_nativeSoft
     if (type < static_cast<jint>(skyline::applet::swkbd::FrontendEventType::TextChanged) ||
         type > static_cast<jint>(skyline::applet::swkbd::FrontendEventType::FrontendOpened))
         return;
+
+    LOGI("[SWKBD-FLOW] Android -> JNI event session={} type={} cursor={} tid={}",
+         static_cast<skyline::u64>(sessionId), type, cursor, gettid());
 
     std::u16string input;
     if (text) {

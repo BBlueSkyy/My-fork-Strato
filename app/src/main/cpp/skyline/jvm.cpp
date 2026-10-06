@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <limits>
+#include <unistd.h>
 #include "jvm.h"
 
 namespace skyline {
@@ -139,29 +140,43 @@ namespace skyline {
     bool JvmManager::ShowSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
                                           const applet::swkbd::FrontendKeyboardConfig &config,
                                           std::u16string_view initialText, bool inlineKeyboard) {
-        return softwareKeyboardTasks.Post([this, sessionId, configCopy = config, textCopy = std::u16string(initialText), inlineKeyboard]() mutable {
-            if (!softwareKeyboardSessions.IsRegistered(sessionId))
-                return;
-            auto buffer{env->NewDirectByteBuffer(configCopy.data(), configCopy.size())};
-            jstring text{};
-            if (buffer && !env->ExceptionCheck())
-                text = NewJString(env, textCopy);
-            bool accepted{};
-            if (buffer && text && !env->ExceptionCheck())
-                accepted = env->CallBooleanMethod(instance, openSoftwareKeyboardId, static_cast<jlong>(sessionId), buffer, text,
-                                                   inlineKeyboard ? JNI_TRUE : JNI_FALSE) == JNI_TRUE;
-            if (env->ExceptionCheck()) {
-                env->ExceptionDescribe();
-                env->ExceptionClear();
-                accepted = false;
-            }
-            if (text)
-                env->DeleteLocalRef(text);
-            if (buffer)
-                env->DeleteLocalRef(buffer);
-            if (!accepted)
-                softwareKeyboardSessions.Dispatch({sessionId, applet::swkbd::FrontendEventType::FrontendDestroyed});
-        });
+        LOGI("[SWKBD-FLOW] HLE -> frontend enqueue Show session={} inline={} callerTid={}",
+             sessionId, inlineKeyboard, gettid());
+        const bool posted{softwareKeyboardTasks.Post(
+            [this, sessionId, configCopy = config, textCopy = std::u16string(initialText), inlineKeyboard]() mutable {
+                LOGI("[SWKBD-FLOW] frontend worker begin Show session={} inline={} workerTid={}",
+                     sessionId, inlineKeyboard, gettid());
+                if (!softwareKeyboardSessions.IsRegistered(sessionId)) {
+                    LOGI("[SWKBD-FLOW] frontend worker dropped Show session={} reason=unregistered", sessionId);
+                    return;
+                }
+                auto buffer{env->NewDirectByteBuffer(configCopy.data(), configCopy.size())};
+                jstring text{};
+                if (buffer && !env->ExceptionCheck())
+                    text = NewJString(env, textCopy);
+                bool accepted{};
+                if (buffer && text && !env->ExceptionCheck()) {
+                    LOGI("[SWKBD-FLOW] JNI openSoftwareKeyboard call session={} inline={} workerTid={}",
+                         sessionId, inlineKeyboard, gettid());
+                    accepted = env->CallBooleanMethod(instance, openSoftwareKeyboardId, static_cast<jlong>(sessionId), buffer, text,
+                                                      inlineKeyboard ? JNI_TRUE : JNI_FALSE) == JNI_TRUE;
+                }
+                if (env->ExceptionCheck()) {
+                    env->ExceptionDescribe();
+                    env->ExceptionClear();
+                    accepted = false;
+                }
+                LOGI("[SWKBD-FLOW] JNI openSoftwareKeyboard return session={} accepted={} workerTid={}",
+                     sessionId, accepted, gettid());
+                if (text)
+                    env->DeleteLocalRef(text);
+                if (buffer)
+                    env->DeleteLocalRef(buffer);
+                if (!accepted)
+                    softwareKeyboardSessions.Dispatch({sessionId, applet::swkbd::FrontendEventType::FrontendDestroyed});
+            })};
+        LOGI("[SWKBD-FLOW] HLE -> frontend enqueue result session={} posted={}", sessionId, posted);
+        return posted;
     }
 
     void JvmManager::ShowSoftwareKeyboardTextCheck(applet::swkbd::FrontendSessionId sessionId, u32 result,
@@ -211,6 +226,8 @@ namespace skyline {
     }
 
     bool JvmManager::DispatchSoftwareKeyboardEvent(applet::swkbd::FrontendEvent event) {
+        LOGI("[SWKBD-FLOW] frontend event dispatch session={} type={} tid={}",
+             event.sessionId, static_cast<u32>(event.type), gettid());
         return softwareKeyboardSessions.Dispatch(std::move(event));
     }
 

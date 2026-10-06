@@ -10,11 +10,23 @@
 #include "jvm.h"
 #include "kernel/types/KProcess.h"
 #include "kernel/svc.h"
+#include "kernel/swkbd_inline_trace.h"
 #include "nce/guest.h"
 #include "nce/instructions.h"
 #include "nce.h"
 
 namespace skyline::nce {
+    namespace {
+        void LogSwkbdGuestCallerPoint(const ThreadContext &ctx, size_t threadId,
+                                      u32 sequence, u16 svcId, const char *svcName, const char *phase) {
+            LOGI("[SWKBD-CALLER] seq={} {} thread={} svc=0x{:X} {} pc=0x{:X} returnPc=0x{:X} sp=0x{:X} fp=0x{:X} "
+                 "x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X} x5=0x{:X}",
+                 sequence, phase, threadId, svcId, svcName ? svcName : "<unimplemented>",
+                 ctx.diagnosticGuestPc, ctx.diagnosticGuestLr, ctx.diagnosticGuestSp, ctx.diagnosticGuestFp,
+                 ctx.gpr.x0, ctx.gpr.x1, ctx.gpr.x2, ctx.gpr.x3, ctx.gpr.x4, ctx.gpr.x5);
+        }
+    }
+
     NCE::ExitException::ExitException(bool killAllThreads) : killAllThreads(killAllThreads) {}
 
     const char *NCE::ExitException::what() const noexcept {
@@ -28,18 +40,61 @@ namespace skyline::nce {
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
-                TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
+                const size_t threadId{state.thread->id};
+                const u32 traceSequence{kernel::diagnostic::BeginSwkbdPostCmd2460Svc(threadId)};
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
+
+                if (traceSequence) {
+                    LogSwkbdGuestCallerPoint(*ctx, threadId, traceSequence, svcId, svc.name, "begin");
+                    if (svcId == 0x1C)
+                        kernel::diagnostic::ObserveSwkbdPostCmd2460Cv(threadId, svcContext.x1);
+                }
+
+                const u64 observedCv{kernel::diagnostic::GetSwkbdPostCmd2460Cv()};
+                const bool matchingCvSignal{
+                    svcId == 0x1D && observedCv && svcContext.x0 == observedCv &&
+                    kernel::diagnostic::IsSwkbdPostCmd2460TraceActive()};
+                if (matchingCvSignal) {
+                    LOGI("[SWKBD-WAKER] targetThread={} cv=0x{:X} count={} wakingThread={}",
+                         kernel::diagnostic::GetSwkbdPostCmd2460TraceThread(), observedCv,
+                         static_cast<i32>(svcContext.w1), threadId);
+                    LogSwkbdGuestCallerPoint(*ctx, threadId, 0, svcId, svc.name, "signal-begin");
+                }
+
+                TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 (svc.function)(state, svcContext);
+
+                const bool cmd2460Returned{
+                    svcId == 0x21 && kernel::diagnostic::ActivateSwkbdPostCmd2460Trace(threadId)};
+                if (cmd2460Returned) {
+                    LOGI("[SWKBD-CALLER] cmd2460 send-sync-return thread={} pc=0x{:X} returnPc=0x{:X} sp=0x{:X} fp=0x{:X} resultX0=0x{:X}",
+                         threadId, ctx->diagnosticGuestPc, ctx->diagnosticGuestLr,
+                         ctx->diagnosticGuestSp, ctx->diagnosticGuestFp, svcContext.x0);
+                }
+                if (matchingCvSignal)
+                    LogSwkbdGuestCallerPoint(*ctx, threadId, 0, svcId, svc.name, "signal-end");
+                if (traceSequence) {
+                    LogSwkbdGuestCallerPoint(*ctx, threadId, traceSequence, svcId, svc.name, "end");
+                    kernel::diagnostic::FinishSwkbdPostCmd2460Svc(threadId, traceSequence);
+                }
+
+                const bool traceScheduling{
+                    cmd2460Returned || kernel::diagnostic::IsSwkbdPostCmd2460TraceActive(threadId)};
+                while (kernel::Scheduler::YieldPending) [[unlikely]] {
+                    if (traceScheduling)
+                        LOGI("[SWKBD-CALLER] yield-pending thread={} before Rotate/WaitSchedule", threadId);
+                    state.scheduler->Rotate();
+                    kernel::Scheduler::YieldPending = false;
+                    if (traceScheduling)
+                        LOGI("[SWKBD-CALLER] wait-schedule enter thread={}", threadId);
+                    state.scheduler->WaitSchedule();
+                    if (traceScheduling)
+                        LOGI("[SWKBD-CALLER] wait-schedule return thread={}", threadId);
+                }
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
             }
 
-            while (kernel::Scheduler::YieldPending) [[unlikely]] {
-                state.scheduler->Rotate();
-                kernel::Scheduler::YieldPending = false;
-                state.scheduler->WaitSchedule();
-            }
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 LOGENF("{} (SVC: {})\nStack Trace:{}", e.what(), svc.name, state.loader->GetStackTrace(e.frames));
@@ -239,7 +294,7 @@ namespace skyline::nce {
         });
     }
 
-    constexpr size_t TrampolineSize{18}; // Size of the main SVC trampoline function in u32 units
+    constexpr size_t TrampolineSize{25}; // Size of the main SVC trampoline function in u32 units
 
     /**
      * @brief Writes a trampoline to the given target address that saves the current context and calls the given function
@@ -254,8 +309,17 @@ namespace skyline::nce {
         *code++ = 0xF9415022; // LDR X2, [X1, #0x2A0] (ThreadContext::hostTpidrEl0)
         *code++ = 0xD51BD042; // MSR TPIDR_EL0, X2
 
-        /* Replace guest stack with host stack */
+        /* Snapshot the guest SVC callsite before replacing the guest stack */
         *code++ = 0x910003E2; // MOV X2, SP
+        *code++ = 0x91004044; // ADD X4, X2, #16 (guest SP before the per-SVC LR push)
+        *code++ = 0xF9016C24; // STR X4, [X1, #0x2D8] (ThreadContext::diagnosticGuestSp)
+        *code++ = 0xF9400044; // LDR X4, [X2] (return PC saved by the per-SVC trampoline)
+        *code++ = 0xF9017024; // STR X4, [X1, #0x2E0] (ThreadContext::diagnosticGuestLr)
+        *code++ = 0xD1001084; // SUB X4, X4, #4 (original SVC instruction address)
+        *code++ = 0xF9017424; // STR X4, [X1, #0x2E8] (ThreadContext::diagnosticGuestPc)
+        *code++ = 0xF901783D; // STR X29, [X1, #0x2F0] (ThreadContext::diagnosticGuestFp)
+
+        /* Replace guest stack with host stack */
         *code++ = 0xF9415423; // LDR X3, [X1, #0x2A8] (ThreadContext::hostSp)
         *code++ = 0x9100007F; // MOV SP, X3
 

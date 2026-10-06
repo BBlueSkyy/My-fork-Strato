@@ -4,6 +4,7 @@
 
 #include <gpu.h>
 #include <kernel/types/KProcess.h>
+#include <kernel/swkbd_inline_trace.h>
 #include <services/am/applet/IApplet.h>
 #include <services/serviceman.h>
 #include <services/hosbinder/IHOSBinderDriver.h>
@@ -132,6 +133,8 @@ namespace skyline::service::visrv {
         auto height{request.Pop<i64>()};
         const auto handle{request.Pop<u64>()};
         const auto appletResourceUserId{request.Pop<u64>()};
+        LOGI("[SWKBD-IPC] VI2450 GetIndirectLayerImageMap begin dimensions={}x{} handle=0x{:X} aruid=0x{:X} pid=0x{:X} outBuffers={}",
+             width, height, handle, appletResourceUserId, request.pid, request.outputBuf.size());
         IndirectLayerLayout layout;
         if (!CalculateIndirectLayerLayout(width, height, layout)) {
             return result::InvalidDimensions;
@@ -153,11 +156,14 @@ namespace skyline::service::visrv {
 
         const bool available{applet->GetIndirectLayerImage(imageBuffer.first(layout.imageSize))};
         if (!available) {
+            LOGI("[SWKBD-IPC] VI2450 return NoData");
             return result::NoData;
         }
 
         response.Push<i64>(static_cast<i64>(layout.imageSize));
         response.Push<i64>(static_cast<i64>(layout.stride));
+        LOGI("[SWKBD-IPC] VI2450 return Success imageSize=0x{:X} stride=0x{:X}",
+             layout.imageSize, layout.stride);
 
         return {};
     }
@@ -172,6 +178,14 @@ namespace skyline::service::visrv {
 
         response.Push<i64>(static_cast<i64>(layout.requiredSize));
         response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
+        LOGI("[SWKBD-FLOW] cmd2460 required-memory dimensions={}x{} size=0x{:X} alignment=0x{:X}",
+             width, height, layout.requiredSize, IndirectLayerAlignment);
+        LOGI("[SWKBD-IPC] VI2460 return Success pid=0x{:X} dimensions={}x{} size=0x{:X} alignment=0x{:X}",
+             request.pid, width, height, layout.requiredSize, IndirectLayerAlignment);
+        if (state.thread) {
+            kernel::diagnostic::ArmSwkbdPostCmd2460Trace(state.thread->id);
+            LOGI("[SWKBD-CALLER] armed post-cmd2460 trace thread={}", state.thread->id);
+        }
 
         return {};
     }
