@@ -106,7 +106,7 @@ namespace skyline::soc::gm20b {
         const DeviceState &state;
         ChannelContext &channelCtx;
         engine::GPFIFO gpfifoEngine; //!< The engine for processing GPFIFO method calls
-        CircularQueue<GpEntry> gpEntries;
+        CircularQueue<GpEntry, true> gpEntries;
         std::vector<u32> pushBufferData; //!< Persistent vector storing pushbuffer data to avoid constant reallocations
         bool skipDirtyFlushes{}; //!< If GPU flushing should be skipped when fetching pushbuffer contents
 
