@@ -436,6 +436,24 @@ namespace skyline::gpu::interconnect::maxwell3d {
         queries.Pause(ctx);
         ctx.executor.AddCheckpoint("Before clear");
 
+        const auto renderCondition{activeRenderCondition};
+        auto conditionSubpass{[renderCondition](CommandExecutor::SubpassFunction &&function) -> CommandExecutor::SubpassFunction {
+            if (!renderCondition.enabled)
+                return std::move(function);
+
+            return [renderCondition, function = std::move(function)]
+                   (vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &cycle, GPU &gpu, vk::RenderPass renderPass, u32 subpass) mutable {
+                auto conditionBinding{renderCondition.Resolve(gpu)};
+                commandBuffer.beginConditionalRenderingEXT(vk::ConditionalRenderingBeginInfoEXT{
+                    .buffer = conditionBinding.buffer,
+                    .offset = conditionBinding.offset,
+                });
+
+                function(commandBuffer, cycle, gpu, renderPass, subpass);
+                commandBuffer.endConditionalRenderingEXT();
+            };
+        }};
+
         auto needsAttachmentClearCmd{[&](auto &view) {
             return scissor.offset.x != 0 || scissor.offset.y != 0 ||
                 scissor.extent != vk::Extent2D{view->texture->dimensions} ||
@@ -469,10 +487,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                   (clearSurface.aEnable ? vk::ColorComponentFlagBits::eA : vk::ColorComponentFlags{}),
                                                                   {clearEngineRegisters.colorClearValue}, &*view, [=](auto &&executionCallback) {
                         auto dst{view.get()};
-                        ctx.executor.AddSubpass(std::move(executionCallback), renderArea, {}, {}, span<TextureView *>{dst}, nullptr);
+                        ctx.executor.AddSubpass(conditionSubpass(std::move(executionCallback)), renderArea, {}, {}, span<TextureView *>{dst}, nullptr);
                     });
                     ctx.executor.NotifyPipelineChange();
-                } else if (needsAttachmentClearCmd(view)) {
+                } else if (renderCondition.enabled || needsAttachmentClearCmd(view)) {
                     clearAttachments.push_back({.aspectMask = view->range.aspectMask, .clearValue = {clearEngineRegisters.colorClearValue}});
                     colorView = view;
                 } else {
@@ -500,7 +518,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     return;
                 }
 
-                if (needsAttachmentClearCmd(view) || (clearAspectMask != view->range.aspectMask)) { // Subpass clears write to all aspects of the texture, so we can't use them when only one component is enabled
+                if (renderCondition.enabled || needsAttachmentClearCmd(view) || (clearAspectMask != view->range.aspectMask)) { // Conditional/load-op clears cannot express the guest predicate, and subpass clears write all aspects.
                     clearAttachments.push_back({.aspectMask = clearAspectMask, .clearValue = clearValue});
                     depthStencilView = view;
                 } else {
@@ -511,9 +529,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         if (!clearAttachments.empty()) {
             std::array<TextureView *, 1> colorAttachments{colorView ? &*colorView : nullptr};
-            ctx.executor.AddSubpass([clearAttachments, clearRects](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32) {
+            ctx.executor.AddSubpass(conditionSubpass([clearAttachments, clearRects](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32) {
                 commandBuffer.clearAttachments(clearAttachments, span(clearRects).first(clearAttachments.size()));
-            }, renderArea, {}, {}, colorView ? colorAttachments : span<TextureView *>{}, depthStencilView ? &*depthStencilView : nullptr);
+            }), renderArea, {}, {}, colorView ? colorAttachments : span<TextureView *>{}, depthStencilView ? &*depthStencilView : nullptr);
         }
 
         ctx.executor.AddCheckpoint("After clear");

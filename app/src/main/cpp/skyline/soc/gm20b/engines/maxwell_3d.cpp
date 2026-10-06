@@ -332,10 +332,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
             })
 
             ENGINE_CASE(clearSurface, {
-                // Vulkan conditional rendering gates draw commands, not attachment/load-op clears.
-                // Keep GPU-backed clear predicates conservative until clear operations are lowered
-                // to a conditionable path.
-                if (CheckRenderEnable(false))
+                if (CheckRenderEnable())
                     interconnect.Clear(clearSurface);
             })
 
