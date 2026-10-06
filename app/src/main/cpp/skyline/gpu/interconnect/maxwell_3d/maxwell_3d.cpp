@@ -110,12 +110,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     struct DrawParams {
         StateUpdater stateUpdater;
+        RenderConditionBinding renderCondition;
         u32 count;
         u32 instanceCount;
         bool transformFeedbackEnable;
     };
     auto *drawParams{ctx.executor.allocator->EmplaceUntracked<DrawParams>(DrawParams{stateUpdater,
-        count, instanceCount, ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
+        activeRenderCondition, count, instanceCount, ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
 
     vk::Rect2D scissor{GetDrawScissor()};
     constantBuffers.ResetQuickBind();
@@ -123,11 +124,23 @@ namespace skyline::gpu::interconnect::maxwell3d {
     ctx.executor.AddCheckpoint("Before inline index draw");
     ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
         drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
+
+        if (drawParams->renderCondition.enabled) {
+            auto conditionBinding{drawParams->renderCondition.Resolve(gpu)};
+            commandBuffer.beginConditionalRenderingEXT(vk::ConditionalRenderingBeginInfoEXT{
+                .buffer = conditionBinding.buffer,
+                .offset = conditionBinding.offset,
+            });
+        }
+
         if (drawParams->transformFeedbackEnable)
             commandBuffer.beginTransformFeedbackEXT(0, {}, {});
         commandBuffer.drawIndexed(drawParams->count, drawParams->instanceCount, 0, 0, 0);
         if (drawParams->transformFeedbackEnable)
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
+
+        if (drawParams->renderCondition.enabled)
+            commandBuffer.endConditionalRenderingEXT();
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
          [this](u32 renderPassIndex) {
@@ -533,6 +546,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
          */
         struct DrawParams {
             StateUpdater stateUpdater;
+            RenderConditionBinding renderCondition;
             u32 count;
             u32 first;
             u32 instanceCount;
@@ -542,6 +556,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             bool transformFeedbackEnable;
         };
         auto *drawParams{ctx.executor.allocator->EmplaceUntracked<DrawParams>(DrawParams{stateUpdater,
+                                                                                         activeRenderCondition,
                                                                                          count, first, instanceCount, vertexOffset, firstInstance, indexed,
                                                                                          ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
 
@@ -553,6 +568,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
 
+            if (drawParams->renderCondition.enabled) {
+                auto conditionBinding{drawParams->renderCondition.Resolve(gpu)};
+                commandBuffer.beginConditionalRenderingEXT(vk::ConditionalRenderingBeginInfoEXT{
+                    .buffer = conditionBinding.buffer,
+                    .offset = conditionBinding.offset,
+                });
+            }
+
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.beginTransformFeedbackEXT(0, {}, {});
 
@@ -563,6 +586,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
+
+            if (drawParams->renderCondition.enabled)
+                commandBuffer.endConditionalRenderingEXT();
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
@@ -601,6 +627,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         struct DrawParams {
             StateUpdater stateUpdater;
             BufferView indirectBuffer;
+            RenderConditionBinding renderCondition;
             u32 count;
             u32 stride;
             bool indexed;
@@ -608,6 +635,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         };
         auto *drawParams{ctx.executor.allocator->EmplaceUntracked<DrawParams>(DrawParams{stateUpdater,
                                                                                          indirectBufferView,
+                                                                                         activeRenderCondition,
                                                                                          count, stride, indexed,
                                                                                          ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
 
@@ -617,6 +645,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ctx.executor.AddCheckpoint("Before indirect draw");
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
+
+            if (drawParams->renderCondition.enabled) {
+                auto conditionBinding{drawParams->renderCondition.Resolve(gpu)};
+                commandBuffer.beginConditionalRenderingEXT(vk::ConditionalRenderingBeginInfoEXT{
+                    .buffer = conditionBinding.buffer,
+                    .offset = conditionBinding.offset,
+                });
+            }
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.beginTransformFeedbackEXT(0, {}, {});
@@ -629,6 +665,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
+
+            if (drawParams->renderCondition.enabled)
+                commandBuffer.endConditionalRenderingEXT();
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
