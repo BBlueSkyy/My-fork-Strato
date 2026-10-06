@@ -42,6 +42,7 @@ import org.stratoemu.strato.settings.EmulationSettings
 import org.stratoemu.strato.settings.SettingsActivity
 import org.stratoemu.strato.utils.GpuDriverHelper
 import org.stratoemu.strato.utils.WindowInsetsHelper
+import java.io.File
 import javax.inject.Inject
 import kotlin.math.ceil
 import com.google.android.material.R as MaterialR
@@ -126,12 +127,18 @@ class MainActivity : AppCompatActivity() {
 
         super.onCreate(savedInstanceState)
 
+        PreferenceManager.setDefaultValues(this, R.xml.app_preferences, false)
+        PreferenceManager.setDefaultValues(this, R.xml.emulation_preferences, false)
+
+        if (shouldShowInitialSetup()) {
+            startActivity(Intent(this, SetupActivity::class.java))
+            finish()
+            return
+        }
+
         setContentView(binding.root)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsHelper.applyToActivity(binding.root, binding.appList)
-
-        PreferenceManager.setDefaultValues(this, R.xml.app_preferences, false)
-        PreferenceManager.setDefaultValues(this, R.xml.emulation_preferences, false)
 
         binding.subText.text = BuildConfig.VERSION_NAME
         binding.subText.setOnClickListener {
@@ -228,6 +235,40 @@ class MainActivity : AppCompatActivity() {
             .addOnTouchModeChangeListener { isInTouchMode ->
                 refreshIconVisible = !isInTouchMode
             }
+    }
+
+    private fun shouldShowInitialSetup(): Boolean {
+        if (appSettings.initialSetupCompleted)
+            return false
+
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+
+        val hasConfiguredFolders =
+            prefs.getStringSet(
+                FolderPickerPreference.SEARCH_LOCATIONS_KEY,
+                emptySet()
+            )?.any { it.isNotBlank() } == true ||
+                appSettings.searchLocation.isNotBlank()
+
+        val keysDirectory = File(filesDir, "keys")
+        val hasExistingKeys =
+            keysDirectory.listFiles()?.any { it.isFile } == true
+
+        val hasInstalledFirmware =
+            !prefs.getString("firmware", "").isNullOrBlank()
+
+        if (
+            hasConfiguredFolders ||
+            hasExistingKeys ||
+            hasInstalledFirmware
+        ) {
+            // Do not interrupt existing installations when this setup flow
+            // first lands. Only clean installs should be redirected.
+            appSettings.initialSetupCompleted = true
+            return false
+        }
+
+        return true
     }
 
     private fun getSearchLocations(): List<Uri> {
