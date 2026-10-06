@@ -64,5 +64,36 @@ int main() {
     }};
     Check(adjacent.mappings.size() == 1 && adjacent.size() == 0x2000, "adjacent mappings were not normalized");
 
+    std::array<u8, 0x8000> ring{};
+    GuestBuffer rollingA{GuestBuffer::Mappings{
+        span<u8>{ring.data() + 0x3000, 0x5000},
+        span<u8>{ring.data(), 0x1000},
+    }};
+    GuestBuffer rollingB{GuestBuffer::Mappings{
+        span<u8>{ring.data() + 0x4000, 0x4000},
+        span<u8>{ring.data(), 0x2000},
+    }};
+
+    auto rollingMerged{rollingA.Merge(rollingB)};
+    Check(rollingMerged.has_value(), "compatible rolling mappings failed to merge");
+    Check(rollingMerged->size() == 0x7000, "rolling merge size failed");
+    Check(rollingMerged->Find(rollingA) == 0, "rolling merge lost first window offset");
+    Check(rollingMerged->Find(rollingB) == 0x1000, "rolling merge lost shifted window offset");
+
+    GuestBuffer rollingC{GuestBuffer::Mappings{
+        span<u8>{ring.data() + 0x5000, 0x3000},
+        span<u8>{ring.data(), 0x3000},
+    }};
+    auto rollingMergedAgain{rollingMerged->Merge(rollingC)};
+    Check(rollingMergedAgain.has_value(), "iterated rolling mapping merge failed");
+    Check(rollingMergedAgain->size() == 0x8000, "iterated rolling merge size failed");
+    Check(rollingMergedAgain->Find(rollingC) == 0x2000, "iterated rolling merge offset failed");
+
+    GuestBuffer reorderedRolling{GuestBuffer::Mappings{
+        span<u8>{ring.data(), 0x2000},
+        span<u8>{ring.data() + 0x4000, 0x4000},
+    }};
+    Check(!rollingA.Merge(reorderedRolling), "reordered rolling alias was merged");
+
     std::cout << "split buffer mapping tests: PASS\n";
 }
