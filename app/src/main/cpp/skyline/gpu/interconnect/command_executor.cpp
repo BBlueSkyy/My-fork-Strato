@@ -88,8 +88,10 @@ namespace skyline::gpu::interconnect {
 
         cycle->Wait();
         cycle = std::make_shared<FenceCycle>(*cycle);
-        if (util::GetTimeNs() - startTime > GrowThresholdNs)
+        if (util::GetTimeNs() - startTime > GrowThresholdNs) {
             didWait = true;
+            pressureWait = true;
+        }
 
         // Command buffer doesn't need to be reset since that's done implicitly by begin
         return cycle;
@@ -242,8 +244,11 @@ namespace skyline::gpu::interconnect {
     CommandRecordThread::Slot *CommandRecordThread::AcquireSlot() {
         auto startTime{util::GetTimeNs()};
         auto slot{outgoing.Pop()};
-        if (util::GetTimeNs() - startTime > GrowThresholdNs)
+        slot->pressureWait = false;
+        if (util::GetTimeNs() - startTime > GrowThresholdNs) {
             slot->didWait = true;
+            slot->pressureWait = true;
+        }
 
         return slot;
     }
@@ -374,6 +379,7 @@ namespace skyline::gpu::interconnect {
         captureNextExecution = false;
         slot = recordThread.AcquireSlot();
         cycle = slot->Reset(gpu);
+        submissionPressure |= slot->pressureWait;
         slot->executionTag = executionTag;
         allocator = &slot->allocator;
     }
@@ -760,6 +766,15 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::AddDeferredAction(std::function<void()> &&callback) {
         pendingDeferredActions.emplace_back(std::move(callback));
+
+        // Preserve normal deferred-action batching until the executor has actually stalled
+        // while acquiring/reusing a slot. At that point this semantic boundary is a safe
+        // place to submit the accumulated work and apply backpressure without permanently
+        // reverting semaphore/syncpoint increments to eager submissions.
+        if (submissionPressure) {
+            submissionPressure = false;
+            Submit();
+        }
     }
 
     void CommandExecutor::LockPreserve() {

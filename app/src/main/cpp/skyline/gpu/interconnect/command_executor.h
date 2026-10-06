@@ -48,6 +48,7 @@ namespace skyline::gpu::interconnect {
             bool ready{}; //!< If this slot's command buffer has had 'beginCommandBuffer' called and is ready to have commands recorded into it
             bool capture{}; //!< If this slot's Vulkan commands should be captured using the renderdoc API
             bool didWait{}; //!< If a wait of time longer than GrowThresholdNs occured when this slot was acquired
+            bool pressureWait{}; //!< If the most recent slot acquisition/reset observed executor backpressure
 
             Slot(GPU &gpu);
 
@@ -168,6 +169,7 @@ namespace skyline::gpu::interconnect {
         size_t subpassCount{}; //!< The number of subpasses in the current render pass
         u32 renderPassIndex{};
         bool preserveLocked{};
+        bool submissionPressure{}; //!< A recent slot acquisition/reset had to wait long enough to indicate GPU backpressure
 
         /**
          * @brief A wrapper of a Texture object that has been locked beforehand and must be unlocked afterwards
