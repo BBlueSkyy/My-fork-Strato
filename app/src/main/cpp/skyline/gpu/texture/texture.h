@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <vulkan/vulkan_format_traits.hpp>
 #include <range/v3/view.hpp>
 #include <range/v3/algorithm.hpp>
 #include <common/spin_lock.h>
@@ -14,6 +15,8 @@
 
 namespace skyline::gpu {
     namespace texture {
+        class TextureStorage;
+
         enum class RenderPassUsage : u8 {
             None,
             Sampled,
@@ -467,6 +470,7 @@ namespace skyline::gpu {
         std::chrono::nanoseconds accumulatedGuestWaitTime{}; //!< Amount of time the texture has been waited on for since the `SkipReadbackHackWaitCountThreshold`th wait on it by the guest
 
       public:
+        std::weak_ptr<texture::TextureStorage> storage; //!< CopyOnly metadata owner, when managed by TextureManager
         std::shared_ptr<FenceCycle> cycle; //!< A fence cycle for when any host operation mutating the texture has completed, it must be waited on prior to any mutations to the backing
         std::optional<GuestTexture> guest;
         texture::Dimensions dimensions;
