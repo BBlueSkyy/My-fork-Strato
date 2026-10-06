@@ -54,7 +54,7 @@ int main() {
 
     GuestBuffer invalid{GuestBuffer::Mappings{
         span<u8>{a.data(), 0x1000},
-        span<u8>{nullptr, 0x1000},
+        span<u8>{static_cast<u8 *>(nullptr), 0x1000},
     }};
     Check(!invalid.valid(), "unmapped split region was accepted");
 
