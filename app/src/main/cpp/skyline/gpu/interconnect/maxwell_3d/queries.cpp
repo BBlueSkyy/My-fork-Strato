@@ -37,6 +37,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     //TODO call cmdbuf begin
     void Queries::Counter::Begin(InterconnectContext &ctx, bool atExecutionStart) {
+        if (ctx.executor.executionTag == lastTag && queryActive && *queryActive)
+            return;
+
         auto prepareFunc{Prepare(ctx)};
 
         *queryActive = true;
@@ -62,8 +65,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     // TODO must be called after begin in cmdbuf
     void Queries::Counter::Report(InterconnectContext &ctx, BufferView view, std::optional<u64> timestamp) {
-        if (ctx.executor.executionTag != lastTag)
-            Begin(ctx, true);
+        const bool newExecution{ctx.executor.executionTag != lastTag};
+        if (newExecution || !queryActive || !*queryActive)
+            Begin(ctx, newExecution);
 
         // End the query with the current query count as index
         ctx.executor.AddCommand([=, this, queryIndex = *this->usedQueryCount - 1](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) {
@@ -126,13 +130,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         view->GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
         counter.Report(ctx, *view, timestamp);
-        counter.Begin(ctx);
+    }
+
+    void Queries::BeginCounter(InterconnectContext &ctx, CounterType type) {
+        counters[static_cast<u32>(type)].Begin(ctx);
     }
 
     void Queries::ResetCounter(InterconnectContext &ctx, CounterType type) {
-        auto &counter{counters[static_cast<u32>(type)]};
-        counter.End(ctx);
-        counter.Begin(ctx);
+        counters[static_cast<u32>(type)].End(ctx);
     }
 
     void Queries::PurgeCaches(InterconnectContext &ctx) {

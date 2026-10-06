@@ -109,6 +109,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
     constantBuffers.ResetQuickBind();
 
     ctx.executor.AddCheckpoint("Before inline index draw");
+    if (count && instanceCount)
+        queries.BeginCounter(ctx, Queries::CounterType::Occulusion);
     ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
         drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
         if (drawParams->transformFeedbackEnable)
@@ -393,6 +395,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");
+        if (count && instanceCount)
+            queries.BeginCounter(ctx, Queries::CounterType::Occulusion);
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
 
@@ -455,6 +459,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         constantBuffers.ResetQuickBind();
 
         ctx.executor.AddCheckpoint("Before indirect draw");
+        queries.BeginCounter(ctx, Queries::CounterType::Occulusion);
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
 

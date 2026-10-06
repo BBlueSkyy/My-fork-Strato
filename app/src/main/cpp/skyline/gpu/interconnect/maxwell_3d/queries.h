@@ -88,6 +88,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
         void Query(InterconnectContext &ctx, soc::gm20b::IOVA address, CounterType type, std::optional<u64> timestamp);
 
         /**
+         * @brief Ensures the counter is active before work that can contribute samples
+         */
+        void BeginCounter(InterconnectContext &ctx, CounterType type);
+
+        /**
          * @brief Resets the counter value for `type` to the default
          */
         void ResetCounter(InterconnectContext &ctx, CounterType type);
