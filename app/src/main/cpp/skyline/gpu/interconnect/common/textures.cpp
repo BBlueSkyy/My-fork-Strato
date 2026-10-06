@@ -230,7 +230,7 @@ namespace skyline::gpu::interconnect {
         constexpr vk::ImageLayout NullImageInitialLayout{vk::ImageLayout::eUndefined};
         constexpr vk::ImageTiling NullImageTiling{vk::ImageTiling::eOptimal};
         constexpr vk::ImageCreateFlags NullImageFlags{};
-        constexpr vk::ImageUsageFlags NullImageUsage{vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled};
+        constexpr vk::ImageUsageFlags NullImageUsage{vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage};
 
         auto vkImage{ctx.gpu.memory.AllocateImage(
             {
@@ -313,11 +313,11 @@ namespace skyline::gpu::interconnect {
             switch (textureHeader.textureType) {
                 case TextureImageControl::TextureType::e1D:
                     guest.viewType = shaderType == Shader::TextureType::ColorArray1D ? vk::ImageViewType::e1DArray : vk::ImageViewType::e1D;
-                    guest.layerCount = 1;
+                    guest.viewLayerCount = 1;
                     break;
                 case TextureImageControl::TextureType::e1DArray:
                     guest.viewType = vk::ImageViewType::e1DArray;
-                    guest.layerCount = depth;
+                    guest.viewLayerCount = depth;
                     break;
                 case TextureImageControl::TextureType::e1DBuffer:
                     throw exception("1D Buffers are not supported");
@@ -328,30 +328,33 @@ namespace skyline::gpu::interconnect {
                     guest.viewMipCount = 1;
                 case TextureImageControl::TextureType::e2D:
                     guest.viewType = shaderType == Shader::TextureType::ColorArray2D ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
-                    guest.layerCount = 1;
+                    guest.viewLayerCount = 1;
                     break;
                 case TextureImageControl::TextureType::e2DArray:
                     guest.viewType = vk::ImageViewType::e2DArray;
-                    guest.layerCount = depth;
+                    guest.viewLayerCount = depth;
                     break;
 
                 case TextureImageControl::TextureType::e3D:
                     guest.viewType = vk::ImageViewType::e3D;
+                    guest.viewLayerCount = 1;
                     guest.layerCount = 1;
                     guest.dimensions.depth = depth;
                     break;
 
                 case TextureImageControl::TextureType::eCube:
                     guest.viewType = shaderType == Shader::TextureType::ColorArrayCube ? vk::ImageViewType::eCubeArray : vk::ImageViewType::eCube;
-                    guest.layerCount = CubeFaceCount;
+                    guest.viewLayerCount = CubeFaceCount;
                     break;
                 case TextureImageControl::TextureType::eCubeArray:
                     guest.viewType = vk::ImageViewType::eCubeArray;
-                    guest.layerCount = depth * CubeFaceCount;
+                    guest.viewLayerCount = depth * CubeFaceCount;
                     break;
             }
 
-            size_t size; //!< The size of the texture in bytes
+            if (textureHeader.textureType != TextureImageControl::TextureType::e3D)
+                guest.layerCount = guest.baseArrayLayer + guest.viewLayerCount;
+
             if (textureHeader.headerType == TextureImageControl::HeaderType::Pitch) {
                 guest.tileConfig = {
                     .mode = texture::TileMode::Pitch,
@@ -368,7 +371,26 @@ namespace skyline::gpu::interconnect {
             }
 
 
-            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
+            u64 backingIova{textureHeader.Iova()};
+            size_t backingSize{guest.GetSize()};
+
+            if (guest.baseArrayLayer) {
+                const u64 layerStride{guest.GetLayerStride()};
+                const u64 baseLayerOffset{layerStride * guest.baseArrayLayer};
+                if (baseLayerOffset > backingIova) {
+                    LOGW("Texture base layer offset exceeds TIC address: iova=0x{:X}, baseLayer={}, layerStride=0x{:X}",
+                         textureHeader.Iova(), guest.baseArrayLayer, layerStride);
+                    if (!nullTextureView)
+                        nullTextureView = CreateNullTexture(ctx);
+
+                    return nullTextureView.get();
+                }
+
+                backingIova -= baseLayerOffset;
+                backingSize = static_cast<size_t>(layerStride * guest.layerCount);
+            }
+
+            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(backingIova, backingSize)};
             guest.mappings.assign(mappings.begin(), mappings.end());
             if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
                 LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
