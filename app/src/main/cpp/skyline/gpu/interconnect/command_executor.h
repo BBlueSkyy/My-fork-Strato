@@ -41,6 +41,7 @@ namespace skyline::gpu::interconnect {
             std::shared_ptr<FenceCycle> cycle;
             LinearAllocatorState<> allocator;
             std::list<node::NodeVariant, LinearAllocator<node::NodeVariant>> nodes;
+            std::list<node::NodeVariant, LinearAllocator<node::NodeVariant>> pendingPreRenderPassEndNodes;
             std::list<node::NodeVariant, LinearAllocator<node::NodeVariant>> pendingPostRenderPassNodes;
             std::mutex beginLock;
             std::condition_variable beginCondition;
@@ -314,6 +315,7 @@ namespace skyline::gpu::interconnect {
 
         struct SubpassHooks {
             SubpassFunction before;
+            CommandFunction beforeRenderPassEnd;
             CommandFunction afterRenderPass;
         };
 

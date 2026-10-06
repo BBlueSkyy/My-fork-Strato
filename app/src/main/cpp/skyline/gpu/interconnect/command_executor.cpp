@@ -407,6 +407,7 @@ namespace skyline::gpu::interconnect {
         if (splitRenderPass) {
             // We need to create a render pass if one doesn't already exist or the current one isn't compatible
             if (renderPass != nullptr) {
+                slot->nodes.splice(slot->nodes.end(), slot->pendingPreRenderPassEndNodes);
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
                 renderPassIndex++;
@@ -436,6 +437,7 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::FinishRenderPass() {
         if (renderPass) {
+            slot->nodes.splice(slot->nodes.end(), slot->pendingPreRenderPassEndNodes);
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
             renderPassIndex++;
@@ -542,6 +544,9 @@ namespace skyline::gpu::interconnect {
                 slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::move(hooks.before));
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
         }
+
+        if (hooks.beforeRenderPassEnd)
+            slot->pendingPreRenderPassEndNodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::move(hooks.beforeRenderPassEnd));
 
         if (hooks.afterRenderPass)
             slot->pendingPostRenderPassNodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::move(hooks.afterRenderPass));
