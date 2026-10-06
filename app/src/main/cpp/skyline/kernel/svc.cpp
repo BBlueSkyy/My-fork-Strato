@@ -798,10 +798,19 @@ namespace skyline::kernel::svc {
 
         TRACE_EVENT_FMT("kernel", fmt::runtime(waitHandles.size() == 1 ? "WaitSynchronization 0x{:X}" : "WaitSynchronizationMultiple 0x{:X}"), waitHandles[0]);
 
+        state.thread->RecordDiagnosticActivity(type::DiagnosticActivityType::WaitSyncBegin,
+                                               numHandles, 0,
+                                               waitHandles.empty() ? 0 : waitHandles[0],
+                                               static_cast<u64>(timeout),
+                                               "WaitSynchronization");
+
         std::unique_lock lock(type::KSyncObject::syncObjectMutex);
         if (state.thread->cancelSync) {
             state.thread->cancelSync = false;
             ctx.w0 = result::Cancelled;
+            state.thread->RecordDiagnosticActivity(type::DiagnosticActivityType::WaitSyncEnd,
+                                                   numHandles, ctx.w0, 0, 0,
+                                                   "WaitSynchronization");
             return;
         }
 
@@ -811,6 +820,10 @@ namespace skyline::kernel::svc {
                 LOGD("Signalled 0x{:X}", waitHandles[index]);
                 ctx.w0 = Result{};
                 ctx.w1 = index;
+                state.thread->RecordDiagnosticActivity(type::DiagnosticActivityType::WaitSyncEnd,
+                                                       numHandles, ctx.w0,
+                                                       waitHandles[index], index,
+                                                       "WaitSynchronization");
                 return;
             }
             index++;
@@ -819,6 +832,9 @@ namespace skyline::kernel::svc {
         if (timeout == 0) {
             LOGD("No handle is currently signalled");
             ctx.w0 = result::TimedOut;
+            state.thread->RecordDiagnosticActivity(type::DiagnosticActivityType::WaitSyncEnd,
+                                                   numHandles, ctx.w0, 0, 0,
+                                                   "WaitSynchronization");
             return;
         }
 
@@ -859,16 +875,26 @@ namespace skyline::kernel::svc {
             LOGD("Signalled 0x{:X}", waitHandles[wakeIndex]);
             ctx.w0 = Result{};
             ctx.w1 = wakeIndex;
+            state.thread->RecordDiagnosticActivity(type::DiagnosticActivityType::WaitSyncEnd,
+                                                   numHandles, ctx.w0,
+                                                   waitHandles[wakeIndex], wakeIndex,
+                                                   "WaitSynchronization");
         } else if (state.thread->cancelSync) {
             state.thread->cancelSync = false;
             LOGD("Wait has been cancelled");
             ctx.w0 = result::Cancelled;
+            state.thread->RecordDiagnosticActivity(type::DiagnosticActivityType::WaitSyncEnd,
+                                                   numHandles, ctx.w0, 0, 0,
+                                                   "WaitSynchronization");
         } else {
             LOGD("Wait has timed out");
             ctx.w0 = result::TimedOut;
             lock.unlock();
             state.scheduler->InsertThread(state.thread);
             state.scheduler->WaitSchedule();
+            state.thread->RecordDiagnosticActivity(type::DiagnosticActivityType::WaitSyncEnd,
+                                                   numHandles, ctx.w0, 0, 0,
+                                                   "WaitSynchronization");
         }
     }
 
@@ -942,12 +968,18 @@ namespace skyline::kernel::svc {
         i64 timeout{static_cast<i64>(ReadSvc64(state, ctx, 3, 3, 4))};
         LOGD("Waiting on {} with {} for {}ns", fmt::ptr(conditional), fmt::ptr(mutex), timeout);
 
+        state.thread->RecordDiagnosticActivity(type::DiagnosticActivityType::CondvarWaitBegin,
+                                               requesterHandle, 0, ctx.x1, ctx.x0,
+                                               "WaitProcessWideKeyAtomic");
         auto result{state.process->ConditionVariableWait(conditional, mutex, requesterHandle, timeout)};
         if (result == Result{})
             LOGD("Waited for {} and reacquired {}", fmt::ptr(conditional), fmt::ptr(mutex));
         else if (result == result::TimedOut)
             LOGD("Wait on {} has timed out after {}ns", fmt::ptr(conditional), timeout);
         ctx.w0 = result;
+        state.thread->RecordDiagnosticActivity(type::DiagnosticActivityType::CondvarWaitEnd,
+                                               requesterHandle, ctx.w0, ctx.x1, ctx.x0,
+                                               "WaitProcessWideKeyAtomic");
     }
 
     void SignalProcessWideKey(const DeviceState &state, SvcContext &ctx) {
@@ -957,6 +989,9 @@ namespace skyline::kernel::svc {
         LOGD("Signalling {} for {} waiters", fmt::ptr(conditional), count);
         state.process->ConditionVariableSignal(conditional, count);
         ctx.w0 = Result{};
+        state.thread->RecordDiagnosticActivity(type::DiagnosticActivityType::CondvarSignal,
+                                               static_cast<u32>(count), ctx.w0, ctx.x0, 0,
+                                               "SignalProcessWideKey");
     }
 
     void GetSystemTick(const DeviceState &state, SvcContext &ctx) {

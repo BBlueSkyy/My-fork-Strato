@@ -44,6 +44,7 @@ namespace skyline {
         class Scheduler {
           private:
             const DeviceState &state;
+            inline static thread_local int diagnosticSignal{0}; //!< Temporary scheduler instrumentation: last yield/preemption signal seen by this host thread
 
             struct CoreContext {
                 u8 id;
@@ -75,6 +76,7 @@ namespace skyline {
             static constexpr std::chrono::milliseconds PreemptiveTimeslice{10}; //!< The duration of time a preemptive thread can run before yielding
             inline static int YieldSignal{SIGRTMIN}; //!< The signal used to cause a non-cooperative yield in running threads (41)
             inline static int PreemptionSignal{SIGRTMIN + 1}; //!< The signal used to cause a preemptive yield in running threads (42)
+            inline static int DiagnosticSignal{SIGRTMIN + 2}; //!< Temporary no-op signal used only to sample NCE guest PC/SP
             inline static thread_local std::atomic_bool YieldPending{false}; //!< Set by host signals and checked before entering guest code
 
             Scheduler(const DeviceState &state);
@@ -83,6 +85,12 @@ namespace skyline {
              * @brief A signal handler designed to cause a non-cooperative yield for preemption and higher priority threads being inserted
              */
             static void GuestSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls);
+
+            /**
+             * @brief Temporary diagnostic signal handler that samples guest PC/SP without changing scheduler state
+             */
+            static void DiagnosticSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls);
+            static void DiagnosticHostSignalHandler(int signal, siginfo *info, ucontext *ctx);
 
             /**
              * @brief A signal handler for scheduling guest threads not currently running guest code

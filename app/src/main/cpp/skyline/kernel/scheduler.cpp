@@ -17,6 +17,8 @@ namespace skyline::kernel {
         // Don't restart syscalls: we want futexes to fail and their predicates rechecked
         if (state.process->is64bit()) {
             signal::SetGuestSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::GuestSignalHandler, false);
+            signal::SetGuestSignalHandler({Scheduler::DiagnosticSignal}, Scheduler::DiagnosticSignalHandler, false);
+            signal::SetHostSignalHandler({Scheduler::DiagnosticSignal}, Scheduler::DiagnosticHostSignalHandler, false);
             signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::HostSignalHandler, false);
         } else {
             signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::JitSignalHandler, false);
@@ -28,6 +30,7 @@ namespace skyline::kernel {
         {
             TRACE_EVENT_FMT("scheduler", "{} Signal", signal == PreemptionSignal ? "Preemption" : "Yield");
             const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
+            diagnosticSignal = signal;
             if (signal == PreemptionSignal)
                 state.thread->isPreempted = false;
             state.scheduler->Rotate();
@@ -37,12 +40,33 @@ namespace skyline::kernel {
         TRACE_EVENT_BEGIN("guest", "Guest");
     }
 
+    void Scheduler::DiagnosticSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
+        auto *threadContext{reinterpret_cast<nce::ThreadContext *>(*tls)};
+        if (!threadContext || !threadContext->state || !threadContext->state->thread)
+            return;
+
+        auto &thread{threadContext->state->thread};
+        const uintptr_t pc{ctx->uc_mcontext.pc};
+        thread->diagnosticGuestPc.store(pc, std::memory_order_relaxed);
+        thread->diagnosticGuestSp.store(ctx->uc_mcontext.sp, std::memory_order_relaxed);
+        thread->diagnosticGuestLr.store(ctx->uc_mcontext.regs[30], std::memory_order_relaxed);
+        thread->diagnosticGuestInsn.store(*reinterpret_cast<const u32 *>(pc), std::memory_order_relaxed);
+        thread->diagnosticGuestSamples.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void Scheduler::DiagnosticHostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+        // The sampling signal may arrive while the target is briefly in host/kernel code.
+        // In that case do nothing; a later sample can capture guest PC/SP.
+    }
+
     void Scheduler::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+        diagnosticSignal = signal;
         YieldPending = true;
     }
 
     void Scheduler::JitSignalHandler(int signal, siginfo *info, ucontext *ctx) {
         // A halted JIT returns to KThread::ThreadEntrypoint, which processes this pending yield.
+        diagnosticSignal = signal;
         YieldPending = true;
         if (kernel::this_thread)
             if (auto *core{kernel::this_thread->jit.load()})
@@ -105,6 +129,9 @@ namespace skyline::kernel {
     }
 
     void Scheduler::YieldThread(const std::shared_ptr<type::KThread> &thread) {
+        LOGI("[THREAD-DIAG] YieldThread requester=T{} target=T{} core={} priority={} pendingYield={} forceYield={}",
+             state.thread ? static_cast<i64>(state.thread->id) : -1LL, thread->id, thread->coreId,
+             thread->priority.load(), thread->pendingYield, thread->forceYield);
         if (state.thread != thread) {
             // If another thread is being yielded, we need to send it an OS signal to yield
             if (!thread->pendingYield) {
@@ -124,6 +151,13 @@ namespace skyline::kernel {
         std::scoped_lock migrationLock{thread->coreMigrationMutex};
         auto &core{cores.at(thread->coreId)};
         std::unique_lock lock{core.mutex};
+
+        LOGI("[THREAD-DIAG] InsertThread begin T{} core={} priority={} base={} affinity=0x{:X} queue_size={} front={}",
+             thread->id, core.id,
+             thread->priority.load(std::memory_order_relaxed),
+             thread->basePriority.load(std::memory_order_relaxed),
+             thread->affinityMask.to_ullong(), core.queue.size(),
+             core.queue.empty() ? -1LL : static_cast<i64>(core.queue.front()->id));
 
         if (thread->isPaused) {
             // We cannot insert a thread that is paused, so we just let the resuming thread insert it
@@ -160,6 +194,10 @@ namespace skyline::kernel {
         } else {
             core.queue.insert(nextThread, thread);
         }
+
+        LOGI("[THREAD-DIAG] InsertThread end T{} core={} queue_size={} front={}",
+             thread->id, core.id, core.queue.size(),
+             core.queue.empty() ? -1LL : static_cast<i64>(core.queue.front()->id));
     }
 
     void Scheduler::MigrateToCore(const std::shared_ptr<type::KThread> &thread, CoreContext *&currentCore, CoreContext *targetCore, std::unique_lock<SpinLock> &lock) {
@@ -202,7 +240,64 @@ namespace skyline::kernel {
         TRACE_EVENT("scheduler", "WaitSchedule");
         if (loadBalance) {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
+            bool diagnosticRotationAttempted{false};
+            bool diagnosticActivityDumped{false};
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
+                auto front{core->queue.empty() ? std::shared_ptr<type::KThread>{} : core->queue.front()};
+                LOGI("[THREAD-DIAG] WaitSchedule blocked T{} core={} priority={} base={} affinity=0x{:X} front=T{} front_priority={} front_base={} front_affinity=0x{:X} queue_size={} waited_ms={} front_pc=0x{:X} front_sp=0x{:X} front_lr=0x{:X} front_insn={:08X} samples={}",
+                     thread->id, core->id,
+                     thread->priority.load(std::memory_order_relaxed),
+                     thread->basePriority.load(std::memory_order_relaxed),
+                     thread->affinityMask.to_ullong(),
+                     front ? static_cast<i64>(front->id) : -1LL,
+                     front ? static_cast<i64>(front->priority.load(std::memory_order_relaxed)) : -1LL,
+                     front ? static_cast<i64>(front->basePriority.load(std::memory_order_relaxed)) : -1LL,
+                     front ? front->affinityMask.to_ullong() : 0,
+                     core->queue.size(), loadBalanceThreshold.count(),
+                     front ? front->diagnosticGuestPc.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestSp.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestLr.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestInsn.load(std::memory_order_relaxed) : 0,
+                     front ? front->diagnosticGuestSamples.load(std::memory_order_relaxed) : 0);
+
+                if (!diagnosticActivityDumped &&
+                    front && front != thread &&
+                    front->priority.load() == thread->priority.load() &&
+                    front->coreId == thread->coreId) {
+                    diagnosticActivityDumped = true;
+                    LOGI("[THREAD-ACT] equal-priority stall waiter=T{} front=T{} core={} priority={} waited_ms={}",
+                         thread->id, front->id, core->id, thread->priority.load(), loadBalanceThreshold.count());
+                    front->LogDiagnosticActivities("equal-priority-stall");
+                }
+
+                bool diagnosticRotationTriggered{false};
+                if (!diagnosticRotationAttempted &&
+                    thread->id == 22 &&
+                    front &&
+                    front->id == 15 &&
+                    front->priority.load() == thread->priority.load() &&
+                    front->coreId == thread->coreId) {
+                    diagnosticRotationAttempted = true;
+                    diagnosticRotationTriggered = true;
+                    LOGI("[THREAD-DIAG] one-shot rotation request front=T{} waiter=T{} core={} priority={}",
+                         front->id, thread->id, core->id, thread->priority.load());
+
+                    // Diagnostic experiment only: request one normal scheduler yield from the
+                    // currently-running equal-priority thread. Do not reorder the queue here;
+                    // the target's GuestSignalHandler performs the normal Rotate()/WaitSchedule()
+                    // handoff after receiving YieldSignal.
+                    YieldThread(front);
+                }
+
+                // Preserve passive PC/SP sampling on all other iterations. Avoid sending the
+                // diagnostic signal in the same iteration as the one-shot yield so the causal
+                // experiment contains only one scheduler-affecting signal.
+                if (!diagnosticRotationTriggered &&
+                    front && front != thread &&
+                    front->priority.load() == thread->priority.load() &&
+                    state.process->is64bit())
+                    front->SendSignal(DiagnosticSignal);
+
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 auto newCore{&GetOptimalCoreForThread(state.thread)};
@@ -215,6 +310,11 @@ namespace skyline::kernel {
         } else {
             thread->scheduleCondition.wait(lock, wakeFunction);
         }
+
+        LOGI("[THREAD-DIAG] WaitSchedule scheduled T{} core={} priority={} front=T{} queue_size={}",
+             thread->id, core->id, thread->priority.load(),
+             core->queue.empty() ? -1LL : static_cast<i64>(core->queue.front()->id),
+             core->queue.size());
 
         if (thread->priority == core->preemptionPriority)
             // If the thread needs to be preempted then arm its preemption timer
@@ -253,6 +353,19 @@ namespace skyline::kernel {
 
         std::unique_lock lock(core.mutex);
 
+        std::shared_ptr<type::KThread> frontBefore{};
+        std::shared_ptr<type::KThread> nextBefore{};
+        if (!core.queue.empty())
+            frontBefore = core.queue.front();
+        if (core.queue.size() > 1)
+            nextBefore = *std::next(core.queue.begin());
+        LOGI("[THREAD-DIAG] Rotate begin T{} core={} priority={} signal={} pendingYield={} forceYield={} queue_size={} front=T{} next=T{} next_priority={}",
+             thread->id, core.id, thread->priority.load(), diagnosticSignal,
+             thread->pendingYield, thread->forceYield, core.queue.size(),
+             frontBefore ? static_cast<i64>(frontBefore->id) : -1LL,
+             nextBefore ? static_cast<i64>(nextBefore->id) : -1LL,
+             nextBefore ? static_cast<i64>(nextBefore->priority.load()) : -1LL);
+
         if (core.queue.front() == thread) {
             // If this thread is at the front of the thread queue then we need to rotate the thread
             // In the case where this thread was forcefully yielded, we don't need to do this as it's done by the thread which yielded to this thread
@@ -260,6 +373,8 @@ namespace skyline::kernel {
             core.queue.splice(std::upper_bound(core.queue.begin(), core.queue.end(), thread->priority.load(), type::KThread::IsHigherPriority), core.queue, core.queue.begin());
 
             auto &front{core.queue.front()};
+            LOGI("[THREAD-DIAG] Rotate reordered T{} core={} new_front=T{} new_front_priority={} queue_size={}",
+                 thread->id, core.id, front->id, front->priority.load(), core.queue.size());
             if (front != thread)
                 front->scheduleCondition.notify(); // If we aren't at the front of the queue, only then should we wake the thread at the front up
         } else if (!thread->forceYield) {
@@ -271,6 +386,11 @@ namespace skyline::kernel {
         thread->DisarmPreemptionTimer(); // If a preemptive thread did a cooperative yield then we need to disarm the preemptive timer
         thread->pendingYield = false;
         thread->forceYield = false;
+        LOGI("[THREAD-DIAG] Rotate end T{} core={} front=T{} queue_size={}",
+             thread->id, core.id,
+             core.queue.empty() ? -1LL : static_cast<i64>(core.queue.front()->id),
+             core.queue.size());
+        diagnosticSignal = 0;
     }
 
     void Scheduler::RemoveThread() {
@@ -278,6 +398,10 @@ namespace skyline::kernel {
         {
             auto &core{cores.at(thread->coreId)};
             std::unique_lock lock(core.mutex);
+
+            LOGI("[THREAD-DIAG] RemoveThread begin T{} core={} priority={} queue_size={} front=T{}",
+                 thread->id, core.id, thread->priority.load(), core.queue.size(),
+                 core.queue.empty() ? -1LL : static_cast<i64>(core.queue.front()->id));
 
             if (!thread->isPaused) {
                 auto it{std::find(core.queue.begin(), core.queue.end(), thread)};
@@ -297,6 +421,10 @@ namespace skyline::kernel {
             } else {
                 thread->insertThreadOnResume = false;
             }
+
+            LOGI("[THREAD-DIAG] RemoveThread end T{} core={} queue_size={} front=T{}",
+                 thread->id, core.id, core.queue.size(),
+                 core.queue.empty() ? -1LL : static_cast<i64>(core.queue.front()->id));
         }
 
         thread->DisarmPreemptionTimer();
