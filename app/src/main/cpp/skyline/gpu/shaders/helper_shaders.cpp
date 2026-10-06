@@ -497,9 +497,80 @@ namespace skyline::gpu {
             {}, {});
     }
 
+    static vk::raii::DescriptorSetLayout CreateConditionalCompareDescriptorSetLayout(GPU &gpu) {
+        vk::DescriptorSetLayoutBinding binding{
+            .binding = 0,
+            .descriptorType = vk::DescriptorType::eStorageBuffer,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute,
+        };
+
+        return vk::raii::DescriptorSetLayout{gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
+            .bindingCount = 1,
+            .pBindings = &binding,
+        }};
+    }
+
+    static vk::raii::PipelineLayout CreateConditionalComparePipelineLayout(GPU &gpu, vk::DescriptorSetLayout descriptorSetLayout) {
+        vk::PushConstantRange pushConstantRange{
+            .stageFlags = vk::ShaderStageFlagBits::eCompute,
+            .offset = 0,
+            .size = sizeof(ConditionalCompareHelperShader::PushConstants),
+        };
+
+        return vk::raii::PipelineLayout{gpu.vkDevice, vk::PipelineLayoutCreateInfo{
+            .setLayoutCount = 1,
+            .pSetLayouts = &descriptorSetLayout,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &pushConstantRange,
+        }};
+    }
+
+    ConditionalCompareHelperShader::ConditionalCompareHelperShader(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem)
+        : shaderModule{CreateShaderModule(gpu, *shaderFileSystem->OpenFile("shaders/conditional_compare.comp.spv"))},
+          descriptorSetLayout{CreateConditionalCompareDescriptorSetLayout(gpu)},
+          pipelineLayout{CreateConditionalComparePipelineLayout(gpu, *descriptorSetLayout)},
+          pipeline{gpu.vkDevice, nullptr, vk::ComputePipelineCreateInfo{
+              .stage = vk::PipelineShaderStageCreateInfo{
+                  .stage = vk::ShaderStageFlagBits::eCompute,
+                  .module = *shaderModule,
+                  .pName = "main",
+              },
+              .layout = *pipelineLayout,
+          }} {}
+
+    DescriptorAllocator::ActiveDescriptorSet ConditionalCompareHelperShader::CreateDescriptorSet(GPU &gpu, vk::Buffer scratchBuffer) {
+        auto descriptorSet{gpu.descriptor.AllocateSet(*descriptorSetLayout)};
+        vk::DescriptorBufferInfo bufferInfo{
+            .buffer = scratchBuffer,
+            .offset = 0,
+            .range = sizeof(u32) * 3,
+        };
+        vk::WriteDescriptorSet write{
+            .dstSet = *descriptorSet,
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eStorageBuffer,
+            .pBufferInfo = &bufferInfo,
+        };
+        gpu.vkDevice.updateDescriptorSets(write, nullptr);
+        return descriptorSet;
+    }
+
+    void ConditionalCompareHelperShader::Compare(vk::raii::CommandBuffer &commandBuffer, vk::DescriptorSet descriptorSet, bool notEqual) {
+        commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *pipeline);
+        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *pipelineLayout, 0, descriptorSet, nullptr);
+
+        PushConstants pushConstants{notEqual ? 1U : 0U};
+        commandBuffer.pushConstants(*pipelineLayout, vk::ShaderStageFlagBits::eCompute, 0,
+                                    vk::ArrayProxy<const PushConstants>{pushConstants});
+        commandBuffer.dispatch(1, 1, 1);
+    }
+
     HelperShaders::HelperShaders(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem)
         : blitHelperShader(gpu, shaderFileSystem),
           clearHelperShader(gpu, shaderFileSystem),
-          queryResolveHelperShader(gpu, shaderFileSystem) {}
+          queryResolveHelperShader(gpu, shaderFileSystem),
+          conditionalCompareHelperShader(gpu, shaderFileSystem) {}
 
 }

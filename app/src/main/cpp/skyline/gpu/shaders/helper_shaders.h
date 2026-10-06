@@ -135,12 +135,35 @@ namespace skyline::gpu {
     };
 
     /**
+     * @brief Produces a 32-bit conditional-rendering predicate from two GPU-visible u32 values
+     */
+    class ConditionalCompareHelperShader {
+      private:
+        vk::raii::ShaderModule shaderModule;
+        vk::raii::DescriptorSetLayout descriptorSetLayout;
+        vk::raii::PipelineLayout pipelineLayout;
+        vk::raii::Pipeline pipeline;
+
+      public:
+        struct PushConstants {
+            u32 notEqual;
+        };
+
+        ConditionalCompareHelperShader(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem);
+
+        DescriptorAllocator::ActiveDescriptorSet CreateDescriptorSet(GPU &gpu, vk::Buffer scratchBuffer);
+
+        void Compare(vk::raii::CommandBuffer &commandBuffer, vk::DescriptorSet descriptorSet, bool notEqual);
+    };
+
+    /**
      * @brief Holds all helper shaders to avoid redundantly recreating them on each usage
      */
     struct HelperShaders {
         BlitHelperShader blitHelperShader;
         ClearHelperShader clearHelperShader;
         QueryResolveHelperShader queryResolveHelperShader;
+        ConditionalCompareHelperShader conditionalCompareHelperShader;
 
         HelperShaders(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem);
     };
