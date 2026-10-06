@@ -2,6 +2,7 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/settings.h>
+#include <atomic>
 #include <gpu.h>
 #include "buffer_manager.h"
 
@@ -353,13 +354,35 @@ namespace skyline::gpu {
                 return view;
 
         GuestBuffer mergedGuest{guest};
-        for (const auto &overlap : overlaps) {
+        for (auto &overlap : overlaps) {
             if (mergedGuest.Find(*overlap->guest))
                 continue;
 
             auto merged{mergedGuest.Merge(*overlap->guest)};
-            if (!merged)
+            if (!merged) {
+                static std::atomic_size_t overlapConflictLogs{};
+                const auto conflictIndex{overlapConflictLogs.fetch_add(1, std::memory_order_relaxed)};
+                if (conflictIndex < 8) {
+                    LOGW("Split buffer overlap conflict: overlap_id={}, overlap_mappings={}, merged_mappings={}, first_usage={}, dirty_state={}, immutability={}, has_cycle={}",
+                         overlap->id, overlap->guest->mappings.size(), mergedGuest.mappings.size(),
+                         overlap.lock.IsFirstUsage(), static_cast<u32>(overlap->dirtyState),
+                         static_cast<u32>(overlap->backingImmutability), static_cast<bool>(overlap->cycle));
+
+                    for (size_t i{}; i < std::min<size_t>(mergedGuest.mappings.size(), 4); ++i) {
+                        const auto &mapping{mergedGuest.mappings[i]};
+                        LOGW("Split buffer overlap conflict: merged[{}]=0x{:X}+0x{:X}",
+                             i, reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
+                    }
+
+                    for (size_t i{}; i < std::min<size_t>(overlap->guest->mappings.size(), 4); ++i) {
+                        const auto &mapping{overlap->guest->mappings[i]};
+                        LOGW("Split buffer overlap conflict: old[{}]=0x{:X}+0x{:X}",
+                             i, reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
+                    }
+                }
+
                 return {};
+            }
 
             mergedGuest = std::move(*merged);
         }
