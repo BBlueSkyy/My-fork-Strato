@@ -413,6 +413,24 @@ namespace skyline::gpu {
         dirtyState = DirtyState::Clean; // Since this is a host-only buffer it's always going to be clean
     }
 
+    Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, GuestBuffer::Mappings mirrorMappings, size_t id)
+        : gpu{gpu},
+          delegate{delegateAllocator.EmplaceUntracked<BufferDelegate>(this)},
+          id{id} {
+        if (mirrorMappings.empty())
+            throw exception("Cannot create a mirrored host buffer without mappings");
+
+        std::vector<span<u8>> mappings{mirrorMappings.begin(), mirrorMappings.end()};
+        mirror = gpu.state.process->memory.CreateMirrors(mappings);
+        backing = gpu.memory.AllocateBuffer(mirror.size());
+        std::memcpy(backing->data(), mirror.data(), mirror.size());
+        dirtyState = DirtyState::Clean;
+
+        const auto entriesBase{std::max<size_t>(1, mirror.size() / MegaBufferTableMaxEntries)};
+        megaBufferTableShift = std::max(std::bit_width(entriesBase - 1), MegaBufferTableShiftMin);
+        megaBufferTable.resize(mirror.size() / (1 << megaBufferTableShift));
+    }
+
     Buffer::~Buffer() {
         if (trapHandle)
             gpu.state.process->trap.DeleteTrap(*trapHandle);
