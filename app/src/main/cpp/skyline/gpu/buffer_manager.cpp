@@ -412,4 +412,40 @@ namespace skyline::gpu {
 
         return buffer->TryGetView(guest, viewOffset, viewSize);
     }
+
+    std::pair<BufferView, std::shared_ptr<Buffer>> BufferManager::CreateReadOnlyAlias(
+        const GuestBuffer &guest, vk::DeviceSize viewOffset, vk::DeviceSize viewSize, ContextTag tag) {
+        TRACE_EVENT("gpu", "BufferManager::CreateReadOnlyAlias");
+
+        if (!guest.valid() || viewOffset > guest.size() || viewSize > guest.size() - viewOffset)
+            return {};
+
+        auto overlaps{Lookup(guest, tag)};
+        if (overlaps.empty())
+            return {};
+
+        for (auto &overlap : overlaps) {
+            if (*gpu.state.settings->useDirectMemoryImport) {
+                if (overlap->RefreshGpuWritesActiveDirect(false, {}))
+                    return {};
+            } else if (overlap->dirtyState == Buffer::DirtyState::GpuDirty ||
+                       overlap->backingImmutability == Buffer::BackingImmutability::AllWrites) {
+                return {};
+            }
+        }
+
+        std::scoped_lock lock{recreationMutex};
+        LockedBuffer alias{std::make_shared<Buffer>(delegateAllocatorState, gpu, guest, nextBufferId++,
+                                                    *gpu.state.settings->useDirectMemoryImport), tag};
+
+        alias->SetupStagedTraps();
+        alias->SynchronizeHost(false);
+
+        auto view{alias->TryGetView(guest, viewOffset, viewSize)};
+        if (!view)
+            return {};
+
+        auto owner{alias.buffer};
+        return {view, std::move(owner)};
+    }
 }
