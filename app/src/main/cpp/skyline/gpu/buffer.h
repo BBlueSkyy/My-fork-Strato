@@ -203,6 +203,13 @@ namespace skyline::gpu {
          */
         Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, vk::DeviceSize size, size_t id);
 
+        /**
+         * @brief Creates a read-only host buffer with a CPU mirror assembled from arbitrary mappings.
+         *        This is used for cached logical aliases such as a circular [tail|head] view.
+         * @note The buffer is intentionally not guest-backed and must never be used as a write target.
+         */
+        Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, GuestBuffer::Mappings mirrorMappings, size_t id);
+
         ~Buffer();
 
         /**
