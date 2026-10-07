@@ -43,6 +43,7 @@ namespace skyline::gpu::interconnect {
         span<u8> blockMapping; //!< The underlying mapping that `view` is a part of
         u64 blockMappingStartAddr; //!< The start GPU address of `blockMapping`
         u64 blockMappingEndAddr; //!< The end GPU address of `blockMapping`
+        std::shared_ptr<Buffer> independentReadAlias{}; //!< Owner for a non-canonical read-only split alias view
 
       public:
         BufferView view{}; //!< The buffer view created as a result of a call to `Update()`
@@ -50,7 +51,8 @@ namespace skyline::gpu::interconnect {
         /**
          * @brief Updates `view` based on the supplied GPU mapping
          */
-        void Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn = true);
+        void Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn = true,
+                    bool allowIndependentReadAlias = false);
 
         /**
          * @brief Purges the cached block mapping so the next `Update()` call will perform a full lookup
