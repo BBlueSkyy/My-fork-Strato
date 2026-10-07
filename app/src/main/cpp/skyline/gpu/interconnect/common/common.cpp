@@ -7,7 +7,7 @@
 #include "common.h"
 
 namespace skyline::gpu::interconnect {
-    void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn) {
+    void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn, std::source_location location) {
         // Ignore size for the mapping end check here as we don't support buffers split across multiple mappings so only the first one would be used anyway. It's also impossible for the mapping to have been remapped with a larger one since the original lookup because the we force the mapping to be reset after semaphores
         if (address < blockMappingStartAddr || address >= blockMappingEndAddr) {
             u64 blockOffset{};
@@ -56,7 +56,8 @@ namespace skyline::gpu::interconnect {
             }
 
             if (splitMappingWarn)
-                LOGW("Split buffer mappings are not supported");
+                LOGW("Split buffer mappings are not supported (address=0x{:X}, size=0x{:X}, first=0x{:X}, mappings={}, caller={}:{}, function={})",
+                     address, size, fullMapping.size(), mappings.size(), location.file_name(), location.line(), location.function_name());
         }
 
         // Mapping covering just the requested input view (or less in the case of split mappings)
