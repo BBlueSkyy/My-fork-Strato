@@ -7,6 +7,7 @@
 #include <common/linear_allocator.h>
 #include <common/segment_table.h>
 #include <common/spin_lock.h>
+#include <unordered_map>
 #include "buffer.h"
 
 namespace skyline::gpu {
@@ -28,6 +29,15 @@ namespace skyline::gpu {
         std::vector<BufferMapping> bufferMappings;
         LinearAllocatorState<> delegateAllocatorState;
         size_t nextBufferId{};
+
+        struct ReadOnlyCircularAlias {
+            std::weak_ptr<Buffer> source;
+            std::shared_ptr<Buffer> alias;
+            u32 sourceSequence{};
+            size_t sourceSize{};
+        };
+
+        std::unordered_map<size_t, ReadOnlyCircularAlias> readOnlyCircularAliases;
 
         static constexpr size_t L2EntryGranularity{19};
         SegmentTable<Buffer *, constant::AddressSpaceSize, constant::PageSizeBits, L2EntryGranularity> bufferTable;
