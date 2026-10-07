@@ -55,9 +55,17 @@ namespace skyline::gpu::interconnect {
                 return;
             }
 
-            if (splitMappingWarn)
-                LOGW("Split buffer mappings are not supported (address=0x{:X}, size=0x{:X}, first=0x{:X}, mappings={}, caller={}:{}, function={})",
-                     address, size, fullMapping.size(), mappings.size(), location.file_name(), location.line(), location.function_name());
+            if (splitMappingWarn) {
+                static std::atomic<u64> splitMappingLogCount{};
+                u64 count{splitMappingLogCount.fetch_add(1, std::memory_order_relaxed) + 1};
+
+                // Keep diagnostic builds usable even when a title hits this path tens of
+                // thousands of times per second. Preserve the first samples, then only
+                // emit periodic snapshots with the cumulative hit count.
+                if (count <= 128 || (count & 0xFFF) == 0)
+                    LOGW("Split buffer mappings are not supported (hit={}, address=0x{:X}, size=0x{:X}, first=0x{:X}, mappings={}, caller={}:{}, function={})",
+                         count, address, size, fullMapping.size(), mappings.size(), location.file_name(), location.line(), location.function_name());
+            }
         }
 
         // Mapping covering just the requested input view (or less in the case of split mappings)
