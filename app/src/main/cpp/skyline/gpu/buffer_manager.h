@@ -88,5 +88,17 @@ namespace skyline::gpu {
         BufferView FindOrCreate(const GuestBuffer &guest, vk::DeviceSize viewOffset, vk::DeviceSize viewSize,
                                 ContextTag tag = {},
                                 const std::function<void(std::shared_ptr<Buffer>, ContextLock<Buffer> &&)> &attachBuffer = {});
+
+        /**
+         * @brief Creates an independent logical view for a read-only split alias when it cannot
+         *        be represented by the canonical overlapping buffer without reordering bytes.
+         * @return The view and the owning Buffer. The caller must keep the owner alive while the
+         *         view can be referenced.
+         * @note This is only allowed while every overlapping canonical buffer has no pending GPU
+         *       writes; it must never be used for a writable alias.
+         */
+        std::pair<BufferView, std::shared_ptr<Buffer>> CreateReadOnlyAlias(
+            const GuestBuffer &guest, vk::DeviceSize viewOffset, vk::DeviceSize viewSize,
+            ContextTag tag = {});
     };
 }
