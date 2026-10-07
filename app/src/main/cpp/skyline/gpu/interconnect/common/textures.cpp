@@ -473,7 +473,7 @@ namespace skyline::gpu::interconnect {
         elementCount++;
         size_t sizeBytes{elementCount * format->bpb};
 
-        cachedView.Update(ctx, textureHeader.Iova(), sizeBytes);
+        cachedView.Update(ctx, textureHeader.Iova(), sizeBytes, true, true);
         if (!cachedView.view) {
             LOGW("Unmapped texture buffer in pool: 0x{:X}", textureHeader.Iova());
             return nullptr;
@@ -505,7 +505,8 @@ namespace skyline::gpu::interconnect {
         }
     }
 
-    vk::raii::BufferView *Textures::GetImageBufferView(InterconnectContext &ctx, u32 index, Shader::ImageFormat shaderFormat, CachedMappedBufferView &cachedView) {
+    vk::raii::BufferView *Textures::GetImageBufferView(InterconnectContext &ctx, u32 index, Shader::ImageFormat shaderFormat,
+                                                        bool readOnly, CachedMappedBufferView &cachedView) {
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
         if (index >= textureHeaders.size())
             return nullptr;
@@ -525,7 +526,7 @@ namespace skyline::gpu::interconnect {
         elementCount++;
         size_t sizeBytes{elementCount * format->second};
 
-        cachedView.Update(ctx, textureHeader.Iova(), sizeBytes);
+        cachedView.Update(ctx, textureHeader.Iova(), sizeBytes, true, readOnly);
         if (!cachedView.view) {
             LOGW("Unmapped image buffer in pool: 0x{:X}", textureHeader.Iova());
             return nullptr;
