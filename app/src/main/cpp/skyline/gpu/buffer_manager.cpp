@@ -95,6 +95,8 @@ namespace skyline::gpu {
     }
 
     void BufferManager::DeleteBuffer(const std::shared_ptr<Buffer> &buffer) {
+        readOnlyCircularAliases.erase(buffer->id);
+
         for (const auto &mapping : buffer->guest->mappings)
             bufferTable.Set(mapping.begin().base(), mapping.end().base(), nullptr);
 
@@ -421,31 +423,77 @@ namespace skyline::gpu {
             return {};
 
         auto overlaps{Lookup(guest, tag)};
-        if (overlaps.empty())
+        if (overlaps.size() != 1)
             return {};
 
-        for (auto &overlap : overlaps) {
-            if (*gpu.state.settings->useDirectMemoryImport) {
-                if (overlap->RefreshGpuWritesActiveDirect(false, {}))
-                    return {};
-            } else if (overlap->dirtyState == Buffer::DirtyState::GpuDirty ||
-                       overlap->backingImmutability == Buffer::BackingImmutability::AllWrites) {
+        auto &source{overlaps.front()};
+        if (!source->guest || source->guest->mappings.size() != 1 || guest.mappings.size() != 2)
+            return {};
+
+        const bool direct{*gpu.state.settings->useDirectMemoryImport};
+        if (direct) {
+            if (source->RefreshGpuWritesActiveDirect(false, {}))
                 return {};
-            }
+        } else {
+            if (source->dirtyState == Buffer::DirtyState::GpuDirty ||
+                source->backingImmutability == Buffer::BackingImmutability::AllWrites)
+                return {};
+
+            // Collapse pending CPU writes before caching the mirrored ring. This advances the
+            // source sequence, so a later guest write naturally causes a fresh alias generation.
+            if (source->dirtyState == Buffer::DirtyState::CpuDirty)
+                source->SynchronizeHost();
         }
 
-        std::scoped_lock lock{recreationMutex};
-        LockedBuffer alias{std::make_shared<Buffer>(delegateAllocatorState, gpu, guest, nextBufferId++,
-                                                    *gpu.state.settings->useDirectMemoryImport), tag};
+        const auto sourceMapping{source->guest->mappings.front()};
+        const auto &tail{guest.mappings[0]};
+        const auto &head{guest.mappings[1]};
 
-        alias->SetupStagedTraps();
-        alias->SynchronizeHost(false);
+        const auto sourceBegin{reinterpret_cast<uintptr_t>(sourceMapping.data())};
+        const auto sourceEnd{sourceBegin + sourceMapping.size()};
+        const auto tailBegin{reinterpret_cast<uintptr_t>(tail.data())};
+        const auto tailEnd{tailBegin + tail.size()};
+        const auto headBegin{reinterpret_cast<uintptr_t>(head.data())};
+        const auto headEnd{headBegin + head.size()};
 
-        auto view{alias->TryGetView(guest, viewOffset, viewSize)};
-        if (!view)
+        // A circular alias is exactly a suffix of one canonical mapping followed by a prefix
+        // of that same mapping. Anything reordered or partially overlapping remains rejected.
+        if (tailBegin < sourceBegin || tailBegin >= sourceEnd || tailEnd != sourceEnd ||
+            headBegin != sourceBegin || headEnd > sourceEnd)
             return {};
 
-        auto owner{alias.buffer};
-        return {view, std::move(owner)};
+        const auto sourceSize{sourceMapping.size()};
+        const auto ringOffset{static_cast<size_t>(tailBegin - sourceBegin)};
+        if (guest.size() > sourceSize || sourceSize > std::numeric_limits<size_t>::max() / 2)
+            return {};
+
+        const auto doubledSize{sourceSize * 2};
+        if (ringOffset > doubledSize || viewOffset > doubledSize - ringOffset ||
+            viewSize > doubledSize - ringOffset - viewOffset)
+            return {};
+
+        std::scoped_lock recreationLock{recreationMutex};
+
+        auto &cached{readOnlyCircularAliases[source->id]};
+        auto cachedSource{cached.source.lock()};
+        const bool sourceChanged{
+            !cached.alias || cachedSource.get() != source.buffer.get() || cached.sourceSize != sourceSize ||
+            (!direct && cached.sourceSequence != source->sequenceNumber)
+        };
+
+        if (sourceChanged) {
+            GuestBuffer::Mappings doubledMappings;
+            doubledMappings.emplace_back(sourceMapping);
+            doubledMappings.emplace_back(sourceMapping);
+
+            cached.source = source.buffer;
+            cached.alias = std::make_shared<Buffer>(delegateAllocatorState, gpu, std::move(doubledMappings),
+                                                    nextBufferId++, direct);
+            cached.sourceSequence = source->sequenceNumber;
+            cached.sourceSize = sourceSize;
+        }
+
+        auto view{cached.alias->GetView(ringOffset + viewOffset, viewSize)};
+        return {view, cached.alias};
     }
 }
