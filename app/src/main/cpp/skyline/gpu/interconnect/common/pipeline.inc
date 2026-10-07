@@ -104,7 +104,7 @@ namespace skyline::gpu::interconnect {
                                                  CachedMappedBufferView &cachedView,
                                                  vk::PipelineStageFlagBits dstStage,
                                                  vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        auto *bufferView{textures.GetImageBufferView(ctx, handle.textureIndex, format, cachedView)};
+        auto *bufferView{textures.GetImageBufferView(ctx, handle.textureIndex, format, !isWritten, cachedView)};
         if (!bufferView)
             return {};
 
