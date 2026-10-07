@@ -50,7 +50,7 @@ namespace skyline::gpu::interconnect {
         /**
          * @brief Updates `view` based on the supplied GPU mapping
          */
-        void Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn = true);
+        void Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn = true,\n                    std::source_location location = std::source_location::current());
 
         /**
          * @brief Purges the cached block mapping so the next `Update()` call will perform a full lookup
