@@ -25,8 +25,39 @@ namespace skyline::gpu::interconnect {
         // Mapping from the start of the buffer view to the end of the block
         auto fullMapping{blockMapping.subspan(address - blockMappingStartAddr)};
 
-        if (splitMappingWarn && fullMapping.size() < size)
-            LOGW("Split buffer mappings are not supported");
+        if (fullMapping.size() < size) {
+            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(address, size)};
+
+            bool physicallyContiguous{!mappings.empty()};
+            size_t translatedSize{};
+            u8 *expectedNext{};
+
+            for (auto mapping : mappings) {
+                if (!mapping.valid() || mapping.empty() || (expectedNext && mapping.data() != expectedNext)) {
+                    physicallyContiguous = false;
+                    break;
+                }
+
+                translatedSize += mapping.size();
+                expectedNext = mapping.data() + mapping.size();
+            }
+
+            if (physicallyContiguous && translatedSize >= size) {
+                auto viewMapping{span<u8>{mappings.front().data(), size}};
+
+                if (view)
+                    if (view = view.GetBuffer()->TryGetView(viewMapping); view)
+                        return;
+
+                view = ctx.gpu.buffer.FindOrCreate(viewMapping, ctx.executor.tag, [&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
+                    ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
+                });
+                return;
+            }
+
+            if (splitMappingWarn)
+                LOGW("Split buffer mappings are not supported");
+        }
 
         // Mapping covering just the requested input view (or less in the case of split mappings)
         auto viewMapping{fullMapping.first(std::min(fullMapping.size(), size))};
