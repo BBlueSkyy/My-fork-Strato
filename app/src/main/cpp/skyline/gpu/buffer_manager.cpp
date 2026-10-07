@@ -3,6 +3,7 @@
 
 #include <common/settings.h>
 #include <atomic>
+#include <limits>
 #include <gpu.h>
 #include "buffer_manager.h"
 
