@@ -230,7 +230,10 @@ namespace skyline::gpu::interconnect {
         constexpr vk::ImageLayout NullImageInitialLayout{vk::ImageLayout::eUndefined};
         constexpr vk::ImageTiling NullImageTiling{vk::ImageTiling::eOptimal};
         constexpr vk::ImageCreateFlags NullImageFlags{};
-        constexpr vk::ImageUsageFlags NullImageUsage{vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled};
+        vk::ImageUsageFlags nullImageUsage{vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled};
+        const auto formatFeatures{ctx.gpu.vkPhysicalDevice.getFormatProperties(NullImageFormat->vkFormat).optimalTilingFeatures};
+        if (formatFeatures & vk::FormatFeatureFlagBits::eStorageImage)
+            nullImageUsage |= vk::ImageUsageFlagBits::eStorage;
 
         auto vkImage{ctx.gpu.memory.AllocateImage(
             {
@@ -242,7 +245,7 @@ namespace skyline::gpu::interconnect {
                 .arrayLayers = 1,
                 .samples = vk::SampleCountFlagBits::e1,
                 .tiling = NullImageTiling,
-                .usage = NullImageUsage,
+                .usage = nullImageUsage,
                 .sharingMode = vk::SharingMode::eExclusive,
                 .queueFamilyIndexCount = 1,
                 .pQueueFamilyIndices = &ctx.gpu.vkQueueFamilyIndex,
@@ -250,7 +253,7 @@ namespace skyline::gpu::interconnect {
             }
         )};
 
-        auto nullTexture{std::make_shared<Texture>(ctx.gpu, std::move(vkImage), NullImageDimensions, NullImageFormat, NullImageInitialLayout, NullImageTiling, NullImageFlags, NullImageUsage)};
+        auto nullTexture{std::make_shared<Texture>(ctx.gpu, std::move(vkImage), NullImageDimensions, NullImageFormat, NullImageInitialLayout, NullImageTiling, NullImageFlags, nullImageUsage)};
         nullTexture->TransitionLayout(vk::ImageLayout::eGeneral);
         return nullTexture->GetView(vk::ImageViewType::e2D, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
