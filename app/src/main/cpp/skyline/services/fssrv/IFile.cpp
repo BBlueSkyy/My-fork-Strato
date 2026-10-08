@@ -7,8 +7,6 @@
 #include "validation.h"
 #include <kernel/types/KProcess.h>
 #include <kernel/types/KThread.h>
-#include <loader/loader.h>
-#include <nce/svc_callsite.h>
 #include "IFile.h"
 
 namespace skyline::service::fssrv {
@@ -117,33 +115,20 @@ namespace skyline::service::fssrv {
                     LOGW("FSP_WRITE_DIAG: Domain IPC framing pointers outside TLS command buffer");
                 }
             }
-            // Capture a bounded native-guest backtrace at the actual failing
-            // write rather than relying on a subsequent svcBreak, when the
-            // stack has already unwound into nn::diag's fatal path.
-            // Diagnostic only; the error code and file contents are unchanged.
+            // The previous stack walker stopped the log before IFile::Write
+            // could return its original InvalidArgument. Do not read or
+            // symbolize guest stack memory synchronously inside IPC dispatch:
+            // rely only on already-captured NCE CPU state for this diagnostic.
             if (state.process->is64bit()) {
-                const auto &call{static_cast<const type::KNceThread &>(*state.thread).ctx.svcCallsite};
+                const auto &guest{static_cast<const type::KNceThread &>(*state.thread).ctx};
+                const auto &call{guest.svcCallsite};
                 LOGW("FSP_WRITE_DIAG: Write caller: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}, FP=0x{:X}",
                      call.pc, call.lr, call.sp, call.fp);
-                try {
-                    const auto readable{[&](u64 address, void *output, size_t length) -> bool {
-                        try {
-                            return state.process->memory.ReadMemoryIfReadable(address, output, length);
-                        } catch (...) {
-                            return false;
-                        }
-                    }};
-                    std::vector<void *> frames;
-                    if (call.pc) frames.push_back(reinterpret_cast<void *>(call.pc));
-                    if (call.lr) frames.push_back(reinterpret_cast<void *>(call.lr));
-                    for (auto address : nce::WalkGuestFrames(call.fp, readable))
-                        frames.push_back(reinterpret_cast<void *>(address));
-                    LOGW("FSP_WRITE_DIAG: Write guest frames={} stack:{}", frames.size(),
-                         state.loader->GetStackTrace(frames));
-                } catch (const std::exception &e) {
-                    LOGW("FSP_WRITE_DIAG: Write guest stack unavailable: {}", e.what());
-                }
+                LOGW("FSP_WRITE_DIAG: Saved SVC registers: X0=0x{:X}, X1=0x{:X}, X2=0x{:X}, X3=0x{:X}, X8=0x{:X}, X16=0x{:X}, X17=0x{:X}, X18=0x{:X}",
+                     guest.gpr.x0, guest.gpr.x1, guest.gpr.x2, guest.gpr.x3,
+                     guest.gpr.x8, guest.gpr.x16, guest.gpr.x17, guest.gpr.x18);
             }
+            LOGW("FSP_WRITE_DIAG: returning original InvalidArgument (2-6001) without guest stack traversal");
             return result::InvalidArgument;
         }
         if (!backing->mode.write)
