@@ -5,6 +5,7 @@
 #include <array>
 #include <cstring>
 #include <elf.h>
+#include <optional>
 #include <string_view>
 #include <mbedtls/sha256.h>
 #include <kernel/results.h>
@@ -32,21 +33,117 @@ namespace skyline::service::jit {
             return value;
         }
 
-        bool HasSymbol(span<u8> image, const loader::NroHeader &header, std::string_view name) {
-            if (!ContainsBytes(image, header.dynsym.offset, header.dynsym.size) ||
-                !ContainsBytes(image, header.dynstr.offset, header.dynstr.size) ||
-                (header.dynsym.size % sizeof(Elf64_Sym)) != 0)
-                return false;
+        struct DynamicSymbols {
+            size_t symbolOffset;
+            size_t symbolCount;
+            size_t stringOffset;
+            size_t stringSize;
+            const char *source;
+        };
 
-            const auto strings{image.subspan(header.dynstr.offset, header.dynstr.size)};
-            const size_t count{header.dynsym.size / sizeof(Elf64_Sym)};
-            for (size_t i{}; i < count; i++) {
+        bool SymbolTableValid(span<u8> image, const DynamicSymbols &table) {
+            return table.symbolCount > 0 && table.symbolCount <= image.size() / sizeof(Elf64_Sym) &&
+                   ContainsBytes(image, table.symbolOffset, table.symbolCount * sizeof(Elf64_Sym)) &&
+                   table.stringSize != 0 && ContainsBytes(image, table.stringOffset, table.stringSize);
+        }
+
+        std::optional<DynamicSymbols> ResolveDynamicSymbols(span<u8> image, const loader::NroHeader &header) {
+            // NRO0 embeds offsets for .dynsym/.dynstr in the header, but some
+            // binaries leave them unset. MOD0's ELF dynamic entries are the
+            // authoritative fallback; interpreting missing header offsets as
+            // "no exports" produced misleading diagnostics for JIT plugins.
+            const DynamicSymbols headerTable{
+                header.dynsym.offset,
+                header.dynsym.size / sizeof(Elf64_Sym),
+                header.dynstr.offset,
+                header.dynstr.size,
+                "NRO header"
+            };
+
+            LOGW("JIT_DIAG: NRO symbol header: mod=0x{:X}, dynsym=0x{:X}+0x{:X}, dynstr=0x{:X}+0x{:X}",
+                 header.modOffset, header.dynsym.offset, header.dynsym.size,
+                 header.dynstr.offset, header.dynstr.size);
+
+            if (header.modOffset != 0 && ContainsBytes(image, header.modOffset, 8) &&
+                ReadU32(image, header.modOffset) == util::MakeMagic<u32>("MOD0")) {
+                // MOD0.DynamicOffset is signed and relative to the MOD0 base.
+                const auto relative{static_cast<i32>(ReadU32(image, header.modOffset + 4))};
+                const i64 dynamicAddress{static_cast<i64>(header.modOffset) + relative};
+                if (dynamicAddress >= 0 &&
+                    ContainsBytes(image, static_cast<size_t>(dynamicAddress), sizeof(Elf64_Dyn))) {
+                    u64 symtab{}, strtab{}, strsz{}, syment{}, hash{};
+                    bool terminated{};
+                    for (size_t pos{static_cast<size_t>(dynamicAddress)};
+                         ContainsBytes(image, pos, sizeof(Elf64_Dyn)); pos += sizeof(Elf64_Dyn)) {
+                        Elf64_Dyn entry{};
+                        std::memcpy(&entry, image.data() + pos, sizeof(entry));
+                        if (entry.d_tag == DT_NULL) {
+                            terminated = true;
+                            break;
+                        }
+                        switch (entry.d_tag) {
+                            case DT_SYMTAB: symtab = entry.d_un.d_ptr; break;
+                            case DT_STRTAB: strtab = entry.d_un.d_ptr; break;
+                            case DT_STRSZ: strsz = entry.d_un.d_val; break;
+                            case DT_SYMENT: syment = entry.d_un.d_val; break;
+                            case DT_HASH: hash = entry.d_un.d_ptr; break;
+                            default: break;
+                        }
+                    }
+
+                    if (terminated && syment == sizeof(Elf64_Sym) && symtab != 0 && strtab != 0 && strsz != 0) {
+                        size_t count{};
+                        // SysV DT_HASH gives the exact symbol count (nchain).
+                        if (hash != 0 && hash <= image.size() && ContainsBytes(image, static_cast<size_t>(hash), 8))
+                            count = ReadU32(image, static_cast<size_t>(hash) + 4);
+                        // Some homebrew NROs have no SysV hash. When the
+                        // string table immediately follows symbols, the
+                        // difference is a safe upper bound for symbol count.
+                        else if (strtab > symtab && (strtab - symtab) % sizeof(Elf64_Sym) == 0)
+                            count = (strtab - symtab) / sizeof(Elf64_Sym);
+
+                        if (symtab <= image.size() && strtab <= image.size() && strsz <= image.size()) {
+                            const DynamicSymbols modTable{
+                                static_cast<size_t>(symtab), count,
+                                static_cast<size_t>(strtab), static_cast<size_t>(strsz), "MOD0 dynamic"
+                            };
+                            if (SymbolTableValid(image, modTable)) {
+                                LOGW("JIT_DIAG: NRO MOD0 resolved symbols: count={}, dynsym=0x{:X}, dynstr=0x{:X}, hash=0x{:X}",
+                                     count, symtab, strtab, hash);
+                                return modTable;
+                            }
+                        }
+                        LOGW("JIT_DIAG: NRO MOD0 symbol bounds/count invalid: sym=0x{:X}, str=0x{:X}, strsz=0x{:X}, n={}, hash=0x{:X}",
+                             symtab, strtab, strsz, count, hash);
+                    } else {
+                        LOGW("JIT_DIAG: NRO MOD0 dynamic table invalid: terminated={}, syment=0x{:X}, symtab=0x{:X}, strtab=0x{:X}, strsz=0x{:X}",
+                             terminated, syment, symtab, strtab, strsz);
+                    }
+                } else {
+                    LOGW("JIT_DIAG: NRO MOD0 dynamic offset outside NRO: 0x{:X}", dynamicAddress);
+                }
+            } else {
+                LOGW("JIT_DIAG: NRO has no valid MOD0 at offset 0x{:X}", header.modOffset);
+            }
+
+            // Prefer valid, bounded NRO header sections over heuristic scans.
+            if (header.dynsym.size && header.dynsym.size % sizeof(Elf64_Sym) == 0 &&
+                SymbolTableValid(image, headerTable)) {
+                LOGW("JIT_DIAG: NRO symbols sourced from header (count={})", headerTable.symbolCount);
+                return headerTable;
+            }
+
+            LOGW("JIT_DIAG: NRO exports cannot be resolved safely; no symbol claims will be made");
+            return std::nullopt;
+        }
+
+        bool HasSymbol(span<u8> image, const DynamicSymbols &table, std::string_view name) {
+            const auto strings{image.subspan(table.stringOffset, table.stringSize)};
+            for (size_t i{}; i < table.symbolCount; i++) {
                 Elf64_Sym symbol{};
-                std::memcpy(&symbol, image.data() + header.dynsym.offset + i * sizeof(Elf64_Sym), sizeof(symbol));
-
-                if (symbol.st_name >= strings.size())
+                std::memcpy(&symbol, image.data() + table.symbolOffset + i * sizeof(Elf64_Sym), sizeof(symbol));
+                if (symbol.st_name >= strings.size() || symbol.st_shndx == SHN_UNDEF)
                     continue;
-
                 const auto *start{reinterpret_cast<const char *>(strings.data() + symbol.st_name)};
                 const size_t capacity{strings.size() - symbol.st_name};
                 const auto *end{static_cast<const char *>(std::memchr(start, 0, capacity))};
@@ -215,14 +312,20 @@ namespace skyline::service::jit {
 
         // Probe the dynamic symbol table without executing or relocating the NRO.
         // Checking inclusion in an NRR is NOT cryptographic signature verification.
-        LOGW("JIT_DIAG: Plugin exports: GetVersion={}, Configure={}, Control={}, GenerateCode={}, OnPrepared={}, ResolveBasicSymbols={}, SetupDiagnostics={}",
-             HasSymbol(module, header, "nnjitpluginGetVersion"),
-             HasSymbol(module, header, "nnjitpluginConfigure"),
-             HasSymbol(module, header, "nnjitpluginControl"),
-             HasSymbol(module, header, "nnjitpluginGenerateCode"),
-             HasSymbol(module, header, "nnjitpluginOnPrepared"),
-             HasSymbol(module, header, "nnjitpluginResolveBasicSymbols"),
-             HasSymbol(module, header, "nnjitpluginSetupDiagnostics"));
+        const auto dynamicSymbols{ResolveDynamicSymbols(module, header)};
+        if (dynamicSymbols) {
+            LOGW("JIT_DIAG: Plugin exports via {}: GetVersion={}, Configure={}, Control={}, GenerateCode={}, OnPrepared={}, ResolveBasicSymbols={}, SetupDiagnostics={}",
+                 dynamicSymbols->source,
+                 HasSymbol(module, *dynamicSymbols, "nnjitpluginGetVersion"),
+                 HasSymbol(module, *dynamicSymbols, "nnjitpluginConfigure"),
+                 HasSymbol(module, *dynamicSymbols, "nnjitpluginControl"),
+                 HasSymbol(module, *dynamicSymbols, "nnjitpluginGenerateCode"),
+                 HasSymbol(module, *dynamicSymbols, "nnjitpluginOnPrepared"),
+                 HasSymbol(module, *dynamicSymbols, "nnjitpluginResolveBasicSymbols"),
+                 HasSymbol(module, *dynamicSymbols, "nnjitpluginSetupDiagnostics"));
+        } else {
+            LOGW("JIT_DIAG: Plugin exports unavailable (no validated dynamic symbol table)");
+        }
 
         LOGW("JIT_DIAG: NRR/NRO metadata validated; loading, relocation and guest plugin execution NOT implemented");
         return kernel::result::NotImplemented;
