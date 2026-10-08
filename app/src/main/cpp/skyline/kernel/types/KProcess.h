@@ -18,6 +18,8 @@ namespace skyline {
     }
 
     namespace kernel::type {
+        class KCodeMemory;
+
         /**
          * @brief KProcess manages process-global state such as memory, kernel handles allocated to the process and synchronization primitives
          */
