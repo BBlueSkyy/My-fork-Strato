@@ -17,7 +17,7 @@ namespace skyline::service::jit {
       private:
         // Keep the kernel objects alive for as long as the JIT session exists.
         // This experimental interface does not yet map either CodeMemory object.
-        std::shared_ptr<kernel::type::KProcess> process;
+        std::weak_ptr<kernel::type::KProcess> process;
         std::shared_ptr<kernel::type::KCodeMemory> executableMemory;
         std::shared_ptr<kernel::type::KCodeMemory> readableMemory;
 
