@@ -93,6 +93,26 @@ namespace skyline::service::fssrv {
                  request.isTipc, request.isDomain, request.inputBuf.size(),
                  request.inputBuf.empty() ? size_t{} : request.inputBuf[0].size(),
                  backing->mode.raw, backing->size);
+            // Inspect only IPC framing, not file contents or file names.
+            // Distinguish an incorrectly positioned CMIF argument pointer
+            // from a bad WriteOption already present in the guest's request.
+            if (request.isDomain && request.domain && request.payload && request.cmdArg) {
+                const auto tlsBegin{reinterpret_cast<uintptr_t>(state.thread->tlsRegion)};
+                const auto argAddress{reinterpret_cast<uintptr_t>(request.cmdArg)};
+                const auto payloadAddress{reinterpret_cast<uintptr_t>(request.payload)};
+                const auto domainAddress{reinterpret_cast<uintptr_t>(request.domain)};
+                if (argAddress >= tlsBegin && argAddress - tlsBegin <= constant::TlsIpcSize &&
+                    payloadAddress >= tlsBegin && payloadAddress - tlsBegin <= constant::TlsIpcSize - sizeof(ipc::PayloadHeader) &&
+                    domainAddress >= tlsBegin && domainAddress - tlsBegin <= constant::TlsIpcSize - sizeof(ipc::DomainHeaderRequest)) {
+                    LOGW("FSP_WRITE_DIAG: Domain IPC framing: arg_tls=0x{:X}, cmif_tls=0x{:X}, domain_tls=0x{:X}, domain_payload_size=0x{:X}, domain_cmd={}, domain_object=0x{:X}, cmif_magic=0x{:08X}, cmif_version=0x{:X}, cmif_cmd=0x{:X}, cmif_token=0x{:X}",
+                         argAddress - tlsBegin, payloadAddress - tlsBegin, domainAddress - tlsBegin,
+                         request.domain->payloadSz, static_cast<u32>(request.domain->command),
+                         request.domain->objectId, static_cast<u32>(request.payload->magic),
+                         request.payload->version, request.payload->value, request.payload->token);
+                } else {
+                    LOGW("FSP_WRITE_DIAG: Domain IPC framing pointers outside TLS command buffer");
+                }
+            }
             return result::InvalidArgument;
         }
         if (!backing->mode.write)
