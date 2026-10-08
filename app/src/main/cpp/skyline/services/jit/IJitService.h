@@ -4,6 +4,7 @@
 #pragma once
 
 #include <services/serviceman.h>
+#include <kernel/types/KCodeMemory.h>
 
 namespace skyline::service::jit {
     /**
@@ -13,8 +14,18 @@ namespace skyline::service::jit {
      * requiring real generated code returns NotImplemented.
      */
     class IJitEnvironment : public BaseService {
+      private:
+        // Keep the kernel objects alive for as long as the JIT session exists.
+        // This experimental interface does not yet map either CodeMemory object.
+        std::shared_ptr<kernel::type::KProcess> process;
+        std::shared_ptr<kernel::type::KCodeMemory> executableMemory;
+        std::shared_ptr<kernel::type::KCodeMemory> readableMemory;
+
       public:
-        IJitEnvironment(const DeviceState &state, ServiceManager &manager);
+        IJitEnvironment(const DeviceState &state, ServiceManager &manager,
+                        std::shared_ptr<kernel::type::KProcess> process,
+                        std::shared_ptr<kernel::type::KCodeMemory> executableMemory,
+                        std::shared_ptr<kernel::type::KCodeMemory> readableMemory);
 
         Result GenerateCode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result Control(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
