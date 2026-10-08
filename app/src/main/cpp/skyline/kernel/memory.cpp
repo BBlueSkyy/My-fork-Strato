@@ -708,7 +708,7 @@ namespace skyline::kernel {
         // chunks that had their permission locked via svcSetMemoryAttribute's PermissionLocked bit
         bool allowed{true};
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
-            if (!desc.second.state.permissionChangeAllowed || desc.second.ipcLockCount != 0 || desc.second.attributes.isPermissionLocked) [[unlikely]]
+            if (!desc.second.state.permissionChangeAllowed || desc.second.ipcLockCount != 0 || desc.second.attributes.isPermissionLocked || desc.second.attributes.isBorrowed) [[unlikely]]
                 allowed = false;
         });
 
@@ -757,7 +757,7 @@ namespace skyline::kernel {
     ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
         if (desc.second.state == memory::states::Unmapped) {
             toMap.emplace_back(desc.first, desc.second.size);
-        } else if (desc.second.state != memory::states::Heap) [[unlikely]] {
+        } else if (desc.second.state != memory::states::Heap || desc.second.attributes.isBorrowed) [[unlikely]] {
             allowed = false;
             LOGW("MapPhysicalMemoryIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which is neither Unmapped nor Heap", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
         }
@@ -877,7 +877,7 @@ namespace skyline::kernel {
 
         bool locked{};
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
-            if (desc.second.ipcLockCount != 0) [[unlikely]]
+            if (desc.second.ipcLockCount != 0 || desc.second.attributes.isBorrowed) [[unlikely]]
                 locked = true;
         });
 
