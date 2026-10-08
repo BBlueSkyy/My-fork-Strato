@@ -169,6 +169,8 @@ namespace skyline {
                     objectType = KType::KSharedMemory;
                 } else if constexpr (std::is_same<objectClass, KTransferMemory>()) {
                     objectType = KType::KTransferMemory;
+                } else if constexpr (std::is_same<objectClass, KCodeMemory>()) {
+                    objectType = KType::KCodeMemory;
                 } else if constexpr (std::is_same<objectClass, KSession>()) {
                     objectType = KType::KSession;
                 } else if constexpr (std::is_same<objectClass, KEvent>()) {
