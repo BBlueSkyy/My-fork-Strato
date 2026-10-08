@@ -5,6 +5,7 @@
 #include <nce.h>
 #include <atomic>
 #include <cstring>
+#include <limits>
 #include <kernel/types/KProcess.h>
 #include <kernel/types/KTransferMemory.h>
 #include <kernel/types/KCodeMemory.h>
