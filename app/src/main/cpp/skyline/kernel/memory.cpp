@@ -617,6 +617,80 @@ namespace skyline::kernel {
         });
     }
 
+    bool MemoryManager::LockRegionForCodeMemory(span<u8> memory) {
+        if (!memory.valid() || memory.empty() || !AddressSpaceContains(memory))
+            return false;
+
+        std::unique_lock lock{mutex};
+        bool allowed{true};
+
+        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &chunk) {
+            const auto &desc{chunk.second};
+            if (desc.state.type != memory::MemoryType::Heap ||
+                !desc.state.codeMemoryAllowed ||
+                desc.permission != memory::Permission{true, true, false} ||
+                desc.attributes.value != 0 ||
+                desc.ipcLockCount != 0) {
+                allowed = false;
+                LOGW("JIT_DIAG: CodeMemory source validation failed at {} state=0x{:X} perm=0x{:X} attr=0x{:X} ipc={}",
+                     fmt::ptr(chunk.first), desc.state.value, desc.permission.raw, desc.attributes.value, desc.ipcLockCount);
+            }
+        });
+
+        if (!allowed)
+            return false;
+
+        auto host{GetHostSpan(memory)};
+        if (mprotect(host.data(), host.size(), PROT_NONE) != 0) {
+            LOGW("JIT_DIAG: protecting CodeMemory source failed: {}", strerror(errno));
+            return false;
+        }
+
+        ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &chunk) {
+            chunk.second.permission = {};
+            chunk.second.attributes.isBorrowed = true;
+            MapInternal(chunk);
+        });
+
+        return true;
+    }
+
+    bool MemoryManager::UnlockRegionForCodeMemory(span<u8> memory) {
+        if (!memory.valid() || memory.empty() || !AddressSpaceContains(memory))
+            return false;
+
+        std::unique_lock lock{mutex};
+        bool allowed{true};
+
+        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &chunk) {
+            const auto &desc{chunk.second};
+            if (desc.state.type != memory::MemoryType::Heap ||
+                !desc.attributes.isBorrowed || desc.ipcLockCount != 0 ||
+                desc.permission != memory::Permission{}) {
+                allowed = false;
+            }
+        });
+
+        if (!allowed) {
+            LOGW("JIT_DIAG: refusing to unlock CodeMemory source whose state has changed");
+            return false;
+        }
+
+        auto host{GetHostSpan(memory)};
+        if (mprotect(host.data(), host.size(), PROT_READ | PROT_WRITE) != 0) {
+            LOGW("JIT_DIAG: restoring CodeMemory source permissions failed: {}", strerror(errno));
+            return false;
+        }
+
+        ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &chunk) {
+            chunk.second.permission = {true, true, false};
+            chunk.second.attributes.isBorrowed = false;
+            MapInternal(chunk);
+        });
+
+        return true;
+    }
+
     void MemoryManager::SetRegionPermission(span<u8> memory, memory::Permission permission) {
         std::unique_lock lock{mutex};
 
