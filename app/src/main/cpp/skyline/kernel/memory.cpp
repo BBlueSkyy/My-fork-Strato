@@ -747,6 +747,22 @@ namespace skyline::kernel {
         return mapped;
     }
 
+    bool MemoryManager::ReadMemoryIfReadable(u64 address, void *output, size_t size) {
+        if (!size) return true;
+        if (!output || address > std::numeric_limits<u64>::max() - size) return false;
+        std::shared_lock lock{mutex};
+        const span<u8> region{reinterpret_cast<u8 *>(address), size};
+        if (!AddressSpaceContains(region)) return false;
+        bool readable{true};
+        ForeachChunkInRange(region, [&](const std::pair<u8 *, ChunkDescriptor> &chunk) {
+            if (!chunk.second.permission.r || chunk.second.state == memory::states::Unmapped ||
+                chunk.second.state == memory::states::Reserved) readable = false;
+        });
+        if (!readable) return false;
+        std::memcpy(output, GetHostSpan(region).data(), size);
+        return true;
+    }
+
     bool MemoryManager::MapPhysicalMemoryIfAllowed(span<u8> memory) {
     std::unique_lock lock{mutex};
 

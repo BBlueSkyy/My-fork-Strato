@@ -28,6 +28,7 @@ namespace skyline::service::jit {
         std::shared_ptr<kernel::type::KTransferMemory> transferMemory;
         std::mutex mutex;
         bool prepared{};
+        bool generationReported{};
         void Synchronize();
 
       public:

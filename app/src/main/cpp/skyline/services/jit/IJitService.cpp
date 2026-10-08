@@ -266,6 +266,10 @@ namespace skyline::service::jit {
             return kernel::result::InvalidArgument;
         const auto arguments{request.Pop<Arguments>()};
         if (arguments.dataSize > sizeof(arguments.data)) return kernel::result::InvalidSize;
+        const bool firstGeneration{!generationReported};
+        generationReported = true;
+        if (firstGeneration)
+            LOGI("JIT first GenerateCode: command=0x{:X}, data_size=0x{:X}", arguments.command, arguments.dataSize);
         try {
             context->ResetHeap();
             const auto ret{context->Add(i32{})};
@@ -285,7 +289,17 @@ namespace skyline::service::jit {
             const Reply reply{context->Get<i32>(ret), 0, context->Get<CodeRange>(out0), context->Get<CodeRange>(out1)};
             response.Push(reply);
             context->Get(outputAddress, output.data(), output.size());
-            if (reply.result) return kernel::result::InvalidState;
+            if (reply.result) {
+                LOGW("JIT GenerateCode callback error: command=0x{:X}, plugin_result=0x{:08X}, RX=0x{:X}+0x{:X}, RO=0x{:X}+0x{:X}",
+                     arguments.command, static_cast<u32>(reply.result), reply.range0.offset, reply.range0.size,
+                     reply.range1.offset, reply.range1.size);
+                return kernel::result::InvalidState;
+            }
+            LOGD("JIT GenerateCode completed: command=0x{:X}, RX=0x{:X}+0x{:X}, RO=0x{:X}+0x{:X}",
+                 arguments.command, reply.range0.offset, reply.range0.size, reply.range1.offset, reply.range1.size);
+            if (firstGeneration)
+                LOGI("JIT first GenerateCode completed: RX=0x{:X}+0x{:X}, RO=0x{:X}+0x{:X}",
+                     reply.range0.offset, reply.range0.size, reply.range1.offset, reply.range1.size);
             return {};
         } catch (const std::exception &e) {
             LOGW("JIT GenerateCode failed: {}", e.what());
@@ -300,6 +314,9 @@ namespace skyline::service::jit {
         if (request.cmdArgSz < sizeof(u64) || request.inputBuf.size() > 1 || request.outputBuf.size() > 1)
             return kernel::result::InvalidArgument;
         const auto command{request.Pop<u64>()};
+        LOGI("JIT Control: command=0x{:X}, input_size=0x{:X}, output_size=0x{:X}", command,
+             request.inputBuf.empty() ? 0 : request.inputBuf[0].size(),
+             request.outputBuf.empty() ? 0 : request.outputBuf[0].size());
         try {
             context->ResetHeap();
             const auto ret{context->Add(i32{})}, cfg{context->Add(configuration)};
@@ -312,7 +329,13 @@ namespace skyline::service::jit {
             const auto pluginResult{context->Get<i32>(ret)};
             response.Push(pluginResult);
             context->Get(out, output.data(), output.size());
-            return (wrapperResult || pluginResult) ? kernel::result::InvalidState : Result{};
+            if (wrapperResult || pluginResult) {
+                LOGW("JIT Control callback error: command=0x{:X}, wrapper_result=0x{:X}, plugin_result=0x{:08X}",
+                     command, wrapperResult, static_cast<u32>(pluginResult));
+                return kernel::result::InvalidState;
+            }
+            LOGI("JIT Control completed: command=0x{:X}, wrapper_result=0x0, plugin_result=0x0", command);
+            return {};
         } catch (const std::exception &e) {
             LOGW("JIT Control failed: {}", e.what());
             prepared = false;
@@ -461,7 +484,9 @@ namespace skyline::service::jit {
             if (const auto entry{image.Symbol("nnjitpluginSetupDiagnostics")})
                 context->Call(entry, {0, context->Add(context->Helper("_resolve"))});
             // Configure's optional memory-flags output is valid storage, not a null stub.
-            context->Call(image.Symbol("nnjitpluginConfigure"), {context->Add(u32{})});
+            const auto flagsAddress{context->Add(u32{})};
+            context->Call(image.Symbol("nnjitpluginConfigure"), {flagsAddress});
+            LOGI("JIT Configure: memory_flags=0x{:X}", context->Get<u32>(flagsAddress));
             context->Call(image.Symbol("nnjitpluginOnPrepared"), {context->Add(configuration)});
             Synchronize();
             this->transferMemory = std::move(transferMemory);
@@ -481,6 +506,7 @@ namespace skyline::service::jit {
         std::lock_guard lock{mutex};
         response.Push(configuration.userRx.offset);
         response.Push(configuration.userRo.offset);
+        LOGI("JIT GetCodeAddress: RX=0x{:X}, RO=0x{:X}", configuration.userRx.offset, configuration.userRo.offset);
         return {};
     }
 }

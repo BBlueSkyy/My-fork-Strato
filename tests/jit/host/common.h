@@ -56,8 +56,14 @@ namespace skyline {
     namespace kernel::type { class KProcess; struct KThread { bool killed{}; }; }
     struct DeviceState { std::shared_ptr<kernel::type::KProcess> process; static thread_local inline std::shared_ptr<kernel::type::KThread> thread; };
 }
-#define LOGW(...) ((void)0)
+namespace skyline::test {
+    inline std::vector<std::string> logs;
+    template<class... Args> void Log(std::string_view message, Args &&...args) {
+        logs.push_back(fmt::format(fmt::runtime(message), std::forward<Args>(args)...));
+    }
+}
+#define LOGW(...) skyline::test::Log(__VA_ARGS__)
 #define LOGD(...) ((void)0)
 #define LOGE(...) ((void)0)
 
-#define LOGI(...) ((void)0)
+#define LOGI(...) skyline::test::Log(__VA_ARGS__)

@@ -1022,19 +1022,40 @@ namespace skyline::kernel::svc {
         }
 
         LOGE("Guest svcBreak: reason=0x{:X}, arg=0x{:X}, size=0x{:X}", reason, ctx.x1, ctx.x2);
+        // Validate read permission, including every crossed chunk. Mapped
+        // CodeMemory/TransferMemory source pages can have permission None.
+        const auto readGuest = [&](u64 address, void *out, size_t size) {
+            try {
+                return state.process->memory.ReadMemoryIfReadable(address, out, size);
+            } catch (const signal::SignalException &) {
+                return false;
+            }
+        };
+        if (ctx.x1 && ctx.x2 == sizeof(u32)) {
+            u32 payload{};
+            if (readGuest(ctx.x1, &payload, sizeof(payload))) {
+                const Result result{payload};
+                LOGE("Guest svcBreak 4-byte payload: 0x{:08X} (module {}, description {})",
+                     payload, static_cast<u32>(result.module), static_cast<u32>(result.id));
+            } else {
+                LOGE("Guest svcBreak payload is not readable");
+            }
+        }
         if (!state.process->is64bit()) {
             const auto &guest{static_cast<const type::KJit32Thread &>(*state.thread).ctx};
             LOGE("Guest AArch32 break location: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}",
                  guest.pc, guest.lr, guest.sp);
 
-            if (ctx.x1 && ctx.x2 == sizeof(u32)) {
-                auto region{span<u8>{reinterpret_cast<u8 *>(ctx.x1), sizeof(u32)}};
-                if (state.process->memory.AddressSpaceContains(region) && state.process->memory.IsRangeMapped(region)) {
-                    u32 payload{};
-                    std::memcpy(&payload, state.process->memory.TranslateVirtualPointer<const u8 *>(ctx.x1), sizeof(payload));
-                    LOGE("Guest svcBreak 4-byte payload: 0x{:08X}", payload);
-                }
-            }
+        } else {
+            const auto &call{static_cast<const type::KNceThread &>(*state.thread).ctx.svcCallsite};
+            LOGE("Guest ARM64 break location: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}, FP=0x{:X}",
+                 call.pc, call.lr, call.sp, call.fp);
+            std::vector<void *> frames;
+            for (auto address : {call.pc, call.lr})
+                if (address) frames.push_back(reinterpret_cast<void *>(address));
+            for (auto address : nce::WalkGuestFrames(call.fp, readGuest))
+                frames.push_back(reinterpret_cast<void *>(address));
+            LOGE("Guest ARM64 break stack:{}", state.loader->GetStackTrace(frames));
         }
         if (state.thread->id)
             state.process->Kill(false);

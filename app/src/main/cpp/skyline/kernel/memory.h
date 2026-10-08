@@ -386,6 +386,9 @@ namespace skyline {
              */
             bool IsRangeMapped(span<u8> region);
 
+            /** Copy a readable guest range while holding the VMM mapping lock. */
+            bool ReadMemoryIfReadable(u64 address, void *output, size_t size);
+
             /**
              * @brief Atomically validates that the entire range is currently Unmapped (Free) and, if so,
              * maps it as Heap-backed physical memory (mirrors MapHeapMemory's ChunkDescriptor)

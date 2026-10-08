@@ -65,7 +65,7 @@ namespace skyline::kernel::ipc {
         for (u8 index{}; header->wNo > index; index++) {
             auto bufW{reinterpret_cast<BufferDescriptorABW *>(pointer)};
             if (bufW->Pointer()) {
-                outputBuf.push_back(state.process->memory.GetHostSpan({bufW->Pointer(), bufW->Size()}));
+                inputBuf.push_back(state.process->memory.GetHostSpan({bufW->Pointer(), bufW->Size()}));
                 outputBuf.push_back(state.process->memory.GetHostSpan({bufW->Pointer(), bufW->Size()}));
                 LOGV("Buf W #{}: {}, 0x{:X}", index, fmt::ptr(bufW->Pointer()), static_cast<u16>(bufW->Size()));
             }
@@ -102,7 +102,12 @@ namespace skyline::kernel::ipc {
                 pointer += sizeof(PayloadHeader);
 
                 cmdArg = pointer;
-                cmdArgSz = header->rawSize * sizeof(u32);
+                // HIPC raw data includes the CMIF header and a total of 16
+                // bytes of alignment padding around the payload. Those bytes
+                // are not command arguments (and may contain stale TLS data).
+                const size_t rawBytes{header->rawSize * sizeof(u32)};
+                constexpr size_t overhead{constant::IpcPaddingSum + sizeof(PayloadHeader)};
+                cmdArgSz = rawBytes >= overhead ? rawBytes - overhead : 0;
             }
         }
 

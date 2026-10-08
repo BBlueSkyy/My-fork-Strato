@@ -46,8 +46,12 @@ int main() {
                      0xb900001f,0xf9400068,0x5280a809,0x72aa5009,0xb9000109,0x52807809,0x72bacbe9,0xb9000509,
                      0xd2800109,0xa9002428,0xa9007c5f,0xf9400fea,0x528009ab,0xb900014b,0xd65f03c0};
     std::memcpy(nro.data()+0x200,code,sizeof(code));
+    // Error-return fixture: ret contains the command's low word, wrapper returns zero.
+    const u32 controlCode[]={0xb9000002,0xd2800000,0xd65f03c0};
+    std::memcpy(nro.data()+0x300,controlCode,sizeof(controlCode));
+    Put(nro,0x220,u32{0xb9000004}); // GenerateCode ret likewise receives command (w4).
     const std::pair<const char*,u64> names[]={{"nnjitpluginGetVersion",0x200},{"nnjitpluginConfigure",0x208},
-       {"nnjitpluginOnPrepared",0x210},{"nnjitpluginControl",0x214},{"nnjitpluginGenerateCode",0x220}};
+       {"nnjitpluginOnPrepared",0x210},{"nnjitpluginControl",0x300},{"nnjitpluginGenerateCode",0x220}};
     size_t stringAt=1,symbolAt=1;
     for(auto [name,address]:names) {std::strcpy(reinterpret_cast<char*>(nro.data()+0x1600+stringAt),name);
        Put(nro,0x1400+symbolAt++*24,Elf64_Sym{static_cast<u32>(stringAt),ELF64_ST_INFO(STB_GLOBAL,STT_FUNC),0,1,address,4});stringAt+=std::strlen(name)+1;}
@@ -67,6 +71,15 @@ int main() {
     kernel::ipc::IpcRequest emptyControl;kernel::ipc::IpcResponse emptyControlled;
     emptyControl.SetArguments(u64{});
     assert(environment->Control(session,emptyControl,emptyControlled)==Result{});
+    kernel::ipc::IpcRequest failedControl;kernel::ipc::IpcResponse failedControlled;
+    failedControl.SetArguments(u64{0x2ee202});
+    assert(environment->Control(session,failedControl,failedControlled)==kernel::result::InvalidState);
+    u32 callbackResult{};std::memcpy(&callbackResult,failedControlled.payload.data(),4);
+    assert(callbackResult==0x2ee202);
+    assert(std::any_of(test::logs.begin(),test::logs.end(),[](const auto &log) {
+        return log.find("JIT Control callback error:")!=std::string::npos &&
+               log.find("plugin_result=0x002EE202")!=std::string::npos;
+    }));
     struct Range {u64 offset,size;};
     struct Arguments {u32 dataSize,padding;u64 command;Range in0,in1;std::array<u64,4> data;};
     kernel::ipc::IpcRequest generate;kernel::ipc::IpcResponse generated;
@@ -84,6 +97,15 @@ int main() {
     PluginContext executor;executor.Load(image);auto backing=rx->GetWritableBacking();
     executor.Map(rxAddress,{backing.data(),backing.size()},false,true);
     assert(executor.Call(rxAddress,{})==42);
+    kernel::ipc::IpcRequest failedGenerate;kernel::ipc::IpcResponse failedGenerated;
+    failedGenerate.SetArguments(Arguments{32,0,0x2ee202,{rxAddress,0x2000},{roAddress,0x2000},{}});
+    failedGenerate.inputBuf={span<u8>{input}};failedGenerate.outputBuf={span<u8>{output}};
+    assert(environment->GenerateCode(session,failedGenerate,failedGenerated)==kernel::result::InvalidState);
+    std::memcpy(&callbackResult,failedGenerated.payload.data(),4);assert(callbackResult==0x2ee202);
+    assert(std::any_of(test::logs.begin(),test::logs.end(),[](const auto &log) {
+        return log.find("JIT GenerateCode callback error:")!=std::string::npos &&
+               log.find("plugin_result=0x002EE202")!=std::string::npos;
+    }));
     manager.registered.reset();environment.reset();state.process->handles.clear();
     std::cout<<"jit:u IPC: CodeMemory, NRR hash rejection, NRO load, callbacks, ARM64 generation and execution passed\n";
 }
