@@ -75,10 +75,26 @@ namespace skyline::service::fssrv {
 
     Result IFile::Write(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
         const auto input{ReadArgument<FileIoInput>(request)};
-        if (!input)
+        if (!input) {
+            // A malformed IFile::Write request and an invalid WriteOption
+            // otherwise collapse into the same result (2-6001).
+            LOGW("FSP_WRITE_DIAG: Write missing 0x18-byte arguments: raw_args=0x{:X}, ipc_raw_words={}, tipc={}, domain={}, input_buffers={}",
+                 request.cmdArgSz, static_cast<u32>(request.header->rawSize),
+                 request.isTipc, request.isDomain, request.inputBuf.size());
             return result::InvalidArgument;
-        if (input->option & ~1U)
+        }
+        if (input->option & ~1U) {
+            // Diagnostic only: preserve the SDK's invalid-option error.
+            // Report the decoded 24-byte payload and transport shape so we
+            // can distinguish guest-supplied flags from IPC offset corruption.
+            LOGW("FSP_WRITE_DIAG: Write rejected invalid option=0x{:08X}, reserved=0x{:08X}, offset={}, size={}, raw_args=0x{:X}, ipc_raw_words={}, tipc={}, domain={}, input_buffers={}, input0_bytes=0x{:X}, open_mode=0x{:X}, file_size=0x{:X}",
+                 input->option, input->padding, input->offset, input->size,
+                 request.cmdArgSz, static_cast<u32>(request.header->rawSize),
+                 request.isTipc, request.isDomain, request.inputBuf.size(),
+                 request.inputBuf.empty() ? size_t{} : request.inputBuf[0].size(),
+                 backing->mode.raw, backing->size);
             return result::InvalidArgument;
+        }
         if (!backing->mode.write)
             return result::WriteNotPermitted;
 
