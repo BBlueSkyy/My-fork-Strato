@@ -222,6 +222,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/kernel/types/KProcess.cpp
         ${source_DIR}/skyline/kernel/types/KThread.cpp
         ${source_DIR}/skyline/kernel/types/KTransferMemory.cpp
+        ${source_DIR}/skyline/kernel/types/KCodeMemory.cpp
         ${source_DIR}/skyline/kernel/types/KSharedMemory.cpp
         ${source_DIR}/skyline/kernel/types/KMemory.cpp
         ${source_DIR}/skyline/kernel/types/KSyncObject.cpp
