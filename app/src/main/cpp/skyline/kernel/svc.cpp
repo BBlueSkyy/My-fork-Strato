@@ -4,6 +4,7 @@
 #include <os.h>
 #include <nce.h>
 #include <atomic>
+#include <array>
 #include <cstring>
 #include <limits>
 #include <kernel/types/KProcess.h>
@@ -12,6 +13,7 @@
 #include <common/trace.h>
 #include <vfs/npdm.h>
 #include "results.h"
+#include "ipc.h"
 #include "svc.h"
 
 namespace skyline::kernel::svc {
@@ -998,7 +1000,87 @@ namespace skyline::kernel::svc {
         ctx.w0 = Result{};
     }
 
+    namespace {
+        // Capture only anomalous IFile::Write-shaped domain IPC *as the guest
+        // enters* svcSendSyncRequest, before the HLE parser, buffer locks or
+        // response serialization can modify the TLS command buffer. This is
+        // diagnostic-only and never reads guest stack frames or file contents.
+        void TraceRawDomainWriteAtSvc(const DeviceState &state, const SvcContext &ctx) {
+            if (!state.process->is64bit() || !state.thread || !state.thread->tlsRegion)
+                return;
+
+            std::array<u8, constant::TlsIpcSize> tls{};
+            std::memcpy(tls.data(), state.thread->tlsRegion, tls.size());
+            const auto copyAt = [&](size_t offset, auto &object) {
+                if (offset > tls.size() || sizeof(object) > tls.size() - offset)
+                    return false;
+                std::memcpy(&object, tls.data() + offset, sizeof(object));
+                return true;
+            };
+
+            ipc::CommandHeader header{};
+            if (!copyAt(0, header) ||
+                (header.type != ipc::CommandType::Request && header.type != ipc::CommandType::RequestWithContext))
+                return;
+
+            size_t cursor{sizeof(header)};
+            if (header.handleDesc) {
+                ipc::HandleDescriptor handles{};
+                if (!copyAt(cursor, handles)) return;
+                cursor += sizeof(handles);
+                if (handles.sendPid) cursor += sizeof(u64);
+                cursor += sizeof(KHandle) * (static_cast<size_t>(handles.copyCount) + handles.moveCount);
+            }
+            cursor += static_cast<size_t>(header.xNo) * sizeof(ipc::BufferDescriptorX);
+            cursor += static_cast<size_t>(header.aNo + header.bNo + header.wNo) * sizeof(ipc::BufferDescriptorABW);
+            if (cursor > tls.size()) return;
+
+            // rawSize is measured from the end of the descriptors and includes
+            // the aligned domain header, CMIF header and command arguments.
+            const auto rawEnd{cursor + static_cast<size_t>(header.rawSize) * sizeof(u32)};
+            if (rawEnd > tls.size()) return;
+            cursor = util::AlignUp(cursor, constant::IpcPaddingSum);
+            const auto domainOffset{cursor};
+            ipc::DomainHeaderRequest domain{};
+            if (!copyAt(cursor, domain) || domain.command != ipc::DomainCommand::SendMessage ||
+                domain.payloadSz != sizeof(ipc::PayloadHeader) + 0x18)
+                return;
+
+            cursor += sizeof(domain);
+            const auto cmifOffset{cursor};
+            ipc::PayloadHeader cmif{};
+            if (!copyAt(cursor, cmif) || cmif.magic != util::MakeMagic<u32>("SFCI") || cmif.value != 1)
+                return;
+            cursor += sizeof(cmif);
+            const auto argOffset{cursor};
+            struct FileWriteArguments {
+                u32 option;
+                u32 reserved;
+                i64 offset;
+                i64 size;
+            };
+            static_assert(sizeof(FileWriteArguments) == 0x18);
+            FileWriteArguments args{};
+            if (cursor + sizeof(args) > rawEnd || !copyAt(cursor, args) || !(args.option & ~1U))
+                return;
+
+            // Multiple services have command 1. We intentionally call this a
+            // Write-shaped request until IFile::Write confirms the identity.
+            LOGW("FSP_SVC_DIAG: pre-dispatch TLS: handle=0x{:X}, thread={}, domain_tls=0x{:X}, cmif_tls=0x{:X}, args_tls=0x{:X}, raw_words={}, domain_object=0x{:X}, payload_size=0x{:X}, descriptors X/A/B/W={}/{}/{}/{}",
+                 static_cast<KHandle>(ctx.x0), state.thread->id, domainOffset, cmifOffset, argOffset,
+                 static_cast<u32>(header.rawSize), domain.objectId, domain.payloadSz,
+                 static_cast<u32>(header.xNo), static_cast<u32>(header.aNo),
+                 static_cast<u32>(header.bNo), static_cast<u32>(header.wNo));
+            LOGW("FSP_SVC_DIAG: pre-dispatch raw file-write-shaped args: option=0x{:08X}, reserved=0x{:08X}, offset={}, size={}",
+                 args.option, args.reserved, args.offset, args.size);
+            const auto &call{static_cast<const type::KNceThread &>(*state.thread).ctx.svcCallsite};
+            LOGW("FSP_SVC_DIAG: guest SVC callsite: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}, FP=0x{:X}",
+                 call.pc, call.lr, call.sp, call.fp);
+        }
+    }
+
     void SendSyncRequest(const DeviceState &state, SvcContext &ctx) {
+        TraceRawDomainWriteAtSvc(state, ctx);
         SchedulerScopedLock schedulerLock(state);
         state.os->serviceManager.SyncRequestHandler(static_cast<KHandle>(ctx.x0));
         ctx.w0 = Result{};
@@ -1050,12 +1132,10 @@ namespace skyline::kernel::svc {
             const auto &call{static_cast<const type::KNceThread &>(*state.thread).ctx.svcCallsite};
             LOGE("Guest ARM64 break location: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}, FP=0x{:X}",
                  call.pc, call.lr, call.sp, call.fp);
-            std::vector<void *> frames;
-            for (auto address : {call.pc, call.lr})
-                if (address) frames.push_back(reinterpret_cast<void *>(address));
-            for (auto address : nce::WalkGuestFrames(call.fp, readGuest))
-                frames.push_back(reinterpret_cast<void *>(address));
-            LOGE("Guest ARM64 break stack:{}", state.loader->GetStackTrace(frames));
+            // Avoid synchronous guest stack walking and symbolization during a
+            // fatal SVC. Previous runs stopped before the original guest
+            // termination sequence could finish. Keep raw caller registers.
+            LOGE("Guest ARM64 break: frame walking suppressed (diagnostic safety)");
         }
         if (state.thread->id)
             state.process->Kill(false);
