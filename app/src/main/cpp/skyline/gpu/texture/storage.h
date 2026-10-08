@@ -28,6 +28,7 @@ namespace skyline::gpu::texture {
      */
     class TextureGroup : public std::enable_shared_from_this<TextureGroup> {
       private:
+        mutable std::mutex runtimeSynchronizationMutex;
         mutable std::mutex mutex;
         std::vector<std::weak_ptr<TextureStorage>> storages;
         CopyDependencyTracker<TextureStorage> copyDependencies;
@@ -39,9 +40,8 @@ namespace skyline::gpu::texture {
          * executable CopyOnly routes. This keeps source/destination texture locking
          * ordered without changing the global barrier policy.
          */
-        static std::mutex &RuntimeSynchronizationMutex() {
-            static std::mutex mutex;
-            return mutex;
+        std::mutex &RuntimeSynchronizationMutex() {
+            return runtimeSynchronizationMutex;
         }
 
         void Attach(const std::shared_ptr<TextureStorage> &storage) {
@@ -222,7 +222,7 @@ namespace skyline::gpu::texture {
         const std::shared_ptr<TextureStorage> &requested,
         const TextureResourceLayout &requestedLayout, const CopyImageInfo &requestedImage,
         const ClassifiedResourceView &classified) {
-        std::scoped_lock runtimeLock{RuntimeSynchronizationMutex()};
+        std::scoped_lock runtimeLock{runtimeSynchronizationMutex};
         std::scoped_lock lock{mutex};
         const bool dimensionalPair{
             (backingLayout.imageType == ImageKind::OneDimensional &&
@@ -336,7 +336,7 @@ namespace skyline::gpu::texture {
     inline bool TextureGroup::TryMergeCopyDependenciesFrom(TextureGroup &other) {
         if (this == &other)
             return true;
-        std::scoped_lock runtimeLock{RuntimeSynchronizationMutex()};
+        std::scoped_lock runtimeLock{runtimeSynchronizationMutex, other.runtimeSynchronizationMutex};
         std::scoped_lock lock{mutex, other.mutex};
         if (copyCapabilities.HasPendingSynchronizations() ||
             other.copyCapabilities.HasPendingSynchronizations())

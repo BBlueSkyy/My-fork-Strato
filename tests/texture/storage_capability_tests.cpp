@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <skyline/gpu/texture/storage.h>
 
@@ -35,6 +36,20 @@ int main() {
     };
 
     auto group = std::make_shared<TextureGroup>();
+
+    // Runtime serialization is local to one alias group: unrelated CopyOnly
+    // relations must remain independently lockable.
+    auto independentGroup = std::make_shared<TextureGroup>();
+    std::unique_lock groupRuntimeLock{group->RuntimeSynchronizationMutex()};
+    std::unique_lock independentRuntimeLock{
+        independentGroup->RuntimeSynchronizationMutex(), std::try_to_lock};
+    assert(independentRuntimeLock.owns_lock());
+    std::unique_lock duplicateGroupRuntimeLock{
+        group->RuntimeSynchronizationMutex(), std::try_to_lock};
+    assert(!duplicateGroupRuntimeLock.owns_lock());
+    independentRuntimeLock.unlock();
+    groupRuntimeLock.unlock();
+
     auto source = std::make_shared<TextureStorage>(nullptr, group, ranges);
     auto destination = std::make_shared<TextureStorage>(nullptr, group, ranges);
     group->Attach(source);

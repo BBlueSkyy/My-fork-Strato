@@ -12,6 +12,10 @@
 #include "command_nodes.h"
 #include "common/spin_lock.h"
 
+namespace skyline::gpu::texture {
+    class TextureGroup;
+}
+
 namespace skyline::gpu::interconnect {
     constexpr bool EnableGpuCheckpoints{false}; //!< Whether to enable GPU debugging checkpoints (WILL DECREASE PERF SIGNIFICANTLY)
 
@@ -187,9 +191,10 @@ namespace skyline::gpu::interconnect {
             ~LockedTexture();
         };
 
+        std::shared_ptr<texture::TextureGroup> copyOnlyRuntimeGroup;
+        std::unique_lock<std::mutex> copyOnlyRuntimeLock;
         std::vector<LockedTexture> preserveAttachedTextures;
         std::vector<LockedTexture> attachedTextures; //!< All textures that are attached to the current execution
-        std::unique_lock<std::mutex> copyOnlyRuntimeLock;
 
         /**
          * @brief A wrapper of a Buffer object that has been locked beforehand and must be unlocked afterwards
@@ -251,6 +256,8 @@ namespace skyline::gpu::interconnect {
         void ResetInternal();
 
         void AttachBufferBase(std::shared_ptr<Buffer> buffer);
+
+        void AcquireCopyOnlyRuntime(TextureView *view);
 
         void SynchronizeCopyOnly(TextureView *view);
 
