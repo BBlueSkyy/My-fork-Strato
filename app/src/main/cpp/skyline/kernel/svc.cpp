@@ -7,6 +7,7 @@
 #include <cstring>
 #include <kernel/types/KProcess.h>
 #include <kernel/types/KTransferMemory.h>
+#include <kernel/types/KCodeMemory.h>
 #include <common/trace.h>
 #include <vfs/npdm.h>
 #include "results.h"
@@ -1615,13 +1616,37 @@ namespace skyline::kernel::svc {
         ctx.w0 = result;
     }
 
-    void CreateCodeMemory(const DeviceState &, SvcContext &ctx) {
+    void CreateCodeMemory(const DeviceState &state, SvcContext &ctx) {
         const u64 address{ctx.x1};
         const u64 size{ctx.x2};
-        LOGW("JIT_DIAG: svcCreateCodeMemory address=0x{:X}, size=0x{:X}; unsupported", address, size);
-        // A real CodeMemory handle and backing mapping are required. Never fake them.
         ctx.w1 = 0;
-        ctx.w0 = result::NotImplemented;
+
+        LOGW("JIT_DIAG: svcCreateCodeMemory address=0x{:X}, size=0x{:X}", address, size);
+        if (!util::IsPageAligned(address)) {
+            ctx.w0 = result::InvalidAddress;
+            return;
+        }
+        if (!size || !util::IsPageAligned(size) || size > std::numeric_limits<size_t>::max()) {
+            ctx.w0 = result::InvalidSize;
+            return;
+        }
+        if (address > std::numeric_limits<u64>::max() - size ||
+            !state.process->memory.AddressSpaceContains(span<u8>{reinterpret_cast<u8 *>(address), static_cast<size_t>(size)})) {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        auto codeMemory{std::make_shared<type::KCodeMemory>(state, span<u8>{
+            reinterpret_cast<u8 *>(address), static_cast<size_t>(size)})};
+        auto initResult{codeMemory->Initialize()};
+        if (initResult != Result{}) {
+            ctx.w0 = initResult;
+            return;
+        }
+
+        ctx.w1 = state.process->InsertItem(codeMemory);
+        ctx.w0 = Result{};
+        LOGW("JIT_DIAG: svcCreateCodeMemory initialized real object handle=0x{:X}, size=0x{:X}", ctx.w1, size);
     }
 
     void ControlCodeMemory(const DeviceState &, SvcContext &ctx) {
