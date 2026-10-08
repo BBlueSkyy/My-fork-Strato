@@ -336,6 +336,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/vfs/patch_manager.cpp
         ${source_DIR}/skyline/services/serviceman.cpp
         ${source_DIR}/skyline/services/base_service.cpp
+        ${source_DIR}/skyline/services/jit/IJitService.cpp
         ${source_DIR}/skyline/services/sm/IUserInterface.cpp
         ${source_DIR}/skyline/services/fatalsrv/IService.cpp
         ${source_DIR}/skyline/services/audio/IAudioInManager.cpp
