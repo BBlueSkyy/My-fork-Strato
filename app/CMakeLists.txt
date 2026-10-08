@@ -189,7 +189,7 @@ include_directories(SYSTEM "libraries/audio-core/include")
 target_link_libraries_system(audio_core Boost::intrusive Boost::container range-v3)
 
 # Dynarmic
-set(DYNARMIC_FRONTENDS "A32" CACHE STRING "Enabled Dynarmic frontends" FORCE)
+set(DYNARMIC_FRONTENDS "A32;A64" CACHE STRING "Enabled Dynarmic frontends" FORCE)
 set(DYNARMIC_INSTALL OFF CACHE BOOL "Skip Dynarmic installation" FORCE)
 set(DYNARMIC_USE_PRECOMPILED_HEADERS OFF CACHE BOOL "Use precompiled headers for Dynarmic" FORCE)
 add_subdirectory("libraries/dynarmic")
@@ -338,6 +338,8 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/serviceman.cpp
         ${source_DIR}/skyline/services/base_service.cpp
         ${source_DIR}/skyline/services/jit/IJitService.cpp
+        ${source_DIR}/skyline/services/jit/plugin_image.cpp
+        ${source_DIR}/skyline/services/jit/plugin_context.cpp
         ${source_DIR}/skyline/services/sm/IUserInterface.cpp
         ${source_DIR}/skyline/services/fatalsrv/IService.cpp
         ${source_DIR}/skyline/services/audio/IAudioInManager.cpp

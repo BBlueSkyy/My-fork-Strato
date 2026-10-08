@@ -1650,15 +1650,26 @@ namespace skyline::kernel::svc {
         LOGW("JIT_DIAG: svcCreateCodeMemory initialized real object handle=0x{:X}, size=0x{:X}", ctx.w1, size);
     }
 
-    void ControlCodeMemory(const DeviceState &, SvcContext &ctx) {
+    void ControlCodeMemory(const DeviceState &state, SvcContext &ctx) {
         const KHandle handle{ctx.w0};
         const u32 operation{ctx.w1};
-        const u64 address{ctx.x2};
-        const u64 size{ctx.x3};
+        const u64 address{ctx.x2}, size{ctx.x3};
         const u32 permission{ctx.w4};
-        LOGW("JIT_DIAG: svcControlCodeMemory handle=0x{:X}, op={}, address=0x{:X}, size=0x{:X}, perm=0x{:X}; unsupported",
-             handle, operation, address, size, permission);
-        ctx.w0 = result::NotImplemented;
+        if (!util::IsPageAligned(address)) { ctx.w0 = result::InvalidAddress; return; }
+        if (!size || !util::IsPageAligned(size)) { ctx.w0 = result::InvalidSize; return; }
+        if (address > std::numeric_limits<u64>::max() - size) { ctx.w0 = result::InvalidMemoryRegion; return; }
+        if (operation > 3) { ctx.w0 = result::InvalidEnumValue; return; }
+        if ((operation == 0 && permission != 3) ||
+            (operation == 2 && permission != 1 && permission != 5) ||
+            ((operation == 1 || operation == 3) && permission != 0)) {
+            ctx.w0 = result::InvalidNewMemoryPermission; return;
+        }
+        std::shared_ptr<type::KCodeMemory> memory;
+        try { memory = state.process->GetHandle<type::KCodeMemory>(handle); }
+        catch (const std::exception &) { ctx.w0 = result::InvalidHandle; return; }
+        memory::Permission perm; perm.raw = permission;
+        ctx.w0 = (operation == 0 || operation == 2) ? memory->Map(address, size, perm, operation == 2)
+                                                   : memory->Unmap(address, size, operation == 3);
     }
 
     #define SVC_NONE SvcDescriptor{} //!< A macro with a placeholder value for the SVC not being implemented or not existing

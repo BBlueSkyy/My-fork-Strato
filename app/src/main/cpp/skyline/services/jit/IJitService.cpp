@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-// Diagnostic-only JIT interface. This parses plugin metadata, but never runs guest code.
+// JIT sysmodule: validate, relocate and execute the guest-supplied compiler plugin.
 
 #include <algorithm>
 #include <array>
@@ -10,6 +10,7 @@
 #include <mbedtls/sha256.h>
 #include <kernel/results.h>
 #include <kernel/types/KTransferMemory.h>
+#include <kernel/types/KProcess.h>
 #include <loader/nro.h>
 #include "IJitService.h"
 
@@ -183,7 +184,7 @@ namespace skyline::service::jit {
         std::shared_ptr<kernel::type::KCodeMemory> readableMemory;
 
         // The process and both CodeMemory handles are distinct kernel objects.
-        // Validate them before exposing a diagnostic session to the guest.
+        // Validate them before exposing a compiler session to the guest.
         try {
             process = state.process->GetHandle<kernel::type::KProcess>(request.copyHandles.at(0));
             if (executableSize)
@@ -202,25 +203,126 @@ namespace skyline::service::jit {
             return kernel::result::InvalidArgument;
         }
 
-        LOGW("JIT_DIAG: validated JIT process and CodeMemory handles (exec=0x{:X}, ro=0x{:X}); mapping not implemented",
-             executableSize, readableSize);
-        manager.RegisterService(SRVREG(IJitEnvironment, std::move(process), std::move(executableMemory), std::move(readableMemory)), session, response);
+        auto environment{SRVREG(IJitEnvironment, std::move(process), std::move(executableMemory), std::move(readableMemory))};
+        const auto result{environment->Initialize(executableSize, readableSize)};
+        if (result != Result{}) return result;
+        manager.RegisterService(environment, session, response);
         return {};
     }
 
-    Result IJitEnvironment::GenerateCode(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
-        LOGW("JIT_DIAG: GenerateCode called (args=0x{:X}, input_buffers={}, output_buffers={}); compiler unavailable",
-             request.cmdArgSz, request.inputBuf.size(), request.outputBuf.size());
-        return kernel::result::NotImplemented;
+    Result IJitEnvironment::Initialize(u64 executableSize, u64 readableSize) {
+        if ((executableSize && !util::IsPageAligned(executableSize)) ||
+            (readableSize && !util::IsPageAligned(readableSize))) return kernel::result::InvalidSize;
+        if (executableMemory) {
+            auto result{executableMemory->MapToOwner(executableSize, memory::Permission{true, false, true}, configuration.userRx.offset)};
+            if (result != Result{}) return result;
+            configuration.userRx.size = executableSize;
+        }
+        if (readableMemory) {
+            auto result{readableMemory->MapToOwner(readableSize, memory::Permission{true, false, false}, configuration.userRo.offset)};
+            if (result != Result{}) return result;
+            configuration.userRo.size = readableSize;
+        }
+        // Identity virtual mapping in the private sysmodule CPU, backed by the
+        // object's writable view. The application retains real R/RX permissions.
+        configuration.sysRx = configuration.userRx;
+        configuration.sysRo = configuration.userRo;
+        return {};
     }
 
-    Result IJitEnvironment::Control(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
-        LOGW("JIT_DIAG: Control called (args=0x{:X}, input_buffers={}, output_buffers={}); compiler unavailable",
-             request.cmdArgSz, request.inputBuf.size(), request.outputBuf.size());
-        return kernel::result::NotImplemented;
+    IJitEnvironment::~IJitEnvironment() {
+        if (prepared && context && state.thread && !state.thread->killed) {
+            try {
+                context->ResetHeap();
+                const auto &finalizers{image.Finalizers()};
+                for (auto it = finalizers.rbegin(); it != finalizers.rend(); ++it) context->Call(*it, {});
+            } catch (const std::exception &e) { LOGW("JIT plugin finalizer failed: {}", e.what()); }
+        }
+        if (configuration.userRo.size && readableMemory)
+            readableMemory->Unmap(configuration.userRo.offset, configuration.userRo.size, true);
+        if (configuration.userRx.size && executableMemory)
+            executableMemory->Unmap(configuration.userRx.offset, configuration.userRx.size, true);
+    }
+
+    void IJitEnvironment::Synchronize() {
+        for (auto [memory, range] : {std::pair{executableMemory, configuration.sysRx}, std::pair{readableMemory, configuration.sysRo}}) {
+            if (!memory) continue;
+            const auto [offset, size]{context->TakeWrites(range.offset)};
+            memory->Synchronize(offset, size);
+        }
+    }
+
+    Result IJitEnvironment::GenerateCode(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        std::lock_guard lock{mutex};
+        struct Arguments {
+            u32 dataSize, padding;
+            u64 command;
+            CodeRange range0, range1;
+            std::array<u64, 4> data;
+        };
+        static_assert(sizeof(Arguments) == 0x50);
+        if (!prepared) return kernel::result::InvalidState;
+        if (request.cmdArgSz < sizeof(Arguments) || request.inputBuf.size() > 1 || request.outputBuf.size() > 1)
+            return kernel::result::InvalidArgument;
+        const auto arguments{request.Pop<Arguments>()};
+        if (arguments.dataSize > sizeof(arguments.data)) return kernel::result::InvalidSize;
+        try {
+            context->ResetHeap();
+            const auto ret{context->Add(i32{})};
+            const auto in0{context->Add(arguments.range0)}, in1{context->Add(arguments.range1)};
+            const auto out0{context->Add(CodeRange{arguments.range0.offset, 0})};
+            const auto out1{context->Add(CodeRange{arguments.range1.offset, 0})};
+            const auto cfg{context->Add(configuration)}, data{context->Add(arguments.data)};
+            auto input{request.inputBuf.empty() ? span<u8>{} : request.inputBuf[0]};
+            auto output{request.outputBuf.empty() ? span<u8>{} : request.outputBuf[0]};
+            const auto inputAddress{context->Add(input.data(), input.size())};
+            const auto outputAddress{context->Add(output.data(), output.size())};
+            context->Call(image.Symbol("nnjitpluginGenerateCode"), {ret, out0, out1, cfg,
+                arguments.command, inputAddress, input.size(), in0, in1, data,
+                arguments.dataSize, outputAddress, output.size()});
+            Synchronize();
+            struct Reply { i32 result; u32 padding; CodeRange range0, range1; };
+            const Reply reply{context->Get<i32>(ret), 0, context->Get<CodeRange>(out0), context->Get<CodeRange>(out1)};
+            response.Push(reply);
+            context->Get(outputAddress, output.data(), output.size());
+            if (reply.result) return kernel::result::InvalidState;
+            return {};
+        } catch (const std::exception &e) {
+            LOGW("JIT GenerateCode failed: {}", e.what());
+            prepared = false;
+            return kernel::result::InvalidState;
+        }
+    }
+
+    Result IJitEnvironment::Control(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        std::lock_guard lock{mutex};
+        if (!prepared) return kernel::result::InvalidState;
+        if (request.cmdArgSz < sizeof(u64) || request.inputBuf.size() > 1 || request.outputBuf.size() > 1)
+            return kernel::result::InvalidArgument;
+        const auto command{request.Pop<u64>()};
+        try {
+            context->ResetHeap();
+            const auto ret{context->Add(i32{})}, cfg{context->Add(configuration)};
+            auto input{request.inputBuf.empty() ? span<u8>{} : request.inputBuf[0]};
+            auto output{request.outputBuf.empty() ? span<u8>{} : request.outputBuf[0]};
+            const auto in{context->Add(input.data(), input.size())}, out{context->Add(output.data(), output.size())};
+            const auto wrapperResult{context->Call(image.Symbol("nnjitpluginControl"),
+                {ret, cfg, command, in, input.size(), out, output.size()})};
+            Synchronize();
+            const auto pluginResult{context->Get<i32>(ret)};
+            response.Push(pluginResult);
+            context->Get(out, output.data(), output.size());
+            return (wrapperResult || pluginResult) ? kernel::result::InvalidState : Result{};
+        } catch (const std::exception &e) {
+            LOGW("JIT Control failed: {}", e.what());
+            prepared = false;
+            return kernel::result::InvalidState;
+        }
     }
 
     Result IJitEnvironment::LoadPlugin(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        std::lock_guard lock{mutex};
+        if (context) return kernel::result::InvalidState;
         // Actual command layout: u64 TransferMemorySize, one copied TransferMemory
         // handle, two input buffers (NRR followed by NRO).
         if (request.cmdArgSz < sizeof(u64) || request.copyHandles.size() != 1 || request.inputBuf.size() != 2) {
@@ -310,7 +412,7 @@ namespace skyline::service::jit {
         if (!hashListed)
             return kernel::result::InvalidArgument;
 
-        // Probe the dynamic symbol table without executing or relocating the NRO.
+        // Retain #324's bounded symbol diagnostics before loading the module.
         // Checking inclusion in an NRR is NOT cryptographic signature verification.
         const auto dynamicSymbols{ResolveDynamicSymbols(module, header)};
         if (dynamicSymbols) {
@@ -327,12 +429,58 @@ namespace skyline::service::jit {
             LOGW("JIT_DIAG: Plugin exports unavailable (no validated dynamic symbol table)");
         }
 
-        LOGW("JIT_DIAG: NRR/NRO metadata validated; loading, relocation and guest plugin execution NOT implemented");
-        return kernel::result::NotImplemented;
+        try {
+            constexpr u64 PluginBase{0x10000};
+            const u64 helpers{(PluginBase + header.size + header.bssSize + 15) & ~15ULL};
+            image.Load({module.data(), module.size()}, PluginBase, [helpers](std::string_view name) {
+                return PluginContext::HelperAddress(name, helpers);
+            });
+            for (auto name : {"nnjitpluginGetVersion", "nnjitpluginConfigure", "nnjitpluginGenerateCode",
+                              "nnjitpluginOnPrepared", "nnjitpluginControl"}) {
+                const auto address{image.Symbol(name)};
+                if (address < PluginBase || address - PluginBase >= header.text.size || address % 4)
+                    throw exception("JIT plugin missing executable export {}", name);
+            }
+            context = std::make_unique<PluginContext>([] { return DeviceState::thread && DeviceState::thread->killed; });
+            context->Load(image);
+            if (executableMemory) {
+                auto backing{executableMemory->GetWritableBacking()};
+                context->Map(configuration.sysRx.offset, {backing.data(), backing.size()}, true, false);
+            }
+            if (readableMemory) {
+                auto backing{readableMemory->GetWritableBacking()};
+                context->Map(configuration.sysRo.offset, {backing.data(), backing.size()}, true, false);
+            }
+            configuration.transfer = {reinterpret_cast<u64>(transferMemory->guest.data()), workSize};
+            context->Map(configuration.transfer.offset, {transferMemory->host.data(), static_cast<size_t>(workSize)}, true, false);
+            for (auto entry : image.Initializers()) context->Call(entry, {});
+            const auto version{context->Call(image.Symbol("nnjitpluginGetVersion"), {})};
+            if (version > 1) throw exception("Unsupported JIT plugin version {}", version);
+            if (const auto entry{image.Symbol("nnjitpluginResolveBasicSymbols")})
+                context->Call(entry, {context->Helper("_resolve")});
+            if (const auto entry{image.Symbol("nnjitpluginSetupDiagnostics")})
+                context->Call(entry, {0, context->Add(context->Helper("_resolve"))});
+            // Configure's optional memory-flags output is valid storage, not a null stub.
+            context->Call(image.Symbol("nnjitpluginConfigure"), {context->Add(u32{})});
+            context->Call(image.Symbol("nnjitpluginOnPrepared"), {context->Add(configuration)});
+            Synchronize();
+            this->transferMemory = std::move(transferMemory);
+            prepared = true;
+            LOGI("JIT plugin prepared: version={}, RX=0x{:X}+0x{:X}, RO=0x{:X}+0x{:X}",
+                 version, configuration.userRx.offset, configuration.userRx.size,
+                 configuration.userRo.offset, configuration.userRo.size);
+            return {};
+        } catch (const std::exception &e) {
+            LOGW("JIT plugin load failed: {}", e.what());
+            context.reset();
+            return kernel::result::InvalidState;
+        }
     }
 
-    Result IJitEnvironment::GetCodeAddress(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
-        LOGW("JIT_DIAG: GetCodeAddress called; user CodeMemory aliases have not been mapped");
-        return kernel::result::NotImplemented;
+    Result IJitEnvironment::GetCodeAddress(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        std::lock_guard lock{mutex};
+        response.Push(configuration.userRx.offset);
+        response.Push(configuration.userRo.offset);
+        return {};
     }
 }

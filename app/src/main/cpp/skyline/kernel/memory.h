@@ -402,6 +402,11 @@ namespace skyline {
             // Various mapping functions for use by the guest, argument validity must be checked by the caller
             void MapCodeMemory(span<u8> memory, memory::Permission permission);
 
+            /** Atomically map shared CodeMemory pages into a free alias-code range. */
+            Result MapCodeMemoryAlias(int fd, span<u8> memory, memory::Permission permission, bool owner);
+            Result AllocateCodeMemoryAlias(int fd, size_t size, memory::Permission permission, bool owner, u64 &address);
+            Result UnmapCodeMemoryAlias(span<u8> memory, bool owner);
+
             void MapMutableCodeMemory(span<u8> memory);
 
             void MapStackMemory(span<u8> memory);

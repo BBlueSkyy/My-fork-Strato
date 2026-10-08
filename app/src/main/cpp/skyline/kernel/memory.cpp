@@ -5,6 +5,7 @@
 #include <asm-generic/unistd.h>
 #include <fcntl.h>
 #include "memory.h"
+#include <kernel/results.h>
 #include "types/KProcess.h"
 
 namespace skyline::kernel {
@@ -790,6 +791,95 @@ namespace skyline::kernel {
                 .permission = permission,
                 .state = memory::states::Code
             }));
+    }
+
+    namespace {
+        bool CodeAliasRegionValid(const MemoryManager &manager, span<u8> region) {
+            if (!manager.AddressSpaceContains(region))
+                return false;
+            const auto overlaps = [](span<u8> a, span<u8> b) {
+                return a.data() < b.end().base() && b.data() < a.end().base();
+            };
+            return !overlaps(region, manager.heap.guest) && !overlaps(region, manager.alias.guest);
+        }
+    }
+
+    Result MemoryManager::MapCodeMemoryAlias(int fd, span<u8> region, memory::Permission permission, bool owner) {
+        if (!CodeAliasRegionValid(*this, region))
+            return result::InvalidMemoryRegion;
+        std::unique_lock lock{mutex};
+        bool free{true};
+        ForeachChunkInRange(region, [&](const auto &chunk) {
+            if (chunk.second.state != memory::states::Unmapped)
+                free = false;
+        });
+        if (!free)
+            return result::InvalidCurrentMemory;
+        auto host{GetHostSpan(region)};
+        if (mmap(host.data(), host.size(), permission.Get(), MAP_FIXED | MAP_SHARED, fd, 0) == MAP_FAILED)
+            return result::OutOfMemory;
+        MapInternal({region.data(), {
+            .permission = permission,
+            .state = owner ? memory::states::CodeGenerated : memory::states::CodeExternal,
+            .size = region.size(),
+        }}, false);
+        return {};
+    }
+
+    Result MemoryManager::AllocateCodeMemoryAlias(int fd, size_t size, memory::Permission permission, bool owner, u64 &address) {
+        // Select only host-backed Free pages. Do not retry random addresses or overwrite
+        // Android mappings in the holes of the 36-bit address space.
+        std::unique_lock lock{mutex};
+        for (const auto &[start, desc] : chunks) {
+            if (desc.state != memory::states::Unmapped || desc.size < size)
+                continue;
+            for (auto hostRange : {codeBase36Bit, base}) {
+                if (!hostRange.valid()) continue;
+                const auto guestStart{reinterpret_cast<u8 *>(TranslateHostAddress(hostRange.data()))};
+                const auto guestEnd{guestStart + hostRange.size()};
+                auto candidate{std::max(start, guestStart)};
+                // Heap/Alias are excluded from Horizon's alias-code region.
+                for (auto excluded : {alias.guest, heap.guest}) {
+                    if (candidate < excluded.end().base() && excluded.data() < candidate + size)
+                        candidate = excluded.end().base();
+                }
+                if (candidate >= guestEnd || size > static_cast<size_t>(guestEnd - candidate) ||
+                    candidate >= start + desc.size || size > static_cast<size_t>(start + desc.size - candidate))
+                    continue;
+                span<u8> region{candidate, size};
+                if (!CodeAliasRegionValid(*this, region)) continue;
+                auto host{GetHostSpan(region)};
+                if (mmap(host.data(), host.size(), permission.Get(), MAP_FIXED | MAP_SHARED, fd, 0) == MAP_FAILED)
+                    return result::OutOfMemory;
+                MapInternal({region.data(), {
+                    .permission = permission,
+                    .state = owner ? memory::states::CodeGenerated : memory::states::CodeExternal,
+                    .size = size,
+                }}, false);
+                address = reinterpret_cast<u64>(candidate);
+                return {};
+            }
+        }
+        return result::OutOfAddressSpace;
+    }
+
+    Result MemoryManager::UnmapCodeMemoryAlias(span<u8> region, bool owner) {
+        if (!AddressSpaceContains(region)) return result::InvalidMemoryRegion;
+        std::unique_lock lock{mutex};
+        bool valid{true};
+        ForeachChunkInRange(region, [&](const auto &chunk) {
+            if (chunk.second.state != (owner ? memory::states::CodeGenerated : memory::states::CodeExternal) ||
+                chunk.second.ipcLockCount || chunk.second.attributes.value)
+                valid = false;
+        });
+        if (!valid) return result::InvalidCurrentMemory;
+        auto host{GetHostSpan(region)};
+        // Replace the alias first. FreeMemory/MADV_REMOVE on the original fd would
+        // discard the same physical pages still referenced by the source and owner.
+        if (mmap(host.data(), host.size(), PROT_NONE, MAP_FIXED | MAP_SHARED | MAP_ANONYMOUS, -1, 0) == MAP_FAILED)
+            return result::OutOfMemory;
+        MapInternal({region.data(), {.state = memory::states::Unmapped, .size = region.size()}}, false);
+        return {};
     }
 
     __attribute__((always_inline)) void MemoryManager::MapMutableCodeMemory(span<u8> memory) {

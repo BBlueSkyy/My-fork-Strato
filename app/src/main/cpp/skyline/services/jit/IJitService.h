@@ -1,31 +1,43 @@
 // SPDX-License-Identifier: MPL-2.0
-// Diagnostic-only stub. No guest code is generated or mapped.
+// JIT sysmodule HLE with real plugin execution and shared CodeMemory pages.
 
 #pragma once
 
 #include <services/serviceman.h>
 #include <kernel/types/KCodeMemory.h>
+#include "plugin_context.h"
+
+namespace skyline::kernel::type { class KTransferMemory; }
 
 namespace skyline::service::jit {
-    /**
-     * @brief Diagnostic IJitEnvironment for identifying the JIT calls made by a guest.
-     *
-     * This is NOT an implementation of Nintendo's JIT sysmodule. Every method
-     * requiring real generated code returns NotImplemented.
-     */
+    /** Owns the compiler plugin and its CodeMemory mappings for one IPC session. */
     class IJitEnvironment : public BaseService {
       private:
-        // Keep the kernel objects alive for as long as the JIT session exists.
-        // This experimental interface does not yet map either CodeMemory object.
+        // Weak process reference avoids a process/session/CodeMemory ownership cycle.
         std::weak_ptr<kernel::type::KProcess> process;
         std::shared_ptr<kernel::type::KCodeMemory> executableMemory;
         std::shared_ptr<kernel::type::KCodeMemory> readableMemory;
+
+        struct CodeRange { u64 offset, size; };
+        struct Configuration {
+            CodeRange userRx, userRo, transfer, sysRx, sysRo;
+        } configuration{};
+        static_assert(sizeof(Configuration) == 0x50);
+        PluginImage image;
+        std::unique_ptr<PluginContext> context;
+        std::shared_ptr<kernel::type::KTransferMemory> transferMemory;
+        std::mutex mutex;
+        bool prepared{};
+        void Synchronize();
 
       public:
         IJitEnvironment(const DeviceState &state, ServiceManager &manager,
                         std::shared_ptr<kernel::type::KProcess> process,
                         std::shared_ptr<kernel::type::KCodeMemory> executableMemory,
                         std::shared_ptr<kernel::type::KCodeMemory> readableMemory);
+
+        ~IJitEnvironment();
+        Result Initialize(u64 executableSize, u64 readableSize);
 
         Result GenerateCode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result Control(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
@@ -41,7 +53,7 @@ namespace skyline::service::jit {
     };
 
     /**
-     * @brief Minimal diagnostic endpoint for nn::jitsrv::IJitService (jit:u).
+     * @brief nn::jitsrv::IJitService (jit:u).
      */
     class IJitService : public BaseService {
       public:
