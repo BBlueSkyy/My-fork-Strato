@@ -18,6 +18,8 @@ namespace skyline {
     }
 
     namespace kernel::type {
+        class KCodeMemory;
+
         /**
          * @brief KProcess manages process-global state such as memory, kernel handles allocated to the process and synchronization primitives
          */
@@ -169,6 +171,8 @@ namespace skyline {
                     objectType = KType::KSharedMemory;
                 } else if constexpr (std::is_same<objectClass, KTransferMemory>()) {
                     objectType = KType::KTransferMemory;
+                } else if constexpr (std::is_same<objectClass, KCodeMemory>()) {
+                    objectType = KType::KCodeMemory;
                 } else if constexpr (std::is_same<objectClass, KSession>()) {
                     objectType = KType::KSession;
                 } else if constexpr (std::is_same<objectClass, KEvent>()) {

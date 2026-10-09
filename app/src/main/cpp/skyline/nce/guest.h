@@ -5,6 +5,7 @@
 
 #include <common.h>
 #include <common/wregister.h>
+#include "svc_callsite.h"
 
 namespace skyline {
     struct DeviceState;
@@ -88,6 +89,7 @@ namespace skyline {
             u32 nzcv;
             const DeviceState *state;
             u64 magic{constant::SkyTlsMagic};
+            SvcCallsite svcCallsite; //!< Native guest registers captured before switching to the host stack
         };
 
         namespace guest {

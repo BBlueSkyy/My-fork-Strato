@@ -260,6 +260,16 @@ namespace skyline::kernel::svc {
     void SignalToAddress(const DeviceState &state, SvcContext &ctx);
 
     /**
+     * @brief Diagnostic-only CodeMemory entry point. Returns NotImplemented without creating an object.
+     */
+    void CreateCodeMemory(const DeviceState &state, SvcContext &ctx);
+
+    /**
+     * @brief Diagnostic-only CodeMemory operation. Returns NotImplemented without mapping memory.
+     */
+    void ControlCodeMemory(const DeviceState &state, SvcContext &ctx);
+
+    /**
      * @brief A per-SVC descriptor with its name and a function pointer
      * @note The descriptor is nullable, the validity of the descriptor can be checked with the boolean operator
      */

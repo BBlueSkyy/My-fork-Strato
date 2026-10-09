@@ -93,6 +93,9 @@ namespace skyline::service::am {
             const auto &guest{static_cast<const kernel::type::KJit32Thread &>(*state.thread).ctx};
             LOGI("Guest AArch32 termination call: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}",
                  guest.pc, guest.lr, guest.sp);
+        } else {
+            const auto &call{static_cast<const kernel::type::KNceThread &>(*state.thread).ctx.svcCallsite};
+            LOGI("Guest ARM64 termination call: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}", call.pc, call.lr, call.sp);
         }
         return {};
     }
