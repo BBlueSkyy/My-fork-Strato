@@ -98,6 +98,9 @@ namespace skyline::gpu {
                 .viewMipCount = guest.viewMipCount,
                 .viewLayerBase = guest.baseArrayLayer,
                 .viewLayerCount = guest.GetViewLayerCount(),
+                .formatBlockWidth = static_cast<u32>(guest.format->blockWidth),
+                .formatBlockHeight = static_cast<u32>(guest.format->blockHeight),
+                .formatBytesPerBlock = static_cast<u32>(guest.format->bpb),
             };
             return texture::BuildResourceLayout(ranges, mips, guest.layerCount, info);
         }

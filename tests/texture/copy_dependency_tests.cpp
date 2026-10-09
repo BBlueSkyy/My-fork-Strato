@@ -271,4 +271,104 @@ int main() {
     assert(rejected.RelationCount() == 0);
     assert(rejected.GetState(first, mip0) == CopyRepresentationState::Untracked);
     assert(rejected.GetState(second, mip0) == CopyRepresentationState::Untracked);
+
+    // A proven 3D depth slice is a complete semantic alias even though the 2D
+    // representation covers only that slice rather than the whole 3D resource.
+    std::array<std::uint8_t, 1024> sliceMemory{};
+    const auto sliceAddress = reinterpret_cast<std::uintptr_t>(sliceMemory.data());
+    const std::array<std::span<std::uint8_t>, 1> volumeMapping{
+        std::span{sliceMemory}.subspan(0, 512),
+    };
+    const std::array<std::span<std::uint8_t>, 1> firstSliceMapping{
+        std::span{sliceMemory}.subspan(0, 128),
+    };
+    const std::array<std::span<std::uint8_t>, 1> secondSliceMapping{
+        std::span{sliceMemory}.subspan(128, 128),
+    };
+    const std::array volumeSubresources{
+        GuestSubresource{
+            .offset = sliceAddress,
+            .size = 512,
+            .width = 8,
+            .height = 8,
+            .depth = 2,
+            .mip = 0,
+            .layer = 0,
+            .depthSlices = {
+                GuestDepthSlice{.size = 128, .segments = {{sliceAddress, 128, 0}}},
+                GuestDepthSlice{.size = 128, .segments = {{sliceAddress + 128, 128, 0}}},
+            },
+        },
+    };
+    const std::array firstSliceSubresources{
+        GuestSubresource{
+            .offset = sliceAddress,
+            .size = 128,
+            .width = 8,
+            .height = 8,
+            .depth = 1,
+            .mip = 0,
+            .layer = 0,
+            .depthSlices = {
+                GuestDepthSlice{.size = 128, .segments = {{sliceAddress, 128, 0}}},
+            },
+        },
+    };
+    const std::array secondSliceSubresources{
+        GuestSubresource{
+            .offset = sliceAddress + 128,
+            .size = 128,
+            .width = 8,
+            .height = 8,
+            .depth = 1,
+            .mip = 0,
+            .layer = 0,
+            .depthSlices = {
+                GuestDepthSlice{.size = 128, .segments = {{sliceAddress + 128, 128, 0}}},
+            },
+        },
+    };
+    const TextureResourceLayout volumeLayout{
+        .tile = {.mode = TileKind::Block, .blockHeight = 1, .blockDepth = 2},
+        .imageType = ImageKind::ThreeDimensional,
+        .viewType = ViewKind::ThreeDimensional,
+        .layerStride = 512,
+        .viewMipCount = 1,
+        .viewLayerCount = 1,
+        .subresources = volumeSubresources,
+    };
+    auto firstSliceLayout{volumeLayout};
+    firstSliceLayout.imageType = ImageKind::TwoDimensional;
+    firstSliceLayout.viewType = ViewKind::TwoDimensional;
+    firstSliceLayout.layerStride = 128;
+    firstSliceLayout.subresources = firstSliceSubresources;
+    auto secondSliceLayout{firstSliceLayout};
+    secondSliceLayout.subresources = secondSliceSubresources;
+
+    auto volumeRepresentation = std::make_shared<Representation>();
+    auto firstSliceRepresentation = std::make_shared<Representation>();
+    auto secondSliceRepresentation = std::make_shared<Representation>();
+    const auto volumeSlice0 = Subresource(0, 0, 0);
+    const auto volumeSlice1 = Subresource(0, 0, 1);
+    const auto twoDimensionalSlice = Subresource(0, 0, 0);
+    CopyDependencyTracker<Representation> sliceDependencies;
+    assert(sliceDependencies.RegisterSynchronized(
+        volumeRepresentation, GuestResourceRanges{volumeMapping}, volumeLayout,
+        firstSliceRepresentation, GuestResourceRanges{firstSliceMapping}, firstSliceLayout,
+        CopyOnly({{volumeSlice0, twoDimensionalSlice}})));
+    assert(sliceDependencies.RegisterSynchronized(
+        volumeRepresentation, GuestResourceRanges{volumeMapping}, volumeLayout,
+        secondSliceRepresentation, GuestResourceRanges{secondSliceMapping}, secondSliceLayout,
+        CopyOnly({{volumeSlice1, twoDimensionalSlice}})));
+
+    const std::array writeSecondSlice{volumeSlice1};
+    assert(sliceDependencies.MarkWritten(volumeRepresentation, writeSecondSlice));
+    assert(sliceDependencies.GetState(volumeRepresentation, volumeSlice1) ==
+        CopyRepresentationState::Current);
+    assert(sliceDependencies.GetState(secondSliceRepresentation, twoDimensionalSlice) ==
+        CopyRepresentationState::Stale);
+    assert(sliceDependencies.GetState(volumeRepresentation, volumeSlice0) ==
+        CopyRepresentationState::Current);
+    assert(sliceDependencies.GetState(firstSliceRepresentation, twoDimensionalSlice) ==
+        CopyRepresentationState::Current);
 }

@@ -58,15 +58,84 @@ namespace skyline::gpu::texture {
                     base > ranges.Size() || levelOffset > ranges.Size() - base ||
                     level.guestSize > ranges.Size() - base - levelOffset)
                     return std::nullopt;
-                auto segments = ranges.Slice(base + levelOffset, level.guestSize);
+                const auto resourceOffset{base + levelOffset};
+                auto segments = ranges.Slice(resourceOffset, level.guestSize);
                 if (segments.empty())
                     return std::nullopt;
                 // offset is diagnostic for split spans. Classification always uses segments.
-                result.subresources.push_back({.offset = segments.front().address,
+                GuestSubresource subresource{.offset = segments.front().address,
                     .size = level.guestSize, .width = level.width, .height = level.height,
                     .depth = level.depth, .mip = static_cast<std::uint32_t>(mip), .layer = layer,
                     .segments = std::move(segments),
-                    .blockHeight = level.blockHeight, .blockDepth = level.blockDepth});
+                    .blockHeight = level.blockHeight, .blockDepth = level.blockDepth};
+
+                if (info.tile.mode == TileKind::Block &&
+                    info.formatBlockWidth && info.formatBlockHeight && info.formatBytesPerBlock) {
+                    const auto divideCeil = [](std::size_t value, std::size_t divisor) {
+                        return value / divisor + static_cast<std::size_t>(value % divisor != 0);
+                    };
+                    const auto widthBlocks{divideCeil(level.width, info.formatBlockWidth)};
+                    if (widthBlocks > std::numeric_limits<std::size_t>::max() /
+                            info.formatBytesPerBlock)
+                        return std::nullopt;
+                    const auto widthBytes{widthBlocks * info.formatBytesPerBlock};
+                    const auto widthGobs{divideCeil(widthBytes, std::size_t{64})};
+                    const auto heightBlocks{divideCeil(level.height, info.formatBlockHeight)};
+                    const auto heightGobs{divideCeil(heightBlocks, std::size_t{8})};
+                    const auto blocksInY{divideCeil(heightGobs, level.blockHeight)};
+                    if (!widthGobs || !blocksInY ||
+                        widthGobs > std::numeric_limits<std::size_t>::max() / blocksInY ||
+                        level.blockHeight > std::numeric_limits<std::size_t>::max() / 512)
+                        return std::nullopt;
+                    const auto blockCount{widthGobs * blocksInY};
+                    const auto gobColumnSize{std::size_t{512} * level.blockHeight};
+                    if (blockCount > std::numeric_limits<std::size_t>::max() / gobColumnSize ||
+                        level.blockDepth > std::numeric_limits<std::size_t>::max() / gobColumnSize)
+                        return std::nullopt;
+                    const auto slicePlaneSize{blockCount * gobColumnSize};
+                    const auto blockStride{std::size_t{level.blockDepth} * gobColumnSize};
+
+                    subresource.depthSlices.resize(level.depth);
+                    for (std::size_t slice{}; slice < level.depth; ++slice) {
+                        const auto sliceInBlock{slice % level.blockDepth};
+                        const auto blockBaseSlice{slice - sliceInBlock};
+                        if (blockBaseSlice > std::numeric_limits<std::size_t>::max() / slicePlaneSize)
+                            return std::nullopt;
+                        const auto blockBase{blockBaseSlice * slicePlaneSize};
+                        if (sliceInBlock > (std::numeric_limits<std::size_t>::max() - blockBase) /
+                                gobColumnSize)
+                            return std::nullopt;
+                        const auto first{blockBase + sliceInBlock * gobColumnSize};
+                        auto &depthSlice{subresource.depthSlices[slice]};
+                        bool complete{true};
+                        for (std::size_t block{}; block < blockCount; ++block) {
+                            if (block > (std::numeric_limits<std::size_t>::max() - first) /
+                                    blockStride) {
+                                complete = false;
+                                break;
+                            }
+                            const auto relative{first + block * blockStride};
+                            if (relative > level.guestSize ||
+                                gobColumnSize > level.guestSize - relative) {
+                                complete = false;
+                                break;
+                            }
+                            auto pieces{ranges.Slice(resourceOffset + relative, gobColumnSize)};
+                            if (pieces.empty()) {
+                                complete = false;
+                                break;
+                            }
+                            depthSlice.segments.insert(depthSlice.segments.end(),
+                                pieces.begin(), pieces.end());
+                        }
+                        if (complete)
+                            depthSlice.size = blockCount * gobColumnSize;
+                        else
+                            depthSlice = {};
+                    }
+                }
+
+                result.subresources.push_back(std::move(subresource));
                 levelOffset += level.guestSize;
             }
         }
@@ -99,6 +168,49 @@ namespace skyline::gpu::texture {
             if (subresource.mip == resolved.mip && subresource.layer == resolved.layer)
                 return resolved.depthSlice < subresource.depth;
         return false;
+    }
+
+    inline const GuestSubresource *FindSubresource(
+        const TextureResourceLayout &layout, ResolvedSubresource resolved) {
+        const GuestSubresource *result{};
+        for (const auto &subresource : layout.subresources) {
+            if (subresource.mip != resolved.mip || subresource.layer != resolved.layer)
+                continue;
+            if (result || resolved.depthSlice >= subresource.depth)
+                return nullptr;
+            result = &subresource;
+        }
+        return result;
+    }
+
+    inline bool IsExactBlockLinearDepthSliceRelation(
+        const TextureResourceLayout &firstLayout, ResolvedSubresource first,
+        const TextureResourceLayout &secondLayout, ResolvedSubresource second) {
+        const bool first3D{firstLayout.imageType == ImageKind::ThreeDimensional};
+        const bool second3D{secondLayout.imageType == ImageKind::ThreeDimensional};
+        if (first3D == second3D ||
+            (firstLayout.imageType != ImageKind::TwoDimensional && !first3D) ||
+            (secondLayout.imageType != ImageKind::TwoDimensional && !second3D) ||
+            firstLayout.tile.mode != TileKind::Block || secondLayout.tile.mode != TileKind::Block ||
+            (first3D ? first.layer != 0 || second.depthSlice != 0
+                     : second.layer != 0 || first.depthSlice != 0))
+            return false;
+
+        const auto firstDescription{FindSubresource(firstLayout, first)};
+        const auto secondDescription{FindSubresource(secondLayout, second)};
+        if (!firstDescription || !secondDescription ||
+            firstDescription->width != secondDescription->width ||
+            firstDescription->height != secondDescription->height ||
+            firstDescription->blockHeight != secondDescription->blockHeight ||
+            firstDescription->blockDepth != secondDescription->blockDepth ||
+            firstDescription->depthSlices.size() != firstDescription->depth ||
+            secondDescription->depthSlices.size() != secondDescription->depth)
+            return false;
+
+        const auto &firstSlice{firstDescription->depthSlices[first.depthSlice]};
+        const auto &secondSlice{secondDescription->depthSlices[second.depthSlice]};
+        return SameGuestBytes(firstSlice.size, firstSlice.segments,
+                              secondSlice.size, secondSlice.segments);
     }
 
     /** Resolve the same backing mip/layer for every selected guest subresource. */
@@ -135,6 +247,21 @@ namespace skyline::gpu::texture {
     /** Resolve every selected requested mip/layer to one exact backing subresource. */
     inline std::optional<ResolvedCopyRegion> ResolveCopyRegion(const TextureResourceLayout &backing,
                                                                 const TextureResourceLayout &requested) {
+        if (const auto depthSlice = FindExactBlockLinearDepthSlice(backing, requested)) {
+            return ResolvedCopyRegion{.subresources = {{
+                .backing = {
+                    .mip = depthSlice->backingMip,
+                    .layer = depthSlice->backingLayer,
+                    .depthSlice = depthSlice->backingDepthSlice,
+                },
+                .requested = {
+                    .mip = depthSlice->requestedMip,
+                    .layer = depthSlice->requestedLayer,
+                    .depthSlice = depthSlice->requestedDepthSlice,
+                },
+            }}};
+        }
+
         ResolvedCopyRegion region;
         region.subresources.reserve(std::size_t{requested.viewMipCount} * requested.viewLayerCount);
         for (const auto &view : requested.subresources) {

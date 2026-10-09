@@ -43,6 +43,12 @@ namespace skyline::gpu::texture {
         constexpr bool operator==(const TileLayout &) const = default;
     };
 
+    /** Physical GOB spans that contain the texels of one block-linear Z slice. */
+    struct GuestDepthSlice {
+        std::uint64_t size{};
+        std::vector<GuestResourceRanges::Segment> segments{};
+    };
+
     /** Physical guest spans and layout for one mip and array layer. */
     struct GuestSubresource {
         std::uint64_t offset{};
@@ -53,6 +59,7 @@ namespace skyline::gpu::texture {
         // representation used by existing, contiguous compatibility fixtures.
         std::vector<GuestResourceRanges::Segment> segments{};
         std::uint32_t blockHeight{}, blockDepth{}; //!< Effective GOB blocks at this mip, when block-linear.
+        std::vector<GuestDepthSlice> depthSlices{};
     };
 
     /**
@@ -67,7 +74,13 @@ namespace skyline::gpu::texture {
         std::uint64_t layerStride{};
         std::uint32_t viewMipBase{}, viewMipCount{};
         std::uint32_t viewLayerBase{}, viewLayerCount{};
+        std::uint32_t formatBlockWidth{}, formatBlockHeight{}, formatBytesPerBlock{};
         std::span<const GuestSubresource> subresources{};
+    };
+
+    struct GuestDepthSliceMatch {
+        std::uint32_t backingMip{}, backingLayer{}, backingDepthSlice{};
+        std::uint32_t requestedMip{}, requestedLayer{}, requestedDepthSlice{};
     };
 
     constexpr bool ValidViewType(ImageKind image, ViewKind view) {
@@ -97,21 +110,20 @@ namespace skyline::gpu::texture {
         return false;
     }
 
-    inline bool SameGuestBytes(const GuestSubresource &lhs, const GuestSubresource &rhs) {
-        if (!lhs.size || lhs.size != rhs.size)
+    inline bool SameGuestBytes(std::uint64_t lhsSize,
+                               std::span<const GuestResourceRanges::Segment> left,
+                               std::uint64_t rhsSize,
+                               std::span<const GuestResourceRanges::Segment> right) {
+        if (!lhsSize || lhsSize != rhsSize)
             return false;
-        const auto lhsSingle = GuestResourceRanges::Segment{lhs.offset, lhs.size, 0};
-        const auto rhsSingle = GuestResourceRanges::Segment{rhs.offset, rhs.size, 0};
-        const auto left = lhs.segments.empty() ? std::span{&lhsSingle, 1} : std::span{lhs.segments};
-        const auto right = rhs.segments.empty() ? std::span{&rhsSingle, 1} : std::span{rhs.segments};
         std::size_t li{}, ri{}, lo{}, ro{}, compared{};
-        while (compared < lhs.size) {
+        while (compared < lhsSize) {
             if (li >= left.size() || ri >= right.size() ||
                 left[li].size > std::numeric_limits<std::uintptr_t>::max() - left[li].address ||
                 right[ri].size > std::numeric_limits<std::uintptr_t>::max() - right[ri].address ||
                 left[li].address + lo != right[ri].address + ro)
                 return false;
-            const auto amount = std::min({left[li].size - lo, right[ri].size - ro, lhs.size - compared});
+            const auto amount = std::min<std::uint64_t>({left[li].size - lo, right[ri].size - ro, lhsSize - compared});
             if (!amount)
                 return false;
             compared += amount;
@@ -119,6 +131,85 @@ namespace skyline::gpu::texture {
             if ((ro += amount) == right[ri].size) { ++ri; ro = 0; }
         }
         return li == left.size() && ri == right.size();
+    }
+
+    inline bool SameGuestBytes(const GuestSubresource &lhs, const GuestSubresource &rhs) {
+        const auto lhsSingle = GuestResourceRanges::Segment{lhs.offset, lhs.size, 0};
+        const auto rhsSingle = GuestResourceRanges::Segment{rhs.offset, rhs.size, 0};
+        const auto left = lhs.segments.empty() ? std::span{&lhsSingle, 1} : std::span{lhs.segments};
+        const auto right = rhs.segments.empty() ? std::span{&rhsSingle, 1} : std::span{rhs.segments};
+        return SameGuestBytes(lhs.size, left, rhs.size, right);
+    }
+
+    inline bool SelectedSubresource(const TextureResourceLayout &layout,
+                                    const GuestSubresource &subresource) {
+        return subresource.mip >= layout.viewMipBase &&
+            subresource.mip - layout.viewMipBase < layout.viewMipCount &&
+            subresource.layer >= layout.viewLayerBase &&
+            subresource.layer - layout.viewLayerBase < layout.viewLayerCount;
+    }
+
+    inline std::optional<GuestDepthSliceMatch> FindExactBlockLinearDepthSlice(
+        const TextureResourceLayout &backing, const TextureResourceLayout &requested) {
+        const bool backing3D{backing.imageType == ImageKind::ThreeDimensional};
+        const bool requested3D{requested.imageType == ImageKind::ThreeDimensional};
+        if (backing3D == requested3D ||
+            (backing.imageType != ImageKind::TwoDimensional && !backing3D) ||
+            (requested.imageType != ImageKind::TwoDimensional && !requested3D) ||
+            backing.tile.mode != TileKind::Block || requested.tile.mode != TileKind::Block ||
+            !ValidViewType(backing.imageType, backing.viewType) ||
+            !ValidViewType(requested.imageType, requested.viewType))
+            return std::nullopt;
+
+        const auto &volume{backing3D ? backing : requested};
+        const auto &surface{backing3D ? requested : backing};
+        if (volume.viewLayerBase || volume.viewLayerCount != 1 ||
+            surface.viewMipCount != 1 || surface.viewLayerCount != 1)
+            return std::nullopt;
+
+        const GuestSubresource *surfaceSubresource{};
+        for (const auto &candidate : surface.subresources) {
+            if (!SelectedSubresource(surface, candidate))
+                continue;
+            if (surfaceSubresource)
+                return std::nullopt;
+            surfaceSubresource = &candidate;
+        }
+        if (!surfaceSubresource || surfaceSubresource->depth != 1 ||
+            surfaceSubresource->depthSlices.size() != 1)
+            return std::nullopt;
+
+        std::optional<GuestDepthSliceMatch> result;
+        for (const auto &candidate : volume.subresources) {
+            if (!SelectedSubresource(volume, candidate) ||
+                candidate.layer != 0 || candidate.depthSlices.size() != candidate.depth ||
+                candidate.width != surfaceSubresource->width ||
+                candidate.height != surfaceSubresource->height ||
+                candidate.blockHeight != surfaceSubresource->blockHeight ||
+                candidate.blockDepth != surfaceSubresource->blockDepth)
+                continue;
+            for (std::uint32_t slice{}; slice < candidate.depth; ++slice) {
+                const auto &volumeSlice{candidate.depthSlices[slice]};
+                const auto &surfaceSlice{surfaceSubresource->depthSlices.front()};
+                if (!SameGuestBytes(volumeSlice.size, volumeSlice.segments,
+                                    surfaceSlice.size, surfaceSlice.segments))
+                    continue;
+                if (result)
+                    return std::nullopt;
+                if (backing3D) {
+                    result = GuestDepthSliceMatch{
+                        candidate.mip, candidate.layer, slice,
+                        surfaceSubresource->mip, surfaceSubresource->layer, 0,
+                    };
+                } else {
+                    result = GuestDepthSliceMatch{
+                        surfaceSubresource->mip, surfaceSubresource->layer, 0,
+                        candidate.mip, candidate.layer, slice,
+                    };
+                }
+            }
+        }
+        return result;
     }
 
     /** A mip zero descriptor must agree with its resource's initial GOB configuration. */
@@ -149,6 +240,10 @@ namespace skyline::gpu::texture {
             !requested.viewMipCount || !requested.viewLayerCount ||
             requested.subresources.empty() || backing.subresources.empty())
             return TextureViewCompatibility::Incompatible;
+
+        if (format == FormatCompatibility::Exact &&
+            FindExactBlockLinearDepthSlice(backing, requested))
+            return TextureViewCompatibility::CopyOnly;
 
         bool overlaps{};
         bool aligned{true};

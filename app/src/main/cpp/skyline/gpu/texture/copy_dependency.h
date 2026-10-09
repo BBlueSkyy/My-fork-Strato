@@ -263,11 +263,17 @@ namespace skyline::gpu::texture {
             if (!backing || !requested || backing == requested ||
                 classified.relation != TextureViewCompatibility::CopyOnly ||
                 classified.sharedView || !classified.copyRegion ||
-                classified.copyRegion->subresources.empty() ||
-                !IsCompleteGuestAlias(backingRanges, requestedRanges))
+                classified.copyRegion->subresources.empty())
                 return false;
 
             const auto &mappings = classified.copyRegion->subresources;
+            const bool completeResourceAlias{IsCompleteGuestAlias(backingRanges, requestedRanges)};
+            if (!completeResourceAlias &&
+                (mappings.size() != 1 ||
+                 !IsExactBlockLinearDepthSliceRelation(
+                     backingLayout, mappings.front().backing,
+                     requestedLayout, mappings.front().requested)))
+                return false;
             for (std::size_t index{}; index < mappings.size(); ++index) {
                 const auto &mapping = mappings[index];
                 if (!ContainsSubresource(backingLayout, mapping.backing) ||

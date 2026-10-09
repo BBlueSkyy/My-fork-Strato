@@ -11,7 +11,7 @@ namespace skyline::gpu::texture { class TextureStorage {}; }
 using namespace skyline::gpu::texture;
 
 int main() {
-    std::array<std::uint8_t, 8192> memory{};
+    std::array<std::uint8_t, 32768> memory{};
     const std::array<std::span<std::uint8_t>, 2> parentMappings{
         std::span{memory}.subspan(128, 80), std::span{memory}.subspan(2048, 304),
     };
@@ -204,4 +204,87 @@ int main() {
     // A sliced view cannot claim a full mip unless all its physical fragments are present.
     const std::array<std::span<std::uint8_t>, 1> missingTail{std::span{memory}.subspan(192, 16)};
     assert(!BuildResourceLayout(GuestResourceRanges{missingTail}, small, 1, mipInfo));
+
+    // A block-linear 3D mip exposes the exact non-contiguous GOB spans owned by
+    // each Z slice. A depth-one 2D alias beginning at that slice must resolve to
+    // the corresponding (mip, layer, depthSlice), not to the whole 3D mip.
+    const std::array<MipDescription, 2> volumeLevels{{
+        {32, 16, 4, 8192, 2, 4},
+        {16, 8, 2, 1024, 1, 2},
+    }};
+    const std::array<std::span<std::uint8_t>, 1> volumeMapping{
+        std::span{memory}.subspan(12000, 9216),
+    };
+    const TextureResourceLayout volumeInfo{
+        .tile = {.mode = TileKind::Block, .blockHeight = 2, .blockDepth = 4},
+        .imageType = ImageKind::ThreeDimensional,
+        .viewType = ViewKind::ThreeDimensional,
+        .layerStride = 9216,
+        .viewMipCount = 2,
+        .viewLayerCount = 1,
+        .formatBlockWidth = 1,
+        .formatBlockHeight = 1,
+        .formatBytesPerBlock = 4,
+    };
+    auto volume = BuildResourceLayout(GuestResourceRanges{volumeMapping}, volumeLevels, 1, volumeInfo);
+    assert(volume);
+    assert(volume->subresources[0].depthSlices.size() == 4);
+    assert(volume->subresources[0].depthSlices[2].segments.size() == 2);
+    assert(volume->subresources[0].depthSlices[2].segments[0].address ==
+        reinterpret_cast<std::uintptr_t>(memory.data() + 14048));
+    assert(volume->subresources[0].depthSlices[2].segments[1].address ==
+        reinterpret_cast<std::uintptr_t>(memory.data() + 18144));
+
+    const std::array<MipDescription, 1> sliceLevel{{{32, 16, 1, 5120, 2, 4}}};
+    const std::array<std::span<std::uint8_t>, 1> sliceMapping{
+        std::span{memory}.subspan(14048, 5120),
+    };
+    auto sliceInfo{volumeInfo};
+    sliceInfo.imageType = ImageKind::TwoDimensional;
+    sliceInfo.viewType = ViewKind::TwoDimensional;
+    sliceInfo.layerStride = 5120;
+    sliceInfo.viewMipCount = 1;
+    auto slice = BuildResourceLayout(GuestResourceRanges{sliceMapping}, sliceLevel, 1, sliceInfo);
+    assert(slice);
+    const auto sliceCopy = ClassifyAndResolveView(
+        volume->Layout(), slice->Layout(), FormatCompatibility::Exact, true);
+    assert(sliceCopy.relation == TextureViewCompatibility::CopyOnly);
+    assert(sliceCopy.copyRegion && sliceCopy.copyRegion->subresources.size() == 1);
+    assert((sliceCopy.copyRegion->subresources[0].backing ==
+        ResolvedSubresource{.mip = 0, .layer = 0, .depthSlice = 2}));
+    assert((sliceCopy.copyRegion->subresources[0].requested ==
+        ResolvedSubresource{.mip = 0, .layer = 0, .depthSlice = 0}));
+
+    const std::array<MipDescription, 1> mipSliceLevel{{{16, 8, 1, 512, 1, 2}}};
+    const std::array<std::span<std::uint8_t>, 1> mipSliceMapping{
+        std::span{memory}.subspan(20704, 512),
+    };
+    auto mipSliceInfo{sliceInfo};
+    mipSliceInfo.tile.blockHeight = 1;
+    mipSliceInfo.tile.blockDepth = 2;
+    mipSliceInfo.layerStride = 512;
+    auto mipSlice = BuildResourceLayout(
+        GuestResourceRanges{mipSliceMapping}, mipSliceLevel, 1, mipSliceInfo);
+    assert(mipSlice);
+    const auto reverseSliceCopy = ClassifyAndResolveView(
+        mipSlice->Layout(), volume->Layout(), FormatCompatibility::Exact, true);
+    assert(reverseSliceCopy.relation == TextureViewCompatibility::CopyOnly);
+    assert(reverseSliceCopy.copyRegion && reverseSliceCopy.copyRegion->subresources.size() == 1);
+    assert((reverseSliceCopy.copyRegion->subresources[0].backing ==
+        ResolvedSubresource{.mip = 0, .layer = 0, .depthSlice = 0}));
+    assert((reverseSliceCopy.copyRegion->subresources[0].requested ==
+        ResolvedSubresource{.mip = 1, .layer = 0, .depthSlice = 1}));
+
+    // A shifted/partial span overlaps the 3D mip but is not the same slice.
+    const std::array<std::span<std::uint8_t>, 1> partialSliceMapping{
+        std::span{memory}.subspan(14064, 5104),
+    };
+    const std::array<MipDescription, 1> partialSliceLevel{{{32, 16, 1, 5104, 2, 4}}};
+    auto partialSliceInfo{sliceInfo};
+    partialSliceInfo.layerStride = 5104;
+    auto partialSlice = BuildResourceLayout(
+        GuestResourceRanges{partialSliceMapping}, partialSliceLevel, 1, partialSliceInfo);
+    assert(partialSlice);
+    assert(ClassifyAndResolveView(volume->Layout(), partialSlice->Layout(),
+        FormatCompatibility::Exact, true).relation == TextureViewCompatibility::LayoutIncompatible);
 }
