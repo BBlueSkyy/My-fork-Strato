@@ -337,4 +337,133 @@ int main() {
     merged.MergeFrom(capabilities);
     merged.MergeFrom(capabilities);
     assert(merged.RouteCount() == 1);
+
+    // Vulkan 1.1 permits an exact image copy between one 3D Z slice and one
+    // 2D layer. The route preserves independent mip/layer/slice identity and
+    // turns only the 3D side's depthSlice into offset.z.
+    std::array<std::uint8_t, 256> depthMemory{};
+    const auto depthAddress = reinterpret_cast<std::uintptr_t>(depthMemory.data());
+    const std::array<std::span<std::uint8_t>, 1> volumeMapping{
+        std::span{depthMemory},
+    };
+    const std::array<std::span<std::uint8_t>, 1> sliceMapping{
+        std::span{depthMemory}.subspan(64, 64),
+    };
+    const std::array volumeSubresources{
+        GuestSubresource{
+            .offset = depthAddress,
+            .size = 256,
+            .width = 8,
+            .height = 8,
+            .depth = 2,
+            .mip = 3,
+            .layer = 0,
+            .blockHeight = 1,
+            .blockDepth = 2,
+            .depthSlices = {
+                GuestDepthSlice{.size = 64, .segments = {{depthAddress, 64, 0}}},
+                GuestDepthSlice{.size = 64, .segments = {{depthAddress + 64, 64, 0}}},
+            },
+        },
+    };
+    const std::array sliceSubresources{
+        GuestSubresource{
+            .offset = depthAddress + 64,
+            .size = 64,
+            .width = 8,
+            .height = 8,
+            .depth = 1,
+            .mip = 5,
+            .layer = 2,
+            .blockHeight = 1,
+            .blockDepth = 2,
+            .depthSlices = {
+                GuestDepthSlice{.size = 64, .segments = {{depthAddress + 64, 64, 0}}},
+            },
+        },
+    };
+    const TextureResourceLayout volumeLayout{
+        .tile = {.mode = TileKind::Block, .blockHeight = 1, .blockDepth = 2},
+        .imageType = ImageKind::ThreeDimensional,
+        .viewType = ViewKind::ThreeDimensional,
+        .layerStride = 256,
+        .viewMipBase = 3,
+        .viewMipCount = 1,
+        .viewLayerCount = 1,
+        .subresources = volumeSubresources,
+    };
+    const TextureResourceLayout sliceLayout{
+        .tile = {.mode = TileKind::Block, .blockHeight = 1, .blockDepth = 2},
+        .imageType = ImageKind::TwoDimensional,
+        .viewType = ViewKind::TwoDimensional,
+        .layerStride = 64,
+        .viewMipBase = 5,
+        .viewMipCount = 1,
+        .viewLayerBase = 2,
+        .viewLayerCount = 1,
+        .subresources = sliceSubresources,
+    };
+    const auto depthRelation = ClassifyAndResolveView(
+        volumeLayout, sliceLayout, FormatCompatibility::Exact, true);
+    assert(depthRelation.relation == TextureViewCompatibility::CopyOnly);
+    const auto volumeSlice = Subresource(3, 0, 1);
+    const auto surfaceLayer = Subresource(5, 2, 0);
+    CopyDependencyTracker<Representation> depthDependencies;
+    assert(depthDependencies.RegisterSynchronized(
+        first, GuestResourceRanges{volumeMapping}, volumeLayout,
+        second, GuestResourceRanges{sliceMapping}, sliceLayout, depthRelation));
+    CopyCapabilityTracker<Representation> depthCapabilities;
+    const CopyImageInfo bidirectionalImage{
+        .hostFormat = 37,
+        .aspectMask = 1,
+        .sampleCount = 1,
+        .transferSource = true,
+        .transferDestination = true,
+    };
+    assert(depthCapabilities.RegisterExactImageCopy(
+        depthDependencies,
+        first, volumeLayout, bidirectionalImage, volumeSlice,
+        second, sliceLayout, bidirectionalImage, surfaceLayer));
+    assert(depthCapabilities.RegisterExactImageCopy(
+        depthDependencies,
+        second, sliceLayout, bidirectionalImage, surfaceLayer,
+        first, volumeLayout, bidirectionalImage, volumeSlice));
+
+    const std::array volumeWrite{volumeSlice};
+    assert(depthDependencies.MarkWritten(first, volumeWrite));
+    const auto volumeToSlice = depthCapabilities.PrepareSynchronization(
+        depthDependencies, second, surfaceLayer);
+    assert(volumeToSlice.state == CopySynchronizationState::Ready);
+    assert(volumeToSlice.copyRegion.sourceImageType == ImageKind::ThreeDimensional);
+    assert(volumeToSlice.copyRegion.destinationImageType == ImageKind::TwoDimensional);
+    assert(volumeToSlice.copyRegion.sourceOffsetZ == 1);
+    assert(volumeToSlice.copyRegion.destinationOffsetZ == 0);
+    assert(volumeToSlice.copyRegion.depth == 1);
+    assert(depthCapabilities.BeginSynchronization(volumeToSlice));
+    assert(depthCapabilities.CompleteSynchronization(
+        depthDependencies, volumeToSlice, true));
+
+    const std::array surfaceWrite{surfaceLayer};
+    assert(depthDependencies.MarkWritten(second, surfaceWrite));
+    const auto sliceToVolume = depthCapabilities.PrepareSynchronization(
+        depthDependencies, first, volumeSlice);
+    assert(sliceToVolume.state == CopySynchronizationState::Ready);
+    assert(sliceToVolume.copyRegion.sourceImageType == ImageKind::TwoDimensional);
+    assert(sliceToVolume.copyRegion.destinationImageType == ImageKind::ThreeDimensional);
+    assert(sliceToVolume.copyRegion.sourceOffsetZ == 0);
+    assert(sliceToVolume.copyRegion.destinationOffsetZ == 1);
+    assert(sliceToVolume.copyRegion.depth == 1);
+
+    auto wrongSliceLayout{sliceLayout};
+    auto wrongSliceSubresources{sliceSubresources};
+    wrongSliceSubresources[0].width = 7;
+    wrongSliceLayout.subresources = wrongSliceSubresources;
+    assert(!depthCapabilities.RegisterExactImageCopy(
+        depthDependencies,
+        first, volumeLayout, bidirectionalImage, volumeSlice,
+        second, wrongSliceLayout, bidirectionalImage, surfaceLayer));
+    assert(!depthCapabilities.RegisterExactImageCopy(
+        depthDependencies,
+        first, volumeLayout, bidirectionalImage, Subresource(3, 0, 2),
+        second, sliceLayout, bidirectionalImage, surfaceLayer));
 }

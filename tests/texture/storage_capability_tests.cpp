@@ -302,4 +302,128 @@ int main() {
     multisampledImage.sampleCount = 2;
     expectCubeRegistrationRejected(nonCubeLayout, multisampledImage, cubeLayout,
                                    multisampledImage, FormatCompatibility::Exact);
+
+    // A proven 3D Z slice activates both directional exact-copy routes as one
+    // transaction even though the 2D storage aliases only part of the volume.
+    std::array<std::uint8_t, 512> depthMemory{};
+    const auto depthAddress = reinterpret_cast<std::uintptr_t>(depthMemory.data());
+    const std::array<std::span<std::uint8_t>, 1> volumeMapping{
+        std::span{depthMemory},
+    };
+    const std::array<std::span<std::uint8_t>, 1> sliceMapping{
+        std::span{depthMemory}.subspan(128, 128),
+    };
+    const std::array volumeSubresources{
+        GuestSubresource{
+            .offset = depthAddress,
+            .size = 512,
+            .width = 8,
+            .height = 8,
+            .depth = 2,
+            .mip = 1,
+            .layer = 0,
+            .blockHeight = 1,
+            .blockDepth = 2,
+            .depthSlices = {
+                GuestDepthSlice{.size = 128, .segments = {{depthAddress, 128, 0}}},
+                GuestDepthSlice{.size = 128, .segments = {{depthAddress + 128, 128, 0}}},
+            },
+        },
+    };
+    const std::array sliceSubresources{
+        GuestSubresource{
+            .offset = depthAddress + 128,
+            .size = 128,
+            .width = 8,
+            .height = 8,
+            .depth = 1,
+            .mip = 0,
+            .layer = 0,
+            .blockHeight = 1,
+            .blockDepth = 2,
+            .depthSlices = {
+                GuestDepthSlice{.size = 128, .segments = {{depthAddress + 128, 128, 0}}},
+            },
+        },
+    };
+    const TextureResourceLayout volumeLayout{
+        .tile = {.mode = TileKind::Block, .blockHeight = 1, .blockDepth = 2},
+        .imageType = ImageKind::ThreeDimensional,
+        .viewType = ViewKind::ThreeDimensional,
+        .layerStride = 512,
+        .viewMipBase = 1,
+        .viewMipCount = 1,
+        .viewLayerCount = 1,
+        .subresources = volumeSubresources,
+    };
+    const TextureResourceLayout sliceLayout{
+        .tile = {.mode = TileKind::Block, .blockHeight = 1, .blockDepth = 2},
+        .imageType = ImageKind::TwoDimensional,
+        .viewType = ViewKind::TwoDimensional,
+        .layerStride = 128,
+        .viewMipCount = 1,
+        .viewLayerCount = 1,
+        .subresources = sliceSubresources,
+    };
+    const auto depthRelation = ClassifyAndResolveView(
+        volumeLayout, sliceLayout, FormatCompatibility::Exact, true);
+    assert(depthRelation.relation == TextureViewCompatibility::CopyOnly);
+    const ResolvedSubresource volumeSlice{.mip = 1, .layer = 0, .depthSlice = 1};
+    const ResolvedSubresource surfaceSlice{};
+
+    auto depthGroup = std::make_shared<TextureGroup>();
+    auto volumeStorage = std::make_shared<TextureStorage>(
+        nullptr, depthGroup, GuestResourceRanges{volumeMapping});
+    auto sliceStorage = std::make_shared<TextureStorage>(
+        nullptr, depthGroup, GuestResourceRanges{sliceMapping});
+    depthGroup->Attach(volumeStorage);
+    depthGroup->Attach(sliceStorage);
+    assert(depthGroup->RegisterDepthSliceCopyOnly(
+        volumeStorage, volumeLayout, bidirectionalImage,
+        sliceStorage, sliceLayout, bidirectionalImage,
+        depthRelation, FormatCompatibility::Exact));
+
+    const std::array volumeSliceWrite{volumeSlice};
+    assert(depthGroup->MarkCopyRepresentationWritten(volumeStorage, volumeSliceWrite));
+    auto toSurface = depthGroup->PrepareCopySynchronization(sliceStorage, surfaceSlice);
+    assert(toSurface.state == CopySynchronizationState::Ready);
+    assert(toSurface.copyRegion.sourceOffsetZ == 1 &&
+        toSurface.copyRegion.destinationOffsetZ == 0 &&
+        toSurface.copyRegion.depth == 1);
+    assert(depthGroup->BeginCopySynchronization(toSurface));
+    assert(depthGroup->CompleteCopySynchronization(toSurface, true));
+
+    const std::array surfaceSliceWrite{surfaceSlice};
+    assert(depthGroup->MarkCopyRepresentationWritten(sliceStorage, surfaceSliceWrite));
+    auto toVolume = depthGroup->PrepareCopySynchronization(volumeStorage, volumeSlice);
+    assert(toVolume.state == CopySynchronizationState::Ready);
+    assert(toVolume.copyRegion.sourceOffsetZ == 0 &&
+        toVolume.copyRegion.destinationOffsetZ == 1 &&
+        toVolume.copyRegion.depth == 1);
+
+    const auto expectDepthRegistrationRejected = [&](const CopyImageInfo &volumeImage,
+                                                      const CopyImageInfo &surfaceImage,
+                                                      FormatCompatibility format) {
+        auto rejectedGroup = std::make_shared<TextureGroup>();
+        auto rejectedVolume = std::make_shared<TextureStorage>(
+            nullptr, rejectedGroup, GuestResourceRanges{volumeMapping});
+        auto rejectedSlice = std::make_shared<TextureStorage>(
+            nullptr, rejectedGroup, GuestResourceRanges{sliceMapping});
+        rejectedGroup->Attach(rejectedVolume);
+        rejectedGroup->Attach(rejectedSlice);
+        assert(!rejectedGroup->RegisterDepthSliceCopyOnly(
+            rejectedVolume, volumeLayout, volumeImage,
+            rejectedSlice, sliceLayout, surfaceImage,
+            depthRelation, format));
+        assert(rejectedGroup->GetCopyRepresentationState(rejectedVolume, volumeSlice) ==
+            CopyRepresentationState::Untracked);
+        assert(rejectedGroup->GetCopyRepresentationState(rejectedSlice, surfaceSlice) ==
+            CopyRepresentationState::Untracked);
+    };
+    expectDepthRegistrationRejected(
+        bidirectionalImage, bidirectionalImage, FormatCompatibility::ViewCompatible);
+    auto destinationOnly{bidirectionalImage};
+    destinationOnly.transferSource = false;
+    expectDepthRegistrationRejected(
+        bidirectionalImage, destinationOnly, FormatCompatibility::Exact);
 }

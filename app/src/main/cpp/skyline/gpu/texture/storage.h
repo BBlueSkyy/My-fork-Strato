@@ -88,6 +88,12 @@ namespace skyline::gpu::texture {
             const std::shared_ptr<TextureStorage> &requested,
             const TextureResourceLayout &requestedLayout, const CopyImageInfo &requestedImage,
             const ClassifiedResourceView &classified, FormatCompatibility format);
+        bool RegisterDepthSliceCopyOnly(
+            const std::shared_ptr<TextureStorage> &backing,
+            const TextureResourceLayout &backingLayout, const CopyImageInfo &backingImage,
+            const std::shared_ptr<TextureStorage> &requested,
+            const TextureResourceLayout &requestedLayout, const CopyImageInfo &requestedImage,
+            const ClassifiedResourceView &classified, FormatCompatibility format);
         PreparedCopySynchronization<TextureStorage> PrepareCopySynchronization(
             const std::shared_ptr<TextureStorage> &destination,
             ResolvedSubresource destinationSubresource) const;
@@ -349,6 +355,58 @@ namespace skyline::gpu::texture {
 
         copyDependencies = std::move(updatedDependencies);
         copyCapabilities = std::move(updatedCapabilities);
+        return true;
+    }
+
+    inline bool TextureGroup::RegisterDepthSliceCopyOnly(
+        const std::shared_ptr<TextureStorage> &backing,
+        const TextureResourceLayout &backingLayout, const CopyImageInfo &backingImage,
+        const std::shared_ptr<TextureStorage> &requested,
+        const TextureResourceLayout &requestedLayout, const CopyImageInfo &requestedImage,
+        const ClassifiedResourceView &classified, FormatCompatibility format) {
+        std::scoped_lock runtimeLock{runtimeSynchronizationMutex};
+        std::scoped_lock lock{mutex};
+        const auto verified{ClassifyAndResolveView(
+            backingLayout, requestedLayout, format, false)};
+        if (!backing || !requested || backing->GetGroup().get() != this ||
+            requested->GetGroup().get() != this ||
+            format != FormatCompatibility::Exact ||
+            verified.relation != TextureViewCompatibility::CopyOnly ||
+            !verified.copyRegion || verified.copyRegion->subresources.size() != 1 ||
+            classified.relation != TextureViewCompatibility::CopyOnly ||
+            !classified.copyRegion ||
+            classified.copyRegion->subresources != verified.copyRegion->subresources)
+            return false;
+
+        const auto &mapping{verified.copyRegion->subresources.front()};
+        if (!IsExactBlockLinearDepthSliceRelation(
+                backingLayout, mapping.backing,
+                requestedLayout, mapping.requested))
+            return false;
+
+        auto updatedDependencies{copyDependencies};
+        if (!updatedDependencies.RegisterSynchronized(
+                backing, backing->ranges, backingLayout,
+                requested, requested->ranges, requestedLayout, verified))
+            return false;
+
+        auto updatedCapabilities{copyCapabilities};
+        auto forward{updatedCapabilities};
+        if (!forward.RegisterExactImageCopy(
+                updatedDependencies,
+                backing, backingLayout, backingImage, mapping.backing,
+                requested, requestedLayout, requestedImage, mapping.requested, false))
+            return false;
+
+        auto reverse{forward};
+        if (!reverse.RegisterExactImageCopy(
+                updatedDependencies,
+                requested, requestedLayout, requestedImage, mapping.requested,
+                backing, backingLayout, backingImage, mapping.backing, false))
+            return false;
+
+        copyDependencies = std::move(updatedDependencies);
+        copyCapabilities = std::move(reverse);
         return true;
     }
 

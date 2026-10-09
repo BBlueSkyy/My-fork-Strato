@@ -24,6 +24,9 @@ namespace skyline::gpu::texture {
     struct ExactImageCopyRegion {
         ResolvedSubresource sourceSubresource{};
         ResolvedSubresource destinationSubresource{};
+        ImageKind sourceImageType{};
+        ImageKind destinationImageType{};
+        std::uint32_t sourceOffsetZ{}, destinationOffsetZ{};
         std::uint32_t width{}, height{}, depth{};
         std::uint32_t aspectMask{};
     };
@@ -104,11 +107,19 @@ namespace skyline::gpu::texture {
                 (sourceLayout.imageType == ImageKind::TwoDimensional &&
                  destinationLayout.imageType == ImageKind::OneDimensional)
             };
+            const bool depthSliceCopy{
+                (sourceLayout.imageType == ImageKind::ThreeDimensional &&
+                 destinationLayout.imageType == ImageKind::TwoDimensional) ||
+                (sourceLayout.imageType == ImageKind::TwoDimensional &&
+                 destinationLayout.imageType == ImageKind::ThreeDimensional)
+            };
             if ((sourceLayout.imageType != destinationLayout.imageType &&
-                 (!dimensionalCopy || !supportsMaintenance5)) ||
-                sourceLayout.imageType == ImageKind::ThreeDimensional ||
-                destinationLayout.imageType == ImageKind::ThreeDimensional ||
-                sourceSubresource.depthSlice || destinationSubresource.depthSlice ||
+                 !depthSliceCopy && (!dimensionalCopy || !supportsMaintenance5)) ||
+                ((sourceLayout.imageType == ImageKind::ThreeDimensional ||
+                  destinationLayout.imageType == ImageKind::ThreeDimensional) &&
+                 !depthSliceCopy) ||
+                (!depthSliceCopy &&
+                 (sourceSubresource.depthSlice || destinationSubresource.depthSlice)) ||
                 !sourceImage.hostFormat || sourceImage.hostFormat != destinationImage.hostFormat ||
                 !sourceImage.aspectMask || sourceImage.aspectMask != destinationImage.aspectMask ||
                 !std::has_single_bit(sourceImage.aspectMask) ||
@@ -118,9 +129,17 @@ namespace skyline::gpu::texture {
 
             const auto source = FindExactSubresource(sourceLayout, sourceSubresource);
             const auto destination = FindExactSubresource(destinationLayout, destinationSubresource);
-            if (!source || !destination || !source->width || !source->height || source->depth != 1 ||
-                !destination->width || !destination->height || destination->depth != 1 ||
+            if (!source || !destination || !source->width || !source->height ||
+                !destination->width || !destination->height ||
                 source->width != destination->width || source->height != destination->height)
+                return false;
+
+            if (depthSliceCopy)
+                return IsExactBlockLinearDepthSliceRelation(
+                    sourceLayout, sourceSubresource,
+                    destinationLayout, destinationSubresource);
+
+            if (source->depth != 1 || destination->depth != 1)
                 return false;
 
             return (!dimensionalCopy && sourceLayout.imageType != ImageKind::OneDimensional) ||
@@ -201,9 +220,15 @@ namespace skyline::gpu::texture {
                 {
                     .sourceSubresource = sourceSubresource,
                     .destinationSubresource = destinationSubresource,
+                    .sourceImageType = sourceLayout.imageType,
+                    .destinationImageType = destinationLayout.imageType,
+                    .sourceOffsetZ = sourceLayout.imageType == ImageKind::ThreeDimensional
+                        ? sourceSubresource.depthSlice : 0,
+                    .destinationOffsetZ = destinationLayout.imageType == ImageKind::ThreeDimensional
+                        ? destinationSubresource.depthSlice : 0,
                     .width = sourceDescription->width,
                     .height = sourceDescription->height,
-                    .depth = sourceDescription->depth,
+                    .depth = 1,
                     .aspectMask = sourceImage.aspectMask,
                 },
             });
