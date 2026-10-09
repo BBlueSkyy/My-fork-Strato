@@ -153,6 +153,8 @@ namespace skyline::gpu::texture {
         bool overlaps{};
         bool aligned{true};
         bool unitHeightDepth{true};
+        bool unitDepth{true};
+        bool squareExtents{true};
         bool effectiveBlockLayout{backing.tile.mode == TileKind::Block && requested.tile.mode == TileKind::Block};
         std::uint64_t selected{};
         for (std::size_t index{}; index < requested.subresources.size(); ++index) {
@@ -166,6 +168,10 @@ namespace skyline::gpu::texture {
             ++selected;
             if (subresource.height != 1 || subresource.depth != 1)
                 unitHeightDepth = false;
+            if (subresource.depth != 1)
+                unitDepth = false;
+            if (subresource.width != subresource.height)
+                squareExtents = false;
             for (std::size_t previous{}; previous < index; ++previous) {
                 const auto &other{requested.subresources[previous]};
                 if (subresource.mip == other.mip && subresource.layer == other.layer)
@@ -204,19 +210,30 @@ namespace skyline::gpu::texture {
         const bool oneDimensionalCopy = format == FormatCompatibility::Exact && unitHeightDepth &&
             ((backing.imageType == ImageKind::OneDimensional && requested.imageType == ImageKind::TwoDimensional) ||
              (backing.imageType == ImageKind::TwoDimensional && requested.imageType == ImageKind::OneDimensional));
+        const bool cubeView = requested.viewType == ViewKind::Cube ||
+            requested.viewType == ViewKind::CubeArray;
+        const bool validCubeLayers = requested.viewLayerBase % 6 == 0;
+        const bool validCubeCount = requested.viewType == ViewKind::Cube
+            ? requested.viewLayerCount == 6
+            : requested.viewType != ViewKind::CubeArray || requested.viewLayerCount % 6 == 0;
+        // This relation needs a distinct host image only because VkImageView creation
+        // cannot add VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT to an existing 2D backing.
+        const bool cubeCompatibleCopy = format == FormatCompatibility::Exact && unitDepth && squareExtents && cubeView &&
+            validCubeLayers && validCubeCount && !backing.cubeCompatible &&
+            backing.imageType == ImageKind::TwoDimensional &&
+            requested.imageType == ImageKind::TwoDimensional;
         if (selected != std::uint64_t{requested.viewMipCount} * requested.viewLayerCount ||
             !aligned || !sameTile ||
             !ValidViewType(backing.imageType, backing.viewType) ||
             !ValidViewType(requested.imageType, requested.viewType) ||
             (backing.imageType != requested.imageType && !oneDimensionalCopy) ||
             (format == FormatCompatibility::ViewCompatible && !supportsFormatView) ||
-            ((requested.viewType == ViewKind::Cube || requested.viewType == ViewKind::CubeArray) &&
-                (!backing.cubeCompatible || requested.viewLayerBase % 6 ||
-                    (requested.viewType == ViewKind::Cube ? requested.viewLayerCount != 6 : requested.viewLayerCount % 6))) ||
+            (cubeView && (!unitDepth || !squareExtents || !validCubeLayers || !validCubeCount ||
+                (!backing.cubeCompatible && !cubeCompatibleCopy))) ||
             (requested.viewLayerCount > 1 && backing.layerStride != requested.layerStride))
             return TextureViewCompatibility::LayoutIncompatible;
 
-        return oneDimensionalCopy || format == FormatCompatibility::CopyCompatible
+        return oneDimensionalCopy || cubeCompatibleCopy || format == FormatCompatibility::CopyCompatible
             ? TextureViewCompatibility::CopyOnly
             : TextureViewCompatibility::Full;
     }

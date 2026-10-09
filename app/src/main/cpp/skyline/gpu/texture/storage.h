@@ -9,7 +9,11 @@
 #include <utility>
 #include <vector>
 #include "copy_capability.h"
+#ifndef SKYLINE_TEXTURE_STORAGE_METADATA_ONLY
 #include "texture.h"
+#else
+namespace skyline::gpu { class Texture; }
+#endif
 
 namespace skyline::gpu::texture {
     class TextureStorage;
@@ -23,8 +27,8 @@ namespace skyline::gpu::texture {
     /**
      * @brief Groups storages whose complete guest ranges have a physical alias relationship
      *
-     * Runtime synchronization remains capability-gated and currently covers only the
-     * verified maintenance5 1D/height-one 2D image-copy relation.
+     * Runtime synchronization remains capability-gated and covers only explicitly
+     * verified exact-image-copy relations.
      */
     class TextureGroup : public std::enable_shared_from_this<TextureGroup> {
       private:
@@ -78,6 +82,12 @@ namespace skyline::gpu::texture {
             const std::shared_ptr<TextureStorage> &requested,
             const TextureResourceLayout &requestedLayout, const CopyImageInfo &requestedImage,
             const ClassifiedResourceView &classified);
+        bool RegisterCubeCompatibleCopyOnly(
+            const std::shared_ptr<TextureStorage> &backing,
+            const TextureResourceLayout &backingLayout, const CopyImageInfo &backingImage,
+            const std::shared_ptr<TextureStorage> &requested,
+            const TextureResourceLayout &requestedLayout, const CopyImageInfo &requestedImage,
+            const ClassifiedResourceView &classified, FormatCompatibility format);
         PreparedCopySynchronization<TextureStorage> PrepareCopySynchronization(
             const std::shared_ptr<TextureStorage> &destination,
             ResolvedSubresource destinationSubresource) const;
@@ -276,6 +286,72 @@ namespace skyline::gpu::texture {
         return true;
     }
 
+    inline bool TextureGroup::RegisterCubeCompatibleCopyOnly(
+        const std::shared_ptr<TextureStorage> &backing,
+        const TextureResourceLayout &backingLayout, const CopyImageInfo &backingImage,
+        const std::shared_ptr<TextureStorage> &requested,
+        const TextureResourceLayout &requestedLayout, const CopyImageInfo &requestedImage,
+        const ClassifiedResourceView &classified, FormatCompatibility format) {
+        std::scoped_lock runtimeLock{runtimeSynchronizationMutex};
+        std::scoped_lock lock{mutex};
+        const bool cubeView{requestedLayout.viewType == ViewKind::Cube ||
+            requestedLayout.viewType == ViewKind::CubeArray};
+        const bool validCubeLayers{requestedLayout.viewLayerBase % 6 == 0 &&
+            (requestedLayout.viewType == ViewKind::Cube
+                ? requestedLayout.viewLayerCount == 6
+                : requestedLayout.viewLayerCount != 0 && requestedLayout.viewLayerCount % 6 == 0)};
+        if (!backing || !requested || backing->GetGroup().get() != this ||
+            requested->GetGroup().get() != this ||
+            format != FormatCompatibility::Exact ||
+            backingLayout.imageType != ImageKind::TwoDimensional ||
+            requestedLayout.imageType != ImageKind::TwoDimensional ||
+            backingLayout.cubeCompatible || !requestedLayout.cubeCompatible ||
+            !cubeView || !validCubeLayers ||
+            ClassifyTextureViewCompatibility(
+                backingLayout, requestedLayout, format) != TextureViewCompatibility::CopyOnly ||
+            classified.relation != TextureViewCompatibility::CopyOnly ||
+            !classified.copyRegion || classified.copyRegion->subresources.empty())
+            return false;
+
+        auto updatedDependencies{copyDependencies};
+        if (!updatedDependencies.RegisterSynchronized(
+                backing, backing->ranges, backingLayout,
+                requested, requested->ranges, requestedLayout, classified))
+            return false;
+
+        auto updatedCapabilities{copyCapabilities};
+        {
+            auto forward{updatedCapabilities};
+            bool complete{true};
+            for (const auto &mapping : classified.copyRegion->subresources)
+                complete &= forward.RegisterExactImageCopy(
+                    updatedDependencies,
+                    backing, backingLayout, backingImage, mapping.backing,
+                    requested, requestedLayout, requestedImage, mapping.requested, false);
+            if (complete) {
+                updatedCapabilities = std::move(forward);
+            } else
+                return false;
+        }
+        {
+            auto reverse{updatedCapabilities};
+            bool complete{true};
+            for (const auto &mapping : classified.copyRegion->subresources)
+                complete &= reverse.RegisterExactImageCopy(
+                    updatedDependencies,
+                    requested, requestedLayout, requestedImage, mapping.requested,
+                    backing, backingLayout, backingImage, mapping.backing, false);
+            if (complete) {
+                updatedCapabilities = std::move(reverse);
+            } else
+                return false;
+        }
+
+        copyDependencies = std::move(updatedDependencies);
+        copyCapabilities = std::move(updatedCapabilities);
+        return true;
+    }
+
     inline PreparedCopySynchronization<TextureStorage> TextureGroup::PrepareCopySynchronization(
         const std::shared_ptr<TextureStorage> &destination,
         ResolvedSubresource destinationSubresource) const {
@@ -355,6 +431,7 @@ namespace skyline::gpu::texture {
         return true;
     }
 
+#ifndef SKYLINE_TEXTURE_STORAGE_METADATA_ONLY
     inline std::shared_ptr<TextureStorage> CreateTextureStorage(
         std::shared_ptr<Texture> texture, GuestResourceRanges ranges) {
         auto group{std::make_shared<TextureGroup>()};
@@ -365,6 +442,7 @@ namespace skyline::gpu::texture {
         group->Attach(storage);
         return storage;
     }
+#endif
 
     /**
      * @brief Joins storages only when one complete ordered guest range is contained in the other

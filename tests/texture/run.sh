@@ -41,6 +41,7 @@ mkdir -p "$build_dir"
 "$build_dir/copy_capability_tests"
 
 "${CXX:-c++}" -std=c++20 -Wall -Wextra -Werror \
+    -DSKYLINE_TEXTURE_STORAGE_METADATA_ONLY \
     -I"$repo_root/app/src/main/cpp" \
     -I"$repo_root/app/libraries/vkhpp" \
     -I"$repo_root/app/libraries/vkhpp/Vulkan-Headers/include" \

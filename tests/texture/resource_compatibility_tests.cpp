@@ -46,6 +46,70 @@ int main() {
     Check(ClassifyTextureViewCompatibility(parent, mipView, FormatCompatibility::Exact), TextureViewCompatibility::LayoutIncompatible, "cube needs host image flag and six faces");
     mipView.viewType = ViewKind::TwoDimensional;
 
+    std::array<GuestSubresource, 12> cubeSubresources{};
+    for (std::uint32_t layer{}; layer < cubeSubresources.size(); ++layer) {
+        cubeSubresources[layer] = {
+            .offset = 0x4000 + layer * 0x400,
+            .size = 0x400,
+            .width = 32,
+            .height = 32,
+            .depth = 1,
+            .mip = 0,
+            .layer = layer,
+        };
+    }
+    const TextureResourceLayout nonCubeBacking{
+        .tile = {.mode = TileKind::Pitch, .pitch = 0x80},
+        .imageType = ImageKind::TwoDimensional,
+        .viewType = ViewKind::TwoDimensionalArray,
+        .cubeCompatible = false,
+        .layerStride = 0x400,
+        .viewMipCount = 1,
+        .viewLayerCount = 12,
+        .subresources = cubeSubresources,
+    };
+    auto cubeView{nonCubeBacking};
+    cubeView.viewType = ViewKind::Cube;
+    cubeView.viewLayerCount = 6;
+    Check(ClassifyTextureViewCompatibility(nonCubeBacking, cubeView, FormatCompatibility::Exact),
+          TextureViewCompatibility::CopyOnly, "valid cube view needs a separate cube-compatible backing");
+
+    auto cubeArrayView{nonCubeBacking};
+    cubeArrayView.viewType = ViewKind::CubeArray;
+    Check(ClassifyTextureViewCompatibility(nonCubeBacking, cubeArrayView, FormatCompatibility::Exact),
+          TextureViewCompatibility::CopyOnly, "valid cube array needs a separate cube-compatible backing");
+
+    auto cubeCompatibleBacking{nonCubeBacking};
+    cubeCompatibleBacking.cubeCompatible = true;
+    Check(ClassifyTextureViewCompatibility(cubeCompatibleBacking, cubeView, FormatCompatibility::Exact),
+          TextureViewCompatibility::Full, "cube-compatible backing keeps the shared-view path");
+    Check(ClassifyTextureViewCompatibility(nonCubeBacking, cubeView, FormatCompatibility::ViewCompatible, true),
+          TextureViewCompatibility::LayoutIncompatible, "cube CopyOnly requires an exact format");
+
+    auto invalidCubeView{cubeView};
+    invalidCubeView.viewLayerCount = 5;
+    Check(ClassifyTextureViewCompatibility(nonCubeBacking, invalidCubeView, FormatCompatibility::Exact),
+          TextureViewCompatibility::LayoutIncompatible, "cube CopyOnly requires exactly six faces");
+    invalidCubeView = cubeView;
+    invalidCubeView.viewLayerBase = 1;
+    Check(ClassifyTextureViewCompatibility(nonCubeBacking, invalidCubeView, FormatCompatibility::Exact),
+          TextureViewCompatibility::LayoutIncompatible, "cube CopyOnly requires an aligned face base");
+
+    auto partialCubeSubresources{cubeSubresources};
+    partialCubeSubresources[3].offset += 0x100;
+    partialCubeSubresources[3].size -= 0x100;
+    invalidCubeView = cubeView;
+    invalidCubeView.subresources = partialCubeSubresources;
+    Check(ClassifyTextureViewCompatibility(nonCubeBacking, invalidCubeView, FormatCompatibility::Exact),
+          TextureViewCompatibility::LayoutIncompatible, "partial cube overlap is not CopyOnly");
+
+    auto depthCubeSubresources{cubeSubresources};
+    depthCubeSubresources[0].depth = 2;
+    invalidCubeView = cubeView;
+    invalidCubeView.subresources = depthCubeSubresources;
+    Check(ClassifyTextureViewCompatibility(nonCubeBacking, invalidCubeView, FormatCompatibility::Exact),
+          TextureViewCompatibility::LayoutIncompatible, "cube CopyOnly excludes depth slices");
+
     const std::array shiftedMip{
         GuestSubresource{.offset = 0x1810, .size = 0x200, .width = 32, .height = 16, .depth = 1, .mip = 0, .layer = 0},
     };
