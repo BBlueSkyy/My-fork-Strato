@@ -238,6 +238,12 @@ namespace skyline::input {
     }
 
     void NpadDevice::WriteNextEntry(NpadControllerInfo &info, NpadControllerState entry) {
+        // DIAGNOSTIC ONLY: neutralize D-pad left/up/right/down in every
+        // guest-visible Npad controller sample (active style and SystemExt).
+        // Preserve analog sticks, stick-derived direction bits and all other
+        // input, connection, sampling and RingLifo metadata unchanged.
+        // Never merge this diagnostic behavior into master.
+        entry.buttons.raw &= ~(0xFULL << 12);
         auto &lastEntry{info.state.at(info.header.currentEntry)};
 
         info.header.timestamp = util::GetTimeTicks();
