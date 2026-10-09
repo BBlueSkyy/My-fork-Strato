@@ -1076,6 +1076,28 @@ namespace skyline::kernel::svc {
             const auto &call{static_cast<const type::KNceThread &>(*state.thread).ctx.svcCallsite};
             LOGW("FSP_SVC_DIAG: guest SVC callsite: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}, FP=0x{:X}",
                  call.pc, call.lr, call.sp, call.fp);
+
+            // At this point we are still before SchedulerScopedLock and
+            // IpcBufferLockGuard. Previous attempts to walk and symbolize the
+            // guest stack from IFile::Write blocked the diagnostic itself.
+            // Read only the first frame record (FP chain + saved LR), without
+            // symbolization, mutation or recursive traversal.
+            if (call.fp && !(call.fp & 0xF)) {
+                std::array<u64, 2> frame{};
+                bool readable{};
+                try {
+                    readable = state.process->memory.ReadMemoryIfReadable(call.fp, frame.data(), sizeof(frame));
+                } catch (const signal::SignalException &) {
+                    readable = false;
+                }
+                if (readable)
+                    LOGW("FSP_SVC_DIAG: guest immediate frame: fp=0x{:X}, caller_fp=0x{:X}, caller_lr=0x{:X}",
+                         call.fp, frame[0], frame[1]);
+                else
+                    LOGW("FSP_SVC_DIAG: guest immediate frame unavailable at FP=0x{:X}", call.fp);
+            } else {
+                LOGW("FSP_SVC_DIAG: guest frame pointer null or unaligned FP=0x{:X}", call.fp);
+            }
         }
     }
 
