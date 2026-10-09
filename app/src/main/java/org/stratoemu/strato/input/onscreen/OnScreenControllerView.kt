@@ -117,6 +117,31 @@ class OnScreenControllerView @JvmOverloads constructor(context : Context, attrs 
     }
 
     private val playingTouchHandler = OnTouchListener { _, event ->
+        // Cancellation invalidates every pointer in the gesture, not only actionIndex.
+        // Always release all active inputs so the guest cannot retain a held direction.
+        if (event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            controls.buttons.forEach { button ->
+                if (button.touchPointerId != -1 || button.partnerPointerId != -1) {
+                    button.touchPointerId = -1
+                    button.partnerPointerId = -1
+                    if (button.onFingerUp(event.x, event.y))
+                        onButtonStateChangedListener?.invoke(button.buttonId, ButtonState.Released)
+                }
+            }
+            controls.joysticks.forEach { joystick ->
+                joystickAnimators.remove(joystick)?.cancel()
+                if (joystick.touchPointerId != -1) {
+                    joystick.touchPointerId = -1
+                    if (joystick.shortDoubleTapped)
+                        onButtonStateChangedListener?.invoke(joystick.buttonId, ButtonState.Released)
+                    joystick.onFingerUp(event.x, event.y)
+                    onStickStateChangedListener?.invoke(joystick.stickId, PointF(0f, 0f))
+                }
+            }
+            invalidate()
+            return@OnTouchListener true
+        }
+
         var handled = false
         val actionIndex = event.actionIndex
         val pointerId = event.getPointerId(actionIndex)
@@ -154,17 +179,17 @@ class OnScreenControllerView @JvmOverloads constructor(context : Context, attrs 
                 }
 
                 MotionEvent.ACTION_MOVE -> {
-                    for (fingerId in 0 until event.pointerCount) {
-                        if (fingerId == button.touchPointerId) {
+                    for (pointerIndex in 0 until event.pointerCount) {
+                        if (event.getPointerId(pointerIndex) == button.touchPointerId) {
                             for (buttonPair in controls.buttonPairs) {
                                 if (buttonPair.contains(button)) {
                                     for (otherButton in buttonPair) {
                                         if (otherButton.partnerPointerId == -1 &&
                                             otherButton != button &&
                                             otherButton.config.enabled &&
-                                            otherButton.isTouched(event.getX(fingerId), event.getY(fingerId))
+                                            otherButton.isTouched(event.getX(pointerIndex), event.getY(pointerIndex))
                                         ) {
-                                            otherButton.partnerPointerId = fingerId
+                                            otherButton.partnerPointerId = event.getPointerId(pointerIndex)
                                             if (otherButton.onFingerDown(x, y))
                                                 onButtonStateChangedListener?.invoke(otherButton.buttonId, ButtonState.Pressed)
                                             if (hapticFeedback)

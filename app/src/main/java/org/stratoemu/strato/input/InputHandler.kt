@@ -328,7 +328,8 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
     /**
      * The last value of the axes so the stagnant axes can be eliminated to not wastefully look them up
      */
-    private val axesHistory = FloatArray(MotionHostEvent.axes.size)
+    // Track the normalized host values separately for each physical device.
+    private val axesHistory = mutableMapOf<String, FloatArray>()
     private val mousePositionHistory = mutableMapOf<Int, Pair<Int, Int>>()
 
     /**
@@ -336,6 +337,7 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
      */
     fun handleMotionEvent(event : MotionEvent) : Boolean {
         if ((event.isFromSource(InputDevice.SOURCE_CLASS_JOYSTICK) || event.isFromSource(InputDevice.SOURCE_CLASS_BUTTON)) && event.action == MotionEvent.ACTION_MOVE) {
+            val deviceHistory = axesHistory.getOrPut(event.device.descriptor) { FloatArray(MotionHostEvent.axes.size) }
             for (axisItem in MotionHostEvent.axes.withIndex()) {
                 val axis = axisItem.value
                 val range : InputDevice.MotionRange? = event.device.getMotionRange(axis, event.source)
@@ -353,8 +355,20 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
                     value = if (abs(value) > MIN_AXIS_DEAD_ZONE) value else 0f
                 }
 
-                if ((event.historySize != 0 && value != event.getHistoricalAxisValue(axis, 0)) || axesHistory[axisItem.index] != value) {
-                    var polarity = value > 0 || (value == 0f && axesHistory[axisItem.index] >= 0)
+                val hostValue = value
+                val previousValue = deviceHistory[axisItem.index]
+                if (previousValue != hostValue) {
+                    // Releasing a mapped direction is required even when an axis jumps
+                    // directly from positive to negative without reporting a neutral sample.
+                    if (previousValue != 0f && hostValue != 0f && (previousValue > 0f) != (hostValue > 0f)) {
+                        when (val previousEvent = inputManager.eventMap[MotionHostEvent(event.device.descriptor, axis, previousValue > 0f)]) {
+                            is ButtonGuestEvent -> if (previousEvent.button != ButtonId.Menu)
+                                setButtonState(previousEvent.id, previousEvent.button.value, false)
+                            is AxisGuestEvent -> setAxisValue(previousEvent.id, previousEvent.axis.ordinal, 0)
+                        }
+                    }
+
+                    var polarity = hostValue > 0 || (hostValue == 0f && previousValue >= 0)
 
                     val guestEvent = MotionHostEvent(event.device.descriptor, axis, polarity).let { hostEvent ->
                         inputManager.eventMap[hostEvent] ?: if (value == 0f) {
@@ -381,7 +395,9 @@ class InputHandler(private val inputManager : InputManager, private val emulatio
                     }
                 }
 
-                axesHistory[axisItem.index] = value
+                // Do not cache the scaled/inverted guest value: future host comparisons
+                // and zero-direction releases must use the original normalized value.
+                deviceHistory[axisItem.index] = hostValue
             }
 
             return true
