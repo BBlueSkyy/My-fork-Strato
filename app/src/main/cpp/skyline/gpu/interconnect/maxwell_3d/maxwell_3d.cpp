@@ -150,6 +150,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (auto *pipeline{activeState.GetPipeline()}) {
                 for (auto hash : pipeline->sourcePackedState.shaderHashes)
                     hashes += fmt::format("{:016X},", hash);
+                const auto &packed{pipeline->sourcePackedState};
+                const auto blend{packed.GetAttachmentBlendState(0)};
+                hashes += fmt::format(" color_mask=0x{:X} blend_enable={} raster_discard={}",
+                    static_cast<u32>(blend.colorWriteMask),
+                    static_cast<bool>(blend.blendEnable),
+                    packed.rasterizerDiscardEnable);
             }
             ctx.executor.AppendDiagnosticDrawTrace(fmt::format(
                 "MAXWELL3D_DRAW kind=inline_index indexed={} count={} instances={} scissor={},{},{}x{} shaders={}\n",
@@ -451,6 +457,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (auto *pipeline{activeState.GetPipeline()}) {
                 for (auto hash : pipeline->sourcePackedState.shaderHashes)
                     hashes += fmt::format("{:016X},", hash);
+                const auto &packed{pipeline->sourcePackedState};
+                const auto blend{packed.GetAttachmentBlendState(0)};
+                hashes += fmt::format(" color_mask=0x{:X} blend_enable={} raster_discard={}",
+                    static_cast<u32>(blend.colorWriteMask),
+                    static_cast<bool>(blend.blendEnable),
+                    packed.rasterizerDiscardEnable);
             }
             ctx.executor.AppendDiagnosticDrawTrace(fmt::format(
                 "MAXWELL3D_DRAW kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={}\n",
@@ -526,6 +538,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (auto *pipeline{activeState.GetPipeline()}) {
                 for (auto hash : pipeline->sourcePackedState.shaderHashes)
                     hashes += fmt::format("{:016X},", hash);
+                const auto &packed{pipeline->sourcePackedState};
+                const auto blend{packed.GetAttachmentBlendState(0)};
+                hashes += fmt::format(" color_mask=0x{:X} blend_enable={} raster_discard={}",
+                    static_cast<u32>(blend.colorWriteMask),
+                    static_cast<bool>(blend.blendEnable),
+                    packed.rasterizerDiscardEnable);
             }
             ctx.executor.AppendDiagnosticDrawTrace(fmt::format(
                 "MAXWELL3D_DRAW kind=indirect indexed={} count={} instances={} scissor={},{},{}x{} shaders={}\n",
