@@ -440,9 +440,11 @@ namespace skyline::gpu::interconnect {
             diagnosticCaptureArmed = true;
             diagnosticCaptureState = DiagnosticCaptureState::Capturing;
             diagnosticRenderTargets.clear();
+            diagnosticSampledInputs.clear();
             diagnosticDrawTraceLines.clear();
             diagnosticDrawTraceFlushedCount = 0;
             diagnosticCaptureIndex = 0;
+            diagnosticSampledCaptureCount = 0;
             diagnosticCaptureBytes = 0;
             diagnosticCaptureDirectory.clear();
             LOGI("MINIRD arm marker consumed; capturing Steel Assault render chain");
@@ -462,6 +464,98 @@ namespace skyline::gpu::interconnect {
         }
 
         return false;
+    }
+
+
+    // Track shader inputs from the same command sequence that records the draw.
+    void CommandExecutor::TrackDiagnosticSampledInputs(span<TextureView *> sampledImages) {
+        if (diagnosticCaptureState != DiagnosticCaptureState::Capturing ||
+            diagnosticSampledCaptureCount + diagnosticSampledInputs.size() >= 8)
+            return;
+
+        for (auto *view : sampledImages) {
+            if (!view)
+                continue;
+            std::shared_ptr<Texture> texture{view->texture};
+            if (!IsMiniRenderDocTarget(*texture) ||
+                texture->layout == vk::ImageLayout::eUndefined)
+                continue;
+            if (std::find_if(diagnosticSampledInputs.begin(), diagnosticSampledInputs.end(),
+                             [&](const auto &existing) { return existing.get() == texture.get(); }) != diagnosticSampledInputs.end())
+                continue;
+            diagnosticSampledInputs.emplace_back(std::move(texture));
+            if (diagnosticSampledCaptureCount + diagnosticSampledInputs.size() >= 8)
+                break;
+        }
+    }
+
+    // Read back selected shader input textures only after the render pass ends.
+    // Waiter callbacks write results after GPU execution; guest memory is untouched.
+    void CommandExecutor::QueueDiagnosticSampledInputCaptures() {
+        if (diagnosticSampledInputs.empty() ||
+            diagnosticCaptureState != DiagnosticCaptureState::Capturing ||
+            diagnosticCaptureDirectory.empty()) {
+            diagnosticSampledInputs.clear();
+            return;
+        }
+
+        const std::filesystem::path directory{diagnosticCaptureDirectory};
+        for (const auto &texture : diagnosticSampledInputs) {
+            if (diagnosticSampledCaptureCount >= 8 ||
+                !IsMiniRenderDocTarget(*texture) ||
+                texture->layout == vk::ImageLayout::eUndefined ||
+                texture->surfaceSize > 64ULL * 1024 * 1024 - diagnosticCaptureBytes)
+                continue;
+
+            const size_t index{diagnosticSampledCaptureCount++};
+            diagnosticCaptureBytes += texture->surfaceSize;
+            const auto fileName{fmt::format("sampled_{:02}_rp{}_{}x{}x{}_{}.raw",
+                index, renderPassIndex, texture->dimensions.width,
+                texture->dimensions.height, texture->dimensions.depth,
+                vk::to_string(texture->format->vkFormat))};
+            const auto rawPath{directory / fileName};
+            const auto metadataPath{directory / fmt::format("sampled_{:02}.txt", index)};
+
+            uintptr_t guestMap{};
+            size_t guestSize{};
+            if (texture->guest) {
+                if (!texture->guest->mappings.empty())
+                    guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                for (const auto &mapping : texture->guest->mappings)
+                    guestSize += mapping.size();
+            }
+            const auto metadata{fmt::format(
+                "kind=sampled_input\nfile={}\nrender_pass={}\nsubmission={}\ntexture=0x{:X}\n"
+                "width={}\nheight={}\ndepth={}\nformat={}\nlayout={}\n"
+                "size={}\nguest_map=0x{:X}\nguest_size={}\n",
+                fileName, renderPassIndex, submissionNumber,
+                reinterpret_cast<uintptr_t>(texture.get()),
+                texture->dimensions.width, texture->dimensions.height,
+                texture->dimensions.depth, vk::to_string(texture->format->vkFormat),
+                vk::to_string(texture->layout), texture->surfaceSize, guestMap, guestSize)};
+            auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [texture, staging](vk::raii::CommandBuffer &commandBuffer,
+                                   const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    cycle->AttachObjects(texture, staging);
+                    texture->CopyIntoStagingBuffer(commandBuffer, staging);
+                });
+            pendingDiagnosticCaptureCallbacks.emplace_back(
+                [staging, rawPath, metadataPath, index, metadata] {
+                    std::ofstream raw{rawPath, std::ios::binary | std::ios::trunc};
+                    if (!raw) {
+                        LOGE("MINIRD could not write sampled input {}", index);
+                        return;
+                    }
+                    raw.write(reinterpret_cast<const char *>(staging->data()),
+                              static_cast<std::streamsize>(staging->size()));
+                    std::ofstream meta{metadataPath, std::ios::trunc};
+                    if (meta)
+                        meta << metadata;
+                    LOGI("MINIRD wrote sampled input {}", index);
+                });
+        }
+        diagnosticSampledInputs.clear();
     }
 
     void CommandExecutor::FlushDiagnosticDrawTrace() {
@@ -538,10 +632,10 @@ namespace skyline::gpu::interconnect {
                 << "scope=Steel Assault render-target chain\n"
                 << "raw_layout=linear host image bytes\n"
                 << "trigger=manual ARM_CAPTURE marker\n"
-                << "stop=16 eligible snapshots or 64MiB aggregate\n"
-                << "max_snapshot_bytes=12582912\n"
+                << "stop=8 render targets and 8 sampled inputs or 64MiB aggregate\n"
+                << "max_snapshot_bytes=12582912\n"\n                << "sampled_inputs=first_8_eligible_distinct_textures\n"
                 << "guest_memory_modified=false\n"
-                << "phase=1_render_target_chain_and_fermi2d_blits\n"
+                << "phase=2_shader_sampled_input_readback\n"
                 << "columns=index,file,render_pass,submission,texture,width,height,depth,format,layout,size,levels,layers,guest_map,guest_map_size,tile,bh,bd\n";
             manifest.close();
 
@@ -562,6 +656,7 @@ namespace skyline::gpu::interconnect {
         }
 
         if (!CheckDiagnosticCaptureArm()) {
+            diagnosticSampledInputs.clear();
             diagnosticRenderTargets.clear();
             return;
         }
@@ -571,13 +666,15 @@ namespace skyline::gpu::interconnect {
             return;
         }
 
+        QueueDiagnosticSampledInputCaptures();
         FlushDiagnosticDrawTrace();
 
         bool captureComplete{};
         for (const auto &texture : diagnosticRenderTargets) {
             if (diagnosticCaptureState != DiagnosticCaptureState::Capturing ||
                 !IsMiniRenderDocTarget(*texture) ||
-                texture->layout == vk::ImageLayout::eUndefined)
+                texture->layout == vk::ImageLayout::eUndefined ||
+                texture->surfaceSize > 64ULL * 1024 * 1024 - diagnosticCaptureBytes)
                 continue;
 
             auto stagingBuffer{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
@@ -660,7 +757,7 @@ namespace skyline::gpu::interconnect {
                     LOGI("MINIRD wrote snapshot {}: {}", captureIndex, rawPath.string());
                 });
 
-            if (diagnosticCaptureIndex >= 16 || diagnosticCaptureBytes >= 64ULL * 1024 * 1024) {
+            if (diagnosticCaptureIndex >= 8 || diagnosticCaptureBytes >= 64ULL * 1024 * 1024) {
                 diagnosticCaptureState = DiagnosticCaptureState::Complete;
                 captureComplete = true;
                 break;
@@ -740,6 +837,7 @@ namespace skyline::gpu::interconnect {
         for (auto view : sampledImages)
             view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
+        TrackDiagnosticSampledInputs(sampledImages);
         return gotoNext;
     }
 
