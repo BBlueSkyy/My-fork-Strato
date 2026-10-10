@@ -59,7 +59,7 @@ namespace skyline::gpu::interconnect {
         }
 
         // If the mirror entry has been written to, clear its shader binary cache and retrap to catch any future writes
-        if (entry->dirty || ctx.executor.usageTracker.sequencedIntervals.Intersect(blockMapping.subspan(blockOffset))) {
+        if (entry->dirty || ctx.executor.usageTracker.IntersectsSequencedWrite(blockMapping.subspan(blockOffset))) {
             entry->cache.clear();
             entry->dirty = false;
 
