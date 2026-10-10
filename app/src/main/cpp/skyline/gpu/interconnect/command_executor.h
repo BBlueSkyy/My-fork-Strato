@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <string>
+
 #include <boost/container/stable_vector.hpp>
 #include <renderdoc_app.h>
 #include <common/linear_allocator.h>
@@ -219,7 +221,30 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
+        // Steel Assault mini-RenderDoc: one manually armed, bounded, diagnostic-only capture.
+        enum class DiagnosticCaptureState { WaitingForArm, Capturing, Complete };
+        DiagnosticCaptureState diagnosticCaptureState{DiagnosticCaptureState::WaitingForArm};
+        std::vector<std::shared_ptr<Texture>> diagnosticRenderTargets;
+        std::vector<std::shared_ptr<Texture>> diagnosticSampledInputs;
+        std::vector<std::shared_ptr<Texture>> diagnosticCapturedSampledTextures;
+        std::vector<std::function<void()>> pendingDiagnosticCaptureCallbacks;
+        std::vector<std::string> diagnosticDrawTraceLines;
+        size_t diagnosticDrawTraceFlushedCount{};
+        bool diagnosticCaptureArmed{};
+        size_t diagnosticCaptureIndex{};
+        size_t diagnosticSampledCaptureCount{};
+        size_t diagnosticCaptureBytes{};
+        std::string diagnosticCaptureDirectory;
+
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
+
+        void TrackDiagnosticRenderTargets(span<TextureView *> colorAttachments);
+        void TrackDiagnosticSampledInputs(span<TextureView *> sampledImages);
+        void QueueDiagnosticSampledInputCaptures();
+        void QueueDiagnosticRenderTargetCaptures();
+        void FlushDiagnosticDrawTrace();
+        bool CheckDiagnosticCaptureArm();
+        bool EnsureDiagnosticCaptureDirectory();
 
         void RotateRecordSlot();
 
@@ -369,6 +394,9 @@ namespace skyline::gpu::interconnect {
         void NotifyPipelineChange();
 
         std::optional<u32> GetRenderPassIndex();
+
+        bool IsDiagnosticDrawTraceActive() const;
+        void AppendDiagnosticDrawTrace(std::string trace);
 
         /**
          * @brief Records a checkpoint into the GPU command stream at the current
