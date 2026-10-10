@@ -638,7 +638,8 @@ namespace skyline::gpu::interconnect {
                 << "raw_layout=linear host image bytes\n"
                 << "trigger=manual ARM_CAPTURE marker\n"
                 << "stop=8 render targets and 8 sampled inputs or 64MiB aggregate\n"
-                << "max_snapshot_bytes=12582912\n"\n                << "sampled_inputs=first_8_eligible_distinct_textures\n"
+                << "max_snapshot_bytes=12582912\n"
+                << "sampled_inputs=first_8_eligible_distinct_textures\n"
                 << "guest_memory_modified=false\n"
                 << "phase=2_shader_sampled_input_readback\n"
                 << "columns=index,file,render_pass,submission,texture,width,height,depth,format,layout,size,levels,layers,guest_map,guest_map_size,tile,bh,bd\n";
