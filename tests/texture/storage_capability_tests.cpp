@@ -379,10 +379,12 @@ int main() {
         nullptr, isolatedSliceGroup, GuestResourceRanges{sliceMapping});
     depthGroup->Attach(volumeStorage);
     isolatedSliceGroup->Attach(sliceStorage);
+    std::unique_lock runtimeLock{depthGroup->RuntimeSynchronizationMutex()};
     assert(depthGroup->RegisterDepthSliceCopyOnly(
         volumeStorage, volumeLayout, bidirectionalImage,
         sliceStorage, sliceLayout, bidirectionalImage,
         depthRelation, FormatCompatibility::Exact));
+    runtimeLock.unlock();
     assert(volumeStorage->GetGroup() == depthGroup);
     assert(sliceStorage->GetGroup() == depthGroup);
 

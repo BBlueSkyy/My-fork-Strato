@@ -412,21 +412,6 @@ namespace skyline::gpu::texture {
                     requested, requested->ranges, requestedLayout, verified))
                 return false;
 
-            // Diagnostic split: commit only dependency/current-stale metadata plus
-            // the already-validated group adoption. Leave executable copy routes
-            // disabled while TextureManager continues returning the legacy view.
-            constexpr bool EnableDepthSliceCopyOnlyCapabilities{};
-            if (!EnableDepthSliceCopyOnlyCapabilities) {
-                if (adoptRequested) {
-                    const auto destinationGroup{shared_from_this()};
-                    if (!requested->MoveFromGroup(requestedGroup, destinationGroup))
-                        return false;
-                    storages.emplace_back(requested);
-                }
-                copyDependencies = std::move(updatedDependencies);
-                return true;
-            }
-
             auto forward{copyCapabilities};
             if (!forward.RegisterExactImageCopy(
                     updatedDependencies,
@@ -452,14 +437,13 @@ namespace skyline::gpu::texture {
             return true;
         };
 
+        // The metadata mutexes serialize route publication. TextureManager may reach
+        // this while its executor already owns this group's runtime serialization lock.
         if (requestedGroup.get() == this) {
-            std::scoped_lock runtimeLock{runtimeSynchronizationMutex};
             std::scoped_lock lock{mutex};
             return registerLocked(false);
         }
 
-        std::scoped_lock runtimeLock{
-            runtimeSynchronizationMutex, requestedGroup->runtimeSynchronizationMutex};
         std::scoped_lock lock{mutex, requestedGroup->mutex};
         return registerLocked(true);
     }
