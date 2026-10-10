@@ -11,3 +11,9 @@ mkdir -p "$build_dir"
     -o "$build_dir/npad_assignment_tests"
 
 "$build_dir/npad_assignment_tests"
+
+"${CXX:-c++}" -std=c++20 -Wall -Wextra -Werror \
+    -I"$repo_root/app/src/main/cpp" \
+    "$repo_root/tests/hid/npad_sdk_probe_tests.cpp" \
+    -o "$build_dir/npad_sdk_probe_tests"
+"$build_dir/npad_sdk_probe_tests"
