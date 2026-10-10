@@ -417,7 +417,7 @@ namespace skyline::gpu {
         if (!guest)
             return;
 
-        usageTracker.dirtyIntervals.Insert(*guest);
+        usageTracker.MarkGpuDirty(*guest);
         MarkGpuDirtyImpl();
     }
 
@@ -524,7 +524,9 @@ namespace skyline::gpu {
         AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
         everHadInlineUpdate = true;
 
-        usageTracker.sequencedIntervals.Insert(*guest);
+        if (guest)
+            usageTracker.MarkSequencedWrite(
+                guest->subspan(static_cast<size_t>(offset), data.size_bytes()));
 
         if (isDirect)
             return WriteImplDirect(data, offset, usageTracker, gpuCopyCallback);
@@ -538,7 +540,9 @@ namespace skyline::gpu {
         AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
         everHadInlineUpdate = true;
 
-        usageTracker.sequencedIntervals.Insert(*guest);
+        if (guest)
+            usageTracker.MarkSequencedWrite(
+                guest->subspan(static_cast<size_t>(dstOffset), static_cast<size_t>(size)));
 
         if (isDirect)
             CopyFromImplDirect(dstOffset, src, srcOffset, size, usageTracker, gpuCopyCallback);
