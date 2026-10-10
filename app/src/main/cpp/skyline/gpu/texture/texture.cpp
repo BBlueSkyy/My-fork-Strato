@@ -746,7 +746,7 @@ namespace skyline::gpu {
     void Texture::MarkGpuDirty(UsageTracker &usageTracker) {
         for (auto mapping : guest->mappings)
             if (mapping.valid())
-                usageTracker.MarkGpuDirty(mapping);
+                usageTracker.dirtyIntervals.Insert(mapping);
     }
 
     void Texture::SynchronizeHost(bool gpuDirty) {
