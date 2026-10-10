@@ -662,6 +662,10 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::MarkCopyOnlyWritten(TextureView *view) {
+        auto *texture{view->texture.get()};
+        if (ranges::find(gpuWrittenTextures, texture) == gpuWrittenTextures.end())
+            gpuWrittenTextures.emplace_back(texture);
+
         auto storage{view->texture->storage.lock()};
         auto group{storage ? storage->GetGroup() : nullptr};
         if (!group)
@@ -877,7 +881,10 @@ namespace skyline::gpu::interconnect {
 
             boost::container::small_vector<FenceCycle *, 8> chainedCycles;
             for (const auto &texture : ranges::views::concat(attachedTextures, preserveAttachedTextures)) {
-                texture->SynchronizeHostInline(slot->commandBuffer, cycle, true);
+                const bool gpuDirty{
+                    ranges::find(gpuWrittenTextures, texture.texture.get()) != gpuWrittenTextures.end()
+                };
+                texture->SynchronizeHostInline(slot->commandBuffer, cycle, gpuDirty);
                 // We don't need to attach the Texture to the cycle as a TextureView will already be attached
                 if (ranges::find(chainedCycles, texture->cycle.get()) == chainedCycles.end()) {
                     cycle->ChainCycle(texture->cycle);
@@ -907,6 +914,7 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::ResetInternal() {
         attachedTextures.clear();
         attachedBuffers.clear();
+        gpuWrittenTextures.clear();
         copyOnlyRuntimeSerialization.Reset();
         allocator->Reset();
         renderPassIndex = 0;
