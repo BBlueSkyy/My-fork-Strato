@@ -193,7 +193,7 @@ namespace skyline::soc::gm20b {
         bool pushbufferDirty{false};
 
         for (auto range : pushBufferMappedRanges) {
-            if (channelCtx.executor.usageTracker.IntersectsGpuDirty(range)) {
+            if (channelCtx.executor.usageTracker.dirtyIntervals.Intersect(range)) {
                 if (skipDirtyFlushes)
                     pushbufferDirty = true;
                 else
