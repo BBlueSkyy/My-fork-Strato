@@ -387,24 +387,44 @@ int main() {
     runtimeLock.unlock();
     assert(volumeStorage->GetGroup() == depthGroup);
     assert(sliceStorage->GetGroup() == depthGroup);
+    assert(depthGroup->GetCopyRepresentationState(volumeStorage, volumeSlice) ==
+        CopyRepresentationState::Current);
+    assert(depthGroup->GetCopyRepresentationState(sliceStorage, surfaceSlice) ==
+        CopyRepresentationState::Stale);
 
-    const std::array volumeSliceWrite{volumeSlice};
-    assert(depthGroup->MarkCopyRepresentationWritten(volumeStorage, volumeSliceWrite));
     auto toSurface = depthGroup->PrepareCopySynchronization(sliceStorage, surfaceSlice);
     assert(toSurface.state == CopySynchronizationState::Ready);
+    assert(toSurface.read.source == volumeStorage);
+    assert(toSurface.read.destination == sliceStorage);
     assert(toSurface.copyRegion.sourceOffsetZ == 1 &&
         toSurface.copyRegion.destinationOffsetZ == 0 &&
         toSurface.copyRegion.depth == 1);
     assert(depthGroup->BeginCopySynchronization(toSurface));
     assert(depthGroup->CompleteCopySynchronization(toSurface, true));
+    assert(depthGroup->GetCopyRepresentationState(volumeStorage, volumeSlice) ==
+        CopyRepresentationState::Current);
+    assert(depthGroup->GetCopyRepresentationState(sliceStorage, surfaceSlice) ==
+        CopyRepresentationState::Current);
 
     const std::array surfaceSliceWrite{surfaceSlice};
     assert(depthGroup->MarkCopyRepresentationWritten(sliceStorage, surfaceSliceWrite));
+    assert(depthGroup->GetCopyRepresentationState(volumeStorage, volumeSlice) ==
+        CopyRepresentationState::Stale);
+    assert(depthGroup->GetCopyRepresentationState(sliceStorage, surfaceSlice) ==
+        CopyRepresentationState::Current);
     auto toVolume = depthGroup->PrepareCopySynchronization(volumeStorage, volumeSlice);
     assert(toVolume.state == CopySynchronizationState::Ready);
+    assert(toVolume.read.source == sliceStorage);
+    assert(toVolume.read.destination == volumeStorage);
     assert(toVolume.copyRegion.sourceOffsetZ == 0 &&
         toVolume.copyRegion.destinationOffsetZ == 1 &&
         toVolume.copyRegion.depth == 1);
+    assert(depthGroup->BeginCopySynchronization(toVolume));
+    assert(depthGroup->CompleteCopySynchronization(toVolume, true));
+    assert(depthGroup->GetCopyRepresentationState(volumeStorage, volumeSlice) ==
+        CopyRepresentationState::Current);
+    assert(depthGroup->GetCopyRepresentationState(sliceStorage, surfaceSlice) ==
+        CopyRepresentationState::Current);
 
     const auto expectDepthRegistrationRejected = [&](const CopyImageInfo &volumeImage,
                                                       const CopyImageInfo &surfaceImage,

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -410,6 +411,13 @@ namespace skyline::gpu::texture {
             if (!updatedDependencies.RegisterSynchronized(
                     backing, backing->ranges, backingLayout,
                     requested, requested->ranges, requestedLayout, verified))
+                return false;
+
+            // The requested representation has just been created and does not yet
+            // contain the authoritative slice. Keep only the existing backing
+            // current so its first read must synchronize in the correct direction.
+            const std::array authoritativeSubresource{mapping.backing};
+            if (!updatedDependencies.MarkWritten(backing, authoritativeSubresource))
                 return false;
 
             auto forward{copyCapabilities};
