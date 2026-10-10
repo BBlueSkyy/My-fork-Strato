@@ -226,6 +226,7 @@ namespace skyline::gpu::interconnect {
         DiagnosticCaptureState diagnosticCaptureState{DiagnosticCaptureState::WaitingForArm};
         std::vector<std::shared_ptr<Texture>> diagnosticRenderTargets;
         std::vector<std::shared_ptr<Texture>> diagnosticSampledInputs;
+        std::vector<std::shared_ptr<Texture>> diagnosticCapturedSampledTextures;
         std::vector<std::function<void()>> pendingDiagnosticCaptureCallbacks;
         std::vector<std::string> diagnosticDrawTraceLines;
         size_t diagnosticDrawTraceFlushedCount{};
