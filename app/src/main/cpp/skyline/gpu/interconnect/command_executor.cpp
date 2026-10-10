@@ -910,7 +910,7 @@ namespace skyline::gpu::interconnect {
         copyOnlyRuntimeSerialization.Reset();
         allocator->Reset();
         renderPassIndex = 0;
-        usageTracker.sequencedIntervals.Clear();
+        usageTracker.ResetSequencedWrites();
 
         // Periodically clear preserve attachments just in case there are new waiters which would otherwise end up waiting forever
         if ((submissionNumber % (2U << *state.settings->executorSlotCountScale)) == 0) {
@@ -967,8 +967,6 @@ namespace skyline::gpu::interconnect {
         ResetInternal();
 
         if (wait) {
-            usageTracker.dirtyIntervals.Clear();
-
             std::condition_variable cv;
             std::mutex mutex;
             bool gpuDone{};
@@ -981,6 +979,7 @@ namespace skyline::gpu::interconnect {
 
             std::unique_lock lock{mutex};
             cv.wait(lock, [&gpuDone] { return gpuDone; });
+            usageTracker.ResetGpuDirty();
         }
     }
 
