@@ -945,7 +945,7 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::AppendDiagnosticDrawTrace(std::string trace) {
-        if (!IsDiagnosticDrawTraceActive())
+        if (!IsDiagnosticDrawTraceActive() || diagnosticDrawTraceLines.size() >= 1024)
             return;
 
         diagnosticDrawTraceLines.emplace_back(
