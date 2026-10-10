@@ -5,6 +5,7 @@
 #include <memory>
 #include <span>
 #include <skyline/gpu/texture/copy_capability.h>
+#include <skyline/gpu/texture/copy_format_compatibility.h>
 
 using namespace skyline::gpu::texture;
 
@@ -211,6 +212,113 @@ int main() {
     assert(!capabilities.RegisterExactImageCopy(
         dependencies, first, layout, sourceImage, mip1,
         second, mismatchedLayout, destinationImage, mip1));
+
+    // CopyCompatible capability discovery is directional and remains separate
+    // from route registration in this checkpoint.
+    const auto forwardFormat = ClassifyHostFormatCompatibility(
+        vk::Format::eR32Uint, vk::ImageAspectFlagBits::eColor,
+        vk::Format::eR8G8B8A8Unorm, vk::ImageAspectFlagBits::eColor, false);
+    const auto reverseFormat = ClassifyHostFormatCompatibility(
+        vk::Format::eR8G8B8A8Unorm, vk::ImageAspectFlagBits::eColor,
+        vk::Format::eR32Uint, vk::ImageAspectFlagBits::eColor, false);
+    assert(forwardFormat == FormatCompatibility::CopyCompatible);
+    assert(reverseFormat == FormatCompatibility::CopyCompatible);
+    auto copyCompatibleSource = sourceImage;
+    copyCompatibleSource.hostFormat = static_cast<std::uint64_t>(
+        static_cast<VkFormat>(vk::Format::eR32Uint));
+    auto copyCompatibleDestination = destinationImage;
+    copyCompatibleDestination.hostFormat = static_cast<std::uint64_t>(
+        static_cast<VkFormat>(vk::Format::eR8G8B8A8Unorm));
+    assert(CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, copyCompatibleSource, mip0,
+        layout, copyCompatibleDestination, layer1,
+        forwardFormat));
+
+    auto reverseCopySource = copyCompatibleDestination;
+    reverseCopySource.transferSource = true;
+    auto reverseCopyDestination = copyCompatibleSource;
+    reverseCopyDestination.transferDestination = true;
+    assert(CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, reverseCopySource, layer1,
+        layout, reverseCopyDestination, mip0,
+        reverseFormat));
+
+    auto missingDirectionalUsage = copyCompatibleSource;
+    missingDirectionalUsage.transferSource = false;
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, missingDirectionalUsage, mip0,
+        layout, copyCompatibleDestination, layer1,
+        FormatCompatibility::CopyCompatible));
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, copyCompatibleSource, mip0,
+        layout, copyCompatibleDestination, layer1,
+        FormatCompatibility::Exact));
+
+    auto mismatchedAspect = copyCompatibleDestination;
+    mismatchedAspect.aspectMask = 2;
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, copyCompatibleSource, mip0,
+        layout, mismatchedAspect, layer1,
+        FormatCompatibility::CopyCompatible));
+    auto multipleAspects = copyCompatibleDestination;
+    multipleAspects.aspectMask = 3;
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, copyCompatibleSource, mip0,
+        layout, multipleAspects, layer1,
+        FormatCompatibility::CopyCompatible));
+    auto depthAspectSource = copyCompatibleSource;
+    auto depthAspectDestination = copyCompatibleDestination;
+    depthAspectSource.aspectMask = 2;
+    depthAspectDestination.aspectMask = 2;
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, depthAspectSource, mip0,
+        layout, depthAspectDestination, layer1,
+        FormatCompatibility::CopyCompatible));
+
+    auto mismatchedSamples = copyCompatibleDestination;
+    mismatchedSamples.sampleCount = 2;
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, copyCompatibleSource, mip0,
+        layout, mismatchedSamples, layer1,
+        FormatCompatibility::CopyCompatible));
+    auto multisampledSource = copyCompatibleSource;
+    multisampledSource.sampleCount = 2;
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, multisampledSource, mip0,
+        layout, mismatchedSamples, layer1,
+        FormatCompatibility::CopyCompatible));
+
+    auto oneDimensionalCopyLayout = layout;
+    oneDimensionalCopyLayout.imageType = ImageKind::OneDimensional;
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        oneDimensionalCopyLayout, copyCompatibleSource, mip0,
+        layout, copyCompatibleDestination, layer1,
+        FormatCompatibility::CopyCompatible));
+    auto threeDimensionalCopyLayout = layout;
+    threeDimensionalCopyLayout.imageType = ImageKind::ThreeDimensional;
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        threeDimensionalCopyLayout, copyCompatibleSource, mip0,
+        threeDimensionalCopyLayout, copyCompatibleDestination, layer1,
+        FormatCompatibility::CopyCompatible));
+
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, copyCompatibleSource, Subresource(7),
+        layout, copyCompatibleDestination, layer1,
+        FormatCompatibility::CopyCompatible));
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, copyCompatibleSource, Subresource(0, 0, 1),
+        layout, copyCompatibleDestination, layer1,
+        FormatCompatibility::CopyCompatible));
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, copyCompatibleSource, mip1,
+        layout, copyCompatibleDestination, layer1,
+        FormatCompatibility::CopyCompatible));
+    auto exactHostFormat = copyCompatibleDestination;
+    exactHostFormat.hostFormat = copyCompatibleSource.hostFormat;
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, copyCompatibleSource, mip0,
+        layout, exactHostFormat, layer1,
+        FormatCompatibility::CopyCompatible));
 
     // The classified 1D/height-one 2D pair becomes executable only with maintenance5.
     const std::array dimensionalSubresource{

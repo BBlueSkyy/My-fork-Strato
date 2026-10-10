@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "copy_format_compatibility.h"
 #include "resource_compatibility.h"
 #include "texture.h"
 
@@ -14,13 +15,9 @@ namespace skyline::gpu::texture {
      * compatibility from cache/aliasing policy.
      */
     constexpr FormatCompatibility ClassifyFormatCompatibility(const FormatBase &lhs, const FormatBase &rhs) {
-        if (lhs == rhs)
-            return FormatCompatibility::Exact;
-
-        if (lhs.IsCompatible(rhs))
-            return FormatCompatibility::ViewCompatible;
-
-        return FormatCompatibility::Incompatible;
+        return ClassifyHostFormatCompatibility(
+            lhs.vkFormat, lhs.vkAspect, rhs.vkFormat, rhs.vkAspect,
+            lhs.IsCompatible(rhs));
     }
 
     /**

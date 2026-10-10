@@ -11,7 +11,7 @@
 #include "guest_range.h"
 
 namespace skyline::gpu::texture {
-    /** CopyCompatible is reserved for formats with a verified explicit conversion path. */
+    /** CopyCompatible requires a verified Vulkan image copy with no format conversion. */
     enum class FormatCompatibility : std::uint8_t {
         Exact,
         ViewCompatible,

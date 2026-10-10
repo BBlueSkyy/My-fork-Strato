@@ -194,6 +194,44 @@ namespace skyline::gpu::texture {
         }
 
       public:
+        /**
+         * @brief Validates a potential CopyCompatible image copy without registering it
+         *
+         * The format classifier is the authority for the Vulkan compatibility class.
+         * This method only accepts the current executor's exact-extent 1D/2D subset;
+         * route registration remains intentionally disabled for this checkpoint.
+         */
+        static bool SupportsCopyCompatibleImageCopy(
+            const TextureResourceLayout &sourceLayout, const CopyImageInfo &sourceImage,
+            ResolvedSubresource sourceSubresource,
+            const TextureResourceLayout &destinationLayout, const CopyImageInfo &destinationImage,
+            ResolvedSubresource destinationSubresource, FormatCompatibility format) {
+            constexpr std::uint32_t ColorAspectMask{1}; // VK_IMAGE_ASPECT_COLOR_BIT
+            if (format != FormatCompatibility::CopyCompatible ||
+                sourceLayout.imageType != destinationLayout.imageType ||
+                sourceLayout.imageType == ImageKind::ThreeDimensional ||
+                sourceSubresource.depthSlice || destinationSubresource.depthSlice ||
+                !sourceImage.hostFormat || !destinationImage.hostFormat ||
+                sourceImage.hostFormat == destinationImage.hostFormat ||
+                sourceImage.aspectMask != ColorAspectMask ||
+                destinationImage.aspectMask != ColorAspectMask ||
+                sourceImage.sampleCount != 1 || destinationImage.sampleCount != 1 ||
+                !sourceImage.transferSource || !destinationImage.transferDestination)
+                return false;
+
+            const auto source = FindExactSubresource(sourceLayout, sourceSubresource);
+            const auto destination = FindExactSubresource(destinationLayout, destinationSubresource);
+            if (!source || !destination || !source->width || !source->height ||
+                !destination->width || !destination->height ||
+                source->width != destination->width ||
+                source->height != destination->height ||
+                source->depth != 1 || destination->depth != 1)
+                return false;
+
+            return sourceLayout.imageType != ImageKind::OneDimensional ||
+                source->height == 1;
+        }
+
         bool RegisterExactImageCopy(
             const CopyDependencyTracker<Representation> &dependencies,
             const std::shared_ptr<Representation> &source,
