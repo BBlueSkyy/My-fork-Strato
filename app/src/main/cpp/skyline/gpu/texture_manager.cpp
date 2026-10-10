@@ -11,7 +11,8 @@
 
 namespace skyline::gpu {
     namespace {
-        constexpr bool EnableDepthSliceCopyOnlyRegistration{};
+        constexpr bool EnableDepthSliceCopyOnlyRegistration{true};
+        constexpr bool UseDepthSliceCopyOnlyRepresentation{};
 
         std::optional<texture::ImageKind> ImageKindOf(vk::ImageType type) {
             switch (type) {
@@ -571,6 +572,10 @@ namespace skyline::gpu {
             if (!matchedDepthSliceRegistered)
                 return legacyDepthSliceView();
         }
+
+        if (depthSliceMatch && !UseDepthSliceCopyOnlyRepresentation)
+            return legacyDepthSliceView();
+
         mappingCache.Insert(storage, storage->ranges);
 
         return texture->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
