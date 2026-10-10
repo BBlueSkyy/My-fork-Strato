@@ -406,25 +406,26 @@ namespace skyline::gpu::texture {
                     requestedLayout, mapping.requested))
                 return false;
 
-            // Diagnostic split: exercise only the cross-group adoption step while
-            // leaving dependency/capability metadata untouched. TextureManager still
-            // returns the legacy depth-slice view for this checkpoint.
-            constexpr bool EnableDepthSliceCopyOnlyMetadata{};
-            if (!EnableDepthSliceCopyOnlyMetadata) {
+            auto updatedDependencies{copyDependencies};
+            if (!updatedDependencies.RegisterSynchronized(
+                    backing, backing->ranges, backingLayout,
+                    requested, requested->ranges, requestedLayout, verified))
+                return false;
+
+            // Diagnostic split: commit only dependency/current-stale metadata plus
+            // the already-validated group adoption. Leave executable copy routes
+            // disabled while TextureManager continues returning the legacy view.
+            constexpr bool EnableDepthSliceCopyOnlyCapabilities{};
+            if (!EnableDepthSliceCopyOnlyCapabilities) {
                 if (adoptRequested) {
                     const auto destinationGroup{shared_from_this()};
                     if (!requested->MoveFromGroup(requestedGroup, destinationGroup))
                         return false;
                     storages.emplace_back(requested);
                 }
+                copyDependencies = std::move(updatedDependencies);
                 return true;
             }
-
-            auto updatedDependencies{copyDependencies};
-            if (!updatedDependencies.RegisterSynchronized(
-                    backing, backing->ranges, backingLayout,
-                    requested, requested->ranges, requestedLayout, verified))
-                return false;
 
             auto forward{copyCapabilities};
             if (!forward.RegisterExactImageCopy(
