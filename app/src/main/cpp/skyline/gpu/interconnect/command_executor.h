@@ -195,6 +195,7 @@ namespace skyline::gpu::interconnect {
         CopyOnlyRuntimeSerialization copyOnlyRuntimeSerialization;
         std::vector<LockedTexture> preserveAttachedTextures;
         std::vector<LockedTexture> attachedTextures; //!< All textures that are attached to the current execution
+        std::vector<Texture *> gpuWrittenTextures; //!< Textures that receive guest-visible GPU writes in this submission
 
         /**
          * @brief A wrapper of a Buffer object that has been locked beforehand and must be unlocked afterwards
