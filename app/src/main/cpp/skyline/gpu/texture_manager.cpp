@@ -11,7 +11,7 @@
 
 namespace skyline::gpu {
     namespace {
-        constexpr bool EnableDepthSliceCopyOnlySelection{};
+        constexpr bool EnableDepthSliceCopyOnlyRegistration{};
 
         std::optional<texture::ImageKind> ImageKindOf(vk::ImageType type) {
             switch (type) {
@@ -219,8 +219,8 @@ namespace skyline::gpu {
                     *storage->texture->guest->format, *guestTexture.format);
                 const auto relation = texture::ClassifyAndResolveView(backingLayout->Layout(),
                     requestedLayout->Layout(), format, SupportsHostFormatView(gpu, *storage->texture, guestTexture));
-                const bool depthSliceCopy{EnableDepthSliceCopyOnlySelection &&
-                    IsDepthSliceCopy(backingLayout->Layout(), requestedLayout->Layout(), relation)};
+                const bool depthSliceCopy{IsDepthSliceCopy(
+                    backingLayout->Layout(), requestedLayout->Layout(), relation)};
                 classifiedStorages.push_back({
                     storage, relation, std::move(*backingLayout), format, depthSliceCopy});
             }
@@ -376,7 +376,7 @@ namespace skyline::gpu {
             }, guestTexture.format, guestTexture.swizzle);
         };
 
-        if (depthSliceMatch && !depthSliceCopyMatch) {
+        if (depthSliceMatch) {
             return legacyDepthSliceView();
         } else if (layerMipMatch) {
             ContextLock textureLock{tag, *layerMipMatch};
@@ -533,7 +533,7 @@ namespace skyline::gpu {
                 if (!group)
                     continue;
 
-                if (EnableDepthSliceCopyOnlySelection && createdLayout && IsDepthSliceCopy(
+                if (EnableDepthSliceCopyOnlyRegistration && createdLayout && IsDepthSliceCopy(
                         classified.layout.Layout(), createdLayout->Layout(), classified.view)) {
                     if (group != backingGroup) {
                         if (group->HasExecutableCopyRoutes()) {
