@@ -73,7 +73,7 @@ namespace skyline::gpu {
     }
 
     bool GuestTexture::MappingsValid() const {
-        return ranges::all_of(mappings, [](const auto &mapping) { return mapping.valid(); });
+        return !mappings.empty() && ranges::all_of(mappings, [](const auto &mapping) { return mapping.valid() && !mapping.empty(); });
     }
 
     TextureView::TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format, vk::ComponentMapping mapping) : texture(std::move(texture)), type(type), format(format), mapping(mapping), range(range) {}
