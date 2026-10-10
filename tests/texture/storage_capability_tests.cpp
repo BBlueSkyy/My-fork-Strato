@@ -141,6 +141,103 @@ int main() {
     assert(mergedGroup->PrepareCopySynchronization(importedSource, mip0).state ==
         CopySynchronizationState::CapabilityUnavailable);
 
+    // CopyCompatible production registration activates both directional routes as one
+    // transaction and uses the existing Current/Stale/Pending lifecycle.
+    const std::array copyCompatibleSubresources{
+        GuestSubresource{
+            .offset = 0,
+            .size = 64,
+            .width = 8,
+            .height = 8,
+            .depth = 1,
+            .mip = 0,
+            .layer = 0,
+        },
+    };
+    const TextureResourceLayout copyCompatibleLayout{
+        .tile = {.mode = TileKind::Pitch, .pitch = 8},
+        .imageType = ImageKind::TwoDimensional,
+        .viewType = ViewKind::TwoDimensional,
+        .layerStride = 64,
+        .viewMipCount = 1,
+        .viewLayerCount = 1,
+        .formatBlockWidth = 1,
+        .formatBlockHeight = 1,
+        .formatBytesPerBlock = 4,
+        .subresources = copyCompatibleSubresources,
+    };
+    const auto copyCompatibleRelation = ClassifyAndResolveView(
+        copyCompatibleLayout, copyCompatibleLayout,
+        FormatCompatibility::CopyCompatible, false);
+    assert(copyCompatibleRelation.relation == TextureViewCompatibility::CopyOnly);
+
+    CopyImageInfo copyCompatibleBackingImage{
+        .hostFormat = static_cast<std::uint64_t>(
+            static_cast<VkFormat>(vk::Format::eR32Uint)),
+        .aspectMask = 1,
+        .sampleCount = 1,
+        .transferSource = true,
+        .transferDestination = true,
+    };
+    CopyImageInfo copyCompatibleRequestedImage{
+        .hostFormat = static_cast<std::uint64_t>(
+            static_cast<VkFormat>(vk::Format::eR8G8B8A8Unorm)),
+        .aspectMask = 1,
+        .sampleCount = 1,
+        .transferSource = true,
+        .transferDestination = true,
+    };
+    auto copyCompatibleGroup = std::make_shared<TextureGroup>();
+    auto copyCompatibleBacking = std::make_shared<TextureStorage>(
+        nullptr, copyCompatibleGroup, ranges);
+    auto copyCompatibleRequested = std::make_shared<TextureStorage>(
+        nullptr, copyCompatibleGroup, ranges);
+    copyCompatibleGroup->Attach(copyCompatibleBacking);
+    copyCompatibleGroup->Attach(copyCompatibleRequested);
+    assert(copyCompatibleGroup->RegisterCopyCompatibleCopyOnly(
+        copyCompatibleBacking, copyCompatibleLayout, copyCompatibleBackingImage,
+        copyCompatibleRequested, copyCompatibleLayout, copyCompatibleRequestedImage,
+        copyCompatibleRelation, FormatCompatibility::CopyCompatible));
+
+    assert(copyCompatibleGroup->MarkCopyRepresentationWritten(
+        copyCompatibleBacking, write));
+    auto copyCompatibleToRequested =
+        copyCompatibleGroup->PrepareCopySynchronization(copyCompatibleRequested, mip0);
+    assert(copyCompatibleToRequested.state == CopySynchronizationState::Ready);
+    assert(copyCompatibleGroup->BeginCopySynchronization(copyCompatibleToRequested));
+    assert(copyCompatibleGroup->CompleteCopySynchronization(
+        copyCompatibleToRequested, true));
+    assert(copyCompatibleGroup->GetCopyRepresentationState(
+        copyCompatibleRequested, mip0) == CopyRepresentationState::Current);
+
+    assert(copyCompatibleGroup->MarkCopyRepresentationWritten(
+        copyCompatibleRequested, write));
+    auto copyCompatibleToBacking =
+        copyCompatibleGroup->PrepareCopySynchronization(copyCompatibleBacking, mip0);
+    assert(copyCompatibleToBacking.state == CopySynchronizationState::Ready);
+    assert(copyCompatibleGroup->BeginCopySynchronization(copyCompatibleToBacking));
+    assert(copyCompatibleGroup->CompleteCopySynchronization(
+        copyCompatibleToBacking, true));
+    assert(copyCompatibleGroup->GetCopyRepresentationState(
+        copyCompatibleBacking, mip0) == CopyRepresentationState::Current);
+
+    auto rejectedCopyCompatibleGroup = std::make_shared<TextureGroup>();
+    auto rejectedCopyCompatibleBacking = std::make_shared<TextureStorage>(
+        nullptr, rejectedCopyCompatibleGroup, ranges);
+    auto rejectedCopyCompatibleRequested = std::make_shared<TextureStorage>(
+        nullptr, rejectedCopyCompatibleGroup, ranges);
+    rejectedCopyCompatibleGroup->Attach(rejectedCopyCompatibleBacking);
+    rejectedCopyCompatibleGroup->Attach(rejectedCopyCompatibleRequested);
+    auto incompatibleCopyCompatibleImage{copyCompatibleRequestedImage};
+    incompatibleCopyCompatibleImage.hostFormat = static_cast<std::uint64_t>(
+        static_cast<VkFormat>(vk::Format::eR16G16B16A16Unorm));
+    assert(!rejectedCopyCompatibleGroup->RegisterCopyCompatibleCopyOnly(
+        rejectedCopyCompatibleBacking, copyCompatibleLayout, copyCompatibleBackingImage,
+        rejectedCopyCompatibleRequested, copyCompatibleLayout, incompatibleCopyCompatibleImage,
+        copyCompatibleRelation, FormatCompatibility::CopyCompatible));
+    assert(rejectedCopyCompatibleGroup->GetCopyRepresentationState(
+        rejectedCopyCompatibleBacking, mip0) == CopyRepresentationState::Untracked);
+
     // Production registration is transactional: an unsupported pair records no dependency.
     const std::array dimensionalSubresources{
         GuestSubresource{.width = 8, .height = 1, .depth = 1},

@@ -77,6 +77,12 @@ namespace skyline::gpu::texture {
             const std::shared_ptr<TextureStorage> &destination,
             const TextureResourceLayout &destinationLayout, const CopyImageInfo &destinationImage,
             ResolvedSubresource destinationSubresource, bool supportsMaintenance5 = false);
+        bool RegisterCopyCompatibleCopyOnly(
+            const std::shared_ptr<TextureStorage> &backing,
+            const TextureResourceLayout &backingLayout, const CopyImageInfo &backingImage,
+            const std::shared_ptr<TextureStorage> &requested,
+            const TextureResourceLayout &requestedLayout, const CopyImageInfo &requestedImage,
+            const ClassifiedResourceView &classified, FormatCompatibility format);
         bool RegisterMaintenance5CopyOnly(
             const std::shared_ptr<TextureStorage> &backing,
             const TextureResourceLayout &backingLayout, const CopyImageInfo &backingImage,
@@ -231,6 +237,65 @@ namespace skyline::gpu::texture {
                 source, sourceLayout, sourceImage, sourceSubresource,
                 destination, destinationLayout, destinationImage, destinationSubresource,
                 supportsMaintenance5);
+    }
+
+    inline bool TextureGroup::RegisterCopyCompatibleCopyOnly(
+        const std::shared_ptr<TextureStorage> &backing,
+        const TextureResourceLayout &backingLayout, const CopyImageInfo &backingImage,
+        const std::shared_ptr<TextureStorage> &requested,
+        const TextureResourceLayout &requestedLayout, const CopyImageInfo &requestedImage,
+        const ClassifiedResourceView &classified, FormatCompatibility format) {
+        std::scoped_lock runtimeLock{runtimeSynchronizationMutex};
+        std::scoped_lock lock{mutex};
+
+        const auto verified{ClassifyAndResolveView(
+            backingLayout, requestedLayout, format, false)};
+        if (!backing || !requested ||
+            backing->GetGroup().get() != this ||
+            requested->GetGroup().get() != this ||
+            format != FormatCompatibility::CopyCompatible ||
+            verified.relation != TextureViewCompatibility::CopyOnly ||
+            !verified.copyRegion || verified.copyRegion->subresources.empty() ||
+            classified.relation != TextureViewCompatibility::CopyOnly ||
+            !classified.copyRegion ||
+            classified.copyRegion->subresources != verified.copyRegion->subresources)
+            return false;
+
+        auto updatedDependencies{copyDependencies};
+        if (!updatedDependencies.RegisterSynchronized(
+                backing, backing->ranges, backingLayout,
+                requested, requested->ranges, requestedLayout, verified))
+            return false;
+
+        auto updatedCapabilities{copyCapabilities};
+        {
+            auto forward{updatedCapabilities};
+            bool complete{true};
+            for (const auto &mapping : verified.copyRegion->subresources)
+                complete &= forward.RegisterCopyCompatibleImageCopy(
+                    updatedDependencies,
+                    backing, backingLayout, backingImage, mapping.backing,
+                    requested, requestedLayout, requestedImage, mapping.requested, format);
+            if (!complete)
+                return false;
+            updatedCapabilities = std::move(forward);
+        }
+        {
+            auto reverse{updatedCapabilities};
+            bool complete{true};
+            for (const auto &mapping : verified.copyRegion->subresources)
+                complete &= reverse.RegisterCopyCompatibleImageCopy(
+                    updatedDependencies,
+                    requested, requestedLayout, requestedImage, mapping.requested,
+                    backing, backingLayout, backingImage, mapping.backing, format);
+            if (!complete)
+                return false;
+            updatedCapabilities = std::move(reverse);
+        }
+
+        copyDependencies = std::move(updatedDependencies);
+        copyCapabilities = std::move(updatedCapabilities);
+        return true;
     }
 
     inline bool TextureGroup::RegisterMaintenance5CopyOnly(

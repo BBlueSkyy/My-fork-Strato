@@ -320,6 +320,60 @@ int main() {
         layout, exactHostFormat, layer1,
         FormatCompatibility::CopyCompatible));
 
+    auto incompatibleHostFormat = copyCompatibleDestination;
+    incompatibleHostFormat.hostFormat = static_cast<std::uint64_t>(
+        static_cast<VkFormat>(vk::Format::eR16G16B16A16Unorm));
+    assert(!CopyCapabilityTracker<Representation>::SupportsCopyCompatibleImageCopy(
+        layout, copyCompatibleSource, mip0,
+        layout, incompatibleHostFormat, layer1,
+        FormatCompatibility::CopyCompatible));
+
+    // CopyCompatible routes reuse ExactImageCopy execution metadata while preserving
+    // directional registration, Pending, and generation completion semantics.
+    auto copyCompatibleFirstImage = copyCompatibleSource;
+    copyCompatibleFirstImage.transferDestination = true;
+    auto copyCompatibleSecondImage = copyCompatibleDestination;
+    copyCompatibleSecondImage.transferSource = true;
+    CopyDependencyTracker<Representation> copyCompatibleDependencies;
+    assert(copyCompatibleDependencies.RegisterSynchronized(
+        first, ranges, layout, second, ranges, layout, CopyOnly({{mip0, mip0}})));
+    CopyCapabilityTracker<Representation> copyCompatibleCapabilities;
+    assert(copyCompatibleCapabilities.RegisterCopyCompatibleImageCopy(
+        copyCompatibleDependencies,
+        first, layout, copyCompatibleFirstImage, mip0,
+        second, layout, copyCompatibleSecondImage, mip0,
+        FormatCompatibility::CopyCompatible));
+    assert(copyCompatibleCapabilities.RegisterCopyCompatibleImageCopy(
+        copyCompatibleDependencies,
+        second, layout, copyCompatibleSecondImage, mip0,
+        first, layout, copyCompatibleFirstImage, mip0,
+        FormatCompatibility::CopyCompatible));
+    assert(copyCompatibleCapabilities.RouteCount() == 2);
+
+    assert(copyCompatibleDependencies.MarkWritten(first, mip0Write));
+    auto copyCompatibleForward = copyCompatibleCapabilities.PrepareSynchronization(
+        copyCompatibleDependencies, second, mip0);
+    assert(copyCompatibleForward.state == CopySynchronizationState::Ready);
+    assert(copyCompatibleForward.capability == CopyCapability::ExactImageCopy);
+    assert(copyCompatibleCapabilities.BeginSynchronization(copyCompatibleForward));
+    assert(copyCompatibleCapabilities.PrepareSynchronization(
+        copyCompatibleDependencies, second, mip0).state ==
+        CopySynchronizationState::Pending);
+    assert(copyCompatibleCapabilities.CompleteSynchronization(
+        copyCompatibleDependencies, copyCompatibleForward, true));
+    assert(copyCompatibleDependencies.GetState(second, mip0) ==
+        CopyRepresentationState::Current);
+
+    assert(copyCompatibleDependencies.MarkWritten(second, mip0Write));
+    auto copyCompatibleReverse = copyCompatibleCapabilities.PrepareSynchronization(
+        copyCompatibleDependencies, first, mip0);
+    assert(copyCompatibleReverse.state == CopySynchronizationState::Ready);
+    assert(copyCompatibleCapabilities.BeginSynchronization(copyCompatibleReverse));
+    assert(copyCompatibleCapabilities.CompleteSynchronization(
+        copyCompatibleDependencies, copyCompatibleReverse, true));
+    assert(copyCompatibleDependencies.GetState(first, mip0) ==
+        CopyRepresentationState::Current);
+
     // The classified 1D/height-one 2D pair becomes executable only with maintenance5.
     const std::array dimensionalSubresource{
         GuestSubresource{.offset = 0x1000, .size = 64, .width = 64, .height = 1,

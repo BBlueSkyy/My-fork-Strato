@@ -551,6 +551,14 @@ namespace skyline::gpu {
                     continue;
                 }
 
+                if (createdLayout &&
+                    classified.format == texture::FormatCompatibility::CopyCompatible &&
+                    group->RegisterCopyCompatibleCopyOnly(
+                        classified.storage, classified.layout.Layout(), backingImage,
+                        storage, createdLayout->Layout(), requestedImage,
+                        classified.view, classified.format))
+                    continue;
+
                 if (gpu.traits.supportsMaintenance5 &&
                     IsMaintenance5DimensionalPair(
                         classified.layout.Layout(), requestedLayout->Layout()))

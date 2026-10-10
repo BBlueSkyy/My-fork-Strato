@@ -8,6 +8,7 @@
 #include <memory>
 #include <vector>
 #include "copy_dependency.h"
+#include "copy_format_compatibility.h"
 
 namespace skyline::gpu::texture {
     enum class CopyCapability : std::uint8_t { ExactImageCopy };
@@ -219,6 +220,13 @@ namespace skyline::gpu::texture {
                 !sourceImage.transferSource || !destinationImage.transferDestination)
                 return false;
 
+            const auto sourceHostFormat{static_cast<vk::Format>(sourceImage.hostFormat)};
+            const auto destinationHostFormat{static_cast<vk::Format>(destinationImage.hostFormat)};
+            if (!AreCopyCompatibleFormats(
+                    sourceHostFormat, vk::ImageAspectFlagBits::eColor,
+                    destinationHostFormat, vk::ImageAspectFlagBits::eColor))
+                return false;
+
             const auto source = FindExactSubresource(sourceLayout, sourceSubresource);
             const auto destination = FindExactSubresource(destinationLayout, destinationSubresource);
             if (!source || !destination || !source->width || !source->height ||
@@ -230,6 +238,43 @@ namespace skyline::gpu::texture {
 
             return sourceLayout.imageType != ImageKind::OneDimensional ||
                 source->height == 1;
+        }
+
+        bool RegisterCopyCompatibleImageCopy(
+            const CopyDependencyTracker<Representation> &dependencies,
+            const std::shared_ptr<Representation> &source,
+            const TextureResourceLayout &sourceLayout, const CopyImageInfo &sourceImage,
+            ResolvedSubresource sourceSubresource,
+            const std::shared_ptr<Representation> &destination,
+            const TextureResourceLayout &destinationLayout, const CopyImageInfo &destinationImage,
+            ResolvedSubresource destinationSubresource, FormatCompatibility format) {
+            if (!source || !destination || source == destination ||
+                !dependencies.HasDirectRelation(
+                    source, sourceSubresource, destination, destinationSubresource) ||
+                !SupportsCopyCompatibleImageCopy(
+                    sourceLayout, sourceImage, sourceSubresource,
+                    destinationLayout, destinationImage, destinationSubresource, format))
+                return false;
+
+            if (FindRoute(source, sourceSubresource, destination, destinationSubresource))
+                return true;
+
+            const auto sourceDescription = FindExactSubresource(sourceLayout, sourceSubresource);
+            routes.push_back({
+                source, sourceSubresource, destination, destinationSubresource,
+                CopyCapability::ExactImageCopy,
+                {
+                    .sourceSubresource = sourceSubresource,
+                    .destinationSubresource = destinationSubresource,
+                    .sourceImageType = sourceLayout.imageType,
+                    .destinationImageType = destinationLayout.imageType,
+                    .width = sourceDescription->width,
+                    .height = sourceDescription->height,
+                    .depth = 1,
+                    .aspectMask = sourceImage.aspectMask,
+                },
+            });
+            return true;
         }
 
         bool RegisterExactImageCopy(
