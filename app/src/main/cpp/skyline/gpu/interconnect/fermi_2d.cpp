@@ -147,6 +147,7 @@ namespace skyline::gpu::interconnect {
         executor.AttachDependency(dstTextureView);
         executor.AttachTexture(dstTextureView.get());
         dstTextureView->texture->MarkGpuDirty(executor.usageTracker);
+        executor.MarkTextureWritten(dstTextureView.get());
 
         executor.AddCheckpoint("Before blit");
         gpu.helperShaders.blitHelperShader.Blit(
