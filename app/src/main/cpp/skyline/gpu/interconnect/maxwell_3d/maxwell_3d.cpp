@@ -118,6 +118,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        if (ctx.executor.IsDiagnosticDrawTraceActive()) {
+            std::string hashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (auto hash : pipeline->sourcePackedState.shaderHashes)
+                    hashes += fmt::format("{:016X},", hash);
+            }
+            ctx.executor.AppendDiagnosticDrawTrace(fmt::format(
+                "MAXWELL3D_DRAW kind=inline_index indexed={} count={} instances={} scissor={},{},{}x{} shaders={}\n",
+                indexed, count, instanceCount, scissor.offset.x, scissor.offset.y,
+                scissor.extent.width, scissor.extent.height, hashes));
+        }
           ctx.executor.AddCheckpoint("After inline index draw");
      }    
    
@@ -407,6 +418,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        if (ctx.executor.IsDiagnosticDrawTraceActive()) {
+            std::string hashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (auto hash : pipeline->sourcePackedState.shaderHashes)
+                    hashes += fmt::format("{:016X},", hash);
+            }
+            ctx.executor.AppendDiagnosticDrawTrace(fmt::format(
+                "MAXWELL3D_DRAW kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={}\n",
+                indexed, count, instanceCount, scissor.offset.x, scissor.offset.y,
+                scissor.extent.width, scissor.extent.height, hashes));
+        }
         ctx.executor.AddCheckpoint("After draw");
     }
 
@@ -470,6 +492,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        if (ctx.executor.IsDiagnosticDrawTraceActive()) {
+            std::string hashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (auto hash : pipeline->sourcePackedState.shaderHashes)
+                    hashes += fmt::format("{:016X},", hash);
+            }
+            ctx.executor.AppendDiagnosticDrawTrace(fmt::format(
+                "MAXWELL3D_DRAW kind=indirect indexed={} count={} instances={} scissor={},{},{}x{} shaders={}\n",
+                indexed, count, 0, scissor.offset.x, scissor.offset.y,
+                scissor.extent.width, scissor.extent.height, hashes));
+        }
         ctx.executor.AddCheckpoint("After indirect draw");
     }
 

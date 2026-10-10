@@ -177,6 +177,19 @@ namespace skyline::gpu::interconnect {
         );
         executor.AddCheckpoint("After blit");
 
+        if (executor.IsDiagnosticDrawTraceActive()) {
+            executor.AppendDiagnosticDrawTrace(fmt::format(
+                "FERMI2D_BLIT src_addr=0x{:X} dst_addr=0x{:X} src_dims={}x{} dst_dims={}x{} "
+                "src_rect={:.3f},{:.3f} dst_rect={},{} {}x{} du_dx={:.6f} dv_dy={:.6f} "
+                "src_layout={} dst_layout={} filter={} origin={}\n",
+                u64{srcSurface.address}, u64{dstSurface.address},
+                srcGuestTexture.dimensions.width, srcGuestTexture.dimensions.height,
+                dstGuestTexture.dimensions.width, dstGuestTexture.dimensions.height,
+                centredSrcRectX, centredSrcRectY, dstRectX, dstRectY,
+                dstRectWidth, dstRectHeight, duDx, dvDy,
+                static_cast<u32>(srcSurface.memoryLayout), static_cast<u32>(dstSurface.memoryLayout),
+                static_cast<u32>(filter), static_cast<u32>(sampleOrigin)));
+        }
 
         executor.NotifyPipelineChange();
     }
