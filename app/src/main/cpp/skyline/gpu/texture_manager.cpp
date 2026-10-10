@@ -376,7 +376,7 @@ namespace skyline::gpu {
             }, guestTexture.format, guestTexture.swizzle);
         };
 
-        if (depthSliceMatch) {
+        if (depthSliceMatch && !depthSliceCopyMatch) {
             return legacyDepthSliceView();
         } else if (layerMipMatch) {
             ContextLock textureLock{tag, *layerMipMatch};
