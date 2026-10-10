@@ -225,17 +225,21 @@ namespace skyline::gpu::interconnect {
         enum class DiagnosticCaptureState { WaitingForArm, Capturing, Complete };
         DiagnosticCaptureState diagnosticCaptureState{DiagnosticCaptureState::WaitingForArm};
         std::vector<std::shared_ptr<Texture>> diagnosticRenderTargets;
+        std::vector<std::shared_ptr<Texture>> diagnosticSampledInputs;
         std::vector<std::function<void()>> pendingDiagnosticCaptureCallbacks;
         std::vector<std::string> diagnosticDrawTraceLines;
         size_t diagnosticDrawTraceFlushedCount{};
         bool diagnosticCaptureArmed{};
         size_t diagnosticCaptureIndex{};
+        size_t diagnosticSampledCaptureCount{};
         size_t diagnosticCaptureBytes{};
         std::string diagnosticCaptureDirectory;
 
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
         void TrackDiagnosticRenderTargets(span<TextureView *> colorAttachments);
+        void TrackDiagnosticSampledInputs(span<TextureView *> sampledImages);
+        void QueueDiagnosticSampledInputCaptures();
         void QueueDiagnosticRenderTargetCaptures();
         void FlushDiagnosticDrawTrace();
         bool CheckDiagnosticCaptureArm();
