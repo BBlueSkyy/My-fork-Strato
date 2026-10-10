@@ -441,6 +441,7 @@ namespace skyline::gpu::interconnect {
             diagnosticCaptureState = DiagnosticCaptureState::Capturing;
             diagnosticRenderTargets.clear();
             diagnosticSampledInputs.clear();
+            diagnosticCapturedSampledTextures.clear();
             diagnosticDrawTraceLines.clear();
             diagnosticDrawTraceFlushedCount = 0;
             diagnosticCaptureIndex = 0;
@@ -480,8 +481,11 @@ namespace skyline::gpu::interconnect {
             if (!IsMiniRenderDocTarget(*texture) ||
                 texture->layout == vk::ImageLayout::eUndefined)
                 continue;
-            if (std::find_if(diagnosticSampledInputs.begin(), diagnosticSampledInputs.end(),
-                             [&](const auto &existing) { return existing.get() == texture.get(); }) != diagnosticSampledInputs.end())
+            const auto alreadyPresent{[&](const auto &list) {
+                return std::find_if(list.begin(), list.end(),
+                    [&](const auto &existing) { return existing.get() == texture.get(); }) != list.end();
+            }};
+            if (alreadyPresent(diagnosticSampledInputs) || alreadyPresent(diagnosticCapturedSampledTextures))
                 continue;
             diagnosticSampledInputs.emplace_back(std::move(texture));
             if (diagnosticSampledCaptureCount + diagnosticSampledInputs.size() >= 8)
@@ -508,6 +512,7 @@ namespace skyline::gpu::interconnect {
                 continue;
 
             const size_t index{diagnosticSampledCaptureCount++};
+            diagnosticCapturedSampledTextures.emplace_back(texture);
             diagnosticCaptureBytes += texture->surfaceSize;
             const auto fileName{fmt::format("sampled_{:02}_rp{}_{}x{}x{}_{}.raw",
                 index, renderPassIndex, texture->dimensions.width,
