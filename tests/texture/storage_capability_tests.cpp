@@ -372,16 +372,19 @@ int main() {
     const ResolvedSubresource surfaceSlice{};
 
     auto depthGroup = std::make_shared<TextureGroup>();
+    auto isolatedSliceGroup = std::make_shared<TextureGroup>();
     auto volumeStorage = std::make_shared<TextureStorage>(
         nullptr, depthGroup, GuestResourceRanges{volumeMapping});
     auto sliceStorage = std::make_shared<TextureStorage>(
-        nullptr, depthGroup, GuestResourceRanges{sliceMapping});
+        nullptr, isolatedSliceGroup, GuestResourceRanges{sliceMapping});
     depthGroup->Attach(volumeStorage);
-    depthGroup->Attach(sliceStorage);
+    isolatedSliceGroup->Attach(sliceStorage);
     assert(depthGroup->RegisterDepthSliceCopyOnly(
         volumeStorage, volumeLayout, bidirectionalImage,
         sliceStorage, sliceLayout, bidirectionalImage,
         depthRelation, FormatCompatibility::Exact));
+    assert(volumeStorage->GetGroup() == depthGroup);
+    assert(sliceStorage->GetGroup() == depthGroup);
 
     const std::array volumeSliceWrite{volumeSlice};
     assert(depthGroup->MarkCopyRepresentationWritten(volumeStorage, volumeSliceWrite));
@@ -405,16 +408,19 @@ int main() {
                                                       const CopyImageInfo &surfaceImage,
                                                       FormatCompatibility format) {
         auto rejectedGroup = std::make_shared<TextureGroup>();
+        auto rejectedSliceGroup = std::make_shared<TextureGroup>();
         auto rejectedVolume = std::make_shared<TextureStorage>(
             nullptr, rejectedGroup, GuestResourceRanges{volumeMapping});
         auto rejectedSlice = std::make_shared<TextureStorage>(
-            nullptr, rejectedGroup, GuestResourceRanges{sliceMapping});
+            nullptr, rejectedSliceGroup, GuestResourceRanges{sliceMapping});
         rejectedGroup->Attach(rejectedVolume);
-        rejectedGroup->Attach(rejectedSlice);
+        rejectedSliceGroup->Attach(rejectedSlice);
         assert(!rejectedGroup->RegisterDepthSliceCopyOnly(
             rejectedVolume, volumeLayout, volumeImage,
             rejectedSlice, sliceLayout, surfaceImage,
             depthRelation, format));
+        assert(rejectedVolume->GetGroup() == rejectedGroup);
+        assert(rejectedSlice->GetGroup() == rejectedSliceGroup);
         assert(rejectedGroup->GetCopyRepresentationState(rejectedVolume, volumeSlice) ==
             CopyRepresentationState::Untracked);
         assert(rejectedGroup->GetCopyRepresentationState(rejectedSlice, surfaceSlice) ==

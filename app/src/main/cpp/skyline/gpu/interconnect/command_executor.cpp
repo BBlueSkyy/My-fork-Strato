@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <range/v3/view.hpp>
 #include <adrenotools/driver.h>
@@ -471,6 +473,26 @@ namespace skyline::gpu::interconnect {
             const auto baseMip{view->range.baseMipLevel};
             const auto levelCount{view->range.levelCount == VK_REMAINING_MIP_LEVELS
                 ? view->texture->levelCount - baseMip : view->range.levelCount};
+            const bool threeDimensional{view->texture->guest &&
+                view->texture->guest->GetImageType() == vk::ImageType::e3D};
+            if (threeDimensional) {
+                for (u32 mip{}; mip < levelCount; ++mip) {
+                    const auto resolvedMip{baseMip + mip};
+                    const auto mipDepth{std::max(view->texture->dimensions.depth >> resolvedMip, 1U)};
+                    if (view->type == vk::ImageViewType::e3D) {
+                        for (u32 slice{}; slice < mipDepth; ++slice)
+                            function({.mip = resolvedMip, .layer = 0, .depthSlice = slice});
+                    } else {
+                        const auto baseSlice{view->range.baseArrayLayer};
+                        const auto sliceCount{view->range.layerCount == VK_REMAINING_ARRAY_LAYERS
+                            ? mipDepth - std::min(baseSlice, mipDepth)
+                            : view->range.layerCount};
+                        for (u32 slice{}; slice < sliceCount && baseSlice + slice < mipDepth; ++slice)
+                            function({.mip = resolvedMip, .layer = 0, .depthSlice = baseSlice + slice});
+                    }
+                }
+                return;
+            }
             const auto baseLayer{view->range.baseArrayLayer};
             const auto layerCount{view->range.layerCount == VK_REMAINING_ARRAY_LAYERS
                 ? view->texture->layerCount - baseLayer : view->range.layerCount};
@@ -543,14 +565,16 @@ namespace skyline::gpu::interconnect {
                     .aspectMask = vk::ImageAspectFlags{region.aspectMask},
                     .baseMipLevel = region.sourceSubresource.mip,
                     .levelCount = 1,
-                    .baseArrayLayer = region.sourceSubresource.layer,
+                    .baseArrayLayer = region.sourceImageType == texture::ImageKind::ThreeDimensional
+                        ? 0 : region.sourceSubresource.layer,
                     .layerCount = 1,
                 };
                 const vk::ImageSubresourceRange destinationRange{
                     .aspectMask = vk::ImageAspectFlags{region.aspectMask},
                     .baseMipLevel = region.destinationSubresource.mip,
                     .levelCount = 1,
-                    .baseArrayLayer = region.destinationSubresource.layer,
+                    .baseArrayLayer = region.destinationImageType == texture::ImageKind::ThreeDimensional
+                        ? 0 : region.destinationSubresource.layer,
                     .layerCount = 1,
                 };
                 const std::array before{
@@ -585,17 +609,19 @@ namespace skyline::gpu::interconnect {
                     .srcSubresource = {
                         .aspectMask = vk::ImageAspectFlags{region.aspectMask},
                         .mipLevel = region.sourceSubresource.mip,
-                        .baseArrayLayer = region.sourceSubresource.layer,
+                        .baseArrayLayer = region.sourceImageType == texture::ImageKind::ThreeDimensional
+                            ? 0 : region.sourceSubresource.layer,
                         .layerCount = 1,
                     },
-                    .srcOffset = {},
+                    .srcOffset = {0, 0, static_cast<std::int32_t>(region.sourceOffsetZ)},
                     .dstSubresource = {
                         .aspectMask = vk::ImageAspectFlags{region.aspectMask},
                         .mipLevel = region.destinationSubresource.mip,
-                        .baseArrayLayer = region.destinationSubresource.layer,
+                        .baseArrayLayer = region.destinationImageType == texture::ImageKind::ThreeDimensional
+                            ? 0 : region.destinationSubresource.layer,
                         .layerCount = 1,
                     },
-                    .dstOffset = {},
+                    .dstOffset = {0, 0, static_cast<std::int32_t>(region.destinationOffsetZ)},
                     .extent = {region.width, region.height, region.depth},
                 }};
                 commandBuffer.copyImage(

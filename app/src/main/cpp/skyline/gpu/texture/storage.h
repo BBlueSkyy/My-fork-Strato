@@ -364,50 +364,89 @@ namespace skyline::gpu::texture {
         const std::shared_ptr<TextureStorage> &requested,
         const TextureResourceLayout &requestedLayout, const CopyImageInfo &requestedImage,
         const ClassifiedResourceView &classified, FormatCompatibility format) {
-        std::scoped_lock runtimeLock{runtimeSynchronizationMutex};
-        std::scoped_lock lock{mutex};
-        const auto verified{ClassifyAndResolveView(
-            backingLayout, requestedLayout, format, false)};
-        if (!backing || !requested || backing->GetGroup().get() != this ||
-            requested->GetGroup().get() != this ||
-            format != FormatCompatibility::Exact ||
-            verified.relation != TextureViewCompatibility::CopyOnly ||
-            !verified.copyRegion || verified.copyRegion->subresources.size() != 1 ||
-            classified.relation != TextureViewCompatibility::CopyOnly ||
-            !classified.copyRegion ||
-            classified.copyRegion->subresources != verified.copyRegion->subresources)
+        if (!backing || !requested)
+            return false;
+        const auto requestedGroup{requested->GetGroup()};
+        if (!requestedGroup)
             return false;
 
-        const auto &mapping{verified.copyRegion->subresources.front()};
-        if (!IsExactBlockLinearDepthSliceRelation(
-                backingLayout, mapping.backing,
-                requestedLayout, mapping.requested))
-            return false;
+        const auto registerLocked = [&](bool adoptRequested) {
+            const auto verified{ClassifyAndResolveView(
+                backingLayout, requestedLayout, format, false)};
+            if (backing->GetGroup().get() != this ||
+                requested->GetGroup() != requestedGroup ||
+                (!adoptRequested && requestedGroup.get() != this) ||
+                format != FormatCompatibility::Exact ||
+                verified.relation != TextureViewCompatibility::CopyOnly ||
+                !verified.copyRegion || verified.copyRegion->subresources.size() != 1 ||
+                classified.relation != TextureViewCompatibility::CopyOnly ||
+                !classified.copyRegion ||
+                classified.copyRegion->subresources != verified.copyRegion->subresources)
+                return false;
 
-        auto updatedDependencies{copyDependencies};
-        if (!updatedDependencies.RegisterSynchronized(
-                backing, backing->ranges, backingLayout,
-                requested, requested->ranges, requestedLayout, verified))
-            return false;
+            if (adoptRequested) {
+                bool foundRequested{};
+                for (const auto &weakStorage : requestedGroup->storages) {
+                    const auto member{weakStorage.lock()};
+                    if (!member)
+                        continue;
+                    if (member != requested)
+                        return false;
+                    foundRequested = true;
+                }
+                if (!foundRequested || requestedGroup->copyDependencies.RelationCount() ||
+                    requestedGroup->copyCapabilities.RouteCount() ||
+                    requestedGroup->copyCapabilities.HasPendingSynchronizations())
+                    return false;
+            }
 
-        auto updatedCapabilities{copyCapabilities};
-        auto forward{updatedCapabilities};
-        if (!forward.RegisterExactImageCopy(
-                updatedDependencies,
-                backing, backingLayout, backingImage, mapping.backing,
-                requested, requestedLayout, requestedImage, mapping.requested, false))
-            return false;
+            const auto &mapping{verified.copyRegion->subresources.front()};
+            if (!IsExactBlockLinearDepthSliceRelation(
+                    backingLayout, mapping.backing,
+                    requestedLayout, mapping.requested))
+                return false;
 
-        auto reverse{forward};
-        if (!reverse.RegisterExactImageCopy(
-                updatedDependencies,
-                requested, requestedLayout, requestedImage, mapping.requested,
-                backing, backingLayout, backingImage, mapping.backing, false))
-            return false;
+            auto updatedDependencies{copyDependencies};
+            if (!updatedDependencies.RegisterSynchronized(
+                    backing, backing->ranges, backingLayout,
+                    requested, requested->ranges, requestedLayout, verified))
+                return false;
 
-        copyDependencies = std::move(updatedDependencies);
-        copyCapabilities = std::move(reverse);
-        return true;
+            auto forward{copyCapabilities};
+            if (!forward.RegisterExactImageCopy(
+                    updatedDependencies,
+                    backing, backingLayout, backingImage, mapping.backing,
+                    requested, requestedLayout, requestedImage, mapping.requested, false))
+                return false;
+
+            auto reverse{forward};
+            if (!reverse.RegisterExactImageCopy(
+                    updatedDependencies,
+                    requested, requestedLayout, requestedImage, mapping.requested,
+                    backing, backingLayout, backingImage, mapping.backing, false))
+                return false;
+
+            if (adoptRequested) {
+                const auto destinationGroup{shared_from_this()};
+                if (!requested->MoveFromGroup(requestedGroup, destinationGroup))
+                    return false;
+                storages.emplace_back(requested);
+            }
+            copyDependencies = std::move(updatedDependencies);
+            copyCapabilities = std::move(reverse);
+            return true;
+        };
+
+        if (requestedGroup.get() == this) {
+            std::scoped_lock runtimeLock{runtimeSynchronizationMutex};
+            std::scoped_lock lock{mutex};
+            return registerLocked(false);
+        }
+
+        std::scoped_lock runtimeLock{
+            runtimeSynchronizationMutex, requestedGroup->runtimeSynchronizationMutex};
+        std::scoped_lock lock{mutex, requestedGroup->mutex};
+        return registerLocked(true);
     }
 
     inline PreparedCopySynchronization<TextureStorage> TextureGroup::PrepareCopySynchronization(

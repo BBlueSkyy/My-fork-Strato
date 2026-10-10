@@ -155,6 +155,17 @@ namespace skyline::gpu {
                 (first.imageType == texture::ImageKind::TwoDimensional &&
                  second.imageType == texture::ImageKind::OneDimensional);
         }
+
+        bool IsDepthSliceCopy(const texture::TextureResourceLayout &backing,
+                              const texture::TextureResourceLayout &requested,
+                              const texture::ClassifiedResourceView &classified) {
+            if (classified.relation != texture::TextureViewCompatibility::CopyOnly ||
+                !classified.copyRegion || classified.copyRegion->subresources.size() != 1)
+                return false;
+            const auto &mapping{classified.copyRegion->subresources.front()};
+            return texture::IsExactBlockLinearDepthSliceRelation(
+                backing, mapping.backing, requested, mapping.requested);
+        }
     }
 
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
@@ -187,6 +198,7 @@ namespace skyline::gpu {
             texture::ClassifiedResourceView view;
             texture::OwnedTextureResourceLayout layout;
             texture::FormatCompatibility format;
+            bool depthSliceCopy{};
         };
 
         const auto requestedLayout = DescribeGuestLayout(guestTexture, guestRanges);
@@ -205,21 +217,30 @@ namespace skyline::gpu {
                     *storage->texture->guest->format, *guestTexture.format);
                 const auto relation = texture::ClassifyAndResolveView(backingLayout->Layout(),
                     requestedLayout->Layout(), format, SupportsHostFormatView(gpu, *storage->texture, guestTexture));
-                classifiedStorages.push_back({storage, relation, std::move(*backingLayout), format});
+                const bool depthSliceCopy{IsDepthSliceCopy(
+                    backingLayout->Layout(), requestedLayout->Layout(), relation)};
+                classifiedStorages.push_back({
+                    storage, relation, std::move(*backingLayout), format, depthSliceCopy});
             }
         }
 
-        const auto classifiedView = [&classifiedStorages](const std::shared_ptr<texture::TextureStorage> &storage)
-                -> const texture::ClassifiedResourceView * {
+        const auto classifiedStorage = [&classifiedStorages](const std::shared_ptr<texture::TextureStorage> &storage)
+                -> const ClassifiedStorage * {
             const auto entry = std::find_if(classifiedStorages.begin(), classifiedStorages.end(),
                 [&storage](const ClassifiedStorage &candidate) { return candidate.storage == storage; });
-            return entry == classifiedStorages.end() ? nullptr : &entry->view;
+            return entry == classifiedStorages.end() ? nullptr : &*entry;
+        };
+        const auto classifiedView = [&classifiedStorage](const std::shared_ptr<texture::TextureStorage> &storage)
+                -> const texture::ClassifiedResourceView * {
+            const auto classified{classifiedStorage(storage)};
+            return classified ? &classified->view : nullptr;
         };
 
         std::shared_ptr<Texture> fullMatch{};
         std::shared_ptr<texture::TextureStorage> fullMatchStorage{};
         std::shared_ptr<Texture> layerMipMatch{};
         std::shared_ptr<Texture> depthSliceMatch{};
+        bool depthSliceCopyMatch{};
         std::shared_ptr<texture::TextureStorage> layerMipMatchStorage{};
         u32 matchLevel{};
         u32 matchLayer{};
@@ -297,6 +318,8 @@ namespace skyline::gpu {
                                         depthSliceLevel = level;
                                         depthSlice = slice;
                                         depthSliceParentDepth = mipLevel.dimensions.depth;
+                                        const auto classified{classifiedStorage(candidateStorage)};
+                                        depthSliceCopyMatch = classified && classified->depthSliceCopy;
                                     }
                                     break;
                                 }
@@ -334,7 +357,7 @@ namespace skyline::gpu {
             }
          }
 
-        if (depthSliceMatch) {
+        const auto legacyDepthSliceView = [&]() {
             // Prefer the real 3D storage over an independently cached slice. The latter
             // would otherwise retain stale contents after the guest renders into another
             // view of the same 3D resource.
@@ -349,6 +372,10 @@ namespace skyline::gpu {
                 .baseArrayLayer = depthSlice,
                 .layerCount = guestTexture.GetViewLayerCount(),
             }, guestTexture.format, guestTexture.swizzle);
+        };
+
+        if (depthSliceMatch && !depthSliceCopyMatch) {
+            return legacyDepthSliceView();
         } else if (layerMipMatch) {
             ContextLock textureLock{tag, *layerMipMatch};
             const texture::ResolvedViewBase legacyBase{
@@ -384,6 +411,10 @@ namespace skyline::gpu {
                 .layerCount = guestTexture.GetViewLayerCount(),
             }, guestTexture.format, guestTexture.swizzle);
         }
+
+        if (depthSliceMatch &&
+            std::find(matches.begin(), matches.end(), depthSliceMatch) == matches.end())
+            matches.push_back(depthSliceMatch);
 
         if (guestTexture.GetImageType() == vk::ImageType::e3D &&
             guestTexture.tileConfig.mode == texture::TileMode::Block) {
@@ -487,6 +518,7 @@ namespace skyline::gpu {
         if (requestedLayout) {
             const auto requestedImage{DescribeCopyImage(*texture)};
             const auto createdLayout{DescribeGuestLayout(guestTexture, storage->ranges, texture.get())};
+            bool matchedDepthSliceRegistered{!depthSliceCopyMatch};
             for (const auto &classified : classifiedStorages) {
                 if (!classified.storage ||
                     classified.view.relation != texture::TextureViewCompatibility::CopyOnly ||
@@ -494,9 +526,30 @@ namespace skyline::gpu {
                     continue;
 
                 const auto backingImage{DescribeCopyImage(*classified.storage->texture)};
-                const auto group{storage->GetGroup()};
+                auto group{storage->GetGroup()};
+                auto backingGroup{classified.storage->GetGroup()};
                 if (!group)
                     continue;
+
+                if (createdLayout && IsDepthSliceCopy(
+                        classified.layout.Layout(), createdLayout->Layout(), classified.view)) {
+                    if (group != backingGroup) {
+                        if (group->HasExecutableCopyRoutes()) {
+                            if (!backingGroup || !group->TryMergeCopyDependenciesFrom(*backingGroup))
+                                continue;
+                        } else {
+                            group = backingGroup;
+                        }
+                    }
+                    if (group && group->RegisterDepthSliceCopyOnly(
+                            classified.storage, classified.layout.Layout(), backingImage,
+                            storage, createdLayout->Layout(), requestedImage,
+                            classified.view, classified.format)) {
+                        if (depthSliceMatch && classified.storage->texture == depthSliceMatch)
+                            matchedDepthSliceRegistered = true;
+                    }
+                    continue;
+                }
 
                 if (gpu.traits.supportsMaintenance5 &&
                     IsMaintenance5DimensionalPair(
@@ -512,6 +565,9 @@ namespace skyline::gpu {
                         storage, createdLayout->Layout(), requestedImage,
                         classified.view, classified.format);
             }
+
+            if (!matchedDepthSliceRegistered)
+                return legacyDepthSliceView();
         }
         mappingCache.Insert(storage, storage->ranges);
 
