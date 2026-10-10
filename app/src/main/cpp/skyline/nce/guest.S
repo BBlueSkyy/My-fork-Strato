@@ -42,9 +42,9 @@ SaveCtx:
     /* Store System Registers */
     STR X0, [SP, #-16]!
     MRS	X0, FPSR
-    STR	W0, [LR, #0x298]
+    STR	W0, [LR, #0x98] // ThreadContext::fpsr (outside the SIMD bank)
     MRS	X0, FPCR
-    STR	W0, [LR, #0x29C]
+    STR	W0, [LR, #0x9C] // ThreadContext::fpcr
     MRS	X0, NZCV
     STR	W0, [LR, #0x2C0]
     LDR X0, [SP], #16
@@ -78,9 +78,9 @@ LoadCtx:
     LDP Q30, Q31, [LR, #(0xA0 + 16 * 30)]
 
     /* Load System Registers */
-    LDR	W0, [LR, #0x298]
+    LDR	W0, [LR, #0x98]
     MSR	FPSR, X0
-    LDR	W0, [LR, #0x29C]
+    LDR	W0, [LR, #0x9C]
     MSR	FPCR, X0
     LDR	W0, [LR, #0x2C0]
     MSR	NZCV, X0
