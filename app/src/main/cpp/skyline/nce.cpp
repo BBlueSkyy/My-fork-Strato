@@ -513,7 +513,7 @@ namespace skyline::nce {
             if (std::holds_alternative<hle::OverrideHook>(entry.hook))
                 size += EmitTrampolineSize + 1;
             else if (std::holds_alternative<hle::EntryExitHook>(entry.hook))
-                size += 4 + EmitTrampolineSize + 1 + EmitTrampolineSize + 4 + 1;
+                size += 6 + EmitTrampolineSize + 1 + EmitTrampolineSize + 6 + 1;
         }
         return size * sizeof(u32);
     }

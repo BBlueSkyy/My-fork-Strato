@@ -1483,8 +1483,8 @@ namespace skyline::kernel::svc {
                 for (size_t i{}; i < targetContext.fpr.regs.size(); i++)
                     context.vreg[i] = targetContext.fpr.regs[i];
 
-                context.fpcr = targetContext.fpr.fpcr;
-                context.fpsr = targetContext.fpr.fpsr;
+                context.fpcr = targetContext.fpcr;
+                context.fpsr = targetContext.fpsr;
 
                 context.tpidr = reinterpret_cast<u64>(targetContext.tpidrEl0);
             } else { // 32 bit

@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <common.h>
 #include <common/wregister.h>
 
@@ -65,14 +67,12 @@ namespace skyline {
 
         /**
          * @brief The state of all floating point (and SIMD) registers in the guest
-         * @note FPSR/FPCR are 64-bit system registers but only the lower 32-bits are used
          * @note Read about ARMv8 ABI here: https://github.com/ARM-software/abi-aa/blob/2f1ac56a7d79f3e753e6ca88d4d3e083c31d6f64/aapcs64/aapcs64.rst#612simd-and-floating-point-registers
          */
-        union alignas(16) FpRegisters {
+        struct alignas(16) FpRegisters {
             std::array<u128, 32> regs;
-            u32 fpsr;
-            u32 fpcr;
         };
+        static_assert(sizeof(FpRegisters) == 0x200);
 
         /**
          * @brief A per-thread context for guest threads
@@ -80,6 +80,10 @@ namespace skyline {
          */
         struct ThreadContext {
             GpRegisters gpr;
+            // Use the eight bytes preceding the aligned SIMD bank. Storing
+            // these at 0x298/0x29C overwrites the upper 64 bits of Q31.
+            u32 fpsr;
+            u32 fpcr;
             FpRegisters fpr;
             u8 *hostTpidrEl0; //!< Host TLS TPIDR_EL0, this must be swapped to prior to calling any CXX functions
             u8 *hostSp; //!< Host Stack Pointer, same as above
@@ -89,6 +93,19 @@ namespace skyline {
             const DeviceState *state;
             u64 magic{constant::SkyTlsMagic};
         };
+        // guest.S, the generated trampolines and KNceThread::Run use these
+        // offsets directly. Keep the existing TLS/host-stack ABI unchanged.
+        static_assert(offsetof(ThreadContext, gpr) == 0x0);
+        static_assert(offsetof(ThreadContext, fpsr) == 0x98);
+        static_assert(offsetof(ThreadContext, fpcr) == 0x9C);
+        static_assert(offsetof(ThreadContext, fpr) == 0xA0);
+        static_assert(offsetof(ThreadContext, hostTpidrEl0) == 0x2A0);
+        static_assert(offsetof(ThreadContext, hostSp) == 0x2A8);
+        static_assert(offsetof(ThreadContext, tpidrroEl0) == 0x2B0);
+        static_assert(offsetof(ThreadContext, tpidrEl0) == 0x2B8);
+        static_assert(offsetof(ThreadContext, nzcv) == 0x2C0);
+        static_assert(offsetof(ThreadContext, state) == 0x2C8);
+        static_assert(offsetof(ThreadContext, magic) == 0x2D0);
 
         namespace guest {
             constexpr size_t SaveCtxSize{38}; //!< The size of the SaveCtx function in 32-bit ARMv8 instructions
