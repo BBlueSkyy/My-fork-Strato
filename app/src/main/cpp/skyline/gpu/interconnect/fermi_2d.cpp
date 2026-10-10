@@ -164,7 +164,6 @@ namespace skyline::gpu::interconnect {
                 .y = static_cast<float>(dstRectY),
             },
             srcGuestTexture.dimensions, dstGuestTexture.dimensions,
-            duDx, dvDy,
             filter == SampleModeFilter::Bilinear,
             srcTextureView.get(), dstTextureView.get(),
             [=](auto &&executionCallback) {
