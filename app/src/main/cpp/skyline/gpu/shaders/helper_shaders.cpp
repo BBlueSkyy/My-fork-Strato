@@ -224,7 +224,6 @@ namespace skyline::gpu {
 
     void BlitHelperShader::Blit(GPU &gpu, BlitRect srcRect, BlitRect dstRect,
                                 vk::Extent2D srcImageDimensions, vk::Extent2D dstImageDimensions,
-                                float dstSrcScaleFactorX, float dstSrcScaleFactorY,
                                 bool bilinearFilter,
                                 TextureView *srcImageView, TextureView *dstImageView,
                                 std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb) {
@@ -252,7 +251,7 @@ namespace skyline::gpu {
                 .dstDimensionsClipSpace = {(2.0f * dstRect.width) / dstImageDimensions.width, (2.0f * dstRect.height) / dstImageDimensions.height}
             }, blit::FragmentPushConstantLayout{
                 .srcOriginUV = {srcRect.x / srcImageDimensions.width, srcRect.y / srcImageDimensions.height},
-                .dstSrcScaleFactor = {dstSrcScaleFactorX * (srcRect.width / srcImageDimensions.width), dstSrcScaleFactorY * (srcRect.height / srcImageDimensions.height)},
+                .dstSrcScaleFactor = {srcRect.width / srcImageDimensions.width, srcRect.height / srcImageDimensions.height},
             },
             GetPipeline(gpu,
                         {dstImageView->format->vkFormat,
