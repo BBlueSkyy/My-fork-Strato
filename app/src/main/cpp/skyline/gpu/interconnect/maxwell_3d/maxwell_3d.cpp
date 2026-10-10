@@ -126,7 +126,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
             ctx.executor.AppendDiagnosticDrawTrace(fmt::format(
                 "MAXWELL3D_DRAW kind=inline_index indexed={} count={} instances={} scissor={},{},{}x{} shaders={}\n",
-                indexed, count, instanceCount, scissor.offset.x, scissor.offset.y,
+                true, count, instanceCount, scissor.offset.x, scissor.offset.y,
                 scissor.extent.width, scissor.extent.height, hashes));
         }
           ctx.executor.AddCheckpoint("After inline index draw");
