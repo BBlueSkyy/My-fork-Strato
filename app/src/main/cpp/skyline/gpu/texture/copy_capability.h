@@ -306,6 +306,27 @@ namespace skyline::gpu::texture {
             return !pendingSynchronizations.empty();
         }
 
+        bool HasDepthSliceRoute(
+            const std::shared_ptr<Representation> &representation,
+            ResolvedSubresource subresource) const {
+            if (!representation)
+                return false;
+            const std::weak_ptr<Representation> weakRepresentation{representation};
+            return std::any_of(routes.begin(), routes.end(), [&](const Route &route) {
+                const bool depthSlicePair{
+                    (route.copyRegion.sourceImageType == ImageKind::ThreeDimensional &&
+                     route.copyRegion.destinationImageType == ImageKind::TwoDimensional) ||
+                    (route.copyRegion.sourceImageType == ImageKind::TwoDimensional &&
+                     route.copyRegion.destinationImageType == ImageKind::ThreeDimensional)
+                };
+                return depthSlicePair &&
+                    ((SameOwner(route.source, weakRepresentation) &&
+                      route.sourceSubresource == subresource) ||
+                     (SameOwner(route.destination, weakRepresentation) &&
+                      route.destinationSubresource == subresource));
+            });
+        }
+
         void MergeFrom(const CopyCapabilityTracker &other) {
             for (const auto &route : other.routes) {
                 bool found{};

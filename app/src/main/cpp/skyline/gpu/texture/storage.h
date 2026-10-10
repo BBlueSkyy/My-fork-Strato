@@ -68,6 +68,10 @@ namespace skyline::gpu::texture {
                                            std::span<const ResolvedSubresource> subresources);
         CopyRepresentationState GetCopyRepresentationState(
             const std::shared_ptr<TextureStorage> &storage, ResolvedSubresource subresource) const;
+        std::optional<CopyRepresentationDebugInfo> GetCopyRepresentationDebugInfo(
+            const std::shared_ptr<TextureStorage> &storage, ResolvedSubresource subresource) const;
+        bool HasDepthSliceCopyRoute(
+            const std::shared_ptr<TextureStorage> &storage, ResolvedSubresource subresource) const;
         PreparedDependencyRead<TextureStorage> PrepareCopyRepresentationRead(
             const std::shared_ptr<TextureStorage> &storage, ResolvedSubresource subresource) const;
         bool RegisterExactImageCopyCapability(
@@ -206,6 +210,24 @@ namespace skyline::gpu::texture {
         if (!storage || storage->GetGroup().get() != this)
             return CopyRepresentationState::Untracked;
         return copyDependencies.GetState(storage, subresource);
+    }
+
+    inline std::optional<CopyRepresentationDebugInfo>
+    TextureGroup::GetCopyRepresentationDebugInfo(
+        const std::shared_ptr<TextureStorage> &storage,
+        ResolvedSubresource subresource) const {
+        std::scoped_lock lock{mutex};
+        if (!storage || storage->GetGroup().get() != this)
+            return std::nullopt;
+        return copyDependencies.GetDebugInfo(storage, subresource);
+    }
+
+    inline bool TextureGroup::HasDepthSliceCopyRoute(
+        const std::shared_ptr<TextureStorage> &storage,
+        ResolvedSubresource subresource) const {
+        std::scoped_lock lock{mutex};
+        return storage && storage->GetGroup().get() == this &&
+            copyCapabilities.HasDepthSliceRoute(storage, subresource);
     }
 
     inline PreparedDependencyRead<TextureStorage> TextureGroup::PrepareCopyRepresentationRead(

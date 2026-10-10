@@ -14,6 +14,12 @@ namespace skyline::gpu::texture {
     enum class CopyRepresentationState : std::uint8_t { Untracked, Current, Stale };
     enum class CopyReadState : std::uint8_t { Untracked, Current, SynchronizationRequired, Unavailable };
 
+    struct CopyRepresentationDebugInfo {
+        CopyRepresentationState state{CopyRepresentationState::Untracked};
+        std::uint64_t generation{};
+        std::uint64_t currentGeneration{};
+    };
+
     template<typename Representation>
     struct PreparedDependencyRead {
         CopyReadState state{CopyReadState::Untracked};
@@ -303,6 +309,24 @@ namespace skyline::gpu::texture {
                 return CopyRepresentationState::Untracked;
             return IsCurrent(*endpoint)
                 ? CopyRepresentationState::Current : CopyRepresentationState::Stale;
+        }
+
+        std::optional<CopyRepresentationDebugInfo> GetDebugInfo(
+            const std::shared_ptr<Representation> &representation,
+            ResolvedSubresource subresource) const {
+            const auto node = FindNode(representation);
+            if (!node)
+                return std::nullopt;
+            const auto endpoint = FindEndpoint(*node, subresource);
+            if (!endpoint)
+                return std::nullopt;
+            const auto currentGeneration{ComponentGeneration(*endpoint)};
+            return CopyRepresentationDebugInfo{
+                .state = endpoints[*endpoint].generation == currentGeneration
+                    ? CopyRepresentationState::Current : CopyRepresentationState::Stale,
+                .generation = endpoints[*endpoint].generation,
+                .currentGeneration = currentGeneration,
+            };
         }
 
         bool MarkWritten(const std::shared_ptr<Representation> &representation,

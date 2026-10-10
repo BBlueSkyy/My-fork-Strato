@@ -2,10 +2,12 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <type_traits>
 #include <range/v3/view.hpp>
 #include <adrenotools/driver.h>
 #include <common/settings.h>
@@ -17,6 +19,161 @@
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
+    namespace {
+        std::atomic_uint64_t depthSliceCopyId{};
+
+        template<typename Handle>
+        std::uint64_t HandleValue(Handle handle) {
+            if constexpr (std::is_pointer_v<Handle>)
+                return reinterpret_cast<std::uintptr_t>(handle);
+            else
+                return static_cast<std::uint64_t>(handle);
+        }
+
+        std::uint64_t ImageHandleValue(vk::Image image) {
+            return HandleValue(static_cast<VkImage>(image));
+        }
+
+        const char *ImageKindName(texture::ImageKind kind) {
+            switch (kind) {
+                case texture::ImageKind::OneDimensional: return "1D";
+                case texture::ImageKind::TwoDimensional: return "2D";
+                case texture::ImageKind::ThreeDimensional: return "3D";
+            }
+            return "?";
+        }
+
+        const char *CopyStateName(
+            const std::optional<texture::CopyRepresentationDebugInfo> &info) {
+            if (!info)
+                return "Untracked";
+            switch (info->state) {
+                case texture::CopyRepresentationState::Untracked: return "Untracked";
+                case texture::CopyRepresentationState::Current: return "Current";
+                case texture::CopyRepresentationState::Stale: return "Stale";
+            }
+            return "?";
+        }
+
+        const char *TextureImageTypeName(const Texture &image) {
+            if (!image.guest)
+                return "?";
+            switch (image.guest->GetImageType()) {
+                case vk::ImageType::e1D: return "1D";
+                case vk::ImageType::e2D: return "2D";
+                case vk::ImageType::e3D: return "3D";
+            }
+            return "?";
+        }
+
+        texture::Dimensions ActualMipDimensions(const Texture &image, std::uint32_t mip) {
+            if (mip >= image.levelCount || mip >= image.mipLayouts.size())
+                return {};
+            return image.mipLayouts[mip].dimensions;
+        }
+
+        bool IsDepthSliceCopy(const texture::ExactImageCopyRegion &region) {
+            return (region.sourceImageType == texture::ImageKind::ThreeDimensional &&
+                    region.destinationImageType == texture::ImageKind::TwoDimensional) ||
+                (region.sourceImageType == texture::ImageKind::TwoDimensional &&
+                 region.destinationImageType == texture::ImageKind::ThreeDimensional);
+        }
+
+        vk::ImageType VkImageTypeOf(texture::ImageKind kind) {
+            switch (kind) {
+                case texture::ImageKind::OneDimensional: return vk::ImageType::e1D;
+                case texture::ImageKind::TwoDimensional: return vk::ImageType::e2D;
+                case texture::ImageKind::ThreeDimensional: return vk::ImageType::e3D;
+            }
+            return vk::ImageType::e2D;
+        }
+
+        const char *ValidateDepthSliceCopy(
+            const std::shared_ptr<texture::TextureStorage> &sourceStorage,
+            Texture &sourceTexture, vk::Image sourceImage,
+            const std::shared_ptr<texture::TextureStorage> &destinationStorage,
+            Texture &destinationTexture, vk::Image destinationImage,
+            const texture::PreparedCopySynchronization<texture::TextureStorage> &prepared) {
+            const auto &region{prepared.copyRegion};
+            if (!IsDepthSliceCopy(region))
+                return "not a 3D/2D depth-slice pair";
+            if (!sourceStorage || !destinationStorage || sourceStorage == destinationStorage)
+                return "source/destination storage is missing or identical";
+            if (!sourceImage || !destinationImage || sourceImage == destinationImage)
+                return "source/destination VkImage is missing or identical";
+            if (sourceTexture.GetBacking() != sourceImage ||
+                destinationTexture.GetBacking() != destinationImage)
+                return "captured VkImage no longer matches its texture";
+            if (!sourceTexture.guest || !destinationTexture.guest ||
+                sourceTexture.guest->GetImageType() != VkImageTypeOf(region.sourceImageType) ||
+                destinationTexture.guest->GetImageType() !=
+                    VkImageTypeOf(region.destinationImageType))
+                return "route imageType does not match the real VkImage type";
+            if (prepared.read.sourceSubresource != region.sourceSubresource ||
+                prepared.read.destinationSubresource != region.destinationSubresource)
+                return "prepared subresource does not match the registered route";
+            if (region.sourceSubresource.mip >= sourceTexture.levelCount ||
+                region.sourceSubresource.mip >= sourceTexture.mipLayouts.size() ||
+                region.destinationSubresource.mip >= destinationTexture.levelCount ||
+                region.destinationSubresource.mip >= destinationTexture.mipLayouts.size())
+                return "mip is outside the real image";
+
+            const auto sourceMip{
+                ActualMipDimensions(sourceTexture, region.sourceSubresource.mip)};
+            const auto destinationMip{
+                ActualMipDimensions(destinationTexture, region.destinationSubresource.mip)};
+            if (!region.width || !region.height || region.depth != 1 ||
+                region.width > sourceMip.width || region.height > sourceMip.height ||
+                region.width > destinationMip.width || region.height > destinationMip.height)
+                return "copy extent is outside a real mip";
+
+            const auto validateSide = [&](const Texture &image, texture::ImageKind kind,
+                                          texture::ResolvedSubresource subresource,
+                                          std::uint32_t offsetZ,
+                                          texture::Dimensions mip) -> const char * {
+                if (kind == texture::ImageKind::ThreeDimensional) {
+                    if (subresource.layer != 0 || image.layerCount != 1)
+                        return "3D subresource has a nonzero layer or array layers";
+                    if (subresource.depthSlice >= mip.depth ||
+                        offsetZ != subresource.depthSlice ||
+                        offsetZ > mip.depth || region.depth > mip.depth - offsetZ)
+                        return "3D depthSlice/offset.z is outside mip depth";
+                } else if (kind == texture::ImageKind::TwoDimensional) {
+                    if (subresource.depthSlice != 0 || offsetZ != 0 || region.depth != 1 ||
+                        mip.depth != 1 || subresource.layer >= image.layerCount)
+                        return "2D subresource/layer/z/depth is invalid";
+                } else {
+                    return "unexpected image type in depth-slice route";
+                }
+                return nullptr;
+            };
+            if (const auto reason = validateSide(
+                    sourceTexture, region.sourceImageType, region.sourceSubresource,
+                    region.sourceOffsetZ, sourceMip))
+                return reason;
+            if (const auto reason = validateSide(
+                    destinationTexture, region.destinationImageType,
+                    region.destinationSubresource, region.destinationOffsetZ, destinationMip))
+                return reason;
+            if (sourceTexture.format->vkFormat != destinationTexture.format->vkFormat ||
+                sourceTexture.sampleCount != destinationTexture.sampleCount ||
+                sourceTexture.sampleCount != vk::SampleCountFlagBits::e1)
+                return "format or sample count is incompatible";
+            const auto aspect{vk::ImageAspectFlags{region.aspectMask}};
+            if (!region.aspectMask ||
+                (sourceTexture.format->vkAspect & aspect) != aspect ||
+                (destinationTexture.format->vkAspect & aspect) != aspect)
+                return "copy aspect is incompatible with an image";
+            if (!(sourceTexture.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+                !(destinationTexture.usage & vk::ImageUsageFlagBits::eTransferDst))
+                return "VkImage transfer usage is missing";
+            if (sourceTexture.layout != vk::ImageLayout::eGeneral ||
+                destinationTexture.layout != vk::ImageLayout::eGeneral)
+                return "VkImage is not in GENERAL layout";
+            return nullptr;
+        }
+    }
+
     static void RecordFullBarrier(vk::raii::CommandBuffer &commandBuffer) {
         commandBuffer.pipelineBarrier(
             vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, {}, vk::MemoryBarrier{
@@ -528,6 +685,7 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::SynchronizeCopyOnly(TextureView *view) {
         auto destinationStorage{view->texture->storage.lock()};
+        auto destinationTexture{std::shared_ptr<Texture>{view->texture}};
         auto destinationGroup{destinationStorage ? destinationStorage->GetGroup() : nullptr};
         if (!destinationGroup ||
             view->texture->layout != vk::ImageLayout::eGeneral)
@@ -551,14 +709,49 @@ namespace skyline::gpu::interconnect {
                 return;
 
             const auto sourceImage{sourceTexture->GetBacking()};
-            const auto destinationImage{view->texture->GetBacking()};
+            const auto destinationImage{destinationTexture->GetBacking()};
             if (!sourceImage || !destinationImage)
                 return;
 
             auto pending{std::move(scheduled.pending)};
             const auto region{prepared.copyRegion};
+            const auto depthSliceCopy{IsDepthSliceCopy(region)};
+            const auto copyId{depthSliceCopy ? ++depthSliceCopyId : 0};
+            const auto sourceInfo{depthSliceCopy
+                ? destinationGroup->GetCopyRepresentationDebugInfo(
+                    sourceStorage, region.sourceSubresource)
+                : std::nullopt};
+            const auto destinationInfo{depthSliceCopy
+                ? destinationGroup->GetCopyRepresentationDebugInfo(
+                    destinationStorage, region.destinationSubresource)
+                : std::nullopt};
+            if (depthSliceCopy) {
+                if (const auto reason = ValidateDepthSliceCopy(
+                        sourceStorage, *sourceTexture, sourceImage,
+                        destinationStorage, *destinationTexture, destinationImage, prepared)) {
+                    LOGE("TexmanDepthCopy reject id={} {}->{} reason='{}' srcStorage={} "
+                         "srcImage=0x{:X} srcSub={}/{}/{} srcZ={} dstStorage={} "
+                         "dstImage=0x{:X} dstSub={}/{}/{} dstZ={} extent={}x{}x{} "
+                         "srcGen={} dstGen={}",
+                         copyId, ImageKindName(region.sourceImageType),
+                         ImageKindName(region.destinationImageType), reason,
+                         fmt::ptr(sourceStorage.get()), ImageHandleValue(sourceImage),
+                         region.sourceSubresource.mip, region.sourceSubresource.layer,
+                         region.sourceSubresource.depthSlice, region.sourceOffsetZ,
+                         fmt::ptr(destinationStorage.get()), ImageHandleValue(destinationImage),
+                         region.destinationSubresource.mip,
+                         region.destinationSubresource.layer,
+                         region.destinationSubresource.depthSlice, region.destinationOffsetZ,
+                         region.width, region.height, region.depth,
+                         prepared.read.sourceGeneration,
+                         prepared.read.destinationGeneration);
+                    return;
+                }
+            }
             AddOutsideRpCommand([
-                sourceImage, destinationImage, region, pending
+                sourceStorage, destinationStorage, sourceTexture, destinationTexture,
+                sourceImage, destinationImage, region, sourceInfo, destinationInfo,
+                depthSliceCopy, copyId, pending
             ](vk::raii::CommandBuffer &commandBuffer,
               const std::shared_ptr<FenceCycle> &recordingCycle, GPU &) {
                 const vk::ImageSubresourceRange sourceRange{
@@ -624,6 +817,48 @@ namespace skyline::gpu::interconnect {
                     .dstOffset = {0, 0, static_cast<std::int32_t>(region.destinationOffsetZ)},
                     .extent = {region.width, region.height, region.depth},
                 }};
+                if (depthSliceCopy) {
+                    const auto sourceMip{
+                        ActualMipDimensions(*sourceTexture, region.sourceSubresource.mip)};
+                    const auto destinationMip{
+                        ActualMipDimensions(*destinationTexture,
+                                            region.destinationSubresource.mip)};
+                    const auto &read{pending->Prepared().read};
+                    LOGI("TexmanDepthCopy emit id={} {}->{} srcStorage={} srcImage=0x{:X} "
+                         "srcType={}/{} srcSub={}/{}/{} srcMip={}x{}x{} srcZ={} "
+                         "srcLayout={} srcState={} srcGen={}/{} preparedGen={} "
+                         "dstStorage={} dstImage=0x{:X} dstType={}/{} dstSub={}/{}/{} "
+                         "dstMip={}x{}x{} dstZ={} dstLayout={} dstState={} dstGen={}/{} "
+                         "preparedGen={} extent={}x{}x{}",
+                         copyId, ImageKindName(region.sourceImageType),
+                         ImageKindName(region.destinationImageType),
+                         fmt::ptr(sourceStorage.get()), ImageHandleValue(sourceImage),
+                         ImageKindName(region.sourceImageType),
+                         TextureImageTypeName(*sourceTexture),
+                         region.sourceSubresource.mip, region.sourceSubresource.layer,
+                         region.sourceSubresource.depthSlice,
+                         sourceMip.width, sourceMip.height, sourceMip.depth,
+                         region.sourceOffsetZ, vk::to_string(sourceTexture->layout),
+                         CopyStateName(sourceInfo),
+                         sourceInfo ? sourceInfo->generation : 0,
+                         sourceInfo ? sourceInfo->currentGeneration : 0,
+                         read.sourceGeneration,
+                         fmt::ptr(destinationStorage.get()),
+                         ImageHandleValue(destinationImage),
+                         ImageKindName(region.destinationImageType),
+                         TextureImageTypeName(*destinationTexture),
+                         region.destinationSubresource.mip,
+                         region.destinationSubresource.layer,
+                         region.destinationSubresource.depthSlice,
+                         destinationMip.width, destinationMip.height, destinationMip.depth,
+                         region.destinationOffsetZ,
+                         vk::to_string(destinationTexture->layout),
+                         CopyStateName(destinationInfo),
+                         destinationInfo ? destinationInfo->generation : 0,
+                         destinationInfo ? destinationInfo->currentGeneration : 0,
+                         read.destinationGeneration,
+                         region.width, region.height, region.depth);
+                }
                 commandBuffer.copyImage(
                     sourceImage, vk::ImageLayout::eGeneral,
                     destinationImage, vk::ImageLayout::eGeneral, copyRegion);
@@ -669,7 +904,27 @@ namespace skyline::gpu::interconnect {
             return;
         ForEachViewSubresource(view, [&](texture::ResolvedSubresource subresource) {
             const std::array exact{subresource};
-            group->MarkCopyRepresentationWritten(storage, exact);
+            const auto depthSliceRoute{group->HasDepthSliceCopyRoute(storage, subresource)};
+            const auto before{depthSliceRoute
+                ? group->GetCopyRepresentationDebugInfo(storage, subresource)
+                : std::nullopt};
+            const auto marked{group->MarkCopyRepresentationWritten(storage, exact)};
+            if (!depthSliceRoute)
+                return;
+            const auto after{group->GetCopyRepresentationDebugInfo(storage, subresource)};
+            const auto mip{ActualMipDimensions(*view->texture, subresource.mip)};
+            LOGI("TexmanDepthCopy write storage={} image=0x{:X} type={} "
+                 "sub={}/{}/{} mip={}x{}x{} layout={} marked={} state={}->{} "
+                 "gen={}/{}->{}/{}",
+                 fmt::ptr(storage.get()), ImageHandleValue(view->texture->GetBacking()),
+                 TextureImageTypeName(*view->texture),
+                 subresource.mip, subresource.layer, subresource.depthSlice,
+                 mip.width, mip.height, mip.depth, vk::to_string(view->texture->layout), marked,
+                 CopyStateName(before), CopyStateName(after),
+                 before ? before->generation : 0,
+                 before ? before->currentGeneration : 0,
+                 after ? after->generation : 0,
+                 after ? after->currentGeneration : 0);
         });
     }
 

@@ -2,7 +2,9 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/trace.h>
+#include <cstdint>
 #include <limits>
+#include <type_traits>
 #include <gpu.h>
 #include "texture/compatibility.h"
 #include "texture/layout.h"
@@ -11,6 +13,95 @@
 
 namespace skyline::gpu {
     namespace {
+        template<typename Handle>
+        std::uint64_t HandleValue(Handle handle) {
+            if constexpr (std::is_pointer_v<Handle>)
+                return reinterpret_cast<std::uintptr_t>(handle);
+            else
+                return static_cast<std::uint64_t>(handle);
+        }
+
+        std::uint64_t ImageHandleValue(vk::Image image) {
+            return HandleValue(static_cast<VkImage>(image));
+        }
+
+        const char *ImageKindName(texture::ImageKind kind) {
+            switch (kind) {
+                case texture::ImageKind::OneDimensional: return "1D";
+                case texture::ImageKind::TwoDimensional: return "2D";
+                case texture::ImageKind::ThreeDimensional: return "3D";
+            }
+            return "?";
+        }
+
+        const char *CopyStateName(
+            const std::optional<texture::CopyRepresentationDebugInfo> &info) {
+            if (!info)
+                return "Untracked";
+            switch (info->state) {
+                case texture::CopyRepresentationState::Untracked: return "Untracked";
+                case texture::CopyRepresentationState::Current: return "Current";
+                case texture::CopyRepresentationState::Stale: return "Stale";
+            }
+            return "?";
+        }
+
+        texture::Dimensions ActualMipDimensions(const Texture &image, std::uint32_t mip) {
+            if (mip >= image.levelCount || mip >= image.mipLayouts.size())
+                return {};
+            return image.mipLayouts[mip].dimensions;
+        }
+
+        void LogDepthSliceRouteRegistration(
+            const std::shared_ptr<texture::TextureGroup> &group,
+            const std::shared_ptr<texture::TextureStorage> &source,
+            const texture::TextureResourceLayout &sourceLayout,
+            texture::ResolvedSubresource sourceSubresource,
+            const std::shared_ptr<texture::TextureStorage> &destination,
+            const texture::TextureResourceLayout &destinationLayout,
+            texture::ResolvedSubresource destinationSubresource) {
+            if (!group || !source || !source->texture || !destination || !destination->texture)
+                return;
+            const auto sourceInfo{
+                group->GetCopyRepresentationDebugInfo(source, sourceSubresource)};
+            const auto destinationInfo{
+                group->GetCopyRepresentationDebugInfo(destination, destinationSubresource)};
+            const auto sourceMip{ActualMipDimensions(*source->texture, sourceSubresource.mip)};
+            const auto destinationMip{
+                ActualMipDimensions(*destination->texture, destinationSubresource.mip)};
+            const auto sourceDescription{
+                texture::FindSubresource(sourceLayout, sourceSubresource)};
+            const auto width{sourceDescription ? sourceDescription->width : 0};
+            const auto height{sourceDescription ? sourceDescription->height : 0};
+            const auto sourceOffsetZ{sourceLayout.imageType == texture::ImageKind::ThreeDimensional
+                ? sourceSubresource.depthSlice : 0};
+            const auto destinationOffsetZ{
+                destinationLayout.imageType == texture::ImageKind::ThreeDimensional
+                    ? destinationSubresource.depthSlice : 0};
+
+            LOGI("TexmanDepthCopy register {}->{} srcStorage={} srcImage=0x{:X} "
+                 "srcSub={}/{}/{} srcMip={}x{}x{} srcZ={} srcLayout={} srcState={} "
+                 "srcGen={}/{} dstStorage={} dstImage=0x{:X} dstSub={}/{}/{} "
+                 "dstMip={}x{}x{} dstZ={} dstLayout={} dstState={} dstGen={}/{} "
+                 "extent={}x{}x1",
+                 ImageKindName(sourceLayout.imageType), ImageKindName(destinationLayout.imageType),
+                 fmt::ptr(source.get()), ImageHandleValue(source->texture->GetBacking()),
+                 sourceSubresource.mip, sourceSubresource.layer, sourceSubresource.depthSlice,
+                 sourceMip.width, sourceMip.height, sourceMip.depth, sourceOffsetZ,
+                 vk::to_string(source->texture->layout), CopyStateName(sourceInfo),
+                 sourceInfo ? sourceInfo->generation : 0,
+                 sourceInfo ? sourceInfo->currentGeneration : 0,
+                 fmt::ptr(destination.get()), ImageHandleValue(destination->texture->GetBacking()),
+                 destinationSubresource.mip, destinationSubresource.layer,
+                 destinationSubresource.depthSlice,
+                 destinationMip.width, destinationMip.height, destinationMip.depth,
+                 destinationOffsetZ, vk::to_string(destination->texture->layout),
+                 CopyStateName(destinationInfo),
+                 destinationInfo ? destinationInfo->generation : 0,
+                 destinationInfo ? destinationInfo->currentGeneration : 0,
+                 width, height);
+        }
+
         std::optional<texture::ImageKind> ImageKindOf(vk::ImageType type) {
             switch (type) {
                 case vk::ImageType::e1D: return texture::ImageKind::OneDimensional;
@@ -545,6 +636,14 @@ namespace skyline::gpu {
                             classified.storage, classified.layout.Layout(), backingImage,
                             storage, createdLayout->Layout(), requestedImage,
                             classified.view, classified.format)) {
+                        const auto &mapping{
+                            classified.view.copyRegion->subresources.front()};
+                        LogDepthSliceRouteRegistration(
+                            group, classified.storage, classified.layout.Layout(), mapping.backing,
+                            storage, createdLayout->Layout(), mapping.requested);
+                        LogDepthSliceRouteRegistration(
+                            group, storage, createdLayout->Layout(), mapping.requested,
+                            classified.storage, classified.layout.Layout(), mapping.backing);
                         if (depthSliceMatch && classified.storage->texture == depthSliceMatch)
                             matchedDepthSliceRegistered = true;
                     }
