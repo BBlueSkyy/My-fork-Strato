@@ -11,6 +11,7 @@
 #include <gpu/megabuffer.h>
 #include "command_nodes.h"
 #include "common/spin_lock.h"
+#include "copy_only_runtime_serialization.h"
 
 namespace skyline::gpu::texture {
     class TextureGroup;
@@ -191,8 +192,7 @@ namespace skyline::gpu::interconnect {
             ~LockedTexture();
         };
 
-        std::shared_ptr<texture::TextureGroup> copyOnlyRuntimeGroup;
-        std::unique_lock<std::mutex> copyOnlyRuntimeLock;
+        CopyOnlyRuntimeSerialization copyOnlyRuntimeSerialization;
         std::vector<LockedTexture> preserveAttachedTextures;
         std::vector<LockedTexture> attachedTextures; //!< All textures that are attached to the current execution
 

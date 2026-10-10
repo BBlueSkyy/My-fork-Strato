@@ -664,21 +664,20 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::AcquireCopyOnlyRuntime(TextureView *view) {
+        if (copyOnlyRuntimeSerialization.OwnsLock())
+            return;
+
         auto storage{view->texture->storage.lock()};
         while (storage) {
             auto group{storage->GetGroup()};
-            if (!group || !group->HasExecutableCopyRoutes() || copyOnlyRuntimeGroup == group)
+            if (!group || !group->HasExecutableCopyRoutes())
                 return;
 
-            if (copyOnlyRuntimeLock.owns_lock())
-                Submit({}, false);
-
-            std::unique_lock candidateLock{group->RuntimeSynchronizationMutex()};
-            if (storage->GetGroup() != group)
+            copyOnlyRuntimeSerialization.Acquire();
+            if (storage->GetGroup() != group || !group->HasExecutableCopyRoutes()) {
+                copyOnlyRuntimeSerialization.Reset();
                 continue;
-
-            copyOnlyRuntimeGroup = std::move(group);
-            copyOnlyRuntimeLock = std::move(candidateLock);
+            }
             return;
         }
     }
@@ -1163,9 +1162,7 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::ResetInternal() {
         attachedTextures.clear();
         attachedBuffers.clear();
-        if (copyOnlyRuntimeLock.owns_lock())
-            copyOnlyRuntimeLock.unlock();
-        copyOnlyRuntimeGroup.reset();
+        copyOnlyRuntimeSerialization.Reset();
         allocator->Reset();
         renderPassIndex = 0;
         usageTracker.sequencedIntervals.Clear();

@@ -52,6 +52,13 @@ mkdir -p "$build_dir"
 
 "${CXX:-c++}" -std=c++20 -Wall -Wextra -Werror \
     -I"$repo_root/app/src/main/cpp/skyline" \
+    "$repo_root/tests/texture/copy_only_runtime_serialization_tests.cpp" \
+    -o "$build_dir/copy_only_runtime_serialization_tests"
+
+"$build_dir/copy_only_runtime_serialization_tests"
+
+"${CXX:-c++}" -std=c++20 -Wall -Wextra -Werror \
+    -I"$repo_root/app/src/main/cpp/skyline" \
     "$repo_root/tests/texture/maintenance5_support_tests.cpp" \
     -o "$build_dir/maintenance5_support_tests"
 
