@@ -10,6 +10,7 @@
 #include "common/utils.h"
 #include "maxwell_3d.h"
 #include "common.h"
+#include <gpu/diagnostic/re5_scene_capture.h>
 
 namespace skyline::gpu::interconnect::maxwell3d {
     Maxwell3D::Maxwell3D(GPU &gpu,
@@ -119,6 +120,55 @@ namespace skyline::gpu::interconnect::maxwell3d {
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+
+        if (diagnostic::Re5SceneCapture().active.load(std::memory_order_acquire)) {
+            std::string shaderHashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    shaderHashes += fmt::format("{:016X},", hash);
+            }
+            std::string targets;
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->texture) {
+                    targets += fmt::format("0x{:X}:{}x{}:{},",
+                        reinterpret_cast<uintptr_t>(target->texture.get()),
+                        target->texture->dimensions.width,
+                        target->texture->dimensions.height,
+                        vk::to_string(target->texture->format->vkFormat));
+                } else {
+                    targets += "null,";
+                }
+            }
+            // Track the depth target alongside color RTs to distinguish
+            // shadow/depth failures from shader output and late composition.
+            if (auto *depthView{activeState.GetDepthAttachment()}; depthView && depthView->texture) {
+                targets += fmt::format("depth=0x{:X}:{}x{}:{},",
+                    reinterpret_cast<uintptr_t>(depthView->texture.get()),
+                    depthView->texture->dimensions.width, depthView->texture->dimensions.height,
+                    vk::to_string(depthView->texture->format->vkFormat));
+            } else {
+                targets += "depth=null,";
+            }
+            std::string blend;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto packed{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                blend = fmt::format("mask=0x{:X},enabled={}",
+                    static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
+            }
+            std::string sampledViews;
+            for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
+                auto *view{activeDescriptorSetSampledImages[i]};
+                if (view && view->texture)
+                    sampledViews += fmt::format("[{}]=0x{:X}:{}x{}:{},", i,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            diagnostic::Re5SceneCapture().Record(fmt::format(
+                "DRAW kind=inline indexed=1 count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+        }
           ctx.executor.AddCheckpoint("After inline index draw");
      }    
    
@@ -270,6 +320,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto *source{textures.GetTexture(ctx, params.textureIndex, Shader::TextureType::Color2D)};
         auto *sampler{samplers.GetSampler(ctx, params.samplerIndex)};
         auto destination{activeState.GetColorRenderTargetForClear(ctx, colorTargetIndex)};
+        if (diagnostic::Re5SceneCapture().active.load(std::memory_order_acquire)) {
+            diagnostic::Re5SceneCapture().Record(fmt::format(
+                "DRAW_TEXTURE texture_index={} sampler_index={} target={} source_present={} sampler_present={} destination_present={} dst={},{} {}x{}",
+                params.textureIndex, params.samplerIndex, colorTargetIndex,
+                source != nullptr, sampler != nullptr, static_cast<bool>(destination),
+                params.dstX, params.dstY, params.dstWidth, params.dstHeight));
+        }
         if (!source || !sampler || !destination)
             return;
 
@@ -515,6 +572,55 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+
+        if (diagnostic::Re5SceneCapture().active.load(std::memory_order_acquire)) {
+            std::string shaderHashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    shaderHashes += fmt::format("{:016X},", hash);
+            }
+            std::string targets;
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->texture) {
+                    targets += fmt::format("0x{:X}:{}x{}:{},",
+                        reinterpret_cast<uintptr_t>(target->texture.get()),
+                        target->texture->dimensions.width,
+                        target->texture->dimensions.height,
+                        vk::to_string(target->texture->format->vkFormat));
+                } else {
+                    targets += "null,";
+                }
+            }
+            // Track the depth target alongside color RTs to distinguish
+            // shadow/depth failures from shader output and late composition.
+            if (auto *depthView{activeState.GetDepthAttachment()}; depthView && depthView->texture) {
+                targets += fmt::format("depth=0x{:X}:{}x{}:{},",
+                    reinterpret_cast<uintptr_t>(depthView->texture.get()),
+                    depthView->texture->dimensions.width, depthView->texture->dimensions.height,
+                    vk::to_string(depthView->texture->format->vkFormat));
+            } else {
+                targets += "depth=null,";
+            }
+            std::string blend;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto packed{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                blend = fmt::format("mask=0x{:X},enabled={}",
+                    static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
+            }
+            std::string sampledViews;
+            for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
+                auto *view{activeDescriptorSetSampledImages[i]};
+                if (view && view->texture)
+                    sampledViews += fmt::format("[{}]=0x{:X}:{}x{}:{},", i,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            diagnostic::Re5SceneCapture().Record(fmt::format(
+                "DRAW kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                indexed, count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+        }
         ctx.executor.AddCheckpoint("After draw");
     }
 
@@ -578,6 +684,55 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+
+        if (diagnostic::Re5SceneCapture().active.load(std::memory_order_acquire)) {
+            std::string shaderHashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    shaderHashes += fmt::format("{:016X},", hash);
+            }
+            std::string targets;
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->texture) {
+                    targets += fmt::format("0x{:X}:{}x{}:{},",
+                        reinterpret_cast<uintptr_t>(target->texture.get()),
+                        target->texture->dimensions.width,
+                        target->texture->dimensions.height,
+                        vk::to_string(target->texture->format->vkFormat));
+                } else {
+                    targets += "null,";
+                }
+            }
+            // Track the depth target alongside color RTs to distinguish
+            // shadow/depth failures from shader output and late composition.
+            if (auto *depthView{activeState.GetDepthAttachment()}; depthView && depthView->texture) {
+                targets += fmt::format("depth=0x{:X}:{}x{}:{},",
+                    reinterpret_cast<uintptr_t>(depthView->texture.get()),
+                    depthView->texture->dimensions.width, depthView->texture->dimensions.height,
+                    vk::to_string(depthView->texture->format->vkFormat));
+            } else {
+                targets += "depth=null,";
+            }
+            std::string blend;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto packed{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                blend = fmt::format("mask=0x{:X},enabled={}",
+                    static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
+            }
+            std::string sampledViews;
+            for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
+                auto *view{activeDescriptorSetSampledImages[i]};
+                if (view && view->texture)
+                    sampledViews += fmt::format("[{}]=0x{:X}:{}x{}:{},", i,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            diagnostic::Re5SceneCapture().Record(fmt::format(
+                "DRAW kind=indirect indexed={} count={} instances=0 scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                indexed, count, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+        }
         ctx.executor.AddCheckpoint("After indirect draw");
     }
 

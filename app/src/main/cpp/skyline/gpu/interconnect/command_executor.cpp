@@ -11,6 +11,10 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <gpu/diagnostic/re5_scene_capture.h>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -382,6 +386,132 @@ namespace skyline::gpu::interconnect {
         return (!a && !b) || (a && b && b->GetView() == a);
     }
 
+
+    // RE5 diagnostic: capture actual full-size 3D color buffers, excluding depth and compressed images.
+    // Like the earlier mini-RenderDoc probes, all image copies remain on the
+    // existing command stream and only execute at a render-pass boundary.
+    static bool IsRe5ScenePassImage(const Texture &texture) {
+        return texture.dimensions.width >= 640 && texture.dimensions.width <= 1920 &&
+               texture.dimensions.height >= 360 && texture.dimensions.height <= 1080 &&
+               texture.dimensions.depth == 1 && texture.levelCount == 1 &&
+               texture.layerCount == 1 &&
+               texture.sampleCount == vk::SampleCountFlagBits::e1 &&
+               texture.surfaceSize && texture.surfaceSize <= 8ULL * 1024 * 1024 &&
+               (texture.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+               !texture.format->IsCompressed() &&
+               (texture.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+               texture.layout != vk::ImageLayout::eUndefined;
+    }
+
+    void CommandExecutor::TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color) {
+        auto &capture{diagnostic::Re5SceneCapture()};
+        if (!capture.active.load(std::memory_order_acquire))
+            return;
+
+        // Color targets before sampled inputs, so the limited budget favors
+        // the result of a pass rather than an atlas used by its shader.
+        const auto track{[&](span<TextureView *> views, bool rt) {
+            for (auto *view : views) {
+                if (!view || !view->texture)
+                    continue;
+                std::shared_ptr<Texture> texture{view->texture};
+                if (!IsRe5ScenePassImage(*texture))
+                    continue;
+                auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
+                    [&](const DiagnosticPassImage &candidate) {
+                        return candidate.texture.get() == texture.get();
+                    })};
+                if (it != diagnosticPassImages.end()) {
+                    it->renderTarget |= rt;
+                } else if (diagnosticPassImages.size() < 24) {
+                    diagnosticPassImages.push_back({std::move(texture), rt});
+                }
+            }
+        }};
+        track(color, true);
+        track(sampled, false);
+    }
+
+    void CommandExecutor::QueueDiagnosticPassReadbacks() {
+        if (diagnosticPassImages.empty())
+            return;
+        auto images{std::move(diagnosticPassImages)};
+        diagnosticPassImages.clear();
+        auto &capture{diagnostic::Re5SceneCapture()};
+        if (!capture.active.load(std::memory_order_acquire))
+            return;
+
+        const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+        if (interval >= diagnostic::SceneFrameCapture::FrameCount)
+            return;
+        const std::filesystem::path directory{capture.CaptureDirectory()};
+        if (directory.empty())
+            return;
+
+        for (const auto &entry : images) {
+            const auto &texture{entry.texture};
+            if (!IsRe5ScenePassImage(*texture))
+                continue;
+
+            const auto snapshotId{capture.ReservePassSnapshot(interval, texture->surfaceSize)};
+            if (!snapshotId)
+                continue;
+            const auto index{*snapshotId};
+            const auto width{texture->dimensions.width};
+            const auto height{texture->dimensions.height};
+            const auto format{vk::to_string(texture->format->vkFormat)};
+            const auto identity{reinterpret_cast<uintptr_t>(texture.get())};
+            const auto executorIdentity{reinterpret_cast<uintptr_t>(this)};
+            uintptr_t guestMap{};
+            size_t guestBytes{};
+            if (texture->guest) {
+                if (!texture->guest->mappings.empty())
+                    guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                for (const auto &mapping : texture->guest->mappings)
+                    guestBytes += mapping.size();
+            }
+            const auto fileName{fmt::format("pass_{:02}_rp{}_{}x{}_{}.raw",
+                index, renderPassIndex, width, height, format)};
+            const auto rawPath{directory / fileName};
+            const auto metaPath{directory / fmt::format("pass_{:02}.txt", index)};
+            const auto meta{fmt::format(
+                "capture_index={} approx_present={} render_pass={} submission={} "
+                "kind={} executor=0x{:X} texture=0x{:X} dimensions={}x{} "
+                "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} "
+                "note=recorded_after_render_pass_end_not_exact_frame_correlation\n",
+                index, interval, renderPassIndex, submissionNumber,
+                entry.renderTarget ? "render_target" : "sampled_input", executorIdentity, identity,
+                width, height, format, vk::to_string(texture->layout),
+                texture->surfaceSize, guestMap, guestBytes)};
+            auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [texture, staging](vk::raii::CommandBuffer &commandBuffer,
+                                   const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    cycle->AttachObjects(texture, staging);
+                    texture->CopyIntoStagingBuffer(commandBuffer, staging);
+                });
+            diagnosticReadbackCallbacks.emplace_back(
+                [staging, rawPath, metaPath, meta, index] {
+                    std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                    if (!raw) {
+                        LOGE("MINIRD_RE5_PHASE2 failed to open snapshot {}", index);
+                        return;
+                    }
+                    raw.write(reinterpret_cast<const char *>(staging->data()),
+                              static_cast<std::streamsize>(staging->size()));
+                    raw.close();
+                    std::ofstream info(metaPath, std::ios::trunc);
+                    if (info)
+                        info << meta;
+                    LOGI("MINIRD_RE5_PHASE2 wrote snapshot {}: {}", index, rawPath.string());
+                });
+            capture.Record(fmt::format(
+                "PHASE2_SNAPSHOT index={} rp={} submission={} executor=0x{:X} interval={} kind={} texture=0x{:X} {}x{} format={}",
+                index, renderPassIndex, submissionNumber, executorIdentity, interval,
+                entry.renderTarget ? "rt" : "sampled", identity, width, height, format));
+        }
+    }
+
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
         auto addSubpass{[&] {
             renderPass->AddSubpass(inputAttachments, colorAttachments, depthStencilAttachment, gpu);
@@ -409,6 +539,7 @@ namespace skyline::gpu::interconnect {
             if (renderPass != nullptr) {
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+                QueueDiagnosticPassReadbacks();
                 renderPassIndex++;
             }
             renderPass = &std::get<node::RenderPassNode>(slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassNode>(), renderArea));
@@ -431,6 +562,7 @@ namespace skyline::gpu::interconnect {
         for (auto view : sampledImages)
             view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
+        TrackDiagnosticPassImages(sampledImages, colorAttachments);
         return gotoNext;
     }
 
@@ -438,6 +570,7 @@ namespace skyline::gpu::interconnect {
         if (renderPass) {
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+            QueueDiagnosticPassReadbacks();
             renderPassIndex++;
 
             renderPass = nullptr;
@@ -726,6 +859,12 @@ namespace skyline::gpu::interconnect {
             SubmitInternal();
             submissionNumber++;
         }
+        // SubmitInternal() closes the final render pass and may enqueue more
+        // diagnostic readbacks. Queue file writes AFTER that point so callbacks
+        // belong to the correct GPU cycle (already registered above).
+        for (auto &cb : diagnosticReadbackCallbacks)
+            waiterThread.Queue(nullptr, std::move(cb));
+        diagnosticReadbackCallbacks.clear();
 
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission
