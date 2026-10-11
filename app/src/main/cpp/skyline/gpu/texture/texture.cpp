@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu.h>
+#include <gpu/diagnostic_copy_tracker.h>
 #include <kernel/memory.h>
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
@@ -744,6 +745,28 @@ namespace skyline::gpu {
     }
 
     void Texture::MarkGpuDirty(UsageTracker &usageTracker) {
+        // Detect GPU texture writes into any preallocated presentation span,
+        // including 3D draw attachments, compute/storage images and blits.
+        if (gpu::diagnostic::LoggedGpuTextureWrites().load(std::memory_order_relaxed) < 128) {
+            for (const auto &mapping : guest->mappings) {
+                if (!mapping.valid())
+                    continue;
+                if (const auto region{gpu::diagnostic::FindPresentationSurface(mapping.data())}) {
+                    const auto index{gpu::diagnostic::LoggedGpuTextureWrites().fetch_add(1, std::memory_order_relaxed)};
+                    if (index < 128) {
+                        LOGI("MINIRD_GPU_TEXTURE_WRITE event={} texture=0x{:X} dst_host=0x{:X} "
+                             "present_base=0x{:X} present_offset=0x{:X} "
+                             "texture={}x{}x{} guest_mapping_bytes={} format={}",
+                             index, reinterpret_cast<uintptr_t>(this),
+                             reinterpret_cast<uintptr_t>(mapping.data()), region->base,
+                             reinterpret_cast<uintptr_t>(mapping.data()) - region->base,
+                             dimensions.width, dimensions.height, dimensions.depth,
+                             mapping.size(), vk::to_string(format->vkFormat));
+                    }
+                    break;
+                }
+            }
+        }
         for (auto mapping : guest->mappings)
             if (mapping.valid())
                 usageTracker.dirtyIntervals.Insert(mapping);

@@ -2,6 +2,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu/texture/layout.h>
+#include <gpu/diagnostic_copy_tracker.h>
 #include <soc/gm20b/channel.h>
 #include "inline2memory.h"
 
@@ -21,6 +22,35 @@ namespace skyline::soc::gm20b::engine {
             throw exception("Semaphore release on I2M completion is not supported!");
 
         LOGD("range: 0x{:X} -> 0x{:X}", u64{state.offsetOut}, u64{state.offsetOut} + buffer.size() * 0x4);
+
+        // Include inline-to-memory uploads: the ordinary DMA and Fermi2D
+        // diagnostics do not observe this GPU engine.
+        if (gpu::diagnostic::LoggedInlineMatches().load(std::memory_order_relaxed) < 128) {
+            try {
+                const auto destinations{channelCtx.asCtx->gmmu.TranslateRange(state.offsetOut, 1)};
+                if (!destinations.empty()) {
+                    const void *destination{destinations.front().data()};
+                    if (const auto region{gpu::diagnostic::FindPresentationSurface(destination)}) {
+                        const auto index{gpu::diagnostic::LoggedInlineMatches().fetch_add(1, std::memory_order_relaxed)};
+                        if (index < 128) {
+                            LOGI("MINIRD_I2M_TO_PRESENT event={} dst_iova=0x{:X} dst_host=0x{:X} "
+                                 "present_base=0x{:X} present_offset=0x{:X} layout={} "
+                                 "line_bytes={} lines={} pitch={} dst_surface={}x{}x{} "
+                                 "block_height={} origin={},{}",
+                                 index, u64{state.offsetOut}, reinterpret_cast<uintptr_t>(destination),
+                                 region->base, reinterpret_cast<uintptr_t>(destination) - region->base,
+                                 static_cast<u32>(state.launchDma.layout),
+                                 state.lineLengthIn, state.lineCount, state.pitchOut,
+                                 state.dstWidth, state.dstHeight, state.dstDepth,
+                                 state.dstBlockSize.Height(),
+                                 state.originBytesX, state.originSamplesY);
+                        }
+                    }
+                }
+            } catch (const std::exception &) {
+                // Diagnostic translation must not affect I2M error behavior.
+            }
+        }
         if (state.launchDma.layout == RegisterState::DmaDstMemoryLayout::Pitch) {
             channelCtx.channelSequenceNumber++;
 

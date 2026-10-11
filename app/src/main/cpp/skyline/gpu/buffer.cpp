@@ -3,6 +3,7 @@
 
 #include <adrenotools/driver.h>
 #include <gpu.h>
+#include <gpu/diagnostic_copy_tracker.h>
 #include <kernel/memory.h>
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
@@ -417,6 +418,19 @@ namespace skyline::gpu {
         if (!guest)
             return;
 
+        // Some GPU writes target generic buffers instead of image textures.
+        if (gpu::diagnostic::LoggedGpuBufferWrites().load(std::memory_order_relaxed) < 128) {
+            if (const auto region{gpu::diagnostic::FindPresentationSurface(guest->data())}) {
+                const auto index{gpu::diagnostic::LoggedGpuBufferWrites().fetch_add(1, std::memory_order_relaxed)};
+                if (index < 128) {
+                    LOGI("MINIRD_GPU_BUFFER_WRITE event={} dst_host=0x{:X} present_base=0x{:X} "
+                         "present_offset=0x{:X} guest_buffer_bytes={}",
+                         index, reinterpret_cast<uintptr_t>(guest->data()),
+                         region->base, reinterpret_cast<uintptr_t>(guest->data()) - region->base,
+                         guest->size());
+                }
+            }
+        }
         usageTracker.dirtyIntervals.Insert(*guest);
         MarkGpuDirtyImpl();
     }
