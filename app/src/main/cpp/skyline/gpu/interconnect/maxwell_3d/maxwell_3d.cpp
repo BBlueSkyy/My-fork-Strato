@@ -10,6 +10,7 @@
 #include "common/utils.h"
 #include "maxwell_3d.h"
 #include "common.h"
+#include <gpu/diagnostic/naruto_ui_capture.h>
 
 namespace skyline::gpu::interconnect::maxwell3d {
     Maxwell3D::Maxwell3D(GPU &gpu,
@@ -119,6 +120,27 @@ namespace skyline::gpu::interconnect::maxwell3d {
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+
+        if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire)) {
+            std::string shaderHashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    shaderHashes += fmt::format("{:016X},", hash);
+            }
+            std::string sampledViews;
+            for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
+                auto *view{activeDescriptorSetSampledImages[i]};
+                if (view && view->texture)
+                    sampledViews += fmt::format("[{}]=0x{:X}:{}x{}:{},", i,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            diagnostic::NarutoUiCapture().Record(fmt::format(
+                "DRAW kind=inline indexed=1 count={} instances={} scissor={},{},{}x{} shaders={} sampled={}",
+                indexed, count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                scissor.extent.height, shaderHashes, sampledViews));
+        }
           ctx.executor.AddCheckpoint("After inline index draw");
      }    
    
@@ -270,6 +292,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto *source{textures.GetTexture(ctx, params.textureIndex, Shader::TextureType::Color2D)};
         auto *sampler{samplers.GetSampler(ctx, params.samplerIndex)};
         auto destination{activeState.GetColorRenderTargetForClear(ctx, colorTargetIndex)};
+        if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire)) {
+            diagnostic::NarutoUiCapture().Record(fmt::format(
+                "DRAW_TEXTURE texture_index={} sampler_index={} target={} source_present={} sampler_present={} destination_present={} dst={},{} {}x{}",
+                params.textureIndex, params.samplerIndex, colorTargetIndex,
+                source != nullptr, sampler != nullptr, static_cast<bool>(destination),
+                params.dstX, params.dstY, params.dstWidth, params.dstHeight));
+        }
         if (!source || !sampler || !destination)
             return;
 
@@ -515,6 +544,27 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+
+        if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire)) {
+            std::string shaderHashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    shaderHashes += fmt::format("{:016X},", hash);
+            }
+            std::string sampledViews;
+            for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
+                auto *view{activeDescriptorSetSampledImages[i]};
+                if (view && view->texture)
+                    sampledViews += fmt::format("[{}]=0x{:X}:{}x{}:{},", i,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            diagnostic::NarutoUiCapture().Record(fmt::format(
+                "DRAW kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={} sampled={}",
+                indexed, count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                scissor.extent.height, shaderHashes, sampledViews));
+        }
         ctx.executor.AddCheckpoint("After draw");
     }
 
@@ -578,6 +628,27 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+
+        if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire)) {
+            std::string shaderHashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    shaderHashes += fmt::format("{:016X},", hash);
+            }
+            std::string sampledViews;
+            for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
+                auto *view{activeDescriptorSetSampledImages[i]};
+                if (view && view->texture)
+                    sampledViews += fmt::format("[{}]=0x{:X}:{}x{}:{},", i,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            diagnostic::NarutoUiCapture().Record(fmt::format(
+                "DRAW kind=indirect indexed={} count={} instances=0 scissor={},{},{}x{} shaders={} sampled={}",
+                indexed, count, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                scissor.extent.height, shaderHashes, sampledViews));
+        }
         ctx.executor.AddCheckpoint("After indirect draw");
     }
 
