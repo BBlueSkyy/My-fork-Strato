@@ -85,7 +85,7 @@ namespace skyline::gpu {
                       bool bilinearFilter,
                       TextureView *srcImageView, TextureView *dstImageView,
                       std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb,
-                      vk::Sampler overrideSampler);
+                      vk::Sampler overrideSampler = {});
     };
 
     /**
