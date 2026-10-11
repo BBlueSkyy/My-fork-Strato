@@ -327,8 +327,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
             srcDims, dstDims, false, source, dest,
             [this, renderArea, source, dest](auto &&executionCallback) {
                 std::array<TextureView *, 1> sampledImages{source};
+                std::array<TextureView *, 1> colorAttachments{dest};
                 ctx.executor.AddSubpass(std::move(executionCallback), renderArea,
-                                        sampledImages, {}, span<TextureView *>{dest}, {},
+                                        sampledImages, {}, colorAttachments, {},
                                         false, vk::PipelineStageFlagBits::eAllGraphics,
                                         vk::PipelineStageFlagBits::eAllGraphics);
             },
