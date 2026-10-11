@@ -1,8 +1,11 @@
 # Auditoria funcional de DRAW_TEXTURE — PR #334
 
-Esta revisão parte de `56e23a89e437a703c7528781aa1acdfd4e7d2e39`, na branch
-`fix/maxwell3d-draw-texture`. A #332 permanece diagnóstica; master e #332 não
-recebem estas alterações. O teste anterior da #334 continuou com tela preta.
+Esta implementação foi desenvolvida na branch `fix/maxwell3d-draw-texture`,
+a partir da primeira tentativa `56e23a89e437a703c7528781aa1acdfd4e7d2e39`.
+A versão inicial ainda exibia tela preta; a revisão funcional posterior
+`203214bcd955278193db9ce1ffb2f39997c33620` foi validada no aparelho
+com Steel Assault base (menu e gameplay). A PR #332 contém apenas diagnósticos
+separados e não faz parte desta integração.
 
 ## Evidência e limite causal
 
@@ -92,7 +95,7 @@ Referências locais auditadas em SHAs fixos:
   `Vulkan/EnumConversion` usam fallback nearest. São políticas dos emuladores,
   não especificações de comportamento reservado do GM20B.
 
-## Validação e próximo teste
+## Validação e limites
 
 `python3 tests/gpu_draw_texture/run.py`: 14 casos passam, com C++20,
 `-Wall -Wextra -Werror` e UBSan. Os testes reproduziram falhas antes das correções.
@@ -100,17 +103,17 @@ Compilam o corpo de produção do DRAW_TEXTURE, seleção de sampler dos shaders
 conversores e layout dos registradores. As interfaces de GPU são substituídas.
 Não compilam a construção real do sampler Vulkan nem gravam/executam a pipeline.
 `git diff --check` passa. Android SDK/NDK não estão disponíveis localmente;
-a compilação completa será feita pelo workflow da PR após publicação.
+a compilação completa foi executada pelo GitHub Actions e passou no commit
+`203214bcd955278193db9ce1ffb2f39997c33620`.
 
-Validação no aparelho: usar a nova build da #334 com Steel Assault base sem update;
-verificar loading, logo e gameplay. Para regressões, testar blits Fermi2D e jogos
-com sampler ligado/independente, incluindo Nine Sols/Marvel e GRID já utilizados
-no fork. Não mesclar a PR automaticamente.
+**Validação no aparelho:** o usuário confirmou que Steel Assault base, sem update,
+renderiza corretamente no menu principal e durante a gameplay com esta correção.
+A compilação e o funcionamento do jogo alvo estão confirmados; os 14 testes
+host cobrem a semântica com interfaces simuladas, e não substituem verificações
+GPU reais de outros títulos.
 
-Se continuar preto, a única verificação mínima proposta é **uma captura
-correlacionada de um DRAW_TEXTURE e seu QueueBuffer**, incluindo o VkImage/view
-fonte antes do draw, destino depois dele e view escolhida para apresentar,
-identificados pelo mesmo backing/NvMap e fence. Isso diferencia: fonte já vazia;
-fonte válida com blit ausente/incorreto; destino válido perdido ao resolver a
-apresentação. Não repetir capturas de quadros independentes nem contadores gerais.
-Esta revisão não acrescenta essa instrumentação à branch funcional.
+**Limite de regressão:** ainda é recomendável testar jogos com blits Fermi2D
+ou samplers dependentes/independentes (por exemplo GRID, Nine Sols e Marvel).
+Nenhuma instrumentação da PR #332 foi incorporada a esta implementação.
+A PR também não pretende reproduzir todas as variações de DRAW_TEXTURE
+e todos os modos de framebuffer sem evidência de uso.
