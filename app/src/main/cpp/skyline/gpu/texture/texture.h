@@ -418,6 +418,7 @@ namespace skyline::gpu {
 
         friend TextureManager;
         friend TextureView;
+        friend class PresentationEngine; // Diagnostic presentation-source GPU readback (PR #336)
 
         /**
          * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid

@@ -138,7 +138,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
             diagnostic::NarutoUiCapture().Record(fmt::format(
                 "DRAW kind=inline indexed=1 count={} instances={} scissor={},{},{}x{} shaders={} sampled={}",
-                indexed, count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
                 scissor.extent.height, shaderHashes, sampledViews));
         }
           ctx.executor.AddCheckpoint("After inline index draw");
