@@ -192,7 +192,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 break;
         }
         info.force_early_z = packedState.apiMandatedEarlyZ;
-        info.y_negate = packedState.flipYEnable;
+        info.y_negate = packedState.yNegateEnable;
         return info;
     }
 
