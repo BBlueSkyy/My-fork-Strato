@@ -402,6 +402,20 @@ namespace skyline::gpu::interconnect {
         return width >= 16 && height >= 16 && width <= 4096 && height <= 4096;
     }
 
+    // DMC3 phase 2: capture the full-size composition stages, rather than using
+    // the budget on early quarter-size bloom buffers before the HUD is drawn.
+    // These are diagnostic size predicates, NOT runtime game-specific fixes.
+    static bool IsDmc3CompositionTarget(const Texture &texture) {
+        return (texture.dimensions.width == 1280 && texture.dimensions.height == 720) ||
+               (texture.dimensions.width == 1920 && texture.dimensions.height == 1080);
+    }
+
+    static bool IsDmc3CompositionInput(const Texture &texture) {
+        return (texture.dimensions.width == 640 && texture.dimensions.height == 360) ||
+               (texture.dimensions.width == 320 && texture.dimensions.height == 180) ||
+               IsDmc3CompositionTarget(texture);
+    }
+
     void CommandExecutor::TrackDiagnosticRenderTargets(span<TextureView *> colorAttachments) {
         if (diagnosticCaptureState == DiagnosticCaptureState::Complete)
             return;
@@ -411,6 +425,8 @@ namespace skyline::gpu::interconnect {
                 continue;
 
             std::shared_ptr<Texture> texture{view->texture};
+            if (!IsDmc3CompositionTarget(*texture))
+                continue;
             if (std::find_if(diagnosticRenderTargets.begin(), diagnosticRenderTargets.end(), [&](const auto &existing) {
                     return existing.get() == texture.get();
                 }) == diagnosticRenderTargets.end())
@@ -479,6 +495,7 @@ namespace skyline::gpu::interconnect {
                 continue;
             std::shared_ptr<Texture> texture{view->texture};
             if (!IsMiniRenderDocTarget(*texture) ||
+                !IsDmc3CompositionInput(*texture) ||
                 texture->layout == vk::ImageLayout::eUndefined)
                 continue;
             const auto alreadyPresent{[&](const auto &list) {
@@ -634,14 +651,14 @@ namespace skyline::gpu::interconnect {
 
             manifest
                 << "Strato mini-RenderDoc diagnostic capture\n"
-                << "scope=Devil May Cry 3 render-target chain\n"
+                << "scope=Devil May Cry 3 1280x720 and 1920x1080 composition targets\n"
                 << "raw_layout=linear host image bytes\n"
                 << "trigger=manual ARM_CAPTURE marker\n"
                 << "stop=24 render targets and 12 sampled inputs or 128MiB aggregate\n"
                 << "max_snapshot_bytes=12582912\n"
-                << "sampled_inputs=first_12_eligible_distinct_textures\n"
+                << "sampled_inputs=first_12_eligible_distinct_320_640_1280_or_1920_inputs\n"
                 << "guest_memory_modified=false\n"
-                << "phase=3_rt_shader_input_and_presentation_readback\n"
+                << "phase=4_focus_full_resolution_composition_and_sampled_inputs\n"
                 << "columns=index,file,render_pass,submission,texture,width,height,depth,format,layout,size,levels,layers,guest_map,guest_map_size,tile,bh,bd\n";
             manifest.close();
 
@@ -849,7 +866,25 @@ namespace skyline::gpu::interconnect {
         for (auto view : sampledImages)
             view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
-        TrackDiagnosticSampledInputs(sampledImages);
+        if (ranges::any_of(colorAttachments, [](TextureView *view) {
+                return view && IsDmc3CompositionTarget(*view->texture);
+            })) {
+            TrackDiagnosticSampledInputs(sampledImages);
+            if (IsDiagnosticDrawTraceActive()) {
+                for (auto *view : colorAttachments) {
+                    if (!view || !IsDmc3CompositionTarget(*view->texture))
+                        continue;
+                    uintptr_t guestMap{};
+                    if (view->texture->guest && !view->texture->guest->mappings.empty())
+                        guestMap = reinterpret_cast<uintptr_t>(view->texture->guest->mappings.front().data());
+                    AppendDiagnosticDrawTrace(fmt::format(
+                        "DMC3_COMPOSITION_RT texture=0x{:X} guest_map=0x{:X} dimensions={}x{} input_count={}\n",
+                        reinterpret_cast<uintptr_t>(view->texture.get()), guestMap,
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        sampledImages.size()));
+                }
+            }
+        }
         return gotoNext;
     }
 
