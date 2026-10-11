@@ -353,6 +353,25 @@ namespace skyline::service::hosbinder {
             gpu::diagnostic::TrackPresentationSurface(guestTexture.mappings.front().data(),
                                                      guestTexture.mappings.front().size(),
                                                      surface.width, surface.height);
+
+            // Diagnostic only: determine whether the incomplete frame already
+            // exists in NvMap memory on the *first* QueueBuffer, BEFORE this
+            // guest surface is ever registered in the TextureManager.
+            // No guest reads are added to the later presentation path.
+            const auto initialGuest{guestTexture.mappings.front()};
+            u64 initialGuestFnv{0xCBF29CE484222325ULL};
+            size_t initialLastNonzeroPlusOne{};
+            for (size_t i{}; i < initialGuest.size(); ++i) {
+                const u8 value{initialGuest[i]};
+                initialGuestFnv ^= value;
+                initialGuestFnv *= 0x100000001B3ULL;
+                if (value)
+                    initialLastNonzeroPlusOne = i + 1;
+            }
+            LOGI("MINIRD_GBP_INITIAL slot={} host=0x{:X} bytes={} fnv1a64=0x{:016X} last_nonzero_end={} created_before_texture_cache=true",
+                 slot, reinterpret_cast<uintptr_t>(initialGuest.data()),
+                 initialGuest.size(), initialGuestFnv, initialLastNonzeroPlusOne);
+
             LOGI("MINIRD_GBP_CREATE slot={} guest_host=0x{:X} guest_size={} "
                  "surface={}x{} pixel_format={} layout={} block_height={} pitch={} "
                  "stride={} nvmap={} surface_offset=0x{:X}",
