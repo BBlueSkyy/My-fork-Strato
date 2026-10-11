@@ -20,9 +20,9 @@ namespace skyline::gpu::diagnostic {
         static constexpr std::uint32_t MaxEvents{2400};
         static constexpr std::uint32_t FrameCount{4};
         // At most eight snapshots in each approximate presentation interval.
-        static constexpr std::uint32_t PassSnapshotsPerInterval{8};
-        static constexpr std::uint32_t MaxPassSnapshots{32};
-        static constexpr std::size_t MaxPassCaptureBytes{128ULL * 1024 * 1024};
+        static constexpr std::uint32_t PassSnapshotsPerInterval{12};
+        static constexpr std::uint32_t MaxPassSnapshots{48};
+        static constexpr std::size_t MaxPassCaptureBytes{160ULL * 1024 * 1024};
 
       private:
         std::mutex mutex;

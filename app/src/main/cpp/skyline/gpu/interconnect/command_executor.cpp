@@ -12,6 +12,7 @@
 #include <dlfcn.h>
 #include "command_executor.h"
 #include <gpu/diagnostic/naruto_ui_capture.h>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <nce.h>
@@ -413,7 +414,7 @@ namespace skyline::gpu::interconnect {
             for (auto *view : views) {
                 if (!view || !view->texture)
                     continue;
-                auto texture{view->texture.shared_from_this()};
+                std::shared_ptr<Texture> texture{view->texture};
                 if (!IsNarutoUiPassImage(*texture))
                     continue;
                 auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
@@ -469,7 +470,7 @@ namespace skyline::gpu::interconnect {
             const auto meta{fmt::format(
                 "capture_index={} approx_present={} render_pass={} submission={} "
                 "kind={} texture=0x{:X} dimensions={}x{} format={} layout={} bytes={} "
-                "note=recorded_after_render_pass_end_not_exact_frame_correlation\\n",
+                "note=recorded_after_render_pass_end_not_exact_frame_correlation\n",
                 index, interval, renderPassIndex, submissionNumber,
                 entry.renderTarget ? "render_target" : "sampled_input", identity,
                 width, height, format, vk::to_string(texture->layout), texture->surfaceSize)};
