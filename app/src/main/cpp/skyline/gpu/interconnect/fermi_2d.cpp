@@ -5,6 +5,7 @@
 #include <gpu/texture/format.h>
 #include <gpu/texture/texture.h>
 #include <gpu/texture_manager.h>
+#include <gpu/diagnostic_copy_tracker.h>
 #include <soc/gm20b/gmmu.h>
 #include <soc/gm20b/channel.h>
 #include "fermi_2d.h"
@@ -138,6 +139,32 @@ namespace skyline::gpu::interconnect {
 
         auto [dstGuestTexture, dstWentOob]{GetGuestTexture(dstSurface)};
 
+        // Diagnose blits to preallocated Android presentation buffers even
+        // when they happen before the manually armed render-pass capture.
+        // Only log direct host-memory destination matches (bounded to 128).
+        if (!dstGuestTexture.mappings.empty() &&
+            gpu::diagnostic::LoggedBlitMatches().load(std::memory_order_relaxed) < 128) {
+            const void *dstHost{dstGuestTexture.mappings.front().data()};
+            if (const auto region{gpu::diagnostic::FindPresentationSurface(dstHost)}) {
+                auto index{gpu::diagnostic::LoggedBlitMatches().fetch_add(1, std::memory_order_relaxed)};
+                if (index < 128) {
+                    LOGI("MINIRD_FERMI_TO_PRESENT event={} src_iova=0x{:X} dst_iova=0x{:X} "
+                         "dst_host=0x{:X} present_base=0x{:X} present_offset=0x{:X} "
+                         "src={}x{} dst={}x{} src_layout={} dst_layout={} "
+                         "src_rect={:.3f},{:.3f} dst_rect={},{} {}x{} "
+                         "du_dx={:.6f} dv_dy={:.6f}",
+                         index, u64{srcSurface.address}, u64{dstSurface.address},
+                         reinterpret_cast<uintptr_t>(dstHost), region->base,
+                         reinterpret_cast<uintptr_t>(dstHost) - region->base,
+                         srcGuestTexture.dimensions.width, srcGuestTexture.dimensions.height,
+                         dstGuestTexture.dimensions.width, dstGuestTexture.dimensions.height,
+                         static_cast<u32>(srcSurface.memoryLayout),
+                         static_cast<u32>(dstSurface.memoryLayout),
+                         centredSrcRectX, centredSrcRectY,
+                         dstRectX, dstRectY, dstRectWidth, dstRectHeight, duDx, dvDy);
+                }
+            }
+        }
 
         auto srcTextureView{gpu.texture.FindOrCreate(srcGuestTexture, executor.tag)};
         executor.AttachDependency(srcTextureView);

@@ -617,6 +617,40 @@ namespace skyline::service::hosbinder {
             else if (surface.layout == NvSurfaceLayout::Tiled)
                 throw exception("Legacy 16Bx16 tiled surfaces are not supported");
 
+            // Diagnostic: this is earlier than the first QueueBuffer/texture-cache
+            // lookup. Register the actual NvMap memory here so all subsequent
+            // Maxwell DMA and Fermi2D writes can be correlated by host address.
+            const auto nvmapId{surface.nvmapHandle ? surface.nvmapHandle : handle.nvmapId};
+            if (auto nvmapHandle{nvMap.GetHandle(nvmapId)}) {
+                if (nvmapHandle->allocated && surface.size &&
+                    surface.offset <= nvmapHandle->origSize &&
+                    surface.size <= nvmapHandle->origSize - surface.offset) {
+                    auto guestBase{state.process->memory.TranslateVirtualPointer<u8 *>(
+                        nvmapHandle->address + surface.offset)};
+                    gpu::diagnostic::TrackPresentationSurface(
+                        guestBase, surface.size, surface.width, surface.height);
+
+                    u64 hash{0xCBF29CE484222325ULL};
+                    size_t lastNonzeroEnd{};
+                    for (size_t i{}; i < surface.size; ++i) {
+                        const u8 value{guestBase[i]};
+                        hash ^= value;
+                        hash *= 0x100000001B3ULL;
+                        if (value)
+                            lastNonzeroEnd = i + 1;
+                    }
+                    LOGI("MINIRD_GBP_PREALLOC slot={} host=0x{:X} bytes={} "
+                         "nvmap={} allocated={} fnv1a64=0x{:016X} last_nonzero_end={} "
+                         "dims={}x{} block_height={} kind={}",
+                         slot, reinterpret_cast<uintptr_t>(guestBase), surface.size,
+                         nvmapId, nvmapHandle->allocated, hash, lastNonzeroEnd,
+                         surface.width, surface.height,
+                         surface.layout == NvSurfaceLayout::Blocklinear
+                             ? (1U << surface.blockHeightLog2) : 0U,
+                         nvmapHandle->kind);
+                }
+            }
+
             defaultFormat = graphicBuffer->format;
             defaultWidth = graphicBuffer->width;
             defaultHeight = graphicBuffer->height;

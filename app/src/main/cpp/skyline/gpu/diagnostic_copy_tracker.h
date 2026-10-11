@@ -37,6 +37,11 @@ namespace skyline::gpu::diagnostic {
         return count;
     }
 
+    inline std::atomic<size_t> &LoggedBlitMatches() {
+        static std::atomic<size_t> count{};
+        return count;
+    }
+
     inline void TrackPresentationSurface(const void *base, size_t size,
                                          uint32_t width, uint32_t height) {
         if (!base || !size)
