@@ -226,7 +226,8 @@ namespace skyline::gpu {
                                 vk::Extent2D srcImageDimensions, vk::Extent2D dstImageDimensions,
                                 bool bilinearFilter,
                                 TextureView *srcImageView, TextureView *dstImageView,
-                                std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb) {
+                                std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb,
+                                vk::Sampler overrideSampler) {
         struct DrawState {
             blit::VertexPushConstantLayout vertexPushConstants;
             blit::FragmentPushConstantLayout fragmentPushConstants;
@@ -265,7 +266,7 @@ namespace skyline::gpu {
         vk::DescriptorImageInfo imageInfo{
             .imageLayout = vk::ImageLayout::eGeneral,
             .imageView = srcImageView->GetView(),
-            .sampler = bilinearFilter ? *bilinearSampler : *nearestSampler
+            .sampler = overrideSampler ? overrideSampler : (bilinearFilter ? *bilinearSampler : *nearestSampler)
         };
 
         std::array<vk::WriteDescriptorSet, 1> writes{vk::WriteDescriptorSet{

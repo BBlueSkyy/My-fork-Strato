@@ -84,7 +84,8 @@ namespace skyline::gpu {
                       vk::Extent2D srcImageDimensions, vk::Extent2D dstImageDimensions,
                       bool bilinearFilter,
                       TextureView *srcImageView, TextureView *dstImageView,
-                      std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb);
+                      std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb,
+                      vk::Sampler overrideSampler);
     };
 
     /**
