@@ -5,6 +5,7 @@
 #include <boost/preprocessor/repeat.hpp>
 #include <gpu/interconnect/command_executor.h>
 #include <soc/gm20b/channel.h>
+#include <atomic>
 #include <soc.h>
 #include "maxwell/types.h"
 #include "maxwell_3d.h"
@@ -154,6 +155,26 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
         bool redundant{registers.raw[method] == argument};
         u32 origRegisterValue{registers.raw[method]};
         registers.raw[method] = argument;
+
+        // Diagnostic only: the DRAW_TEXTURE register block starts at 0x420,
+        // and a write to its final word (SRC_Y0, 0x42B) triggers the draw.
+        // Ryujinx historically fixed Steel Assault with this method; establish
+        // whether this guest actually invokes it before modifying #334.
+        if (method == 0x42B) {
+            static std::atomic<u32> drawTextureTriggerCount{};
+            const u32 sequence{drawTextureTriggerCount.fetch_add(1, std::memory_order_relaxed)};
+            if (sequence < 16) {
+                LOGI("MINIRD_DRAW_TEXTURE_TRIGGER seq={} src_texture={} src_sampler={} "
+                     "dst_xy=0x{:08X},0x{:08X} dst_wh=0x{:08X},0x{:08X} "
+                     "src_xy=0x{:08X},0x{:08X} gradients=0x{:08X},0x{:08X},0x{:08X},0x{:08X}",
+                     sequence, registers.raw[0x429], registers.raw[0x428],
+                     registers.raw[0x420], registers.raw[0x421],
+                     registers.raw[0x422], registers.raw[0x423],
+                     registers.raw[0x42A], registers.raw[0x42B],
+                     registers.raw[0x424], registers.raw[0x425],
+                     registers.raw[0x426], registers.raw[0x427]);
+            }
+        }
 
         if (batchEnableState.raw) {
             if (batchEnableState.constantBufferActive) {
