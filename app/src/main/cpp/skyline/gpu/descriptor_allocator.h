@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <vulkan/vulkan_hash.hpp>
 #include <vulkan/vulkan_raii.hpp>
 #include <common/spin_lock.h>
 #include <common.h>

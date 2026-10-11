@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <mutex>
 #include <boost/container/stable_vector.hpp>
 #include <renderdoc_app.h>
 #include <common/linear_allocator.h>
@@ -10,6 +11,11 @@
 #include <gpu/megabuffer.h>
 #include "command_nodes.h"
 #include "common/spin_lock.h"
+#include "copy_only_runtime_serialization.h"
+
+namespace skyline::gpu::texture {
+    class TextureGroup;
+}
 
 namespace skyline::gpu::interconnect {
     constexpr bool EnableGpuCheckpoints{false}; //!< Whether to enable GPU debugging checkpoints (WILL DECREASE PERF SIGNIFICANTLY)
@@ -186,6 +192,7 @@ namespace skyline::gpu::interconnect {
             ~LockedTexture();
         };
 
+        CopyOnlyRuntimeSerialization copyOnlyRuntimeSerialization;
         std::vector<LockedTexture> preserveAttachedTextures;
         std::vector<LockedTexture> attachedTextures; //!< All textures that are attached to the current execution
 
@@ -218,6 +225,7 @@ namespace skyline::gpu::interconnect {
         std::vector<std::function<void()>> pipelineChangeCallbacks; //!< Set of persistent callbacks that will be called after any non-Maxwell 3D engine changes the active pipeline
 
         std::vector<std::function<void()>> pendingDeferredActions;
+        std::vector<std::function<void()>> pendingGpuCompletionCallbacks;
 
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
@@ -249,6 +257,12 @@ namespace skyline::gpu::interconnect {
 
         void AttachBufferBase(std::shared_ptr<Buffer> buffer);
 
+        void AcquireCopyOnlyRuntime(TextureView *view);
+
+        void SynchronizeCopyOnly(TextureView *view);
+
+        void MarkCopyOnlyWritten(TextureView *view);
+
         /**
          * @brief Non-gated implementation of `AddCheckpoint`
          */
@@ -274,6 +288,11 @@ namespace skyline::gpu::interconnect {
          * @note This'll automatically handle syncing of the texture in the most optimal way possible
          */
         bool AttachTexture(TextureView *view);
+
+        /**
+         * @brief Marks the exact subresources in a view as written for CopyOnly tracking
+         */
+        void MarkTextureWritten(TextureView *view);
 
         /**
          * @brief Attach the lifetime of a buffer view to the command buffer
