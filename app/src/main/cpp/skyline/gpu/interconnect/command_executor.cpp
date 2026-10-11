@@ -783,7 +783,38 @@ namespace skyline::gpu::interconnect {
             const std::filesystem::path captureDirectory{diagnosticCaptureDirectory};
             const auto completePath{captureDirectory / "capture_complete.txt"};
             const auto captureCount{diagnosticCaptureIndex};
-            pendingDiagnosticCaptureCallbacks.emplace_back([completePath, captureCount] {
+            // Attach only the exact two composition shader pairs (guest
+            // Maxwell binaries plus host translated SPIR-V) to the capture.
+            // Collection runs on the already-existing completion callback.
+            const std::filesystem::path shaderDumpDirectory{
+                std::filesystem::path(state.os->publicAppFilesPath) / "shader_dumps" /
+                state.loader->nacp->GetSaveDataOwnerId()
+            };
+            pendingDiagnosticCaptureCallbacks.emplace_back([
+                completePath, captureCount, captureDirectory, shaderDumpDirectory
+            ] {
+                static constexpr std::array<u64, 4> hashes{
+                    0x876B9710C59D830BULL,
+                    0x45D98CBE92CDE655ULL,
+                    0xECDEA54A93100668ULL,
+                    0x6B00644EB84B71A7ULL,
+                };
+                std::error_code error;
+                auto destinationDirectory{captureDirectory / "composite_shaders"};
+                std::filesystem::create_directories(destinationDirectory, error);
+                if (!error) {
+                    for (auto hash : hashes) {
+                        for (const char *extension : {".guest", ".spv"}) {
+                            auto name{fmt::format("MINIRD_{:016X}{}", hash, extension)};
+                            auto input{shaderDumpDirectory / name};
+                            auto output{destinationDirectory / name};
+                            error.clear();
+                            if (std::filesystem::exists(input, error) && !error)
+                                std::filesystem::copy_file(input, output,
+                                    std::filesystem::copy_options::overwrite_existing, error);
+                        }
+                    }
+                }
                 std::ofstream complete{completePath, std::ios::out | std::ios::trunc};
                 if (complete)
                     complete << "capture_complete=true\nsnapshots=" << captureCount << "\n";

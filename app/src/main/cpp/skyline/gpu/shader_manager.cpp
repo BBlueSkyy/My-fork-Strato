@@ -2,6 +2,7 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <fstream>
+#include <algorithm>
 #include <range/v3/algorithm.hpp>
 #include <boost/functional/hash.hpp>
 #include <gpu.h>
@@ -57,6 +58,32 @@ namespace skyline::gpu {
         if (it != replacementMap.end()) {
             LOGI("Replacing shader with hash: 0x{:X}", hash);
             return it->second;
+        }
+
+        // Mini-RenderDoc only: preserve *both* the original Maxwell bytecode
+        // and the emitted host SPIR-V for the four previously observed 6-index
+        // composition shaders. No shader output, pipeline or guest memory is
+        // modified, and unrelated shader binaries are not dumped.
+        static constexpr std::array<u64, 4> MiniRdCompositeHashes{
+            0x876B9710C59D830BULL,
+            0x45D98CBE92CDE655ULL,
+            0xECDEA54A93100668ULL,
+            0x6B00644EB84B71A7ULL,
+        };
+        if (std::find(MiniRdCompositeHashes.begin(), MiniRdCompositeHashes.end(), hash)
+            != MiniRdCompositeHashes.end()) {
+            std::scoped_lock lock{dumpMutex};
+            std::error_code error;
+            std::filesystem::create_directories(dumpPath, error);
+            if (!error) {
+                auto path{dumpPath / fmt::format("MINIRD_{:016X}{}", hash, spv ? ".spv" : ".guest")};
+                if (!std::filesystem::exists(path)) {
+                    std::ofstream out{path, std::ios::binary};
+                    if (out)
+                        out.write(reinterpret_cast<const char *>(binary.data()),
+                                  static_cast<std::streamsize>(binary.size()));
+                }
+            }
         }
 
         if (DumpShaders) {
