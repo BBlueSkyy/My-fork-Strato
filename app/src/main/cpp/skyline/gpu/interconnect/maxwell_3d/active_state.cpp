@@ -313,7 +313,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     /* Scissor */
     void ScissorState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
-        manager.Bind(handle, scissor, windowOrigin.lowerLeft, surfaceClip.vertical.height);
+        manager.Bind(handle, scissor, windowOrigin, surfaceClip);
     }
 
     ScissorState::ScissorState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine, u32 index) : engine{manager, dirtyHandle, engine}, index{index} {}
