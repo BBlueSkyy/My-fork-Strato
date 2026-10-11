@@ -180,7 +180,7 @@ namespace skyline::gpu {
                     "frame={} frame_id={} texture=0x{:X} guest_map=0x{:X} guest_size={} "
                     "host={}x{} format={} view_format={} layout={} surface_bytes={} "
                     "crop={},{},{},{} scale={} transform={} swapchain={}x{} "
-                    "swapchain_format={} layer={} mip={}\\n",
+                    "swapchain_format={} layer={} mip={}\n",
                     captureIndex, frame.id, reinterpret_cast<uintptr_t>(texture.get()),
                     guestMap, guestSize, texture->dimensions.width, texture->dimensions.height,
                     vk::to_string(texture->format->vkFormat),
