@@ -219,6 +219,20 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
+        // Phase 2, PR #336: bounded readbacks *after* real render-pass endings.
+        struct DiagnosticPassImage {
+            std::shared_ptr<Texture> texture;
+            bool renderTarget{};
+        };
+        std::vector<DiagnosticPassImage> diagnosticPassImages;
+        std::vector<std::function<void()>> diagnosticReadbackCallbacks;
+        std::array<size_t, 4> diagnosticCapturedPerPresentation{};
+        size_t diagnosticCapturedCount{};
+        size_t diagnosticCapturedBytes{};
+
+        void TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color);
+        void QueueDiagnosticPassReadbacks();
+
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
         void RotateRecordSlot();

@@ -19,6 +19,10 @@ namespace skyline::gpu::diagnostic {
         std::atomic<std::uint32_t> eventCount{0};
         static constexpr std::uint32_t MaxEvents{2400};
         static constexpr std::uint32_t FrameCount{4};
+        // At most eight snapshots in each approximate presentation interval.
+        static constexpr std::uint32_t PassSnapshotsPerInterval{8};
+        static constexpr std::uint32_t MaxPassSnapshots{32};
+        static constexpr std::size_t MaxPassCaptureBytes{128ULL * 1024 * 1024};
 
       private:
         std::mutex mutex;
@@ -33,6 +37,11 @@ namespace skyline::gpu::diagnostic {
             eventCount.store(0, std::memory_order_relaxed);
             presentIndex.store(0, std::memory_order_relaxed);
             active.store(true, std::memory_order_release);
+        }
+
+        std::string CaptureDirectory() {
+            std::scoped_lock lock(mutex);
+            return path;
         }
 
         void Record(std::string event) {

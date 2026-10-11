@@ -310,6 +310,7 @@ namespace skyline::gpu {
     };
 
     class TextureManager;
+    namespace interconnect { class CommandExecutor; }
 
     /**
      * @brief A view into a specific subresource of a Texture
@@ -418,6 +419,7 @@ namespace skyline::gpu {
 
         friend TextureManager;
         friend TextureView;
+        friend class interconnect::CommandExecutor; // Diagnostic GPU readback only
         friend class PresentationEngine; // Diagnostic presentation-source GPU readback (PR #336)
 
         /**

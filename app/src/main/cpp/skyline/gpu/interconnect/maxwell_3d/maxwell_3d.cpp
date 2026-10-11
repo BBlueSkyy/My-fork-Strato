@@ -127,6 +127,24 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 for (const auto hash : pipeline->sourcePackedState.shaderHashes)
                     shaderHashes += fmt::format("{:016X},", hash);
             }
+            std::string targets;
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->texture) {
+                    targets += fmt::format("0x{:X}:{}x{}:{},",
+                        reinterpret_cast<uintptr_t>(target->texture.get()),
+                        target->texture->dimensions.width,
+                        target->texture->dimensions.height,
+                        vk::to_string(target->texture->format->vkFormat));
+                } else {
+                    targets += "null,";
+                }
+            }
+            std::string blend;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto packed{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                blend = fmt::format("mask=0x{:X},enabled={}",
+                    static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
+            }
             std::string sampledViews;
             for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
                 auto *view{activeDescriptorSetSampledImages[i]};
@@ -137,9 +155,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         vk::to_string(view->texture->format->vkFormat));
             }
             diagnostic::NarutoUiCapture().Record(fmt::format(
-                "DRAW kind=inline indexed=1 count={} instances={} scissor={},{},{}x{} shaders={} sampled={}",
+                "DRAW kind=inline indexed=1 count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
                 count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
-                scissor.extent.height, shaderHashes, sampledViews));
+                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
         }
           ctx.executor.AddCheckpoint("After inline index draw");
      }    
@@ -551,6 +569,24 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 for (const auto hash : pipeline->sourcePackedState.shaderHashes)
                     shaderHashes += fmt::format("{:016X},", hash);
             }
+            std::string targets;
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->texture) {
+                    targets += fmt::format("0x{:X}:{}x{}:{},",
+                        reinterpret_cast<uintptr_t>(target->texture.get()),
+                        target->texture->dimensions.width,
+                        target->texture->dimensions.height,
+                        vk::to_string(target->texture->format->vkFormat));
+                } else {
+                    targets += "null,";
+                }
+            }
+            std::string blend;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto packed{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                blend = fmt::format("mask=0x{:X},enabled={}",
+                    static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
+            }
             std::string sampledViews;
             for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
                 auto *view{activeDescriptorSetSampledImages[i]};
@@ -561,9 +597,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         vk::to_string(view->texture->format->vkFormat));
             }
             diagnostic::NarutoUiCapture().Record(fmt::format(
-                "DRAW kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={} sampled={}",
+                "DRAW kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
                 indexed, count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
-                scissor.extent.height, shaderHashes, sampledViews));
+                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
         }
         ctx.executor.AddCheckpoint("After draw");
     }
@@ -635,6 +671,24 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 for (const auto hash : pipeline->sourcePackedState.shaderHashes)
                     shaderHashes += fmt::format("{:016X},", hash);
             }
+            std::string targets;
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->texture) {
+                    targets += fmt::format("0x{:X}:{}x{}:{},",
+                        reinterpret_cast<uintptr_t>(target->texture.get()),
+                        target->texture->dimensions.width,
+                        target->texture->dimensions.height,
+                        vk::to_string(target->texture->format->vkFormat));
+                } else {
+                    targets += "null,";
+                }
+            }
+            std::string blend;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto packed{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                blend = fmt::format("mask=0x{:X},enabled={}",
+                    static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
+            }
             std::string sampledViews;
             for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
                 auto *view{activeDescriptorSetSampledImages[i]};
@@ -645,9 +699,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         vk::to_string(view->texture->format->vkFormat));
             }
             diagnostic::NarutoUiCapture().Record(fmt::format(
-                "DRAW kind=indirect indexed={} count={} instances=0 scissor={},{},{}x{} shaders={} sampled={}",
+                "DRAW kind=indirect indexed={} count={} instances=0 scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
                 indexed, count, scissor.offset.x, scissor.offset.y, scissor.extent.width,
-                scissor.extent.height, shaderHashes, sampledViews));
+                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
         }
         ctx.executor.AddCheckpoint("After indirect draw");
     }
