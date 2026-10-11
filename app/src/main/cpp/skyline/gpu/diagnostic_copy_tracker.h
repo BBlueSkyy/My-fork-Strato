@@ -19,7 +19,7 @@ namespace skyline::gpu::diagnostic {
         uint64_t registration{};
     };
 
-    inline constexpr uint32_t DrawTextureProbeVersion{2};
+    inline constexpr uint32_t DrawTextureProbeVersion{3};
 
     inline std::atomic<uint64_t> &DrawTextureTriggers() {
         static std::atomic<uint64_t> count{};

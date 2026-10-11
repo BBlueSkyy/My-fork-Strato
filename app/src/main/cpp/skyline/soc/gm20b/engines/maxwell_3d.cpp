@@ -278,6 +278,53 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
              static_cast<u32>(tic.widthMinusOne) + 1, static_cast<u32>(tic.heightMinusOne) + 1,
              static_cast<u32>(tic.depthMinusOne) + 1, tic.BaseLayer(), static_cast<u32>(tic.headerType),
              tic.formatWord.Raw(), tic.tileConfig.raw, tic.viewConfig.raw);
+
+        // DRAW_TEXTURE has explicit TIC and TSC IDs. The experimental handler
+        // uses the programmable pipeline's linked-TSC rule instead, choosing
+        // textureIndex when ViaHeaderBinding is enabled. Read only these two
+        // descriptors to determine whether that difference matters here.
+        // This shares the existing event print gate and performs no sampler
+        // creation, texture lookup, command submission or pixel readback.
+        const u32 samplerIndex{registers.raw[0x428]};
+        const u64 samplerPoolAddress{registers.texSamplerPool->offset};
+        const u32 samplerMaximum{registers.samplerBinding->value == type::SamplerBinding::Value::ViaHeaderBinding ?
+            registers.texHeaderPool->maximumIndex : registers.texSamplerPool->maximumIndex};
+        const std::array<u32, 2> samplerIndices{samplerIndex, textureIndex};
+        for (size_t i{}; i < samplerIndices.size(); ++i) {
+            const u32 index{samplerIndices[i]};
+            if (i && index == samplerIndices[0])
+                continue;
+            using SamplerWords = std::array<u32, 8>;
+            const u64 descriptorOffset{static_cast<u64>(index) * sizeof(SamplerWords)};
+            if (samplerPoolAddress > addressSpaceSize - sizeof(SamplerWords) || index > samplerMaximum ||
+                descriptorOffset > addressSpaceSize - sizeof(SamplerWords) - samplerPoolAddress) {
+                LOGI("MINIRD_DRAW_TEXTURE_SAMPLER_UNAVAILABLE event={} index={} pool=0x{:X} maximum={}",
+                     event, index, samplerPoolAddress, samplerMaximum);
+                continue;
+            }
+            const u64 descriptorAddress{samplerPoolAddress + descriptorOffset};
+            const auto descriptorMappings{channelCtx.asCtx->gmmu.TranslateRange(descriptorAddress, sizeof(SamplerWords))};
+            if (std::any_of(descriptorMappings.begin(), descriptorMappings.end(), [](const auto &mapping) { return !mapping.valid(); })) {
+                LOGI("MINIRD_DRAW_TEXTURE_SAMPLER_UNAVAILABLE event={} index={} tsc_iova=0x{:X} unmapped=true",
+                     event, index, descriptorAddress);
+                continue;
+            }
+            SamplerWords words{};
+            try {
+                words = channelCtx.asCtx->gmmu.Read<SamplerWords>(descriptorAddress);
+            } catch (const exception &error) {
+                // Only this optional descriptor read can be caught here.
+                LOGI("MINIRD_DRAW_TEXTURE_SAMPLER_UNAVAILABLE event={} index={} tsc_iova=0x{:X} reason={}",
+                     event, index, descriptorAddress, error.what());
+                continue;
+            }
+            LOGI("MINIRD_DRAW_TEXTURE_SAMPLER event={} explicit_index={} linked_index={} index={} "
+                 "tsc_iova=0x{:X} tsc_maximum={} effective_maximum={} "
+                 "words=0x{:08X},0x{:08X},0x{:08X},0x{:08X},0x{:08X},0x{:08X},0x{:08X},0x{:08X}",
+                 event, samplerIndex, textureIndex, index, descriptorAddress,
+                 static_cast<u32>(registers.texSamplerPool->maximumIndex), samplerMaximum,
+                 words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7]);
+        }
     }
 
     __attribute__((always_inline)) void Maxwell3D::FlushDeferredDraw() {
