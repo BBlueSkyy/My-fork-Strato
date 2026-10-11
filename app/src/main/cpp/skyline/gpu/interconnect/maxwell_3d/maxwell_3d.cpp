@@ -11,6 +11,33 @@
 #include "common.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
+    static std::string DescribeMiniRenderDocSampledViews(span<TextureView *> views) {
+        std::string details{fmt::format("SAMPLED_IMAGE_BINDINGS count={}\n", views.size())};
+        for (size_t i{}; i < views.size() && i < 12; ++i) {
+            auto *view{views[i]};
+            auto *texture{view ? view->texture.get() : nullptr};
+            if (!texture) {
+                details += fmt::format("sampled[{}]=null\n", i);
+                continue;
+            }
+            uintptr_t guestMap{};
+            if (texture->guest && !texture->guest->mappings.empty())
+                guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+            details += fmt::format(
+                "sampled[{}] texture=0x{:X} host={}x{} format={} view_format={} layout={} "
+                "guest_map=0x{:X} view_layer={} view_mip={} swizzle={},{},{},{}\n",
+                i, reinterpret_cast<uintptr_t>(texture),
+                texture->dimensions.width, texture->dimensions.height,
+                vk::to_string(texture->format->vkFormat),
+                view->format ? vk::to_string(view->format->vkFormat) : std::string{"Undefined"},
+                vk::to_string(texture->layout), guestMap,
+                view->range.baseArrayLayer, view->range.baseMipLevel,
+                static_cast<u32>(view->mapping.r), static_cast<u32>(view->mapping.g),
+                static_cast<u32>(view->mapping.b), static_cast<u32>(view->mapping.a));
+        }
+        return details;
+    }
+
     Maxwell3D::Maxwell3D(GPU &gpu,
                          soc::gm20b::ChannelContext &channelCtx,
                          TrapManager &trap,
@@ -118,6 +145,24 @@ namespace skyline::gpu::interconnect::maxwell3d {
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        if (ctx.executor.IsDiagnosticDrawTraceActive()) {
+            std::string hashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (auto hash : pipeline->sourcePackedState.shaderHashes)
+                    hashes += fmt::format("{:016X},", hash);
+                const auto &packed{pipeline->sourcePackedState};
+                const auto blend{packed.GetAttachmentBlendState(0)};
+                hashes += fmt::format(" color_mask=0x{:X} blend_enable={} raster_discard={}",
+                    static_cast<u32>(blend.colorWriteMask),
+                    static_cast<bool>(blend.blendEnable),
+                    packed.rasterizerDiscardEnable);
+            }
+            ctx.executor.AppendDiagnosticDrawTrace(fmt::format(
+                "MAXWELL3D_DRAW kind=inline_index indexed={} count={} instances={} scissor={},{},{}x{} shaders={}\n",
+                true, count, instanceCount, scissor.offset.x, scissor.offset.y,
+                scissor.extent.width, scissor.extent.height, hashes));
+            ctx.executor.AppendDiagnosticDrawTrace(DescribeMiniRenderDocSampledViews(activeDescriptorSetSampledImages));
+        }
           ctx.executor.AddCheckpoint("After inline index draw");
      }    
    
@@ -407,6 +452,24 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        if (ctx.executor.IsDiagnosticDrawTraceActive()) {
+            std::string hashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (auto hash : pipeline->sourcePackedState.shaderHashes)
+                    hashes += fmt::format("{:016X},", hash);
+                const auto &packed{pipeline->sourcePackedState};
+                const auto blend{packed.GetAttachmentBlendState(0)};
+                hashes += fmt::format(" color_mask=0x{:X} blend_enable={} raster_discard={}",
+                    static_cast<u32>(blend.colorWriteMask),
+                    static_cast<bool>(blend.blendEnable),
+                    packed.rasterizerDiscardEnable);
+            }
+            ctx.executor.AppendDiagnosticDrawTrace(fmt::format(
+                "MAXWELL3D_DRAW kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={}\n",
+                indexed, count, instanceCount, scissor.offset.x, scissor.offset.y,
+                scissor.extent.width, scissor.extent.height, hashes));
+            ctx.executor.AppendDiagnosticDrawTrace(DescribeMiniRenderDocSampledViews(activeDescriptorSetSampledImages));
+        }
         ctx.executor.AddCheckpoint("After draw");
     }
 
@@ -470,6 +533,24 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        if (ctx.executor.IsDiagnosticDrawTraceActive()) {
+            std::string hashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (auto hash : pipeline->sourcePackedState.shaderHashes)
+                    hashes += fmt::format("{:016X},", hash);
+                const auto &packed{pipeline->sourcePackedState};
+                const auto blend{packed.GetAttachmentBlendState(0)};
+                hashes += fmt::format(" color_mask=0x{:X} blend_enable={} raster_discard={}",
+                    static_cast<u32>(blend.colorWriteMask),
+                    static_cast<bool>(blend.blendEnable),
+                    packed.rasterizerDiscardEnable);
+            }
+            ctx.executor.AppendDiagnosticDrawTrace(fmt::format(
+                "MAXWELL3D_DRAW kind=indirect indexed={} count={} instances={} scissor={},{},{}x{} shaders={}\n",
+                indexed, count, 0, scissor.offset.x, scissor.offset.y,
+                scissor.extent.width, scissor.extent.height, hashes));
+            ctx.executor.AppendDiagnosticDrawTrace(DescribeMiniRenderDocSampledViews(activeDescriptorSetSampledImages));
+        }
         ctx.executor.AddCheckpoint("After indirect draw");
     }
 

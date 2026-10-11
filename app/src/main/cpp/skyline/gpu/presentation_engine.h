@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <string>
 #include <jni.h>
 #include <android/looper.h>
 #include <common/trace.h>
@@ -45,6 +46,11 @@ namespace skyline::gpu {
         std::array<std::shared_ptr<FenceCycle>, MaxSwapchainImageCount> frameFences{}; //!< Array of fences used to wait on the GPU for copying of swapchain images to be completed, indexed by `frameIndex`
         size_t frameIndex{}; //!< The index of the next semaphore/fence to be used for acquiring swapchain images
         size_t swapchainImageCount{}; //!< The number of images in the current swapchain
+
+        // Diagnostic-only one-shot pre-present trace, armed by the mini-RenderDoc.
+        bool diagnosticPresentActive{};
+        size_t diagnosticPresentFrameCount{};
+        std::string diagnosticPresentDirectory;
 
         i64 frameTimestamp{}; //!< The timestamp of the last frame being shown in nanoseconds
         i64 averageFrametimeNs{}; //!< The average time between frames in nanoseconds
