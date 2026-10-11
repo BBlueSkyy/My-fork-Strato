@@ -2,6 +2,7 @@
 // Copyright © 2022 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <cmath>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -256,6 +257,85 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     void Maxwell3D::DisableQuickConstantBufferBind() {
         constantBuffers.DisableQuickBind();
+    }
+
+    void Maxwell3D::DrawTexture(const engine::DrawTexture &params,
+                                 const engine::WindowOrigin &origin,
+                                 const engine::SurfaceClip &clip, size_t colorTargetIndex) {
+        TRACE_EVENT("gpu", "Maxwell3D::DrawTexture");
+
+        // DRAW_TEXTURE uses its own texture/sampler IDs, not the shaders or
+        // descriptors of the previously selected programmable pipeline.
+        samplers.Update(ctx, samplerBinding.value == engine::SamplerBinding::Value::ViaHeaderBinding);
+        auto *source{textures.GetTexture(ctx, params.textureIndex, Shader::TextureType::Color2D)};
+        auto *sampler{samplers.GetSampler(ctx, params.samplerIndex, params.textureIndex)};
+        auto destination{activeState.GetColorRenderTargetForClear(ctx, colorTargetIndex)};
+        if (!source || !sampler || !destination)
+            return;
+
+        auto *dest{destination.get()};
+        if (source == dest || source->texture.get() == dest->texture.get()) {
+            // A feedback loop needs explicit Vulkan layout/dependency support.
+            LOGW("DRAW_TEXTURE source and destination refer to the same image");
+            return;
+        }
+
+        constexpr float Fixed12Scale{1.0f / 4096.0f};
+        constexpr double Fixed32Scale{1.0 / 4294967296.0};
+
+        const float width{params.dstWidth * Fixed12Scale};
+        const float height{params.dstHeight * Fixed12Scale};
+        const float x{params.dstX * Fixed12Scale};
+        float y{params.dstY * Fixed12Scale};
+        if (origin.lowerLeft)
+            y = static_cast<float>(clip.vertical.height) - y;
+        if (origin.flipY)
+            y -= height;
+
+        const float srcX{params.srcX * Fixed12Scale};
+        const float srcY{params.srcY * Fixed12Scale};
+        const float srcWidth{static_cast<float>(params.duDx * Fixed32Scale) * width};
+        const float srcHeight{static_cast<float>(params.dvDy * Fixed32Scale) * height};
+
+        const vk::Extent2D srcDims{source->texture->dimensions};
+        const vk::Extent2D dstDims{dest->texture->dimensions};
+        const float left{std::clamp(std::min(x, x + width), 0.0f, static_cast<float>(dstDims.width))};
+        const float top{std::clamp(std::min(y, y + height), 0.0f, static_cast<float>(dstDims.height))};
+        const float right{std::clamp(std::max(x, x + width), 0.0f, static_cast<float>(dstDims.width))};
+        const float bottom{std::clamp(std::max(y, y + height), 0.0f, static_cast<float>(dstDims.height))};
+        if (!(right > left && bottom > top) || !srcDims.width || !srcDims.height)
+            return;
+
+        const auto x0{static_cast<i32>(std::floor(left))};
+        const auto y0{static_cast<i32>(std::floor(top))};
+        const auto x1{static_cast<i32>(std::ceil(right))};
+        const auto y1{static_cast<i32>(std::ceil(bottom))};
+        const vk::Rect2D renderArea{
+            {x0, y0}, {static_cast<u32>(x1 - x0), static_cast<u32>(y1 - y0)}
+        };
+
+        ctx.executor.AttachDependency(destination);
+        ctx.executor.AttachTexture(source);
+        ctx.executor.AttachTexture(dest);
+        dest->texture->MarkGpuDirty(ctx.executor.usageTracker);
+
+        ctx.executor.AddCheckpoint("Before draw texture");
+        ctx.gpu.helperShaders.blitHelperShader.Blit(
+            ctx.gpu,
+            {.width = srcWidth, .height = srcHeight, .x = srcX, .y = srcY},
+            {.width = width, .height = height, .x = x, .y = y},
+            srcDims, dstDims, false, source, dest,
+            [this, renderArea, source, dest](auto &&executionCallback) {
+                std::array<TextureView *, 1> sampledImages{source};
+                ctx.executor.AddSubpass(std::move(executionCallback), renderArea,
+                                        sampledImages, {}, span<TextureView *>{dest}, {},
+                                        false, vk::PipelineStageFlagBits::eAllGraphics,
+                                        vk::PipelineStageFlagBits::eAllGraphics);
+            },
+            **sampler
+        );
+        ctx.executor.AddCheckpoint("After draw texture");
+        ctx.executor.NotifyPipelineChange();
     }
 
     void Maxwell3D::Clear(engine::ClearSurface &clearSurface) {
