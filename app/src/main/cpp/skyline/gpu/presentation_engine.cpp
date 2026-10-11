@@ -147,12 +147,21 @@ namespace skyline::gpu {
         // Diagnostic observation only: a CPU-dirty guest surface will be
         // uploaded here, whereas GPU-dirty/clean surfaces take other paths.
         const char *dirtyBefore{};
+        bool guestReadable{};
         {
             std::scoped_lock stateLock{texture->stateMutex};
             switch (texture->dirtyState) {
-                case Texture::DirtyState::Clean: dirtyBefore = "Clean"; break;
-                case Texture::DirtyState::CpuDirty: dirtyBefore = "CpuDirty"; break;
-                case Texture::DirtyState::GpuDirty: dirtyBefore = "GpuDirty"; break;
+                case Texture::DirtyState::Clean:
+                    dirtyBefore = "Clean";
+                    guestReadable = true;
+                    break;
+                case Texture::DirtyState::CpuDirty:
+                    dirtyBefore = "CpuDirty";
+                    guestReadable = true;
+                    break;
+                case Texture::DirtyState::GpuDirty:
+                    dirtyBefore = "GpuDirty";
+                    break;
             }
         }
         texture->SynchronizeHost();
@@ -220,6 +229,29 @@ namespace skyline::gpu {
                 // the diagnostic readback, avoiding a race with guest rendering.
                 if (texture->cycle)
                     texture->cycle->Wait();
+
+                // Diagnostic: retain the ORIGINAL guest swizzled bytes, before
+                // any Vulkan readback conversion, to compare with the host
+                // image and verify whether a stale/incorrect upload occurred.
+                // Never read GPU-dirty mappings: those may be read-trapped.
+                if (guestReadable && texture->guest &&
+                    texture->guest->mappings.size() == 1 &&
+                    texture->guest->mappings.front().valid() &&
+                    texture->guest->mappings.front().size() <= 12ULL * 1024 * 1024) {
+                    const auto source{texture->guest->mappings.front()};
+                    const auto guestName{fmt::format(
+                        "present_guest_{:02}_{}x{}_blocklinear.raw",
+                        captureIndex, texture->dimensions.width, texture->dimensions.height)};
+                    std::ofstream guestRaw{directory / guestName,
+                        std::ios::binary | std::ios::trunc};
+                    if (guestRaw) {
+                        guestRaw.write(reinterpret_cast<const char *>(source.data()),
+                                       static_cast<std::streamsize>(source.size()));
+                        LOGI("MINIRD wrote guest backing {} ({} bytes)", guestName, source.size());
+                    } else {
+                        LOGE("MINIRD could not write guest backing {}", guestName);
+                    }
+                }
 
                 auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
                 auto diagnosticCycle{gpu.scheduler.Submit(
