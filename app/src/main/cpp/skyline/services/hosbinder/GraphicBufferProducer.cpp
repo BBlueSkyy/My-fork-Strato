@@ -5,6 +5,7 @@
 
 #include <gpu.h>
 #include <gpu/texture/format.h>
+#include <gpu/diagnostic_copy_tracker.h>
 #include <soc.h>
 #include <services/nvdrv/devices/nvmap.h>
 #include <services/common/fence.h>
@@ -349,6 +350,9 @@ namespace skyline::service::hosbinder {
             // QueueBuffer's actual NvMap-backed guest region can now be
             // correlated against the mapped DMA destinations in draws.txt.
             // This runs only on first creation of a graphic buffer texture.
+            gpu::diagnostic::TrackPresentationSurface(guestTexture.mappings.front().data(),
+                                                     guestTexture.mappings.front().size(),
+                                                     surface.width, surface.height);
             LOGI("MINIRD_GBP_CREATE slot={} guest_host=0x{:X} guest_size={} "
                  "surface={}x{} pixel_format={} layout={} block_height={} pitch={} "
                  "stride={} nvmap={} surface_offset=0x{:X}",

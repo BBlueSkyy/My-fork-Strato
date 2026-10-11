@@ -5,6 +5,7 @@
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/texture/format.h>
 #include <gpu/texture/layout.h>
+#include <gpu/diagnostic_copy_tracker.h>
 #include <soc.h>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
@@ -90,6 +91,44 @@ namespace skyline::soc::gm20b::engine {
     }
 
     void MaxwellDma::DmaCopy() {
+        // Trace all DMA copy routes (including 1D non-remap) that touch a
+        // registered presentation surface. Record the first 128 matches only.
+        // This is independent of ARM_CAPTURE, because guest writes may occur
+        // before the manually armed renderpass snapshot window.
+        if (gpu::diagnostic::LoggedDmaMatches().load(std::memory_order_relaxed) < 128) {
+            try {
+                const auto destination{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, 1)};
+                const void *dstHost{destination.empty() ? nullptr : destination.front().data()};
+                if (const auto match{gpu::diagnostic::FindPresentationSurface(dstHost)}) {
+                    const auto sequence{gpu::diagnostic::LoggedDmaMatches().fetch_add(1, std::memory_order_relaxed)};
+                    if (sequence < 128) {
+                        uintptr_t srcHost{};
+                        try {
+                            const auto source{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, 1)};
+                            if (!source.empty())
+                                srcHost = reinterpret_cast<uintptr_t>(source.front().data());
+                        } catch (const std::exception &) {
+                        }
+                        const auto &launch{*registers.launchDma};
+                        LOGI("MINIRD_DMA_TO_PRESENT event={} src_iova=0x{:X} dst_iova=0x{:X} "
+                             "src_host=0x{:X} dst_host=0x{:X} presented_base=0x{:X} presented_offset=0x{:X} "
+                             "presented_dims={}x{} one_dimensional={} multiline={} remap={} "
+                             "src_layout={} dst_layout={} length={} lines={} src_pitch={} dst_pitch={}",
+                             sequence, u64{*registers.offsetIn}, u64{*registers.offsetOut},
+                             srcHost, reinterpret_cast<uintptr_t>(dstHost),
+                             match->base, reinterpret_cast<uintptr_t>(dstHost) - match->base,
+                             match->width, match->height, !launch.multiLineEnable,
+                             launch.multiLineEnable, launch.remapEnable,
+                             static_cast<u32>(launch.srcMemoryLayout), static_cast<u32>(launch.dstMemoryLayout),
+                             *registers.lineLengthIn, *registers.lineCount,
+                             *registers.pitchIn, *registers.pitchOut);
+                    }
+                }
+            } catch (const std::exception &) {
+                // Never affect original DMA error handling from diagnostic reads.
+            }
+        }
+
         // Record the copy engine operations around the rendered/presented
         // buffers, correlating IOVA with the actual host guest-memory mapping.
         // Diagnostic-only, enabled solely during the manually armed GPU trace.

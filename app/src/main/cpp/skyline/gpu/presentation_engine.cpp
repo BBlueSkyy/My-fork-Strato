@@ -143,6 +143,18 @@ namespace skyline::gpu {
         auto &nextImageTexture{images.at(nextImage.second)};
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
+
+        // Diagnostic observation only: a CPU-dirty guest surface will be
+        // uploaded here, whereas GPU-dirty/clean surfaces take other paths.
+        const char *dirtyBefore{};
+        {
+            std::scoped_lock stateLock{texture->stateMutex};
+            switch (texture->dirtyState) {
+                case Texture::DirtyState::Clean: dirtyBefore = "Clean"; break;
+                case Texture::DirtyState::CpuDirty: dirtyBefore = "CpuDirty"; break;
+                case Texture::DirtyState::GpuDirty: dirtyBefore = "GpuDirty"; break;
+            }
+        }
         texture->SynchronizeHost();
 
         // One-shot diagnostic only. Capture the actual presentation source
@@ -180,7 +192,7 @@ namespace skyline::gpu {
                     "frame={} frame_id={} texture=0x{:X} guest_map=0x{:X} guest_size={} "
                     "host={}x{} format={} view_format={} layout={} surface_bytes={} "
                     "crop={},{},{},{} scale={} transform={} swapchain={}x{} "
-                    "swapchain_format={} layer={} mip={}\n",
+                    "swapchain_format={} layer={} mip={} dirty_before_sync={}\n",
                     captureIndex, frame.id, reinterpret_cast<uintptr_t>(texture.get()),
                     guestMap, guestSize, texture->dimensions.width, texture->dimensions.height,
                     vk::to_string(texture->format->vkFormat),
@@ -194,7 +206,7 @@ namespace skyline::gpu {
                     swapchainFormat ? vk::to_string(swapchainFormat->vkFormat)
                                     : std::string{"Undefined"},
                     frame.textureView->range.baseArrayLayer,
-                    frame.textureView->range.baseMipLevel);
+                    frame.textureView->range.baseMipLevel, dirtyBefore);
             }
 
             if (captureIndex < 4 &&
