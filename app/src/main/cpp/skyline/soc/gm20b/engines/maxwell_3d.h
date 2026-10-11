@@ -82,6 +82,9 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
 
         bool CheckRenderEnable();
 
+        u64 drawTextureDiagnosticSequence{};
+        void TraceDrawTexture();
+
         type::DrawTopology ApplyTopologyOverride(type::DrawTopology beginMethodTopology);
 
         void FlushDeferredDraw();

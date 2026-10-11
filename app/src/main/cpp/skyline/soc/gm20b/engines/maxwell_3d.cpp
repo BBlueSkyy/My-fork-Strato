@@ -4,8 +4,11 @@
 
 #include <boost/preprocessor/repeat.hpp>
 #include <gpu/interconnect/command_executor.h>
+#include <gpu/diagnostic_copy_tracker.h>
+#include <gpu/interconnect/common/tic.h>
 #include <soc/gm20b/channel.h>
 #include <atomic>
+#include <limits>
 #include <soc.h>
 #include "maxwell/types.h"
 #include "maxwell_3d.h"
@@ -113,6 +116,168 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
           channelCtx{channelCtx} {
         channelCtx.executor.AddFlushCallback([this]() { FlushEngineState(); });
         InitializeRegisters();
+        LOGI("MINIRD_DRAW_TEXTURE_DIAG version={} trigger_method=0x42B channel=0x{:X} "
+             "trigger_baseline={} present_candidate_baseline={} unknown_extent_baseline={}",
+             gpu::diagnostic::DrawTextureProbeVersion, reinterpret_cast<uintptr_t>(&channelCtx),
+             gpu::diagnostic::DrawTextureTriggers().load(std::memory_order_relaxed),
+             gpu::diagnostic::DrawTexturePresentCandidates().load(std::memory_order_relaxed),
+             gpu::diagnostic::DrawTextureUnknownExtents().load(std::memory_order_relaxed));
+    }
+
+    void Maxwell3D::TraceDrawTexture() {
+        namespace diagnostic = gpu::diagnostic;
+        const auto event{diagnostic::DrawTextureTriggers().fetch_add(1, std::memory_order_relaxed) + 1};
+        const auto sequence{++drawTextureDiagnosticSequence};
+        const size_t targetIndex{registers.ctSelect->count ? (*registers.ctSelect)[0] : 0};
+        const auto &target{registers.colorTargets[targetIndex]};
+        const u64 destination{target.offset};
+
+        // Calculate the parent allocation extent, not a written rectangle.
+        // No TextureManager lookup, image creation, flush or pixel readback.
+        // An unsupported format only makes this diagnostic extent unavailable;
+        // it does not change the existing (unimplemented) method's behavior.
+        size_t destinationSize{1};
+        bool extentKnown{};
+        if (target.format != type::ColorTarget::Format::Disabled && target.width && target.height && target.thirdDimension) {
+            try {
+                if (static_cast<u32>(target.format) > 0xFF)
+                    throw exception("RT format exceeds its 8-bit encoding");
+                gpu::interconnect::maxwell3d::PackedPipelineState packed{};
+                packed.SetColorRenderTargetFormat(targetIndex, target.format);
+                gpu::GuestTexture guest{};
+                guest.format = packed.GetColorRenderTargetFormat(targetIndex);
+                if (!guest.format)
+                    throw exception("Empty RT format in diagnostic extent");
+                const bool array{target.memory.thirdDimensionControl == type::TargetMemory::ThirdDimensionControl::ThirdDimensionDefinesArraySize};
+                guest.layerCount = array ? static_cast<u32>(target.thirdDimension) : 1;
+                const u32 depth{array ? 1U : static_cast<u32>(target.thirdDimension)};
+                if (target.memory.layout == type::TargetMemory::Layout::Pitch) {
+                    guest.dimensions = {target.width / guest.format->bpb, target.height, depth};
+                    guest.tileConfig = {.mode = gpu::texture::TileMode::Pitch, .pitch = target.width};
+                } else {
+                    guest.dimensions = {target.width, target.height, depth};
+                    guest.tileConfig = {.mode = gpu::texture::TileMode::Block,
+                                        .blockHeight = target.memory.BlockHeight(),
+                                        .blockDepth = target.memory.BlockDepth()};
+                }
+                guest.layerStride = (target.layerOffset > 1 || guest.layerCount > 1) ? target.ArrayPitch() : 0;
+                if (guest.dimensions.width && (guest.tileConfig.mode == gpu::texture::TileMode::Pitch ||
+                    (guest.tileConfig.blockHeight && guest.tileConfig.blockDepth))) {
+                    // CalculateLayerSize returns u32. Bound its intermediate
+                    // product before invoking it, including block padding.
+                    if (!guest.layerStride) {
+                        const size_t rowBytes{guest.tileConfig.mode == gpu::texture::TileMode::Pitch ? target.width :
+                            util::AlignUp<size_t>(static_cast<size_t>(guest.dimensions.width) * guest.format->bpb, 64)};
+                        const size_t rows{guest.tileConfig.mode == gpu::texture::TileMode::Pitch ? target.height :
+                            util::AlignUp<size_t>(target.height, 8 * guest.tileConfig.blockHeight)};
+                        const size_t slices{guest.tileConfig.mode == gpu::texture::TileMode::Pitch ? 1 :
+                            util::AlignUp<size_t>(depth, guest.tileConfig.blockDepth)};
+                        constexpr size_t maximumLayerSize{std::numeric_limits<u32>::max()};
+                        if (rowBytes > maximumLayerSize / rows || rowBytes * rows > maximumLayerSize / slices)
+                            throw exception("RT extent exceeds the layer-size calculation's u32 range");
+                    }
+                    // Widen before multiplying; GetSize itself uses a u32 product.
+                    destinationSize = static_cast<size_t>(guest.GetLayerStride()) * guest.layerCount;
+                    extentKnown = destinationSize != 0;
+                }
+            } catch (const exception &error) {
+                if (sequence <= 16)
+                    LOGI("MINIRD_DRAW_TEXTURE_EXTENT_UNAVAILABLE event={} reason={}", event, error.what());
+            }
+        }
+
+        if (!extentKnown)
+            diagnostic::DrawTextureUnknownExtents().fetch_add(1, std::memory_order_relaxed);
+
+        // Translate every segment and compare whole ranges, including a span
+        // starting before the surface. GPU-VA aliases resolve through the GMMU.
+        constexpr u64 addressSpaceSize{1ULL << GmmuAddressSpaceBits};
+        if (destination >= addressSpaceSize || !destinationSize || destinationSize > addressSpaceSize - destination) {
+            LOGI("MINIRD_DRAW_TEXTURE_DEST_UNAVAILABLE event={} dst_iova=0x{:X} extent={}", event, destination, destinationSize);
+            return;
+        }
+        const auto mappings{channelCtx.asCtx->gmmu.TranslateRange(destination, destinationSize)};
+        std::optional<diagnostic::PresentRegion> present;
+        for (const auto &mapping : mappings) {
+            if (auto candidate{diagnostic::FindPresentationOverlap(mapping.data(), mapping.size())};
+                candidate && (!present || candidate->registration > present->registration))
+                present = candidate;
+        }
+        const auto candidates{present ? diagnostic::DrawTexturePresentCandidates().fetch_add(1, std::memory_order_relaxed) + 1 : 0};
+        if (sequence > 16 && !std::has_single_bit(sequence) && (!present || candidates > 16))
+            return;
+
+        LOGI("MINIRD_DRAW_TEXTURE_TRIGGER version={} event={} channel=0x{:X} seq={} submission={} "
+             "src_texture={} src_sampler={} sampler_binding={} "
+             "dst_xy=0x{:08X},0x{:08X} dst_wh=0x{:08X},0x{:08X} "
+             "src_xy=0x{:08X},0x{:08X} gradients=0x{:08X},0x{:08X},0x{:08X},0x{:08X} "
+             "ct_select=0x{:08X} dst_target={} dst_iova=0x{:X} dst_wh_regs={}x{} "
+             "dst_format=0x{:X} dst_memory=0x{:08X} dst_layers_or_depth={} dst_layer={} "
+             "dst_array_pitch={} extent={} extent_known={} maps={} present_candidate={} "
+             "nvmap={} present_base=0x{:X} present_registration={} "
+             "window_origin=0x{:08X} surface_clip=0x{:08X},0x{:08X} "
+             "render_enable={} render_override={}",
+             diagnostic::DrawTextureProbeVersion, event, reinterpret_cast<uintptr_t>(&channelCtx), sequence,
+             channelCtx.executor.submissionNumber, registers.raw[0x429], registers.raw[0x428], registers.raw[0x48D],
+             registers.raw[0x420], registers.raw[0x421], registers.raw[0x422], registers.raw[0x423],
+             registers.raw[0x42A], registers.raw[0x42B], registers.raw[0x424], registers.raw[0x425],
+             registers.raw[0x426], registers.raw[0x427], registers.raw[0x487], targetIndex, destination,
+             target.width, target.height, static_cast<u32>(target.format), registers.raw[0x205 + targetIndex * 0x10],
+             static_cast<u32>(target.thirdDimension), target.layerOffset, target.ArrayPitch(), destinationSize, extentKnown,
+             mappings.size(), present.has_value(), present ? present->nvmapId : 0,
+             present ? present->base : 0, present ? present->registration : 0,
+             registers.raw[0x4EB], registers.raw[0x3FD], registers.raw[0x3FE],
+             static_cast<u32>(registers.renderEnable->mode), static_cast<u32>(registers.renderEnableOverride->mode));
+        for (size_t i{}; i < mappings.size(); ++i) {
+            const auto &mapping{mappings[i]};
+            const auto candidate{diagnostic::FindPresentationOverlap(mapping.data(), mapping.size())};
+            if (i < 8 || candidate)
+                LOGI("MINIRD_DRAW_TEXTURE_MAP event={} segment={} host=0x{:X} bytes={} "
+                     "nvmap={} present_base=0x{:X}", event, i, reinterpret_cast<uintptr_t>(mapping.data()),
+                     mapping.size(), candidate ? candidate->nvmapId : 0, candidate ? candidate->base : 0);
+        }
+
+        // Read only the 32-byte TIC descriptor after validating its mapping.
+        // This does not sample pixels or create a host texture for the source.
+        const u32 textureIndex{registers.raw[0x429]};
+        const u64 poolAddress{registers.texHeaderPool->offset};
+        const u64 headerOffset{static_cast<u64>(textureIndex) * sizeof(gpu::interconnect::TextureImageControl)};
+        if (poolAddress > addressSpaceSize - sizeof(gpu::interconnect::TextureImageControl) ||
+            textureIndex > registers.texHeaderPool->maximumIndex ||
+            headerOffset > addressSpaceSize - sizeof(gpu::interconnect::TextureImageControl) - poolAddress) {
+            LOGI("MINIRD_DRAW_TEXTURE_SOURCE_UNAVAILABLE event={} tic_pool=0x{:X} index={} maximum={}", event, poolAddress, textureIndex, registers.texHeaderPool->maximumIndex);
+            return;
+        }
+        const u64 headerAddress{poolAddress + headerOffset};
+        const auto headerMappings{channelCtx.asCtx->gmmu.TranslateRange(headerAddress, sizeof(gpu::interconnect::TextureImageControl))};
+        for (const auto &mapping : headerMappings) {
+            if (!mapping.valid()) {
+                LOGI("MINIRD_DRAW_TEXTURE_SOURCE_UNAVAILABLE event={} tic_iova=0x{:X} unmapped=true", event, headerAddress);
+                return;
+            }
+        }
+        gpu::interconnect::TextureImageControl tic{};
+        try {
+            tic = channelCtx.asCtx->gmmu.Read<gpu::interconnect::TextureImageControl>(headerAddress);
+        } catch (const exception &error) {
+            // AsGpu can unmap between TranslateRange and Read. A page fault
+            // from this optional metadata read must not kill the guest. No GPU
+            // execution or Vulkan operation is inside this diagnostic catch.
+            LOGI("MINIRD_DRAW_TEXTURE_SOURCE_UNAVAILABLE event={} tic_iova=0x{:X} reason={}", event, headerAddress, error.what());
+            return;
+        }
+        if (tic.Iova() >= addressSpaceSize) {
+            LOGI("MINIRD_DRAW_TEXTURE_SOURCE_UNAVAILABLE event={} src_iova=0x{:X} out_of_range=true", event, tic.Iova());
+            return;
+        }
+        const auto sourceMappings{channelCtx.asCtx->gmmu.TranslateRange(tic.Iova(), 1)};
+        LOGI("MINIRD_DRAW_TEXTURE_SOURCE event={} tic_iova=0x{:X} src_iova=0x{:X} src_host=0x{:X} "
+             "src_wh={}x{} src_depth={} src_layer={} src_header={} src_format=0x{:08X} "
+             "src_tile=0x{:04X} src_view=0x{:08X}", event, headerAddress, tic.Iova(),
+             sourceMappings.empty() ? 0 : reinterpret_cast<uintptr_t>(sourceMappings.front().data()),
+             static_cast<u32>(tic.widthMinusOne) + 1, static_cast<u32>(tic.heightMinusOne) + 1,
+             static_cast<u32>(tic.depthMinusOne) + 1, tic.BaseLayer(), static_cast<u32>(tic.headerType),
+             tic.formatWord.Raw(), tic.tileConfig.raw, tic.viewConfig.raw);
     }
 
     __attribute__((always_inline)) void Maxwell3D::FlushDeferredDraw() {
@@ -158,23 +323,10 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
 
         // Diagnostic only: the DRAW_TEXTURE register block starts at 0x420,
         // and a write to its final word (SRC_Y0, 0x42B) triggers the draw.
-        // Ryujinx historically fixed Steel Assault with this method; establish
-        // whether this guest actually invokes it before modifying #334.
-        if (method == 0x42B) {
-            static std::atomic<u32> drawTextureTriggerCount{};
-            const u32 sequence{drawTextureTriggerCount.fetch_add(1, std::memory_order_relaxed)};
-            if (sequence < 16) {
-                LOGI("MINIRD_DRAW_TEXTURE_TRIGGER seq={} src_texture={} src_sampler={} "
-                     "dst_xy=0x{:08X},0x{:08X} dst_wh=0x{:08X},0x{:08X} "
-                     "src_xy=0x{:08X},0x{:08X} gradients=0x{:08X},0x{:08X},0x{:08X},0x{:08X}",
-                     sequence, registers.raw[0x429], registers.raw[0x428],
-                     registers.raw[0x420], registers.raw[0x421],
-                     registers.raw[0x422], registers.raw[0x423],
-                     registers.raw[0x42A], registers.raw[0x42B],
-                     registers.raw[0x424], registers.raw[0x425],
-                     registers.raw[0x426], registers.raw[0x427]);
-            }
-        }
+        // Run before deferred-draw handling and independently of redundancy:
+        // an identical SRC_Y0 write is still a new hardware draw trigger.
+        if (method == 0x42B)
+            TraceDrawTexture();
 
         if (batchEnableState.raw) {
             if (batchEnableState.constantBufferActive) {

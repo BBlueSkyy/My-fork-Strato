@@ -352,7 +352,8 @@ namespace skyline::service::hosbinder {
             // This runs only on first creation of a graphic buffer texture.
             gpu::diagnostic::TrackPresentationSurface(guestTexture.mappings.front().data(),
                                                      guestTexture.mappings.front().size(),
-                                                     surface.width, surface.height);
+                                                     surface.width, surface.height,
+                                                     nvMapHandleObj->id);
 
             // Diagnostic only: determine whether the incomplete frame already
             // exists in NvMap memory on the *first* QueueBuffer, BEFORE this
@@ -437,11 +438,16 @@ namespace skyline::service::hosbinder {
                 std::memory_order_relaxed)};
             LOGI("MINIRD_QUEUE_RT_SUMMARY queued_frame={} slot={} rt_visits={} "
                  "rt_present_matches={} rt_last_match_base=0x{:X} "
-                 "nvmap={}",
+                 "nvmap={} draw_texture_probe={} draw_texture_triggers={} "
+                 "draw_texture_present_candidates={} draw_texture_unknown_extents={}",
                  frameNumber, slot, rtVisits, rtMatches, lastMatch,
                  graphicBuffer.graphicHandle.surfaces.at(0).nvmapHandle
                      ? graphicBuffer.graphicHandle.surfaces.at(0).nvmapHandle
-                     : graphicBuffer.graphicHandle.nvmapId);
+                     : graphicBuffer.graphicHandle.nvmapId,
+                 gpu::diagnostic::DrawTextureProbeVersion,
+                 gpu::diagnostic::DrawTextureTriggers().load(std::memory_order_relaxed),
+                 gpu::diagnostic::DrawTexturePresentCandidates().load(std::memory_order_relaxed),
+                 gpu::diagnostic::DrawTextureUnknownExtents().load(std::memory_order_relaxed));
         }
 
         width = defaultWidth;
@@ -647,7 +653,7 @@ namespace skyline::service::hosbinder {
                     auto guestBase{state.process->memory.TranslateVirtualPointer<u8 *>(
                         nvmapHandle->address + surface.offset)};
                     gpu::diagnostic::TrackPresentationSurface(
-                        guestBase, surface.size, surface.width, surface.height);
+                        guestBase, surface.size, surface.width, surface.height, nvmapId);
 
                     u64 hash{0xCBF29CE484222325ULL};
                     size_t lastNonzeroEnd{};
