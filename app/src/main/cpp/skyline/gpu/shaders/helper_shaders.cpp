@@ -226,7 +226,8 @@ namespace skyline::gpu {
                                 vk::Extent2D srcImageDimensions, vk::Extent2D dstImageDimensions,
                                 bool bilinearFilter,
                                 TextureView *srcImageView, TextureView *dstImageView,
-                                std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb) {
+                                std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb,
+                                vk::Sampler overrideSampler, std::optional<vk::Rect2D> overrideScissor) {
         struct DrawState {
             blit::VertexPushConstantLayout vertexPushConstants;
             blit::FragmentPushConstantLayout fragmentPushConstants;
@@ -265,7 +266,7 @@ namespace skyline::gpu {
         vk::DescriptorImageInfo imageInfo{
             .imageLayout = vk::ImageLayout::eGeneral,
             .imageView = srcImageView->GetView(),
-            .sampler = bilinearFilter ? *bilinearSampler : *nearestSampler
+            .sampler = overrideSampler ? overrideSampler : (bilinearFilter ? *bilinearSampler : *nearestSampler)
         };
 
         std::array<vk::WriteDescriptorSet, 1> writes{vk::WriteDescriptorSet{
@@ -278,7 +279,7 @@ namespace skyline::gpu {
 
         gpu.vkDevice.updateDescriptorSets(writes, nullptr);
 
-        recordCb([drawState = std::move(drawState)](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &cycle, GPU &gpu, vk::RenderPass, u32) {
+        recordCb([drawState = std::move(drawState), overrideScissor](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &cycle, GPU &gpu, vk::RenderPass, u32) {
             cycle->AttachObject(drawState);
 
             vk::Viewport viewport{
@@ -290,9 +291,9 @@ namespace skyline::gpu {
                 .maxDepth = 1.0f
             };
 
-            vk::Rect2D scissor{
+            const auto scissor{overrideScissor.value_or(vk::Rect2D{
                 .extent = drawState->imageDimensions
-            };
+            })};
 
             commandBuffer.setScissor(0, {scissor});
             commandBuffer.setViewport(0, {viewport});

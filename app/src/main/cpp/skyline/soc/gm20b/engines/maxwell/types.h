@@ -18,6 +18,21 @@ namespace skyline::soc::gm20b::engine::maxwell3d::type {
         MethodReplay = 3, //!< Replays older tracked writes for any new writes to registers, discarding the contents of the new write
     };
 
+    // DRAW_TEXTURE: signed 20.12 coordinates and 32.32 gradients.
+    struct DrawTexture {
+        i32 dstX;
+        i32 dstY;
+        i32 dstWidth;
+        i32 dstHeight;
+        i64 duDx;
+        i64 dvDy;
+        u32 samplerIndex;
+        u32 textureIndex;
+        i32 srcX;
+        i32 srcY;
+    };
+    static_assert(sizeof(DrawTexture) == 0x30);
+
     struct SyncpointAction {
         u16 id : 12;
         u8 _pad0_ : 4;

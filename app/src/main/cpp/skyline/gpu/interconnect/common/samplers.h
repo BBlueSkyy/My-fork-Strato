@@ -50,6 +50,10 @@ namespace skyline::gpu::interconnect {
 
         vk::raii::Sampler *GetSampler(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
 
+        // Explicit TSC lookup for fixed-function methods such as DRAW_TEXTURE.
+        // The three-argument overload retains programmable shader binding rules.
+        vk::raii::Sampler *GetSampler(InterconnectContext &ctx, u32 samplerIndex);
+
         Shader::CompareFunction GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
     };
 }
