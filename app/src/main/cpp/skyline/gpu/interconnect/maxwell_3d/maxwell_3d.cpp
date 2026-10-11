@@ -268,7 +268,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         // descriptors of the previously selected programmable pipeline.
         samplers.Update(ctx, samplerBinding.value == engine::SamplerBinding::Value::ViaHeaderBinding);
         auto *source{textures.GetTexture(ctx, params.textureIndex, Shader::TextureType::Color2D)};
-        auto *sampler{samplers.GetSampler(ctx, params.samplerIndex, params.textureIndex)};
+        auto *sampler{samplers.GetSampler(ctx, params.samplerIndex)};
         auto destination{activeState.GetColorRenderTargetForClear(ctx, colorTargetIndex)};
         if (!source || !sampler || !destination)
             return;
@@ -289,20 +289,44 @@ namespace skyline::gpu::interconnect::maxwell3d {
         float y{params.dstY * Fixed12Scale};
         if (origin.lowerLeft)
             y = static_cast<float>(clip.vertical.height) - y;
-        if (origin.flipY)
-            y -= height;
+        // Window-origin bit 4 flips triangle/shader Y. DRAW_TEXTURE already
+        // supplies window coordinates and only uses the origin mode (bit 0).
 
         const float srcX{params.srcX * Fixed12Scale};
         const float srcY{params.srcY * Fixed12Scale};
         const float srcWidth{static_cast<float>(params.duDx * Fixed32Scale) * width};
         const float srcHeight{static_cast<float>(params.dvDy * Fixed32Scale) * height};
 
-        const vk::Extent2D srcDims{source->texture->dimensions};
-        const vk::Extent2D dstDims{dest->texture->dimensions};
-        const float left{std::clamp(std::min(x, x + width), 0.0f, static_cast<float>(dstDims.width))};
-        const float top{std::clamp(std::min(y, y + height), 0.0f, static_cast<float>(dstDims.height))};
-        const float right{std::clamp(std::max(x, x + width), 0.0f, static_cast<float>(dstDims.width))};
-        const float bottom{std::clamp(std::max(y, y + height), 0.0f, static_cast<float>(dstDims.height))};
+        // Aliases and TIC base levels can select a mip of a larger backing image.
+        // Coordinates are relative to that view, as are Vulkan sampler UVs.
+        auto viewDimensions{[](TextureView *view) {
+            const auto mip{std::min(view->range.baseMipLevel, 31U)};
+            return vk::Extent2D{
+                std::max(1U, view->texture->dimensions.width >> mip),
+                std::max(1U, view->texture->dimensions.height >> mip)
+            };
+        }};
+        const auto srcDims{viewDimensions(source)};
+        const auto dstDims{viewDimensions(dest)};
+        float left{std::max({std::min(x, x + width), 0.0f, static_cast<float>(clip.horizontal.x)})};
+        float top{std::max({std::min(y, y + height), 0.0f, static_cast<float>(clip.vertical.y)})};
+        float right{std::min({std::max(x, x + width), static_cast<float>(dstDims.width),
+                             static_cast<float>(clip.horizontal.x) + clip.horizontal.width})};
+        float bottom{std::min({std::max(y, y + height), static_cast<float>(dstDims.height),
+                              static_cast<float>(clip.vertical.y) + clip.vertical.height})};
+        const auto &scissor0{clearEngineRegisters.scissor0};
+        if (scissor0.enable) {
+            left = std::max(left, static_cast<float>(scissor0.horizontal.xMin));
+            right = std::min(right, static_cast<float>(scissor0.horizontal.xMax));
+            const float scissorTop{origin.lowerLeft
+                ? static_cast<float>(clip.vertical.height) - scissor0.vertical.yMax
+                : static_cast<float>(scissor0.vertical.yMin)};
+            const float scissorBottom{origin.lowerLeft
+                ? static_cast<float>(clip.vertical.height) - scissor0.vertical.yMin
+                : static_cast<float>(scissor0.vertical.yMax)};
+            top = std::max(top, scissorTop);
+            bottom = std::min(bottom, scissorBottom);
+        }
         if (!(right > left && bottom > top) || !srcDims.width || !srcDims.height)
             return;
 
@@ -314,6 +338,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
             {x0, y0}, {static_cast<u32>(x1 - x0), static_cast<u32>(y1 - y0)}
         };
 
+        // AttachTexture only keeps the backing locked through submission. Retain
+        // the sampled view on the fence cycle too, even if its TIC cache is replaced.
+        ctx.executor.AttachDependency(source->shared_from_this());
         ctx.executor.AttachDependency(destination);
         ctx.executor.AttachTexture(source);
         ctx.executor.AttachTexture(dest);
@@ -333,7 +360,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                         false, vk::PipelineStageFlagBits::eAllGraphics,
                                         vk::PipelineStageFlagBits::eAllGraphics);
             },
-            **sampler
+            **sampler, renderArea
         );
         ctx.executor.AddCheckpoint("After draw texture");
         ctx.executor.NotifyPipelineChange();

@@ -47,6 +47,10 @@ namespace skyline::gpu::interconnect {
             case TextureSamplerControl::Filter::Linear:
                 return vk::Filter::eLinear;
         }
+        // Reserved descriptor values must not cause an undefined C++ return.
+        // Match the deterministic nearest fallback used by the reference backends.
+        LOGW("Invalid sampler filter {}", static_cast<u32>(filter));
+        return vk::Filter::eNearest;
     }
 
     static vk::SamplerMipmapMode ConvertSamplerMipFilter(TextureSamplerControl::MipFilter filter) {
@@ -59,6 +63,8 @@ namespace skyline::gpu::interconnect {
             case TextureSamplerControl::MipFilter::Linear:
                 return vk::SamplerMipmapMode::eLinear;
         }
+        LOGW("Invalid sampler mip filter {}", static_cast<u32>(filter));
+        return vk::SamplerMipmapMode::eNearest;
     }
 
     static vk::SamplerAddressMode ConvertSamplerAddressMode(TextureSamplerControl::AddressMode mode) {
@@ -171,7 +177,11 @@ namespace skyline::gpu::interconnect {
 
     vk::raii::Sampler *Samplers::GetSampler(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex) {
         const auto &samplerPoolObj{samplerPool.Get()};
-        u32 index{samplerPoolObj.didUseTexHeaderBinding ? textureIndex : samplerIndex};
+        return GetSampler(ctx, samplerPoolObj.didUseTexHeaderBinding ? textureIndex : samplerIndex);
+    }
+
+    vk::raii::Sampler *Samplers::GetSampler(InterconnectContext &ctx, u32 index) {
+        const auto &samplerPoolObj{samplerPool.Get()};
         auto texSamplers{samplerPoolObj.texSamplers};
         if (index >= texSamplers.size()) {
             LOGW("Sampler requested for out-of-range TSC index {}", index);

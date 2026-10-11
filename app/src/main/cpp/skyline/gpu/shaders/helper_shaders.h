@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <optional>
 #include <vulkan/vulkan_raii.hpp>
 #include <gpu/descriptor_allocator.h>
 #include <gpu/graphics_pipeline_assembler.h>
@@ -85,7 +86,8 @@ namespace skyline::gpu {
                       bool bilinearFilter,
                       TextureView *srcImageView, TextureView *dstImageView,
                       std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb,
-                      vk::Sampler overrideSampler = {});
+                      vk::Sampler overrideSampler = {},
+                      std::optional<vk::Rect2D> overrideScissor = std::nullopt);
     };
 
     /**
