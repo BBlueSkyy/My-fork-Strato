@@ -346,6 +346,20 @@ namespace skyline::service::hosbinder {
             guestTexture.mappings[0] = span<u8>(state.process->memory.TranslateVirtualPointer<u8 *>(
                 reinterpret_cast<u64>(nvMapHandleObj->GetPointer()) + surface.offset), guestTexture.GetLayerStride());
 
+            // QueueBuffer's actual NvMap-backed guest region can now be
+            // correlated against the mapped DMA destinations in draws.txt.
+            // This runs only on first creation of a graphic buffer texture.
+            LOGI("MINIRD_GBP_CREATE slot={} guest_host=0x{:X} guest_size={} "
+                 "surface={}x{} pixel_format={} layout={} block_height={} pitch={} "
+                 "stride={} nvmap={} surface_offset=0x{:X}",
+                 slot, reinterpret_cast<uintptr_t>(guestTexture.mappings.front().data()),
+                 guestTexture.mappings.front().size(),
+                 surface.width, surface.height, static_cast<u32>(handle.format),
+                 static_cast<u32>(surface.layout),
+                 surface.layout == NvSurfaceLayout::Blocklinear ? (1U << surface.blockHeightLog2) : 0U,
+                 surface.pitch, handle.stride,
+                 surface.nvmapHandle ? surface.nvmapHandle : handle.nvmapId, surface.offset);
+
             std::scoped_lock channelLock{state.gpu->channelLock};
             buffer.texture = state.gpu->texture.FindOrCreate(guestTexture);
         }

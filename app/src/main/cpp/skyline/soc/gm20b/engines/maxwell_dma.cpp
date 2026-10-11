@@ -90,6 +90,56 @@ namespace skyline::soc::gm20b::engine {
     }
 
     void MaxwellDma::DmaCopy() {
+        // Record the copy engine operations around the rendered/presented
+        // buffers, correlating IOVA with the actual host guest-memory mapping.
+        // Diagnostic-only, enabled solely during the manually armed GPU trace.
+        if (channelCtx.executor.IsDiagnosticDrawTraceActive()) {
+            const auto &launch{*registers.launchDma};
+            if (launch.multiLineEnable || launch.remapEnable) {
+                uintptr_t srcHost{}, dstHost{};
+                try {
+                    auto srcMapping{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, 1)};
+                    if (!srcMapping.empty())
+                        srcHost = reinterpret_cast<uintptr_t>(srcMapping.front().data());
+                } catch (const std::exception &) {
+                    // Diagnostics must not alter the copy path's exception behavior.
+                }
+                try {
+                    auto dstMapping{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, 1)};
+                    if (!dstMapping.empty())
+                        dstHost = reinterpret_cast<uintptr_t>(dstMapping.front().data());
+                } catch (const std::exception &) {
+                }
+
+                const bool srcBlock{launch.srcMemoryLayout == Registers::LaunchDma::MemoryLayout::BlockLinear};
+                const bool dstBlock{launch.dstMemoryLayout == Registers::LaunchDma::MemoryLayout::BlockLinear};
+                const char *route{srcBlock ? (dstBlock ? "block_to_block" : "block_to_pitch")
+                                           : (dstBlock ? "pitch_to_block" : "pitch_to_pitch")};
+                const bool skipped{launch.multiLineEnable && !launch.remapEnable && srcBlock && dstBlock};
+                channelCtx.executor.AppendDiagnosticDrawTrace(fmt::format(
+                    "MAXWELL_DMA route={} skipped_unimplemented={} multi_line={} remap={} "
+                    "src_iova=0x{:X} dst_iova=0x{:X} src_host=0x{:X} dst_host=0x{:X} "
+                    "line_bytes={} lines={} pitch_in={} pitch_out={} "
+                    "src_surface={}x{}x{} src_block_height={} src_origin={},{} "
+                    "dst_surface={}x{}x{} dst_block_height={} dst_origin={},{}\n",
+                    route, skipped, launch.multiLineEnable, launch.remapEnable,
+                    u64{*registers.offsetIn}, u64{*registers.offsetOut},
+                    srcHost, dstHost, *registers.lineLengthIn, *registers.lineCount,
+                    *registers.pitchIn, *registers.pitchOut,
+                    srcBlock ? registers.srcSurface->width : 0,
+                    srcBlock ? registers.srcSurface->height : 0,
+                    srcBlock ? registers.srcSurface->depth : 0,
+                    srcBlock ? registers.srcSurface->blockSize.Height() : 0,
+                    srcBlock ? registers.srcSurface->origin.x : 0,
+                    srcBlock ? registers.srcSurface->origin.y : 0,
+                    dstBlock ? registers.dstSurface->width : 0,
+                    dstBlock ? registers.dstSurface->height : 0,
+                    dstBlock ? registers.dstSurface->depth : 0,
+                    dstBlock ? registers.dstSurface->blockSize.Height() : 0,
+                    dstBlock ? registers.dstSurface->origin.x : 0,
+                    dstBlock ? registers.dstSurface->origin.y : 0));
+            }
+        }
         if (registers.launchDma->multiLineEnable) {
             if (registers.launchDma->remapEnable) [[unlikely]] {
                 const bool usesBlockLinear{
@@ -112,7 +162,11 @@ namespace skyline::soc::gm20b::engine {
                 if (registers.launchDma->srcMemoryLayout == Registers::LaunchDma::MemoryLayout::Pitch) [[likely]] {
                     CopyPitchToPitch();
                 } else {
-                    LOGW("BlockLinear to BlockLinear DMA copies are unimplemented!");
+                    LOGW("BlockLinear to BlockLinear DMA copies are unimplemented! src=0x{:X} dst=0x{:X} size={}x{} src_surface={}x{}x{} dst_surface={}x{}x{}",
+                         u64{*registers.offsetIn}, u64{*registers.offsetOut},
+                         *registers.lineLengthIn, *registers.lineCount,
+                         registers.srcSurface->width, registers.srcSurface->height, registers.srcSurface->depth,
+                         registers.dstSurface->width, registers.dstSurface->height, registers.dstSurface->depth);
                 }
             } else if (registers.launchDma->srcMemoryLayout == Registers::LaunchDma::MemoryLayout::BlockLinear) {
                 CopyBlockLinearToPitch();
