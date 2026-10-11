@@ -8,6 +8,21 @@
 #include "common.h"
 
 namespace skyline::gpu::interconnect {
+    // Diagnostic only: retain the current dynamic Vulkan viewport/scissor 0
+    // across StateUpdateBuilder instances, including state set before the
+    // mini-RenderDoc arm marker. Never modifies the recorded Vulkan commands.
+    struct DiagnosticRasterState {
+        vk::Viewport viewport{};
+        vk::Rect2D scissor{};
+        bool hasViewport{};
+        bool hasScissor{};
+    };
+
+    inline DiagnosticRasterState &CurrentDiagnosticRasterState() {
+        static thread_local DiagnosticRasterState state{};
+        return state;
+    }
+
     /**
      * @brief Header for a singly-linked state update command
      */
@@ -413,6 +428,11 @@ namespace skyline::gpu::interconnect {
         }
 
         void SetViewport(u32 index, const vk::Viewport &viewport) {
+            if (!index) {
+                auto &diagnostic{CurrentDiagnosticRasterState()};
+                diagnostic.viewport = viewport;
+                diagnostic.hasViewport = true;
+            }
             AppendCmd<SetViewportCmd>(
                 {
                     .index = index,
@@ -421,6 +441,11 @@ namespace skyline::gpu::interconnect {
         }
 
         void SetScissor(u32 index, const vk::Rect2D &scissor) {
+            if (!index) {
+                auto &diagnostic{CurrentDiagnosticRasterState()};
+                diagnostic.scissor = scissor;
+                diagnostic.hasScissor = true;
+            }
             AppendCmd<SetScissorCmd>(
                 {
                     .index = index,

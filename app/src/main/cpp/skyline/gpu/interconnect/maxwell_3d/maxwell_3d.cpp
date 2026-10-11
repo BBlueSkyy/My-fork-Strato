@@ -469,6 +469,38 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 indexed, count, instanceCount, scissor.offset.x, scissor.offset.y,
                 scissor.extent.width, scissor.extent.height, hashes));
             ctx.executor.AppendDiagnosticDrawTrace(DescribeMiniRenderDocSampledViews(activeDescriptorSetSampledImages));
+            if (indexed && count == 6 && scissor.extent.width == 800 && scissor.extent.height == 480) {
+                if (auto *pipeline{activeState.GetPipeline()}) {
+                    const auto &p{pipeline->sourcePackedState};
+                    const auto blend{p.GetAttachmentBlendState(0)};
+                    const auto &rs{CurrentDiagnosticRasterState()};
+                    ctx.executor.AppendDiagnosticDrawTrace(fmt::format(
+                        "MINIRD_COMPOSITE_STATE topo={} first={} vertex_offset={} first_instance={} "
+                        "cull=0x{:X} front_cw={} flip_y={} depth_test={} depth_write={} depth_func={} "
+                        "depth_bounds={} stencil_test={} logic_op={} primitive_restart={} "
+                        "blend_src_color={} blend_dst_color={} blend_op_color={} "
+                        "blend_src_alpha={} blend_dst_alpha={} blend_op_alpha={} "
+                        "viewport_set={} viewport={:.2f},{:.2f},{:.2f},{:.2f} depth={:.3f},{:.3f} "
+                        "scissor_set={} dynamic_scissor={},{},{}x{}\n",
+                        static_cast<u32>(topology), first, vertexOffset, firstInstance,
+                        static_cast<u32>(p.cullMode), p.frontFaceClockwise, p.flipYEnable,
+                        p.depthTestEnable, p.depthWriteEnable, static_cast<u32>(p.GetDepthFunc()),
+                        p.depthBoundsTestEnable, p.stencilTestEnable, p.logicOpEnable,
+                        p.primitiveRestartEnabled,
+                        static_cast<u32>(blend.srcColorBlendFactor),
+                        static_cast<u32>(blend.dstColorBlendFactor),
+                        static_cast<u32>(blend.colorBlendOp),
+                        static_cast<u32>(blend.srcAlphaBlendFactor),
+                        static_cast<u32>(blend.dstAlphaBlendFactor),
+                        static_cast<u32>(blend.alphaBlendOp),
+                        rs.hasViewport, rs.viewport.x, rs.viewport.y,
+                        rs.viewport.width, rs.viewport.height,
+                        rs.viewport.minDepth, rs.viewport.maxDepth,
+                        rs.hasScissor, rs.scissor.offset.x, rs.scissor.offset.y,
+                        rs.scissor.extent.width, rs.scissor.extent.height));
+                }
+            }
+
         }
         ctx.executor.AddCheckpoint("After draw");
     }
