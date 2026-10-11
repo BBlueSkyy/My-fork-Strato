@@ -1086,6 +1086,25 @@ namespace skyline::gpu {
                 const auto presentRegion{gpu::diagnostic::FindPresentationSurface(
                     guest->mappings.front().data())};
 
+                // Do not stop observing actual render-pass attachments when
+                // the deduplicated startup trace hits its 160-entry cap.
+                gpu::diagnostic::RenderTargetAttachmentVisits().fetch_add(1, std::memory_order_relaxed);
+                if (presentRegion) {
+                    const auto count{gpu::diagnostic::RenderTargetAttachmentPresentMatches().fetch_add(
+                        1, std::memory_order_relaxed)};
+                    gpu::diagnostic::RenderTargetAttachmentLastMatch().store(
+                        guestBase, std::memory_order_relaxed);
+                    if (count < 32) {
+                        LOGI("MINIRD_RT_PRESENT_MATCH match={} guest_base=0x{:X} "
+                             "present_base=0x{:X} offset=0x{:X} texture={}x{}x{} "
+                             "format={} render_pass={}",
+                             count, guestBase, presentRegion->base,
+                             guestBase - presentRegion->base,
+                             dimensions.width, dimensions.height, dimensions.depth,
+                             vk::to_string(format->vkFormat), renderPassIndex);
+                    }
+                }
+
                 struct RenderTargetSignature {
                     uintptr_t address{};
                     u32 width{}, height{}, depth{};

@@ -57,6 +57,24 @@ namespace skyline::gpu::diagnostic {
         return count;
     }
 
+    // Independent of the 160-entry unique-RT trace limit: these counters
+    // cover the whole emulation session, including render passes after the
+    // early startup batch has exhausted the unique-RT diagnostic slots.
+    inline std::atomic<uint64_t> &RenderTargetAttachmentVisits() {
+        static std::atomic<uint64_t> count{};
+        return count;
+    }
+
+    inline std::atomic<uint64_t> &RenderTargetAttachmentPresentMatches() {
+        static std::atomic<uint64_t> count{};
+        return count;
+    }
+
+    inline std::atomic<uint64_t> &RenderTargetAttachmentLastMatch() {
+        static std::atomic<uint64_t> guestAddress{};
+        return guestAddress;
+    }
+
     inline void TrackPresentationSurface(const void *base, size_t size,
                                          uint32_t width, uint32_t height) {
         if (!base || !size)

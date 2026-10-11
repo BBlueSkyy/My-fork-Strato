@@ -425,6 +425,25 @@ namespace skyline::service::hosbinder {
         buffer.frameNumber = ++frameNumber;
         buffer.fence = fence;
 
+        // A sparse, session-wide checkpoint proving whether *any* Maxwell3D
+        // render-pass attachment was mapped onto a presentation allocation.
+        // Unlike MINIRD_RT_BIND, this remains active after 160 unique RTs.
+        if (frameNumber <= 12 || std::has_single_bit(frameNumber)) {
+            const auto rtVisits{gpu::diagnostic::RenderTargetAttachmentVisits().load(
+                std::memory_order_relaxed)};
+            const auto rtMatches{gpu::diagnostic::RenderTargetAttachmentPresentMatches().load(
+                std::memory_order_relaxed)};
+            const auto lastMatch{gpu::diagnostic::RenderTargetAttachmentLastMatch().load(
+                std::memory_order_relaxed)};
+            LOGI("MINIRD_QUEUE_RT_SUMMARY queued_frame={} slot={} rt_visits={} "
+                 "rt_present_matches={} rt_last_match_base=0x{:X} "
+                 "nvmap={}",
+                 frameNumber, slot, rtVisits, rtMatches, lastMatch,
+                 graphicBuffer.graphicHandle.surfaces.at(0).nvmapHandle
+                     ? graphicBuffer.graphicHandle.surfaces.at(0).nvmapHandle
+                     : graphicBuffer.graphicHandle.nvmapId);
+        }
+
         width = defaultWidth;
         height = defaultHeight;
         transformHint = state.gpu->presentation.GetTransformHint();
