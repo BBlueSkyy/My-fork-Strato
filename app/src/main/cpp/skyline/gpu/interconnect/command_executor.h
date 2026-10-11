@@ -226,10 +226,6 @@ namespace skyline::gpu::interconnect {
         };
         std::vector<DiagnosticPassImage> diagnosticPassImages;
         std::vector<std::function<void()>> diagnosticReadbackCallbacks;
-        std::array<size_t, 4> diagnosticCapturedPerPresentation{};
-        size_t diagnosticCapturedCount{};
-        size_t diagnosticCapturedBytes{};
-
         void TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color);
         void QueueDiagnosticPassReadbacks();
 

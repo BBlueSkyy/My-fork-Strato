@@ -442,7 +442,7 @@ namespace skyline::gpu::interconnect {
             return;
 
         const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
-        if (interval >= diagnosticCapturedPerPresentation.size())
+        if (interval >= diagnostic::UiFrameCapture::FrameCount)
             return;
         const std::filesystem::path directory{capture.CaptureDirectory()};
         if (directory.empty())
@@ -450,30 +450,39 @@ namespace skyline::gpu::interconnect {
 
         for (const auto &entry : images) {
             const auto &texture{entry.texture};
-            if (!IsNarutoUiPassImage(*texture) ||
-                diagnosticCapturedPerPresentation[interval] >= diagnostic::UiFrameCapture::PassSnapshotsPerInterval ||
-                diagnosticCapturedCount >= diagnostic::UiFrameCapture::MaxPassSnapshots ||
-                texture->surfaceSize > diagnostic::UiFrameCapture::MaxPassCaptureBytes - diagnosticCapturedBytes)
+            if (!IsNarutoUiPassImage(*texture))
                 continue;
 
-            const auto index{diagnosticCapturedCount++};
-            diagnosticCapturedPerPresentation[interval]++;
-            diagnosticCapturedBytes += texture->surfaceSize;
+            const auto snapshotId{capture.ReservePassSnapshot(interval, texture->surfaceSize)};
+            if (!snapshotId)
+                continue;
+            const auto index{*snapshotId};
             const auto width{texture->dimensions.width};
             const auto height{texture->dimensions.height};
             const auto format{vk::to_string(texture->format->vkFormat)};
             const auto identity{reinterpret_cast<uintptr_t>(texture.get())};
+            const auto executorIdentity{reinterpret_cast<uintptr_t>(this)};
+            uintptr_t guestMap{};
+            size_t guestBytes{};
+            if (texture->guest) {
+                if (!texture->guest->mappings.empty())
+                    guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                for (const auto &mapping : texture->guest->mappings)
+                    guestBytes += mapping.size();
+            }
             const auto fileName{fmt::format("pass_{:02}_rp{}_{}x{}_{}.raw",
                 index, renderPassIndex, width, height, format)};
             const auto rawPath{directory / fileName};
             const auto metaPath{directory / fmt::format("pass_{:02}.txt", index)};
             const auto meta{fmt::format(
                 "capture_index={} approx_present={} render_pass={} submission={} "
-                "kind={} texture=0x{:X} dimensions={}x{} format={} layout={} bytes={} "
+                "kind={} executor=0x{:X} texture=0x{:X} dimensions={}x{} "
+                "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} "
                 "note=recorded_after_render_pass_end_not_exact_frame_correlation\n",
                 index, interval, renderPassIndex, submissionNumber,
-                entry.renderTarget ? "render_target" : "sampled_input", identity,
-                width, height, format, vk::to_string(texture->layout), texture->surfaceSize)};
+                entry.renderTarget ? "render_target" : "sampled_input", executorIdentity, identity,
+                width, height, format, vk::to_string(texture->layout),
+                texture->surfaceSize, guestMap, guestBytes)};
             auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
             slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
                 [texture, staging](vk::raii::CommandBuffer &commandBuffer,
@@ -497,8 +506,8 @@ namespace skyline::gpu::interconnect {
                     LOGI("MINIRD_NARUTO_PHASE2 wrote snapshot {}: {}", index, rawPath.string());
                 });
             capture.Record(fmt::format(
-                "PHASE2_SNAPSHOT index={} rp={} submission={} interval={} kind={} texture=0x{:X} {}x{} format={}",
-                index, renderPassIndex, submissionNumber, interval,
+                "PHASE2_SNAPSHOT index={} rp={} submission={} executor=0x{:X} interval={} kind={} texture=0x{:X} {}x{} format={}",
+                index, renderPassIndex, submissionNumber, executorIdentity, interval,
                 entry.renderTarget ? "rt" : "sampled", identity, width, height, format));
         }
     }

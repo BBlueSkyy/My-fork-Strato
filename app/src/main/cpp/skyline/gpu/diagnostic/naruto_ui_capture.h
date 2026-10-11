@@ -2,7 +2,10 @@
 #pragma once
 // One-shot diagnostic only. This is a small, bounded trace, not the RenderDoc API.
 // No guest data or guest GPU command is modified.
+#include <array>
 #include <atomic>
+#include <cstddef>
+#include <optional>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -28,15 +31,40 @@ namespace skyline::gpu::diagnostic {
         std::mutex mutex;
         std::vector<std::string> events;
         std::string path;
+        // One registry shared by all GPU command executors. Individual executor
+        // counters collided in the previous capture and overwrote raw files.
+        std::array<std::uint32_t, FrameCount> passCountByInterval{};
+        std::uint32_t nextPassIndex{};
+        std::size_t passBytes{};
 
       public:
         void Start(std::string captureDirectory) {
             std::scoped_lock lock(mutex);
             path = std::move(captureDirectory);
             events.clear();
+            passCountByInterval.fill(0);
+            nextPassIndex = 0;
+            passBytes = 0;
             eventCount.store(0, std::memory_order_relaxed);
             presentIndex.store(0, std::memory_order_relaxed);
             active.store(true, std::memory_order_release);
+        }
+
+        // Allocates a unique, globally capped snapshot ID across all executors.
+        // Called before allocating staging buffers or writing file names.
+        std::optional<std::uint32_t> ReservePassSnapshot(std::uint32_t interval, std::size_t bytes) {
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_acquire) ||
+                interval >= FrameCount || bytes == 0 ||
+                passCountByInterval[interval] >= PassSnapshotsPerInterval ||
+                nextPassIndex >= MaxPassSnapshots ||
+                passBytes > MaxPassCaptureBytes ||
+                bytes > MaxPassCaptureBytes - passBytes)
+                return std::nullopt;
+
+            ++passCountByInterval[interval];
+            passBytes += bytes;
+            return nextPassIndex++;
         }
 
         std::string CaptureDirectory() {
