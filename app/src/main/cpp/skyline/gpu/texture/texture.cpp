@@ -1077,6 +1077,69 @@ namespace skyline::gpu {
         lastRenderPassIndex = renderPassIndex;
 
         if (renderPassUsage == texture::RenderPassUsage::RenderTarget) {
+            // Mini-RenderDoc: color/depth attachments in normal Maxwell3D
+            // render passes do NOT invoke Texture::MarkGpuDirty. Record the
+            // actual attachment guest addresses here to test whether the game
+            // renders to the final NvMap-backed presentation surfaces.
+            if (guest && !guest->mappings.empty() && guest->mappings.front().valid()) {
+                const auto guestBase{reinterpret_cast<uintptr_t>(guest->mappings.front().data())};
+                const auto presentRegion{gpu::diagnostic::FindPresentationSurface(
+                    guest->mappings.front().data())};
+
+                struct RenderTargetSignature {
+                    uintptr_t address{};
+                    u32 width{}, height{}, depth{};
+                    vk::Format format{};
+                };
+                static std::mutex rtMutex;
+                static std::array<RenderTargetSignature, 256> seen{};
+                static size_t seenCount{}, nonPresentCount{}, presentCount{};
+                std::optional<size_t> logIndex{};
+                {
+                    std::scoped_lock lock{rtMutex};
+                    bool alreadySeen{};
+                    for (size_t i{}; i < seenCount; ++i) {
+                        const auto &entry{seen[i]};
+                        if (entry.address == guestBase &&
+                            entry.width == dimensions.width &&
+                            entry.height == dimensions.height &&
+                            entry.depth == dimensions.depth &&
+                            entry.format == format->vkFormat) {
+                            alreadySeen = true;
+                            break;
+                        }
+                    }
+                    auto &count{presentRegion ? presentCount : nonPresentCount};
+                    const size_t limit{presentRegion ? 96U : 160U};
+                    if (!alreadySeen && count < limit && seenCount < seen.size()) {
+                        logIndex = seenCount;
+                        seen[seenCount++] = {
+                            guestBase, dimensions.width, dimensions.height,
+                            dimensions.depth, format->vkFormat
+                        };
+                        ++count;
+                    }
+                }
+
+                if (logIndex) {
+                    LOGI("MINIRD_RT_BIND unique={} guest_base=0x{:X} dims={}x{}x{} "
+                         "mapping_bytes={} format={} tile_mode={} block_height={} "
+                         "render_pass={} present_match={} present_base=0x{:X} "
+                         "present_offset=0x{:X} present_dims={}x{}",
+                         *logIndex, guestBase,
+                         dimensions.width, dimensions.height, dimensions.depth,
+                         guest->mappings.front().size(),
+                         vk::to_string(format->vkFormat),
+                         static_cast<u32>(guest->tileConfig.mode),
+                         guest->tileConfig.mode == texture::TileMode::Block
+                             ? static_cast<u32>(guest->tileConfig.blockHeight) : 0U,
+                         renderPassIndex, static_cast<bool>(presentRegion),
+                         presentRegion ? presentRegion->base : 0,
+                         presentRegion ? guestBase - presentRegion->base : 0,
+                         presentRegion ? presentRegion->width : 0,
+                         presentRegion ? presentRegion->height : 0);
+                }
+            }
             everUsedAsRt = true;
             pendingStageMask = vk::PipelineStageFlagBits::eVertexShader |
                 vk::PipelineStageFlagBits::eTessellationControlShader |
