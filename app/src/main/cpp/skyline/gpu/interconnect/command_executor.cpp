@@ -831,13 +831,8 @@ namespace skyline::gpu::interconnect {
         executionTag = AllocateTag();
 
         // Ensure all pushed callbacks wait for the submission to have finished GPU execution
-        if (!slot->nodes.empty()) {
+        if (!slot->nodes.empty())
             waiterThread.Queue(cycle, {});
-            // Raw readbacks are written ONLY after this exact GPU cycle finishes.
-            for (auto &cb : diagnosticReadbackCallbacks)
-                waiterThread.Queue(nullptr, std::move(cb));
-        }
-        diagnosticReadbackCallbacks.clear();
 
         if (*state.settings->useDirectMemoryImport) {
             // When DMI is in use, callbacks and deferred actions should be executed in sequence with the host GPU
@@ -855,6 +850,12 @@ namespace skyline::gpu::interconnect {
             SubmitInternal();
             submissionNumber++;
         }
+        // SubmitInternal() closes the final render pass and may enqueue more
+        // diagnostic readbacks. Queue file writes AFTER that point so callbacks
+        // belong to the correct GPU cycle (already registered above).
+        for (auto &cb : diagnosticReadbackCallbacks)
+            waiterThread.Queue(nullptr, std::move(cb));
+        diagnosticReadbackCallbacks.clear();
 
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission
