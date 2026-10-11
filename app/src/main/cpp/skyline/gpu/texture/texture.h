@@ -420,6 +420,7 @@ namespace skyline::gpu {
         friend TextureManager;
         friend TextureView;
         friend class interconnect::CommandExecutor;
+        friend class PresentationEngine;
 
         /**
          * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid

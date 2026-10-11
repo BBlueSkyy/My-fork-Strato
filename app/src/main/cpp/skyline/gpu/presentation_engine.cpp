@@ -2,6 +2,8 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <android/native_window_jni.h>
+#include <filesystem>
+#include <fstream>
 #include <android/choreographer.h>
 #include <common/settings.h>
 #include <common/signal.h>
@@ -9,6 +11,7 @@
 #include <gpu.h>
 #include <soc.h>
 #include <loader/loader.h>
+#include <os.h>
 #include <kernel/types/KProcess.h>
 #include "presentation_engine.h"
 #include "native_window.h"
@@ -141,6 +144,98 @@ namespace skyline::gpu {
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
         texture->SynchronizeHost();
+
+        // One-shot diagnostic only. Capture the actual presentation source
+        // *after* CPU -> GPU synchronization but *before* swapchain copying.
+        // Do not change guest memory, crop or Vulkan presentation semantics.
+        if (!diagnosticPresentActive && diagnosticPresentFrameCount == 0) {
+            const std::filesystem::path markerPath{
+                std::filesystem::path(state.os->publicAppFilesPath) /
+                "gpu_capture" / "steel_assault" / "PRESENT_ARM"};
+            std::ifstream marker{markerPath};
+            if (marker) {
+                std::getline(marker, diagnosticPresentDirectory);
+                marker.close();
+                std::error_code error;
+                std::filesystem::remove(markerPath, error);
+                diagnosticPresentActive = !diagnosticPresentDirectory.empty();
+            }
+        }
+
+        if (diagnosticPresentActive && diagnosticPresentFrameCount < 16) {
+            const size_t captureIndex{diagnosticPresentFrameCount++};
+            uintptr_t guestMap{};
+            size_t guestSize{};
+            if (texture->guest) {
+                if (!texture->guest->mappings.empty())
+                    guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                for (const auto &mapping : texture->guest->mappings)
+                    guestSize += mapping.size();
+            }
+
+            const std::filesystem::path directory{diagnosticPresentDirectory};
+            std::ofstream trace{directory / "present_frames.txt", std::ios::app};
+            if (trace) {
+                trace << fmt::format(
+                    "frame={} frame_id={} texture=0x{:X} guest_map=0x{:X} guest_size={} "
+                    "host={}x{} format={} view_format={} layout={} surface_bytes={} "
+                    "crop={},{},{},{} scale={} transform={} swapchain={}x{} "
+                    "swapchain_format={} layer={} mip={}\\n",
+                    captureIndex, frame.id, reinterpret_cast<uintptr_t>(texture.get()),
+                    guestMap, guestSize, texture->dimensions.width, texture->dimensions.height,
+                    vk::to_string(texture->format->vkFormat),
+                    frame.textureView->format
+                        ? vk::to_string(frame.textureView->format->vkFormat)
+                        : std::string{"Undefined"},
+                    vk::to_string(texture->layout), texture->surfaceSize,
+                    frame.crop.left, frame.crop.top, frame.crop.right, frame.crop.bottom,
+                    static_cast<u32>(frame.scalingMode), static_cast<u32>(frame.transform),
+                    swapchainExtent.width, swapchainExtent.height,
+                    swapchainFormat ? vk::to_string(swapchainFormat->vkFormat)
+                                    : std::string{"Undefined"},
+                    frame.textureView->range.baseArrayLayer,
+                    frame.textureView->range.baseMipLevel);
+            }
+
+            if (captureIndex < 4 &&
+                texture->layout != vk::ImageLayout::eUndefined &&
+                texture->levelCount == 1 && texture->layerCount == 1 &&
+                texture->sampleCount == vk::SampleCountFlagBits::e1 &&
+                texture->surfaceSize > 0 && texture->surfaceSize <= 12ULL * 1024 * 1024 &&
+                (texture->format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+                !texture->format->IsCompressed()) {
+                // The previous frame's submitted work must be complete before
+                // the diagnostic readback, avoiding a race with guest rendering.
+                if (texture->cycle)
+                    texture->cycle->Wait();
+
+                auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+                auto diagnosticCycle{gpu.scheduler.Submit(
+                    [texture, staging](vk::raii::CommandBuffer &commandBuffer) {
+                        texture->CopyIntoStagingBuffer(commandBuffer, staging);
+                    })};
+                diagnosticCycle->AttachObjects(texture, staging);
+                diagnosticCycle->Wait();
+
+                const auto fileName{fmt::format("present_source_{:02}_{}x{}_{}.raw",
+                    captureIndex, texture->dimensions.width, texture->dimensions.height,
+                    vk::to_string(texture->format->vkFormat))};
+                std::ofstream raw{directory / fileName, std::ios::binary | std::ios::trunc};
+                if (raw) {
+                    raw.write(reinterpret_cast<const char *>(staging->data()),
+                              static_cast<std::streamsize>(staging->size()));
+                    LOGI("MINIRD wrote present source frame {}: {}", captureIndex, fileName);
+                } else {
+                    LOGE("MINIRD failed to write present source frame {}", captureIndex);
+                }
+            }
+
+            if (diagnosticPresentFrameCount >= 16) {
+                diagnosticPresentActive = false;
+                LOGI("MINIRD presentation trace complete: {} frames", diagnosticPresentFrameCount);
+            }
+        }
+
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,

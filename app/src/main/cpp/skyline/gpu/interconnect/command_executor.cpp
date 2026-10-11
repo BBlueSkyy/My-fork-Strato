@@ -645,6 +645,12 @@ namespace skyline::gpu::interconnect {
                 << "columns=index,file,render_pass,submission,texture,width,height,depth,format,layout,size,levels,layers,guest_map,guest_map_size,tile,bh,bd\n";
             manifest.close();
 
+            // The presentation thread consumes this one-shot marker and records
+            // exactly which surface is sent to the Android window.
+            std::ofstream presentMarker{base / "PRESENT_ARM", std::ios::out | std::ios::trunc};
+            if (presentMarker)
+                presentMarker << diagnosticCaptureDirectory << '\n';
+
             LOGI("MINIRD capture directory: {}", diagnosticCaptureDirectory);
             return true;
         }
