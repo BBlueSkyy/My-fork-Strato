@@ -761,6 +761,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         std::array<DiagnosticUniformBuffer, 2> diagnosticUniformBuffers{};
 
         u32 writeIdx{};
+        u32 diagnosticImageIdx{};
+        auto diagnosticImages{ctx.executor.allocator->AllocateUntracked<DiagnosticImageBinding>(
+            std::min<u32>(descriptorInfo.totalCombinedImageSamplerCount, 64))};
         auto writes{ctx.executor.allocator->AllocateUntracked<vk::WriteDescriptorSet>(descriptorInfo.totalWriteDescCount)};
 
         u32 bufferIdx{};
@@ -890,6 +893,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                      stage.stage, srcStageMask, dstStageMask);
                              });
 
+            const auto diagnosticImageBaseBinding{bindingIdx};
             writeImageDescs(vk::DescriptorType::eCombinedImageSampler, stage.combinedImageSamplerDescs, stage.combinedImageSamplerDescTotalCount,
                             [&](const DescriptorInfo::StageDescriptorInfo::CombinedImageSamplerDesc &desc, size_t arrayIdx) {
                                 BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers[i], desc, arrayIdx)};
@@ -897,6 +901,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                samplers, textures, handle,
                                                                stage.stage,
                                                                srcStageMask, dstStageMask)};
+                                if (diagnosticImageIdx < diagnosticImages.size())
+                                    diagnosticImages[diagnosticImageIdx++] = {
+                                        &imageDescs[imageIdx], binding.second,
+                                        diagnosticImageBaseBinding + static_cast<u32>(&desc - stage.combinedImageSamplerDescs.data()),
+                                        static_cast<u32>(arrayIdx), static_cast<u32>(i), handle.raw,
+                                        desc.cbuf_index, desc.cbuf_offset + (arrayIdx << desc.size_shift), srcStageMask, dstStageMask,
+                                        binding.second ? binding.second->DiagnosticViewBacking() : vk::Image{}};
                                 sampledImages[combinedImageSamplerIdx++] = binding.second;
                                 return binding.first;
                             }, ctx.gpu.traits.quirks.needsIndividualTextureBindingWrites);
@@ -918,6 +929,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             .bindPoint = vk::PipelineBindPoint::eGraphics,
             .descriptorSetIndex = 0,
             .diagnosticUniformBuffers = diagnosticUniformBuffers,
+            .diagnosticImageBindings = diagnosticImages.first(diagnosticImageIdx),
         });
     }
 
@@ -926,10 +938,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         size_t stageIndex{static_cast<size_t>(quickBind.stage)};
         std::array<DiagnosticUniformBuffer, 2> diagnosticUniformBuffers{};
+        u32 diagnosticImageIdx{};
         const auto &stageDescInfo{descriptorInfo.stages[stageIndex]};
         const auto &cbufUsageInfo{stageDescInfo.cbufUsages[quickBind.index]};
         if (!cbufUsageInfo.writeDescCount)
             return nullptr;
+        auto diagnosticImages{ctx.executor.allocator->AllocateUntracked<DiagnosticImageBinding>(
+            std::min<u32>(cbufUsageInfo.totalImageDescCount, 64))};
 
         auto &stageConstantBuffers{constantBuffers[stageIndex]};
 
@@ -1026,6 +1041,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                               samplers, textures, handle,
                                                                               stageDescInfo.stage,
                                                                               srcStageMask, dstStageMask)};
+                                               if (diagnosticImageIdx < diagnosticImages.size())
+                                                   diagnosticImages[diagnosticImageIdx++] = {
+                                                       &imageDescs[imageIdx], binding.second, usage.binding,
+                                                       static_cast<u32>(arrayIdx), static_cast<u32>(stageIndex), handle.raw,
+                                                       desc.cbuf_index, desc.cbuf_offset + (arrayIdx << desc.size_shift), srcStageMask, dstStageMask,
+                                                       binding.second ? binding.second->DiagnosticViewBacking() : vk::Image{}};
                                                sampledImages[usage.entirePipelineIdx + arrayIdx] = binding.second;
                                                return binding.first;
                                            });
@@ -1051,6 +1072,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             .bindPoint = vk::PipelineBindPoint::eGraphics,
             .descriptorSetIndex = 0,
             .diagnosticUniformBuffers = diagnosticUniformBuffers,
+            .diagnosticImageBindings = diagnosticImages.first(diagnosticImageIdx),
         });
     }
 

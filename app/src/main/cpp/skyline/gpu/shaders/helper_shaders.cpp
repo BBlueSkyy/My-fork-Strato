@@ -7,6 +7,7 @@
 #include <gpu/graphics_pipeline_assembler.h>
 #include <vfs/filesystem.h>
 #include "helper_shaders.h"
+#include <gpu/diagnostic/re5_texture_trace.h>
 
 namespace skyline::gpu {
     static vk::raii::ShaderModule CreateShaderModule(GPU &gpu, vfs::Backing &shaderBacking) {
@@ -279,7 +280,16 @@ namespace skyline::gpu {
 
         gpu.vkDevice.updateDescriptorSets(writes, nullptr);
 
-        recordCb([drawState = std::move(drawState), overrideScissor](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &cycle, GPU &gpu, vk::RenderPass, u32) {
+        const auto diagnosticBlitId{diagnostic::CurrentBlit() ? diagnostic::CurrentBlit()->id : 0};
+        if (auto *trace{diagnostic::CurrentBlit()})
+            trace->Append(fmt::format("BLIT_DESCRIPTOR_WRITE set=0x{:X} binding=0 array_element=0 vk_image_view=0x{:X} sampler=0x{:X} descriptor_layout={} source_texture_id={} view_creation_backing=0x{:X}",
+                reinterpret_cast<uintptr_t>(static_cast<VkDescriptorSet>(*drawState->descriptorSet)),
+                reinterpret_cast<uintptr_t>(static_cast<VkImageView>(imageInfo.imageView)),
+                reinterpret_cast<uintptr_t>(static_cast<VkSampler>(imageInfo.sampler)),
+                vk::to_string(imageInfo.imageLayout), srcImageView->texture->diagnosticIdentity,
+                reinterpret_cast<uintptr_t>(static_cast<VkImage>(srcImageView->DiagnosticViewBacking()))));
+
+        recordCb([drawState = std::move(drawState), overrideScissor, diagnosticBlitId, imageInfo](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &cycle, GPU &gpu, vk::RenderPass pass, u32 subpass) {
             cycle->AttachObject(drawState);
 
             vk::Viewport viewport{
@@ -304,6 +314,13 @@ namespace skyline::gpu {
             commandBuffer.pushConstants(*drawState->pipeline.pipelineLayout, vk::ShaderStageFlagBits::eFragment, sizeof(blit::VertexPushConstantLayout),
                                         vk::ArrayProxy<const blit::FragmentPushConstantLayout>{drawState->fragmentPushConstants});
             commandBuffer.draw(6, 1, 0, 0);
+            if (diagnosticBlitId)
+                diagnostic::Re5BlitJournal().NoteBlitRecorded(diagnosticBlitId, fmt::format(
+                    "set=0x{:X} binding=0 vk_image_view=0x{:X} pass=0x{:X} subpass={} cycle=0x{:X} note=vkCmdDraw_recorded_not_gpu_completion",
+                    reinterpret_cast<uintptr_t>(static_cast<VkDescriptorSet>(*drawState->descriptorSet)),
+                    reinterpret_cast<uintptr_t>(static_cast<VkImageView>(imageInfo.imageView)),
+                    reinterpret_cast<uintptr_t>(static_cast<VkRenderPass>(pass)), subpass,
+                    reinterpret_cast<uintptr_t>(cycle.get())));
         });
 
     }

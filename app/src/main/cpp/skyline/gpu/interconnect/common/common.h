@@ -4,6 +4,7 @@
 #pragma once
 
 #include <source_location>
+#include <gpu/diagnostic/re5_descriptor_trace.h>
 #include <common/dirty_tracking.h>
 #include <vulkan/vulkan_raii.hpp>
 #include <gpu/buffer.h>
@@ -20,6 +21,7 @@ namespace skyline::soc::gm20b {
 namespace skyline::gpu::interconnect {
     class CommandExecutor;
 }
+namespace skyline::gpu { class TextureView; }
 
 namespace skyline::gpu::interconnect {
     namespace engine_common = skyline::soc::gm20b::engine;
@@ -122,5 +124,6 @@ namespace skyline::gpu::interconnect {
         u32 descriptorSetIndex;
         // FS cbuf 3 and 4, identified from the guest shaders in the supplied cache.
         std::array<DiagnosticUniformBuffer, 2> diagnosticUniformBuffers{};
+        span<DiagnosticImageBinding> diagnosticImageBindings{};
     };
 }

@@ -13,6 +13,7 @@
 
 namespace skyline::gpu::interconnect {
     struct DiagnosticScalarProbe;
+    struct DiagnosticBindingProbe;
     constexpr bool EnableGpuCheckpoints{false}; //!< Whether to enable GPU debugging checkpoints (WILL DECREASE PERF SIGNIFICANTLY)
 
     /*
@@ -228,6 +229,7 @@ namespace skyline::gpu::interconnect {
         };
         std::vector<DiagnosticPassImage> diagnosticPassImages;
         std::vector<std::shared_ptr<DiagnosticScalarProbe>> diagnosticPassScalars;
+        std::vector<std::shared_ptr<DiagnosticBindingProbe>> diagnosticPassBindings;
         void QueueDiagnosticScalarReadbacks();
         std::vector<std::function<void()>> diagnosticReadbackCallbacks;
         void TrackDiagnosticPassImages(span<TextureView *> color, TextureView *depthStencilAttachment);
@@ -323,7 +325,7 @@ namespace skyline::gpu::interconnect {
          * @param exclusiveSubpass If this subpass should be the only subpass in a render pass
          * @note Any supplied texture should be attached prior and not undergo any persistent layout transitions till execution
          */
-        void AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, std::shared_ptr<DiagnosticScalarProbe> scalarProbe = {});
+        void AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, std::shared_ptr<DiagnosticScalarProbe> scalarProbe = {}, std::shared_ptr<DiagnosticBindingProbe> bindingProbe = {});
 
         /**
          * @brief Adds a subpass that clears the entirety of the specified attachment with a color value, it may utilize VK_ATTACHMENT_LOAD_OP_CLEAR for a more efficient clear when possible

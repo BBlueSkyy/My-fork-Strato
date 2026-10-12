@@ -431,6 +431,14 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::QueueDiagnosticScalarReadbacks() {
+        for (auto &probe : diagnosticPassBindings)
+            diagnosticReadbackCallbacks.emplace_back([probe] {
+                std::ofstream out(std::filesystem::path(probe->directory) /
+                    fmt::format("draw_bindings_{:03}.txt", probe->index), std::ios::trunc);
+                if (out)
+                    out << probe->metadata << (probe->recorded ? probe->result : "consumer_status=not_recorded\n");
+            });
+        diagnosticPassBindings.clear();
         auto probes{std::move(diagnosticPassScalars)};
         diagnosticPassScalars.clear();
         for (auto &probe : probes) {
@@ -713,7 +721,14 @@ namespace skyline::gpu::interconnect {
         cycle->AttachObject(dependency);
     }
 
-    void CommandExecutor::AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, std::shared_ptr<DiagnosticScalarProbe> scalarProbe) {
+    void CommandExecutor::AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, std::shared_ptr<DiagnosticScalarProbe> scalarProbe, std::shared_ptr<DiagnosticBindingProbe> bindingProbe) {
+        if (bindingProbe) {
+            function = [original = std::move(function), bindingProbe](vk::raii::CommandBuffer &commands,
+                const std::shared_ptr<FenceCycle> &cycle, GPU &gpu, vk::RenderPass pass, u32 subpass) {
+                original(commands, cycle, gpu, pass, subpass);
+                bindingProbe->RecordConsumedDescriptors();
+            };
+        }
         bool gotoNext{CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask)};
         if (gotoNext)
             slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassFunctionNode>(), std::forward<decltype(function)>(function));
@@ -728,6 +743,11 @@ namespace skyline::gpu::interconnect {
             diagnostic::Re5SceneCapture().Record(fmt::format("SCALAR_PROBE index={} executor=0x{:X} submission={} rp={}",
                 scalarProbe->index, reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex));
             diagnosticPassScalars.emplace_back(std::move(scalarProbe));
+        }
+        if (bindingProbe) {
+            bindingProbe->metadata += fmt::format("executor=0x{:X} submission={} render_pass={} subpass={}\n",
+                reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex, subpassCount - 1);
+            diagnosticPassBindings.emplace_back(std::move(bindingProbe));
         }
 
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)

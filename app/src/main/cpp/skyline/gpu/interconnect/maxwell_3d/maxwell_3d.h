@@ -61,6 +61,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         DescriptorAllocator::ActiveDescriptorSet *activeDescriptorSet{};
         std::vector<TextureView *> activeDescriptorSetSampledImages{};
         std::array<DiagnosticUniformBuffer, 2> diagnosticUniformBuffers{};
+        std::vector<DiagnosticImageBinding> diagnosticImageBindings;
+        std::shared_ptr<DiagnosticBindingProbe> PrepareDiagnosticBindingProbe(const char *kind, u32 count, u32 instances);
         std::shared_ptr<DiagnosticScalarProbe> PrepareDiagnosticScalarProbe(const char *kind, u32 count, u32 instances);
 
         size_t UpdateQuadConversionBuffer(u32 count, u32 firstVertex);

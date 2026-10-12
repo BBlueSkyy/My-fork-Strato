@@ -6,7 +6,7 @@ This audit supplements the scalar diagnostic in PR #337. The developer's hint is
 
 | Source | Commit |
 |---|---|
-| Current fork master (verified with git ls-remote) | `be16463d5d3cb30f9ad99bc0466b2e8b0a0a9211` |
+| Fork master pinned for this audit (verified with git ls-remote) | `be16463d5d3cb30f9ad99bc0466b2e8b0a0a9211` |
 | PR #337 base / original audit | `140dae65115cddc1289ab222b27faef18f66d83d` |
 | Fork Texman v2 #244 | `0a4a6c94868bb855f32c880789260730da4104b2` |
 | Eden | `6352612425ae0765802eaa8c5904ff652b97222a` |
@@ -86,3 +86,9 @@ First capture **request and selection metadata from chapter loading**, not anoth
 Only after that join is established are before/after bytes of **that one subresource** needed to distinguish bad alias selection from stale contents or visibility. Prioritize the shared partial-overlap/format-view/coherence paths in master and the tested #244. A request at mip 1 falling through while the parent has current GPU data would establish that defect's involvement, but still would not prove it is sufficient to resolve the game given the #244 result. If all relevant requests are mip 0, that specific hypothesis is excluded for those requests.
 
 The already authorized scalar probe is preserved and published separately from these findings. It measures dynamic multiplier bytes missing from the original captures; it **does not close the blit-history gap** and does not add Fermi rendering changes.
+
+## Follow-up instrumentation in the same PR
+
+Phase 4 now implements the bounded chapter-loading journal and later draw-binding link described above; see `re5-scene-mini-renderdoc.md`. It preserves the published scalar and image probes and does not apply the mip-loop change or any other rendering correction. The failed test on #244 remains contrary evidence to calling mip 1 a proven RE5 solution.
+
+The fork advanced again to `c7cb28d822c52437ed83e9f86ed15c3a3b77c6e7` during final validation. It was fetched read-only for an integration check; the source pins and line references above describe the earlier audit, not a new claim about every change in that head. Publishing this diagnostic does not modify master. The new good/bad captures have not yet been collected, so no requested Fermi resource has been proved to be the cause.

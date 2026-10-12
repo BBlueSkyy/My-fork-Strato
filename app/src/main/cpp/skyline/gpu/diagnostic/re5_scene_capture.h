@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include "re5_blit_trace.h"
 
 namespace skyline::gpu::diagnostic {
     class SceneFrameCapture {
@@ -27,6 +28,7 @@ namespace skyline::gpu::diagnostic {
         static constexpr std::uint32_t MaxPassSnapshots{24};
         static constexpr std::size_t MaxPassCaptureBytes{100ULL * 1024 * 1024};
         static constexpr std::uint32_t ScalarProbesPerInterval{32};
+        static constexpr std::uint32_t BindingProbesPerInterval{18};
         struct ScalarTicket {
             std::uint32_t index;
             std::string directory;
@@ -46,6 +48,10 @@ namespace skyline::gpu::diagnostic {
         std::array<std::uint32_t, FrameCount> scalarCountByInterval{};
         std::array<std::array<std::uint32_t, 2>, FrameCount> scalarDrawsByInterval{};
         std::uint32_t nextScalarIndex{};
+        std::array<std::uint32_t, FrameCount> bindingCounts{};
+        std::array<std::array<std::uint32_t, 5>, FrameCount> bindingDraws{};
+        std::array<std::array<std::uint32_t, 5>, FrameCount> bindingGroups{};
+        std::uint32_t nextBindingIndex{};
 
       public:
         void Start(std::string captureDirectory) {
@@ -58,6 +64,11 @@ namespace skyline::gpu::diagnostic {
             scalarCountByInterval.fill(0);
             scalarDrawsByInterval = {};
             nextScalarIndex = 0;
+            bindingCounts.fill(0);
+            bindingDraws = {};
+            bindingGroups = {};
+            nextBindingIndex = 0;
+            Re5BlitJournal().BeginCapture(path);
             for (auto &counter : priorityDrawsByInterval)
                 counter.store(0, std::memory_order_relaxed);
             for (auto &counter : otherDrawsByInterval)
@@ -123,6 +134,22 @@ namespace skyline::gpu::diagnostic {
             return ordinal < 8 || ordinal % 32 == 0;
         }
 
+        std::optional<ScalarTicket> ReserveBindingProbe(std::uint32_t interval, std::uint32_t group) {
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_acquire) || interval >= FrameCount || group >= 5)
+                return std::nullopt;
+            const auto ordinal{bindingDraws[interval][group]++};
+            if (ordinal >= 2 && ordinal % 64 != 0)
+                return std::nullopt;
+            if (bindingGroups[interval][group] >= (group < 4 ? 4U : 2U))
+                return std::nullopt;
+            if (bindingCounts[interval] >= BindingProbesPerInterval)
+                return std::nullopt;
+            ++bindingCounts[interval];
+            ++bindingGroups[interval][group];
+            return ScalarTicket{nextBindingIndex++, path};
+        }
+
         void Record(std::string event) {
             if (!active.load(std::memory_order_acquire) ||
                 eventCount.load(std::memory_order_relaxed) >= MaxEvents)
@@ -148,6 +175,8 @@ namespace skyline::gpu::diagnostic {
                     out << event << '\n';
             }
             events.clear();
+            std::ofstream blits(std::filesystem::path(path) / "blit_history.txt", std::ios::trunc);
+            if (blits) blits << Re5BlitJournal().FreezeSnapshot(path);
         }
     };
 

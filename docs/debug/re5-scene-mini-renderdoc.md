@@ -1,4 +1,4 @@
-# Resident Evil 5 — selective scene mini-RenderDoc (phase 3: scalar provenance)
+# Resident Evil 5 — selective scene mini-RenderDoc (phase 4: blit and binding provenance)
 
 Draft PR #337, diagnostic only; **do not merge** as a rendering correction.
 
@@ -73,3 +73,40 @@ Compare a bad and a good capture from the updated APK, preferably at the same ca
 - Host sampling/budget test and scalar range/provenance tests; ASan/UBSan (LeakSanitizer is unavailable under this container's process restrictions).
 - `tests/gpu/re5_scalar_vulkan_tests.cpp` calls the **production** readback helper with pinned Vulkan-Hpp and the same compile definitions as Android. It checks zero/one values, a nonzero descriptor base plus 0x1C0, missing/short/whole/overflow ranges, exactly four copied bytes, and a subsequent GPU write. Run with a graphics-capable ICD and Khronos synchronization validation.
 - Android integration compilation is delegated to the existing PR Build workflow on push. Host tests do not establish device behavior or the game's root cause.
+
+## Phase 4: chapter-loading blits linked to draw bindings
+
+The scalar and scene instruments above are preserved. The missing observation for the developer's Blit Engine/Texman hint is the identity of a requested texture, its selected view and a later consumer. This phase records that relationship without changing texture selection, formats, shaders or synchronization. It adds **no GPU copies, barriers, waits, pass splits or executor flushes**; the existing scalar/image readbacks remain unchanged.
+
+A bounded in-memory journal starts automatically with this diagnostic APK, before `ARM_CAPTURE`. Load the problematic chapter after starting the APK so its initialization blits are available. `ARM_CAPTURE` still starts the four-presentation scene capture; no second arming file is required.
+
+| File | Observation |
+|---|---|
+| `blit_history.txt` | Fermi source/destination IOVAs and surface parameters; translated physical mappings; Texman candidates and selection route; mip/layer lookup offsets/results; requested and returned TextureView metadata; backing, layout, dirty state and observed upload/download events; blit descriptor and command-recording identity |
+| `draw_bindings_NNN.txt` | Shader tuple, target texture IDs, descriptor set/mode, physical binding/array element, guest bindless handle and primary cbuf location; sampled view format/aspect/swizzle/subrange; current backing and immutable backing used when creating the descriptor's VkImageView; actual descriptor fields at draw command recording |
+| Existing `scalar_NNN.raw/.txt`, scene images and `gpu_events.txt` | Existing phase-2/3 observations with their original limits and timing |
+
+Texture IDs are monotonic for this process and are distinct from reusable C++/Vulkan addresses. The blit helper's descriptor is recorded after its original descriptor write. Material bindings retain references to the **actual allocator-resident `VkDescriptorImageInfo`**, including full writes, quick-bind identity copies and descriptor reuse; flushes and pipeline invalidation clear those references. The recorded fields are read after the original state updater and draw commands are recorded, before the executor allocator resets. Saving draw metadata uses the existing fence-ordered diagnostic callbacks, with no additional GPU work.
+
+Each binding lists `related_blit_ids`. Join those IDs to `BLIT id=...` records, then compare good and bad captures by guest ranges, request parameters, formats and subresources. Process IDs and host/Vulkan addresses must not be compared numerically across separate executions. A relation means **same destination Texture object or overlapping physical mappings**; it does not prove that a particular blit produced the pixels sampled by the draw. A source-only use is not labelled a producer.
+
+### Coverage and limits
+
+- The journal retains the latest blit for up to **256 destination texture identities**, at most **16 KiB per record**. Repeated screen blits replace one destination entry. Failed preparations retain a bounded record even when no destination was selected.
+- Capture pins at most **128 related records**, so a later blit cannot overwrite an already linked record. `evictions`, `pin_drops`, mapping truncation and record truncation are explicit. History freezes when presentation acquisition finishes; late command recording or later writes are outside that history snapshot.
+- A request records at most **two compact candidate rows**, up to **16 mip layouts** and **16 physical mappings** per full mapping description. A selected view is described separately. A rejected candidate beyond the budget is not evidence of absence.
+- Up to **18 draw binding probes per approximate presentation interval**, **72 overall**: independently up to four draws for each of the four observed fragment hashes (first two, then ordinals 64 and 128), and two other draws. The depth attachment must be 1280×720. This sampling does not establish that those hashes render the black pixels.
+- Provenance retains up to **64 sampled descriptor slots**; a selected draw describes at most **16 slots**, with a metadata budget. `retained_slots`, `pipeline_sampled_count` and budget markers make partial coverage visible. The history snapshot is bounded to **8 MiB**; it is not an exhaustive event log.
+- Synchronization counters cover only the period since a texture entered tracking. `upload_copy_recorded`/`download_copy_recorded` mean Vulkan commands were recorded. `copy_to_guest_returned` means the existing copy function returned. None validates bytes or establishes GPU completion/visibility for the consumer. `dirty_state=lock_busy` means the state was unavailable without waiting.
+
+The view creation backing stamp is distinct from the current Texture backing. A mismatch is a concrete stale-view clue, not by itself proof that RE5 samples incorrect data. Likewise, `CONSUMED` records API descriptor fields, not actual shader loads. This phase does **not capture sampled texture contents**, complete barriers or GPU execution order. Only after a suspicious producer/consumer pair is identified should a byte/content probe target that single subresource.
+
+### Paired capture procedure
+
+1. Start the updated APK and load the problematic chapter. Capture the bad state using the existing `ARM_CAPTURE` procedure.
+2. In the same game session, load chapter 4-1, return to the problematic chapter and capture the good state, preferably at the same camera/location. If the transition does not recover the graphics, label that capture as bad too.
+3. Send both **complete** `capture_###` folders and `emulation.log`, including `blit_history.txt`, all `draw_bindings_*.txt`, scalar files and images. Keep earlier captures separately. Wait for the existing readback log messages to stop before packaging; `capture_complete.txt` only closes presentation acquisition, not late fence callbacks.
+
+### Validation of phase 4
+
+`tests/gpu/re5_blit_trace_tests.cpp` exercises bounded history, pin retention/freeze, overlap rejection, thread-local scopes, identity-copy provenance, independent sampling budgets and observed synchronization counters. `tests/gpu/re5_binding_provenance_tests.cpp` uses the production descriptor metadata header with pinned Vulkan-Hpp/fmt and checks that a descriptor field populated after draw preparation is read from the retained real slot at recording. Both pass with warnings treated as errors; the journal test also passes ASan/UBSan. The existing scene/scalar host tests and the production scalar Vulkan integration test were rerun successfully, the latter with zero Khronos synchronization-validation errors on Lavapipe. Android integration remains the PR Build workflow's responsibility; no device rendering fix is claimed.

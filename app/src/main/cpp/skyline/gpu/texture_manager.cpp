@@ -4,12 +4,25 @@
 #include <common/trace.h>
 #include "texture/layout.h"
 #include "texture_manager.h"
+#include <gpu/diagnostic/re5_texture_trace.h>
 
 namespace skyline::gpu {
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
+        auto *blitTrace{diagnostic::CurrentBlit()};
+        size_t diagnosticCandidates{};
+        if (blitTrace)
+            blitTrace->Append("TEXMAN_REQUEST " + diagnostic::DescribeGuestTexture(guestTexture));
+        const auto traceViewRequest{[&](const std::shared_ptr<Texture> &texture, const char *route,
+                                       u32 mip, u32 levels, u32 layer, u32 layers) {
+            if (blitTrace)
+                blitTrace->Append(fmt::format("GET_VIEW_REQUEST route={} texture_id={} format={} type={} aspect={} mip={}+{} layer={}+{} candidate_count={} candidate_limit=2 {}",
+                    route, texture->diagnosticIdentity, vk::to_string(guestTexture.format->vkFormat),
+                    vk::to_string(guestTexture.viewType), vk::to_string(guestTexture.aspect), mip, levels,
+                    layer, layers, diagnosticCandidates, texture->DiagnosticStateSummary()));
+        }};
 
         auto guestMapping{guestTexture.mappings.front()};
 
@@ -45,6 +58,10 @@ namespace skyline::gpu {
         u32 depthSliceParentDepth{};
 
         while (hostMapping != textures.begin() && (--hostMapping)->end() > guestMapping.begin()) {
+            if (blitTrace && diagnosticCandidates++ < 2)
+                blitTrace->Append(fmt::format("TEXMAN_CANDIDATE contains_first_span={} replaced={} {}",
+                    hostMapping->contains(guestMapping), hostMapping->texture->replaced,
+                    diagnostic::DescribeCandidate(*hostMapping->texture, true)));
             auto &hostMappings{hostMapping->texture->guest->mappings};
             if (!hostMapping->contains(guestMapping) || hostMapping->texture->replaced)
                 continue;
@@ -139,6 +156,13 @@ namespace skyline::gpu {
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
                         (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
                     size_t memOffset{static_cast<size_t>(guestMapping.data() - hostMapping->texture->guest->mappings.front().data())};
+                    if (blitTrace && diagnosticCandidates <= 2) {
+                        size_t logical{};
+                        for (auto it{hostMappings.begin()}; it != hostMapping->iterator; ++it) logical += it->size();
+                        logical += reinterpret_cast<uintptr_t>(guestMapping.data()) - reinterpret_cast<uintptr_t>(hostMapping->iterator->data());
+                        blitTrace->Append(fmt::format("MIP_LOOKUP texture_id={} legacy_offset={} logical_span_offset={}",
+                            hostMapping->texture->diagnosticIdentity, memOffset, logical));
+                    }
                     size_t layerMemOffset{};
                     bool matched{};
                     for (u32 layer{}; layer < hostMapping->texture->layerCount; layer++) {
@@ -163,6 +187,9 @@ namespace skyline::gpu {
                         layerMemOffset += matchGuestTexture.GetLayerStride();
                     }
 
+                    if (blitTrace && diagnosticCandidates <= 2)
+                        blitTrace->Append(fmt::format("MIP_RESULT texture_id={} matched={} mip={} layer={}",
+                            hostMapping->texture->diagnosticIdentity, matched, matchLevel, matchLayer));
                     if (matched) {
                         if (layerMipMatch)
                             layerMipMatch->replaced = true;
@@ -184,6 +211,8 @@ namespace skyline::gpu {
                 fullMatch->replaced = true;
 
             ContextLock textureLock{tag, *depthSliceMatch};
+            traceViewRequest(depthSliceMatch, "depth_slice", depthSliceLevel, 1,
+                             depthSlice, guestTexture.GetViewLayerCount());
             return depthSliceMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
                 .aspectMask = guestTexture.aspect,
                 .baseMipLevel = depthSliceLevel,
@@ -193,6 +222,9 @@ namespace skyline::gpu {
             }, guestTexture.format, guestTexture.swizzle);
         } else if (layerMipMatch) {
             ContextLock textureLock{tag, *layerMipMatch};
+            traceViewRequest(layerMipMatch, "mip_layer", guestTexture.viewMipBase + matchLevel,
+                             guestTexture.viewMipCount, guestTexture.baseArrayLayer + matchLayer,
+                             guestTexture.GetViewLayerCount());
             return layerMipMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
                 .aspectMask = guestTexture.aspect,
                 .baseMipLevel = guestTexture.viewMipBase + matchLevel,
@@ -202,6 +234,8 @@ namespace skyline::gpu {
             }, guestTexture.format, guestTexture.swizzle);
         } else if (fullMatch) {
             ContextLock textureLock{tag, *fullMatch};
+            traceViewRequest(fullMatch, "full", guestTexture.viewMipBase, guestTexture.viewMipCount,
+                             guestTexture.baseArrayLayer, guestTexture.GetViewLayerCount());
             return fullMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
                 .aspectMask = guestTexture.aspect,
                 .baseMipLevel = guestTexture.viewMipBase,
@@ -313,8 +347,11 @@ namespace skyline::gpu {
             }
         }
 
-        for (auto &texture : matches)
+        for (auto &texture : matches) {
+            if (blitTrace) blitTrace->Append(fmt::format("TEXMAN_RECONCILE texture_id={} action=SynchronizeGuest cpu_dirty=0 skip_trap=1", texture->diagnosticIdentity));
+            if (blitTrace) diagnostic::Re5BlitJournal().TrackTexture(texture->diagnosticIdentity);
             texture->SynchronizeGuest(false, true);
+        }
 
         // Create a texture as we cannot find one that matches
 
@@ -331,6 +368,8 @@ namespace skyline::gpu {
             textures.emplace(mapping, TextureMapping{texture, it, guestMapping});
         }
 
+        traceViewRequest(texture, "new", guestTexture.viewMipBase, guestTexture.viewMipCount,
+                         guestTexture.baseArrayLayer, guestTexture.GetViewLayerCount());
         return texture->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
             .aspectMask = guestTexture.aspect,
             .baseMipLevel = guestTexture.viewMipBase,
