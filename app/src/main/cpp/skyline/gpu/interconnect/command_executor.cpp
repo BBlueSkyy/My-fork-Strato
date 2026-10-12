@@ -432,6 +432,50 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::QueueDiagnosticScalarReadbacks() {
+        if (diagnosticCubeTexture) {
+            auto texture{std::move(diagnosticCubeTexture)};
+            auto directory{std::move(diagnosticCubeDirectory)};
+            auto metadata{std::move(diagnosticCubeMetadata)};
+            diagnosticCubeTexture.reset();
+            diagnosticCubeDirectory.clear();
+            diagnosticCubeMetadata.clear();
+            // This uses the existing image->staging helper at the same natural
+            // pass boundary as scene snapshots; it does not wait or split passes.
+            const auto bytes{texture->surfaceSize};
+            const auto levels{texture->levelCount};
+            const auto layers{texture->layerCount};
+            metadata += fmt::format("copy_status=scheduled_after_natural_pass bytes={} host_mips={} host_layers={} "
+                "format={} layout={} ordering=mip_major_with_all_layers_per_mip "
+                "note=GPU_content_observed_after_pass_not_at_fragment_instruction\\n",
+                bytes, levels, layers, vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout));
+            size_t mipOffset{};
+            for (u32 i{}; i < texture->mipLayouts.size(); ++i) {
+                const auto &mip{texture->mipLayouts[i]};
+                metadata += fmt::format("mip={} width={} height={} depth={} linear_offset={} bytes_per_layer={} layers={}\\n",
+                    i, mip.dimensions.width, mip.dimensions.height, mip.dimensions.depth,
+                    mipOffset, mip.targetLinearSize, layers);
+                mipOffset += mip.targetLinearSize * layers;
+            }
+            auto staging{gpu.memory.AllocateStagingBuffer(bytes)};
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [texture, staging](vk::raii::CommandBuffer &commands,
+                                   const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    cycle->AttachObjects(texture, staging);
+                    texture->CopyIntoStagingBuffer(commands, staging);
+                });
+            diagnosticReadbackCallbacks.emplace_back(
+                [staging, directory = std::move(directory), metadata = std::move(metadata), bytes] {
+                    const auto status{vmaInvalidateAllocation(staging->vmaAllocator, staging->vmaAllocation, 0, bytes)};
+                    const auto base{std::filesystem::path(directory) / "cubemap_binding21_000"};
+                    std::ofstream info(base.string() + ".txt", std::ios::trunc);
+                    if (info) info << metadata << "invalidate_result=" << static_cast<int>(status) << '\\n';
+                    if (status != VK_SUCCESS) return;
+                    std::ofstream raw(base.string() + ".raw", std::ios::binary | std::ios::trunc);
+                    if (raw) raw.write(reinterpret_cast<const char *>(staging->data()), bytes);
+                    if (info) info << "raw_status=" << (raw ? "written" : "failed") << '\\n';
+                    LOGI("MINIRD_RE5_CUBE sampled cubemap readback {}", raw ? "written" : "failed");
+                });
+        }
         for (auto &probe : diagnosticPassBindings)
             diagnosticReadbackCallbacks.emplace_back([probe] {
                 std::ofstream out(std::filesystem::path(probe->directory) /
@@ -735,6 +779,42 @@ namespace skyline::gpu::interconnect {
             slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassFunctionNode>(), std::forward<decltype(function)>(function));
         else
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
+
+        // Reserve only an actual sampled 128x128 cube matching the known
+        // binding, and only after the previous render pass has been closed.
+        // No descriptor is re-resolved and no guest texture is synchronized.
+        if (bindingProbe && !diagnosticCubeTexture) {
+            auto &capture{diagnostic::Re5SceneCapture()};
+            for (const auto &image : bindingProbe->images) {
+                if (image.stage != 4 || image.binding != 21 || !image.view ||
+                    image.view->type != vk::ImageViewType::eCube || !image.view->texture)
+                    continue;
+                auto &texture{*image.view->texture};
+                if (texture.dimensions.width != 128 || texture.dimensions.height != 128 ||
+                    texture.dimensions.depth != 1 || texture.layerCount != 6 ||
+                    texture.levelCount < 1 || texture.levelCount > 8 ||
+                    texture.format->vkFormat != vk::Format::eR8G8B8A8Unorm ||
+                    texture.surfaceSize == 0 || texture.surfaceSize > 2ULL * 1024 * 1024 ||
+                    !(texture.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+                    texture.layout != vk::ImageLayout::eGeneral)
+                    continue;
+                if (capture.cubeReadbackReserved.exchange(true, std::memory_order_acq_rel))
+                    break;
+                diagnosticCubeTexture = image.view->texture;
+                diagnosticCubeDirectory = bindingProbe->directory;
+                diagnosticCubeMetadata = fmt::format(
+                    "source=fs_binding21 descriptor_probe={} texture_id={} view_type=Cube "
+                    "host_levels={} host_layers={} requested_view_mip={}+{} requested_view_layer={}+{} "
+                    "view_create_backing=0x{:X} current_backing=0x{:X} "
+                    "note=observed_sampled_binding_not_shader_load_proof\\n",
+                    bindingProbe->index, texture.diagnosticIdentity, texture.levelCount,
+                    texture.layerCount, image.view->range.baseMipLevel, image.view->range.levelCount,
+                    image.view->range.baseArrayLayer, image.view->range.layerCount,
+                    reinterpret_cast<uintptr_t>(static_cast<VkImage>(image.viewBackingAtWrite)),
+                    reinterpret_cast<uintptr_t>(static_cast<VkImage>(texture.GetBacking())));
+                break;
+            }
+        }
 
         // Register before AddSubpass's automatic Submit can clear active state.
         // CreateRenderPassWithSubpass may have ended the *previous* pass above.
