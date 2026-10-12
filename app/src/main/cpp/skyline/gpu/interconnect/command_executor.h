@@ -230,6 +230,11 @@ namespace skyline::gpu::interconnect {
         std::vector<DiagnosticPassImage> diagnosticPassImages;
         std::vector<std::shared_ptr<DiagnosticScalarProbe>> diagnosticPassScalars;
         std::vector<std::shared_ptr<DiagnosticBindingProbe>> diagnosticPassBindings;
+        // Only the first 128x128 sampled cube seen at FS binding 21. A snapshot
+        // is queued at the natural end of the render pass, never during a draw.
+        std::shared_ptr<Texture> diagnosticCubeTexture;
+        std::string diagnosticCubeDirectory;
+        std::string diagnosticCubeMetadata;
         void QueueDiagnosticScalarReadbacks();
         std::vector<std::function<void()>> diagnosticReadbackCallbacks;
         void TrackDiagnosticPassImages(span<TextureView *> color, TextureView *depthStencilAttachment);
