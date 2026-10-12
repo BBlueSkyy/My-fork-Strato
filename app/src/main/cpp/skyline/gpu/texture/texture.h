@@ -319,6 +319,7 @@ namespace skyline::gpu {
     class TextureView : public std::enable_shared_from_this<TextureView> {
       private:
         vk::ImageView vkView{};
+        u64 vkViewGeneration{};
 
       public:
         LockableSharedPtr<Texture> texture;
@@ -357,6 +358,9 @@ namespace skyline::gpu {
          * @note Naming is in accordance to the Lockable named requirement
          */
         bool try_lock();
+
+        // Supported subset of the backing usage for this view format.
+        vk::ImageUsageFlags GetUsage() const;
 
         /**
          * @return A VkImageView that corresponds to the properties of this view
@@ -407,6 +411,11 @@ namespace skyline::gpu {
         };
 
         std::vector<TextureViewStorage> views;
+        u64 backingGeneration{1};
+        std::vector<vk::Format> backingViewFormats; //!< Empty means no explicit image-format list.
+
+        bool ViewFormatAdmitted(vk::Format requested) const;
+        void PromoteBackingForView(vk::Format requested);
 
         std::shared_ptr<memory::StagingBuffer> downloadStagingBuffer{};
 
@@ -553,7 +562,13 @@ namespace skyline::gpu {
          * @note All memory residing in the current backing is not copied to the new backing, it must be handled externally
          * @note The texture **must** be locked prior to calling this
          */
-        void SwapBacking(BackingType &&backing, vk::ImageLayout layout = vk::ImageLayout::eUndefined);
+        // The replacement's real creation flags and optional format list are part of
+        // its view-admission contract; never inherit permissions from the old image.
+        void SwapBacking(BackingType &&backing, vk::ImageCreateFlags flags, vk::ImageLayout layout = vk::ImageLayout::eUndefined, std::vector<vk::Format> viewFormats = {});
+
+        // Valid while locked and until this generation finishes recording. Empty
+        // means no explicit list, rather than a list containing the native format.
+        span<const vk::Format> GetBackingViewFormats() const { return backingViewFormats; }
 
         /**
          * @brief Transitions the backing to the supplied layout, if the backing already is in this layout then this does nothing
@@ -594,7 +609,7 @@ namespace skyline::gpu {
         /**
          * @return A cached or newly created view into this texture with the supplied attributes
          */
-        std::shared_ptr<TextureView> GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format = {}, vk::ComponentMapping mapping = {});
+        std::shared_ptr<TextureView> GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format = {}, vk::ComponentMapping mapping = {}, ContextTag context = {});
 
         /**
          * @brief Copies the contents of the supplied source texture into the current texture
