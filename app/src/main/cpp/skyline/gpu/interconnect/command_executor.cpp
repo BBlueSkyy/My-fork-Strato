@@ -446,12 +446,12 @@ namespace skyline::gpu::interconnect {
             const auto layers{texture->layerCount};
             metadata += fmt::format("copy_status=scheduled_after_natural_pass bytes={} host_mips={} host_layers={} "
                 "format={} layout={} ordering=mip_major_with_all_layers_per_mip "
-                "note=GPU_content_observed_after_pass_not_at_fragment_instruction\\n",
+                "note=GPU_content_observed_after_pass_not_at_fragment_instruction\n",
                 bytes, levels, layers, vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout));
             size_t mipOffset{};
             for (u32 i{}; i < texture->mipLayouts.size(); ++i) {
                 const auto &mip{texture->mipLayouts[i]};
-                metadata += fmt::format("mip={} width={} height={} depth={} linear_offset={} bytes_per_layer={} layers={}\\n",
+                metadata += fmt::format("mip={} width={} height={} depth={} linear_offset={} bytes_per_layer={} layers={}\n",
                     i, mip.dimensions.width, mip.dimensions.height, mip.dimensions.depth,
                     mipOffset, mip.targetLinearSize, layers);
                 mipOffset += mip.targetLinearSize * layers;
@@ -468,11 +468,11 @@ namespace skyline::gpu::interconnect {
                     const auto status{vmaInvalidateAllocation(staging->vmaAllocator, staging->vmaAllocation, 0, bytes)};
                     const auto base{std::filesystem::path(directory) / "cubemap_binding21_000"};
                     std::ofstream info(base.string() + ".txt", std::ios::trunc);
-                    if (info) info << metadata << "invalidate_result=" << static_cast<int>(status) << '\\n';
+                    if (info) info << metadata << "invalidate_result=" << static_cast<int>(status) << '\n';
                     if (status != VK_SUCCESS) return;
                     std::ofstream raw(base.string() + ".raw", std::ios::binary | std::ios::trunc);
-                    if (raw) raw.write(reinterpret_cast<const char *>(staging->data()), bytes);
-                    if (info) info << "raw_status=" << (raw ? "written" : "failed") << '\\n';
+                    if (raw) raw.write(reinterpret_cast<const char *>(staging->data()), static_cast<std::streamsize>(bytes));
+                    if (info) info << "raw_status=" << (raw ? "written" : "failed") << '\n';
                     LOGI("MINIRD_RE5_CUBE sampled cubemap readback {}", raw ? "written" : "failed");
                 });
         }
@@ -806,7 +806,7 @@ namespace skyline::gpu::interconnect {
                     "source=fs_binding21 descriptor_probe={} texture_id={} view_type=Cube "
                     "host_levels={} host_layers={} requested_view_mip={}+{} requested_view_layer={}+{} "
                     "view_create_backing=0x{:X} current_backing=0x{:X} "
-                    "note=observed_sampled_binding_not_shader_load_proof\\n",
+                    "note=observed_sampled_binding_not_shader_load_proof\n",
                     bindingProbe->index, texture.diagnosticIdentity, texture.levelCount,
                     texture.layerCount, image.view->range.baseMipLevel, image.view->range.levelCount,
                     image.view->range.baseArrayLayer, image.view->range.layerCount,
