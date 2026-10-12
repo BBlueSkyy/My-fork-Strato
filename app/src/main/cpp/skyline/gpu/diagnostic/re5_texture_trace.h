@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include <gpu/texture/texture.h>
+#include <gpu/diagnostic/re5_cubemap_probe.h>
 #include "re5_blit_trace.h"
 
 namespace skyline::gpu::diagnostic {
@@ -81,10 +82,8 @@ namespace skyline::gpu::diagnostic {
             vk::to_string(texture.usage), texture.DiagnosticStateSummary(), DescribeCandidate(texture)) +
             fmt::format(" host_allocated_mips={} host_allocated_layers={} view_mips_fit={} view_layers_fit={} view_backing_matches_current={} note=range_uses_actual_Texture_allocation_not_guest_metadata",
                 texture.levelCount, texture.layerCount,
-                range.baseMipLevel < texture.levelCount &&
-                    range.levelCount <= texture.levelCount - range.baseMipLevel,
-                range.baseArrayLayer < texture.layerCount &&
-                    range.layerCount <= texture.layerCount - range.baseArrayLayer,
+                DiagnosticSubresourceFits(texture.levelCount, range.baseMipLevel, range.levelCount),
+                DiagnosticSubresourceFits(texture.layerCount, range.baseArrayLayer, range.layerCount),
                 view->DiagnosticViewBacking() == texture.GetBacking());
     }
 }
