@@ -78,6 +78,13 @@ namespace skyline::gpu::diagnostic {
             reinterpret_cast<uintptr_t>(static_cast<VkImage>(texture.GetBacking())),
             vk::to_string(texture.format->vkFormat), texture.dimensions.width, texture.dimensions.height,
             texture.dimensions.depth, vk::to_string(texture.layout), vk::to_string(texture.flags),
-            vk::to_string(texture.usage), texture.DiagnosticStateSummary(), DescribeCandidate(texture));
+            vk::to_string(texture.usage), texture.DiagnosticStateSummary(), DescribeCandidate(texture)) +
+            fmt::format(" host_allocated_mips={} host_allocated_layers={} view_mips_fit={} view_layers_fit={} view_backing_matches_current={} note=range_uses_actual_Texture_allocation_not_guest_metadata",
+                texture.levelCount, texture.layerCount,
+                range.baseMipLevel < texture.levelCount &&
+                    range.levelCount <= texture.levelCount - range.baseMipLevel,
+                range.baseArrayLayer < texture.layerCount &&
+                    range.layerCount <= texture.layerCount - range.baseArrayLayer,
+                view->DiagnosticViewBacking() == texture.GetBacking());
     }
 }
