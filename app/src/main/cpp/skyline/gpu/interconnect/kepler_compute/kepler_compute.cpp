@@ -28,6 +28,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
     }
 
     void KeplerCompute::Dispatch(const QMD &qmd) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
         if (ctx.gpu.traits.quirks.brokenComputeShaders)
             return;
 
@@ -79,5 +80,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             commandBuffer.dispatch(drawParams->dimensions[0], drawParams->dimensions[1], drawParams->dimensions[2]);
         });
         ctx.executor.AddCheckpoint("After dispatch");
+
+        });
     }
 }
