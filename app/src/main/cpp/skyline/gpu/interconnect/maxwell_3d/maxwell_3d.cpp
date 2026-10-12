@@ -407,6 +407,32 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 probe->metadata += "related_blit_ids=";
                 for (const auto id : related) probe->metadata += fmt::format("{},", id);
                 probe->metadata += " relation=same_texture_or_physical_overlap_not_proven_pixel_producer\n";
+                // A single targeted probe for the 128x128 cube observed at FS binding 21
+                // in the supplied paired captures. Read-only: no descriptor refresh or sync.
+                if (image.stage == 4 && image.binding == 21 &&
+                    image.view->type == vk::ImageViewType::eCube &&
+                    texture.dimensions.width == 128 && texture.dimensions.height == 128) {
+                    constexpr u32 LodCbufIndex{12};
+                    constexpr u32 LodOffset{4};
+                    probe->metadata += fmt::format("CUBEMAP_128_BIND21 {}\n",
+                        samplers.DiagnosticLodSummary(image.rawHandle >> 20, image.rawHandle & ((1U << 20) - 1U)));
+                    auto &lodView{constantBuffers.boundConstantBuffers[4][LodCbufIndex].view};
+                    if (lodView && diagnostic::ScalarRangeValid(lodView.size, LodOffset)) {
+                        ContextLock lock{ctx.executor.tag, lodView};
+                        const auto base{lodView.GetOffset()};
+                        const auto lod{lodView.GetBuffer()->PeekDiagnosticGuestScalar(base + LodOffset)};
+                        probe->metadata += fmt::format(
+                            "CUBEMAP_128_BIND21 lod_cbuf=12 lod_offset=0x4 guest_status={} "
+                            "gpu_dirty={} direct={} shadow={} view_offset={} view_size={}\n",
+                            lod.bits ? "unsynchronized_guest_mirror" : "guest_mirror_unavailable",
+                            lod.gpuDirty, lod.direct, lod.directShadow, base, lodView.size);
+                        if (lod.bits)
+                            probe->metadata += fmt::format("CUBEMAP_128_BIND21 lod_bits=0x{:08X} lod_float={} "
+                                "note=guest_observation_not_shader_execution\n", *lod.bits, std::bit_cast<float>(*lod.bits));
+                    } else {
+                        probe->metadata += "CUBEMAP_128_BIND21 lod_status=unbound_or_out_of_range\n";
+                    }
+                }
             }
             if (probe->metadata.size() > 48 * 1024) {
                 probe->metadata += "metadata_budget_exhausted\n";
