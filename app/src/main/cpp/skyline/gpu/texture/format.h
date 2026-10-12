@@ -232,7 +232,8 @@ namespace skyline::gpu::format {
             .b = vk::ComponentSwizzle::eB,
             .a = vk::ComponentSwizzle::eA,
     }, true);
-    FORMAT(S8Uint, 32, eS8Uint, .vkAspect = {
+    // Stencil-only S8 has one byte per texel (not a 32-bit depth/stencil word).
+    FORMAT(S8Uint, 8, eS8Uint, .vkAspect = {
            vka::eStencil
     }, .swizzleMapping = {
            .r = vk::ComponentSwizzle::eR,
@@ -240,6 +241,9 @@ namespace skyline::gpu::format {
            .b = vk::ComponentSwizzle::eB,
            .a = vk::ComponentSwizzle::eA,
     });
+
+    static_assert(S8Uint.GetSize(1, 1) == R8Unorm.GetSize(1, 1), "S8 and R8 guest texels must occupy one byte");
+    static_assert(S8Uint.GetSize(16, 8) == 16 * 8, "S8 guest texture byte size must be 8 bpp");
 
     #undef FORMAT
     #undef FORMAT_SUFF_UNORM_SRGB
