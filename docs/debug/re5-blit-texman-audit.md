@@ -14,6 +14,8 @@ This audit supplements the scalar diagnostic in PR #337. The developer's hint is
 
 The developer's upstream Texman rewrite is not assumed to be the fork's PR #244. A difference in #244 does not prove a fix in the developer's implementation.
 
+**Confirmed device result supplied during this audit:** RE5 was tested on PR #244 and the black characters/ground persisted. The corrected mip lookup in that branch must not be presented as an RE5 solution. This result lowers the priority of an isolated mip-lookup explanation; it does not exclude shared Fermi/view/alias paths or establish equivalence with the developer's upstream rewrite. The exact tested APK commit was not supplied, so this report does not infer an instruction-level equivalence from the PR number.
+
 ## Strongest master divergence: an ordinary nonzero mip is missed
 
 `gpu/interconnect/fermi_2d.cpp:135–146` constructs one-mip 2D source/destination requests from the Fermi surface addresses and calls `TextureManager::FindOrCreate`. The address can legitimately identify a mip of an existing larger image.
@@ -47,7 +49,7 @@ Reproduction executed with the **exact loop extracted from the pinned master**, 
 
 #244 `texture_manager.cpp:337–354` uses `LocateSubresource`; `texture/guest_range.h:161–165` subtracts every preceding mip size unconditionally. Its guest-range and resource-layout host tests also passed.
 
-**Confirmed:** a master lookup defect, reachable by a nonzero-mip Fermi request. **Not captured:** whether RE5 made that request, which image was authoritative, whether fallback bytes were stale, or which later material draw sampled it. Applying a RE5 correction from this finding alone would still be speculative.
+**Confirmed:** a master lookup defect, reachable by a nonzero-mip Fermi request. **Not captured:** whether RE5 made that request, which image was authoritative, whether fallback bytes were stale, or which later material draw sampled it. The user's persistent bug on #244 is contrary evidence to treating this difference alone as sufficient. Applying a RE5 correction from this finding alone would still be speculative.
 
 ## Other concrete comparisons
 
@@ -81,6 +83,6 @@ First capture **request and selection metadata from chapter loading**, not anoth
 - Lookup route (existing mip/layer/full view versus new representation), selected backing identity and returned view type/format/aspect/mip/layer/swizzle.
 - One later material binding with the same guest range/backing identity, to join producer and consumer.
 
-Only after that join is established are before/after bytes of **that one subresource** needed to distinguish bad alias selection from stale contents or visibility. If a request at mip 1 is observed falling through while the parent has the current GPU data, the reproduced lookup defect becomes actionable for RE5. If all relevant requests are mip 0, that specific hypothesis is excluded for those requests.
+Only after that join is established are before/after bytes of **that one subresource** needed to distinguish bad alias selection from stale contents or visibility. Prioritize the shared partial-overlap/format-view/coherence paths in master and the tested #244. A request at mip 1 falling through while the parent has current GPU data would establish that defect's involvement, but still would not prove it is sufficient to resolve the game given the #244 result. If all relevant requests are mip 0, that specific hypothesis is excluded for those requests.
 
 The already authorized scalar probe is preserved and published separately from these findings. It measures dynamic multiplier bytes missing from the original captures; it **does not close the blit-history gap** and does not add Fermi rendering changes.
