@@ -12,6 +12,7 @@
 #include <dlfcn.h>
 #include "command_executor.h"
 #include <gpu/diagnostic/re5_scene_capture.h>
+#include <gpu/diagnostic/re5_cubemap_probe.h>
 #include <gpu/diagnostic/re5_scalar_copy.h>
 #include <gpu/interconnect/common/common.h>
 #include <bit>
@@ -790,13 +791,12 @@ namespace skyline::gpu::interconnect {
                     image.view->type != vk::ImageViewType::eCube || !image.view->texture)
                     continue;
                 auto &texture{*image.view->texture};
-                if (texture.dimensions.width != 128 || texture.dimensions.height != 128 ||
-                    texture.dimensions.depth != 1 || texture.layerCount != 6 ||
-                    texture.levelCount < 1 || texture.levelCount > 8 ||
-                    texture.format->vkFormat != vk::Format::eR8G8B8A8Unorm ||
-                    texture.surfaceSize == 0 || texture.surfaceSize > 2ULL * 1024 * 1024 ||
-                    !(texture.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
-                    texture.layout != vk::ImageLayout::eGeneral)
+                if (!diagnostic::DiagnosticCubeCandidate(
+                    texture.dimensions.width, texture.dimensions.height, texture.dimensions.depth,
+                    texture.layerCount, texture.levelCount, texture.surfaceSize,
+                    texture.format->vkFormat == vk::Format::eR8G8B8A8Unorm,
+                    bool(texture.usage & vk::ImageUsageFlagBits::eTransferSrc),
+                    texture.layout == vk::ImageLayout::eGeneral))
                     continue;
                 if (capture.cubeReadbackReserved.exchange(true, std::memory_order_acq_rel))
                     break;
