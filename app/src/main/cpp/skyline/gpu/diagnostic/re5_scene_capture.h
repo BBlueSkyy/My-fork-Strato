@@ -26,6 +26,11 @@ namespace skyline::gpu::diagnostic {
         static constexpr std::uint32_t PassSnapshotsPerInterval{6};
         static constexpr std::uint32_t MaxPassSnapshots{24};
         static constexpr std::size_t MaxPassCaptureBytes{100ULL * 1024 * 1024};
+        static constexpr std::uint32_t ScalarProbesPerInterval{32};
+        struct ScalarTicket {
+            std::uint32_t index;
+            std::string directory;
+        };
 
       private:
         std::mutex mutex;
@@ -38,6 +43,9 @@ namespace skyline::gpu::diagnostic {
         std::size_t passBytes{};
         std::array<std::atomic<std::uint32_t>, FrameCount> priorityDrawsByInterval{};
         std::array<std::atomic<std::uint32_t>, FrameCount> otherDrawsByInterval{};
+        std::array<std::uint32_t, FrameCount> scalarCountByInterval{};
+        std::array<std::array<std::uint32_t, 2>, FrameCount> scalarDrawsByInterval{};
+        std::uint32_t nextScalarIndex{};
 
       public:
         void Start(std::string captureDirectory) {
@@ -47,6 +55,9 @@ namespace skyline::gpu::diagnostic {
             passCountByInterval.fill(0);
             nextPassIndex = 0;
             passBytes = 0;
+            scalarCountByInterval.fill(0);
+            scalarDrawsByInterval = {};
+            nextScalarIndex = 0;
             for (auto &counter : priorityDrawsByInterval)
                 counter.store(0, std::memory_order_relaxed);
             for (auto &counter : otherDrawsByInterval)
@@ -93,6 +104,23 @@ namespace skyline::gpu::diagnostic {
         std::string CaptureDirectory() {
             std::scoped_lock lock(mutex);
             return path;
+        }
+
+        std::optional<ScalarTicket> ReserveScalarProbe(std::uint32_t interval) {
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_acquire) || interval >= FrameCount ||
+                scalarCountByInterval[interval] >= ScalarProbesPerInterval)
+                return std::nullopt;
+            ++scalarCountByInterval[interval];
+            return ScalarTicket{nextScalarIndex++, path};
+        }
+
+        bool SampleScalarDraw(std::uint32_t interval, std::uint32_t target) {
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_acquire) || interval >= FrameCount || target >= 2)
+                return false;
+            const auto ordinal{scalarDrawsByInterval[interval][target]++};
+            return ordinal < 8 || ordinal % 32 == 0;
         }
 
         void Record(std::string event) {

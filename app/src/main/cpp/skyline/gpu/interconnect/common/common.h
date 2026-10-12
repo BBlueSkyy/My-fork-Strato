@@ -91,6 +91,26 @@ namespace skyline::gpu::interconnect {
 
     class StateUpdateBuilder;
 
+    // Points at the exact descriptor info filled by StateUpdater during recording.
+    // Valid only within the owning executor allocation/cycle; never re-resolve a
+    // BufferView here, as that could select a different backing than the draw.
+    struct DiagnosticUniformBuffer {
+        const vk::DescriptorBufferInfo *info{};
+        u32 binding{};
+        u32 element{};
+        bool immutableMegaBuffer{};
+    };
+
+    struct DiagnosticScalarProbe {
+        DiagnosticUniformBuffer descriptor;
+        u32 byteOffset{};
+        u32 index{};
+        std::string directory;
+        std::string metadata;
+        std::string result;
+        bool copied{};
+    };
+
     struct DescriptorUpdateInfo {
         span<vk::CopyDescriptorSet> copies; //!< These will be performed before writes
         span<vk::WriteDescriptorSet> writes;
@@ -100,5 +120,7 @@ namespace skyline::gpu::interconnect {
         vk::DescriptorSetLayout descriptorSetLayout;
         vk::PipelineBindPoint bindPoint;
         u32 descriptorSetIndex;
+        // FS cbuf 3 and 4, identified from the guest shaders in the supplied cache.
+        std::array<DiagnosticUniformBuffer, 2> diagnosticUniformBuffers{};
     };
 }

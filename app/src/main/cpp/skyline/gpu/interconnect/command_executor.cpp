@@ -12,6 +12,9 @@
 #include <dlfcn.h>
 #include "command_executor.h"
 #include <gpu/diagnostic/re5_scene_capture.h>
+#include <gpu/diagnostic/re5_scalar_copy.h>
+#include <gpu/interconnect/common/common.h>
+#include <bit>
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -427,6 +430,63 @@ namespace skyline::gpu::interconnect {
         }
     }
 
+    void CommandExecutor::QueueDiagnosticScalarReadbacks() {
+        auto probes{std::move(diagnosticPassScalars)};
+        diagnosticPassScalars.clear();
+        for (auto &probe : probes) {
+            auto staging{gpu.memory.AllocateStagingBuffer(4)};
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [probe, staging](vk::raii::CommandBuffer &commandBuffer,
+                                 const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    // The descriptor was resolved by RecordAll for this draw,
+                    // including a prior write inherited through descriptor copies.
+                    // Do not read it later on the waiter: its allocator can reset.
+                    if (!probe->descriptor.info) {
+                        probe->result = "gpu_status=descriptor_provenance_unavailable\n";
+                        return;
+                    }
+                    const auto desc{*probe->descriptor.info};
+                    probe->result = fmt::format("vk_buffer=0x{:X} descriptor_offset={} descriptor_range={}\n",
+                        reinterpret_cast<uintptr_t>(static_cast<VkBuffer>(desc.buffer)), desc.offset, desc.range);
+                    const auto offset{diagnostic::RecordScalarReadback(commandBuffer, desc,
+                        probe->byteOffset, staging->vkBuffer)};
+                    if (!offset) {
+                        probe->result += "gpu_status=unbound_or_unverifiable_range\n";
+                        return;
+                    }
+                    cycle->AttachObject(staging);
+                    probe->copied = true;
+                    probe->result += fmt::format("gpu_status=copied_postpass gpu_byte_offset={} bytes=4\n", *offset);
+                });
+            diagnosticReadbackCallbacks.emplace_back([probe, staging] {
+                const std::filesystem::path directory{probe->directory};
+                const auto prefix{fmt::format("scalar_{:03}", probe->index)};
+                if (probe->copied) {
+                    const auto status{vmaInvalidateAllocation(staging->vmaAllocator, staging->vmaAllocation, 0, 4)};
+                    if (status == VK_SUCCESS) {
+                        u32 bits;
+                        std::memcpy(&bits, staging->data(), sizeof(bits));
+                        probe->result += fmt::format("gpu_bits=0x{:08X} gpu_float={}\n", bits, std::bit_cast<float>(bits));
+                        std::ofstream raw(directory / (prefix + ".raw"), std::ios::binary | std::ios::trunc);
+                        if (raw)
+                            raw.write(reinterpret_cast<const char *>(staging->data()), 4);
+                        if (!raw)
+                            probe->result += "raw_write_status=failed\n";
+                    } else {
+                        probe->result += fmt::format("gpu_status=invalidate_failed result={}\n", static_cast<int>(status));
+                    }
+                }
+                std::ofstream info(directory / (prefix + ".txt"), std::ios::trunc);
+                if (info)
+                    info << probe->metadata << probe->result;
+                else
+                    LOGE("MINIRD_RE5_SCALAR failed metadata {}", probe->index);
+                if (info)
+                    LOGI("MINIRD_RE5_SCALAR wrote probe {}", probe->index);
+            });
+        }
+    }
+
     void CommandExecutor::QueueDiagnosticPassReadbacks() {
         if (diagnosticPassImages.empty())
             return;
@@ -533,6 +593,7 @@ namespace skyline::gpu::interconnect {
             // We need to create a render pass if one doesn't already exist or the current one isn't compatible
             if (renderPass != nullptr) {
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
+                QueueDiagnosticScalarReadbacks();
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
                 QueueDiagnosticPassReadbacks();
                 renderPassIndex++;
@@ -564,6 +625,7 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::FinishRenderPass() {
         if (renderPass) {
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
+            QueueDiagnosticScalarReadbacks();
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
             QueueDiagnosticPassReadbacks();
             renderPassIndex++;
@@ -651,12 +713,22 @@ namespace skyline::gpu::interconnect {
         cycle->AttachObject(dependency);
     }
 
-    void CommandExecutor::AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
+    void CommandExecutor::AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, std::shared_ptr<DiagnosticScalarProbe> scalarProbe) {
         bool gotoNext{CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask)};
         if (gotoNext)
             slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassFunctionNode>(), std::forward<decltype(function)>(function));
         else
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
+
+        // Register before AddSubpass's automatic Submit can clear active state.
+        // CreateRenderPassWithSubpass may have ended the *previous* pass above.
+        if (scalarProbe) {
+            scalarProbe->metadata += fmt::format("executor=0x{:X} submission={} render_pass={} subpass={}\n",
+                reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex, subpassCount - 1);
+            diagnostic::Re5SceneCapture().Record(fmt::format("SCALAR_PROBE index={} executor=0x{:X} submission={} rp={}",
+                scalarProbe->index, reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex));
+            diagnosticPassScalars.emplace_back(std::move(scalarProbe));
+        }
 
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
             Submit();

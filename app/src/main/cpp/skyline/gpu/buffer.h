@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstring>
 #include <boost/functional/hash.hpp>
 #include <common/linear_allocator.h>
 #include <common/spin_lock.h>
@@ -180,6 +181,33 @@ namespace skyline::gpu {
 
         constexpr vk::Buffer GetBacking() {
             return backing ? backing->vkBuffer : *directBacking->vkBuffer;
+        }
+
+        struct DiagnosticGuestScalar {
+            std::optional<u32> bits;
+            uintptr_t guestMap{};
+            bool direct{};
+            bool gpuDirty{};
+            bool directShadow{};
+        };
+
+        // No traps, readback, host upload or GPU wait. This observes the raw
+        // guest mirror, which may be stale relative to pending GPU writes.
+        // The caller must hold the view/buffer lock.
+        DiagnosticGuestScalar PeekDiagnosticGuestScalar(vk::DeviceSize offset) {
+            std::scoped_lock stateLock{stateMutex};
+            DiagnosticGuestScalar result{
+                .guestMap = guest ? reinterpret_cast<uintptr_t>(guest->data()) : 0,
+                .direct = isDirect,
+                .gpuDirty = currentExecutionGpuDirty || dirtyState == DirtyState::GpuDirty,
+                .directShadow = directTrackedShadowActive,
+            };
+            if (mirror.valid() && offset <= mirror.size() && mirror.size() - offset >= sizeof(u32)) {
+                u32 bits;
+                std::memcpy(&bits, mirror.data() + offset, sizeof(bits));
+                result.bits = bits;
+            }
+            return result;
         }
 
         /**

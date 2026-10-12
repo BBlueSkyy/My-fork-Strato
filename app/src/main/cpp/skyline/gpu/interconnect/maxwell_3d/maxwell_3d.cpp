@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <optional>
+#include <bit>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -12,6 +13,7 @@
 #include "maxwell_3d.h"
 #include "common.h"
 #include <gpu/diagnostic/re5_scene_capture.h>
+#include <gpu/diagnostic/re5_scalar_probe.h>
 
 namespace skyline::gpu::interconnect::maxwell3d {
     // Phase 2: filter by structural GPU properties observed in RE5 gameplay.
@@ -71,6 +73,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
           directState{activeState.directState},
           queries{gpu} {
         ctx.executor.AddFlushCallback([this] {
+            diagnosticUniformBuffers = {};
             if (attachedDescriptorSets) {
                 ctx.executor.AttachDependency(attachedDescriptorSets);
                 attachedDescriptorSets = nullptr;
@@ -87,6 +90,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         });
 
         ctx.executor.AddPipelineChangeCallback([this] {
+            diagnosticUniformBuffers = {};
             activeState.MarkAllDirty();
             activeDescriptorSet = nullptr;
         });
@@ -131,6 +135,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
        vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
     PrepareDraw(builder, topology, true, false, 0, count, srcStageMask, dstStageMask);
+    auto scalarProbe{PrepareDiagnosticScalarProbe("inline", count, instanceCount)};
 
     inlineIndexBuffer = std::make_shared<memory::Buffer>(ctx.gpu.memory.AllocateBuffer(util::AlignUp(indexData.size_bytes(), PAGE_SIZE)));
     std::memcpy(inlineIndexBuffer->cast<u8>().data(), indexData.data(), indexData.size_bytes());
@@ -161,7 +166,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (drawParams->transformFeedbackEnable)
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
-         !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+         !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask, std::move(scalarProbe));
 
         if (auto re5SceneOrdinal{SampleRe5SceneDraw(activeState)}) {
             std::string shaderHashes;
@@ -316,6 +321,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
              builder.SetPipeline(pipeline->compiledPipeline.pipeline, vk::PipelineBindPoint::eGraphics);
 
          if (descUpdateInfo) {
+             // Full updates replace provenance. Quick-bind copies keep only
+             // slots whose binding/element is demonstrably copied unchanged.
+             diagnostic::UpdateScalarProvenance(diagnosticUniformBuffers,
+                 descUpdateInfo->diagnosticUniformBuffers, descUpdateInfo->copies);
              if (ctx.gpu.traits.supportsPushDescriptors) {
                  builder.SetDescriptorSetWithPush(descUpdateInfo);
              } else {
@@ -334,6 +343,69 @@ namespace skyline::gpu::interconnect::maxwell3d {
                  }
              }
          }
+    }
+
+    std::shared_ptr<DiagnosticScalarProbe> Maxwell3D::PrepareDiagnosticScalarProbe(const char *kind, u32 count, u32 instances) {
+        auto &capture{diagnostic::Re5SceneCapture()};
+        if (!capture.active.load(std::memory_order_acquire))
+            return {};
+        auto *pipeline{activeState.GetPipeline()};
+        if (!pipeline)
+            return {};
+        const auto hash{pipeline->sourcePackedState.shaderHashes[static_cast<size_t>(engine::Pipeline::Shader::Type::Pixel)]};
+        const u32 target{hash == 0xF3805B306B15F89AULL ? 0U : 1U};
+        if (hash != 0xF3805B306B15F89AULL && hash != 0xB141A1171435D55EULL)
+            return {};
+        auto *depth{activeState.GetDepthAttachment()};
+        if (!depth || !depth->texture || depth->texture->dimensions.width != 1280 ||
+            depth->texture->dimensions.height != 720)
+            return {};
+        const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+        if (!capture.SampleScalarDraw(interval, target))
+            return {};
+        auto ticket{capture.ReserveScalarProbe(interval)};
+        if (!ticket)
+            return {};
+        auto probe{std::make_shared<DiagnosticScalarProbe>()};
+        probe->descriptor = diagnosticUniformBuffers[target];
+        probe->byteOffset = target == 0 ? 0x1C0 : 0;
+        probe->index = ticket->index;
+        probe->directory = std::move(ticket->directory);
+        probe->metadata = fmt::format(
+            "probe={} approx_present={} kind={} count={} instances={} fs={:016X} stage=4 cbuf={} byte_offset={} "
+            "binding={} array_element={} descriptor_set=0x{:X} descriptor_mode={} source={} "
+            "guest_time=draw_preparation gpu_time=natural_render_pass_end depth_texture=0x{:X}\n",
+            probe->index, interval, kind, count, instances, hash, target + 3, probe->byteOffset,
+            probe->descriptor.binding, probe->descriptor.element,
+            activeDescriptorSet ? reinterpret_cast<uintptr_t>(static_cast<VkDescriptorSet>(**activeDescriptorSet)) : 0,
+            ctx.gpu.traits.supportsPushDescriptors ? "push" : "allocated_set",
+            !probe->descriptor.info ? "unavailable" : probe->descriptor.immutableMegaBuffer ? "megabuffer" : "buffer_view",
+            reinterpret_cast<uintptr_t>(depth->texture.get()));
+        probe->metadata += "shaders=";
+        for (const auto shaderHash : pipeline->sourcePackedState.shaderHashes)
+            probe->metadata += fmt::format("{:016X},", shaderHash);
+        probe->metadata += '\n';
+        for (auto *view : activeState.GetColorAttachments())
+            if (view && view->texture)
+                probe->metadata += fmt::format("color_texture=0x{:X} dimensions={}x{} format={}\n",
+                    reinterpret_cast<uintptr_t>(view->texture.get()), view->texture->dimensions.width,
+                    view->texture->dimensions.height, vk::to_string(view->texture->format->vkFormat));
+        auto &view{constantBuffers.boundConstantBuffers[4][target + 3].view};
+        if (view && diagnostic::ScalarRangeValid(view.size, probe->byteOffset)) {
+            ContextLock lock{ctx.executor.tag, view};
+            const auto base{view.GetOffset()};
+            auto guest{view.GetBuffer()->PeekDiagnosticGuestScalar(base + probe->byteOffset)};
+            probe->metadata += fmt::format(
+                "guest_status={} guest_map=0x{:X} guest_view_offset={} guest_view_size={} direct={} gpu_dirty={} direct_shadow={}\n",
+                guest.bits ? "mirror_observed_without_synchronization" : "mirror_unavailable", guest.guestMap,
+                base, view.size, guest.direct, guest.gpuDirty, guest.directShadow);
+            if (guest.bits)
+                probe->metadata += fmt::format("guest_bits=0x{:08X} guest_float={}\n", *guest.bits, std::bit_cast<float>(*guest.bits));
+        } else {
+            probe->metadata += "guest_status=unbound_or_out_of_range\n";
+        }
+        probe->metadata += "note=guest_mirror_may_be_stale_or_differ_from_direct_shadow; gpu_read_is_postpass_not_shader_execution_proof\n";
+        return probe;
     }
 
     void Maxwell3D::LoadConstantBuffer(span<u32> data, u32 offset) {
@@ -563,6 +635,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
         PrepareDraw(builder, topology, indexed, false, first, count, srcStageMask, dstStageMask);
+        auto scalarProbe{PrepareDiagnosticScalarProbe("direct", count, instanceCount)};
 
         if (directState.inputAssembly.NeedsQuadConversion()) {
             count = conversion::quads::GetIndexCount(count);
@@ -613,7 +686,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
-        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask, std::move(scalarProbe));
 
         if (auto re5SceneOrdinal{SampleRe5SceneDraw(activeState)}) {
             std::string shaderHashes;
@@ -676,6 +749,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
         PrepareDraw(builder, topology, indexed, true, 0, 0, srcStageMask, dstStageMask);
+        auto scalarProbe{PrepareDiagnosticScalarProbe("indirect", count, 0)};
 
         if (directState.inputAssembly.NeedsQuadConversion())
             throw exception("Quad conversion is not supported for indirect draws!");
@@ -725,7 +799,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
-        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask, std::move(scalarProbe));
 
         if (auto re5SceneOrdinal{SampleRe5SceneDraw(activeState)}) {
             std::string shaderHashes;
