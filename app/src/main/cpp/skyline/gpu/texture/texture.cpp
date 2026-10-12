@@ -11,6 +11,8 @@
 #include "adreno_aliasing.h"
 #include "bc_decoder.h"
 #include "format.h"
+#include "image_format_policy.h"
+#include "backing_promotion.h"
 
 namespace skyline::gpu {
     u32 GuestTexture::GetLayerStride() {
@@ -80,15 +82,36 @@ namespace skyline::gpu {
 
     Texture::TextureViewStorage::TextureViewStorage(vk::ImageViewType type, texture::Format format, vk::ComponentMapping mapping, vk::ImageSubresourceRange range, vk::raii::ImageView &&vkView) : type(type), format(format), mapping(mapping), range(range), vkView(std::move(vkView)) {}
 
+    vk::ImageUsageFlags TextureView::GetUsage() const {
+        auto usage{texture->usage};
+        if (!format || format->vkFormat == texture->format->vkFormat) return usage;
+        const auto properties{texture->gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat)};
+        const auto features{texture->tiling == vk::ImageTiling::eOptimal ? properties.optimalTilingFeatures : properties.linearTilingFeatures};
+        if (!(features & vk::FormatFeatureFlagBits::eSampledImage)) usage &= ~vk::ImageUsageFlagBits::eSampled;
+        if (!(features & vk::FormatFeatureFlagBits::eStorageImage)) usage &= ~vk::ImageUsageFlagBits::eStorage;
+        if (!(features & vk::FormatFeatureFlagBits::eColorAttachment)) usage &= ~vk::ImageUsageFlagBits::eColorAttachment;
+        if (!(features & vk::FormatFeatureFlagBits::eDepthStencilAttachment)) usage &= ~vk::ImageUsageFlagBits::eDepthStencilAttachment;
+        if (!(features & (vk::FormatFeatureFlagBits::eColorAttachment | vk::FormatFeatureFlagBits::eDepthStencilAttachment)))
+            usage &= ~vk::ImageUsageFlagBits::eInputAttachment;
+        return usage;
+    }
+
     vk::ImageView TextureView::GetView() {
-        if (vkView)
+        const auto requested{format ? format->vkFormat : texture->format->vkFormat};
+        if (!texture->ViewFormatAdmitted(requested))
+            throw exception("Texture view format {} is not admitted by backing {}", vk::to_string(requested), vk::to_string(texture->format->vkFormat));
+        if (vkView && vkViewGeneration == texture->backingGeneration)
             return vkView;
 
         auto it{std::find_if(texture->views.begin(), texture->views.end(), [this](const Texture::TextureViewStorage &view) {
             return view.type == type && view.format == format && view.mapping == mapping && view.range == range;
         })};
         if (it == texture->views.end()) {
+            // Foreign formats need not support every usage of the native image (e.g.
+            // an sRGB sampled alias of a storage-capable UNORM image).
+            vk::ImageViewUsageCreateInfo viewUsage{.usage = GetUsage()};
             vk::ImageViewCreateInfo createInfo{
+                .pNext = &viewUsage,
                 .image = texture->GetBacking(),
                 .viewType = type,
                 .format = format ? *format : *texture->format,
@@ -99,6 +122,7 @@ namespace skyline::gpu {
             it = texture->views.emplace(texture->views.end(), type, format, mapping, range, vk::raii::ImageView{texture->gpu.vkDevice, createInfo});
         }
 
+        vkViewGeneration = texture->backingGeneration;
         return vkView = *it->vkView;
     }
 
@@ -574,18 +598,6 @@ namespace skyline::gpu {
         return surfaceSize;
     }
 
-    static bool RequiresMutableBcnFormat(texture::Format inputFormat) {
-        switch (inputFormat->vkFormat) {
-            case vk::Format::eBc1RgbaUnormBlock:
-            case vk::Format::eBc1RgbaSrgbBlock:
-            case vk::Format::eBc3UnormBlock:
-            case vk::Format::eBc3SrgbBlock:
-                return true;
-            default:
-                return false;
-        }
-    }
-
     Texture::Texture(GPU &pGpu, GuestTexture pGuest)
         : gpu(pGpu),
           guest(std::move(pGuest)),
@@ -609,9 +621,8 @@ namespace skyline::gpu {
           deswizzledSurfaceSize(CalculateLevelStride(mipLayouts) * layerCount),
           surfaceSize(format == guest->format ? deswizzledSurfaceSize : (CalculateTargetLevelStride(mipLayouts) * layerCount)),
           sampleCount(vk::SampleCountFlagBits::e1),
-          flags((!gpu.traits.quirks.vkImageMutableFormatCostly || RequiresMutableBcnFormat(format))
-                    ? vk::ImageCreateFlags{vk::ImageCreateFlagBits::eMutableFormat}
-                    : vk::ImageCreateFlags{}),
+          flags(texture::GuestImageFormatFlags(format->vkFormat, gpu.traits.quirks.vkImageMutableFormatCostly,
+              guest->GetImageType() == vk::ImageType::e2D && format->vkAspect == vk::ImageAspectFlagBits::eColor && !format->IsCompressed())),
           usage(vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled) {
         if ((format->vkAspect & vk::ImageAspectFlagBits::eColor) && !format->IsCompressed())
             usage |= vk::ImageUsageFlagBits::eColorAttachment;
@@ -706,10 +717,21 @@ namespace skyline::gpu {
         }
     }
 
-    void Texture::SwapBacking(BackingType &&pBacking, vk::ImageLayout pLayout) {
+    void Texture::SwapBacking(BackingType &&pBacking, vk::ImageCreateFlags pFlags, vk::ImageLayout pLayout, std::vector<vk::Format> pViewFormats) {
         WaitOnFence();
 
-        backing = std::move(pBacking);
+        std::vector<vk::ImageView> handles;
+        for (const auto &view : views) handles.push_back(*view.vkView);
+        auto retiredFramebuffers{gpu.framebufferCache.RetireViews(handles)};
+        retiredFramebuffers.clear(); // Fence is complete; destroy framebuffers before their views.
+        views.clear();
+        ++backingGeneration;
+
+        std::visit([&](auto &replacement) {
+            backing.emplace<std::decay_t<decltype(replacement)>>(std::move(replacement));
+        }, pBacking);
+        flags = pFlags;
+        backingViewFormats = std::move(pViewFormats);
         layout = pLayout;
         if (GetBacking())
             backingCondition.notify_all();
@@ -890,15 +912,86 @@ namespace skyline::gpu {
                 gpu.state.process->trap.TrapRegions(*trapHandle, true); // Trap any future CPU writes to this texture
     }
 
-    std::shared_ptr<TextureView> Texture::GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format pFormat, vk::ComponentMapping mapping) {
-        if (!pFormat || pFormat == guest->format)
-            pFormat = format; // We want to use the texture's format if it isn't supplied or if the requested format matches the guest format then we want to use the host format just in case it is host incompatible and the host format differs from the guest format
+    bool Texture::ViewFormatAdmitted(vk::Format requested) const {
+        return texture::ViewFormatAdmitted(format->vkFormat, flags, backingViewFormats, requested);
+    }
 
-        auto viewFormat{pFormat->vkFormat}, textureFormat{format->vkFormat};
-        if ((flags & vk::ImageCreateFlagBits::eMutableFormat) == vk::ImageCreateFlags{} &&
-            viewFormat != textureFormat &&
-            (!gpu.traits.quirks.adrenoRelaxedFormatAliasing || !texture::IsAdrenoAliasCompatible(viewFormat, textureFormat)))
-            LOGW("Creating a view of a texture with a different format without mutable format: {} - {}", vk::to_string(viewFormat), vk::to_string(textureFormat));
+    void Texture::PromoteBackingForView(vk::Format requested) {
+        if (ViewFormatAdmitted(requested)) return;
+        if (!guest || guest->GetImageType() != vk::ImageType::e2D ||
+            format->vkAspect != vk::ImageAspectFlagBits::eColor || format->IsCompressed() ||
+            sampleCount != vk::SampleCountFlagBits::e1 || tiling != vk::ImageTiling::eOptimal ||
+            !(usage & vk::ImageUsageFlagBits::eTransferSrc) || !(usage & vk::ImageUsageFlagBits::eTransferDst))
+            throw exception("Cannot safely promote this texture backing to format {}", vk::to_string(requested));
+
+        WaitOnBacking();
+        const auto previousCycle{cycle};
+        if (previousCycle) previousCycle->WaitSubmit(); // Old raw views/nodes must finish recording first.
+        auto admitted{texture::AdmitViewFormat(format->vkFormat, backingViewFormats, requested)};
+        const auto promotedFlags{flags | vk::ImageCreateFlagBits::eMutableFormat};
+        vk::ImageFormatListCreateInfo list{
+            .viewFormatCount = static_cast<u32>(admitted.size()), .pViewFormats = admitted.data()
+        };
+        vk::ImageCreateInfo createInfo{
+            .pNext = gpu.traits.supportsImageFormatList ? &list : nullptr,
+            .flags = promotedFlags, .imageType = guest->GetImageType(), .format = *format,
+            .extent = dimensions, .mipLevels = levelCount, .arrayLayers = layerCount,
+            .samples = sampleCount, .tiling = tiling, .usage = usage,
+            .sharingMode = vk::SharingMode::eExclusive, .queueFamilyIndexCount = 1,
+            .pQueueFamilyIndices = &gpu.vkQueueFamilyIndex, .initialLayout = vk::ImageLayout::eUndefined,
+        };
+        auto next{std::make_shared<memory::Image>(gpu.memory.AllocateImage(createInfo))};
+        const auto oldImage{GetBacking()};
+        const auto newImage{next->vkImage};
+        auto copies{texture::PromotionCopyRegions(dimensions, levelCount, layerCount)};
+        struct Retired {
+            BackingType backing;
+            std::vector<TextureViewStorage> views;
+            std::vector<vk::raii::Framebuffer> framebuffers; // Destroy before views and image.
+        };
+        auto retired{std::make_shared<Retired>()};
+        std::vector<vk::ImageView> handles;
+        for (const auto &view : views) handles.push_back(*view.vkView);
+        // A failed promotion may still retire cache entries used by old GPU work.
+        // Attach before cache mutation, even when the copy has not been submitted.
+        if (previousCycle) previousCycle->AttachObject(retired);
+        retired->framebuffers = gpu.framebufferCache.RetireViews(handles);
+        std::shared_ptr<FenceCycle> copyCycle{previousCycle};
+        if (layout != vk::ImageLayout::eUndefined) {
+            auto commandBuffer{gpu.scheduler.AllocateCommandBuffer()};
+            copyCycle = commandBuffer.GetFenceCycle();
+            try {
+                // Prepare all allocating lifetime/dependency operations before submission.
+                copyCycle->AttachObjects(retired, next, shared_from_this());
+                copyCycle->ChainCycle(previousCycle);
+                commandBuffer->begin(vk::CommandBufferBeginInfo{
+                    .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+                });
+                texture::RecordBackingPromotion(*commandBuffer, oldImage, newImage, layout, levelCount, layerCount, copies);
+                commandBuffer->end();
+                gpu.scheduler.SubmitCommandBuffer(*commandBuffer, copyCycle);
+            } catch (...) {
+                copyCycle->Cancel();
+                throw; // No backing ownership or view generation has changed.
+            }
+        }
+
+        // No allocating operations after submission. Image's move constructor transfers
+        // ownership; its defaulted move assignment would duplicate the VMA allocation.
+        std::visit([&](auto &old) {
+            retired->backing.emplace<std::decay_t<decltype(old)>>(std::move(old));
+        }, backing);
+        retired->views = std::move(views);
+        backing.emplace<memory::Image>(std::move(*next));
+        flags = promotedFlags;
+        backingViewFormats = gpu.traits.supportsImageFormatList ? std::move(admitted) : std::vector<vk::Format>{};
+        ++backingGeneration;
+        cycle = std::move(copyCycle);
+    }
+
+    std::shared_ptr<TextureView> Texture::GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format pFormat, vk::ComponentMapping mapping, ContextTag context) {
+        if (!pFormat || (guest && pFormat == guest->format))
+            pFormat = format; // We want to use the texture's format if it isn't supplied or if the requested format matches the guest format then we want to use the host format just in case it is host incompatible and the host format differs from the guest format
 
         if ((pFormat->vkAspect & format->vkAspect) == vk::ImageAspectFlagBits{}) {
             pFormat = format; // If the requested format doesn't share any aspects then fallback to the texture's format in the hope it's more likely to function
@@ -914,6 +1007,15 @@ namespace skyline::gpu {
         if (isRgbaBgraPair && mapping == vk::ComponentMapping{vk::ComponentSwizzle::eB, vk::ComponentSwizzle::eG, vk::ComponentSwizzle::eR, vk::ComponentSwizzle::eA}) {
             pFormat = format;
             mapping = vk::ComponentMapping{};
+        }
+
+        if (!ViewFormatAdmitted(pFormat->vkFormat)) {
+            if (!format->IsCompatible(*pFormat))
+                throw exception("Incompatible texture view formats {} and {}", vk::to_string(format->vkFormat), vk::to_string(pFormat->vkFormat));
+            if (context)
+                throw TextureBackingPromotionRequest{shared_from_this(), pFormat->vkFormat};
+            // No executor context: the caller holds the texture lock, excluding queued uses.
+            PromoteBackingForView(pFormat->vkFormat);
         }
 
         return std::make_shared<TextureView>(shared_from_this(), type, range, pFormat, mapping);

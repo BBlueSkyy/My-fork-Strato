@@ -9,6 +9,7 @@
 #include <gpu/interconnect/common/file_pipeline_state_accessor.h>
 #include <gpu/graphics_pipeline_assembler.h>
 #include <gpu/shader_manager.h>
+#include <shader_compiler/backend/spirv/emit_spirv.h>
 #include <gpu.h>
 #include <jvm.h>
 #include <vulkan/vulkan_enums.hpp>
@@ -511,7 +512,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
     static GraphicsPipelineAssembler::CompiledPipeline MakeCompiledPipeline(GPU &gpu,
                                                                                  const PackedPipelineState &packedState,
                                                                                  const std::array<ShaderStage, engine::ShaderStageCount> &shaderStages,
-                                                                                 span<vk::DescriptorSetLayoutBinding> layoutBindings) {
+                                                                                 span<vk::DescriptorSetLayoutBinding> layoutBindings,
+                                                                                 bool usesRenderArea) {
         boost::container::static_vector<vk::PipelineShaderStageCreateInfo, engine::ShaderStageCount> shaderStageInfos;
         for (const auto &stage : shaderStages)
             if (stage.module)
@@ -667,6 +669,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         texture::Format depthStencilFormat{packedState.GetDepthRenderTargetFormat()};
 
+        boost::container::static_vector<vk::PushConstantRange, 1> pushConstantRanges;
+        if (usesRenderArea) {
+            pushConstantRanges.push_back(vk::PushConstantRange{
+                .stageFlags = vk::ShaderStageFlagBits::eAllGraphics,
+                .offset = 0,
+                .size = sizeof(Shader::Backend::SPIRV::RenderAreaLayout),
+            });
+        }
+
         return gpu.graphicsPipelineAssembler->AssemblePipelineAsync(GraphicsPipelineAssembler::PipelineState{
             .shaderStages = shaderStageInfos,
             .vertexState = vertexInputState,
@@ -682,14 +693,20 @@ namespace skyline::gpu::interconnect::maxwell3d {
             .depthStencilFormat = depthStencilFormat ? depthStencilFormat->vkFormat : vk::Format::eUndefined,
             .sampleCount = vk::SampleCountFlagBits::e1, //TODO: fix after MSAA support
             .destroyShaderModules = true
-        }, layoutBindings);
+        }, layoutBindings, pushConstantRanges);
     }
 
     Pipeline::Pipeline(GPU &gpu, PipelineStateAccessor &accessor, const PackedPipelineState &packedState)
         : sourcePackedState{packedState} {
         auto shaderStages{MakePipelineShaders(gpu, accessor, sourcePackedState)};
         descriptorInfo = MakePipelineDescriptorInfo(shaderStages, gpu.traits.quirks.needsIndividualTextureBindingWrites);
-        compiledPipeline = MakeCompiledPipeline(gpu, sourcePackedState, shaderStages, descriptorInfo.descriptorSetLayoutBindings);
+
+        for (const auto &stage : shaderStages)
+            usesRenderArea |= stage.module && stage.info.uses_render_area;
+
+        compiledPipeline = MakeCompiledPipeline(gpu, sourcePackedState, shaderStages,
+                                                descriptorInfo.descriptorSetLayoutBindings,
+                                                usesRenderArea);
 
         for (u32 i{}; i < engine::ShaderStageCount; i++)
             if (shaderStages[i].stage != vk::ShaderStageFlagBits{})

@@ -65,11 +65,16 @@ namespace skyline::gpu {
                 auto &matchGuestTexture{*hostMapping->texture->guest};
 
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                    ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
-                        matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
-                        matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
-                        || matchGuestTexture.viewMipBase > 0)
+                    (((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
+                       matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
+                       matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
+                      || matchGuestTexture.viewMipBase > 0))
                     && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
+                    // Equal block-linear allocation sizes do not make differently-sized
+                    // images interchangeable. A VkImageView cannot restrict a 16x1
+                    // backing to the logical 1x1 extent described by a TIC, so reusing
+                    // such a backing changes normalized sampling coordinates. Mip/layer
+                    // aliases are handled by the representable view paths below.
                     fullMatch = hostMapping->texture;
                 } else {
                     matches.push_back(hostMapping->texture);
@@ -190,7 +195,7 @@ namespace skyline::gpu {
                 .levelCount = 1,
                 .baseArrayLayer = depthSlice,
                 .layerCount = guestTexture.GetViewLayerCount(),
-            }, guestTexture.format, guestTexture.swizzle);
+            }, guestTexture.format, guestTexture.swizzle, tag);
         } else if (layerMipMatch) {
             ContextLock textureLock{tag, *layerMipMatch};
             return layerMipMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
@@ -199,7 +204,7 @@ namespace skyline::gpu {
                 .levelCount = guestTexture.viewMipCount,
                 .baseArrayLayer = guestTexture.baseArrayLayer + matchLayer,
                 .layerCount = guestTexture.GetViewLayerCount(),
-            }, guestTexture.format, guestTexture.swizzle);
+            }, guestTexture.format, guestTexture.swizzle, tag);
         } else if (fullMatch) {
             ContextLock textureLock{tag, *fullMatch};
             return fullMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
@@ -208,7 +213,7 @@ namespace skyline::gpu {
                 .levelCount = guestTexture.viewMipCount,
                 .baseArrayLayer = guestTexture.baseArrayLayer,
                 .layerCount = guestTexture.GetViewLayerCount(),
-            }, guestTexture.format, guestTexture.swizzle);
+            }, guestTexture.format, guestTexture.swizzle, tag);
         }
 
         if (guestTexture.GetImageType() == vk::ImageType::e3D &&
@@ -337,6 +342,6 @@ namespace skyline::gpu {
             .levelCount = guestTexture.viewMipCount,
             .baseArrayLayer = guestTexture.baseArrayLayer,
             .layerCount = guestTexture.GetViewLayerCount(),
-        }, guestTexture.format, guestTexture.swizzle);
+        }, guestTexture.format, guestTexture.swizzle, tag);
     }
 }

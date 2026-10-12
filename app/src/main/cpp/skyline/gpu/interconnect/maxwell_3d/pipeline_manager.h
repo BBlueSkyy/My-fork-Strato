@@ -56,12 +56,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     u32 cbuf_offset;
                     u8 cbuf_index;
                     bool is_written;
+                    bool has_size;
                     u8 count;
 
                     StorageBufferDesc(const Shader::StorageBufferDescriptor &desc)
                         : cbuf_offset{desc.cbuf_offset},
                           cbuf_index{static_cast<u8>(desc.cbuf_index)},
                           is_written{desc.is_written},
+                          has_size{desc.has_size},
                           count{static_cast<u8>(desc.count)} {}
 
                     auto operator<=>(const StorageBufferDesc &) const = default;
@@ -224,6 +226,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         DescriptorInfo descriptorInfo; //!< Info about all descriptors used in each stage of the pipeline
         u8 transitionCacheNextIdx{}; //!< The next index to insert into the transition cache
         u8 stageMask{}; //!< Bitmask of active shader stages
+        bool usesRenderArea{}; //!< Whether any shader stage reads the render-area push constant
         u16 sampledImageCount{};
 
         std::array<Pipeline *, 6> transitionCache{};
@@ -250,6 +253,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         bool CheckBindingMatch(Pipeline *other);
 
         u32 GetTotalSampledImageCount() const;
+
+        bool UsesRenderArea() const {
+            return usesRenderArea;
+        }
 
         /**
          * @brief Creates a descriptor set update from the current GPU state

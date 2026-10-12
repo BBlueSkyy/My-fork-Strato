@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <gpu/texture/backing_promotion.h>
+
 #include <boost/container/stable_vector.hpp>
 #include <renderdoc_app.h>
 #include <common/linear_allocator.h>
@@ -388,6 +390,14 @@ namespace skyline::gpu::interconnect {
          * @param wait Whether to wait synchronously for GPU completion of the submit
          */
         void Submit(std::function<void()> &&callback = {}, bool wait = false);
+
+        void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &request);
+
+        template<typename Operation>
+        void RunWithTextureBackingRetry(Operation &&operation) {
+            texture::RetryBackingPromotion(std::forward<Operation>(operation),
+                [this](const auto &request) { HandleTextureBackingPromotion(request); });
+        }
 
         /**
          * @brief Adds an action to be executed upon current cycle completion (if DMI is on, otherwise after submission)

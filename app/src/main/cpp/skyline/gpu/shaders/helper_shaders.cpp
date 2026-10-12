@@ -7,6 +7,7 @@
 #include <gpu/graphics_pipeline_assembler.h>
 #include <vfs/filesystem.h>
 #include "helper_shaders.h"
+#include "blit_geometry.h"
 
 namespace skyline::gpu {
     static vk::raii::ShaderModule CreateShaderModule(GPU &gpu, vfs::Backing &shaderBacking) {
@@ -228,6 +229,15 @@ namespace skyline::gpu {
                                 TextureView *srcImageView, TextureView *dstImageView,
                                 std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb,
                                 vk::Sampler overrideSampler, std::optional<vk::Rect2D> overrideScissor) {
+        // Keep caller compatibility, but resolve padded dimension hints against the actual views.
+        const auto viewDimensions{[](const TextureView *view) -> vk::Extent2D {
+            return {blit::MipDimension(view->texture->dimensions.width, view->range.baseMipLevel),
+                    blit::MipDimension(view->texture->dimensions.height, view->range.baseMipLevel)};
+        }};
+        srcImageDimensions = viewDimensions(srcImageView);
+        dstImageDimensions = viewDimensions(dstImageView);
+        const auto srcX{blit::NormalizeAxis(srcRect.x, srcRect.width, srcImageDimensions.width)};
+        const auto srcY{blit::NormalizeAxis(srcRect.y, srcRect.height, srcImageDimensions.height)};
         struct DrawState {
             blit::VertexPushConstantLayout vertexPushConstants;
             blit::FragmentPushConstantLayout fragmentPushConstants;
@@ -251,8 +261,8 @@ namespace skyline::gpu {
                 .dstOriginClipSpace = {(2.0f * dstRect.x) / dstImageDimensions.width - 1.0f, (2.0f * dstRect.y) / dstImageDimensions.height - 1.0f},
                 .dstDimensionsClipSpace = {(2.0f * dstRect.width) / dstImageDimensions.width, (2.0f * dstRect.height) / dstImageDimensions.height}
             }, blit::FragmentPushConstantLayout{
-                .srcOriginUV = {srcRect.x / srcImageDimensions.width, srcRect.y / srcImageDimensions.height},
-                .dstSrcScaleFactor = {srcRect.width / srcImageDimensions.width, srcRect.height / srcImageDimensions.height},
+                .srcOriginUV = {srcX.origin, srcY.origin},
+                .dstSrcScaleFactor = {srcX.span, srcY.span},
             },
             GetPipeline(gpu,
                         {dstImageView->format->vkFormat,

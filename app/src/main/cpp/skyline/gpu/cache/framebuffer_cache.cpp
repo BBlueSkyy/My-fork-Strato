@@ -8,7 +8,7 @@
 namespace skyline::gpu::cache {
     FramebufferCache::FramebufferCache(GPU &gpu) : gpu(gpu) {}
 
-    FramebufferCache::FramebufferImagelessAttachment::FramebufferImagelessAttachment(const vk::FramebufferAttachmentImageInfo &info) : flags(info.flags), usage(info.usage), width(info.width), height(info.height), layers(info.layerCount), format(*info.pViewFormats) {}
+    FramebufferCache::FramebufferImagelessAttachment::FramebufferImagelessAttachment(const vk::FramebufferAttachmentImageInfo &info) : flags(info.flags), usage(info.usage), width(info.width), height(info.height), layers(info.layerCount), formats(info.pViewFormats, info.pViewFormats + info.viewFormatCount) {}
 
     FramebufferCache::FramebufferCacheKey::FramebufferCacheKey(const FramebufferCreateInfo &createInfo) {
         auto &info{createInfo.get<vk::FramebufferCreateInfo>()};
@@ -54,7 +54,8 @@ namespace skyline::gpu::cache {
                     HASH(attachment.width);
                     HASH(attachment.height);
                     HASH(attachment.layers);
-                    HASH(attachment.format);
+                    HASH(attachment.formats.size());
+                    for (auto format : attachment.formats) HASH(format);
                 }
             },
             [&hash](const std::vector<vk::ImageView> &attachments) {
@@ -80,13 +81,15 @@ namespace skyline::gpu::cache {
 
         if (info.flags & vk::FramebufferCreateFlagBits::eImageless) {
             auto &attachmentInfo{key.get<vk::FramebufferAttachmentsCreateInfo>()};
+            HASH(attachmentInfo.attachmentImageInfoCount);
             for (const vk::FramebufferAttachmentImageInfo &image : span<const vk::FramebufferAttachmentImageInfo>(attachmentInfo.pAttachmentImageInfos, attachmentInfo.attachmentImageInfoCount)) {
                 HASH(static_cast<VkImageCreateFlags>(image.flags));
                 HASH(static_cast<VkImageUsageFlags>(image.usage));
                 HASH(image.width);
                 HASH(image.height);
                 HASH(image.layerCount);
-                HASH(*image.pViewFormats);
+                HASH(image.viewFormatCount);
+                for (auto format : span<const vk::Format>{image.pViewFormats, image.viewFormatCount}) HASH(format);
             }
         } else {
             HASH(info.attachmentCount);
@@ -126,7 +129,8 @@ namespace skyline::gpu::cache {
                 RETF(attachment.width != rhsAttachmentInfo->width)
                 RETF(attachment.height != rhsAttachmentInfo->height)
                 RETF(attachment.layers != rhsAttachmentInfo->layerCount)
-                RETF(attachment.format != *rhsAttachmentInfo->pViewFormats)
+                RETF(attachment.formats.size() != rhsAttachmentInfo->viewFormatCount)
+                RETF(!std::equal(attachment.formats.begin(), attachment.formats.end(), rhsAttachmentInfo->pViewFormats))
                 rhsAttachmentInfo++;
             }
         } else {
@@ -148,5 +152,24 @@ namespace skyline::gpu::cache {
 
         auto entryIt{framebufferCache.try_emplace(FramebufferCacheKey{createInfo}, gpu.vkDevice, createInfo.get<vk::FramebufferCreateInfo>())};
         return *entryIt.first->second;
+    }
+
+    std::vector<vk::raii::Framebuffer> FramebufferCache::RetireViews(span<const vk::ImageView> views) {
+        std::scoped_lock lock{mutex};
+        std::vector<vk::raii::Framebuffer> retired;
+        // Reserve before modifying the cache, so allocation failure cannot destroy live framebuffers.
+        retired.reserve(framebufferCache.size());
+        for (auto it{framebufferCache.begin()}; it != framebufferCache.end();) {
+            auto attachments{std::get_if<std::vector<vk::ImageView>>(&it->first.attachments)};
+            if (attachments && std::any_of(attachments->begin(), attachments->end(), [&](auto view) {
+                    return std::find(views.begin(), views.end(), view) != views.end();
+                })) {
+                retired.push_back(std::move(it->second));
+                it = framebufferCache.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        return retired;
     }
 }
