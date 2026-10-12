@@ -197,8 +197,8 @@ namespace skyline::gpu::interconnect {
         executor.AddCheckpoint("After blit");
 
 
-        executor.NotifyPipelineChange();
         blitTrace.queued = true;
+        executor.NotifyPipelineChange();
     }
 
 }

@@ -320,8 +320,8 @@ namespace skyline::gpu {
      */
     class TextureView : public std::enable_shared_from_this<TextureView> {
       private:
-        vk::ImageView vkView{};
         vk::Image diagnosticViewBacking{};
+        vk::ImageView vkView{};
 
       public:
         LockableSharedPtr<Texture> texture;

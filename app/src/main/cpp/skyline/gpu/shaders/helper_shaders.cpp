@@ -4,10 +4,10 @@
 #include <gpu.h>
 #include <gpu/descriptor_allocator.h>
 #include <gpu/texture/texture.h>
+#include <gpu/diagnostic/re5_texture_trace.h>
 #include <gpu/graphics_pipeline_assembler.h>
 #include <vfs/filesystem.h>
 #include "helper_shaders.h"
-#include <gpu/diagnostic/re5_texture_trace.h>
 
 namespace skyline::gpu {
     static vk::raii::ShaderModule CreateShaderModule(GPU &gpu, vfs::Backing &shaderBacking) {

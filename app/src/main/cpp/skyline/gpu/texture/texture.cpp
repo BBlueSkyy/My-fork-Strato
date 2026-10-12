@@ -87,6 +87,8 @@ namespace skyline::gpu {
         auto it{std::find_if(texture->views.begin(), texture->views.end(), [this](const Texture::TextureViewStorage &view) {
             return view.type == type && view.format == format && view.mapping == mapping && view.range == range;
         })};
+        if (it != texture->views.end())
+            diagnosticViewBacking = it->diagnosticViewBacking;
         if (it == texture->views.end()) {
             vk::ImageViewCreateInfo createInfo{
                 .image = texture->GetBacking(),
@@ -98,9 +100,9 @@ namespace skyline::gpu {
 
             it = texture->views.emplace(texture->views.end(), type, format, mapping, range, vk::raii::ImageView{texture->gpu.vkDevice, createInfo});
             it->diagnosticViewBacking = createInfo.image;
+            diagnosticViewBacking = it->diagnosticViewBacking;
         }
 
-        diagnosticViewBacking = it->diagnosticViewBacking;
         return vkView = *it->vkView;
     }
 
