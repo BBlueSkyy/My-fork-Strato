@@ -119,6 +119,16 @@ namespace skyline::loader {
         patchDataRomFs = patch && patch->HasRomFsSection() ? data : nullptr;
         romFs = std::move(data); // Keep other loader consumers on the same final view.
         currentProcessRomFsIdentity = identity;
+
+        // The selected external update supplies more than Program ExeFS/RomFS:
+        // its Control NCA also supersedes the base control.nacp when present.
+        // Keeping the base NACP here meant that launch-time/AM save provisioning
+        // could use obsolete owner IDs and save sizes for an updated executable.
+        // Match the update-only resolution path while retaining the base control
+        // when an update does not carry a replacement Control NCA.
+        if (patch && state.updateLoader && state.updateLoader->nacp)
+            nacp = state.updateLoader->nacp;
+
         programUpdateApplied = patch != nullptr;
         programContentResolved = true;
         LOGI("Resolved current-process RomFS: {}", identity);

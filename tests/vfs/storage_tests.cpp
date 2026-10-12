@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include <iostream>
+#include <cstring>
 #include <vfs/bktr.h>
 #include <vfs/nca.h>
 #include <crypto/key_store.h>
@@ -34,6 +35,15 @@ public:
         return output.size();
     }
 };
+// A minimal, synthetic Control NACP for testing base/update metadata selection.
+std::shared_ptr<MemoryBacking> ControlBacking(u64 ownerId, u64 accountSaveSize) {
+    auto backing{std::make_shared<MemoryBacking>(sizeof(NACP::NacpData))};
+    NACP::NacpData control{};
+    control.saveDataOwnerId = ownerId;
+    control.userAccountSaveDataSize = accountSaveSize;
+    std::memcpy(backing->data.data(), &control, sizeof(control));
+    return backing;
+}
 void Check(bool ok, const char *message) { if (!ok) throw std::runtime_error(message); }
 
 void TestBktrPartition() {
@@ -319,13 +329,18 @@ void TestPersistentResolution() {
     auto pf{PatchFixture()}; pf.Finalize();
     FixtureLoader base;
     base.programNca.emplace(bf.backing, keys); base.romFs = base.programNca->romFs;
+    base.nacp.emplace(ControlBacking(0x0100000000001000ULL, 0x1000));
     DeviceState state;
     state.updateLoader = std::make_shared<FixtureLoader>();
     state.updateLoader->programPatchNca.emplace(pf.backing, keys);
+    state.updateLoader->nacp.emplace(ControlBacking(0x0100000000002000ULL, 0x8000));
     const size_t before{modResolutionCount};
     base.ResolveProgramContent(state);
     auto mounted{base.currentProcessRomFs};
     Check(mounted && mounted == base.patchDataRomFs && base.programUpdateApplied, "Current/patch storage views differ");
+    Check(base.nacp && base.nacp->nacpContents.saveDataOwnerId == 0x0100000000002000ULL &&
+          base.nacp->nacpContents.userAccountSaveDataSize == 0x8000,
+          "Updated Program retained obsolete base Control NACP save metadata");
     Check(base.currentProcessRomFsIdentity.find("size=0x1000, first16=5000000000000000") != std::string::npos, "Fingerprint does not describe served storage");
     auto expected{RomBytes()}; std::fill(expected.begin()+0x800, expected.end(), 0x62);
     state.updateLoader.reset(); base.programNca.reset(); bf.backing.reset(); pf.backing.reset();
@@ -343,10 +358,14 @@ void TestPatchDataAbsence() {
     Check(base.currentProcessRomFs && !base.patchDataRomFs, "Base-only process fabricated patch data");
     NcaFixture pf; auto exe{ExeBytes(0x42)}; pf.Add(0, ExeHeader(exe.size()), WithPrefix(exe)); pf.Finalize();
     FixtureLoader other; other.programNca.emplace(bf.backing, keys);
+    other.nacp.emplace(ControlBacking(0x0100000000001000ULL, 0x1000));
     state.updateLoader = std::make_shared<FixtureLoader>();
     state.updateLoader->programPatchNca.emplace(pf.backing, keys);
     other.ResolveProgramContent(state);
     Check(ReadBytes(other.currentProcessRomFs) == RomBytes() && !other.patchDataRomFs, "ExeFS-only update fabricated a patch RomFS");
+    Check(other.nacp && other.nacp->nacpContents.saveDataOwnerId == 0x0100000000001000ULL &&
+          other.nacp->nacpContents.userAccountSaveDataSize == 0x1000,
+          "Program update without a Control NCA must retain base NACP");
 }
 
 void TestBaseDataWithUpdateExeFsResolution() {
