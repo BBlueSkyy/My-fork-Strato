@@ -552,9 +552,11 @@ namespace skyline::service::fssrv {
             std::tie(fileSystem, error) = vfs::OsFileSystem::OpenExistingWithin(hostPath, state.os->publicAppFilesPath + "/switch");
         }
         if (error == std::errc::no_such_file_or_directory || error == std::errc::not_a_directory) {
-            LOGW("OpenSaveDataFileSystem: missing save, spaceId={}, type={}, programId=0x{:016X}, ownerId=0x{:016X}, readOnly={}",
+            LOGW("OpenSaveDataFileSystem: missing save, spaceId={}, type={}, requestedProgramId=0x{:016X}, defaultOwnerId=0x{:016X}, userId={:016X}{:016X}, relativePath={}, readOnly={}",
                  static_cast<u32>(input->spaceId), static_cast<u32>(input->attribute.type),
-                 input->attribute.programId, defaultProgramId, readOnly);
+                 input->attribute.programId, defaultProgramId,
+                 input->attribute.userId.upper, input->attribute.userId.lower,
+                 *saveDataPath, readOnly);
             return result::EntityNotFound;
         }
         if (error)
