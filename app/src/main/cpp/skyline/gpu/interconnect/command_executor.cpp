@@ -387,12 +387,12 @@ namespace skyline::gpu::interconnect {
     }
 
 
-    // RE5 diagnostic: capture actual full-size 3D color buffers, excluding depth and compressed images.
-    // Like the earlier mini-RenderDoc probes, all image copies remain on the
-    // existing command stream and only execute at a render-pass boundary.
+    // RE5 phase 2: only trace color render targets of 1280x720 3D passes
+    // paired with depth; the first capture spent its budget on unrelated inputs.
+    // All readbacks remain at natural render-pass boundaries (not mid-draw).
     static bool IsRe5ScenePassImage(const Texture &texture) {
-        return texture.dimensions.width >= 640 && texture.dimensions.width <= 1920 &&
-               texture.dimensions.height >= 360 && texture.dimensions.height <= 1080 &&
+        return texture.dimensions.width == 1280 &&
+               texture.dimensions.height == 720 &&
                texture.dimensions.depth == 1 && texture.levelCount == 1 &&
                texture.layerCount == 1 &&
                texture.sampleCount == vk::SampleCountFlagBits::e1 &&
@@ -403,33 +403,28 @@ namespace skyline::gpu::interconnect {
                texture.layout != vk::ImageLayout::eUndefined;
     }
 
-    void CommandExecutor::TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color) {
+    void CommandExecutor::TrackDiagnosticPassImages(span<TextureView *> color, TextureView *depthStencilAttachment) {
         auto &capture{diagnostic::Re5SceneCapture()};
-        if (!capture.active.load(std::memory_order_acquire))
+        if (!capture.active.load(std::memory_order_acquire) ||
+            !depthStencilAttachment || !depthStencilAttachment->texture)
             return;
 
-        // Color targets before sampled inputs, so the limited budget favors
-        // the result of a pass rather than an atlas used by its shader.
-        const auto track{[&](span<TextureView *> views, bool rt) {
-            for (auto *view : views) {
-                if (!view || !view->texture)
-                    continue;
-                std::shared_ptr<Texture> texture{view->texture};
-                if (!IsRe5ScenePassImage(*texture))
-                    continue;
-                auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
-                    [&](const DiagnosticPassImage &candidate) {
-                        return candidate.texture.get() == texture.get();
-                    })};
-                if (it != diagnosticPassImages.end()) {
-                    it->renderTarget |= rt;
-                } else if (diagnosticPassImages.size() < 24) {
-                    diagnosticPassImages.push_back({std::move(texture), rt});
-                }
+        const auto &depth{*depthStencilAttachment->texture};
+        if (depth.dimensions.width != 1280 || depth.dimensions.height != 720 ||
+            !(depth.format->vkAspect & vk::ImageAspectFlagBits::eDepth))
+            return;
+
+        for (auto *view : color) {
+            if (!view || !view->texture || !IsRe5ScenePassImage(*view->texture))
+                continue;
+            auto texture{view->texture};
+            const auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
+                [&](const DiagnosticPassImage &entry) { return entry.texture.get() == texture.get(); })};
+            if (it == diagnosticPassImages.end() && diagnosticPassImages.size() < 4) {
+                diagnosticPassImages.push_back({std::move(texture), true,
+                    reinterpret_cast<uintptr_t>(depthStencilAttachment->texture.get())});
             }
-        }};
-        track(color, true);
-        track(sampled, false);
+        }
     }
 
     void CommandExecutor::QueueDiagnosticPassReadbacks() {
@@ -477,12 +472,12 @@ namespace skyline::gpu::interconnect {
             const auto meta{fmt::format(
                 "capture_index={} approx_present={} render_pass={} submission={} "
                 "kind={} executor=0x{:X} texture=0x{:X} dimensions={}x{} "
-                "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} "
+                "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} depth_texture=0x{:X} "
                 "note=recorded_after_render_pass_end_not_exact_frame_correlation\n",
                 index, interval, renderPassIndex, submissionNumber,
                 entry.renderTarget ? "render_target" : "sampled_input", executorIdentity, identity,
                 width, height, format, vk::to_string(texture->layout),
-                texture->surfaceSize, guestMap, guestBytes)};
+                texture->surfaceSize, guestMap, guestBytes, entry.depthIdentity)};
             auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
             slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
                 [texture, staging](vk::raii::CommandBuffer &commandBuffer,
@@ -562,7 +557,7 @@ namespace skyline::gpu::interconnect {
         for (auto view : sampledImages)
             view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
-        TrackDiagnosticPassImages(sampledImages, colorAttachments);
+        TrackDiagnosticPassImages(colorAttachments, depthStencilAttachment);
         return gotoNext;
     }
 

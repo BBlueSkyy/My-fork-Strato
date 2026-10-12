@@ -3,6 +3,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <cmath>
+#include <optional>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -13,6 +14,47 @@
 #include <gpu/diagnostic/re5_scene_capture.h>
 
 namespace skyline::gpu::interconnect::maxwell3d {
+    // Phase 2: filter by structural GPU properties observed in RE5 gameplay.
+    // No Title ID checks, Vulkan state changes, forced refreshes or render-pass
+    // splits. The hashes only prioritize diagnostic logs; they do not affect draws.
+    template <typename ActiveStateType>
+    static std::optional<u32> SampleRe5SceneDraw(ActiveStateType &activeState) {
+        auto &capture{diagnostic::Re5SceneCapture()};
+        if (!capture.active.load(std::memory_order_acquire))
+            return std::nullopt;
+        auto *depth{activeState.GetDepthAttachment()};
+        if (!depth || !depth->texture ||
+            depth->texture->dimensions.width != 1280 ||
+            depth->texture->dimensions.height != 720 ||
+            !(depth->texture->format->vkAspect & vk::ImageAspectFlagBits::eDepth))
+            return std::nullopt;
+        bool sceneTarget{};
+        for (auto *view : activeState.GetColorAttachments()) {
+            if (view && view->texture &&
+                view->texture->dimensions.width == 1280 &&
+                view->texture->dimensions.height == 720 &&
+                (view->texture->format->vkAspect & vk::ImageAspectFlagBits::eColor)) {
+                sceneTarget = true;
+                break;
+            }
+        }
+        if (!sceneTarget)
+            return std::nullopt;
+        bool priority{};
+        if (auto *pipeline{activeState.GetPipeline()}) {
+            for (const auto hash : pipeline->sourcePackedState.shaderHashes) {
+                if (hash == 0xF3805B306B15F89AULL ||
+                    hash == 0xB141A1171435D55EULL ||
+                    hash == 0x8E1C37D501C478E1ULL ||
+                    hash == 0x07C66B919FC55A45ULL) {
+                    priority = true;
+                    break;
+                }
+            }
+        }
+        return capture.SampleSceneDraw(priority);
+    }
+
     Maxwell3D::Maxwell3D(GPU &gpu,
                          soc::gm20b::ChannelContext &channelCtx,
                          TrapManager &trap,
@@ -121,7 +163,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
 
-        if (diagnostic::Re5SceneCapture().active.load(std::memory_order_acquire)) {
+        if (auto re5SceneOrdinal{SampleRe5SceneDraw(activeState)}) {
             std::string shaderHashes;
             if (auto *pipeline{activeState.GetPipeline()}) {
                 for (const auto hash : pipeline->sourcePackedState.shaderHashes)
@@ -165,8 +207,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         vk::to_string(view->texture->format->vkFormat));
             }
             diagnostic::Re5SceneCapture().Record(fmt::format(
-                "DRAW kind=inline indexed=1 count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
-                count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                "SCENE_DRAW ordinal={} kind=inline indexed=1 count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                *re5SceneOrdinal, count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
                 scissor.extent.height, shaderHashes, targets, blend, sampledViews));
         }
           ctx.executor.AddCheckpoint("After inline index draw");
@@ -573,7 +615,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
 
-        if (diagnostic::Re5SceneCapture().active.load(std::memory_order_acquire)) {
+        if (auto re5SceneOrdinal{SampleRe5SceneDraw(activeState)}) {
             std::string shaderHashes;
             if (auto *pipeline{activeState.GetPipeline()}) {
                 for (const auto hash : pipeline->sourcePackedState.shaderHashes)
@@ -617,8 +659,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         vk::to_string(view->texture->format->vkFormat));
             }
             diagnostic::Re5SceneCapture().Record(fmt::format(
-                "DRAW kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
-                indexed, count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                "SCENE_DRAW ordinal={} kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                *re5SceneOrdinal, indexed, count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
                 scissor.extent.height, shaderHashes, targets, blend, sampledViews));
         }
         ctx.executor.AddCheckpoint("After draw");
@@ -685,7 +727,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
 
-        if (diagnostic::Re5SceneCapture().active.load(std::memory_order_acquire)) {
+        if (auto re5SceneOrdinal{SampleRe5SceneDraw(activeState)}) {
             std::string shaderHashes;
             if (auto *pipeline{activeState.GetPipeline()}) {
                 for (const auto hash : pipeline->sourcePackedState.shaderHashes)
@@ -729,8 +771,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         vk::to_string(view->texture->format->vkFormat));
             }
             diagnostic::Re5SceneCapture().Record(fmt::format(
-                "DRAW kind=indirect indexed={} count={} instances=0 scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
-                indexed, count, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                "SCENE_DRAW ordinal={} kind=indirect indexed={} count={} instances=0 scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                *re5SceneOrdinal, indexed, count, scissor.offset.x, scissor.offset.y, scissor.extent.width,
                 scissor.extent.height, shaderHashes, targets, blend, sampledViews));
         }
         ctx.executor.AddCheckpoint("After indirect draw");

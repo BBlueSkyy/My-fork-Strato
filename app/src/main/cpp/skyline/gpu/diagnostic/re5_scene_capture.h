@@ -22,10 +22,10 @@ namespace skyline::gpu::diagnostic {
         std::atomic<std::uint32_t> eventCount{0};
         static constexpr std::uint32_t MaxEvents{2400};
         static constexpr std::uint32_t FrameCount{4};
-        // At most 12 snapshots in each approximate presentation interval.
-        static constexpr std::uint32_t PassSnapshotsPerInterval{12};
-        static constexpr std::uint32_t MaxPassSnapshots{48};
-        static constexpr std::size_t MaxPassCaptureBytes{160ULL * 1024 * 1024};
+        // At most six post-pass color snapshots in each approximate presentation interval.
+        static constexpr std::uint32_t PassSnapshotsPerInterval{6};
+        static constexpr std::uint32_t MaxPassSnapshots{24};
+        static constexpr std::size_t MaxPassCaptureBytes{100ULL * 1024 * 1024};
 
       private:
         std::mutex mutex;
@@ -36,6 +36,8 @@ namespace skyline::gpu::diagnostic {
         std::array<std::uint32_t, FrameCount> passCountByInterval{};
         std::uint32_t nextPassIndex{};
         std::size_t passBytes{};
+        std::array<std::atomic<std::uint32_t>, FrameCount> priorityDrawsByInterval{};
+        std::array<std::atomic<std::uint32_t>, FrameCount> otherDrawsByInterval{};
 
       public:
         void Start(std::string captureDirectory) {
@@ -45,6 +47,10 @@ namespace skyline::gpu::diagnostic {
             passCountByInterval.fill(0);
             nextPassIndex = 0;
             passBytes = 0;
+            for (auto &counter : priorityDrawsByInterval)
+                counter.store(0, std::memory_order_relaxed);
+            for (auto &counter : otherDrawsByInterval)
+                counter.store(0, std::memory_order_relaxed);
             eventCount.store(0, std::memory_order_relaxed);
             presentIndex.store(0, std::memory_order_relaxed);
             active.store(true, std::memory_order_release);
@@ -65,6 +71,23 @@ namespace skyline::gpu::diagnostic {
             ++passCountByInterval[interval];
             passBytes += bytes;
             return nextPassIndex++;
+        }
+
+        // This samples *real* scene draws; no image copies or guest state changes.
+        // Per-approximate-frame counters prevent the first busy frame from using
+        // the entire bounded event budget of a four-frame capture.
+        std::optional<std::uint32_t> SampleSceneDraw(bool priorityShader) {
+            if (!active.load(std::memory_order_acquire))
+                return std::nullopt;
+            const auto interval{presentIndex.load(std::memory_order_acquire)};
+            if (interval >= FrameCount)
+                return std::nullopt;
+            auto &counter{priorityShader ? priorityDrawsByInterval[interval] : otherDrawsByInterval[interval]};
+            const auto ordinal{counter.fetch_add(1, std::memory_order_relaxed)};
+            if (priorityShader ? (ordinal < 8 || ordinal % 32 == 0)
+                               : (ordinal < 4 || ordinal % 128 == 0))
+                return ordinal;
+            return std::nullopt;
         }
 
         std::string CaptureDirectory() {
@@ -92,7 +115,7 @@ namespace skyline::gpu::diagnostic {
             if (out) {
                 out << "GPU events collected while 4 frames were being presented.\n"
                     << "present_index_approx is NOT exact GPU/present synchronization.\n"
-                    << "Events are capped at 2400 to bound memory and disk usage.\n\n";
+                    << "Events are filtered for 1280x720 scene draws and sampled to preserve later frames.\n\n";
                 for (const auto &event : events)
                     out << event << '\n';
             }

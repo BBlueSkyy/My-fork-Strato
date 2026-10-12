@@ -219,14 +219,15 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
-        // Phase 2, PR #336: bounded readbacks *after* real render-pass endings.
+        // RE5 phase 2: bounded scene-color readbacks at natural render-pass endings.
         struct DiagnosticPassImage {
             std::shared_ptr<Texture> texture;
             bool renderTarget{};
+            uintptr_t depthIdentity{};
         };
         std::vector<DiagnosticPassImage> diagnosticPassImages;
         std::vector<std::function<void()>> diagnosticReadbackCallbacks;
-        void TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color);
+        void TrackDiagnosticPassImages(span<TextureView *> color, TextureView *depthStencilAttachment);
         void QueueDiagnosticPassReadbacks();
 
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated

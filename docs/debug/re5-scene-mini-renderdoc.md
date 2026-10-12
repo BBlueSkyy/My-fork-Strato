@@ -1,30 +1,46 @@
-# Resident Evil 5 — bounded mini-RenderDoc (diagnostic only)
+# Resident Evil 5 — selective scene mini-RenderDoc (phase 2)
 
-Based on master 140dae65115cddc1289ab222b27faef18f66d83d and the Naruto UI diagnostic capture. This is **not** a RenderDoc `.rdc` and is **not** a rendering fix.
+Draft PR #337, diagnostic only; **do not merge** as a rendering correction.
 
-## Observation from the supplied 43s clip
+## Evidence from the actual gameplay capture
 
-Resident Evil 5 Chapter 1 gameplay shows dark character and crowd silhouettes against a bright scene, and some suspect sharply black rectangular regions on/near buildings. The original-game comparison and exact first defective draw are not yet established. UI/text appears visible.
+The RE5 gameplay capture contained four 1920x1080 pre-swapchain images, 36 color snapshots, and 2,388 sampled draw records; it exhausted 2,400 event slots in approximate presentation interval zero. Most snapshots were collected before the main 3D color target could be followed sufficiently.
 
-## Usage
+Within those records:
+- One 1280x720 color target was written by 886 draws and sampled another 1280x720 render target.
+- The other 1280x720 target was written by 259 draws.
+- Both use the same 1280x720 D24/S8 depth attachment.
+- Frequently observed fragment hashes include `F3805B306B15F89A` and `B141A1171435D55E` on the main color path; `8E1C37D501C478E1` and `07C66B919FC55A45` on the upstream color path.
 
-1. Install the diagnostic Android APK and enter gameplay when the defect is visible.
-2. In Strato public app files, rename `gpu_capture/re5_scene/ARM_CAPTURE.rename_this_file_when_ready` to `ARM_CAPTURE`.
-3. Resume gameplay and allow four consecutive presentations to be captured; the initial frame might already have been rendered. Arming polls every 16 presentations.
-4. Wait for `MINIRD_RE5 capture complete` and subsequent `MINIRD_RE5_PHASE2 wrote snapshot` messages. `capture_complete.txt` alone is not proof that asynchronous staging readbacks have finished.
-5. Zip the latest `gpu_capture/re5_scene/capture_###` folder with the emulation.log and a matching image or video; report Vulkan driver version.
+User confirmed the sky is normally fine; character models and parts of the ground are black. This is **not** proof those four shaders are defective, nor that an observed abnormal sky frame is a real rendering failure rather than a diagnostic timing side effect. No Title ID or pointer-specific rendering workaround is used.
 
-## Outputs
+## What changed
 
-- `present_source_XX_*.raw`, `present_XX.txt`: actual host GPU source image, before Android swapchain copy, and associated host format/crop/guest-map.
-- `pass_*.raw`, `pass_XX.txt`: post-renderpass intermediate Vulkan color images with submission, renderpass, texture identity, host format, approximation of presentation interval and metadata.
-- `gpu_events.txt`: direct/indirect/indexed draws, guest shader hashes, RT identities and formats, depth-attachment identities, blend masks and flags, scissor, sampled view metadata, unmapped TIC events.
-- Limits: 4 presentations, 2400 events, 12 post-pass snapshots per approximate presented interval, 48 snapshots, 160MiB total intermediate bytes.
+- Track post-pass color readbacks **only** from 1280x720 color images used with a 1280x720 depth attachment, not every sampled color texture or early postprocessing pass.
+- Continue capturing source images immediately before Android swapchain copy.
+- Record sparse `SCENE_DRAW` entries with shaders, sample textures, color/depth identity, scissor and blend state. Prefer four hashes found in the actual first capture, but still sample draws using other shaders to avoid falsely restricting the diagnosis.
+- Per-approximate-present sampling: priority draws (first 8, then one per 32), other scene draws (first 4, then one per 128). This prevents the first busy interval from filling the event log.
+- Budget: up to 6 pass readbacks per approximate present interval, up to 24 overall, 100 MiB of intermediate data, 2,400 total logged events. Capture frames remain four, with unique globally reserved snapshot IDs.
+- Save depth attachment **identity**, not depth pixels. No new barriers, pass splits, stalls or guest state changes are introduced in the scene draw path.
 
-## Interpretation
+## How to capture
 
-- If `present_source` is correct but the screen is not, investigate swapchain/crop/transform. If already wrong, inspect post-pass images and find the first incorrect pass.
-- Match suspicious pass by renderpass index, submission and attachment identity, then associated shader hash and sampled textures. Draw events and readbacks are *not* 1:1: a readback is at end of renderpass. `present_index_approx` is approximate, not a frame-accurate guest GPU fence.
-- Distinguish genuine backlighting from incorrect material/fragment/depth state by comparison to expected native Switch or Eden output at the same camera and moment.
-- For a defect still unresolved, perform a second probe filtered by discovered shader/attachment; do not apply a title-specific rendering workaround.
-- This is opt-in only. The readback introduces possible GPU timing overhead; no guest RAM or functional render state changes. Depth is logged, not copied in this first capture.
+1. Install the diagnostic APK of the updated PR #337 after its build succeeds.
+2. Enter gameplay when blackened characters and black ground patches are visible.
+3. Rename `gpu_capture/re5_scene/ARM_CAPTURE.rename_this_file_when_ready` to `ARM_CAPTURE` in the Strato public app files. If the rename hint has not been created, enter gameplay and let a few presentations occur.
+4. Resume gameplay and remain at the same location for 10–15 seconds.
+5. Include the new `capture_###` folder, `gpu_events.txt`, `emulation.log`, a screenshot, and the Vulkan driver version. Wait for `MINIRD_RE5_PHASE2 wrote snapshot` messages before zipping; `capture_complete.txt` only reports that presentation acquisition finished.
+
+## Interpretation and limitations
+
+- The source image is read **pre-swapchain**. Compare it against post-pass color snapshots.
+- `SCENE_DRAW` is sampled, not a full draw trace. A shader hash being present does not prove which pixels it affected.
+- Snapshots are taken **at natural Vulkan render-pass ends**, not immediately before/after individual draw commands. Copying an image while a render pass is active is invalid without changing the rendering path; forcing pass splits is inappropriate for the first targeted probe.
+- `present_index_approx` is not a strict GPU frame identifier. Use submission, render pass, texture and depth IDs to correlate.
+- If upstream color is already wrong before sampling by a downstream shader, examine the upstream RT and its sampled/depth dependencies. If upstream looks right but downstream is black, inspect the downstream fragment shader input state or pipeline.
+- First capture may be affected by GPU readback timing. Repeat only if results are inconsistent, not as a reflex.
+- Once a **specific** problematic draw/pass is identified, add a temporary deeper probe in the same diagnostic branch if needed. Do not apply speculative Texman/shader/depth changes.
+
+## Optional header-only host test
+
+`g++ -std=c++20 -Wall -Wextra -Werror -I app/src/main/cpp tests/gpu/re5_scene_capture_tests.cpp -o /tmp/re5_scene_capture_tests && /tmp/re5_scene_capture_tests`
