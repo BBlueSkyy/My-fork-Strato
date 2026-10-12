@@ -126,15 +126,8 @@ namespace skyline::loader {
         // could use obsolete owner IDs and save sizes for an updated executable.
         // Match the update-only resolution path while retaining the base control
         // when an update does not carry a replacement Control NCA.
-        if (patch && state.updateLoader && state.updateLoader->nacp) {
+        if (patch && state.updateLoader && state.updateLoader->nacp)
             nacp = state.updateLoader->nacp;
-            LOGI("ResolveProgramContent: applied updated Control NACP (saveDataOwnerId=0x{:016X}, accountSaveSize=0x{:X}, accountJournalSize=0x{:X}, deviceSaveSize=0x{:X}, deviceJournalSize=0x{:X})",
-                 nacp->nacpContents.saveDataOwnerId,
-                 nacp->nacpContents.userAccountSaveDataSize,
-                 nacp->nacpContents.userAccountSaveDataJournalSize,
-                 nacp->nacpContents.deviceSaveDataSize,
-                 nacp->nacpContents.deviceSaveDataJournalSize);
-        }
 
         programUpdateApplied = patch != nullptr;
         programContentResolved = true;
