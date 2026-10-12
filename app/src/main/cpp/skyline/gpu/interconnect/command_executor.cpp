@@ -758,6 +758,14 @@ namespace skyline::gpu::interconnect {
         }
     }
 
+    void CommandExecutor::HandleTextureBackingPromotion(const TextureBackingPromotionRequest &request) {
+        // Restart preparation after submitting old nodes. In particular, allocator
+        // pointers and descriptors from the interrupted operation must not be reused.
+        Submit();
+        ContextLock lock{tag, *request.texture};
+        request.texture->PromoteBackingForView(request.format);
+    }
+
     void CommandExecutor::AddDeferredAction(std::function<void()> &&callback) {
         pendingDeferredActions.emplace_back(std::move(callback));
     }
