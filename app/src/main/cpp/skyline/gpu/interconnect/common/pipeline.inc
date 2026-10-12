@@ -171,6 +171,8 @@ namespace skyline::gpu::interconnect {
         }
 
         ctx.executor.AttachTexture(texture);
+        if (!(texture->GetUsage() & vk::ImageUsageFlagBits::eStorage))
+            throw exception("Texture view format does not support storage image binding");
         auto view{texture->GetView()};
 
         if (texture->texture) {
