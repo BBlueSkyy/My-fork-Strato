@@ -796,7 +796,9 @@ namespace skyline::gpu::interconnect {
                     texture.layerCount, texture.levelCount, texture.surfaceSize,
                     texture.format->vkFormat == vk::Format::eR8G8B8A8Unorm,
                     bool(texture.usage & vk::ImageUsageFlagBits::eTransferSrc),
-                    texture.layout == vk::ImageLayout::eGeneral))
+                    texture.layout == vk::ImageLayout::eGeneral) ||
+                    !texture.GetBacking() || !image.viewBackingAtWrite ||
+                    image.viewBackingAtWrite != texture.GetBacking())
                     continue;
                 if (capture.cubeReadbackReserved.exchange(true, std::memory_order_acq_rel))
                     break;
