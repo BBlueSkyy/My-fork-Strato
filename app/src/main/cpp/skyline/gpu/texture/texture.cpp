@@ -11,6 +11,7 @@
 #include "adreno_aliasing.h"
 #include "bc_decoder.h"
 #include "format.h"
+#include "image_format_policy.h"
 
 namespace skyline::gpu {
     u32 GuestTexture::GetLayerStride() {
@@ -574,18 +575,6 @@ namespace skyline::gpu {
         return surfaceSize;
     }
 
-    static bool RequiresMutableBcnFormat(texture::Format inputFormat) {
-        switch (inputFormat->vkFormat) {
-            case vk::Format::eBc1RgbaUnormBlock:
-            case vk::Format::eBc1RgbaSrgbBlock:
-            case vk::Format::eBc3UnormBlock:
-            case vk::Format::eBc3SrgbBlock:
-                return true;
-            default:
-                return false;
-        }
-    }
-
     Texture::Texture(GPU &pGpu, GuestTexture pGuest)
         : gpu(pGpu),
           guest(std::move(pGuest)),
@@ -609,9 +598,7 @@ namespace skyline::gpu {
           deswizzledSurfaceSize(CalculateLevelStride(mipLayouts) * layerCount),
           surfaceSize(format == guest->format ? deswizzledSurfaceSize : (CalculateTargetLevelStride(mipLayouts) * layerCount)),
           sampleCount(vk::SampleCountFlagBits::e1),
-          flags((!gpu.traits.quirks.vkImageMutableFormatCostly || RequiresMutableBcnFormat(format))
-                    ? vk::ImageCreateFlags{vk::ImageCreateFlagBits::eMutableFormat}
-                    : vk::ImageCreateFlags{}),
+          flags(texture::GuestImageFormatFlags(format->vkFormat, gpu.traits.quirks.vkImageMutableFormatCostly)),
           usage(vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled) {
         if ((format->vkAspect & vk::ImageAspectFlagBits::eColor) && !format->IsCompressed())
             usage |= vk::ImageUsageFlagBits::eColorAttachment;
