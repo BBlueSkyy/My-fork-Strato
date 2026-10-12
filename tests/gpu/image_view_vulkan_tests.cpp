@@ -73,7 +73,7 @@ int main() {
     for (bool reverse : {false, true}) {
         auto native{reverse ? vk::Format::eB8G8R8A8Unorm : vk::Format::eR8G8B8A8Unorm};
         VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-        info.flags = static_cast<VkImageCreateFlags>(skyline::gpu::texture::GuestImageFormatFlags(native, true));
+        info.flags = static_cast<VkImageCreateFlags>(skyline::gpu::texture::GuestImageFormatFlags(native, true, false));
         info.imageType = VK_IMAGE_TYPE_2D;
         info.format = static_cast<VkFormat>(native);
         info.extent = {reverse ? 32U : 17U, 26, 1};
