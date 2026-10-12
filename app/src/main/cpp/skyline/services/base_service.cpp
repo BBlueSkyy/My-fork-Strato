@@ -33,8 +33,16 @@ namespace skyline::service {
         TRACE_EVENT("service", perfetto::StaticString{function.name});
         try {
             auto result{function(session, request, response)};
-            if (result.raw)
-                LOGD("{} returned 0x{:X}", function.name, result.raw);
+            if (result.raw) {
+                // Keep this diagnostic visible in INFO builds: an application may
+                // terminate later with nn::fs::ResultTargetNotFound (2-1002),
+                // without identifying the IPC request that originally returned it.
+                if (static_cast<u32>(result.module) == 2 && static_cast<u32>(result.id) == 1002)
+                    LOGW("FSP-SRV target not found: service={}, command=0x{:X} ({}), handler={}",
+                         GetName(), functionId, functionId, function.name);
+                else
+                    LOGD("{} returned 0x{:X}", function.name, result.raw);
+            }
             return result;
         } catch (exception &e) {
             // We need to forward any skyline::exception objects without modification even though they inherit from std::exception
