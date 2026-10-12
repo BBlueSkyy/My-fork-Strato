@@ -27,6 +27,8 @@ namespace skyline::gpu::diagnostic {
         std::atomic<bool> active{false};
         std::atomic<std::uint32_t> presentIndex{0};
         std::atomic<std::uint32_t> eventCount{0};
+        // One GPU cubemap readback per armed capture, across all executors.
+        std::atomic<bool> cubeReadbackReserved{false};
         static constexpr std::uint32_t MaxEvents{2400};
         static constexpr std::uint32_t FrameCount{4};
         // At most six post-pass color snapshots in each approximate presentation interval.
@@ -82,6 +84,7 @@ namespace skyline::gpu::diagnostic {
             for (auto &counter : otherDrawsByInterval)
                 counter.store(0, std::memory_order_relaxed);
             eventCount.store(0, std::memory_order_relaxed);
+            cubeReadbackReserved.store(false, std::memory_order_relaxed);
             presentIndex.store(0, std::memory_order_relaxed);
             active.store(true, std::memory_order_release);
         }
