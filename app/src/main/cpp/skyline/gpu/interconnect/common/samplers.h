@@ -4,6 +4,7 @@
 #pragma once
 
 #include <tsl/robin_map.h>
+#include <string>
 #include "common.h"
 #include "tsc.h"
 #include <shader_compiler/runtime_info.h>
