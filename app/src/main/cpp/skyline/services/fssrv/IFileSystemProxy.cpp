@@ -551,8 +551,12 @@ namespace skyline::service::fssrv {
 
             std::tie(fileSystem, error) = vfs::OsFileSystem::OpenExistingWithin(hostPath, state.os->publicAppFilesPath + "/switch");
         }
-        if (error == std::errc::no_such_file_or_directory || error == std::errc::not_a_directory)
+        if (error == std::errc::no_such_file_or_directory || error == std::errc::not_a_directory) {
+            LOGW("OpenSaveDataFileSystem: missing save, spaceId={}, type={}, programId=0x{:016X}, ownerId=0x{:016X}, readOnly={}",
+                 static_cast<u32>(input->spaceId), static_cast<u32>(input->attribute.type),
+                 input->attribute.programId, defaultProgramId, readOnly);
             return result::EntityNotFound;
+        }
         if (error)
             return MapVfsError(error);
 
@@ -647,6 +651,12 @@ namespace skyline::service::fssrv {
         if (input->storageId == StorageId::Host)
             return result::NotImplemented;
 
+        const auto missingStorage = [&](const char *reason) -> Result {
+            LOGW("OpenDataStorageByDataId: target missing, storageId={}, dataId=0x{:016X}, reason={}",
+                 static_cast<u32>(input->storageId), input->dataId, reason);
+            return result::EntityNotFound;
+        };
+
         // DLC content has its own RomFS; it is never patched against the current Program NCA.
         if (input->storageId != StorageId::NandSystem) {
             for (const auto &dlc : state.dlcLoaders) {
@@ -654,7 +664,7 @@ namespace skyline::service::fssrv {
                     continue;
                 auto romFs{dlc->publicNca ? dlc->publicNca->romFs : nullptr};
                 if (!romFs)
-                    return result::EntityNotFound;
+                    return missingStorage("matching DLC has no RomFS");
                 manager.RegisterService(std::make_shared<IStorage>(romFs, state, manager), session, response);
                 return {};
             }
@@ -663,7 +673,7 @@ namespace skyline::service::fssrv {
             // implementations use it to search the aggregate content provider,
             // so continue with system content after checking externally loaded DLC.
             if (input->storageId != StorageId::None)
-                return result::EntityNotFound;
+                return missingStorage("no matching DLC for requested storage");
         }
 
         bool archiveError{};
@@ -695,13 +705,13 @@ namespace skyline::service::fssrv {
         if (!state.os->assetFileSystem) {
             if (archiveError)
                 return result::UnexpectedFailure;
-            return result::EntityNotFound;
+            return missingStorage("no asset filesystem or matching system archive");
         }
         auto assetBacking{state.os->assetFileSystem->OpenFileUnchecked(fmt::format("romfs/{:016X}", input->dataId))};
         if (!assetBacking) {
             if (archiveError)
                 return result::UnexpectedFailure;
-            return result::EntityNotFound;
+            return missingStorage("not found in system archives or assets");
         }
         manager.RegisterService(std::make_shared<IStorage>(std::move(assetBacking), state, manager), session, response);
         return {};
