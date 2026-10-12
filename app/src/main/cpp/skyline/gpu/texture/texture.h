@@ -13,6 +13,9 @@
 #include <gpu/usage_tracker.h>
 
 namespace skyline::gpu {
+    namespace interconnect {
+        class CommandExecutor;
+    }
     namespace texture {
         enum class RenderPassUsage : u8 {
             None,
@@ -378,6 +381,8 @@ namespace skyline::gpu {
      * @note This class conforms to the Lockable and BasicLockable C++ named requirements
      */
     class Texture : public std::enable_shared_from_this<Texture> {
+        friend class interconnect::CommandExecutor;
+
       private:
         GPU &gpu;
         RecursiveSpinLock mutex; //!< Synchronizes any mutations to the texture or its backing
