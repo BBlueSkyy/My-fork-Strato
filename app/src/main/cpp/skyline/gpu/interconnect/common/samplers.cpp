@@ -4,6 +4,7 @@
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include "samplers.h"
+#include <fmt/format.h>
 
 namespace skyline::gpu::interconnect {
     void SamplerPoolState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
