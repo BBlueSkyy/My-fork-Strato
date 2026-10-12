@@ -82,6 +82,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
      void Maxwell3D::DrawWithInlineIndex(engine::DrawTopology topology, bool transformFeedbackEnable,
                                      span<u8> indexData, engine::IndexBuffer::IndexSize indexSize,
                                      u32 count, u32 instanceCount) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
      TRACE_EVENT("gpu", "DrawWithInlineIndex", "count", count, "instanceCount", instanceCount);
 
        StateUpdateBuilder builder{*ctx.executor.allocator};
@@ -120,7 +121,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
           ctx.executor.AddCheckpoint("After inline index draw");
-     }    
+     
+        });
+    }    
    
      vk::Rect2D Maxwell3D::GetClearScissor() {
         const auto &clearSurfaceControl{clearEngineRegisters.clearSurfaceControl};
@@ -274,6 +277,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     void Maxwell3D::DrawTexture(const engine::DrawTexture &params,
                                  const engine::WindowOrigin &origin,
                                  const engine::SurfaceClip &clip, size_t colorTargetIndex) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
         TRACE_EVENT("gpu", "Maxwell3D::DrawTexture");
 
         // DRAW_TEXTURE uses its own texture/sampler IDs, not the shaders or
@@ -376,14 +380,23 @@ namespace skyline::gpu::interconnect::maxwell3d {
         );
         ctx.executor.AddCheckpoint("After draw texture");
         ctx.executor.NotifyPipelineChange();
+    
+        });
     }
 
     void Maxwell3D::Clear(engine::ClearSurface &clearSurface) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
         auto scissor{GetClearScissor()};
         if (scissor.extent.width == 0 || scissor.extent.height == 0)
             return;
 
         TRACE_EVENT("gpu", "Maxwell3D::Clear");
+        // Resolve all requested attachment views before publishing any clear node.
+        // If a backing promotion is required, the retry starts from a clean preparation state.
+        auto requestedColor{(clearSurface.rEnable || clearSurface.gEnable || clearSurface.bEnable || clearSurface.aEnable)
+            ? activeState.GetColorRenderTargetForClear(ctx, clearSurface.mrtSelect) : std::shared_ptr<TextureView>{}};
+        auto requestedDepth{(clearSurface.stencilEnable || clearSurface.zEnable)
+            ? activeState.GetDepthRenderTargetForClear(ctx) : std::shared_ptr<TextureView>{}};
         ctx.executor.AddCheckpoint("Before clear");
 
         auto needsAttachmentClearCmd{[&](auto &view) {
@@ -403,7 +416,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         std::shared_ptr<TextureView> depthStencilView{};
 
         if (clearSurface.rEnable || clearSurface.gEnable || clearSurface.bEnable || clearSurface.aEnable) {
-            if (auto view{activeState.GetColorRenderTargetForClear(ctx, clearSurface.mrtSelect)}) {
+            if (auto view{requestedColor}) {
                 ctx.executor.AttachTexture(&*view);
 
                 bool partialClear{!(clearSurface.rEnable && clearSurface.gEnable && clearSurface.bEnable && clearSurface.aEnable)};
@@ -432,7 +445,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
 
         if (clearSurface.stencilEnable || clearSurface.zEnable) {
-            if (auto view{activeState.GetDepthRenderTargetForClear(ctx)}) {
+            if (auto view{requestedDepth}) {
                 ctx.executor.AttachTexture(&*view);
 
                 bool viewHasDepth{view->range.aspectMask & vk::ImageAspectFlagBits::eDepth}, viewHasStencil{view->range.aspectMask & vk::ImageAspectFlagBits::eStencil};
@@ -467,9 +480,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
 
         ctx.executor.AddCheckpoint("After clear");
+    
+        });
     }
 
     void Maxwell3D::Draw(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, u32 count, u32 first, u32 instanceCount, u32 vertexOffset, u32 firstInstance) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
         TRACE_EVENT("gpu", "Draw", "indexed", indexed, "count", count, "instanceCount", instanceCount);
 
         StateUpdateBuilder builder{*ctx.executor.allocator};
@@ -528,9 +544,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
         ctx.executor.AddCheckpoint("After draw");
+    
+        });
     }
 
     void Maxwell3D::DrawIndirect(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, span<u8> indirectBuffer, u32 count, u32 stride) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
         if (!count)
             return;
 
@@ -591,6 +610,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
         ctx.executor.AddCheckpoint("After indirect draw");
+    
+        });
     }
 
     void Maxwell3D::Query(soc::gm20b::IOVA address, engine::SemaphoreInfo::CounterType type, std::optional<u64> timestamp) {
