@@ -390,12 +390,11 @@ namespace skyline::gpu::interconnect {
     }
 
 
-    // RE5 phase 2: only trace color render targets of 1280x720 3D passes
+    // RE5 phase 2: only trace color render targets of 3D passes
     // paired with depth; the first capture spent its budget on unrelated inputs.
     // All readbacks remain at natural render-pass boundaries (not mid-draw).
     static bool IsRe5ScenePassImage(const Texture &texture) {
-        return texture.dimensions.width == 1280 &&
-               texture.dimensions.height == 720 &&
+        return texture.dimensions.width && texture.dimensions.height &&
                texture.dimensions.depth == 1 && texture.levelCount == 1 &&
                texture.layerCount == 1 &&
                texture.sampleCount == vk::SampleCountFlagBits::e1 &&
@@ -413,12 +412,14 @@ namespace skyline::gpu::interconnect {
             return;
 
         const auto &depth{*depthStencilAttachment->texture};
-        if (depth.dimensions.width != 1280 || depth.dimensions.height != 720 ||
-            !(depth.format->vkAspect & vk::ImageAspectFlagBits::eDepth))
+        if (!(depth.format->vkAspect & vk::ImageAspectFlagBits::eDepth))
             return;
 
         for (auto *view : color) {
-            if (!view || !view->texture || !IsRe5ScenePassImage(*view->texture))
+            if (!view || !view->texture ||
+                !diagnostic::SceneExtentMatches(view->texture->dimensions.width,
+                    view->texture->dimensions.height, depth.dimensions.width, depth.dimensions.height) ||
+                !IsRe5ScenePassImage(*view->texture))
                 continue;
             auto texture{view->texture};
             const auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),

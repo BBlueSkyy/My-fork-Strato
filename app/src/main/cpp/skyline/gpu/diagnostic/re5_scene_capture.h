@@ -3,6 +3,7 @@
 // One-shot diagnostic only. This is a small, bounded trace, not the RenderDoc API.
 // No guest data or guest GPU command is modified.
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <optional>
@@ -16,6 +17,11 @@
 #include "re5_blit_trace.h"
 
 namespace skyline::gpu::diagnostic {
+    constexpr bool SceneExtentMatches(std::uint32_t colorWidth, std::uint32_t colorHeight,
+                                      std::uint32_t depthWidth, std::uint32_t depthHeight) {
+        return colorWidth && colorHeight &&
+               colorWidth == depthWidth && colorHeight == depthHeight;
+    }
     class SceneFrameCapture {
       public:
         std::atomic<bool> active{false};
@@ -52,6 +58,7 @@ namespace skyline::gpu::diagnostic {
         std::array<std::array<std::uint32_t, 5>, FrameCount> bindingDraws{};
         std::array<std::array<std::uint32_t, 5>, FrameCount> bindingGroups{};
         std::uint32_t nextBindingIndex{};
+        std::vector<std::array<std::uint32_t, 6>> sceneGeometries;
 
       public:
         void Start(std::string captureDirectory) {
@@ -68,6 +75,7 @@ namespace skyline::gpu::diagnostic {
             bindingDraws = {};
             bindingGroups = {};
             nextBindingIndex = 0;
+            sceneGeometries.clear();
             Re5BlitJournal().BeginCapture(path);
             for (auto &counter : priorityDrawsByInterval)
                 counter.store(0, std::memory_order_relaxed);
@@ -150,6 +158,24 @@ namespace skyline::gpu::diagnostic {
             return ScalarTicket{nextBindingIndex++, path};
         }
 
+        // Metadata only: make a rejected resolution/aspect visible too. At most
+        // 16 unique depth/color configurations, independent of draw sampling.
+        void RecordSceneGeometry(const std::array<std::uint32_t, 6> &geometry) {
+            if (!active.load(std::memory_order_acquire)) return;
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_relaxed) || sceneGeometries.size() >= 16 ||
+                events.size() >= MaxEvents ||
+                std::find(sceneGeometries.begin(), sceneGeometries.end(), geometry) != sceneGeometries.end())
+                return;
+            sceneGeometries.push_back(geometry);
+            events.emplace_back("present_index_approx=" + std::to_string(presentIndex.load(std::memory_order_relaxed)) +
+                " SCENE_GEOMETRY depth=" + std::to_string(geometry[0]) + "x" + std::to_string(geometry[1]) +
+                " depth_aspect=" + std::to_string(geometry[2]) + " color=" + std::to_string(geometry[3]) +
+                "x" + std::to_string(geometry[4]) + " color_aspect=" + std::to_string(geometry[5]) +
+                " extent_match=" + std::to_string(SceneExtentMatches(geometry[3], geometry[4], geometry[0], geometry[1])));
+            eventCount.store(static_cast<std::uint32_t>(events.size()), std::memory_order_relaxed);
+        }
+
         void Record(std::string event) {
             if (!active.load(std::memory_order_acquire) ||
                 eventCount.load(std::memory_order_relaxed) >= MaxEvents)
@@ -170,7 +196,9 @@ namespace skyline::gpu::diagnostic {
             if (out) {
                 out << "GPU events collected while 4 frames were being presented.\n"
                     << "present_index_approx is NOT exact GPU/present synchronization.\n"
-                    << "Events are filtered for 1280x720 scene draws and sampled to preserve later frames.\n\n";
+                    << "Events are filtered for matching color/depth extents and sampled to preserve later frames.\n"
+                    << "reserved_binding_probes=" << nextBindingIndex << " reserved_scalar_probes=" << nextScalarIndex
+                    << " reserved_pass_snapshots=" << nextPassIndex << " pass_bytes=" << passBytes << "\n\n";
                 for (const auto &event : events)
                     out << event << '\n';
             }

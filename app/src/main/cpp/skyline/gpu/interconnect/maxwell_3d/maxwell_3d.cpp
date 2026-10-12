@@ -21,27 +21,38 @@ namespace skyline::gpu::interconnect::maxwell3d {
     // No Title ID checks, Vulkan state changes, forced refreshes or render-pass
     // splits. The hashes only prioritize diagnostic logs; they do not affect draws.
     template <typename ActiveStateType>
-    static std::optional<u32> SampleRe5SceneDraw(ActiveStateType &activeState) {
+    static bool HasDiagnosticSceneAttachments(ActiveStateType &activeState) {
         auto &capture{diagnostic::Re5SceneCapture()};
         if (!capture.active.load(std::memory_order_acquire))
-            return std::nullopt;
+            return false;
         auto *depth{activeState.GetDepthAttachment()};
-        if (!depth || !depth->texture ||
-            depth->texture->dimensions.width != 1280 ||
-            depth->texture->dimensions.height != 720 ||
-            !(depth->texture->format->vkAspect & vk::ImageAspectFlagBits::eDepth))
-            return std::nullopt;
+        const bool hasDepth{depth && depth->texture};
+        const bool depthAspect{hasDepth && (depth->texture->format->vkAspect & vk::ImageAspectFlagBits::eDepth)};
+        const u32 depthWidth{hasDepth ? depth->texture->dimensions.width : 0};
+        const u32 depthHeight{hasDepth ? depth->texture->dimensions.height : 0};
         bool sceneTarget{};
+        bool colorSeen{};
         for (auto *view : activeState.GetColorAttachments()) {
-            if (view && view->texture &&
-                view->texture->dimensions.width == 1280 &&
-                view->texture->dimensions.height == 720 &&
-                (view->texture->format->vkAspect & vk::ImageAspectFlagBits::eColor)) {
+            if (!view || !view->texture) continue;
+            colorSeen = true;
+            const bool colorAspect{bool(view->texture->format->vkAspect & vk::ImageAspectFlagBits::eColor)};
+            capture.RecordSceneGeometry({depthWidth, depthHeight, static_cast<u32>(depthAspect),
+                view->texture->dimensions.width, view->texture->dimensions.height, static_cast<u32>(colorAspect)});
+            if (depthAspect && colorAspect && diagnostic::SceneExtentMatches(view->texture->dimensions.width,
+                    view->texture->dimensions.height, depthWidth, depthHeight)) {
                 sceneTarget = true;
                 break;
             }
         }
-        if (!sceneTarget)
+        if (!colorSeen)
+            capture.RecordSceneGeometry({depthWidth, depthHeight, static_cast<u32>(depthAspect), 0, 0, 0});
+        return sceneTarget;
+    }
+
+    template <typename ActiveStateType>
+    static std::optional<u32> SampleRe5SceneDraw(ActiveStateType &activeState) {
+        auto &capture{diagnostic::Re5SceneCapture()};
+        if (!HasDiagnosticSceneAttachments(activeState))
             return std::nullopt;
         bool priority{};
         if (auto *pipeline{activeState.GetPipeline()}) {
@@ -356,8 +367,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (!capture.active.load(std::memory_order_acquire)) return {};
         auto *pipeline{activeState.GetPipeline()};
         auto *depth{activeState.GetDepthAttachment()};
-        if (!pipeline || !depth || !depth->texture || depth->texture->dimensions.width != 1280 ||
-            depth->texture->dimensions.height != 720) return {};
+        if (!pipeline || !HasDiagnosticSceneAttachments(activeState)) return {};
         const auto hash{pipeline->sourcePackedState.shaderHashes[static_cast<size_t>(engine::Pipeline::Shader::Type::Pixel)]};
         const u32 group{hash == 0xF3805B306B15F89AULL ? 0U : hash == 0xB141A1171435D55EULL ? 1U :
             hash == 0x8E1C37D501C478E1ULL ? 2U : hash == 0x07C66B919FC55A45ULL ? 3U : 4U};
@@ -375,6 +385,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         for (const auto shaderHash : pipeline->sourcePackedState.shaderHashes)
             probe->metadata += fmt::format("{:016X},", shaderHash);
         probe->metadata += '\n';
+        probe->metadata += fmt::format("depth_texture_id={} dimensions={}x{}\n",
+            depth->texture->diagnosticIdentity, depth->texture->dimensions.width,
+            depth->texture->dimensions.height);
         for (auto *view : activeState.GetColorAttachments())
             if (view && view->texture)
                 probe->metadata += fmt::format("target_texture_id={} object=0x{:X}\n",
@@ -416,8 +429,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (hash != 0xF3805B306B15F89AULL && hash != 0xB141A1171435D55EULL)
             return {};
         auto *depth{activeState.GetDepthAttachment()};
-        if (!depth || !depth->texture || depth->texture->dimensions.width != 1280 ||
-            depth->texture->dimensions.height != 720)
+        if (!HasDiagnosticSceneAttachments(activeState))
             return {};
         const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
         if (!capture.SampleScalarDraw(interval, target))
