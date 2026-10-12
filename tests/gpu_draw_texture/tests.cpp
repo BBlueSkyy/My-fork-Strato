@@ -61,6 +61,7 @@ struct TextureView : std::enable_shared_from_this<TextureView> {
 };
 struct FakeSampler { u32 index; u32 operator*() const { return index + 100; } };
 struct Executor {
+    template<typename Operation> void RunWithTextureBackingRetry(Operation &&operation) { operation(); }
     int usageTracker{}, pipelineChanges{}, blits{};
     std::vector<std::shared_ptr<void>> dependencies;
     std::vector<TextureView *> attached;
