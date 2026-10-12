@@ -70,10 +70,6 @@ namespace skyline::service::am {
     Result IApplicationFunctions::EnsureSaveData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto userId{request.Pop<account::UserId>()};
         const auto &nacp{state.loader->nacp->nacpContents};
-        LOGI("EnsureSaveData: ownerId=0x{:016X}, userId={:016X}{:016X}, accountSize=0x{:X}, accountJournal=0x{:X}, deviceSize=0x{:X}, deviceJournal=0x{:X}",
-             nacp.saveDataOwnerId, userId.upper, userId.lower,
-             nacp.userAccountSaveDataSize, nacp.userAccountSaveDataJournalSize,
-             nacp.deviceSaveDataSize, nacp.deviceSaveDataJournalSize);
 
         const auto ensureResult{fssrv::EnsureApplicationSaveData(state.os->publicAppFilesPath,
                                                                  nacp.saveDataOwnerId,
