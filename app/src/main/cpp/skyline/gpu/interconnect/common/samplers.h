@@ -55,5 +55,8 @@ namespace skyline::gpu::interconnect {
         vk::raii::Sampler *GetSampler(InterconnectContext &ctx, u32 samplerIndex);
 
         Shader::CompareFunction GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
+
+        // Read-only TSC interpretation for a selected diagnostic descriptor; no sampler creation.
+        std::string DiagnosticLodSummary(u32 samplerIndex, u32 textureIndex);
     };
 }
