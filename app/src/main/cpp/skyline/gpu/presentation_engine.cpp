@@ -196,6 +196,9 @@ namespace skyline::gpu {
                         readme << "RE5 automatic/manual pass-boundary capture: " << reason << '\n'
                                << "pretrigger_* are circular metadata histories, not GPU readbacks.\n"
                                << "The screen probe is a 3x3 RGB brightness heuristic, not proof of a bad frame.\n"
+                               << "Full pass readbacks now select 1280x720 focused composition or 1920x1080 outputs only.\n"
+                               << "The screen detector reads the source before swapchain CopyFrom, not the Android swapchain.\n"
+                               << "pretrigger_present_sources.txt maps the presenting texture to preceding pass metadata.\n"
                                << "Pass readbacks remain bounded and can perturb race timing.\n"
                                << detail << '\n';
                     LOGI("RE5_BOUNDARY trigger={} directory={}", reason, dir.string());
@@ -305,14 +308,33 @@ namespace skyline::gpu {
 
             if (capture.RecordingMetadata()) {
                 const auto frameNumber{capture.monitorPresent.fetch_add(1, std::memory_order_acq_rel) + 1};
+                uintptr_t sourceGuestMap{};
+                if (texture->guest && !texture->guest->mappings.empty())
+                    sourceGuestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                capture.RecordPrePresent(fmt::format(
+                    "SOURCE_BEFORE_SWAPCHAIN_COPY monitor_present={} texture=0x{:X} "
+                    "guest_map=0x{:X} dimensions={}x{} format={} view_mip={}+{} "
+                    "view_layer={}+{} layout={}",
+                    frameNumber, reinterpret_cast<uintptr_t>(texture.get()), sourceGuestMap,
+                    texture->dimensions.width, texture->dimensions.height,
+                    vk::to_string(texture->format->vkFormat),
+                    frame.textureView->range.baseMipLevel, frame.textureView->range.levelCount,
+                    frame.textureView->range.baseArrayLayer, frame.textureView->range.layerCount,
+                    vk::to_string(texture->layout)));
                 if (capture.active.load(std::memory_order_acquire)) {
                     capture.RecordPresent(fmt::format(
                         "PRESENT monitor_present={} approx_present={} texture=0x{:X} "
-                        "dimensions={}x{} format={} layout={} just_armed={}",
+                        "dimensions={}x{} format={} layout={} just_armed={} "
+                        "source_guest_map=0x{:X} source_view_mip={}+{} source_view_layer={}+{} "
+                        "sampled_before_swapchain_copy=1",
                         frameNumber, capture.presentIndex.load(std::memory_order_relaxed),
                         reinterpret_cast<uintptr_t>(texture.get()), texture->dimensions.width,
                         texture->dimensions.height, vk::to_string(texture->format->vkFormat),
-                        vk::to_string(texture->layout), justArmed));
+                        vk::to_string(texture->layout), justArmed,
+                        sourceGuestMap, frame.textureView->range.baseMipLevel,
+                        frame.textureView->range.levelCount,
+                        frame.textureView->range.baseArrayLayer,
+                        frame.textureView->range.layerCount));
                     if (!justArmed) {
                         const auto next{capture.presentIndex.fetch_add(1, std::memory_order_acq_rel) + 1};
                         if (next >= diagnostic::Re5PassBoundaryCapture::FrameCount) {
