@@ -1587,6 +1587,41 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(Texture::IsGuestLayoutReversible(array));
     }
 
+    void CheckFreedWriterGuestBridge(GPU &gpu) {
+        std::vector<u8> bytes(90112 * 6), expected(bytes.size());
+        for (size_t i{}; i < bytes.size(); ++i) bytes[i] = static_cast<u8>(i * 29 + i / 113);
+        expected = bytes;
+
+        auto make{[&](u32 stride, u32 layers) {
+            auto texture{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm, vk::Extent3D{128,128,1}, 1, layers)};
+            texture->guest->layerStride = stride;
+            texture->guest->viewType = vk::ImageViewType::e2DArray;
+            texture->guest->viewMipCount = 1;
+            texture->guest->mappings.push_back(span<u8>{bytes});
+            texture->mirror = bytes;
+            texture->dirtyState = Texture::DirtyState::CpuDirty;
+            { std::scoped_lock lock{*texture}; texture->SynchronizeHost(false); }
+            return texture;
+        }};
+
+        auto writer{make(90112, 6)};
+        auto alternate{make(180224, 3)};
+        *gpu.state.settings->freeGuestTextureMemory = true;
+        WriteAliasRenderTarget(writer, {0,0,1,1});
+        EncodeAliasBase(writer, expected, {0,0,255,255});
+        assert(writer->memoryFreed && writer->dirtyState == Texture::DirtyState::GpuDirty);
+        assert(bytes != expected); // Fake FreeMemory removes the guest bridge.
+
+        Texture::RegisterAliases({writer, alternate});
+        auto group{writer->aliasGroup.load()};
+        assert(group && alternate->aliasGroup.load() == group);
+        assert(!writer->memoryFreed && writer->gpuReadbackSerial == writer->gpuWriteSerial);
+        assert(bytes == expected && group->guestGeneration == group->generation);
+
+        *gpu.state.settings->freeGuestTextureMemory = false;
+        gpu.scheduler.Complete();
+    }
+
     void CheckStorageWriterTracking(GPU &gpu) {
         std::vector<u8> bytes(64 * 64 * 4, 0x31);
         GuestTexture guest;
@@ -1744,6 +1779,7 @@ int main() {
             CheckCpuWriteBeforeSubmit(gpu);
             CheckRegistrationAfterReadback(gpu);
             CheckMaterializationVsWriteback();
+            CheckFreedWriterGuestBridge(gpu);
             CheckStorageWriterTracking(gpu);
             CheckReadOnlyAliasWriteGate(gpu);
             for (bool reverse : {false, true}) CheckPromotion(gpu, reverse);

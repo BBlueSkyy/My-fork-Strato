@@ -917,6 +917,44 @@ namespace skyline::gpu {
         }
         if (!IsGuestLayoutReversible(*requested) || ConvertHostCompatibleFormat(requested->format, reference->gpu.traits) != requested->format)
             throw exception("Cannot losslessly reconcile the requested guest layout");
+        const auto newest{*std::max_element(textures.begin(), textures.end(), [](const auto &a, const auto &b) {
+            return a->gpuWriteSerial < b->gpuWriteSerial;
+        })};
+
+        // Free Guest Texture Memory may have discarded the guest pages of the
+        // latest native GPU writer before a second representation is requested.
+        // Restore those bytes from the writer before classifying aliases: guest
+        // memory is the bridge between different Tegra layouts, but it must not
+        // be treated as authoritative until this readback has completed.
+        bool restoreNewest{};
+        {
+            std::scoped_lock stateLock{newest->stateMutex};
+            restoreNewest = newest->guest && !newest->aliasStale.load() && newest->memoryFreed &&
+                newest->dirtyState == DirtyState::GpuDirty && newest->format == newest->guest->format &&
+                newest->sampleCount == vk::SampleCountFlagBits::e1 &&
+                IsGuestLayoutReversible(*newest->guest);
+        }
+        if (restoreNewest) {
+            DirtyState previousState;
+            bool previousMemoryFreed{};
+            {
+                std::scoped_lock stateLock{newest->stateMutex};
+                previousState = newest->dirtyState;
+                previousMemoryFreed = newest->memoryFreed;
+            }
+            try {
+                newest->SynchronizeGuest(false, true);
+                std::scoped_lock stateLock{newest->stateMutex};
+                if (newest->memoryFreed || newest->gpuWriteSerial > newest->gpuReadbackSerial)
+                    throw exception("Texture alias writer guest bridge was not restored");
+            } catch (...) {
+                std::scoped_lock stateLock{newest->stateMutex};
+                newest->dirtyState = previousState;
+                newest->memoryFreed = previousMemoryFreed;
+                throw;
+            }
+        }
+
         std::vector<std::shared_ptr<Texture>> eligible, historical;
         for (const auto &texture : textures) {
             if (!texture->aliasRetired.load() && texture->CanReconcileGuestLayout(*requested))
@@ -924,9 +962,6 @@ namespace skyline::gpu {
             else
                 historical.push_back(texture);
         }
-        const auto newest{*std::max_element(textures.begin(), textures.end(), [](const auto &a, const auto &b) {
-            return a->gpuWriteSerial < b->gpuWriteSerial;
-        })};
         // A non-reversible GPU writer cannot be encoded through guest memory.
         // Retirement is safe only after readback or a strictly newer writer has
         // superseded it. An untracked/tied writer is deliberately rejected.
@@ -966,10 +1001,13 @@ namespace skyline::gpu {
         // Only the newest writer may encode these bytes. A completed readback
         // from even a historical layout already makes guest memory authoritative.
         if (newestEligible) {
-            const auto previousState{[&] {
+            DirtyState previousState;
+            bool previousMemoryFreed{};
+            {
                 std::scoped_lock stateLock{newest->stateMutex};
-                return newest->dirtyState;
-            }()};
+                previousState = newest->dirtyState;
+                previousMemoryFreed = newest->memoryFreed;
+            }
             try {
                 newest->SynchronizeGuest(false, true);
                 std::scoped_lock stateLock{newest->stateMutex};
@@ -978,6 +1016,7 @@ namespace skyline::gpu {
             } catch (...) {
                 std::scoped_lock stateLock{newest->stateMutex};
                 newest->dirtyState = previousState;
+                newest->memoryFreed = previousMemoryFreed;
                 throw;
             }
         }
