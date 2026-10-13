@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <string>
 #include <gpu/descriptor_allocator.h>
 #include <gpu/interconnect/common/samplers.h>
 #include <gpu/interconnect/common/textures.h>
@@ -46,6 +47,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         InterconnectContext ctx;
         ActiveState activeState;
         ClearEngineRegisters clearEngineRegisters;
+        // References only: original Maxwell register storage outlives this interconnect.
+        const engine::Viewport &diagnosticViewport0;
+        const engine::Viewport &diagnosticViewport;
+        const std::array<float, engine::BlendColorChannelCount> &diagnosticBlendConstants;
         ConstantBuffers constantBuffers;
         Samplers samplers;
         const engine::SamplerBinding &samplerBinding;
@@ -72,6 +77,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
          * @brief A scissor derived from the current draw register state and bound RTs
          */
         vk::Rect2D GetDrawScissor();
+
+        /**
+         * Diagnostic only. Describe the current (not stale cache) programmable
+         * pipeline and visible guest viewport/scissor state for RE5 composition.
+         */
+        std::string DescribeDiagnosticOperation(const char *kind, vk::Rect2D area,
+                                                bool programmable);
 
         /**
          * @brief Performs operations common across indirect and regular draws
