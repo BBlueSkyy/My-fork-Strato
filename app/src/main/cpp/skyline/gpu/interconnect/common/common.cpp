@@ -7,7 +7,7 @@
 #include "common.h"
 
 namespace skyline::gpu::interconnect {
-    void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn) {
+    void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn, std::source_location location) {
         // Ignore size for the mapping end check here as we don't support buffers split across multiple mappings so only the first one would be used anyway. It's also impossible for the mapping to have been remapped with a larger one since the original lookup because the we force the mapping to be reset after semaphores
         if (address < blockMappingStartAddr || address >= blockMappingEndAddr) {
             u64 blockOffset{};
@@ -25,8 +25,48 @@ namespace skyline::gpu::interconnect {
         // Mapping from the start of the buffer view to the end of the block
         auto fullMapping{blockMapping.subspan(address - blockMappingStartAddr)};
 
-        if (splitMappingWarn && fullMapping.size() < size)
-            LOGW("Split buffer mappings are not supported");
+        if (fullMapping.size() < size) {
+            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(address, size)};
+
+            bool physicallyContiguous{!mappings.empty()};
+            size_t translatedSize{};
+            u8 *expectedNext{};
+
+            for (auto mapping : mappings) {
+                if (!mapping.valid() || mapping.empty() || (expectedNext && mapping.data() != expectedNext)) {
+                    physicallyContiguous = false;
+                    break;
+                }
+
+                translatedSize += mapping.size();
+                expectedNext = mapping.data() + mapping.size();
+            }
+
+            if (physicallyContiguous && translatedSize >= size) {
+                auto viewMapping{span<u8>{mappings.front().data(), size}};
+
+                if (view)
+                    if (view = view.GetBuffer()->TryGetView(viewMapping); view)
+                        return;
+
+                view = ctx.gpu.buffer.FindOrCreate(viewMapping, ctx.executor.tag, [&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
+                    ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
+                });
+                return;
+            }
+
+            if (splitMappingWarn) {
+                static std::atomic<u64> splitMappingLogCount{};
+                u64 count{splitMappingLogCount.fetch_add(1, std::memory_order_relaxed) + 1};
+
+                // Keep diagnostic builds usable even when a title hits this path tens of
+                // thousands of times per second. Preserve the first samples, then only
+                // emit periodic snapshots with the cumulative hit count.
+                if (count <= 128 || (count & 0xFFF) == 0)
+                    LOGW("Split buffer mappings are not supported (hit={}, address=0x{:X}, size=0x{:X}, first=0x{:X}, mappings={}, caller={}:{}, function={})",
+                         count, address, size, fullMapping.size(), mappings.size(), location.file_name(), location.line(), location.function_name());
+            }
+        }
 
         // Mapping covering just the requested input view (or less in the case of split mappings)
         auto viewMapping{fullMapping.first(std::min(fullMapping.size(), size))};
