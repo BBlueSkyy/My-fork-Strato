@@ -32,7 +32,7 @@ namespace skyline::gpu {
         auto recordDecision{[&](const char *decision, const std::shared_ptr<Texture> &selected = {},
                                 u32 selectedMip = 0, u32 selectedLayer = 0) {
             auto &capture{diagnostic::Re5PassBoundary()};
-            if (!capture.active.load(std::memory_order_acquire))
+            if (!capture.RecordingMetadata())
                 return;
             size_t mappedBytes{};
             for (const auto &mapping : guestTexture.mappings)
