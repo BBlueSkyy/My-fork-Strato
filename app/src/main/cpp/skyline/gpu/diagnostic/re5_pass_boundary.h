@@ -51,7 +51,7 @@ namespace skyline::gpu::diagnostic {
         std::size_t readbackBytes{};
         std::uint32_t focusedProbes{};
         std::size_t focusedBytes{};
-        std::deque<std::string> recentTexman, recentPasses, recentProbes;
+        std::deque<std::string> recentTexman, recentPasses, recentProbes, recentPresentSources;
 
         static void PushRecent(std::deque<std::string> &ring, std::string line, std::size_t limit) {
             if (ring.size() >= limit)
@@ -83,6 +83,7 @@ namespace skyline::gpu::diagnostic {
             recentTexman.clear();
             recentPasses.clear();
             recentProbes.clear();
+            recentPresentSources.clear();
             monitorPresent.store(0, std::memory_order_relaxed);
             monitoring.store(true, std::memory_order_release);
         }
@@ -98,6 +99,8 @@ namespace skyline::gpu::diagnostic {
             WriteRecent(path, "pretrigger_texman.txt", recentTexman);
             WriteRecent(path, "pretrigger_passes.txt", recentPasses);
             WriteRecent(path, "pretrigger_screen_probes.txt", recentProbes);
+            WriteRecent(path, "pretrigger_present_sources.txt", recentPresentSources);
+            recentPresentSources.clear();
             recentTexman.clear();
             recentPasses.clear();
             recentProbes.clear();
@@ -160,6 +163,12 @@ namespace skyline::gpu::diagnostic {
                 PushRecent(recentProbes, std::move(line), 128);
             else if (!path.empty())
                 AppendLocked("screen_probes.txt", line);
+        }
+
+        void RecordPrePresent(std::string line) {
+            std::scoped_lock lock{mutex};
+            if (monitoring.load(std::memory_order_acquire))
+                PushRecent(recentPresentSources, std::move(line), 128);
         }
 
         void RecordPresent(std::string line) {
