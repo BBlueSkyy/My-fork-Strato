@@ -176,37 +176,71 @@ namespace skyline::gpu {
 
                 }
 
-                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                const bool sameTileConfig{matchGuestTexture.tileConfig == guestTexture.tileConfig};
+                const bool blockMipCandidate{
+                    matchGuestTexture.GetImageType() == vk::ImageType::e2D &&
+                    guestTexture.GetImageType() == vk::ImageType::e2D &&
+                    matchGuestTexture.tileConfig.mode == texture::TileMode::Block &&
+                    guestTexture.tileConfig.mode == texture::TileMode::Block &&
+                    guestTexture.mipLevelCount == 1 &&
+                    guestTexture.viewMipBase == 0 &&
+                    guestTexture.viewMipCount == 1
+                };
+                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
+                        (sameTileConfig || blockMipCandidate) &&
                         (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
                     size_t memOffset{static_cast<size_t>(guestMapping.data() - hostMapping->texture->guest->mappings.front().data())};
+
+                    std::optional<texture::MipLevelLayout> requestedMipLayout;
+                    if (blockMipCandidate) {
+                        auto requestedLayouts{texture::GetBlockLinearMipLayout(
+                            guestTexture.dimensions,
+                            guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
+                            guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
+                            guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth, 1)};
+                        if (!requestedLayouts.empty())
+                            requestedMipLayout = requestedLayouts.front();
+                    }
+
                     size_t layerMemOffset{};
                     bool matched{};
                     for (u32 layer{}; layer < hostMapping->texture->layerCount; layer++) {
                         u32 level{};
                         size_t levelMemOffset{};
 
-                        for (auto &mipLevel : hostMapping->texture->mipLayouts) {
-                            if (layerMemOffset + levelMemOffset == memOffset) {
-                                if (mipLevel.blockLinearSize == guestTexture.CalculateLayerSize()) {
-                                    auto range{requestedRange};
-                                    // Test before addition, including the whole requested
-                                    // range, not just the starting subresource.
-                                    if (range.baseMipLevel <= hostMapping->texture->levelCount - level &&
-                                        range.baseArrayLayer <= hostMapping->texture->layerCount - layer) {
-                                        range.baseMipLevel += level;
-                                        range.baseArrayLayer += layer;
-                                        if (hostMapping->texture->ViewRangeFits(guestTexture.viewType, range) &&
-                                            (range.layerCount == 1 || matchGuestTexture.GetLayerStride() == requestedStride)) {
-                                            matched = true;
-                                            matchLayer = layer;
-                                            matchLevel = level;
-                                            break;
-                                        }
+                        for (const auto &mipLevel : hostMapping->texture->mipLayouts) {
+                            bool layoutMatches{mipLevel.blockLinearSize == guestTexture.CalculateLayerSize()};
+                            if (blockMipCandidate) {
+                                layoutMatches = requestedMipLayout &&
+                                    mipLevel.dimensions == guestTexture.dimensions &&
+                                    mipLevel.blockHeight == requestedMipLayout->blockHeight &&
+                                    mipLevel.blockDepth == requestedMipLayout->blockDepth &&
+                                    mipLevel.blockLinearSize == requestedMipLayout->blockLinearSize;
+                            }
+
+                            if (layerMemOffset + levelMemOffset == memOffset && layoutMatches) {
+                                auto range{requestedRange};
+                                // Test before addition, including the whole requested
+                                // range, not just the starting subresource.
+                                if (range.baseMipLevel <= hostMapping->texture->levelCount - level &&
+                                    range.baseArrayLayer <= hostMapping->texture->layerCount - layer) {
+                                    range.baseMipLevel += level;
+                                    range.baseArrayLayer += layer;
+                                    if (hostMapping->texture->ViewRangeFits(guestTexture.viewType, range) &&
+                                        (range.layerCount == 1 || matchGuestTexture.GetLayerStride() == requestedStride)) {
+                                        matched = true;
+                                        matchLayer = layer;
+                                        matchLevel = level;
+                                        break;
                                     }
                                 }
-                                level++;
-                                levelMemOffset += mipLevel.blockLinearSize;
                             }
+
+                            // These offsets describe the parent's physical mip chain.
+                            // Advancing only after an address equality (the old code)
+                            // made every non-zero mip mathematically unreachable.
+                            ++level;
+                            levelMemOffset += mipLevel.blockLinearSize;
                         }
 
                         if (matched)

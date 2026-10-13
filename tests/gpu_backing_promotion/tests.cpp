@@ -1210,6 +1210,29 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         cube.mipLevelCount=cube.viewMipCount=8;
         auto c{manager.FindOrCreate(cube)};
         assert(c->texture==a->texture && c->texture->levelCount==8 && c->GetView());
+
+        // A render target whose guest address starts at a non-zero mip must be
+        // a view of the existing parent image, not a second independent backing.
+        // The old matcher advanced levelMemOffset only when it already equalled
+        // the requested address, so mip 1+ could never be reached.
+        const u32 mipIndex{3};
+        size_t mipOffset{};
+        for (u32 i{}; i < mipIndex; ++i)
+            mipOffset += c->texture->mipLayouts[i].blockLinearSize;
+        auto mipRt{descriptor};
+        mipRt.dimensions = c->texture->mipLayouts[mipIndex].dimensions;
+        mipRt.viewType = vk::ImageViewType::e2D;
+        mipRt.mipLevelCount = mipRt.viewMipCount = 1;
+        mipRt.layerCount = 1;
+        mipRt.layerStride = static_cast<u32>(c->texture->mipLayouts[mipIndex].blockLinearSize);
+        mipRt.tileConfig.blockHeight = c->texture->mipLayouts[mipIndex].blockHeight;
+        mipRt.tileConfig.blockDepth = c->texture->mipLayouts[mipIndex].blockDepth;
+        mipRt.mappings.clear();
+        mipRt.mappings.push_back(span<u8>{guest.data() + mipOffset, mipRt.layerStride});
+        auto mipView{manager.FindOrCreate(mipRt)};
+        assert(mipView->texture == c->texture);
+        assert(mipView->range.baseMipLevel == mipIndex && mipView->range.levelCount == 1);
+        assert(mipView->range.baseArrayLayer == 0 && mipView->range.layerCount == 1);
         WriteAliasRenderTarget(b->texture,{0,1,0,1}); EncodeAliasBase(b->texture,expected,{0,255,0,255});
         assert(manager.FindOrCreate(cube)->texture==c->texture); // No executor context: reconcile before the view lock.
         AliasRead(c->texture); VerifyAliasHost(c->texture,expected);
