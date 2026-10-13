@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <gpu/diagnostic/re5_pass_boundary.h>
+#include <os.h>
 #include <android/choreographer.h>
 #include <common/settings.h>
 #include <common/signal.h>
