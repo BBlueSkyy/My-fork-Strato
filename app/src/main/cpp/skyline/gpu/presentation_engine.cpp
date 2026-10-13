@@ -3,6 +3,7 @@
 
 #include <android/native_window_jni.h>
 #include <array>
+#include <deque>
 #include <optional>
 #include <fmt/format.h>
 #include <filesystem>
@@ -173,7 +174,8 @@ namespace skyline::gpu {
                 u32 width{}, height{};
                 uintptr_t source{};
             };
-            static std::optional<PendingProbe> pending;
+            static std::deque<PendingProbe> pending;
+            static constexpr size_t MaxPendingProbes{8};
 
             auto startCapture{[&](const char *reason, const std::string &detail = {}) {
                 std::error_code ec;
@@ -202,11 +204,12 @@ namespace skyline::gpu {
                 return false;
             }};
 
-            // Poll rather than wait. If the GPU is busy we simply skip sampling
-            // new frames until the previous 576-byte transfer completes.
-            if (pending && pending->cycle->Poll(false)) {
-                auto completed{std::move(*pending)};
-                pending.reset();
+            // Retire probes in presentation order. An eight-entry in-flight
+            // queue tolerates normal GPU latency without missing every other frame.
+            // Never block on a diagnostic fence.
+            while (!pending.empty() && pending.front().cycle->Poll(false)) {
+                auto completed{std::move(pending.front())};
+                pending.pop_front();
                 const auto result{vmaInvalidateAllocation(completed.staging->vmaAllocator,
                     completed.staging->vmaAllocation, 0, completed.staging->size())};
                 if (result == VK_SUCCESS) {
@@ -327,7 +330,7 @@ namespace skyline::gpu {
                     vkFormat == vk::Format::eB8G8R8A8Unorm ||
                     vkFormat == vk::Format::eB8G8R8A8Srgb
                 };
-                if (!pending && capture.RecordingMetadata() && supported &&
+                if (pending.size() < MaxPendingProbes && capture.RecordingMetadata() && supported &&
                     texture->dimensions.width >= 8 && texture->dimensions.height >= 8 &&
                     texture->sampleCount == vk::SampleCountFlagBits::e1 &&
                     texture->layout != vk::ImageLayout::eUndefined && texture->GetBacking() &&
@@ -398,7 +401,7 @@ namespace skyline::gpu {
                     probeCycle->AttachObjects(texture, staging);
                     // Preserve ordering against the existing presentation copy.
                     texture->cycle = probeCycle;
-                    pending.emplace(PendingProbe{
+                    pending.emplace_back(PendingProbe{
                         std::move(staging), std::move(probeCycle), frameNumber,
                         texture->dimensions.width, texture->dimensions.height,
                         reinterpret_cast<uintptr_t>(texture.get())
