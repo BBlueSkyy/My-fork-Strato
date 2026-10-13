@@ -504,16 +504,15 @@ namespace skyline::gpu::texture {
         );
     }
 
-    void CopyPitchLinearToLinear(const GuestTexture &guest, u8 *guestInput, u8 *linearOutput) {
-        // Compressed surfaces have one physical row per row of format blocks.
-        const auto rowBytes{guest.format->GetSize(guest.dimensions.width, 1)};
-        const auto rowCount{PitchLinearRowCount(guest.dimensions.height, guest.format->blockHeight)};
-        CopyPitchedRows(guestInput, guest.tileConfig.pitch, linearOutput, rowBytes, rowBytes, rowCount);
+    void CopyPitchLinearToLinear(const GuestTexture &guest, std::span<const u8> guestInput, std::span<u8> linearOutput) {
+        const auto layout{GetPitchLinearLayout(guest.dimensions.width, guest.dimensions.height,
+            guest.format->blockWidth, guest.format->blockHeight, guest.format->bpb, guest.tileConfig.pitch, guest.dimensions.depth, guest.mipLevelCount)};
+        CopyPitchedRows(guestInput, guest.tileConfig.pitch, linearOutput, layout.rowBytes, layout.rowBytes, layout.rowCount);
     }
 
-    void CopyLinearToPitchLinear(const GuestTexture &guest, u8 *linearInput, u8 *guestOutput) {
-        const auto rowBytes{guest.format->GetSize(guest.dimensions.width, 1)};
-        const auto rowCount{PitchLinearRowCount(guest.dimensions.height, guest.format->blockHeight)};
-        CopyPitchedRows(linearInput, rowBytes, guestOutput, guest.tileConfig.pitch, rowBytes, rowCount);
+    void CopyLinearToPitchLinear(const GuestTexture &guest, std::span<const u8> linearInput, std::span<u8> guestOutput) {
+        const auto layout{GetPitchLinearLayout(guest.dimensions.width, guest.dimensions.height,
+            guest.format->blockWidth, guest.format->blockHeight, guest.format->bpb, guest.tileConfig.pitch, guest.dimensions.depth, guest.mipLevelCount)};
+        CopyPitchedRows(linearInput, layout.rowBytes, guestOutput, guest.tileConfig.pitch, layout.rowBytes, layout.rowCount);
     }
 }

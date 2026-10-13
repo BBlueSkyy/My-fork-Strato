@@ -17,8 +17,11 @@
 
 namespace skyline::gpu {
     u32 GuestTexture::GetLayerStride() {
-        if (layerStride)
+        if (layerStride) {
+            if (tileConfig.mode == texture::TileMode::Pitch && layerStride < CalculateLayerSize())
+                throw std::invalid_argument("Pitch-linear layer stride is smaller than its layer size");
             return layerStride;
+        }
 
         layerStride = CalculateLayerSize();
         return layerStride;
@@ -30,8 +33,9 @@ namespace skyline::gpu {
                 return static_cast<u32>(format->GetSize(dimensions));
 
             case texture::TileMode::Pitch:
-                // Pitch counts rows of compressed format blocks, not pixel rows.
-                return static_cast<u32>(texture::PitchLinearRowCount(dimensions.height, format->blockHeight) * tileConfig.pitch);
+                // Pitch-linear synchronization supports one 2D mip per layer.
+                return texture::GetPitchLinearLayout(dimensions.width, dimensions.height,
+                    format->blockWidth, format->blockHeight, format->bpb, tileConfig.pitch, dimensions.depth, mipLevelCount).layerSize;
 
             case texture::TileMode::Block:
                 return static_cast<u32>(texture::GetBlockLinearLayerSize(dimensions, format->blockHeight, format->blockWidth, format->bpb, tileConfig.blockHeight, tileConfig.blockDepth, mipLevelCount, layerCount > 1));
@@ -73,6 +77,8 @@ namespace skyline::gpu {
     }
 
     size_t GuestTexture::GetSize() {
+        if (tileConfig.mode == texture::TileMode::Pitch)
+            return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), layerCount, baseArrayLayer);
         return GetLayerStride() * (layerCount - baseArrayLayer);
     }
 
@@ -272,6 +278,8 @@ namespace skyline::gpu {
         if (guest->dimensions != dimensions)
             throw exception("Guest and host dimensions being different is not supported currently");
 
+        if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
+            throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
         auto pointer{mirror.data()};
 
         WaitOnBacking();
@@ -311,7 +319,7 @@ namespace skyline::gpu {
                 if (guest->tileConfig.mode == texture::TileMode::Block)
                     texture::CopyBlockLinearToLinear(*guest, pointer, outputLayer);
                 else if (guest->tileConfig.mode == texture::TileMode::Pitch)
-                    texture::CopyPitchLinearToLinear(*guest, pointer, outputLayer);
+                    texture::CopyPitchLinearToLinear(*guest, {pointer, guestLayerStride}, {outputLayer, deswizzledLayerStride});
                 else if (guest->tileConfig.mode == texture::TileMode::Linear)
                     std::memcpy(outputLayer, pointer, surfaceSize);
                 pointer += guestLayerStride;
@@ -341,51 +349,62 @@ namespace skyline::gpu {
 
         if (!deswizzleBuffer.empty()) {
             for (const auto &level : mipLayouts) {
-                size_t levelHeight{level.dimensions.height * layerCount}; //!< The height of an image representing all layers in the entire level
-                switch (guest->format->vkFormat) {
-                    case vk::Format::eBc1RgbaUnormBlock:
-                    case vk::Format::eBc1RgbaSrgbBlock:
-                        bcn::DecodeBc1(deswizzleOutput, bufferData, level.dimensions.width, levelHeight, true);
-                        break;
+                auto decode{[&](const u8 *decodeInput, u8 *decodeOutput, size_t decodeHeight) {
+                    switch (guest->format->vkFormat) {
+                        case vk::Format::eBc1RgbaUnormBlock:
+                        case vk::Format::eBc1RgbaSrgbBlock:
+                            bcn::DecodeBc1(decodeInput, decodeOutput, level.dimensions.width, decodeHeight, true);
+                            break;
 
-                    case vk::Format::eBc2UnormBlock:
-                    case vk::Format::eBc2SrgbBlock:
-                        bcn::DecodeBc2(deswizzleOutput, bufferData, level.dimensions.width, levelHeight);
-                        break;
+                        case vk::Format::eBc2UnormBlock:
+                        case vk::Format::eBc2SrgbBlock:
+                            bcn::DecodeBc2(decodeInput, decodeOutput, level.dimensions.width, decodeHeight);
+                            break;
 
-                    case vk::Format::eBc3UnormBlock:
-                    case vk::Format::eBc3SrgbBlock:
-                        bcn::DecodeBc3(deswizzleOutput, bufferData, level.dimensions.width, levelHeight);
-                        break;
+                        case vk::Format::eBc3UnormBlock:
+                        case vk::Format::eBc3SrgbBlock:
+                            bcn::DecodeBc3(decodeInput, decodeOutput, level.dimensions.width, decodeHeight);
+                            break;
 
-                    case vk::Format::eBc4UnormBlock:
-                        bcn::DecodeBc4(deswizzleOutput, bufferData, level.dimensions.width, levelHeight, false);
-                        break;
-                    case vk::Format::eBc4SnormBlock:
-                        bcn::DecodeBc4(deswizzleOutput, bufferData, level.dimensions.width, levelHeight, true);
-                        break;
+                        case vk::Format::eBc4UnormBlock:
+                            bcn::DecodeBc4(decodeInput, decodeOutput, level.dimensions.width, decodeHeight, false);
+                            break;
+                        case vk::Format::eBc4SnormBlock:
+                            bcn::DecodeBc4(decodeInput, decodeOutput, level.dimensions.width, decodeHeight, true);
+                            break;
 
-                    case vk::Format::eBc5UnormBlock:
-                        bcn::DecodeBc5(deswizzleOutput, bufferData, level.dimensions.width, levelHeight, false);
-                        break;
-                    case vk::Format::eBc5SnormBlock:
-                        bcn::DecodeBc5(deswizzleOutput, bufferData, level.dimensions.width, levelHeight, true);
-                        break;
+                        case vk::Format::eBc5UnormBlock:
+                            bcn::DecodeBc5(decodeInput, decodeOutput, level.dimensions.width, decodeHeight, false);
+                            break;
+                        case vk::Format::eBc5SnormBlock:
+                            bcn::DecodeBc5(decodeInput, decodeOutput, level.dimensions.width, decodeHeight, true);
+                            break;
 
-                    case vk::Format::eBc6HUfloatBlock:
-                        bcn::DecodeBc6(deswizzleOutput, bufferData, level.dimensions.width, levelHeight, false);
-                        break;
-                    case vk::Format::eBc6HSfloatBlock:
-                        bcn::DecodeBc6(deswizzleOutput, bufferData, level.dimensions.width, levelHeight, true);
-                        break;
+                        case vk::Format::eBc6HUfloatBlock:
+                            bcn::DecodeBc6(decodeInput, decodeOutput, level.dimensions.width, decodeHeight, false);
+                            break;
+                        case vk::Format::eBc6HSfloatBlock:
+                            bcn::DecodeBc6(decodeInput, decodeOutput, level.dimensions.width, decodeHeight, true);
+                            break;
 
-                    case vk::Format::eBc7UnormBlock:
-                    case vk::Format::eBc7SrgbBlock:
-                        bcn::DecodeBc7(deswizzleOutput, bufferData, level.dimensions.width, levelHeight);
-                        break;
+                        case vk::Format::eBc7UnormBlock:
+                        case vk::Format::eBc7SrgbBlock:
+                            bcn::DecodeBc7(decodeInput, decodeOutput, level.dimensions.width, decodeHeight);
+                            break;
 
-                    default:
-                        throw exception("Unsupported guest format '{}'", vk::to_string(guest->format->vkFormat));
+                        default:
+                            throw exception("Unsupported guest format '{}'", vk::to_string(guest->format->vkFormat));
+                    }
+                }};
+                if (guest->tileConfig.mode == texture::TileMode::Pitch) {
+                    // Joining odd-height BC layers into one tall image discards
+                    // each layer's partial block row and shifts subsequent layers.
+                    texture::DecodePitchLinearLayers(
+                        {deswizzleOutput, deswizzledSurfaceSize}, level.linearSize,
+                        {bufferData, surfaceSize}, level.targetLinearSize, layerCount,
+                        [&](const u8 *input, u8 *output) { decode(input, output, level.dimensions.height); });
+                } else {
+                    decode(deswizzleOutput, bufferData, level.dimensions.height * layerCount);
                 }
 
                 deswizzleOutput += level.linearSize * layerCount;
@@ -482,6 +501,8 @@ namespace skyline::gpu {
     }
 
     void Texture::CopyToGuest(u8 *hostBuffer) {
+        if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
+            throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
         auto guestOutput{mirror.data()};
 
         auto guestLayerStride{guest->GetLayerStride()};
@@ -490,7 +511,7 @@ namespace skyline::gpu {
                 if (guest->tileConfig.mode == texture::TileMode::Block)
                     texture::CopyLinearToBlockLinear(*guest, hostBuffer, guestOutput);
                 else if (guest->tileConfig.mode == texture::TileMode::Pitch)
-                    texture::CopyLinearToPitchLinear(*guest, hostBuffer, guestOutput);
+                    texture::CopyLinearToPitchLinear(*guest, {hostBuffer, layerStride}, {guestOutput, guestLayerStride});
                 else if (guest->tileConfig.mode == texture::TileMode::Linear)
                     std::memcpy(hostBuffer, guestOutput, layerStride);
                 guestOutput += guestLayerStride;
@@ -608,8 +629,8 @@ namespace skyline::gpu {
           layout(vk::ImageLayout::eUndefined),
           tiling(vk::ImageTiling::eOptimal), // Force Optimal due to not adhering to host subresource layout during Linear synchronization
           layerCount(guest->layerCount),
-          deswizzledLayerStride(static_cast<u32>(guest->format->GetSize(dimensions))),
-          layerStride(format == guest->format ? deswizzledLayerStride : static_cast<u32>(format->GetSize(dimensions))),
+          deswizzledLayerStride(guest->format->GetSize(dimensions)),
+          layerStride(format == guest->format ? deswizzledLayerStride : format->GetSize(dimensions)),
           levelCount(guest->mipLevelCount),
           mipLayouts(
               texture::GetBlockLinearMipLayout(
@@ -620,8 +641,8 @@ namespace skyline::gpu {
                   guest->mipLevelCount
               )
           ),
-          deswizzledSurfaceSize(CalculateLevelStride(mipLayouts) * layerCount),
-          surfaceSize(format == guest->format ? deswizzledSurfaceSize : (CalculateTargetLevelStride(mipLayouts) * layerCount)),
+          deswizzledSurfaceSize(guest->tileConfig.mode == texture::TileMode::Pitch ? texture::PitchLinearCheckedMultiply(CalculateLevelStride(mipLayouts), layerCount) : CalculateLevelStride(mipLayouts) * layerCount),
+          surfaceSize(format == guest->format ? deswizzledSurfaceSize : (guest->tileConfig.mode == texture::TileMode::Pitch ? texture::PitchLinearCheckedMultiply(CalculateTargetLevelStride(mipLayouts), layerCount) : CalculateTargetLevelStride(mipLayouts) * layerCount)),
           sampleCount(vk::SampleCountFlagBits::e1),
           flags(texture::GuestImageFormatFlags(format->vkFormat, gpu.traits.quirks.vkImageMutableFormatCostly,
               guest->GetImageType() == vk::ImageType::e2D && format->vkAspect == vk::ImageAspectFlagBits::eColor && !format->IsCompressed())),

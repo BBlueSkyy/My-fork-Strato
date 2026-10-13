@@ -116,11 +116,11 @@ namespace skyline::gpu::texture {
      * @brief Copies the contents of a pitch-linear guest texture to a linear output buffer
      * @note This does not support 3D textures
      */
-    void CopyPitchLinearToLinear(const GuestTexture &guest, u8 *guestInput, u8 *linearOutput);
+    void CopyPitchLinearToLinear(const GuestTexture &guest, std::span<const u8> guestInput, std::span<u8> linearOutput);
 
     /**
      * @brief Copies the contents of a linear buffer to a pitch-linear guest texture
      * @note This does not support 3D textures
      */
-    void CopyLinearToPitchLinear(const GuestTexture &guest, u8 *linearInput, u8 *guestOutput);
+    void CopyLinearToPitchLinear(const GuestTexture &guest, std::span<const u8> linearInput, std::span<u8> guestOutput);
 }
