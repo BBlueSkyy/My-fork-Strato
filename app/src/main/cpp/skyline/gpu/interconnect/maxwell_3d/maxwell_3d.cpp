@@ -124,7 +124,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (drawParams->transformFeedbackEnable)
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
-         !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+         !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
+         DescribeDiagnosticOperation("draw_inline_index", scissor, true));
           ctx.executor.AddCheckpoint("After inline index draw");
      
         });
@@ -461,7 +462,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 ctx.executor.AddSubpass(std::move(executionCallback), renderArea,
                                         sampledImages, {}, colorAttachments, {},
                                         false, vk::PipelineStageFlagBits::eAllGraphics,
-                                        vk::PipelineStageFlagBits::eAllGraphics);
+                                        vk::PipelineStageFlagBits::eAllGraphics,
+                                        DescribeDiagnosticOperation("draw_texture_helper", renderArea, false));
             },
             **sampler, renderArea
         );
@@ -519,7 +521,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                   (clearSurface.aEnable ? vk::ColorComponentFlagBits::eA : vk::ColorComponentFlags{}),
                                                                   {clearEngineRegisters.colorClearValue}, &*view, [=](auto &&executionCallback) {
                         auto dst{view.get()};
-                        ctx.executor.AddSubpass(std::move(executionCallback), renderArea, {}, {}, span<TextureView *>{dst}, nullptr);
+                        ctx.executor.AddSubpass(std::move(executionCallback), renderArea, {}, {}, span<TextureView *>{dst}, nullptr,
+                                                false, {}, {},
+                                                DescribeDiagnosticOperation("partial_clear_helper", renderArea, false) +
+                                                fmt::format(" color_raw={:08X},{:08X},{:08X},{:08X}",
+                                                    clearEngineRegisters.colorClearValue[0],
+                                                    clearEngineRegisters.colorClearValue[1],
+                                                    clearEngineRegisters.colorClearValue[2],
+                                                    clearEngineRegisters.colorClearValue[3]));
                     });
                     ctx.executor.NotifyPipelineChange();
                 } else if (needsAttachmentClearCmd(view)) {
@@ -563,7 +572,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
             std::array<TextureView *, 1> colorAttachments{colorView ? &*colorView : nullptr};
             ctx.executor.AddSubpass([clearAttachments, clearRects](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32) {
                 commandBuffer.clearAttachments(clearAttachments, span(clearRects).first(clearAttachments.size()));
-            }, renderArea, {}, {}, colorView ? colorAttachments : span<TextureView *>{}, depthStencilView ? &*depthStencilView : nullptr);
+            }, renderArea, {}, {}, colorView ? colorAttachments : span<TextureView *>{}, depthStencilView ? &*depthStencilView : nullptr,
+               false, {}, {}, DescribeDiagnosticOperation("clear_attachments", renderArea, false) +
+               fmt::format(" clear_color_raw={:08X},{:08X},{:08X},{:08X} clear_depth={} clear_stencil={} rectangles={}x{}",
+                   clearEngineRegisters.colorClearValue[0], clearEngineRegisters.colorClearValue[1],
+                   clearEngineRegisters.colorClearValue[2], clearEngineRegisters.colorClearValue[3],
+                   clearEngineRegisters.depthClearValue, clearEngineRegisters.stencilClearValue,
+                   scissor.extent.width, scissor.extent.height));
         }
 
         ctx.executor.AddCheckpoint("After clear");
@@ -629,7 +644,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
-        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
+         DescribeDiagnosticOperation("draw", scissor, true));
         ctx.executor.AddCheckpoint("After draw");
     
         });
@@ -695,7 +711,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
-        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
+         DescribeDiagnosticOperation("draw_indirect", scissor, true));
         ctx.executor.AddCheckpoint("After indirect draw");
     
         });
