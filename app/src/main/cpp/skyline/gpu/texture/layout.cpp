@@ -2,6 +2,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include "layout.h"
+#include "pitch_linear.h"
 
 namespace skyline::gpu::texture {
     #pragma pack(push, 0)
@@ -504,30 +505,15 @@ namespace skyline::gpu::texture {
     }
 
     void CopyPitchLinearToLinear(const GuestTexture &guest, u8 *guestInput, u8 *linearOutput) {
-        auto sizeLine{guest.format->GetSize(guest.dimensions.width, 1)}; //!< The size of a single line of pixel data
-        auto sizeStride{guest.tileConfig.pitch}; //!< The size of a single stride of pixel data
-
-        auto inputLine{guestInput};
-        auto outputLine{linearOutput};
-
-        for (size_t line{}; line < guest.dimensions.height; line++) {
-            std::memcpy(outputLine, inputLine, sizeLine);
-            inputLine += sizeStride;
-            outputLine += sizeLine;
-        }
+        // Compressed surfaces have one physical row per row of format blocks.
+        const auto rowBytes{guest.format->GetSize(guest.dimensions.width, 1)};
+        const auto rowCount{PitchLinearRowCount(guest.dimensions.height, guest.format->blockHeight)};
+        CopyPitchedRows(guestInput, guest.tileConfig.pitch, linearOutput, rowBytes, rowBytes, rowCount);
     }
 
     void CopyLinearToPitchLinear(const GuestTexture &guest, u8 *linearInput, u8 *guestOutput) {
-        auto sizeLine{guest.format->GetSize(guest.dimensions.width, 1)}; //!< The size of a single line of pixel data
-        auto sizeStride{guest.tileConfig.pitch}; //!< The size of a single stride of pixel data
-
-        auto inputLine{linearInput};
-        auto outputLine{guestOutput};
-
-        for (size_t line{}; line < guest.dimensions.height; line++) {
-            std::memcpy(outputLine, inputLine, sizeLine);
-            inputLine += sizeLine;
-            outputLine += sizeStride;
-        }
+        const auto rowBytes{guest.format->GetSize(guest.dimensions.width, 1)};
+        const auto rowCount{PitchLinearRowCount(guest.dimensions.height, guest.format->blockHeight)};
+        CopyPitchedRows(linearInput, rowBytes, guestOutput, guest.tileConfig.pitch, rowBytes, rowCount);
     }
 }
