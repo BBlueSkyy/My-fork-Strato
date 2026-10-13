@@ -4,6 +4,7 @@
 #pragma once
 
 #include <tsl/robin_map.h>
+#include <string>
 #include "common.h"
 #include "tsc.h"
 #include <shader_compiler/runtime_info.h>
@@ -55,5 +56,8 @@ namespace skyline::gpu::interconnect {
         vk::raii::Sampler *GetSampler(InterconnectContext &ctx, u32 samplerIndex);
 
         Shader::CompareFunction GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
+
+        // Read-only TSC interpretation for a selected diagnostic descriptor; no sampler creation.
+        std::string DiagnosticLodSummary(u32 samplerIndex, u32 textureIndex);
     };
 }

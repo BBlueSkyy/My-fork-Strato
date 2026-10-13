@@ -106,6 +106,8 @@ namespace skyline::gpu {
         auto it{std::find_if(texture->views.begin(), texture->views.end(), [this](const Texture::TextureViewStorage &view) {
             return view.type == type && view.format == format && view.mapping == mapping && view.range == range;
         })};
+        if (it != texture->views.end())
+            diagnosticViewBacking = it->diagnosticViewBacking;
         if (it == texture->views.end()) {
             // Foreign formats need not support every usage of the native image (e.g.
             // an sRGB sampled alias of a storage-capable UNORM image).
@@ -120,6 +122,8 @@ namespace skyline::gpu {
             };
 
             it = texture->views.emplace(texture->views.end(), type, format, mapping, range, vk::raii::ImageView{texture->gpu.vkDevice, createInfo});
+            it->diagnosticViewBacking = createInfo.image;
+            diagnosticViewBacking = it->diagnosticViewBacking;
         }
 
         vkViewGeneration = texture->backingGeneration;
@@ -446,6 +450,10 @@ namespace skyline::gpu {
 
         auto bufferImageCopies{GetBufferImageCopies()};
         commandBuffer.copyBufferToImage(stagingBuffer->vkBuffer, image, layout, vk::ArrayProxy(static_cast<u32>(bufferImageCopies.size()), bufferImageCopies.data()));
+        if (diagnostic::Re5BlitJournal().Tracks(diagnosticIdentity))
+            diagnostic::Re5BlitJournal().NoteSync(diagnosticIdentity, fmt::format(
+                "upload_copy_recorded image=0x{:X} levels={} layers={} layout={} note=not_gpu_completion",
+                reinterpret_cast<uintptr_t>(static_cast<VkImage>(image)), levelCount, layerCount, vk::to_string(layout)));
     }
 
     void Texture::CopyIntoStagingBuffer(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<memory::StagingBuffer> &stagingBuffer) {
@@ -467,6 +475,10 @@ namespace skyline::gpu {
 
         auto bufferImageCopies{GetBufferImageCopies()};
         commandBuffer.copyImageToBuffer(image, layout, stagingBuffer->vkBuffer, vk::ArrayProxy(static_cast<u32>(bufferImageCopies.size()), bufferImageCopies.data()));
+        if (diagnostic::Re5BlitJournal().Tracks(diagnosticIdentity))
+            diagnostic::Re5BlitJournal().NoteSync(diagnosticIdentity, fmt::format(
+                "download_copy_recorded image=0x{:X} levels={} layers={} layout={} note=not_guest_write_or_gpu_completion",
+                reinterpret_cast<uintptr_t>(static_cast<VkImage>(image)), levelCount, layerCount, vk::to_string(layout)));
 
         commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {}, {}, vk::BufferMemoryBarrier{
             .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
@@ -516,6 +528,10 @@ namespace skyline::gpu {
         } else if (levelCount != 0) {
             throw exception("Mipmapped textures with tiling mode '{}' aren't supported", static_cast<int>(tiling));
         }
+        if (diagnostic::Re5BlitJournal().Tracks(diagnosticIdentity))
+            diagnostic::Re5BlitJournal().NoteSync(diagnosticIdentity, fmt::format(
+                "copy_to_guest_returned levels={} layers={} tile_mode={} note=function_return_not_content_validation",
+                levelCount, layerCount, static_cast<u32>(guest->tileConfig.mode)));
     }
 
     void Texture::FreeGuest() {
@@ -665,6 +681,15 @@ namespace skyline::gpu {
             gpu.state.process->trap.DeleteTrap(*trapHandle);
         if (alignedMirror.valid())
             munmap(alignedMirror.data(), alignedMirror.size());
+    }
+
+    std::string Texture::DiagnosticStateSummary() {
+        std::unique_lock lock{stateMutex, std::try_to_lock};
+        if (!lock) return "dirty_state=lock_busy";
+        return fmt::format("dirty_state={} memory_freed={} rt_used={} pending_stages={} read_stages={} cycle=0x{:X}",
+            dirtyState == DirtyState::Clean ? "clean" : dirtyState == DirtyState::CpuDirty ? "cpu_dirty" : "gpu_dirty",
+            memoryFreed, everUsedAsRt, vk::to_string(pendingStageMask), vk::to_string(readStageMask),
+            reinterpret_cast<uintptr_t>(cycle.get()));
     }
 
     void Texture::lock() {

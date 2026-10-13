@@ -1,0 +1,120 @@
+# Resident Evil 5 — selective scene mini-RenderDoc (phase 4: blit and binding provenance)
+
+Draft PR #337, diagnostic only; **do not merge** as a rendering correction.
+
+## Evidence from the actual gameplay capture
+
+The RE5 gameplay capture contained four 1920x1080 pre-swapchain images, 36 color snapshots, and 2,388 sampled draw records; it exhausted 2,400 event slots in approximate presentation interval zero. Most snapshots were collected before the main 3D color target could be followed sufficiently.
+
+Within those records:
+- One 1280x720 color target was written by 886 draws and sampled another 1280x720 render target.
+- The other 1280x720 target was written by 259 draws.
+- Both use the same 1280x720 D24/S8 depth attachment.
+- Frequently observed fragment hashes include `F3805B306B15F89A` and `B141A1171435D55E` on the main color path; `8E1C37D501C478E1` and `07C66B919FC55A45` on the upstream color path.
+
+User confirmed the sky is normally fine; character models and parts of the ground are black. This is **not** proof those four shaders are defective, nor that an observed abnormal sky frame is a real rendering failure rather than a diagnostic timing side effect. No Title ID or pointer-specific rendering workaround is used.
+
+## What changed
+
+- Track post-pass color readbacks from color images paired with a depth attachment of matching backing dimensions, rather than every sampled input or early postprocessing pass. The original 1280x720-only gate was removed after the Docked captures below contained no scene probes.
+- Continue capturing source images immediately before Android swapchain copy.
+- Record sparse `SCENE_DRAW` entries with shaders, sample textures, color/depth identity, scissor and blend state. Prefer four hashes found in the actual first capture, but still sample draws using other shaders to avoid falsely restricting the diagnosis. At most 16 unique `SCENE_GEOMETRY` rows also describe matching or rejected color/depth dimensions/aspects, independently of draw sampling.
+- Per-approximate-present sampling: priority draws (first 8, then one per 32), other scene draws (first 4, then one per 128). This prevents the first busy interval from filling the event log.
+- Budget: up to 6 pass readbacks per approximate present interval, up to 24 overall, 100 MiB of intermediate data, 2,400 total logged events. Capture frames remain four, with unique globally reserved snapshot IDs.
+- Save depth attachment **identity**, not depth pixels. Phase 3 adds only buffer barriers restricted to the four probed bytes and their staging destination, outside the natural render pass; no pass splits, waits, guest writes or forced descriptor refreshes.
+
+## How to capture
+
+1. Install the diagnostic APK of the updated PR #337 after its build succeeds.
+2. Enter gameplay when blackened characters and black ground patches are visible.
+3. Rename `gpu_capture/re5_scene/ARM_CAPTURE.rename_this_file_when_ready` to `ARM_CAPTURE` in the Strato public app files. If the rename hint has not been created, enter gameplay and let a few presentations occur.
+4. Resume gameplay and remain at the same location for 10–15 seconds.
+5. Include the new `capture_###` folder, `gpu_events.txt`, `emulation.log`, a screenshot, and the Vulkan driver version. Wait for `MINIRD_RE5_PHASE2 wrote snapshot` and `MINIRD_RE5_SCALAR wrote probe` messages to stop before zipping; `capture_complete.txt` only reports that presentation acquisition finished.
+
+## Interpretation and limitations
+
+- The source image is read **pre-swapchain**. Compare it against post-pass color snapshots.
+- `SCENE_DRAW` is sampled, not a full draw trace. A shader hash being present does not prove which pixels it affected.
+- Snapshots are taken **at natural Vulkan render-pass ends**, not immediately before/after individual draw commands. Copying an image while a render pass is active is invalid without changing the rendering path; forcing pass splits is inappropriate for the first targeted probe.
+- `present_index_approx` is not a strict GPU frame identifier. Use submission, render pass, texture and depth IDs to correlate.
+- If upstream color is already wrong before sampling by a downstream shader, examine the upstream RT and its sampled/depth dependencies. If upstream looks right but downstream is black, inspect the downstream fragment shader input state or pipeline.
+- First capture may be affected by GPU readback timing. Repeat only if results are inconsistent, not as a reflex.
+- Once a **specific** problematic draw/pass is identified, add a temporary deeper probe in the same diagnostic branch if needed. Do not apply speculative Texman/shader/depth changes.
+
+## Optional header-only host test
+
+`g++ -std=c++20 -pthread -Wall -Wextra -Werror -I app/src/main/cpp/skyline tests/gpu/re5_scene_capture_tests.cpp -o /tmp/re5_scene_capture_tests && /tmp/re5_scene_capture_tests`
+
+## Phase 3: smallest missing observation
+
+The supplied PCHE v5 staging cache contains the guest instructions for the captured shaders. `F3805B306B15F89A` finishes RGB with three unconditional FMULs using **fragment stage 4, cbuf 3, byte offset 0x1C0**. The control shader `B141A1171435D55E` uses **stage 4, cbuf 4, byte offset 0** for its final RGB multiplier. Those dynamic values are absent from both supplied scene captures and the cache. A zero multiplier is a hypothesis, not a proven cause, and this diagnostic does not change either shader.
+
+Each selected draw now produces `scalar_NNN.txt` and, when a valid descriptor was copied, a **four-byte** `scalar_NNN.raw`. Metadata includes:
+
+- Unique probe ID, draw kind/count, shader tuple, approximate present, executor/submission/render-pass/subpass and color/depth identities.
+- Guest raw mirror bits and float at draw preparation, guest mapping/view offset/size, GPU-dirty/direct-import/direct-shadow flags. Reading bypasses guest traps and does not synchronize or refresh either backing.
+- Descriptor set, Vulkan binding and array element, origin (megabuffer or BufferView), actual VkBuffer/offset/range, byte offset of the GPU copy and resulting bits/float.
+- Explicit statuses for unavailable descriptor provenance, missing guest mirror, invalid/unverifiable range, invalidation or file errors. Unknown data is never represented as zero.
+
+Descriptor provenance is captured from the **same `VkDescriptorBufferInfo` populated by StateUpdater for the submitted descriptor writes**, including rolled-over uniform writes and quick-bind descriptor copies. Reused draws keep that reference; full updates, uncopied slots, flushes and non-graphics pipeline changes invalidate it. A new BufferView resolution or a freshly uploaded diagnostic constant buffer would not measure the descriptor that the draw used and is deliberately avoided.
+
+Probes cover direct, indirect and inline-index draws. Registration happens after natural pass selection but before AddSubpass can submit/reset state. Copies execute at the natural pass end, before pending post-pass commands. Fence-ordered callbacks invalidate staging memory before saving and carry their own capture path, so finishing the presentation acquisition does not discard late GPU results. No render pass is split, no executor flush is added and no guest value/binding is changed.
+
+Budget: first eight draws and then one per 32 for each of the two fragment hashes, independently in each approximate presentation interval; at most **32 probes per interval, 128 total, 512 bytes of scalar payload**. The existing image/event budgets remain in place. Hash selection affects diagnostic sampling only.
+
+### What this can and cannot prove
+
+The raw file observes bytes in the buffer identified by the draw's descriptor **at the natural pass end**, after its consumers, with a four-byte transfer dependency. It is not an execution trace of the shader's uniform load. Megabuffer allocations are snapshots retained for the executor cycle; BufferView backings can still be changed by writes or direct-memory activity. Even on megabuffers, correct bytes do not prove that the consumer had the correct visibility dependency. Guest mirror bytes are also an unsynchronized observation and may differ from the normal direct-shadow read path. These distinctions are included in every record.
+
+Compare a bad and a good capture from the updated APK, preferably at the same camera/scene. If the actual buffer scalar differs, follow its producer and binding provenance before proposing a fix. If it is identical and nonzero in relevant draws, the zero-multiplier hypothesis loses support; sampled texture/view contents and depth remain candidates. An absence of probes is a capture coverage limitation, not evidence of a good value.
+
+### Validation
+
+- Host sampling/budget test and scalar range/provenance tests; ASan/UBSan (LeakSanitizer is unavailable under this container's process restrictions).
+- `tests/gpu/re5_scalar_vulkan_tests.cpp` calls the **production** readback helper with pinned Vulkan-Hpp and the same compile definitions as Android. It checks zero/one values, a nonzero descriptor base plus 0x1C0, missing/short/whole/overflow ranges, exactly four copied bytes, and a subsequent GPU write. Run with a graphics-capable ICD and Khronos synchronization validation.
+- Android integration compilation is delegated to the existing PR Build workflow on push. Host tests do not establish device behavior or the game's root cause.
+
+## Phase 4: chapter-loading blits linked to draw bindings
+
+The scalar and scene instruments above are preserved. The missing observation for the developer's Blit Engine/Texman hint is the identity of a requested texture, its selected view and a later consumer. This phase records that relationship without changing texture selection, formats, shaders or synchronization. It adds **no GPU copies, barriers, waits, pass splits or executor flushes**; the existing scalar/image readbacks remain unchanged.
+
+A bounded in-memory journal starts automatically with this diagnostic APK, before `ARM_CAPTURE`. Load the problematic chapter after starting the APK so its initialization blits are available. `ARM_CAPTURE` still starts the four-presentation scene capture; no second arming file is required.
+
+| File | Observation |
+|---|---|
+| `blit_history.txt` | Fermi source/destination IOVAs and surface parameters; translated physical mappings; Texman candidates and selection route; mip/layer lookup offsets/results; requested and returned TextureView metadata; backing, layout, dirty state and observed upload/download events; blit descriptor and command-recording identity |
+| `draw_bindings_NNN.txt` | Shader tuple, target texture IDs, descriptor set/mode, physical binding/array element, guest bindless handle and primary cbuf location; sampled view format/aspect/swizzle/subrange; current backing and immutable backing used when creating the descriptor's VkImageView; actual descriptor fields at draw command recording |
+| Existing `scalar_NNN.raw/.txt`, scene images and `gpu_events.txt` | Existing phase-2/3 observations with their original limits and timing |
+
+Texture IDs are monotonic for this process and are distinct from reusable C++/Vulkan addresses. The blit helper's descriptor is recorded after its original descriptor write. Material bindings retain references to the **actual allocator-resident `VkDescriptorImageInfo`**, including full writes, quick-bind identity copies and descriptor reuse; flushes and pipeline invalidation clear those references. The recorded fields are read after the original state updater and draw commands are recorded, before the executor allocator resets. Saving draw metadata uses the existing fence-ordered diagnostic callbacks, with no additional GPU work.
+
+Each binding lists `related_blit_ids`. Join those IDs to `BLIT id=...` records, then compare good and bad captures by guest ranges, request parameters, formats and subresources. Process IDs and host/Vulkan addresses must not be compared numerically across separate executions. A relation means **same destination Texture object or overlapping physical mappings**; it does not prove that a particular blit produced the pixels sampled by the draw. A source-only use is not labelled a producer.
+
+### Coverage and limits
+
+- The journal retains the latest blit for up to **256 destination texture identities**, at most **16 KiB per record**. Repeated screen blits replace one destination entry. Failed preparations retain a bounded record even when no destination was selected.
+- Capture pins at most **128 related records**, so a later blit cannot overwrite an already linked record. `evictions`, `pin_drops`, mapping truncation and record truncation are explicit. History freezes when presentation acquisition finishes; late command recording or later writes are outside that history snapshot.
+- A request records at most **two compact candidate rows**, up to **16 mip layouts** and **16 physical mappings** per full mapping description. A selected view is described separately. A rejected candidate beyond the budget is not evidence of absence.
+- Up to **18 draw binding probes per approximate presentation interval**, **72 overall**: independently up to four draws for each of the four observed fragment hashes (first two, then ordinals 64 and 128), and two other draws. A color attachment must have the same nonzero backing dimensions as the depth attachment, with color/depth aspects respectively. This sampling does not establish that those hashes render the black pixels.
+- Provenance retains up to **64 sampled descriptor slots**; a selected draw describes at most **16 slots**, with a metadata budget. `retained_slots`, `pipeline_sampled_count` and budget markers make partial coverage visible. The history snapshot is bounded to **8 MiB**; it is not an exhaustive event log.
+- Synchronization counters cover only the period since a texture entered tracking. `upload_copy_recorded`/`download_copy_recorded` mean Vulkan commands were recorded. `copy_to_guest_returned` means the existing copy function returned. None validates bytes or establishes GPU completion/visibility for the consumer. `dirty_state=lock_busy` means the state was unavailable without waiting.
+
+The view creation backing stamp is distinct from the current Texture backing. A mismatch is a concrete stale-view clue, not by itself proof that RE5 samples incorrect data. Likewise, `CONSUMED` records API descriptor fields, not actual shader loads. This phase does **not capture sampled texture contents**, complete barriers or GPU execution order. Only after a suspicious producer/consumer pair is identified should a byte/content probe target that single subresource.
+
+### Paired capture procedure
+
+1. Start the updated APK and load the problematic chapter. Capture the bad state using the existing `ARM_CAPTURE` procedure.
+2. In the same game session, load chapter 4-1, return to the problematic chapter and capture the good state, preferably at the same camera/location. If the transition does not recover the graphics, label that capture as bad too.
+3. Send both **complete** `capture_###` folders and `emulation.log`, including `blit_history.txt`, all `draw_bindings_*.txt`, scalar files and images. Keep earlier captures separately. Wait for the existing readback log messages to stop before packaging; `capture_complete.txt` only closes presentation acquisition, not late fence callbacks.
+
+### Validation of phase 4
+
+`tests/gpu/re5_blit_trace_tests.cpp` exercises bounded history, pin retention/freeze, overlap rejection, thread-local scopes, identity-copy provenance, independent sampling budgets and observed synchronization counters. `tests/gpu/re5_binding_provenance_tests.cpp` uses the production descriptor metadata header with pinned Vulkan-Hpp/fmt and checks that a descriptor field populated after draw preparation is read from the retained real slot at recording. Both pass with warnings treated as errors; the journal test also passes ASan/UBSan. The existing scene/scalar host tests and the production scalar Vulkan integration test were rerun successfully, the latter with zero Khronos synchronization-validation errors on Lavapipe. Android integration remains the PR Build workflow's responsibility; no device rendering fix is claimed.
+
+### Docked coverage repair
+
+The next supplied good/bad ZIPs both contain only presentation images and a blit journal; there are no draw-binding, scalar or pass files. See `re5-docked-capture-analysis.md`. The fixed 1280x720 gate could silently reject a different internal resolution; the presented 1920x1080 size does not prove the internal size. Scene logs, bindings, scalar probes and pass selection now share a resolution-independent matching-color/depth criterion. Existing shader sampling and all count/byte limits are preserved. The 8 MiB per-pass-image cap admits 1920x1080 RGBA8 but still rejects larger/FP16 images above that limit; the 100 MiB total budget permits at most twelve full-HD RGBA8 snapshots.
+
+`gpu_events.txt` now reports reserved binding/scalar/pass counts and pass bytes. `SCENE_GEOMETRY` logs at most sixteen unique backing-dimension/aspect configurations, including rejected ones. These are metadata only, do not add GPU operations and are bounded by the existing 2,400 event limit. Matching uses backing dimensions; differently sized backings with matching mip-view extents are still outside this scene filter. Existing asynchronous readback timing restrictions continue to apply.
+
+The scene host regression rejects 1920x1080 under the legacy gate, then accepts matched 1280x720/1920x1080/960x540 while rejecting mismatches/zero extents. It also checks full-HD byte-budget enforcement and deduplication/limit of geometry rows. A new paired capture should keep Docked mode and the same driver. Before packaging, check for `SCENE_DRAW`/`draw_bindings_*.txt`; if absent, send the geometry rows and reserved counts rather than interpreting missing files as correct data. Scalar files still require the two selected fragment hashes and valid provenance.

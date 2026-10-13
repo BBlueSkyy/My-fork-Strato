@@ -7,6 +7,7 @@
 #include <gpu/texture_manager.h>
 #include <soc/gm20b/gmmu.h>
 #include <soc/gm20b/channel.h>
+#include <gpu/diagnostic/re5_texture_trace.h>
 #include "fermi_2d.h"
 
 namespace skyline::gpu::interconnect {
@@ -124,6 +125,13 @@ namespace skyline::gpu::interconnect {
     void Fermi2D::Blit(const Surface &srcSurface, const Surface &dstSurface, float srcRectX, float srcRectY, u32 dstRectWidth, u32 dstRectHeight, u32 dstRectX, u32 dstRectY, float duDx, float dvDy, SampleModeOrigin sampleOrigin, bool resolve, SampleModeFilter filter) {
         executor.RunWithTextureBackingRetry([&] {
         TRACE_EVENT("gpu", "Fermi2D::Blit");
+        diagnostic::BlitScope blitTrace;
+        blitTrace.Append(fmt::format("FERMI executor=0x{:X} src_iova=0x{:X} dst_iova=0x{:X} src_surface_format={} dst_surface_format={} src_surface={}x{} dst_surface={}x{} src_pitch={} dst_pitch={} src_rect={},{} dst_rect={},{},{}x{} du_dx={} dv_dy={} origin={} filter={} resolve={}",
+            reinterpret_cast<uintptr_t>(&executor), u64{srcSurface.address}, u64{dstSurface.address},
+            static_cast<u32>(srcSurface.format), static_cast<u32>(dstSurface.format), srcSurface.width, srcSurface.height,
+            dstSurface.width, dstSurface.height, srcSurface.stride, dstSurface.stride, srcRectX, srcRectY,
+            dstRectX, dstRectY, dstRectWidth, dstRectHeight, duDx, dvDy, static_cast<u32>(sampleOrigin),
+            static_cast<u32>(filter), resolve));
 
         // Blit shader always samples from centre so adjust if necessary
         float centredSrcRectX{sampleOrigin == SampleModeOrigin::Corner ? srcRectX - 0.5f : srcRectX};
@@ -138,16 +146,28 @@ namespace skyline::gpu::interconnect {
             centredSrcRectX = 0.0f;
 
         auto [dstGuestTexture, dstWentOob]{GetGuestTexture(dstSurface)};
+        blitTrace.Append(fmt::format("REQUESTS centered_src={},{} src_oob={} dst_oob={}",
+            centredSrcRectX, centredSrcRectY, srcWentOob, dstWentOob));
 
 
+        blitTrace.role = "source";
         auto srcTextureView{gpu.texture.FindOrCreate(srcGuestTexture, executor.tag)};
         executor.AttachDependency(srcTextureView);
         executor.AttachTexture(srcTextureView.get());
+        blitTrace.sourceTexture = srcTextureView->texture->diagnosticIdentity;
+        diagnostic::Re5BlitJournal().TrackTexture(blitTrace.sourceTexture);
+        blitTrace.Append("GET_VIEW_RESULT " + diagnostic::DescribeTextureView(srcTextureView.get()));
 
+        blitTrace.role = "destination";
         auto dstTextureView{gpu.texture.FindOrCreate(dstGuestTexture, executor.tag)};
         executor.AttachDependency(dstTextureView);
         executor.AttachTexture(dstTextureView.get());
+        blitTrace.destinationTexture = dstTextureView->texture->diagnosticIdentity;
+        diagnostic::Re5BlitJournal().TrackTexture(blitTrace.destinationTexture);
+        blitTrace.destinationRanges = diagnostic::TextureMappings(dstGuestTexture);
+        blitTrace.Append("GET_VIEW_RESULT " + diagnostic::DescribeTextureView(dstTextureView.get()));
         dstTextureView->texture->MarkGpuDirty(executor.usageTracker);
+        blitTrace.Append("FERMI_MARK_GPU_DIRTY " + dstTextureView->texture->DiagnosticStateSummary());
 
         executor.AddCheckpoint("Before blit");
         gpu.helperShaders.blitHelperShader.Blit(
@@ -178,6 +198,7 @@ namespace skyline::gpu::interconnect {
         executor.AddCheckpoint("After blit");
 
 
+        blitTrace.queued = true;
         executor.NotifyPipelineChange();
 
         });

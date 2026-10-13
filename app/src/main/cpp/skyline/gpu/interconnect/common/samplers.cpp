@@ -4,6 +4,7 @@
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include "samplers.h"
+#include <fmt/format.h>
 
 namespace skyline::gpu::interconnect {
     void SamplerPoolState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
@@ -250,6 +251,24 @@ namespace skyline::gpu::interconnect {
 
         texSamplerCache[index] = sampler.get();
         return sampler.get();
+    }
+
+    std::string Samplers::DiagnosticLodSummary(u32 samplerIndex, u32 textureIndex) {
+        const auto &pool{samplerPool.Get()};
+        const u32 index{pool.didUseTexHeaderBinding ? textureIndex : samplerIndex};
+        if (index >= pool.texSamplers.size())
+            return fmt::format("sampler_status=tsc_out_of_range selected_index={} count={}", index, pool.texSamplers.size());
+        // Copy the 32-byte TSC because its fixed-point helpers are non-const.
+        auto tsc{pool.texSamplers[index]};
+        const bool noMip{tsc.mipFilter == TextureSamplerControl::MipFilter::None};
+        return fmt::format("sampler_status=tsc_observed selected_index={} via_texture_header={} "
+                           "mip_filter={} min_filter={} mag_filter={} tsc_min_lod={} tsc_max_lod={} "
+                           "effective_vulkan_min_lod={} effective_vulkan_max_lod={} mip_lod_bias={} "
+                           "max_anisotropy={} note=tsc_state_at_draw_preparation_not_dynamic_shader_lod",
+            index, pool.didUseTexHeaderBinding, static_cast<u32>(tsc.mipFilter),
+            static_cast<u32>(tsc.minFilter), static_cast<u32>(tsc.magFilter),
+            tsc.MinLodClamp(), tsc.MaxLodClamp(), noMip ? 0.0f : tsc.MinLodClamp(),
+            noMip ? 0.25f : tsc.MaxLodClamp(), tsc.MipLodBias(), tsc.MaxAnisotropy());
     }
 
     Shader::CompareFunction Samplers::GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex) {

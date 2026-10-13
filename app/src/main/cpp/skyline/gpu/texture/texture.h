@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #pragma once
+#include <gpu/diagnostic/re5_blit_trace.h>
 
 #include <range/v3/view.hpp>
 #include <range/v3/algorithm.hpp>
@@ -313,6 +314,7 @@ namespace skyline::gpu {
     };
 
     class TextureManager;
+    namespace interconnect { class CommandExecutor; }
 
     /**
      * @brief A view into a specific subresource of a Texture
@@ -321,6 +323,7 @@ namespace skyline::gpu {
      */
     class TextureView : public std::enable_shared_from_this<TextureView> {
       private:
+        vk::Image diagnosticViewBacking{};
         vk::ImageView vkView{};
         u64 vkViewGeneration{};
 
@@ -370,6 +373,7 @@ namespace skyline::gpu {
          * @note The texture **must** be locked prior to calling this
          */
         vk::ImageView GetView();
+        vk::Image DiagnosticViewBacking() const { return diagnosticViewBacking; }
 
         bool operator==(const TextureView &rhs) {
             return texture == rhs.texture && type == rhs.type && format == rhs.format && mapping == rhs.mapping && range == rhs.range;
@@ -411,6 +415,7 @@ namespace skyline::gpu {
             vk::ComponentMapping mapping;
             vk::ImageSubresourceRange range;
             vk::raii::ImageView vkView;
+            vk::Image diagnosticViewBacking{};
 
             TextureViewStorage(vk::ImageViewType type, texture::Format format, vk::ComponentMapping mapping, vk::ImageSubresourceRange range, vk::raii::ImageView &&vkView);
         };
@@ -432,6 +437,8 @@ namespace skyline::gpu {
 
         friend TextureManager;
         friend TextureView;
+        friend class interconnect::CommandExecutor; // Diagnostic GPU readback only
+        friend class PresentationEngine; // Diagnostic presentation-source GPU readback (PR #336)
 
         /**
          * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid
@@ -483,6 +490,10 @@ namespace skyline::gpu {
       public:
         std::shared_ptr<FenceCycle> cycle; //!< A fence cycle for when any host operation mutating the texture has completed, it must be waited on prior to any mutations to the backing
         std::optional<GuestTexture> guest;
+        const u64 diagnosticIdentity{diagnostic::NextDiagnosticIdentity()};
+        // Caller holds the texture lock. Dirty state uses its own try-lock;
+        // diagnosis never waits on a fence, refreshes mappings or changes state.
+        std::string DiagnosticStateSummary();
         texture::Dimensions dimensions;
         texture::Format format;
         vk::ImageLayout layout;

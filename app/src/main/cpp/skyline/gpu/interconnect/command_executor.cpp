@@ -11,6 +11,14 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <gpu/diagnostic/re5_scene_capture.h>
+#include <gpu/diagnostic/re5_cubemap_probe.h>
+#include <gpu/diagnostic/re5_scalar_copy.h>
+#include <gpu/interconnect/common/common.h>
+#include <bit>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -382,6 +390,237 @@ namespace skyline::gpu::interconnect {
         return (!a && !b) || (a && b && b->GetView() == a);
     }
 
+
+    // RE5 phase 2: only trace color render targets of 3D passes
+    // paired with depth; the first capture spent its budget on unrelated inputs.
+    // All readbacks remain at natural render-pass boundaries (not mid-draw).
+    static bool IsRe5ScenePassImage(const Texture &texture) {
+        return texture.dimensions.width && texture.dimensions.height &&
+               texture.dimensions.depth == 1 && texture.levelCount == 1 &&
+               texture.layerCount == 1 &&
+               texture.sampleCount == vk::SampleCountFlagBits::e1 &&
+               texture.surfaceSize && texture.surfaceSize <= 8ULL * 1024 * 1024 &&
+               (texture.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+               !texture.format->IsCompressed() &&
+               (texture.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+               texture.layout != vk::ImageLayout::eUndefined;
+    }
+
+    void CommandExecutor::TrackDiagnosticPassImages(span<TextureView *> color, TextureView *depthStencilAttachment) {
+        auto &capture{diagnostic::Re5SceneCapture()};
+        if (!capture.active.load(std::memory_order_acquire) ||
+            !depthStencilAttachment || !depthStencilAttachment->texture)
+            return;
+
+        const auto &depth{*depthStencilAttachment->texture};
+        if (!(depth.format->vkAspect & vk::ImageAspectFlagBits::eDepth))
+            return;
+
+        for (auto *view : color) {
+            if (!view || !view->texture ||
+                !diagnostic::SceneExtentMatches(view->texture->dimensions.width,
+                    view->texture->dimensions.height, depth.dimensions.width, depth.dimensions.height) ||
+                !IsRe5ScenePassImage(*view->texture))
+                continue;
+            auto texture{view->texture};
+            const auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
+                [&](const DiagnosticPassImage &entry) { return entry.texture.get() == texture.get(); })};
+            if (it == diagnosticPassImages.end() && diagnosticPassImages.size() < 4) {
+                diagnosticPassImages.push_back({std::move(texture), true,
+                    reinterpret_cast<uintptr_t>(depthStencilAttachment->texture.get())});
+            }
+        }
+    }
+
+    void CommandExecutor::QueueDiagnosticScalarReadbacks() {
+        if (diagnosticCubeTexture) {
+            auto texture{std::move(diagnosticCubeTexture)};
+            auto directory{std::move(diagnosticCubeDirectory)};
+            auto metadata{std::move(diagnosticCubeMetadata)};
+            diagnosticCubeTexture.reset();
+            diagnosticCubeDirectory.clear();
+            diagnosticCubeMetadata.clear();
+            // This uses the existing image->staging helper at the same natural
+            // pass boundary as scene snapshots; it does not wait or split passes.
+            const auto bytes{texture->surfaceSize};
+            const auto levels{texture->levelCount};
+            const auto layers{texture->layerCount};
+            metadata += fmt::format("copy_status=scheduled_after_natural_pass bytes={} host_mips={} host_layers={} "
+                "format={} layout={} ordering=mip_major_with_all_layers_per_mip "
+                "note=GPU_content_observed_after_pass_not_at_fragment_instruction\n",
+                bytes, levels, layers, vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout));
+            size_t mipOffset{};
+            for (u32 i{}; i < texture->mipLayouts.size(); ++i) {
+                const auto &mip{texture->mipLayouts[i]};
+                metadata += fmt::format("mip={} width={} height={} depth={} linear_offset={} bytes_per_layer={} layers={}\n",
+                    i, mip.dimensions.width, mip.dimensions.height, mip.dimensions.depth,
+                    mipOffset, mip.targetLinearSize, layers);
+                mipOffset += mip.targetLinearSize * layers;
+            }
+            auto staging{gpu.memory.AllocateStagingBuffer(bytes)};
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [texture, staging](vk::raii::CommandBuffer &commands,
+                                   const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    cycle->AttachObjects(texture, staging);
+                    texture->CopyIntoStagingBuffer(commands, staging);
+                });
+            diagnosticReadbackCallbacks.emplace_back(
+                [staging, directory = std::move(directory), metadata = std::move(metadata), bytes] {
+                    const auto status{vmaInvalidateAllocation(staging->vmaAllocator, staging->vmaAllocation, 0, bytes)};
+                    const auto base{std::filesystem::path(directory) / "cubemap_binding21_000"};
+                    std::ofstream info(base.string() + ".txt", std::ios::trunc);
+                    if (info) info << metadata << "invalidate_result=" << static_cast<int>(status) << '\n';
+                    if (status != VK_SUCCESS) return;
+                    std::ofstream raw(base.string() + ".raw", std::ios::binary | std::ios::trunc);
+                    if (raw) raw.write(reinterpret_cast<const char *>(staging->data()), static_cast<std::streamsize>(bytes));
+                    if (info) info << "raw_status=" << (raw ? "written" : "failed") << '\n';
+                    LOGI("MINIRD_RE5_CUBE sampled cubemap readback {}", raw ? "written" : "failed");
+                });
+        }
+        for (auto &probe : diagnosticPassBindings)
+            diagnosticReadbackCallbacks.emplace_back([probe] {
+                std::ofstream out(std::filesystem::path(probe->directory) /
+                    fmt::format("draw_bindings_{:03}.txt", probe->index), std::ios::trunc);
+                if (out)
+                    out << probe->metadata << (probe->recorded ? probe->result : "consumer_status=not_recorded\n");
+            });
+        diagnosticPassBindings.clear();
+        auto probes{std::move(diagnosticPassScalars)};
+        diagnosticPassScalars.clear();
+        for (auto &probe : probes) {
+            auto staging{gpu.memory.AllocateStagingBuffer(4)};
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [probe, staging](vk::raii::CommandBuffer &commandBuffer,
+                                 const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    // The descriptor was resolved by RecordAll for this draw,
+                    // including a prior write inherited through descriptor copies.
+                    // Do not read it later on the waiter: its allocator can reset.
+                    if (!probe->descriptor.info) {
+                        probe->result = "gpu_status=descriptor_provenance_unavailable\n";
+                        return;
+                    }
+                    const auto desc{*probe->descriptor.info};
+                    probe->result = fmt::format("vk_buffer=0x{:X} descriptor_offset={} descriptor_range={}\n",
+                        reinterpret_cast<uintptr_t>(static_cast<VkBuffer>(desc.buffer)), desc.offset, desc.range);
+                    const auto offset{diagnostic::RecordScalarReadback(commandBuffer, desc,
+                        probe->byteOffset, staging->vkBuffer)};
+                    if (!offset) {
+                        probe->result += "gpu_status=unbound_or_unverifiable_range\n";
+                        return;
+                    }
+                    cycle->AttachObject(staging);
+                    probe->copied = true;
+                    probe->result += fmt::format("gpu_status=copied_postpass gpu_byte_offset={} bytes=4\n", *offset);
+                });
+            diagnosticReadbackCallbacks.emplace_back([probe, staging] {
+                const std::filesystem::path directory{probe->directory};
+                const auto prefix{fmt::format("scalar_{:03}", probe->index)};
+                if (probe->copied) {
+                    const auto status{vmaInvalidateAllocation(staging->vmaAllocator, staging->vmaAllocation, 0, 4)};
+                    if (status == VK_SUCCESS) {
+                        u32 bits;
+                        std::memcpy(&bits, staging->data(), sizeof(bits));
+                        probe->result += fmt::format("gpu_bits=0x{:08X} gpu_float={}\n", bits, std::bit_cast<float>(bits));
+                        std::ofstream raw(directory / (prefix + ".raw"), std::ios::binary | std::ios::trunc);
+                        if (raw)
+                            raw.write(reinterpret_cast<const char *>(staging->data()), 4);
+                        if (!raw)
+                            probe->result += "raw_write_status=failed\n";
+                    } else {
+                        probe->result += fmt::format("gpu_status=invalidate_failed result={}\n", static_cast<int>(status));
+                    }
+                }
+                std::ofstream info(directory / (prefix + ".txt"), std::ios::trunc);
+                if (info)
+                    info << probe->metadata << probe->result;
+                else
+                    LOGE("MINIRD_RE5_SCALAR failed metadata {}", probe->index);
+                if (info)
+                    LOGI("MINIRD_RE5_SCALAR wrote probe {}", probe->index);
+            });
+        }
+    }
+
+    void CommandExecutor::QueueDiagnosticPassReadbacks() {
+        if (diagnosticPassImages.empty())
+            return;
+        auto images{std::move(diagnosticPassImages)};
+        diagnosticPassImages.clear();
+        auto &capture{diagnostic::Re5SceneCapture()};
+        if (!capture.active.load(std::memory_order_acquire))
+            return;
+
+        const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+        if (interval >= diagnostic::SceneFrameCapture::FrameCount)
+            return;
+        const std::filesystem::path directory{capture.CaptureDirectory()};
+        if (directory.empty())
+            return;
+
+        for (const auto &entry : images) {
+            const auto &texture{entry.texture};
+            if (!IsRe5ScenePassImage(*texture))
+                continue;
+
+            const auto snapshotId{capture.ReservePassSnapshot(interval, texture->surfaceSize)};
+            if (!snapshotId)
+                continue;
+            const auto index{*snapshotId};
+            const auto width{texture->dimensions.width};
+            const auto height{texture->dimensions.height};
+            const auto format{vk::to_string(texture->format->vkFormat)};
+            const auto identity{reinterpret_cast<uintptr_t>(texture.get())};
+            const auto executorIdentity{reinterpret_cast<uintptr_t>(this)};
+            uintptr_t guestMap{};
+            size_t guestBytes{};
+            if (texture->guest) {
+                if (!texture->guest->mappings.empty())
+                    guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                for (const auto &mapping : texture->guest->mappings)
+                    guestBytes += mapping.size();
+            }
+            const auto fileName{fmt::format("pass_{:02}_rp{}_{}x{}_{}.raw",
+                index, renderPassIndex, width, height, format)};
+            const auto rawPath{directory / fileName};
+            const auto metaPath{directory / fmt::format("pass_{:02}.txt", index)};
+            const auto meta{fmt::format(
+                "capture_index={} approx_present={} render_pass={} submission={} "
+                "kind={} executor=0x{:X} texture=0x{:X} dimensions={}x{} "
+                "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} depth_texture=0x{:X} "
+                "note=recorded_after_render_pass_end_not_exact_frame_correlation\n",
+                index, interval, renderPassIndex, submissionNumber,
+                entry.renderTarget ? "render_target" : "sampled_input", executorIdentity, identity,
+                width, height, format, vk::to_string(texture->layout),
+                texture->surfaceSize, guestMap, guestBytes, entry.depthIdentity)};
+            auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [texture, staging](vk::raii::CommandBuffer &commandBuffer,
+                                   const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    cycle->AttachObjects(texture, staging);
+                    texture->CopyIntoStagingBuffer(commandBuffer, staging);
+                });
+            diagnosticReadbackCallbacks.emplace_back(
+                [staging, rawPath, metaPath, meta, index] {
+                    std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                    if (!raw) {
+                        LOGE("MINIRD_RE5_PHASE2 failed to open snapshot {}", index);
+                        return;
+                    }
+                    raw.write(reinterpret_cast<const char *>(staging->data()),
+                              static_cast<std::streamsize>(staging->size()));
+                    raw.close();
+                    std::ofstream info(metaPath, std::ios::trunc);
+                    if (info)
+                        info << meta;
+                    LOGI("MINIRD_RE5_PHASE2 wrote snapshot {}: {}", index, rawPath.string());
+                });
+            capture.Record(fmt::format(
+                "PHASE2_SNAPSHOT index={} rp={} submission={} executor=0x{:X} interval={} kind={} texture=0x{:X} {}x{} format={}",
+                index, renderPassIndex, submissionNumber, executorIdentity, interval,
+                entry.renderTarget ? "rt" : "sampled", identity, width, height, format));
+        }
+    }
+
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
         auto addSubpass{[&] {
             renderPass->AddSubpass(inputAttachments, colorAttachments, depthStencilAttachment, gpu);
@@ -408,7 +647,9 @@ namespace skyline::gpu::interconnect {
             // We need to create a render pass if one doesn't already exist or the current one isn't compatible
             if (renderPass != nullptr) {
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
+                QueueDiagnosticScalarReadbacks();
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+                QueueDiagnosticPassReadbacks();
                 renderPassIndex++;
             }
             renderPass = &std::get<node::RenderPassNode>(slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassNode>(), renderArea));
@@ -431,13 +672,16 @@ namespace skyline::gpu::interconnect {
         for (auto view : sampledImages)
             view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
+        TrackDiagnosticPassImages(colorAttachments, depthStencilAttachment);
         return gotoNext;
     }
 
     void CommandExecutor::FinishRenderPass() {
         if (renderPass) {
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
+            QueueDiagnosticScalarReadbacks();
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+            QueueDiagnosticPassReadbacks();
             renderPassIndex++;
 
             renderPass = nullptr;
@@ -523,12 +767,71 @@ namespace skyline::gpu::interconnect {
         cycle->AttachObject(dependency);
     }
 
-    void CommandExecutor::AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
+    void CommandExecutor::AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, std::shared_ptr<DiagnosticScalarProbe> scalarProbe, std::shared_ptr<DiagnosticBindingProbe> bindingProbe) {
+        if (bindingProbe) {
+            function = [original = std::move(function), bindingProbe](vk::raii::CommandBuffer &commands,
+                const std::shared_ptr<FenceCycle> &cycle, GPU &gpu, vk::RenderPass pass, u32 subpass) {
+                original(commands, cycle, gpu, pass, subpass);
+                bindingProbe->RecordConsumedDescriptors();
+            };
+        }
         bool gotoNext{CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask)};
         if (gotoNext)
             slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassFunctionNode>(), std::forward<decltype(function)>(function));
         else
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
+
+        // Reserve only an actual sampled 128x128 cube matching the known
+        // binding, and only after the previous render pass has been closed.
+        // No descriptor is re-resolved and no guest texture is synchronized.
+        if (bindingProbe && !diagnosticCubeTexture) {
+            auto &capture{diagnostic::Re5SceneCapture()};
+            for (const auto &image : bindingProbe->images) {
+                if (image.stage != 4 || image.binding != 21 || !image.view ||
+                    image.view->type != vk::ImageViewType::eCube || !image.view->texture)
+                    continue;
+                auto &texture{*image.view->texture};
+                if (!diagnostic::DiagnosticCubeCandidate(
+                    texture.dimensions.width, texture.dimensions.height, texture.dimensions.depth,
+                    texture.layerCount, texture.levelCount, texture.surfaceSize,
+                    texture.format->vkFormat == vk::Format::eR8G8B8A8Unorm,
+                    bool(texture.usage & vk::ImageUsageFlagBits::eTransferSrc),
+                    texture.layout == vk::ImageLayout::eGeneral) ||
+                    !texture.GetBacking() || !image.viewBackingAtWrite ||
+                    image.viewBackingAtWrite != texture.GetBacking())
+                    continue;
+                if (capture.cubeReadbackReserved.exchange(true, std::memory_order_acq_rel))
+                    break;
+                diagnosticCubeTexture = image.view->texture;
+                diagnosticCubeDirectory = bindingProbe->directory;
+                diagnosticCubeMetadata = fmt::format(
+                    "source=fs_binding21 descriptor_probe={} texture_id={} view_type=Cube "
+                    "host_levels={} host_layers={} requested_view_mip={}+{} requested_view_layer={}+{} "
+                    "view_create_backing=0x{:X} current_backing=0x{:X} "
+                    "note=observed_sampled_binding_not_shader_load_proof\n",
+                    bindingProbe->index, texture.diagnosticIdentity, texture.levelCount,
+                    texture.layerCount, image.view->range.baseMipLevel, image.view->range.levelCount,
+                    image.view->range.baseArrayLayer, image.view->range.layerCount,
+                    reinterpret_cast<uintptr_t>(static_cast<VkImage>(image.viewBackingAtWrite)),
+                    reinterpret_cast<uintptr_t>(static_cast<VkImage>(texture.GetBacking())));
+                break;
+            }
+        }
+
+        // Register before AddSubpass's automatic Submit can clear active state.
+        // CreateRenderPassWithSubpass may have ended the *previous* pass above.
+        if (scalarProbe) {
+            scalarProbe->metadata += fmt::format("executor=0x{:X} submission={} render_pass={} subpass={}\n",
+                reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex, subpassCount - 1);
+            diagnostic::Re5SceneCapture().Record(fmt::format("SCALAR_PROBE index={} executor=0x{:X} submission={} rp={}",
+                scalarProbe->index, reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex));
+            diagnosticPassScalars.emplace_back(std::move(scalarProbe));
+        }
+        if (bindingProbe) {
+            bindingProbe->metadata += fmt::format("executor=0x{:X} submission={} render_pass={} subpass={}\n",
+                reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex, subpassCount - 1);
+            diagnosticPassBindings.emplace_back(std::move(bindingProbe));
+        }
 
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
             Submit();
@@ -726,6 +1029,12 @@ namespace skyline::gpu::interconnect {
             SubmitInternal();
             submissionNumber++;
         }
+        // SubmitInternal() closes the final render pass and may enqueue more
+        // diagnostic readbacks. Queue file writes AFTER that point so callbacks
+        // belong to the correct GPU cycle (already registered above).
+        for (auto &cb : diagnosticReadbackCallbacks)
+            waiterThread.Queue(nullptr, std::move(cb));
+        diagnosticReadbackCallbacks.clear();
 
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission
