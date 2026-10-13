@@ -355,6 +355,7 @@ namespace skyline::gpu {
         std::atomic<std::shared_ptr<texture::AliasGroup>> aliasGroup{};
         std::atomic<bool> aliasStale{};
         std::atomic<bool> aliasRetired{};
+        std::atomic<bool> aliasReadOnly{};
         u64 gpuWriteSerial{},gpuReadbackSerial{};
         bool replaced{};
         vk::PipelineStageFlags pendingStageMask{}, readStageMask{};
@@ -364,6 +365,7 @@ namespace skyline::gpu {
         bool try_lock() { return mutex.try_lock(); }
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const Guest &) const;
+        static bool CanMaterializeGuestLayout(const GuestTexture &);
         static bool IsGuestLayoutReversible(const GuestTexture &);
         static std::shared_ptr<texture::AliasGroup> RegisterAliases(std::vector<std::shared_ptr<Texture>>, const GuestTexture * = nullptr);
         void RequireAliasCoherence(ContextTag);
@@ -1589,6 +1591,52 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(!rejected); // A valid separate representation must have a coherent fallback.
     }
 
+    void CheckReadOnlyAliasWriteGate(GPU &gpu) {
+        std::vector<u8> bytes(90112 * 6, 0x4D);
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = {128,128,1};
+        guest.mipLevelCount = 8;
+        guest.viewMipCount = 8;
+        guest.layerCount = 6;
+        guest.layerStride = 90112;
+        guest.mappings = {span<u8>{bytes.data(), bytes.size()}};
+        assert(Texture::CanMaterializeGuestLayout(guest));
+        assert(Texture::IsGuestLayoutReversible(guest));
+
+        auto texture{std::make_shared<Texture>(gpu, guest)};
+        texture->SetupGuestMappings();
+        auto group{Texture::RegisterAliases({texture})};
+        texture->aliasReadOnly = true;
+        const auto generation{group->generation};
+        const auto serial{texture->gpuWriteSerial};
+
+        bool directRejected{};
+        try { texture->RecordGpuWrite(); } catch (const std::runtime_error &) { directRejected = true; }
+        assert(directRejected && group->generation == generation && texture->gpuWriteSerial == serial);
+
+        UsageTracker usage;
+        bool storageRejected{};
+        try { texture->MarkGpuDirty(usage); } catch (const std::runtime_error &) { storageRejected = true; }
+        assert(storageRejected && usage.dirtyIntervals.count == 0 && group->generation == generation);
+
+        const auto oldPass{texture->lastRenderPassUsage};
+        const auto oldPassIndex{texture->lastRenderPassIndex};
+        bool rtRejected{};
+        try { texture->UpdateRenderPassUsage(77, texture::RenderPassUsage::RenderTarget); } catch (const std::runtime_error &) { rtRejected = true; }
+        assert(rtRejected && texture->lastRenderPassUsage == oldPass && texture->lastRenderPassIndex == oldPassIndex && !texture->everUsedAsRt);
+
+        texture->dirtyState = Texture::DirtyState::GpuDirty;
+        const auto before{bytes};
+        texture->SynchronizeGuest(false, true);
+        assert(bytes == before); // A read-only alias never becomes a GPU -> guest encoder.
+
+        bool gpuDirtyRejected{};
+        try { texture->SynchronizeHost(true); } catch (const std::runtime_error &) { gpuDirtyRejected = true; }
+        assert(gpuDirtyRejected && group->generation == generation);
+        texture->dirtyState = Texture::DirtyState::CpuDirty;
+    }
+
     void CheckLogicalExtent() {
         struct Guest {
             struct { u32 width, height, depth{1}; } dimensions;
@@ -1647,6 +1695,7 @@ int main() {
             CheckAliasTraps(gpu);
             CheckCpuWriteBeforeSubmit(gpu);
             CheckRegistrationAfterReadback(gpu);
+            CheckReadOnlyAliasWriteGate(gpu);
             for (bool reverse : {false, true}) CheckPromotion(gpu, reverse);
             for (bool cpuDirty : {false, true})
                 for (size_t blockHeight : {1, 16}) CheckMipGrowth(gpu, cpuDirty, blockHeight);
@@ -1657,5 +1706,5 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
-    std::puts("Production Texman: full FindOrCreate separate-layout fallback, three aliases, alternating RT writers, stale invalidation, historical non-reversible alias retirement/authority/rollback, real CPU traps/contention, failed download/upload recovery, test-only Vulkan transport, no redundant copies, views/fences; existing promotion and 1-to-8 mip expansion (6 faces) passed; zero Vulkan validation errors");
+    std::puts("Production Texman: full FindOrCreate separate-layout fallback, read-only materialized alias write gates, three aliases, alternating RT writers, stale invalidation, historical non-reversible alias retirement/authority/rollback, real CPU traps/contention, failed download/upload recovery, test-only Vulkan transport, no redundant copies, views/fences; existing promotion and 1-to-8 mip expansion (6 faces) passed; zero Vulkan validation errors");
 }

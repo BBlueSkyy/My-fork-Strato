@@ -536,6 +536,11 @@ namespace skyline::gpu {
     }
 
     void Texture::FreeGuest() {
+        // A read-only alias may need the guest representation again after another
+        // alias becomes the writer. Preserve those bytes without changing the
+        // global Free Guest Texture Memory policy for ordinary textures.
+        if (aliasReadOnly.load())
+            return;
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
         if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
             gpu.state.process->memory.FreeMemory(mirror);
@@ -784,7 +789,7 @@ namespace skyline::gpu {
         }
     }
 
-    bool Texture::IsGuestLayoutReversible(const GuestTexture &value) {
+    bool Texture::CanMaterializeGuestLayout(const GuestTexture &value) {
         if (!value.format || !value.format->bpb || value.format->vkAspect != vk::ImageAspectFlagBits::eColor ||
             value.GetImageType() != vk::ImageType::e2D || value.baseArrayLayer || !value.layerCount ||
             !value.dimensions.width || !value.dimensions.height || !value.mipLevelCount ||
@@ -800,14 +805,14 @@ namespace skyline::gpu {
             size_t uploadOffset{};
             const auto uploadAlignment{std::lcm<size_t>(4, value.format->bpb)};
             for (const auto &level : layouts) {
-                // Existing staging copies are tightly packed. Do not enable a
-                // layout whose mip offsets violate Vulkan buffer-copy alignment.
+                // SynchronizeHost packs mip payloads tightly before the Vulkan
+                // buffer-to-image copy, so retain its alignment and guest bounds.
                 if (uploadOffset % uploadAlignment) return false;
                 uploadOffset += level.linearSize * value.layerCount;
                 layerBytes += level.blockLinearSize;
             }
         } else {
-            return false; // Pitch/linear reconstruction is outside this block-linear fallback.
+            return false; // This separate-backing fallback currently materializes block-linear 2D color images only.
         }
         const size_t stride{value.layerStride ? value.layerStride : value.CalculateLayerSize()};
         size_t mapped{};
@@ -817,6 +822,13 @@ namespace skyline::gpu {
         }
         return stride && layerBytes <= stride && layerBytes <= mapped &&
             value.layerCount - 1 <= (mapped - layerBytes) / stride;
+    }
+
+    bool Texture::IsGuestLayoutReversible(const GuestTexture &value) {
+        // Layout materialization and native-format writeback share the same
+        // block-linear bounds. Host-format conversion is checked separately by
+        // CanReconcileGuestLayout because decoded BCn images are read-only aliases.
+        return CanMaterializeGuestLayout(value);
     }
 
     bool Texture::CanReconcileGuestLayout(const GuestTexture &requested) const {
@@ -982,6 +994,8 @@ namespace skyline::gpu {
         for (size_t i{}; i < writers.size(); ++i) {
             if (!writers[i]) continue;
             auto owner{writers[i]->texture.get()};
+            if (owner->aliasReadOnly.load())
+                throw exception("A materialized read-only texture alias cannot be used as a render target");
             auto group{owner->aliasGroup.load()};
             if (!group) continue;
             for (size_t j{}; j < i; ++j)
@@ -1005,6 +1019,8 @@ namespace skyline::gpu {
     }
 
     void Texture::RecordGpuWrite() {
+        if (aliasReadOnly.load())
+            throw exception("Cannot write through a materialized read-only texture alias");
         if (aliasRetired.load())
             throw exception("Cannot write through a retired non-reversible texture alias");
         auto alias{aliasGroup.load()};
@@ -1036,6 +1052,8 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeHost(bool gpuDirty) {
+        if (gpuDirty && aliasReadOnly.load())
+            throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
         auto alias{aliasGroup.load()};
         std::unique_lock<std::recursive_mutex> aliasLock;
         if (alias) aliasLock = std::unique_lock{alias->operationMutex};
@@ -1116,6 +1134,8 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeHostInline(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &pCycle, bool gpuDirty) {
+        if (gpuDirty && aliasReadOnly.load())
+            throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
         if (!guest)
             return;
 
@@ -1161,6 +1181,10 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeGuest(bool cpuDirty, bool skipTrap) {
+        // Read-only aliases are reconstructed from authoritative guest bytes.
+        // They must never become a GPU -> guest encoding source.
+        if (aliasReadOnly.load())
+            return;
         auto alias{aliasGroup.load()};
         std::unique_lock<std::recursive_mutex> aliasLock;
         if (alias) aliasLock = std::unique_lock{alias->operationMutex};
@@ -1578,12 +1602,15 @@ namespace skyline::gpu {
     }
 
     void Texture::UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage) {
+        // Reject a read-only alias before mutating render-pass/write tracking.
+        if (renderPassUsage == texture::RenderPassUsage::RenderTarget)
+            RecordGpuWrite();
+
         lastRenderPassUsage = renderPassUsage;
         lastRenderPassIndex = renderPassIndex;
 
         if (renderPassUsage == texture::RenderPassUsage::RenderTarget) {
             everUsedAsRt = true;
-            RecordGpuWrite();
             pendingStageMask = vk::PipelineStageFlagBits::eVertexShader |
                 vk::PipelineStageFlagBits::eTessellationControlShader |
                 vk::PipelineStageFlagBits::eTessellationEvaluationShader |

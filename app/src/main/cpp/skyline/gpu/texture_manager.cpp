@@ -227,30 +227,59 @@ namespace skyline::gpu {
             }
          }
 
+        bool requestedReadOnlyAlias{};
         for (const auto &alias : exactAliases)
             if (auto group{alias->aliasGroup.load()}) { separateGroup = std::move(group); break; }
         if (unrepresentableMatch || separateGroup) {
-            // Validate existing-group adoption too: an unsupported third layout
-            // cannot become a writer just because its guest mappings match.
-            // Exact guest mappings identify history, not necessarily reversible
-            // representations. Put an eligible layout first for registration;
-            // the remaining history must pass its separate ownership check there.
-            const auto eligibleEnd{std::stable_partition(exactAliases.begin(), exactAliases.end(), [&](const auto &alias) {
-                return alias->CanReconcileGuestLayout(guestTexture);
-            })};
-            if (!Texture::IsGuestLayoutReversible(guestTexture) || ConvertHostCompatibleFormat(guestTexture.format, gpu.traits) != guestTexture.format)
-                throw exception("Cannot safely represent this guest mip/layer layout on the overlapping texture backing");
-            bool registered{eligibleEnd == exactAliases.end() && separateGroup && std::all_of(exactAliases.begin(), exactAliases.end(), [&](const auto &alias) {
-                return alias->aliasGroup.load() == separateGroup;
-            })};
-            if (!registered) {
-                if (tag) {
-                    std::vector<std::shared_ptr<void>> leases;
-                    leases.reserve(exactAliases.size());
-                    for (auto it{exactAliases.begin()}; it != eligibleEnd; ++it) leases.push_back((*it)->PinGuestMemory());
-                    throw TextureAliasReconciliationRequest{{}, exactAliases, std::move(leases), std::make_shared<GuestTexture>(guestTexture)};
+            const bool requestedMaterializable{Texture::CanMaterializeGuestLayout(guestTexture)};
+            const bool requestedLossless{Texture::IsGuestLayoutReversible(guestTexture) &&
+                ConvertHostCompatibleFormat(guestTexture.format, gpu.traits) == guestTexture.format};
+            if (!requestedMaterializable)
+                throw exception("Cannot safely materialize this guest mip/layer layout on the overlapping texture backing");
+
+            if (requestedLossless) {
+                // Exact guest mappings identify history, not necessarily reversible
+                // representations. Put an eligible layout first for registration;
+                // the remaining history must pass its separate ownership check there.
+                const auto eligibleEnd{std::stable_partition(exactAliases.begin(), exactAliases.end(), [&](const auto &alias) {
+                    return alias->CanReconcileGuestLayout(guestTexture);
+                })};
+                bool registered{eligibleEnd == exactAliases.end() && separateGroup && std::all_of(exactAliases.begin(), exactAliases.end(), [&](const auto &alias) {
+                    return alias->aliasGroup.load() == separateGroup;
+                })};
+                if (!registered) {
+                    if (tag) {
+                        std::vector<std::shared_ptr<void>> leases;
+                        leases.reserve(exactAliases.size());
+                        for (auto it{exactAliases.begin()}; it != eligibleEnd; ++it) leases.push_back((*it)->PinGuestMemory());
+                        throw TextureAliasReconciliationRequest{{}, exactAliases, std::move(leases), std::make_shared<GuestTexture>(guestTexture)};
+                    }
+                    separateGroup = Texture::RegisterAliases(exactAliases, &guestTexture);
                 }
-                separateGroup = Texture::RegisterAliases(exactAliases, &guestTexture);
+            } else {
+                // Host-converted or otherwise non-lossless representations may be
+                // materialized for sampling, but they cannot own the guest bytes.
+                // Establish/retain a group whose authority is a lossless existing
+                // representation, then join the new representation read-only.
+                requestedReadOnlyAlias = true;
+                const auto writerEligibleEnd{std::stable_partition(exactAliases.begin(), exactAliases.end(), [](const auto &alias) {
+                    return alias->guest && alias->CanReconcileGuestLayout(*alias->guest);
+                })};
+                if (writerEligibleEnd == exactAliases.begin())
+                    throw exception("Cannot materialize a read-only texture alias without a lossless authoritative representation");
+
+                bool registered{separateGroup && std::all_of(exactAliases.begin(), exactAliases.end(), [&](const auto &alias) {
+                    return alias->aliasGroup.load() == separateGroup;
+                })};
+                if (!registered) {
+                    if (tag) {
+                        std::vector<std::shared_ptr<void>> leases;
+                        leases.reserve(static_cast<size_t>(std::distance(exactAliases.begin(), writerEligibleEnd)));
+                        for (auto it{exactAliases.begin()}; it != writerEligibleEnd; ++it) leases.push_back((*it)->PinGuestMemory());
+                        throw TextureAliasReconciliationRequest{{}, exactAliases, std::move(leases), {}};
+                    }
+                    separateGroup = Texture::RegisterAliases(exactAliases);
+                }
             }
         }
 
@@ -410,6 +439,7 @@ namespace skyline::gpu {
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();
+        texture->aliasReadOnly = requestedReadOnlyAlias;
         if (separateGroup) {
             std::scoped_lock metadata{separateGroup->mutex};
             separateGroup->members.emplace_back(texture);

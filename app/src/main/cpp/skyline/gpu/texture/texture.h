@@ -409,10 +409,12 @@ namespace skyline::gpu {
         texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup{};
         std::atomic<bool> aliasStale{};
         std::atomic<bool> aliasRetired{}; //!< Obsolete non-reversible representations cannot reclaim writer ownership.
+        std::atomic<bool> aliasReadOnly{}; //!< Materializable aliases without a lossless GPU -> guest path may only be sampled/read.
         u64 gpuWriteSerial{};
         u64 gpuReadbackSerial{}; //!< Updated only after successful guest encoding.
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const GuestTexture &requested) const;
+        static bool CanMaterializeGuestLayout(const GuestTexture &value);
         static bool IsGuestLayoutReversible(const GuestTexture &value);
         static std::shared_ptr<texture::AliasGroup> RegisterAliases(std::vector<std::shared_ptr<Texture>> textures, const GuestTexture *requested = nullptr);
         void RequireAliasCoherence(ContextTag context);

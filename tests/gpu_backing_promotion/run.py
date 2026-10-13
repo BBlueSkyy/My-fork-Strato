@@ -35,6 +35,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
         signature) for signature in (
         "void Texture::SetupGuestMappings(",
+        "bool Texture::CanMaterializeGuestLayout(",
         "bool Texture::IsGuestLayoutReversible(",
         "bool Texture::CanReconcileGuestLayout(",
         "std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(",
