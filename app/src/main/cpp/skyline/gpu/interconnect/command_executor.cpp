@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -396,11 +397,22 @@ namespace skyline::gpu::interconnect {
             diagnosticBoundaryPass.emplace();
 
         auto &pass{*diagnosticBoundaryPass};
+        const auto step{pass.operationCount++};
+        // These are consecutive draw/clear operations, not necessarily distinct Vulkan subpasses.
         pass.metadata += fmt::format(
-            "subpass rp={} submission={} render_area={},{},{}x{} sampled_count={} color_count={} depth={}\n",
-            renderPassIndex, submissionNumber, renderArea.offset.x, renderArea.offset.y,
+            "operation_step={} rp={} submission={} render_area={},{},{}x{} sampled_count={} color_count={} depth={}\n",
+            step, renderPassIndex, submissionNumber, renderArea.offset.x, renderArea.offset.y,
             renderArea.extent.width, renderArea.extent.height, sampledImages.size(),
             colorAttachments.size(), depthStencilAttachment && depthStencilAttachment->texture);
+        for (size_t slotIndex{}; slotIndex < colorAttachments.size(); ++slotIndex) {
+            const auto *view{colorAttachments[slotIndex]};
+            if (view && view->texture)
+                pass.metadata += fmt::format(
+                    "operation_output={} slot={} texture=0x{:X} mip={}+{} layer={}+{}\n",
+                    step, slotIndex, reinterpret_cast<uintptr_t>(view->texture.get()),
+                    view->range.baseMipLevel, view->range.levelCount,
+                    view->range.baseArrayLayer, view->range.layerCount);
+        }
 
         size_t inputIndex{};
         for (auto *view : sampledImages) {
@@ -411,6 +423,26 @@ namespace skyline::gpu::interconnect {
                 break;
             }
             auto &texture{*view->texture};
+            // Signature of the RE5 post-process sequence. Store the input views
+            // for small post-pass probes, deduplicated by backing/subresource.
+            if (renderArea.extent.width == 1280 && renderArea.extent.height == 720) {
+                if ((texture.dimensions.width == 256 && texture.dimensions.height == 1) ||
+                    (texture.dimensions.width == 2304 && texture.dimensions.height == 1280))
+                    pass.focusCandidate = true;
+                if ((texture.dimensions.width == 256 && texture.dimensions.height == 1) ||
+                    (texture.dimensions.width == 2304 && texture.dimensions.height == 1280) ||
+                    (texture.dimensions.width == 1280 && texture.dimensions.height == 720) ||
+                    (texture.dimensions.width == 1024 && texture.dimensions.height == 512)) {
+                    const auto present{ranges::any_of(pass.focusedInputs, [&](const auto &prior) {
+                        return prior.texture.get() == view->texture.get() &&
+                               prior.range.baseMipLevel == view->range.baseMipLevel &&
+                               prior.range.baseArrayLayer == view->range.baseArrayLayer;
+                    })};
+                    if (!present && pass.focusedInputs.size() < 12)
+                        pass.focusedInputs.push_back({view->texture, view->range,
+                                                      step, static_cast<u32>(inputIndex - 1)});
+                }
+            }
             uintptr_t guestMap{};
             size_t guestBytes{};
             if (texture.guest) {
@@ -469,6 +501,10 @@ namespace skyline::gpu::interconnect {
                 pass->range.baseArrayLayer, pass->range.layerCount, pass->metadata));
         if (!capture.active.load(std::memory_order_acquire))
             return;
+
+        // Input probes are captured outside the Vulkan render pass, before
+        // the existing full-target readback. Never force additional pass splits.
+        QueueFocusedInputProbes(*pass);
 
         auto texture{pass->target};
         const auto range{pass->range};
@@ -565,6 +601,176 @@ namespace skyline::gpu::interconnect {
                     out << fmt::format("{:02X}", bytes[i]);
                 out << '\n';
             });
+    }
+
+
+    void CommandExecutor::QueueFocusedInputProbes(const DiagnosticBoundaryPass &pass) {
+        auto &capture{diagnostic::Re5PassBoundary()};
+        if (!pass.focusCandidate || !pass.target ||
+            pass.target->dimensions.width != 1280 || pass.target->dimensions.height != 720)
+            return;
+
+        for (const auto &input : pass.focusedInputs) {
+            const auto texture{input.texture};
+            if (!texture || texture.get() == pass.target.get() || !texture->GetBacking() ||
+                texture->layout == vk::ImageLayout::eUndefined ||
+                texture->sampleCount != vk::SampleCountFlagBits::e1 ||
+                !(texture->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+                input.range.baseMipLevel >= texture->mipLayouts.size() ||
+                input.range.baseArrayLayer >= texture->layerCount ||
+                !(texture->format->vkAspect & vk::ImageAspectFlagBits::eColor))
+                continue;
+
+            const auto format{texture->format->vkFormat};
+            const bool rgba{
+                format == vk::Format::eR8G8B8A8Unorm ||
+                format == vk::Format::eR8G8B8A8Srgb ||
+                format == vk::Format::eB8G8R8A8Unorm ||
+                format == vk::Format::eB8G8R8A8Srgb
+            };
+            const bool bc7{format == vk::Format::eBc7UnormBlock ||
+                           format == vk::Format::eBc7SrgbBlock};
+            if (!rgba && !bc7)
+                continue;
+
+            const auto mip{input.range.baseMipLevel};
+            const auto layer{input.range.baseArrayLayer};
+            const auto extent{texture->mipLayouts[mip].dimensions};
+            if (extent.depth != 1 || extent.width < 4 || (!bc7 && extent.height < 1) ||
+                (bc7 && extent.height < 4))
+                continue;
+
+            // A 1D texture is probed in three 4x1 patches; 2D uses nine 4x4
+            // patches. BC7 captures raw 4x4 blocks (16 bytes) without fake RGB.
+            const u32 sites{extent.height == 1 ? 3U : 9U};
+            const u32 rows{extent.height == 1 ? 1U : 4U};
+            constexpr size_t SlotBytes{64};
+            const auto totalBytes{sites * SlotBytes};
+            const auto ticket{capture.ReserveFocused(totalBytes)};
+            if (!ticket)
+                break;
+
+            const auto sourceLayout{texture->layout};
+            const auto stage{input.step};
+            const auto inputSlot{input.slot};
+            const auto staging{gpu.memory.AllocateStagingBuffer(totalBytes)};
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [texture, staging, mip, layer, extent, sites, rows, sourceLayout](vk::raii::CommandBuffer &commands,
+                    const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    cycle->AttachObjects(texture, staging);
+                    const vk::ImageSubresourceRange subresource{
+                        .aspectMask = vk::ImageAspectFlagBits::eColor,
+                        .baseMipLevel = mip, .levelCount = 1,
+                        .baseArrayLayer = layer, .layerCount = 1
+                    };
+                    commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                        vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                        vk::ImageMemoryBarrier{
+                            .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
+                            .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                            .oldLayout = sourceLayout,
+                            .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .image = texture->GetBacking(),
+                            .subresourceRange = subresource
+                        });
+
+                    std::array<vk::BufferImageCopy, 9> regions{};
+                    for (u32 i{}; i < sites; ++i) {
+                        auto x{std::min(extent.width - 4, extent.width * ((i % 3) + 1) / 4)};
+                        auto y{rows == 1 ? 0U :
+                            std::min(extent.height - 4, extent.height * ((i / 3) + 1) / 4)};
+                        // BC7 image offsets and extents must be block-aligned.
+                        x &= ~3U;
+                        y &= ~3U;
+                        regions[i] = vk::BufferImageCopy{
+                            .bufferOffset = i * SlotBytes,
+                            .imageSubresource = {
+                                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                                .mipLevel = mip, .baseArrayLayer = layer, .layerCount = 1
+                            },
+                            .imageOffset = vk::Offset3D{static_cast<i32>(x), static_cast<i32>(y), 0},
+                            .imageExtent = vk::Extent3D{4, rows, 1}
+                        };
+                    }
+
+                    commands.copyImageToBuffer(texture->GetBacking(),
+                        vk::ImageLayout::eTransferSrcOptimal, staging->vkBuffer,
+                        vk::ArrayProxy(sites, regions.data()));
+                    commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                        vk::PipelineStageFlagBits::eAllCommands, {}, {}, {},
+                        vk::ImageMemoryBarrier{
+                            .srcAccessMask = vk::AccessFlagBits::eTransferRead,
+                            .dstAccessMask = vk::AccessFlagBits::eMemoryRead |
+                                vk::AccessFlagBits::eMemoryWrite,
+                            .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+                            .newLayout = sourceLayout,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .image = texture->GetBacking(),
+                            .subresourceRange = subresource
+                        });
+                    commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                        vk::PipelineStageFlagBits::eHost, {}, {},
+                        vk::BufferMemoryBarrier{
+                            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                            .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .buffer = staging->vkBuffer, .offset = 0, .size = staging->size()
+                        }, {});
+                });
+
+            const auto guestMap{texture->guest && !texture->guest->mappings.empty() ?
+                reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data()) : 0};
+            diagnosticBoundaryCallbacks.emplace_back(
+                [staging, ticket = *ticket, texture, format, guestMap, stage, inputSlot,
+                 mip, layer, extent, sites, rows, bc7] {
+                    const auto result{vmaInvalidateAllocation(staging->vmaAllocator,
+                        staging->vmaAllocation, 0, staging->size())};
+                    std::ofstream out(std::filesystem::path(ticket.directory) /
+                        fmt::format("focus_{:03}.txt", ticket.index), std::ios::trunc);
+                    if (!out)
+                        return;
+                    out << fmt::format(
+                        "FOCUS index={} approx_present={} operation_step={} input_slot={} "
+                        "texture=0x{:X} guest_map=0x{:X} format={} mip={} layer={} extent={}x{} "
+                        "sites={} raw_bc7={} invalidate_result={}\n",
+                        ticket.index, ticket.present, stage, inputSlot,
+                        reinterpret_cast<uintptr_t>(texture.get()), guestMap,
+                        vk::to_string(format), mip, layer, extent.width, extent.height,
+                        sites, bc7, static_cast<int>(result));
+                    if (result != VK_SUCCESS)
+                        return;
+                    const auto *buffer{static_cast<const u8 *>(staging->data())};
+                    std::uint64_t wholeHash{1469598103934665603ULL};
+                    for (u32 i{}; i < sites; ++i) {
+                        const auto *sample{buffer + i * 64};
+                        const size_t bytes{bc7 ? 16U : static_cast<size_t>(rows) * 16U};
+                        u32 sum{}, zero{};
+                        std::uint64_t hash{1469598103934665603ULL};
+                        for (size_t j{}; j < bytes; ++j) {
+                            zero += sample[j] == 0;
+                            sum += sample[j];
+                            hash = (hash ^ sample[j]) * 1099511628211ULL;
+                            wholeHash = (wholeHash ^ sample[j]) * 1099511628211ULL;
+                        }
+                        if (bc7) {
+                            out << fmt::format("site={} block_bytes={} zeros={} hash=0x{:016X}\n",
+                                i, bytes, zero, hash);
+                        } else {
+                            u32 rgb{};
+                            for (size_t px{}; px < bytes; px += 4)
+                                rgb += static_cast<u32>(sample[px]) + sample[px + 1] + sample[px + 2];
+                            out << fmt::format(
+                                "site={} rgb_mean={} byte_mean={} zeros={} hash=0x{:016X}\n",
+                                i, rgb / (3 * (bytes / 4)), sum / bytes, zero, hash);
+                        }
+                    }
+                    out << fmt::format("whole_hash=0x{:016X}\n", wholeHash);
+                });
+        }
     }
 
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
