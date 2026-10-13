@@ -8,6 +8,7 @@
 #include <common/settings.h>
 #include "texture.h"
 #include "layout.h"
+#include "pitch_linear.h"
 #include "adreno_aliasing.h"
 #include "bc_decoder.h"
 #include "format.h"
@@ -29,7 +30,8 @@ namespace skyline::gpu {
                 return static_cast<u32>(format->GetSize(dimensions));
 
             case texture::TileMode::Pitch:
-                return dimensions.height * tileConfig.pitch;
+                // Pitch counts rows of compressed format blocks, not pixel rows.
+                return static_cast<u32>(texture::PitchLinearRowCount(dimensions.height, format->blockHeight) * tileConfig.pitch);
 
             case texture::TileMode::Block:
                 return static_cast<u32>(texture::GetBlockLinearLayerSize(dimensions, format->blockHeight, format->blockWidth, format->bpb, tileConfig.blockHeight, tileConfig.blockDepth, mipLevelCount, layerCount > 1));
