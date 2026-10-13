@@ -389,7 +389,7 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::TrackDiagnosticBoundaryPass(vk::Rect2D renderArea, span<TextureView *> sampledImages,
                                                            span<TextureView *> colorAttachments, TextureView *depthStencilAttachment) {
         auto &capture{diagnostic::Re5PassBoundary()};
-        if (!capture.active.load(std::memory_order_acquire))
+        if (!capture.RecordingMetadata())
             return;
 
         if (!diagnosticBoundaryPass)
@@ -460,6 +460,13 @@ namespace skyline::gpu::interconnect {
             return;
 
         auto &capture{diagnostic::Re5PassBoundary()};
+        if (capture.monitoring.load(std::memory_order_acquire))
+            capture.RecordPrePass(fmt::format(
+                "monitor_present={} rp={} submission={} target=0x{:X} mip={}+{} layer={}+{}\n{}",
+                capture.monitorPresent.load(std::memory_order_relaxed), renderPassIndex, submissionNumber,
+                reinterpret_cast<uintptr_t>(pass->target.get()),
+                pass->range.baseMipLevel, pass->range.levelCount,
+                pass->range.baseArrayLayer, pass->range.layerCount, pass->metadata));
         if (!capture.active.load(std::memory_order_acquire))
             return;
 
