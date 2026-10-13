@@ -3,6 +3,8 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <cmath>
+#include <fmt/format.h>
+#include <gpu/diagnostic/re5_pass_boundary.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -21,6 +23,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         : ctx{channelCtx, channelCtx.executor, gpu, trap, memoryManager},
           activeState{manager, registerBundle.activeStateRegisters},
           clearEngineRegisters{registerBundle.clearRegisters},
+          diagnosticViewport0{registerBundle.activeStateRegisters.viewportsRegisters[0].viewport0},
+          diagnosticViewport{registerBundle.activeStateRegisters.viewportsRegisters[0].viewport},
+          diagnosticBlendConstants{registerBundle.activeStateRegisters.blendConstantsRegisters.blendConsts},
           constantBuffers{manager, registerBundle.constantBufferSelectorRegisters},
           samplers{manager, registerBundle.samplerPoolRegisters},
           samplerBinding{registerBundle.samplerBinding},
@@ -189,6 +194,88 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
 
         return scissor;
+    }
+
+
+    std::string Maxwell3D::DescribeDiagnosticOperation(const char *kind, vk::Rect2D area,
+                                                       bool programmable) {
+        auto &capture{diagnostic::Re5PassBoundary()};
+        if (!capture.RecordingMetadata())
+            return {};
+
+        const auto &clip{clearEngineRegisters.surfaceClip};
+        if (!((clip.horizontal.width == 1280 && clip.vertical.height == 720) ||
+              (clip.horizontal.width == 1920 && clip.vertical.height == 1080)))
+            return {};
+
+        const auto &scissor{clearEngineRegisters.scissor0};
+        const auto &viewportClip{clearEngineRegisters.viewportClip0};
+        auto output{fmt::format(
+            "operation_state={} render_area={},{},{}x{} surface_clip={},{},{}x{} "
+            "scissor0_enable={} scissor0_raw={},{},{},{} "
+            "viewport0_offset={},{} viewport0_scale={},{} "
+            "viewport_current_offset={},{} viewport_current_scale={},{} "
+            "viewport_clip0={},{},{}x{} blend_constants={},{},{},{}",
+            kind, area.offset.x, area.offset.y, area.extent.width, area.extent.height,
+            clip.horizontal.x, clip.vertical.y, clip.horizontal.width, clip.vertical.height,
+            scissor.enable, scissor.horizontal.xMin, scissor.vertical.yMin,
+            scissor.horizontal.xMax, scissor.vertical.yMax,
+            diagnosticViewport0.offsetX, diagnosticViewport0.offsetY,
+            diagnosticViewport0.scaleX, diagnosticViewport0.scaleY,
+            diagnosticViewport.offsetX, diagnosticViewport.offsetY,
+            diagnosticViewport.scaleX, diagnosticViewport.scaleY,
+            viewportClip.horizontal.x0, viewportClip.vertical.y0,
+            viewportClip.horizontal.width, viewportClip.vertical.height,
+            diagnosticBlendConstants[0], diagnosticBlendConstants[1],
+            diagnosticBlendConstants[2], diagnosticBlendConstants[3])};
+
+        if (!programmable) {
+            output += " pipeline=helper_or_clear shader_hashes=not_applicable";
+            return output;
+        }
+
+        // A pipeline pointer alone is not a shader identity; preserve both
+        // its stable packed-state key and every guest shader hash.
+        auto *pipeline{activeState.GetPipeline()};
+        if (!pipeline) {
+            output += " pipeline=null";
+            return output;
+        }
+        const auto &p{pipeline->sourcePackedState};
+        output += fmt::format(
+            " pipeline_ptr=0x{:X} pipeline_key=0x{:016X} "
+            "depth_test={} depth_write={} depth_func={} depth_bounds={} "
+            "stencil_test={} stencil_front_func={} stencil_back_func={} "
+            "alpha_test={} alpha_func={} alpha_ref={} "
+            "logic_enable={} logic_op={} discard={} viewport_transform={} dynamic_state={} "
+            "shader_hashes=",
+            reinterpret_cast<uintptr_t>(pipeline),
+            static_cast<std::uint64_t>(PackedPipelineStateHash{}(p)),
+            p.depthTestEnable, p.depthWriteEnable, static_cast<u32>(p.depthFunc),
+            p.depthBoundsTestEnable, p.stencilTestEnable,
+            static_cast<u32>(p.stencilFront.func), static_cast<u32>(p.stencilBack.func),
+            p.alphaTestEnable, static_cast<u32>(p.alphaFunc), p.alphaRef,
+            p.logicOpEnable, static_cast<u32>(p.logicOp),
+            p.rasterizerDiscardEnable, p.viewportTransformEnable, p.dynamicStateActive);
+        for (size_t i{}; i < p.shaderHashes.size(); ++i)
+            output += fmt::format("{}{:016X}", i ? "," : "", p.shaderHashes[i]);
+
+        for (size_t i{}; i < p.attachmentBlendStates.size(); ++i) {
+            const auto &blend{p.attachmentBlendStates[i]};
+            if (!blend.colorWriteMask && !blend.blendEnable)
+                continue;
+            output += fmt::format(
+                " blend[{}]=enable:{},write:{:X},color_op:{},src_color:{},dst_color:{},"
+                "alpha_op:{},src_alpha:{},dst_alpha:{}",
+                i, blend.blendEnable, static_cast<u32>(blend.colorWriteMask),
+                static_cast<u32>(blend.colorBlendOp),
+                static_cast<u32>(blend.srcColorBlendFactor),
+                static_cast<u32>(blend.dstColorBlendFactor),
+                static_cast<u32>(blend.alphaBlendOp),
+                static_cast<u32>(blend.srcAlphaBlendFactor),
+                static_cast<u32>(blend.dstAlphaBlendFactor));
+        }
+        return output;
     }
 
      void Maxwell3D::PrepareDraw(StateUpdateBuilder &builder,
