@@ -385,6 +385,7 @@ namespace skyline::gpu {
     class Texture : public std::enable_shared_from_this<Texture> {
         friend class interconnect::CommandExecutor;
         friend class PresentationEngine;
+        friend class TextureManager;
 
       private:
         GPU &gpu;
@@ -405,7 +406,7 @@ namespace skyline::gpu {
         } dirtyState{DirtyState::CpuDirty}; //!< The state of the CPU mappings with respect to the GPU texture
         bool memoryFreed{}; //!< If the guest backing memory has been freed
         mutable std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
-        std::atomic<std::shared_ptr<texture::AliasGroup>> aliasGroup{};
+        texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup{};
         std::atomic<bool> aliasStale{};
         u64 gpuWriteSerial{};
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
