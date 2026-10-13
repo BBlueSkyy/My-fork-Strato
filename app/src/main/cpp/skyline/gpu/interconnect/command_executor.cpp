@@ -598,9 +598,16 @@ namespace skyline::gpu::interconnect {
                 texture->CopyIntoStagingBuffer(commands, staging);
             });
 
+        const auto vkFormat{texture->format->vkFormat};
+        const bool rgba8{
+            vkFormat == vk::Format::eR8G8B8A8Unorm ||
+            vkFormat == vk::Format::eR8G8B8A8Srgb ||
+            vkFormat == vk::Format::eB8G8R8A8Unorm ||
+            vkFormat == vk::Format::eB8G8R8A8Srgb
+        };
         diagnosticBoundaryCallbacks.emplace_back(
             [staging, directory = ticket->directory, index, metadata = std::move(metadata),
-             analysisOffset, analysisSize] {
+             analysisOffset, analysisSize, rgba8] {
                 const auto status{vmaInvalidateAllocation(staging->vmaAllocator, staging->vmaAllocation, 0, staging->size())};
                 std::ofstream out(std::filesystem::path(directory) / fmt::format("pass_{:03}.txt", index), std::ios::trunc);
                 if (!out)
@@ -637,6 +644,24 @@ namespace skyline::gpu::interconnect {
                 for (size_t i{}; i < preview; ++i)
                     out << fmt::format("{:02X}", bytes[i]);
                 out << '\n';
+                // RGB black with alpha=255 has a nonzero byte mean. Report
+                // color channels separately for common 8-bit scene formats.
+                if (rgba8 && analysisSize % 4 == 0) {
+                    const auto pixels{analysisSize / 4};
+                    std::uint64_t rgbSum{}, blackRGB{}, opaqueAlpha{};
+                    for (size_t i{}; i < analysisSize; i += 4) {
+                        const auto rgb{static_cast<u32>(bytes[i]) + bytes[i + 1] + bytes[i + 2]};
+                        rgbSum += rgb;
+                        blackRGB += rgb == 0;
+                        opaqueAlpha += bytes[i + 3] == 255;
+                    }
+                    out << fmt::format(
+                        "rgb8 pixels={} rgb_mean={:.6f} black_rgb_ratio={:.6f} "
+                        "opaque_alpha_ratio={:.6f}\n",
+                        pixels, static_cast<double>(rgbSum) / (pixels * 3),
+                        static_cast<double>(blackRGB) / pixels,
+                        static_cast<double>(opaqueAlpha) / pixels);
+                }
             });
     }
 
