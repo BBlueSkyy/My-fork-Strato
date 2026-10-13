@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "alias_group.h"
 #include <algorithm>
 #include <array>
 #include <memory>
@@ -25,6 +26,11 @@ namespace skyline::gpu {
                     return;
                 } catch (const TextureBackingPromotionRequest &request) {
                     resolve(request);
+                } catch (const TextureAliasReconciliationRequest &request) {
+                    if constexpr (requires { resolve(request); })
+                        resolve(request);
+                    else
+                        throw;
                 }
             }
         }

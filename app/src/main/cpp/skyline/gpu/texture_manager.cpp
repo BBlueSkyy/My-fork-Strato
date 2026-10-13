@@ -47,6 +47,8 @@ namespace skyline::gpu {
             return guestMapping.begin() < element.end();
         })};
 
+        std::vector<std::shared_ptr<Texture>> exactAliases;
+        std::shared_ptr<texture::AliasGroup> separateGroup;
         std::shared_ptr<Texture> fullMatch{};
         std::shared_ptr<Texture> unrepresentableMatch{};
         std::shared_ptr<Texture> layerMipMatch{};
@@ -75,6 +77,8 @@ namespace skyline::gpu {
 
             if (firstHostMapping == hostMappings.begin() && firstHostMapping->begin() == guestMapping.begin() && mappingMatch && lastHostMapping == hostMappings.end() && lastGuestMapping.end() == std::prev(lastHostMapping)->end()) {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
+                if (std::find(exactAliases.begin(), exactAliases.end(), hostMapping->texture) == exactAliases.end())
+                    exactAliases.push_back(hostMapping->texture);
                 auto &matchGuestTexture{*hostMapping->texture->guest};
 
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
@@ -221,6 +225,36 @@ namespace skyline::gpu {
             }
          }
 
+        for (const auto &alias : exactAliases)
+            if (auto group{alias->aliasGroup.load()}) { separateGroup = std::move(group); break; }
+        if (unrepresentableMatch || separateGroup) {
+            // Validate existing-group adoption too: an unsupported third layout
+            // cannot become a writer just because its guest mappings match.
+            for (const auto &alias : exactAliases)
+                if (!alias->CanReconcileGuestLayout(guestTexture))
+                    throw exception("Cannot safely represent this guest mip/layer layout on the overlapping texture backing");
+            bool registered{separateGroup && std::all_of(exactAliases.begin(), exactAliases.end(), [&](const auto &alias) {
+                return alias->aliasGroup.load() == separateGroup;
+            })};
+            if (!registered) {
+                if (tag) {
+                    std::vector<std::shared_ptr<void>> leases;
+                    leases.reserve(exactAliases.size());
+                    for (const auto &alias : exactAliases) leases.push_back(alias->PinGuestMemory());
+                    throw TextureAliasReconciliationRequest{{}, exactAliases, std::move(leases)};
+                }
+                Texture::RegisterAliases(exactAliases);
+                separateGroup = exactAliases.front()->aliasGroup.load();
+            }
+        }
+
+        if (!tag) {
+            // BufferQueue lookups have no executor retry boundary. Reconcile
+            // before taking the selected Texture's view lock.
+            const auto selected{depthSliceMatch ? depthSliceMatch : layerMipMatch ? layerMipMatch : fullMatch};
+            if (selected) selected->ReconcileAliases();
+        }
+
         if (depthSliceMatch) {
             // Prefer the real 3D storage over an independently cached slice. The latter
             // would otherwise retain stale contents after the guest renders into another
@@ -254,9 +288,6 @@ namespace skyline::gpu {
             }
             return fullMatch->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
         }
-
-        if (unrepresentableMatch)
-            throw exception("Cannot safely represent this guest mip/layer layout on the overlapping texture backing");
 
         if (guestTexture.GetImageType() == vk::ImageType::e3D &&
             guestTexture.tileConfig.mode == texture::TileMode::Block) {
@@ -361,13 +392,20 @@ namespace skyline::gpu {
         }
 
         for (auto &texture : matches)
-            texture->SynchronizeGuest(false, true);
+            if (!separateGroup || texture->aliasGroup.load() != separateGroup)
+                texture->SynchronizeGuest(false, true);
 
         // Create a texture as we cannot find one that matches
 
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();
+        if (separateGroup) {
+            std::scoped_lock metadata{separateGroup->mutex};
+            separateGroup->members.emplace_back(texture);
+            texture->aliasGroup.store(separateGroup);
+            texture->aliasStale = separateGroup->guestGeneration != separateGroup->generation;
+        }
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto it{texture->guest->mappings.begin()};
         textures.emplace(mappingEnd, TextureMapping{texture, it, guestMapping});
@@ -378,6 +416,7 @@ namespace skyline::gpu {
             textures.emplace(mapping, TextureMapping{texture, it, guestMapping});
         }
 
+        if (!tag) texture->ReconcileAliases();
         return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
     }
 }

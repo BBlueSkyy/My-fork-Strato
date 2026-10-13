@@ -64,12 +64,43 @@ A scoped guest-memory lease prevents reserved, not-yet-represented mip bytes
 from being discarded while the executor submits the old representation. It
 does not assume the setting caused the captured defect.
 
-This is not a general solution for differently tiled/strided aliases. A newly
-rejected parent that cannot be expanded without changing its byte layout fails
-explicitly before invalid view creation or unsynchronized overlap readback.
-Arbitrary layer expansion, converted host formats, already discarded guest
-tails and reconstruction of unrelated GPU alias writers are not implemented.
-The older incompatible-format overlap reconciliation remains outside this fix.
+## Part 1: incompatible guest representations
+
+When exact ordered guest mappings cannot share a legitimate backing, valid
+native 2D block-linear color representations can retain separate images. Each
+layout must fit its mapping and stride, remain losslessly encodable, and satisfy
+the existing staging alignment. Converted formats, discarded guest bytes,
+partial mapping overlaps, 3D reconstruction and pitch/linear reconstruction
+remain guarded. Representable mip growth still takes the canonical path above.
+
+An alias group records the latest real GPU writer, its generation and the last
+generation encoded into guest bytes. Existing render-target and explicit writer
+hooks publish ownership; looking up or reading a representation does not become
+a write. Registration flushes only the newest writer, including when a newer
+writer has already completed its readback. All superseded representations are
+stale and cannot overwrite guest memory through synchronization, CPU traps or
+destruction.
+
+A stale cached view requests an executor retry before recording the operation.
+The existing submission boundary releases resource locks; the authoritative
+writer is then synchronized through its own guest encoding, and the target is
+uploaded using its own layout. The writer is downloaded once per generation;
+repeat reads need no extra upload or backing reconstruction. A CPU write arriving
+between sampled attachment preparation and submission retains the original
+submit-time CpuDirty upload. Non-executor lookups and retained display views
+reconcile before taking their texture lock.
+
+The guest constructor no longer installs callbacks before shared ownership
+exists: the manager already installs them after construction. Trap callbacks
+use nonblocking alias-operation locks while the trap lock is held. Pending
+registration temporarily pins the existing guest mappings using the same lease
+mechanism as mip growth; the FreeGuest implementation is unchanged.
+
+Part 1 does not change runtime Vulkan copy/barrier methods, storage-image
+binding/cached-write policies or Free Guest Texture Memory policy. It is not an
+optimization: a change of representation after GPU writes uses the existing
+synchronous guest readback and can incur a wait. Android/game behavior requires
+device testing; this does not establish that RE5's black graphics are resolved.
 
 ## Local validation
 
@@ -93,3 +124,26 @@ generation, upload dependencies, allocation failures, and download-buffer
 reset. Existing format-promotion, framebuffer lifetime, BC1/BC3 and DRAW_TEXTURE
 tests remain applicable. Host validation does not establish Android driver
 behavior or whether RE5's visible defect is resolved.
+
+### Part 1 ownership tests
+
+The host suite additionally compiles the full production FindOrCreate, alias
+registration/reconciliation, attachment/retry, dirty-state synchronization and
+trap callback bodies. Real Vulkan render-target writes and byte readbacks cover
+90112-byte/six-layer and 180224-byte/three-layer layouts over the same 540672-byte
+allocation, a third 270336-byte/two-layer layout, alternating writers, stale
+readback rejection, CPU writes, allocation/recording failures, stable cached
+views and repeated reads with unchanged upload/submission/allocation counters.
+It also checks canonical one-to-eight mip growth while another layout is cached.
+
+Vulkan transport (CopyFromStagingBuffer, CopyIntoStagingBuffer and
+TransitionLayout) is an explicitly isolated host fixture for these tests. Its
+test-only dependencies allow the Part 1 byte/ownership assertions to run without
+implementing the additional runtime barriers reserved for Part 2. Zero validation
+errors in this fixture do **not** certify the unchanged runtime dependencies.
+Android allocation, scheduler and memory mirror interfaces remain host adapters.
+
+`TEXMAN_BASELINE_MANAGER_REF=956ad8f6` substitutes the published manager body;
+the distinct-stride creation fails with the original unrepresentable-layout
+exception. The current body passes. The completed-readback registration and
+pre-submit CPU-write tests were also observed failing before their fixes.

@@ -51,3 +51,18 @@ view API bodies from the base commit. Running the same Vulkan test must fail
 at the illegal eight-mip view and report VUID 01718. Without that environment
 variable the test compiles the current implementation and must pass with zero
 validation errors. Run the negative control only with a host software ICD.
+
+Part 1 alias tests compile the complete production manager, ownership methods,
+dirty-state synchronization and trap callbacks. They exercise three distinct
+strides over identical mappings, alternating render-target writers, stale
+readback prevention, repeated reads, canonical mip growth, registration after
+a newer completed readback and CPU writes between attachment and submission.
+
+CopyFromStagingBuffer, CopyIntoStagingBuffer and TransitionLayout are explicit
+**test-only Vulkan transport fixtures** in this suite. Runtime copies/barriers
+and FreeGuest policy remain unchanged by Part 1. Thus zero fixture validation
+errors establish ownership/content behavior with synchronized transport, not
+validation of runtime dependencies reserved for Part 2.
+
+Negative manager control: `TEXMAN_BASELINE_MANAGER_REF=956ad8f6 python3
+tests/gpu_backing_promotion/run.py` must fail at distinct-stride creation.
