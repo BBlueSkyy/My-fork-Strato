@@ -4,6 +4,10 @@
 #include <cstring>
 #include <gpu/texture/backing_promotion.h>
 #include <gpu/texture/image_format_policy.h>
+#include <gpu/texture/view_range.h>
+#include <bit>
+#include <chrono>
+#include <numeric>
 #include <vulkan/vulkan_raii.hpp>
 #include <cassert>
 #include <cstdio>
@@ -16,10 +20,17 @@
 
 using u32 = uint32_t;
 using u64 = uint64_t;
+using u8 = uint8_t;
 using ContextTag = uint64_t;
 template<typename T> using span = std::span<T>;
 template<typename... Args> std::runtime_error exception(const char *text, Args &&...) {
     return std::runtime_error(text);
+}
+namespace util {
+    template<typename T> constexpr T DivideCeil(T value, T divisor) { return (value + divisor - 1) / divisor; }
+    template<typename T, typename U> constexpr T AlignUp(T value, U alignment) { return (value + alignment - 1) & ~(static_cast<T>(alignment) - 1); }
+    template<typename T, typename U> constexpr T AlignDown(T value, U alignment) { return value & ~(static_cast<T>(alignment) - 1); }
+    template<typename T, typename U> constexpr bool IsAligned(T value, U alignment) { return value % alignment == 0; }
 }
 
 unsigned validationErrors{};
@@ -33,7 +44,21 @@ VKAPI_ATTR VkBool32 VKAPI_CALL ValidationMessage(VkDebugUtilsMessageSeverityFlag
 }
 
 namespace skyline::gpu {
+    namespace texture {
+        using Dimensions = vk::Extent3D;
+        constexpr size_t SectorWidth{16}, GobWidth{64}, GobHeight{8}, SectorLinesInGob{32};
+        enum class TileMode { Block, Pitch, Linear };
+        #include "layout.inc"
+    }
+    #include "sizes.inc"
     namespace memory {
+        struct StagingBuffer {
+            vk::raii::DeviceMemory allocation{nullptr};
+            vk::raii::Buffer buffer{nullptr};
+            vk::Buffer vkBuffer{};
+            u8 *pointer{};
+            u8 *data() { return pointer; }
+        };
         struct Image {
             vk::raii::DeviceMemory allocation{nullptr};
             vk::raii::Image image{nullptr};
@@ -108,6 +133,20 @@ namespace skyline::gpu {
             image.bindMemory(*memory, 0);
             return {std::move(memory), std::move(image)};
         }
+        std::shared_ptr<memory::StagingBuffer> AllocateStagingBuffer(size_t size) {
+            if (failAllocation) throw std::bad_alloc{};
+            auto staging{std::make_shared<memory::StagingBuffer>()};
+            staging->buffer = vk::raii::Buffer{device, vk::BufferCreateInfo{.size = size,
+                .usage = vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst}};
+            auto requirements{staging->buffer.getMemoryRequirements()};
+            staging->allocation = vk::raii::DeviceMemory{device, vk::MemoryAllocateInfo{
+                .allocationSize = requirements.size, .memoryTypeIndex = MemoryType(requirements.memoryTypeBits,
+                    vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)}};
+            staging->buffer.bindMemory(*staging->allocation, 0);
+            staging->vkBuffer = *staging->buffer;
+            staging->pointer = static_cast<u8 *>(staging->allocation.mapMemory(0, size));
+            return staging;
+        }
     };
 
     struct Scheduler {
@@ -159,6 +198,20 @@ namespace skyline::gpu {
         Allocator memory;
         cache::FramebufferCache framebufferCache;
         Scheduler scheduler;
+        struct Settings {
+            std::shared_ptr<bool> freeGuestTextureMemory{std::make_shared<bool>(false)};
+            std::shared_ptr<bool> enableFastGpuReadbackHack{std::make_shared<bool>(false)};
+        };
+        struct Process {
+            struct Memory {
+                unsigned discards{};
+                void FreeMemory(span<u8> mirror) { ++discards; std::fill(mirror.begin(), mirror.end(), 0); }
+            } memory;
+        };
+        struct State {
+            std::shared_ptr<Settings> settings{std::make_shared<Settings>()};
+            std::shared_ptr<Process> process{std::make_shared<Process>()};
+        } state;
         GPU(const vk::raii::Device &device, const vk::raii::PhysicalDevice &physical, u32 family, bool list)
             : vkDevice{device}, vkPhysicalDevice{physical}, vkQueueFamilyIndex{family}, traits{list}, memory{device, physical.getMemoryProperties()},
               scheduler{device, family} {}
@@ -166,6 +219,7 @@ namespace skyline::gpu {
     struct NativeFormat {
         vk::Format vkFormat;
         vk::ImageAspectFlags vkAspect{vk::ImageAspectFlagBits::eColor};
+        size_t blockWidth{1}, blockHeight{1}, bpb{4};
         bool IsCompressed() const {
             return vkFormat == vk::Format::eBc1RgbaUnormBlock || vkFormat == vk::Format::eBc1RgbaSrgbBlock ||
                    vkFormat == vk::Format::eBc3UnormBlock || vkFormat == vk::Format::eBc3SrgbBlock;
@@ -200,10 +254,24 @@ namespace skyline::gpu {
         NativeFormat *format{&native};
         struct Guest {
             NativeFormat *format{};
+            vk::Extent3D dimensions{128, 128, 1};
+            u32 baseArrayLayer{}, mipLevelCount{3}, layerStride{90112};
+            u32 viewMipBase{}, viewMipCount{8}, layerCount{6};
+            vk::ImageViewType viewType{vk::ImageViewType::eCube};
+            vk::ImageAspectFlags aspect{vk::ImageAspectFlagBits::eColor};
+            vk::ComponentMapping swizzle{};
+            struct TileConfig {
+                texture::TileMode mode{texture::TileMode::Block}; size_t blockHeight{1}, blockDepth{1};
+                bool operator==(const TileConfig &) const = default;
+            } tileConfig;
+            std::vector<span<u8>> mappings;
             vk::ImageType GetImageType() const { return vk::ImageType::e2D; }
+            u32 GetLayerStride() { return layerStride; }
+            u32 GetViewLayerCount() const { return layerCount; }
         };
         std::optional<Guest> guest{Guest{}};
         BackingType backing;
+        vk::ImageType backingImageType{vk::ImageType::e2D};
         vk::Extent3D dimensions{20, 12, 1};
         u32 levelCount{3}, layerCount{2};
         vk::SampleCountFlagBits sampleCount{vk::SampleCountFlagBits::e1};
@@ -220,10 +288,25 @@ namespace skyline::gpu {
         // Sentinels: backing promotion must not rewrite dirty/lifetime/alias identity state.
         int dirtyState{2};
         bool memoryFreed{false};
+        mutable std::recursive_mutex stateMutex;
+        u32 guestMemoryPins{};
+        std::chrono::nanoseconds accumulatedGuestWaitTime{};
+        static constexpr std::chrono::nanoseconds SkipReadbackHackWaitTimeThreshold{1'000'000};
+        span<u8> mirror;
+        std::vector<texture::MipLevelLayout> mipLayouts;
+        size_t surfaceSize{}, deswizzledSurfaceSize{};
+        std::shared_ptr<memory::StagingBuffer> downloadStagingBuffer;
         u64 mirrorHash{0x123456}, trapIdentity{777};
-        Texture(GPU &gpu, vk::Format native) : gpu{gpu}, native{native},
+        Texture(GPU &gpu, vk::Format native, vk::Extent3D extent = {20, 12, 1}, u32 levels = 3, u32 layers = 2) : gpu{gpu}, native{native},
+            dimensions{extent}, levelCount{levels}, layerCount{layers},
             flags{texture::GuestImageFormatFlags(native, true)} {
             guest->format = format;
+            guest->dimensions = extent;
+            guest->layerCount = layers;
+            guest->mipLevelCount = levels;
+            if (extent.width == extent.height && layers >= 6) flags |= vk::ImageCreateFlagBits::eCubeCompatible;
+            mipLayouts = texture::GetBlockLinearMipLayout(extent, 1, 1, 4, 1, 1, 4, 1, 1, levels);
+            surfaceSize = deswizzledSurfaceSize = CalculateLevelStride(mipLayouts) * layers;
             if (this->native.IsCompressed()) usage &= ~vk::ImageUsageFlagBits::eColorAttachment;
             if (gpu.vkPhysicalDevice.getFormatProperties(native).optimalTilingFeatures & vk::FormatFeatureFlagBits::eStorageImage)
                 usage |= vk::ImageUsageFlagBits::eStorage;
@@ -241,7 +324,12 @@ namespace skyline::gpu {
         span<const vk::Format> GetBackingViewFormats() const { return backingViewFormats; }
         void WaitOnFence() { if (cycle) { cycle->Wait(); cycle.reset(); } }
         bool ViewFormatAdmitted(vk::Format) const;
-        void PromoteBackingForView(vk::Format);
+        void PromoteBackingForView(vk::Format, u32 levels = 0);
+        bool ViewRangeFits(vk::ImageViewType, const vk::ImageSubresourceRange &, u32 levels = 0) const;
+        bool CanGrowMipLevels(u32) const;
+        std::shared_ptr<void> PinGuestMemoryForMipGrowth(u32);
+        void SynchronizeHost(bool);
+        void FreeGuest();
         std::shared_ptr<TextureView> GetView(vk::ImageViewType, vk::ImageSubresourceRange,
             texture::Format, vk::ComponentMapping, ContextTag);
         void SwapBacking(BackingType &&, vk::ImageCreateFlags, vk::ImageLayout, std::vector<vk::Format>);
@@ -263,6 +351,19 @@ namespace skyline::gpu {
         vk::ImageView GetView();
     };
     #include "production.inc"
+    struct ContextLock {
+        ContextLock(ContextTag, Texture &) {}
+    };
+    namespace interconnect {
+        struct CommandExecutor {
+            ContextTag tag{1};
+            std::shared_ptr<Texture> pending;
+            unsigned submissions{};
+            void Submit() { ++submissions; pending->FreeGuest(); }
+            void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &);
+        };
+        #include "retry.inc"
+    }
 
     struct Buffer {
         vk::raii::DeviceMemory memory{nullptr};
@@ -291,6 +392,41 @@ namespace skyline::gpu {
             return result;
         }
     };
+
+    // The guest synchronization boundary is a host facade. Its submitted GPU
+    // upload is real, so expansion must depend on the cycle it publishes.
+    void Texture::SynchronizeHost(bool gpuDirty) {
+        assert(!gpuDirty);
+        if (dirtyState != 1) return;
+        auto staging{gpu.memory.AllocateStagingBuffer(surfaceSize)};
+        for (u32 layer{}; layer < layerCount; ++layer)
+            texture::CopyBlockLinearToLinear(dimensions, format->blockWidth, format->blockHeight, format->bpb,
+                guest->tileConfig.blockHeight, guest->tileConfig.blockDepth,
+                mirror.data() + layer * guest->layerStride,
+                staging->data() + layer * mipLayouts.front().linearSize);
+        const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, levelCount, 0, layerCount};
+        const vk::BufferImageCopy region{.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, layerCount}, .imageExtent = dimensions};
+        auto previous{cycle};
+        if (previous) previous->WaitSubmit();
+        cycle = gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                vk::ImageMemoryBarrier{.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eTransferWrite, .oldLayout = layout, .newLayout = vk::ImageLayout::eTransferDstOptimal,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = GetBacking(), .subresourceRange = range});
+            commands.copyBufferToImage(staging->vkBuffer, GetBacking(), vk::ImageLayout::eTransferDstOptimal, region);
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {},
+                vk::ImageMemoryBarrier{.srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                    .oldLayout = vk::ImageLayout::eTransferDstOptimal, .newLayout = vk::ImageLayout::eGeneral,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = GetBacking(), .subresourceRange = range});
+        });
+        cycle->AttachObject(staging);
+        cycle->ChainCycle(previous);
+        layout = vk::ImageLayout::eGeneral;
+        dirtyState = 0;
+    }
 
     void CheckImagelessAttachment(GPU &gpu, TextureView *view) {
         std::vector<vk::FramebufferAttachmentImageInfo> attachmentInfo;
@@ -547,9 +683,200 @@ namespace skyline::gpu {
         assert(readback.Read() == bytes);
     }
 
+    void CheckMipGrowth(GPU &gpu, bool cpuDirty, size_t blockHeight) {
+        auto texture{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm, vk::Extent3D{128, 128, 1}, 1, 6)};
+        texture->guest->tileConfig.blockHeight = blockHeight;
+        texture->guest->viewType = vk::ImageViewType::e2DArray;
+        texture->guest->viewMipCount = 1;
+        auto layouts{texture::GetBlockLinearMipLayout(texture->dimensions, 1, 1, 4, 1, 1, 4, blockHeight, 1, 8)};
+        texture->mipLayouts.assign(layouts.begin(), layouts.begin() + 1);
+        std::vector<u8> guestBytes(90112 * 6, 0xCD), expected;
+        std::vector<vk::BufferImageCopy> regions;
+        size_t guestOffset{}, linearOffset{};
+        for (u32 level{}; level < 8; ++level) {
+            const auto &mip{layouts[level]};
+            regions.push_back(vk::BufferImageCopy{.bufferOffset = linearOffset,
+                .imageSubresource = {vk::ImageAspectFlagBits::eColor, level, 0, 6}, .imageExtent = mip.dimensions});
+            for (u32 layer{}; layer < 6; ++layer) {
+                std::vector<u8> bytes(mip.linearSize);
+                for (size_t i{}; i < bytes.size(); ++i) bytes[i] = static_cast<u8>((level * 31 + layer * 17 + i * 7 + i / 23) % 251);
+                texture::CopyLinearToBlockLinear(mip.dimensions, 1, 1, 4, mip.blockHeight, mip.blockDepth,
+                    bytes.data(), guestBytes.data() + layer * 90112 + guestOffset);
+                // Deliberately stale guest mip0 in the GPU-dirty case.
+                if (!cpuDirty && !level)
+                    for (auto &byte : bytes) byte ^= 0xA5;
+                expected.insert(expected.end(), bytes.begin(), bytes.end());
+            }
+            guestOffset += mip.blockLinearSize;
+            linearOffset += mip.linearSize * 6;
+        }
+        assert(guestOffset == 89088 && linearOffset == 524280);
+        texture->mirror = guestBytes;
+        texture->guest->mappings.push_back(texture->mirror);
+        auto mappingIdentity{texture->guest->mappings.data()};
+        const auto original{texture->GetBacking()};
+        const vk::ImageSubresourceRange base{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6};
+        const vk::ImageSubresourceRange complete{vk::ImageAspectFlagBits::eColor, 0, 8, 0, 6};
+        TextureView cachedAlias{texture, vk::ImageViewType::e2DArray, base, texture->format, {}};
+        const auto oldView{cachedAlias.GetView()};
+        TextureView invalid{texture, vk::ImageViewType::eCube, complete, texture->format, {}};
+        bool guarded{};
+        try { invalid.GetView(); } catch (const std::runtime_error &) { guarded = true; }
+        assert(guarded);
+        guarded = false;
+        try { texture->GetView(vk::ImageViewType::eCube, complete, texture->format, {}, 0); }
+        catch (const std::runtime_error &) { guarded = true; }
+        assert(guarded); // Both APIs guard the actual backing before Vulkan sees it.
+
+        assert(texture->CanGrowMipLevels(8) && !texture->CanGrowMipLevels(9));
+        texture->memoryFreed = true;
+        assert(!texture->CanGrowMipLevels(8));
+        texture->memoryFreed = false;
+        texture->guest->layerStride = 65536;
+        assert(!texture->CanGrowMipLevels(8));
+        texture->guest->layerStride = 90112;
+        texture->mirror = span<u8>{guestBytes.data(), guestBytes.size() - 1025};
+        assert(!texture->CanGrowMipLevels(8));
+        texture->mirror = guestBytes;
+        texture->mipLayouts.front().blockHeight *= 2;
+        assert(!texture->CanGrowMipLevels(8));
+        texture->mipLayouts.front().blockHeight /= 2;
+
+        Texture::Guest descriptor{*texture->guest};
+        descriptor.viewType = vk::ImageViewType::eCube;
+        descriptor.viewMipCount = descriptor.mipLevelCount = 8;
+        if (cpuDirty) descriptor.viewMipCount = VK_REMAINING_MIP_LEVELS;
+        auto fullMatchPredicate{[&](Texture::Guest guestTexture) {
+            #include "request_validation.inc"
+            auto &matchGuestTexture{*texture->guest};
+            struct Candidate { std::shared_ptr<Texture> texture; } candidate{texture};
+            auto hostMapping{&candidate};
+            const auto requestedStride{guestTexture.GetLayerStride()};
+            #include "request_range.inc"
+            #include "match.inc"
+        }};
+        assert(fullMatchPredicate(descriptor));
+        auto wrong{descriptor};
+        wrong.layerCount = 7;
+        assert(!fullMatchPredicate(wrong));
+        wrong = descriptor;
+        wrong.layerStride = 131072;
+        assert(!fullMatchPredicate(wrong));
+        wrong = descriptor;
+        wrong.dimensions.width = 64;
+        assert(!fullMatchPredicate(wrong));
+        wrong = descriptor;
+        wrong.viewMipBase = 8;
+        wrong.viewMipCount = VK_REMAINING_MIP_LEVELS;
+        guarded = false;
+        try { fullMatchPredicate(wrong); } catch (const std::runtime_error &) { guarded = true; }
+        assert(guarded); // A larger parent cannot legalize a base outside the guest chain.
+
+        Buffer upload{gpu, texture->surfaceSize}, readback{gpu, linearOffset};
+        upload.Write(std::vector<u8>{expected.begin(), expected.begin() + texture->surfaceSize});
+        texture->cycle = gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                vk::ImageMemoryBarrier{.dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+                    .oldLayout = vk::ImageLayout::eUndefined, .newLayout = vk::ImageLayout::eTransferDstOptimal,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = original, .subresourceRange = base});
+            commands.copyBufferToImage(*upload.buffer, original, vk::ImageLayout::eTransferDstOptimal, regions.front());
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {},
+                vk::ImageMemoryBarrier{.srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                    .oldLayout = vk::ImageLayout::eTransferDstOptimal, .newLayout = vk::ImageLayout::eGeneral,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = original, .subresourceRange = base});
+        });
+        texture->layout = vk::ImageLayout::eGeneral;
+        texture->dirtyState = cpuDirty ? 1 : 2;
+        texture->downloadStagingBuffer = gpu.memory.AllocateStagingBuffer(texture->surfaceSize);
+        auto previous{texture->cycle};
+
+        // Allocation failure preserves backing, view generation and guest metadata.
+        if (!cpuDirty) {
+            gpu.memory.failAllocation = true;
+            bool failed{};
+            try { texture->PromoteBackingForView(texture->format->vkFormat, 8); } catch (const std::bad_alloc &) { failed = true; }
+            gpu.memory.failAllocation = false;
+            assert(failed && texture->GetBacking() == original && texture->levelCount == 1);
+            assert(texture->guest->mipLevelCount == 1 && texture->backingGeneration == 1 && cachedAlias.GetView() == oldView);
+        }
+
+        interconnect::CommandExecutor executor;
+        executor.pending = texture;
+        *gpu.state.settings->freeGuestTextureMemory = true;
+        std::shared_ptr<TextureView> cubeView;
+        unsigned attempts{};
+        texture::RetryBackingPromotion([&] {
+            ++attempts;
+            auto fullMatch{texture};
+            const auto &guestTexture{descriptor};
+            #include "request_range.inc"
+            const ContextTag tag{1};
+            auto select{[&]() -> std::shared_ptr<TextureView> {
+                if (false) return {};
+                #include "selection.inc"
+                else return {};
+            }};
+            cubeView = select();
+        }, [&](const auto &request) {
+            assert(texture->guestMemoryPins == 1);
+            const auto discards{gpu.state.process->memory.discards};
+            executor.HandleTextureBackingPromotion(request);
+            assert(gpu.state.process->memory.discards == discards); // Actual FreeGuest respected the lease during Submit.
+        });
+        *gpu.state.settings->freeGuestTextureMemory = false;
+        assert(attempts == 2 && executor.submissions == 1 && texture->guestMemoryPins == 0);
+        assert(texture->levelCount == 8 && texture->guest->mipLevelCount == 8 && !texture->downloadStagingBuffer);
+        assert(texture->surfaceSize == linearOffset && texture->deswizzledSurfaceSize == linearOffset);
+        assert(texture->guest->mappings.data() == mappingIdentity && texture->mirror.data() == guestBytes.data());
+        assert(cubeView->texture == texture && cubeView->range.levelCount == 8 && texture->backingGeneration == 2 && cubeView->GetView());
+        auto generation{texture->backingGeneration};
+        auto allocations{gpu.memory.count};
+        texture->PromoteBackingForView(texture->format->vkFormat, 8);
+        assert(texture->backingGeneration == generation && gpu.memory.count == allocations);
+        assert(cachedAlias.GetView() != oldView && cachedAlias.vkViewGeneration == 2);
+        assert(previous->gpuWaits == 0 && previous->submitWaits);
+        if (cpuDirty) assert(texture->cycle->previous != previous && texture->cycle->previous->previous == previous);
+        else assert(texture->cycle->previous == previous);
+
+        auto verifyBytes{[&] {
+            auto cycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
+                commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                    vk::ImageMemoryBarrier{.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                        .dstAccessMask = vk::AccessFlagBits::eTransferRead, .oldLayout = vk::ImageLayout::eGeneral,
+                        .newLayout = vk::ImageLayout::eGeneral, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = texture->GetBacking(), .subresourceRange = complete});
+                commands.copyImageToBuffer(texture->GetBacking(), vk::ImageLayout::eGeneral, *readback.buffer, regions);
+                commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {}, {},
+                    vk::BufferMemoryBarrier{.srcAccessMask = vk::AccessFlagBits::eTransferWrite, .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .buffer = *readback.buffer, .size = linearOffset}, {});
+            })};
+            cycle->Wait(true);
+            assert(readback.Read() == expected);
+        }};
+        verifyBytes();
+        // A later write through the cached base-level alias must affect the cube
+        // while leaving all added mips untouched.
+        gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                vk::ImageMemoryBarrier{.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eTransferWrite, .oldLayout = vk::ImageLayout::eGeneral,
+                    .newLayout = vk::ImageLayout::eGeneral, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = cachedAlias.texture->GetBacking(), .subresourceRange = base});
+            const std::array<float, 4> color{1, 0, 1, 1};
+            commands.clearColorImage(cachedAlias.texture->GetBacking(), vk::ImageLayout::eGeneral, vk::ClearColorValue{color}, base);
+        });
+        for (size_t i{}; i < 65536 * 6; ++i) expected[i] = i % 4 == 1 ? 0 : 255;
+        verifyBytes();
+        gpu.scheduler.Complete();
+    }
+
     void CheckLogicalExtent() {
         struct Guest {
-            struct { u32 width, height; } dimensions;
+            struct { u32 width, height, depth{1}; } dimensions;
             u32 depth, viewMipBase;
             u32 GetViewDepth() const { return depth; }
         };
@@ -559,7 +886,7 @@ namespace skyline::gpu {
         assert(!matches({{16, 1}, 1, 0}, {{1, 1}, 1, 0}));
         assert(!matches({{1, 1}, 1, 0}, {{16, 1}, 1, 0}));
         assert(matches({{16, 1}, 1, 0}, {{16, 1}, 1, 0}));
-        assert(matches({{20, 12}, 1, 1}, {{10, 6}, 1, 0}));
+        assert(!matches({{20, 12}, 1, 1}, {{10, 6}, 1, 0}));
     }
 }
 
@@ -592,6 +919,8 @@ int main() {
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
             for (bool reverse : {false, true}) CheckPromotion(gpu, reverse);
+            for (bool cpuDirty : {false, true})
+                for (size_t blockHeight : {1, 16}) CheckMipGrowth(gpu, cpuDirty, blockHeight);
             assert(features.textureCompressionBC);
             for (bool bc3 : {false, true})
                 for (bool reverse : {false, true}) CheckCompressed(gpu, bc3, reverse);
@@ -599,5 +928,5 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
-    std::puts("Production backing promotion: RGBA/BGRA, pixels (3 mips x 2 layers), views/generation/reuse, format-list expansion, sRGB/storage legality, framebuffer retirement, pre-submit failures, SwapBacking, BC1/BC3 and logical extents passed; zero Vulkan validation errors");
+    std::puts("Production backing promotion: existing format/lifetime tests and native 1-to-8 mip expansion (6 faces), GPU/CPU contents, cached alias writes, guest-memory lease, full-match bounds, mapping identity and staging resize passed; zero Vulkan validation errors");
 }
