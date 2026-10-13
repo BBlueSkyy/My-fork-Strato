@@ -9,6 +9,27 @@
 namespace skyline::gpu {
     class Texture;
     namespace texture {
+        /**
+         * Atomic shared_ptr wrapper for Android libc++ versions that do not
+         * provide std::atomic<std::shared_ptr<T>>. The standard shared_ptr
+         * atomic free functions are available since C++11 and preserve the
+         * same publication semantics without changing alias ownership.
+         */
+        template<typename T>
+        class AtomicSharedPtr {
+          private:
+            std::shared_ptr<T> value{};
+
+          public:
+            std::shared_ptr<T> load(std::memory_order order = std::memory_order_seq_cst) const noexcept {
+                return std::atomic_load_explicit(&value, order);
+            }
+
+            void store(std::shared_ptr<T> desired, std::memory_order order = std::memory_order_seq_cst) noexcept {
+                std::atomic_store_explicit(&value, std::move(desired), order);
+            }
+        };
+
         // Only identical, ordered guest mappings join a group. Images retain
         // their own layout, views, locks and fences. This mutex protects metadata
         // only: never acquire a texture/state lock or wait on a fence under it.
