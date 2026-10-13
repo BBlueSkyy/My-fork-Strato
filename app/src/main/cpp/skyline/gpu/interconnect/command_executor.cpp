@@ -9,7 +9,11 @@
 #include <common/settings.h>
 #include <loader/loader.h>
 #include <gpu.h>
+#include <gpu/diagnostic/re5_pass_boundary.h>
 #include <dlfcn.h>
+#include <filesystem>
+#include <fstream>
+#include <fmt/format.h>
 #include "command_executor.h"
 #include <nce.h>
 
@@ -382,6 +386,180 @@ namespace skyline::gpu::interconnect {
         return (!a && !b) || (a && b && b->GetView() == a);
     }
 
+    void CommandExecutor::TrackDiagnosticBoundaryPass(vk::Rect2D renderArea, span<TextureView *> sampledImages,
+                                                           span<TextureView *> colorAttachments, TextureView *depthStencilAttachment) {
+        auto &capture{diagnostic::Re5PassBoundary()};
+        if (!capture.active.load(std::memory_order_acquire))
+            return;
+
+        if (!diagnosticBoundaryPass)
+            diagnosticBoundaryPass.emplace();
+
+        auto &pass{*diagnosticBoundaryPass};
+        pass.metadata += fmt::format(
+            "subpass rp={} submission={} render_area={},{},{}x{} sampled_count={} color_count={} depth={}\n",
+            renderPassIndex, submissionNumber, renderArea.offset.x, renderArea.offset.y,
+            renderArea.extent.width, renderArea.extent.height, sampledImages.size(),
+            colorAttachments.size(), depthStencilAttachment && depthStencilAttachment->texture);
+
+        size_t inputIndex{};
+        for (auto *view : sampledImages) {
+            if (!view || !view->texture)
+                continue;
+            if (inputIndex++ >= 16) {
+                pass.metadata += "sampled_inputs_truncated=1\n";
+                break;
+            }
+            auto &texture{*view->texture};
+            uintptr_t guestMap{};
+            size_t guestBytes{};
+            if (texture.guest) {
+                if (!texture.guest->mappings.empty())
+                    guestMap = reinterpret_cast<uintptr_t>(texture.guest->mappings.front().data());
+                for (const auto &mapping : texture.guest->mappings)
+                    guestBytes += mapping.size();
+            }
+            pass.metadata += fmt::format(
+                "input={} texture=0x{:X} dimensions={}x{}x{} format={} view_type={} "
+                "mip={}+{} layer={}+{} levels={} layers={} guest_map=0x{:X} guest_bytes={} "
+                "alias_stale={} alias_read_only={} replaced={}\n",
+                inputIndex - 1, reinterpret_cast<uintptr_t>(view->texture.get()),
+                texture.dimensions.width, texture.dimensions.height, texture.dimensions.depth,
+                vk::to_string(texture.format->vkFormat), vk::to_string(view->type),
+                view->range.baseMipLevel, view->range.levelCount,
+                view->range.baseArrayLayer, view->range.layerCount,
+                texture.levelCount, texture.layerCount, guestMap, guestBytes,
+                texture.aliasStale.load(), texture.aliasReadOnly.load(), texture.replaced);
+        }
+
+        for (auto *view : colorAttachments) {
+            if (!view || !view->texture)
+                continue;
+            auto &texture{*view->texture};
+            const auto area{static_cast<std::uint64_t>(texture.dimensions.width) * texture.dimensions.height};
+            if (!pass.target || area > pass.targetArea) {
+                pass.target = view->texture;
+                pass.range = view->range;
+                pass.targetArea = area;
+            }
+        }
+
+        if (depthStencilAttachment && depthStencilAttachment->texture)
+            pass.metadata += fmt::format("depth_texture=0x{:X} dimensions={}x{} format={} mip={}+{} layer={}+{}\n",
+                reinterpret_cast<uintptr_t>(depthStencilAttachment->texture.get()),
+                depthStencilAttachment->texture->dimensions.width, depthStencilAttachment->texture->dimensions.height,
+                vk::to_string(depthStencilAttachment->texture->format->vkFormat),
+                depthStencilAttachment->range.baseMipLevel, depthStencilAttachment->range.levelCount,
+                depthStencilAttachment->range.baseArrayLayer, depthStencilAttachment->range.layerCount);
+    }
+
+    void CommandExecutor::QueueDiagnosticBoundaryPassReadback() {
+        auto pass{std::move(diagnosticBoundaryPass)};
+        diagnosticBoundaryPass.reset();
+        if (!pass || !pass->target)
+            return;
+
+        auto &capture{diagnostic::Re5PassBoundary()};
+        if (!capture.active.load(std::memory_order_acquire))
+            return;
+
+        auto texture{pass->target};
+        const auto range{pass->range};
+        if (!texture->GetBacking() || texture->layout == vk::ImageLayout::eUndefined ||
+            texture->sampleCount != vk::SampleCountFlagBits::e1 ||
+            !(texture->format->vkAspect & vk::ImageAspectFlagBits::eColor) ||
+            texture->format->IsCompressed() ||
+            !(texture->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+            range.baseMipLevel >= texture->mipLayouts.size() ||
+            range.baseArrayLayer >= texture->layerCount ||
+            !texture->surfaceSize)
+            return;
+
+        const auto ticket{capture.ReservePass(texture->surfaceSize)};
+        if (!ticket)
+            return;
+
+        size_t analysisOffset{};
+        for (u32 level{}; level < range.baseMipLevel; ++level)
+            analysisOffset += texture->mipLayouts[level].targetLinearSize * texture->layerCount;
+        const auto analysisSize{texture->mipLayouts[range.baseMipLevel].targetLinearSize};
+        analysisOffset += analysisSize * range.baseArrayLayer;
+        if (!analysisSize || analysisOffset > texture->surfaceSize ||
+            analysisSize > texture->surfaceSize - analysisOffset)
+            return;
+
+        const auto index{ticket->index};
+        auto metadata{std::move(pass->metadata)};
+        uintptr_t guestMap{};
+        size_t guestBytes{};
+        if (texture->guest) {
+            if (!texture->guest->mappings.empty())
+                guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+            for (const auto &mapping : texture->guest->mappings)
+                guestBytes += mapping.size();
+        }
+        metadata += fmt::format(
+            "PASS index={} approx_present={} rp={} submission={} target_texture=0x{:X} "
+            "dimensions={}x{}x{} format={} backing_levels={} backing_layers={} "
+            "target_mip={} target_layer={} analysis_offset={} analysis_bytes={} backing_bytes={} "
+            "guest_map=0x{:X} guest_bytes={}\n",
+            index, ticket->present, renderPassIndex, submissionNumber,
+            reinterpret_cast<uintptr_t>(texture.get()), texture->dimensions.width,
+            texture->dimensions.height, texture->dimensions.depth,
+            vk::to_string(texture->format->vkFormat), texture->levelCount, texture->layerCount,
+            range.baseMipLevel, range.baseArrayLayer, analysisOffset, analysisSize,
+            texture->surfaceSize, guestMap, guestBytes);
+
+        auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+        slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+            [texture, staging](vk::raii::CommandBuffer &commands,
+                               const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                cycle->AttachObjects(texture, staging);
+                texture->CopyIntoStagingBuffer(commands, staging);
+            });
+
+        diagnosticBoundaryCallbacks.emplace_back(
+            [staging, directory = ticket->directory, index, metadata = std::move(metadata),
+             analysisOffset, analysisSize] {
+                const auto status{vmaInvalidateAllocation(staging->vmaAllocator, staging->vmaAllocation, 0, staging->size())};
+                std::ofstream out(std::filesystem::path(directory) / fmt::format("pass_{:03}.txt", index), std::ios::trunc);
+                if (!out)
+                    return;
+                out << metadata << "invalidate_result=" << static_cast<int>(status) << '\n';
+                if (status != VK_SUCCESS)
+                    return;
+
+                const auto *bytes{static_cast<const u8 *>(staging->data()) + analysisOffset};
+                size_t zeroBytes{};
+                size_t zeroWords{};
+                u8 minimum{0xFF}, maximum{};
+                std::uint64_t sum{};
+                std::uint64_t hash{1469598103934665603ULL};
+                for (size_t i{}; i < analysisSize; ++i) {
+                    const auto value{bytes[i]};
+                    zeroBytes += value == 0;
+                    minimum = std::min(minimum, value);
+                    maximum = std::max(maximum, value);
+                    sum += value;
+                    hash ^= value;
+                    hash *= 1099511628211ULL;
+                }
+                for (size_t i{}; i + 4 <= analysisSize; i += 4)
+                    zeroWords += bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 0 && bytes[i + 3] == 0;
+
+                out << fmt::format(
+                    "stats zero_bytes={} total_bytes={} zero_ratio={:.6f} zero_words={} total_words={} "
+                    "min_byte={} max_byte={} mean_byte={:.6f} fnv1a64=0x{:016X}\nfirst_bytes=",
+                    zeroBytes, analysisSize, static_cast<double>(zeroBytes) / analysisSize,
+                    zeroWords, analysisSize / 4, minimum, maximum,
+                    static_cast<double>(sum) / analysisSize, hash);
+                const auto preview{std::min<size_t>(analysisSize, 32)};
+                for (size_t i{}; i < preview; ++i)
+                    out << fmt::format("{:02X}", bytes[i]);
+                out << '\n';
+            });
+    }
+
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
         auto addSubpass{[&] {
             renderPass->AddSubpass(inputAttachments, colorAttachments, depthStencilAttachment, gpu);
@@ -414,6 +592,7 @@ namespace skyline::gpu::interconnect {
             if (renderPass != nullptr) {
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+                QueueDiagnosticBoundaryPassReadback();
                 renderPassIndex++;
             }
             renderPass = &std::get<node::RenderPassNode>(slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassNode>(), renderArea));
@@ -434,8 +613,10 @@ namespace skyline::gpu::interconnect {
                 view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget);
 
         for (auto view : sampledImages)
-            view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
+            if (view)
+                view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
+        TrackDiagnosticBoundaryPass(renderArea, sampledImages, colorAttachments, depthStencilAttachment);
         return gotoNext;
     }
 
@@ -443,6 +624,7 @@ namespace skyline::gpu::interconnect {
         if (renderPass) {
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+            QueueDiagnosticBoundaryPassReadback();
             renderPassIndex++;
 
             renderPass = nullptr;
@@ -700,6 +882,7 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::ResetInternal() {
         attachedTextures.clear();
         attachedBuffers.clear();
+        diagnosticBoundaryPass.reset();
         allocator->Reset();
         renderPassIndex = 0;
         usageTracker.sequencedIntervals.Clear();
@@ -737,6 +920,12 @@ namespace skyline::gpu::interconnect {
             SubmitInternal();
             submissionNumber++;
         }
+
+        // Diagnostic callbacks are queued after SubmitInternal because closing
+        // the final render pass may add the readback nodes to this same cycle.
+        for (auto &cb : diagnosticBoundaryCallbacks)
+            waiterThread.Queue(nullptr, std::move(cb));
+        diagnosticBoundaryCallbacks.clear();
 
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission

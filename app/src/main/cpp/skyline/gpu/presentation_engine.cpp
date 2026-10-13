@@ -2,6 +2,9 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <android/native_window_jni.h>
+#include <filesystem>
+#include <fstream>
+#include <gpu/diagnostic/re5_pass_boundary.h>
 #include <android/choreographer.h>
 #include <common/settings.h>
 #include <common/signal.h>
@@ -143,6 +146,74 @@ namespace skyline::gpu {
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
         texture->SynchronizeHost();
+
+        // Manual bounded diagnostic. Rename the hint file to ARM_CAPTURE while
+        // entering the remaining blurry/black RE5 scene; no Title ID checks.
+        {
+            namespace fs = std::filesystem;
+            auto &capture{diagnostic::Re5PassBoundary()};
+            static std::uint32_t pollCount{};
+            static bool justArmed{};
+            const fs::path root{fs::path(state.os->publicAppFilesPath) / "gpu_capture" / "re5_boundary"};
+
+            if (!capture.active.load(std::memory_order_acquire) && (++pollCount % 8 == 1)) {
+                std::error_code ec;
+                fs::create_directories(root, ec);
+                if (!ec) {
+                    const auto arm{root / "ARM_CAPTURE"};
+                    if (fs::exists(arm, ec) && !ec) {
+                        ec.clear();
+                        fs::remove(arm, ec);
+                        if (!ec) {
+                            for (unsigned i{1}; i <= 999; ++i) {
+                                const auto directory{root / fmt::format("capture_{:03}", i)};
+                                ec.clear();
+                                if (fs::exists(directory, ec) || ec)
+                                    continue;
+                                if (!fs::create_directories(directory, ec) || ec)
+                                    continue;
+                                capture.Start(directory.string());
+                                justArmed = true;
+                                std::ofstream readme(directory / "README.txt");
+                                if (readme)
+                                    readme << "RE5 pass-boundary diagnostic based on PR #341 partial fix.\n"
+                                           << "Arm immediately before/while the remaining black scene is visible.\n"
+                                           << "pass_###.txt contains post-render-pass subresource byte statistics and sampled-input metadata.\n"
+                                           << "texman_decisions.txt contains bounded FindOrCreate decisions made during the capture.\n"
+                                           << "No LOD, texture contents, shader state or Texman selection is overridden.\n";
+                                LOGI("RE5_BOUNDARY armed: {}", directory.string());
+                                break;
+                            }
+                        }
+                    } else {
+                        const auto hint{root / "ARM_CAPTURE.rename_this_file_when_ready"};
+                        ec.clear();
+                        if (!fs::exists(hint, ec) && !ec) {
+                            std::ofstream out(hint);
+                            if (out)
+                                out << "Rename this file to ARM_CAPTURE just before or while the remaining RE5 black scene is visible.\n";
+                        }
+                    }
+                }
+            }
+
+            if (capture.active.load(std::memory_order_acquire)) {
+                capture.RecordPresent(fmt::format(
+                    "PRESENT approx_present={} texture=0x{:X} dimensions={}x{} format={} layout={} just_armed={}",
+                    capture.presentIndex.load(std::memory_order_relaxed),
+                    reinterpret_cast<uintptr_t>(texture.get()), texture->dimensions.width, texture->dimensions.height,
+                    vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout), justArmed));
+                if (!justArmed) {
+                    const auto next{capture.presentIndex.fetch_add(1, std::memory_order_acq_rel) + 1};
+                    if (next >= diagnostic::Re5PassBoundaryCapture::FrameCount) {
+                        capture.Stop();
+                        LOGI("RE5_BOUNDARY capture complete");
+                    }
+                }
+                justArmed = false;
+            }
+        }
+
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,
