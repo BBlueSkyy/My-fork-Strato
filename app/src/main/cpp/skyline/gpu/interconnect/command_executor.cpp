@@ -929,12 +929,18 @@ namespace skyline::gpu::interconnect {
         cycle->AttachObject(dependency);
     }
 
-    void CommandExecutor::AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
+    void CommandExecutor::AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, std::string diagnosticState) {
         bool gotoNext{CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask)};
         if (gotoNext)
             slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassFunctionNode>(), std::forward<decltype(function)>(function));
         else
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
+
+        // Metadata only. Record before a potential implicit Submit() clears
+        // the pending pass; do not add GPU barriers, nodes or pass splits.
+        if (!diagnosticState.empty() && diagnosticBoundaryPass &&
+            diagnostic::Re5PassBoundary().RecordingMetadata())
+            diagnosticBoundaryPass->metadata += diagnosticState + '\n';
 
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
             Submit();
@@ -971,6 +977,13 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::AddClearColorSubpass(TextureView *attachment, const vk::ClearColorValue &value) {
         bool gotoNext{CreateRenderPassWithSubpass(vk::Rect2D{.extent = attachment->texture->dimensions}, {}, {}, attachment, nullptr)};
+        if (diagnosticBoundaryPass && diagnostic::Re5PassBoundary().RecordingMetadata())
+            diagnosticBoundaryPass->metadata += fmt::format(
+                "operation_state=clear_color target=0x{:X} rgba_raw={:08X},{:08X},{:08X},{:08X} "
+                "range_mip={} range_layer={}\n",
+                reinterpret_cast<uintptr_t>(attachment->texture.get()),
+                value.uint32[0], value.uint32[1], value.uint32[2], value.uint32[3],
+                attachment->range.baseMipLevel, attachment->range.baseArrayLayer);
         if (renderPass->ClearColorAttachment(0, value, gpu)) {
             if (gotoNext)
                 slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassNode>());
@@ -996,6 +1009,12 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::AddClearDepthStencilSubpass(TextureView *attachment, const vk::ClearDepthStencilValue &value) {
         bool gotoNext{CreateRenderPassWithSubpass(vk::Rect2D{.extent = attachment->texture->dimensions}, {}, {}, {}, attachment)};
+        if (diagnosticBoundaryPass && diagnostic::Re5PassBoundary().RecordingMetadata())
+            diagnosticBoundaryPass->metadata += fmt::format(
+                "operation_state=clear_depth_stencil target=0x{:X} depth={} stencil={} "
+                "range_mip={} range_layer={}\n",
+                reinterpret_cast<uintptr_t>(attachment->texture.get()), value.depth, value.stencil,
+                attachment->range.baseMipLevel, attachment->range.baseArrayLayer);
         if (renderPass->ClearDepthStencilAttachment(value, gpu)) {
             if (gotoNext)
                 slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassNode>());
