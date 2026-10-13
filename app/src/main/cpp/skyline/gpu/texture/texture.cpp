@@ -444,30 +444,53 @@ namespace skyline::gpu {
     }
 
     void Texture::CopyFromStagingBuffer(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<memory::StagingBuffer> &stagingBuffer) {
-        auto image{GetBacking()};
-        if (layout == vk::ImageLayout::eUndefined)
-            commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eHost, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, vk::ImageMemoryBarrier{
-                .image = image,
-                .srcAccessMask = vk::AccessFlagBits::eMemoryRead,
-                .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-                .oldLayout = std::exchange(layout, vk::ImageLayout::eGeneral),
-                .newLayout = vk::ImageLayout::eGeneral,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .subresourceRange = {
-                    .aspectMask = format->vkAspect,
-                    .levelCount = levelCount,
-                    .layerCount = layerCount,
-                },
-            });
+        const auto image{GetBacking()};
+        const vk::ImageSubresourceRange range{
+            .aspectMask = format->vkAspect,
+            .levelCount = levelCount,
+            .layerCount = layerCount,
+        };
+
+        // Re-uploading an initialized image must depend on prior reads/writes to
+        // the same subresources. The old path emitted a barrier only for the
+        // Undefined -> General transition, which leaves a WRITE_AFTER_WRITE
+        // hazard when an alias/backing is refreshed while already in General.
+        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, vk::ImageMemoryBarrier{
+            .image = image,
+            .srcAccessMask = layout == vk::ImageLayout::eUndefined ? vk::AccessFlags{} :
+                vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .oldLayout = std::exchange(layout, vk::ImageLayout::eGeneral),
+            .newLayout = vk::ImageLayout::eGeneral,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .subresourceRange = range,
+        });
 
         auto bufferImageCopies{GetBufferImageCopies()};
-        commandBuffer.copyBufferToImage(stagingBuffer->vkBuffer, image, layout, vk::ArrayProxy(static_cast<u32>(bufferImageCopies.size()), bufferImageCopies.data()));
+        commandBuffer.copyBufferToImage(stagingBuffer->vkBuffer, image, layout,
+            vk::ArrayProxy(static_cast<u32>(bufferImageCopies.size()), bufferImageCopies.data()));
+
+        // Make the transfer write visible to the next use without a global
+        // execution wait. This dependency is scoped to this image/subresource set.
+        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, vk::ImageMemoryBarrier{
+            .image = image,
+            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+            .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+            .oldLayout = layout,
+            .newLayout = layout,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .subresourceRange = range,
+        });
     }
 
     void Texture::CopyIntoStagingBuffer(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<memory::StagingBuffer> &stagingBuffer) {
-        auto image{GetBacking()};
-        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eBottomOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, vk::ImageMemoryBarrier{
+        const auto image{GetBacking()};
+        // BottomOfPipe cannot make earlier shader/attachment/transfer writes
+        // available to this copy. Depend on all possible prior writers, but keep
+        // the memory dependency scoped to this image.
+        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, vk::ImageMemoryBarrier{
             .image = image,
             .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
             .dstAccessMask = vk::AccessFlagBits::eTransferRead,
@@ -483,7 +506,8 @@ namespace skyline::gpu {
         });
 
         auto bufferImageCopies{GetBufferImageCopies()};
-        commandBuffer.copyImageToBuffer(image, layout, stagingBuffer->vkBuffer, vk::ArrayProxy(static_cast<u32>(bufferImageCopies.size()), bufferImageCopies.data()));
+        commandBuffer.copyImageToBuffer(image, layout, stagingBuffer->vkBuffer,
+            vk::ArrayProxy(static_cast<u32>(bufferImageCopies.size()), bufferImageCopies.data()));
 
         commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {}, {}, vk::BufferMemoryBarrier{
             .srcAccessMask = vk::AccessFlagBits::eTransferWrite,

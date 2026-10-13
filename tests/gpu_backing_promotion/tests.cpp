@@ -480,65 +480,6 @@ namespace skyline::gpu {
     #include "guest_copy.inc"
     #include "production.inc"
 
-    // Host transport fixture: Vulkan copies/barriers are test-only.
-void Texture::CopyFromStagingBuffer(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<memory::StagingBuffer> &stagingBuffer) {
-        const auto image{GetBacking()};
-        const vk::ImageSubresourceRange range{format->vkAspect, 0, levelCount, 0, layerCount};
-        // Re-uploading an initialized alias can race earlier reads/writes even
-        // when its layout is already General. Scope this dependency to this image.
-        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, vk::ImageMemoryBarrier{
-            .srcAccessMask = layout == vk::ImageLayout::eUndefined ? vk::AccessFlags{} :
-                vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
-            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .oldLayout = std::exchange(layout, vk::ImageLayout::eGeneral),
-            .newLayout = vk::ImageLayout::eGeneral,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = image,
-            .subresourceRange = range,
-        });
-        auto bufferImageCopies{GetBufferImageCopies()};
-        commandBuffer.copyBufferToImage(stagingBuffer->vkBuffer, image, layout,
-            vk::ArrayProxy(static_cast<u32>(bufferImageCopies.size()), bufferImageCopies.data()));
-        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, vk::ImageMemoryBarrier{
-            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
-            .oldLayout = layout, .newLayout = layout,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = image, .subresourceRange = range,
-        });
-    }
-void Texture::CopyIntoStagingBuffer(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<memory::StagingBuffer> &stagingBuffer) {
-        auto image{GetBacking()};
-        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, vk::ImageMemoryBarrier{
-            .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
-            .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-            .oldLayout = layout,
-            .newLayout = layout,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = image,
-            .subresourceRange = {
-                .aspectMask = format->vkAspect,
-                .levelCount = levelCount,
-                .layerCount = layerCount,
-            },
-        });
-
-        auto bufferImageCopies{GetBufferImageCopies()};
-        commandBuffer.copyImageToBuffer(image, layout, stagingBuffer->vkBuffer, vk::ArrayProxy(static_cast<u32>(bufferImageCopies.size()), bufferImageCopies.data()));
-
-        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {}, {}, vk::BufferMemoryBarrier{
-            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .dstAccessMask = vk::AccessFlagBits::eHostRead,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = stagingBuffer->vkBuffer,
-            .offset = 0,
-            .size = stagingBuffer->size(),
-        }, {});
-    }
 void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         WaitOnBacking();
         WaitOnFence();

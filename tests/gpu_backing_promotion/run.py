@@ -52,6 +52,8 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         "std::shared_ptr<void> Texture::PinGuestMemory(",
         "void Texture::FreeGuest(",
         "boost::container::small_vector<vk::BufferImageCopy, 10> Texture::GetBufferImageCopies(",
+        "void Texture::CopyFromStagingBuffer(",
+        "void Texture::CopyIntoStagingBuffer(",
         "void Texture::CopyToGuest(",
         "std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl(",
         "void Texture::SynchronizeHost(",
