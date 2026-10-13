@@ -4,6 +4,8 @@
 #include <common/trace.h>
 #include "texture/layout.h"
 #include "texture_manager.h"
+#include "texture/backing_promotion.h"
+#include "texture/view_range.h"
 
 namespace skyline::gpu {
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
@@ -12,6 +14,16 @@ namespace skyline::gpu {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
         auto guestMapping{guestTexture.mappings.front()};
+        if (!texture::SubresourceRangeFits(guestTexture.mipLevelCount, guestTexture.viewMipBase, guestTexture.viewMipCount)) {
+            throw exception("Guest texture view exceeds its declared mip chain");
+        }
+        const vk::ImageSubresourceRange requestedRange{
+            guestTexture.aspect, guestTexture.viewMipBase,
+            guestTexture.viewMipCount == VK_REMAINING_MIP_LEVELS && guestTexture.viewMipBase < guestTexture.mipLevelCount ?
+                guestTexture.mipLevelCount - guestTexture.viewMipBase : guestTexture.viewMipCount,
+            guestTexture.baseArrayLayer, guestTexture.GetViewLayerCount(),
+        };
+        const auto requestedStride{guestTexture.layerStride ? guestTexture.layerStride : guestTexture.CalculateLayerSize()};
 
         /*
          * Iterate over all textures that overlap with the first mapping of the guest texture and compare the mappings:
@@ -36,6 +48,7 @@ namespace skyline::gpu {
         })};
 
         std::shared_ptr<Texture> fullMatch{};
+        std::shared_ptr<Texture> unrepresentableMatch{};
         std::shared_ptr<Texture> layerMipMatch{};
         std::shared_ptr<Texture> depthSliceMatch{};
         u32 matchLevel{};
@@ -65,11 +78,15 @@ namespace skyline::gpu {
                 auto &matchGuestTexture{*hostMapping->texture->guest};
 
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                    (((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
+                    (matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                        matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
-                       matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
-                      || matchGuestTexture.viewMipBase > 0))
-                    && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
+                       matchGuestTexture.dimensions.depth == guestTexture.dimensions.depth)
+                    && matchGuestTexture.GetImageType() == guestTexture.GetImageType()
+                    && matchGuestTexture.tileConfig == guestTexture.tileConfig
+                    && (guestTexture.GetViewLayerCount() == 1 || matchGuestTexture.GetLayerStride() == requestedStride)
+                    && (hostMapping->texture->ViewRangeFits(guestTexture.viewType, requestedRange) ||
+                        (hostMapping->texture->ViewRangeFits(guestTexture.viewType, requestedRange, guestTexture.mipLevelCount) &&
+                         hostMapping->texture->CanGrowMipLevels(guestTexture.mipLevelCount)))) {
                     // Equal block-linear allocation sizes do not make differently-sized
                     // images interchangeable. A VkImageView cannot restrict a 16x1
                     // backing to the logical 1x1 extent described by a TIC, so reusing
@@ -77,7 +94,19 @@ namespace skyline::gpu {
                     // aliases are handled by the representable view paths below.
                     fullMatch = hostMapping->texture;
                 } else {
-                    matches.push_back(hostMapping->texture);
+                    if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
+                        matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                        ((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
+                          matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
+                          matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()) || matchGuestTexture.viewMipBase > 0)) {
+                        // The old full-match predicate would have reused this
+                        // image, despite incompatible backing bounds/layout. Do
+                        // not send it through unsynchronized overlap readback:
+                        // that would create a second, incoherent GPU writer.
+                        unrepresentableMatch = hostMapping->texture;
+                    } else {
+                        matches.push_back(hostMapping->texture);
+                    }
                 }
             } else {
                 auto &matchGuestTexture{*hostMapping->texture->guest};
@@ -153,10 +182,21 @@ namespace skyline::gpu {
                         for (auto &mipLevel : hostMapping->texture->mipLayouts) {
                             if (layerMemOffset + levelMemOffset == memOffset) {
                                 if (mipLevel.blockLinearSize == guestTexture.CalculateLayerSize()) {
-                                    matched = true;
-                                    matchLayer = layer;
-                                    matchLevel = level;
-                                    break;
+                                    auto range{requestedRange};
+                                    // Test before addition, including the whole requested
+                                    // range, not just the starting subresource.
+                                    if (range.baseMipLevel <= hostMapping->texture->levelCount - level &&
+                                        range.baseArrayLayer <= hostMapping->texture->layerCount - layer) {
+                                        range.baseMipLevel += level;
+                                        range.baseArrayLayer += layer;
+                                        if (hostMapping->texture->ViewRangeFits(guestTexture.viewType, range) &&
+                                            (range.layerCount == 1 || matchGuestTexture.GetLayerStride() == requestedStride)) {
+                                            matched = true;
+                                            matchLayer = layer;
+                                            matchLevel = level;
+                                            break;
+                                        }
+                                    }
                                 }
                                 level++;
                                 levelMemOffset += mipLevel.blockLinearSize;
@@ -198,23 +238,25 @@ namespace skyline::gpu {
             }, guestTexture.format, guestTexture.swizzle, tag);
         } else if (layerMipMatch) {
             ContextLock textureLock{tag, *layerMipMatch};
-            return layerMipMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
-                .aspectMask = guestTexture.aspect,
-                .baseMipLevel = guestTexture.viewMipBase + matchLevel,
-                .levelCount = guestTexture.viewMipCount,
-                .baseArrayLayer = guestTexture.baseArrayLayer + matchLayer,
-                .layerCount = guestTexture.GetViewLayerCount(),
-            }, guestTexture.format, guestTexture.swizzle, tag);
+            auto range{requestedRange};
+            range.baseMipLevel += matchLevel;
+            range.baseArrayLayer += matchLayer;
+            return layerMipMatch->GetView(guestTexture.viewType, range, guestTexture.format, guestTexture.swizzle, tag);
         } else if (fullMatch) {
             ContextLock textureLock{tag, *fullMatch};
-            return fullMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
-                .aspectMask = guestTexture.aspect,
-                .baseMipLevel = guestTexture.viewMipBase,
-                .levelCount = guestTexture.viewMipCount,
-                .baseArrayLayer = guestTexture.baseArrayLayer,
-                .layerCount = guestTexture.GetViewLayerCount(),
-            }, guestTexture.format, guestTexture.swizzle, tag);
+            if (!fullMatch->ViewRangeFits(guestTexture.viewType, requestedRange)) {
+                // Submit only at a genuine backing incompatibility. Retrying also
+                // rebuilds descriptors whose preparation used the previous image.
+                if (tag)
+                    throw TextureBackingPromotionRequest{fullMatch, fullMatch->format->vkFormat, guestTexture.mipLevelCount,
+                        fullMatch->PinGuestMemoryForMipGrowth(guestTexture.mipLevelCount)};
+                fullMatch->PromoteBackingForView(fullMatch->format->vkFormat, guestTexture.mipLevelCount);
+            }
+            return fullMatch->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
         }
+
+        if (unrepresentableMatch)
+            throw exception("Cannot safely represent this guest mip/layer layout on the overlapping texture backing");
 
         if (guestTexture.GetImageType() == vk::ImageType::e3D &&
             guestTexture.tileConfig.mode == texture::TileMode::Block) {
@@ -336,12 +378,6 @@ namespace skyline::gpu {
             textures.emplace(mapping, TextureMapping{texture, it, guestMapping});
         }
 
-        return texture->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
-            .aspectMask = guestTexture.aspect,
-            .baseMipLevel = guestTexture.viewMipBase,
-            .levelCount = guestTexture.viewMipCount,
-            .baseArrayLayer = guestTexture.baseArrayLayer,
-            .layerCount = guestTexture.GetViewLayerCount(),
-        }, guestTexture.format, guestTexture.swizzle, tag);
+        return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
     }
 }

@@ -13,6 +13,9 @@
 #include "format.h"
 #include "image_format_policy.h"
 #include "backing_promotion.h"
+#include "view_range.h"
+#include <bit>
+#include <numeric>
 
 namespace skyline::gpu {
     u32 GuestTexture::GetLayerStride() {
@@ -97,6 +100,8 @@ namespace skyline::gpu {
     }
 
     vk::ImageView TextureView::GetView() {
+        if (!texture->ViewRangeFits(type, range) || !range.aspectMask || (range.aspectMask & ~texture->format->vkAspect))
+            throw exception("Texture view exceeds backing mip/layer bounds or has an incompatible view type");
         const auto requested{format ? format->vkFormat : texture->format->vkFormat};
         if (!texture->ViewFormatAdmitted(requested))
             throw exception("Texture view format {} is not admitted by backing {}", vk::to_string(requested), vk::to_string(texture->format->vkFormat));
@@ -520,15 +525,16 @@ namespace skyline::gpu {
 
     void Texture::FreeGuest() {
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
-        if (*gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
+        if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
             gpu.state.process->memory.FreeMemory(mirror);
             memoryFreed = true;
         }
     }
 
-    Texture::Texture(GPU &gpu, BackingType &&backing, texture::Dimensions dimensions, texture::Format format, vk::ImageLayout layout, vk::ImageTiling tiling, vk::ImageCreateFlags flags, vk::ImageUsageFlags usage, u32 levelCount, u32 layerCount, vk::SampleCountFlagBits sampleCount)
+    Texture::Texture(GPU &gpu, BackingType &&backing, texture::Dimensions dimensions, texture::Format format, vk::ImageLayout layout, vk::ImageTiling tiling, vk::ImageCreateFlags flags, vk::ImageUsageFlags usage, u32 levelCount, u32 layerCount, vk::SampleCountFlagBits sampleCount, vk::ImageType imageType)
         : gpu(gpu),
           backing(std::move(backing)),
+          backingImageType(imageType),
           dimensions(dimensions),
           format(format),
           layout(layout),
@@ -600,6 +606,7 @@ namespace skyline::gpu {
 
     Texture::Texture(GPU &pGpu, GuestTexture pGuest)
         : gpu(pGpu),
+          backingImageType(pGuest.GetImageType()),
           guest(std::move(pGuest)),
           dimensions(guest->dimensions),
           format(ConvertHostCompatibleFormat(guest->format, gpu.traits)),
@@ -916,26 +923,87 @@ namespace skyline::gpu {
         return texture::ViewFormatAdmitted(format->vkFormat, flags, backingViewFormats, requested);
     }
 
-    void Texture::PromoteBackingForView(vk::Format requested) {
-        if (ViewFormatAdmitted(requested)) return;
+    bool Texture::ViewRangeFits(vk::ImageViewType type, const vk::ImageSubresourceRange &range, u32 levels) const {
+        return texture::ViewRangeFits(backingImageType, dimensions, flags, levels ? levels : levelCount, layerCount, type, range);
+    }
+
+    bool Texture::CanGrowMipLevels(u32 levels) const {
+        std::scoped_lock stateLock{stateMutex};
+        if (!guest || mipLayouts.size() != levelCount || levels <= levelCount || levels > static_cast<u32>(std::bit_width(std::max(dimensions.width, dimensions.height))) ||
+            backingImageType != vk::ImageType::e2D || guest->GetImageType() != vk::ImageType::e2D || guest->baseArrayLayer != 0 ||
+            guest->tileConfig.mode != texture::TileMode::Block || guest->tileConfig.blockDepth != 1 ||
+            format != guest->format || format->vkAspect != vk::ImageAspectFlagBits::eColor ||
+            sampleCount != vk::SampleCountFlagBits::e1 || tiling != vk::ImageTiling::eOptimal || memoryFreed)
+            return false;
+        auto layouts{texture::GetBlockLinearMipLayout(dimensions,
+            format->blockHeight, format->blockWidth, format->bpb,
+            format->blockHeight, format->blockWidth, format->bpb,
+            guest->tileConfig.blockHeight, guest->tileConfig.blockDepth, levels)};
+        size_t guestSize{};
+        for (size_t level{}; level < layouts.size(); ++level) {
+            const auto &next{layouts[level]};
+            if (level < mipLayouts.size()) {
+                const auto &old{mipLayouts[level]};
+                if (old.dimensions != next.dimensions || old.blockLinearSize != next.blockLinearSize ||
+                    old.linearSize != next.linearSize || old.targetLinearSize != next.targetLinearSize ||
+                    old.blockHeight != next.blockHeight || old.blockDepth != next.blockDepth)
+                    return false;
+            }
+            if (next.blockLinearSize > guest->layerStride || guestSize > guest->layerStride - next.blockLinearSize)
+                return false;
+            guestSize += next.blockLinearSize;
+        }
+        // The mapping can include layer-end padding, but every new mip must fit
+        // within the original stride and the final layer's mapped bytes.
+        return layerCount && guestSize <= mirror.size() &&
+               layerCount - 1 <= (mirror.size() - guestSize) / guest->layerStride;
+    }
+
+    std::shared_ptr<void> Texture::PinGuestMemoryForMipGrowth(u32 levels) {
+        std::scoped_lock stateLock{stateMutex};
+        if (!CanGrowMipLevels(levels))
+            throw exception("Guest bytes needed for mip expansion are unavailable or have an incompatible layout");
+        const auto self{shared_from_this()};
+        ++guestMemoryPins;
+        // shared_ptr invokes the deleter even if allocating its control block
+        // fails, balancing the pin on both success and failure paths.
+        return std::shared_ptr<void>{this, [texture = self](void *) {
+            std::scoped_lock lock{texture->stateMutex};
+            --texture->guestMemoryPins;
+        }};
+    }
+
+    void Texture::PromoteBackingForView(vk::Format requested, u32 requestedLevels) {
+        const auto nextLevels{std::max(levelCount, requestedLevels)};
+        const bool grow{nextLevels != levelCount};
+        const bool admitFormat{!ViewFormatAdmitted(requested)};
+        if (!grow && !admitFormat) return;
+        std::scoped_lock stateLock{stateMutex};
+        if (grow && !CanGrowMipLevels(nextLevels))
+            throw exception("Cannot preserve this texture's guest mip layout while growing its backing");
         if (!guest || guest->GetImageType() != vk::ImageType::e2D ||
-            format->vkAspect != vk::ImageAspectFlagBits::eColor || format->IsCompressed() ||
+            format->vkAspect != vk::ImageAspectFlagBits::eColor || (admitFormat && format->IsCompressed()) ||
             sampleCount != vk::SampleCountFlagBits::e1 || tiling != vk::ImageTiling::eOptimal ||
             !(usage & vk::ImageUsageFlagBits::eTransferSrc) || !(usage & vk::ImageUsageFlagBits::eTransferDst))
             throw exception("Cannot safely promote this texture backing to format {}", vk::to_string(requested));
 
         WaitOnBacking();
+        // When CPU bytes own the existing levels, upload them before copying the
+        // old image. GPU-dirty levels must never be overwritten from the mirror.
+        if (grow) SynchronizeHost(false);
+        if (grow && layout == vk::ImageLayout::eUndefined)
+            throw exception("Cannot grow a backing without initialized source mip levels");
         const auto previousCycle{cycle};
         if (previousCycle) previousCycle->WaitSubmit(); // Old raw views/nodes must finish recording first.
-        auto admitted{texture::AdmitViewFormat(format->vkFormat, backingViewFormats, requested)};
-        const auto promotedFlags{flags | vk::ImageCreateFlagBits::eMutableFormat};
+        auto admitted{admitFormat ? texture::AdmitViewFormat(format->vkFormat, backingViewFormats, requested) : backingViewFormats};
+        const auto promotedFlags{admitFormat ? flags | vk::ImageCreateFlagBits::eMutableFormat : flags};
         vk::ImageFormatListCreateInfo list{
             .viewFormatCount = static_cast<u32>(admitted.size()), .pViewFormats = admitted.data()
         };
         vk::ImageCreateInfo createInfo{
-            .pNext = gpu.traits.supportsImageFormatList ? &list : nullptr,
+            .pNext = gpu.traits.supportsImageFormatList && !admitted.empty() ? &list : nullptr,
             .flags = promotedFlags, .imageType = guest->GetImageType(), .format = *format,
-            .extent = dimensions, .mipLevels = levelCount, .arrayLayers = layerCount,
+            .extent = dimensions, .mipLevels = nextLevels, .arrayLayers = layerCount,
             .samples = sampleCount, .tiling = tiling, .usage = usage,
             .sharingMode = vk::SharingMode::eExclusive, .queueFamilyIndexCount = 1,
             .pQueueFamilyIndices = &gpu.vkQueueFamilyIndex, .initialLayout = vk::ImageLayout::eUndefined,
@@ -944,6 +1012,40 @@ namespace skyline::gpu {
         const auto oldImage{GetBacking()};
         const auto newImage{next->vkImage};
         auto copies{texture::PromotionCopyRegions(dimensions, levelCount, layerCount)};
+        std::vector<texture::MipLevelLayout> nextLayouts;
+        std::vector<vk::BufferImageCopy> uploads;
+        std::shared_ptr<memory::StagingBuffer> initialization;
+        size_t nextSurfaceSize{surfaceSize};
+        if (grow) {
+            nextLayouts = texture::GetBlockLinearMipLayout(dimensions,
+                format->blockHeight, format->blockWidth, format->bpb,
+                format->blockHeight, format->blockWidth, format->bpb,
+                guest->tileConfig.blockHeight, guest->tileConfig.blockDepth, nextLevels);
+            nextSurfaceSize = CalculateTargetLevelStride(nextLayouts) * layerCount;
+            size_t stagingSize{};
+            const auto alignment{std::lcm<size_t>(4, format->bpb)};
+            for (u32 level{levelCount}; level < nextLevels; ++level) {
+                stagingSize += (alignment - stagingSize % alignment) % alignment;
+                uploads.push_back(vk::BufferImageCopy{
+                    .bufferOffset = stagingSize,
+                    .imageSubresource = {vk::ImageAspectFlagBits::eColor, level, 0, layerCount},
+                    .imageExtent = nextLayouts[level].dimensions,
+                });
+                stagingSize += nextLayouts[level].targetLinearSize * layerCount;
+            }
+            initialization = gpu.memory.AllocateStagingBuffer(stagingSize);
+            size_t guestOffset{};
+            for (u32 level{}; level < nextLevels; ++level) {
+                const auto &mip{nextLayouts[level]};
+                if (level >= levelCount)
+                    for (u32 layer{}; layer < layerCount; ++layer)
+                        texture::CopyBlockLinearToLinear(mip.dimensions,
+                            format->blockWidth, format->blockHeight, format->bpb, mip.blockHeight, mip.blockDepth,
+                            mirror.data() + layer * static_cast<size_t>(guest->layerStride) + guestOffset,
+                            initialization->data() + uploads[level - levelCount].bufferOffset + layer * mip.targetLinearSize);
+                guestOffset += mip.blockLinearSize;
+            }
+        }
         struct Retired {
             BackingType backing;
             std::vector<TextureViewStorage> views;
@@ -963,11 +1065,13 @@ namespace skyline::gpu {
             try {
                 // Prepare all allocating lifetime/dependency operations before submission.
                 copyCycle->AttachObjects(retired, next, shared_from_this());
+                if (initialization) copyCycle->AttachObject(initialization);
                 copyCycle->ChainCycle(previousCycle);
                 commandBuffer->begin(vk::CommandBufferBeginInfo{
                     .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
                 });
-                texture::RecordBackingPromotion(*commandBuffer, oldImage, newImage, layout, levelCount, layerCount, copies);
+                texture::RecordBackingPromotion(*commandBuffer, oldImage, newImage, layout, levelCount, layerCount, copies,
+                    nextLevels, initialization ? initialization->vkBuffer : vk::Buffer{}, uploads);
                 commandBuffer->end();
                 gpu.scheduler.SubmitCommandBuffer(*commandBuffer, copyCycle);
             } catch (...) {
@@ -985,11 +1089,22 @@ namespace skyline::gpu {
         backing.emplace<memory::Image>(std::move(*next));
         flags = promotedFlags;
         backingViewFormats = gpu.traits.supportsImageFormatList ? std::move(admitted) : std::vector<vk::Format>{};
+        if (grow) {
+            // Preserve mappings/trap identity: TextureManager stores iterators into
+            // this mapping vector, and every cached alias shares this Texture.
+            guest->mipLevelCount = nextLevels;
+            levelCount = nextLevels;
+            mipLayouts = std::move(nextLayouts);
+            surfaceSize = deswizzledSurfaceSize = nextSurfaceSize; // Native-format growth only.
+            downloadStagingBuffer.reset();
+        }
         ++backingGeneration;
         cycle = std::move(copyCycle);
     }
 
     std::shared_ptr<TextureView> Texture::GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format pFormat, vk::ComponentMapping mapping, ContextTag context) {
+        if (!ViewRangeFits(type, range))
+            throw exception("Texture view exceeds backing mip/layer bounds or has an incompatible view type");
         if (!pFormat || (guest && pFormat == guest->format))
             pFormat = format; // We want to use the texture's format if it isn't supplied or if the requested format matches the guest format then we want to use the host format just in case it is host incompatible and the host format differs from the guest format
 
@@ -997,6 +1112,8 @@ namespace skyline::gpu {
             pFormat = format; // If the requested format doesn't share any aspects then fallback to the texture's format in the hope it's more likely to function
             range.aspectMask = format->Aspect(mapping.r == vk::ComponentSwizzle::eR);
         }
+        if (!range.aspectMask || (range.aspectMask & ~format->vkAspect))
+            throw exception("Texture view has unsupported image aspects");
 
         // Workaround to avoid aliasing when sampling from a BGRA texture with a RGBA view and a mapping to counteract that
         // TODO: drop this after new texture manager

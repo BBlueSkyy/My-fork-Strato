@@ -390,6 +390,7 @@ namespace skyline::gpu {
         std::condition_variable_any backingCondition; //!< Signalled when a valid backing has been swapped in
         using BackingType = std::variant<vk::Image, vk::raii::Image, memory::Image>;
         BackingType backing; //!< The Vulkan image that backs this texture, it is nullable
+        vk::ImageType backingImageType; //!< Immutable image type supplied at allocation/wrapping.
 
         span<u8> mirror{}; //!< A contiguous mirror of all the guest mappings to allow linear access on the CPU
         span<u8> alignedMirror{}; //!< The mirror mapping aligned to page size to reflect the full mapping
@@ -400,7 +401,8 @@ namespace skyline::gpu {
             GpuDirty, //!< The GPU texture has been modified but the CPU mappings have not been updated
         } dirtyState{DirtyState::CpuDirty}; //!< The state of the CPU mappings with respect to the GPU texture
         bool memoryFreed{}; //!< If the guest backing memory has been freed
-        std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
+        mutable std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
+        u32 guestMemoryPins{}; //!< Mip expansion still needs guest bytes not represented by the current image.
 
         /**
          * @brief Storage for all metadata about a specific view into the buffer, used to prevent redundant view creation and duplication of VkBufferView(s)
@@ -420,7 +422,10 @@ namespace skyline::gpu {
         std::vector<vk::Format> backingViewFormats; //!< Empty means no explicit image-format list.
 
         bool ViewFormatAdmitted(vk::Format requested) const;
-        void PromoteBackingForView(vk::Format requested);
+        void PromoteBackingForView(vk::Format requested, u32 requestedLevels = 0);
+        bool ViewRangeFits(vk::ImageViewType type, const vk::ImageSubresourceRange &range, u32 levels = 0) const;
+        bool CanGrowMipLevels(u32 levels) const;
+        std::shared_ptr<void> PinGuestMemoryForMipGrowth(u32 levels);
 
         std::shared_ptr<memory::StagingBuffer> downloadStagingBuffer{};
 
@@ -503,7 +508,7 @@ namespace skyline::gpu {
          * @brief Creates a texture object wrapping the supplied backing with the supplied attributes
          * @param layout The initial layout of the texture, it **must** be eUndefined or ePreinitialized
          */
-        Texture(GPU &gpu, BackingType &&backing, texture::Dimensions dimensions, texture::Format format, vk::ImageLayout layout, vk::ImageTiling tiling, vk::ImageCreateFlags flags, vk::ImageUsageFlags usage, u32 levelCount = 1, u32 layerCount = 1, vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1);
+        Texture(GPU &gpu, BackingType &&backing, texture::Dimensions dimensions, texture::Format format, vk::ImageLayout layout, vk::ImageTiling tiling, vk::ImageCreateFlags flags, vk::ImageUsageFlags usage, u32 levelCount = 1, u32 layerCount = 1, vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1, vk::ImageType imageType = vk::ImageType::e2D);
 
         /**
          * @brief Creates a texture object wrapping the guest texture with a backing that can represent the guest texture data

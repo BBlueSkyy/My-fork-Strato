@@ -763,7 +763,7 @@ namespace skyline::gpu::interconnect {
         // pointers and descriptors from the interrupted operation must not be reused.
         Submit();
         ContextLock lock{tag, *request.texture};
-        request.texture->PromoteBackingForView(request.format);
+        request.texture->PromoteBackingForView(request.format, request.levels);
     }
 
     void CommandExecutor::AddDeferredAction(std::function<void()> &&callback) {
