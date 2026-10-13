@@ -1158,15 +1158,16 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeHostInline(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &pCycle, bool gpuDirty) {
-        if (gpuDirty && aliasReadOnly.load())
-            throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
         if (!guest)
             return;
 
-        // Attachment initializes grouped images before their first use. A CPU
-        // write to a sampled image can still arrive before submission: preserve
-        // the existing CpuDirty upload, without declaring a read to be a writer.
+        // SubmitInternal passes gpuDirty=true for every attached texture,
+        // including sampled/read-only resources. Alias writer ownership is
+        // established by RecordGpuWrite at the actual RT/storage write sites;
+        // attachment synchronization itself is not evidence of a GPU write.
         if (HasAliases()) gpuDirty = false;
+        if (gpuDirty && aliasReadOnly.load())
+            throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
 
         TRACE_EVENT("gpu", "Texture::SynchronizeHostInline");
         // FIXME (TEXMAN): This should really be tracked on the texture usage side

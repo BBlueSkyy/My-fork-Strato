@@ -1688,6 +1688,17 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         bool gpuDirtyRejected{};
         try { texture->SynchronizeHost(true); } catch (const std::runtime_error &) { gpuDirtyRejected = true; }
         assert(gpuDirtyRejected && group->generation == generation);
+
+        // SubmitInternal conservatively supplies gpuDirty=true for all attached
+        // textures, including sampled aliases. That synchronization hint must be
+        // normalized before the read-only writer guard; actual writes are still
+        // rejected by RecordGpuWrite/MarkGpuDirty/RT usage above.
+        texture->dirtyState = Texture::DirtyState::Clean;
+        auto submitBuffer{gpu.scheduler.AllocateCommandBuffer()};
+        texture->SynchronizeHostInline(*submitBuffer, submitBuffer.GetFenceCycle(), true);
+        assert(texture->dirtyState == Texture::DirtyState::Clean &&
+               group->generation == generation && texture->gpuWriteSerial == serial);
+
         texture->dirtyState = Texture::DirtyState::CpuDirty;
     }
 
