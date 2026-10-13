@@ -468,11 +468,23 @@ namespace skyline::gpu::interconnect {
             if (!view || !view->texture)
                 continue;
             auto &texture{*view->texture};
-            const auto area{static_cast<std::uint64_t>(texture.dimensions.width) * texture.dimensions.height};
-            if (!pass.target || area > pass.targetArea) {
+            const auto mip{view->range.baseMipLevel};
+            const auto validMip{mip < texture.mipLayouts.size()};
+            const auto width{validMip ? texture.mipLayouts[mip].dimensions.width : 0U};
+            const auto height{validMip ? texture.mipLayouts[mip].dimensions.height : 0U};
+            // A pass may include multiple color outputs. Keep the final
+            // composition image instead of an auxiliary, larger backing.
+            const std::uint32_t priority{
+                (width == 1920 && height == 1080) ? 2U :
+                (width == 1280 && height == 720) ? 1U : 0U
+            };
+            const auto area{static_cast<std::uint64_t>(width) * height};
+            if (!pass.target || priority > pass.targetPriority ||
+                (priority == pass.targetPriority && area > pass.targetArea)) {
                 pass.target = view->texture;
                 pass.range = view->range;
                 pass.targetArea = area;
+                pass.targetPriority = priority;
             }
         }
 
@@ -502,12 +514,35 @@ namespace skyline::gpu::interconnect {
         if (!capture.active.load(std::memory_order_acquire))
             return;
 
-        // Input probes are captured outside the Vulkan render pass, before
-        // the existing full-target readback. Never force additional pass splits.
+        // The old unrestricted strategy exhausted all 48 full readbacks on
+        // the 128x128 cube-map mip chain before reaching the presentation.
+        // Preserve focused input probes, but reserve FULL readbacks for the
+        // composition stage and the final 1920x1080 output only.
         QueueFocusedInputProbes(*pass);
 
         auto texture{pass->target};
         const auto range{pass->range};
+        if (range.baseMipLevel >= texture->mipLayouts.size())
+            return;
+        const auto &targetDims{texture->mipLayouts[range.baseMipLevel].dimensions};
+        const bool finalOutput{targetDims.width == 1920 && targetDims.height == 1080};
+        const bool focusedComposition{pass->focusCandidate &&
+            targetDims.width == 1280 && targetDims.height == 720};
+        if (!finalOutput && !focusedComposition)
+            return;
+
+        capture.RecordPresent(fmt::format(
+            "SELECTED_SCENE_PASS monitor_present={} approx_present={} "
+            "rp={} submission={} texture=0x{:X} mip={} layer={} "
+            "effective_dimensions={}x{} kind={} guest_map=0x{:X}",
+            capture.monitorPresent.load(std::memory_order_relaxed),
+            capture.presentIndex.load(std::memory_order_relaxed),
+            renderPassIndex, submissionNumber,
+            reinterpret_cast<uintptr_t>(texture.get()), range.baseMipLevel,
+            range.baseArrayLayer, targetDims.width, targetDims.height,
+            finalOutput ? "final_output" : "focused_composition",
+            texture->guest && !texture->guest->mappings.empty() ?
+            reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data()) : 0));
         if (!texture->GetBacking() || texture->layout == vk::ImageLayout::eUndefined ||
             texture->sampleCount != vk::SampleCountFlagBits::e1 ||
             !(texture->format->vkAspect & vk::ImageAspectFlagBits::eColor) ||
@@ -518,10 +553,6 @@ namespace skyline::gpu::interconnect {
             !texture->surfaceSize)
             return;
 
-        const auto ticket{capture.ReservePass(texture->surfaceSize)};
-        if (!ticket)
-            return;
-
         size_t analysisOffset{};
         for (u32 level{}; level < range.baseMipLevel; ++level)
             analysisOffset += texture->mipLayouts[level].targetLinearSize * texture->layerCount;
@@ -529,6 +560,12 @@ namespace skyline::gpu::interconnect {
         analysisOffset += analysisSize * range.baseArrayLayer;
         if (!analysisSize || analysisOffset > texture->surfaceSize ||
             analysisSize > texture->surfaceSize - analysisOffset)
+            return;
+
+        // Full backing copies include all mips/layers, so charge the real
+        // staging allocation, not just the selected subresource's bytes.
+        const auto ticket{capture.ReservePass(texture->surfaceSize)};
+        if (!ticket)
             return;
 
         const auto index{ticket->index};
