@@ -791,44 +791,68 @@ namespace skyline::gpu {
 
     bool Texture::CanMaterializeGuestLayout(const GuestTexture &value) {
         if (!value.format || !value.format->bpb || value.format->vkAspect != vk::ImageAspectFlagBits::eColor ||
-            value.GetImageType() != vk::ImageType::e2D || value.baseArrayLayer || !value.layerCount ||
-            !value.dimensions.width || !value.dimensions.height || !value.mipLevelCount ||
-            value.mipLevelCount > static_cast<u32>(std::bit_width(std::max(value.dimensions.width, value.dimensions.height))))
+            value.baseArrayLayer || !value.layerCount || !value.dimensions.width || !value.dimensions.height ||
+            !value.dimensions.depth || !value.mipLevelCount)
             return false;
+
+        const auto imageType{value.GetImageType()};
+        const auto maxDimension{std::max({value.dimensions.width, value.dimensions.height, value.dimensions.depth})};
+        if (value.mipLevelCount > static_cast<u32>(std::bit_width(maxDimension)) ||
+            (imageType == vk::ImageType::e3D && value.layerCount != 1))
+            return false;
+
         size_t layerBytes{};
-        if (value.tileConfig.mode == texture::TileMode::Block) {
-            if (!std::has_single_bit(static_cast<u32>(value.tileConfig.blockHeight)) || value.tileConfig.blockDepth != 1) return false;
-            auto layouts{texture::GetBlockLinearMipLayout(value.dimensions,
-                value.format->blockHeight, value.format->blockWidth, value.format->bpb,
-                value.format->blockHeight, value.format->blockWidth, value.format->bpb,
-                value.tileConfig.blockHeight, value.tileConfig.blockDepth, value.mipLevelCount)};
-            size_t uploadOffset{};
-            const auto uploadAlignment{std::lcm<size_t>(4, value.format->bpb)};
-            for (const auto &level : layouts) {
-                // SynchronizeHost packs mip payloads tightly before the Vulkan
-                // buffer-to-image copy, so retain its alignment and guest bounds.
-                if (uploadOffset % uploadAlignment) return false;
-                uploadOffset += level.linearSize * value.layerCount;
-                layerBytes += level.blockLinearSize;
+        switch (value.tileConfig.mode) {
+            case texture::TileMode::Block: {
+                if (!std::has_single_bit(static_cast<u32>(value.tileConfig.blockHeight)) ||
+                    !std::has_single_bit(static_cast<u32>(value.tileConfig.blockDepth)))
+                    return false;
+                auto layouts{texture::GetBlockLinearMipLayout(value.dimensions,
+                    value.format->blockHeight, value.format->blockWidth, value.format->bpb,
+                    value.format->blockHeight, value.format->blockWidth, value.format->bpb,
+                    value.tileConfig.blockHeight, value.tileConfig.blockDepth, value.mipLevelCount)};
+                size_t uploadOffset{};
+                const auto uploadAlignment{std::lcm<size_t>(4, value.format->bpb)};
+                for (const auto &level : layouts) {
+                    // This is the packing used by SynchronizeHostImpl/GetBufferImageCopies.
+                    if (uploadOffset % uploadAlignment) return false;
+                    if (level.linearSize > SIZE_MAX / value.layerCount) return false;
+                    const auto packedLevelBytes{level.linearSize * value.layerCount};
+                    if (packedLevelBytes > SIZE_MAX - uploadOffset ||
+                        level.blockLinearSize > SIZE_MAX - layerBytes)
+                        return false;
+                    uploadOffset += packedLevelBytes;
+                    layerBytes += level.blockLinearSize;
+                }
+                break;
             }
-        } else {
-            return false; // This separate-backing fallback currently materializes block-linear 2D color images only.
+            case texture::TileMode::Pitch:
+            case texture::TileMode::Linear:
+                // SynchronizeHostImpl supports these layouts only for a single mip.
+                if (value.mipLevelCount != 1 || imageType == vk::ImageType::e3D)
+                    return false;
+                layerBytes = value.CalculateLayerSize();
+                break;
         }
+
         const size_t stride{value.layerStride ? value.layerStride : value.CalculateLayerSize()};
         size_t mapped{};
         for (const auto &mapping : value.mappings) {
             if (!mapping.valid() || mapping.size() > SIZE_MAX - mapped) return false;
             mapped += mapping.size();
         }
-        return stride && layerBytes <= stride && layerBytes <= mapped &&
+        return stride && layerBytes && layerBytes <= stride && layerBytes <= mapped &&
             value.layerCount - 1 <= (mapped - layerBytes) / stride;
     }
 
     bool Texture::IsGuestLayoutReversible(const GuestTexture &value) {
-        // Layout materialization and native-format writeback share the same
-        // block-linear bounds. Host-format conversion is checked separately by
-        // CanReconcileGuestLayout because decoded BCn images are read-only aliases.
-        return CanMaterializeGuestLayout(value);
+        // Writer authority remains deliberately narrower than materialization:
+        // the alias group currently has a proven lossless GPU -> guest path only
+        // for native 2D block-linear color layouts with non-interleaved Z.
+        return CanMaterializeGuestLayout(value) &&
+            value.GetImageType() == vk::ImageType::e2D &&
+            value.tileConfig.mode == texture::TileMode::Block &&
+            value.tileConfig.blockDepth == 1;
     }
 
     bool Texture::CanReconcileGuestLayout(const GuestTexture &requested) const {

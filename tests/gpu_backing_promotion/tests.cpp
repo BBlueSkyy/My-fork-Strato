@@ -302,9 +302,13 @@ namespace skyline::gpu {
         u32 GetViewLayerCount() const { return layerCount; }
         u32 GetViewDepth() const { return dimensions.depth; }
         u32 CalculateLayerSize() const {
+            if (tileConfig.mode == texture::TileMode::Pitch)
+                return static_cast<u32>(dimensions.height * tileConfig.pitch);
+            if (tileConfig.mode == texture::TileMode::Linear)
+                return static_cast<u32>(format->GetSize(dimensions));
             auto layouts{texture::GetBlockLinearMipLayout(dimensions,1,1,4,1,1,4,tileConfig.blockHeight,tileConfig.blockDepth,mipLevelCount)};
             size_t bytes{}; for (const auto &level : layouts) bytes += level.blockLinearSize;
-            return bytes;
+            return static_cast<u32>(bytes);
         }
     };
 
@@ -1591,6 +1595,56 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(!rejected); // A valid separate representation must have a coherent fallback.
     }
 
+    void CheckMaterializationVsWriteback() {
+        std::vector<u8> pitchBytes(64 * 32 * 4);
+        GuestTexture pitch;
+        pitch.format = format::R8G8B8A8Unorm;
+        pitch.dimensions = {64,32,1};
+        pitch.mipLevelCount = 1;
+        pitch.viewMipCount = 1;
+        pitch.layerCount = 1;
+        pitch.layerStride = static_cast<u32>(pitchBytes.size());
+        pitch.tileConfig.mode = texture::TileMode::Pitch;
+        pitch.tileConfig.pitch = 64 * 4;
+        pitch.mappings = {span<u8>{pitchBytes.data(), pitchBytes.size()}};
+        assert(Texture::CanMaterializeGuestLayout(pitch));
+        assert(!Texture::IsGuestLayoutReversible(pitch));
+
+        auto multiPitch{pitch};
+        multiPitch.mipLevelCount = 2;
+        multiPitch.viewMipCount = 2;
+        assert(!Texture::CanMaterializeGuestLayout(multiPitch));
+
+        GuestTexture volume;
+        volume.format = format::R8G8B8A8Unorm;
+        volume.dimensions = {16,16,4};
+        volume.viewType = vk::ImageViewType::e3D;
+        volume.layerCount = 1;
+        volume.mipLevelCount = 3;
+        volume.viewMipCount = 3;
+        volume.tileConfig.mode = texture::TileMode::Block;
+        volume.tileConfig.blockHeight = 2;
+        volume.tileConfig.blockDepth = 4;
+        volume.layerStride = volume.CalculateLayerSize();
+        std::vector<u8> volumeBytes(volume.layerStride);
+        volume.mappings = {span<u8>{volumeBytes.data(), volumeBytes.size()}};
+        assert(Texture::CanMaterializeGuestLayout(volume));
+        assert(!Texture::IsGuestLayoutReversible(volume));
+
+        auto array{pitch};
+        array.tileConfig.mode = texture::TileMode::Block;
+        array.tileConfig.blockHeight = 1;
+        array.tileConfig.blockDepth = 1;
+        array.mipLevelCount = 1;
+        array.viewMipCount = 1;
+        array.layerCount = 2;
+        array.layerStride = array.CalculateLayerSize();
+        std::vector<u8> arrayBytes(static_cast<size_t>(array.layerStride) * array.layerCount);
+        array.mappings = {span<u8>{arrayBytes.data(), arrayBytes.size()}};
+        assert(Texture::CanMaterializeGuestLayout(array));
+        assert(Texture::IsGuestLayoutReversible(array));
+    }
+
     void CheckReadOnlyAliasWriteGate(GPU &gpu) {
         std::vector<u8> bytes(90112 * 6, 0x4D);
         GuestTexture guest;
@@ -1695,6 +1749,7 @@ int main() {
             CheckAliasTraps(gpu);
             CheckCpuWriteBeforeSubmit(gpu);
             CheckRegistrationAfterReadback(gpu);
+            CheckMaterializationVsWriteback();
             CheckReadOnlyAliasWriteGate(gpu);
             for (bool reverse : {false, true}) CheckPromotion(gpu, reverse);
             for (bool cpuDirty : {false, true})
