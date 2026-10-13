@@ -2,6 +2,9 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <android/native_window_jni.h>
+#include <array>
+#include <optional>
+#include <fmt/format.h>
 #include <filesystem>
 #include <fstream>
 #include <gpu/diagnostic/re5_pass_boundary.h>
@@ -148,70 +151,259 @@ namespace skyline::gpu {
 
         texture->SynchronizeHost();
 
-        // Manual bounded diagnostic. Rename the hint file to ARM_CAPTURE while
-        // entering the remaining blurry/black RE5 scene; no Title ID checks.
+        // Opt-in RE5 auto capture. Sample only 9 4x4 patches of the *presented*
+        // texture. A circular in-memory history keeps the preceding Texman/pass
+        // decisions; full pass readbacks begin only after a suspected blackout.
         {
             namespace fs = std::filesystem;
             auto &capture{diagnostic::Re5PassBoundary()};
-            static std::uint32_t pollCount{};
-            static bool justArmed{};
             const fs::path root{fs::path(state.os->publicAppFilesPath) / "gpu_capture" / "re5_boundary"};
+            static u32 pollCount{};
+            static bool justArmed{};
+            static bool autoCaptureUsed{};
+            static std::array<u32, 9> previousSamples{};
+            static bool havePrevious{};
+            static u64 previousFrame{};
+            static u32 previousWidth{}, previousHeight{};
 
-            if (!capture.active.load(std::memory_order_acquire) && (++pollCount % 8 == 1)) {
+            struct PendingProbe {
+                std::shared_ptr<memory::StagingBuffer> staging;
+                std::shared_ptr<FenceCycle> cycle;
+                u64 frame{};
+                u32 width{}, height{};
+                uintptr_t source{};
+            };
+            static std::optional<PendingProbe> pending;
+
+            auto startCapture{[&](const char *reason, const std::string &detail = {}) {
+                std::error_code ec;
+                fs::create_directories(root, ec);
+                if (ec)
+                    return false;
+                for (unsigned index{1}; index <= 999; ++index) {
+                    const auto dir{root / fmt::format("capture_{:03}", index)};
+                    ec.clear();
+                    if (fs::exists(dir, ec) || ec)
+                        continue;
+                    if (!fs::create_directories(dir, ec) || ec)
+                        continue;
+                    capture.Start(dir.string());
+                    justArmed = true;
+                    std::ofstream readme(dir / "README.txt");
+                    if (readme)
+                        readme << "RE5 automatic/manual pass-boundary capture: " << reason << '\n'
+                               << "pretrigger_* are circular metadata histories, not GPU readbacks.\n"
+                               << "The screen probe is a 3x3 RGB brightness heuristic, not proof of a bad frame.\n"
+                               << "Pass readbacks remain bounded and can perturb race timing.\n"
+                               << detail << '\n';
+                    LOGI("RE5_BOUNDARY trigger={} directory={}", reason, dir.string());
+                    return true;
+                }
+                return false;
+            }};
+
+            // Poll rather than wait. If the GPU is busy we simply skip sampling
+            // new frames until the previous 576-byte transfer completes.
+            if (pending && pending->cycle->Poll(false)) {
+                auto completed{std::move(*pending)};
+                pending.reset();
+                const auto result{vmaInvalidateAllocation(completed.staging->vmaAllocator,
+                    completed.staging->vmaAllocation, 0, completed.staging->size())};
+                if (result == VK_SUCCESS) {
+                    std::array<u32, 9> values{};
+                    const auto *data{static_cast<const u8 *>(completed.staging->data())};
+                    u32 sum{}, darkSites{}, brightToDark{}, oldSum{};
+                    for (size_t i{}; i < values.size(); ++i) {
+                        u32 rgb{};
+                        for (size_t pixel{}; pixel < 16; ++pixel) {
+                            const auto *p{data + i * 64 + pixel * 4};
+                            rgb += static_cast<u32>(p[0]) + p[1] + p[2];
+                        }
+                        values[i] = rgb / 48; // Ignore alpha, invariant to RGBA/BGRA.
+                        sum += values[i];
+                        oldSum += previousSamples[i];
+                        darkSites += values[i] <= 22;
+                        brightToDark += previousSamples[i] >= 65 && values[i] <= 22;
+                    }
+                    const auto mean{sum / 9}, previousMean{oldSum / 9};
+                    const bool comparable{havePrevious &&
+                        previousWidth == completed.width && previousHeight == completed.height &&
+                        completed.frame > previousFrame && completed.frame - previousFrame <= 4};
+                    const bool suspectedBlackout{comparable &&
+                        (brightToDark >= 5 || (brightToDark >= 3 && darkSites >= 6 &&
+                         previousMean >= 60 && mean * 3 < previousMean))};
+                    std::string observation{fmt::format(
+                        "probe_frame={} source=0x{:X} extent={}x{} mean_rgb={} previous_mean={} "
+                        "dark_sites={} bright_to_dark={} comparable={} trigger={} values=",
+                        completed.frame, completed.source, completed.width, completed.height,
+                        mean, previousMean, darkSites, brightToDark, comparable, suspectedBlackout)};
+                    for (size_t i{}; i < values.size(); ++i)
+                        observation += fmt::format("{}{}", i ? "," : "", values[i]);
+                    capture.RecordScreenProbe(observation);
+
+                    previousSamples = values;
+                    havePrevious = true;
+                    previousFrame = completed.frame;
+                    previousWidth = completed.width;
+                    previousHeight = completed.height;
+
+                    if (suspectedBlackout && capture.monitoring.load(std::memory_order_acquire) &&
+                        !capture.active.load(std::memory_order_acquire) && !autoCaptureUsed &&
+                        startCapture("auto_blackout", observation)) {
+                        autoCaptureUsed = true;
+                        capture.RecordPresent("TRIGGER " + observation);
+                    }
+                } else {
+                    capture.RecordScreenProbe(fmt::format("probe_frame={} invalidate_error={}",
+                        completed.frame, static_cast<int>(result)));
+                    havePrevious = false;
+                }
+            }
+
+            // Existing ARM_CAPTURE still works; AUTO_CAPTURE arms monitoring
+            // once, without having to catch an individual flicker manually.
+            if (!capture.RecordingMetadata() && (++pollCount % 8 == 1)) {
                 std::error_code ec;
                 fs::create_directories(root, ec);
                 if (!ec) {
-                    const auto arm{root / "ARM_CAPTURE"};
-                    if (fs::exists(arm, ec) && !ec) {
+                    const auto manual{root / "ARM_CAPTURE"};
+                    const auto automatic{root / "AUTO_CAPTURE"};
+                    ec.clear();
+                    if (fs::exists(manual, ec) && !ec) {
                         ec.clear();
-                        fs::remove(arm, ec);
-                        if (!ec) {
-                            for (unsigned i{1}; i <= 999; ++i) {
-                                const auto directory{root / fmt::format("capture_{:03}", i)};
-                                ec.clear();
-                                if (fs::exists(directory, ec) || ec)
-                                    continue;
-                                if (!fs::create_directories(directory, ec) || ec)
-                                    continue;
-                                capture.Start(directory.string());
-                                justArmed = true;
-                                std::ofstream readme(directory / "README.txt");
-                                if (readme)
-                                    readme << "RE5 pass-boundary diagnostic based on PR #341 partial fix.\n"
-                                           << "Arm immediately before/while the remaining black scene is visible.\n"
-                                           << "pass_###.txt contains post-render-pass subresource byte statistics and sampled-input metadata.\n"
-                                           << "texman_decisions.txt contains bounded FindOrCreate decisions made during the capture.\n"
-                                           << "No LOD, texture contents, shader state or Texman selection is overridden.\n";
-                                LOGI("RE5_BOUNDARY armed: {}", directory.string());
-                                break;
+                        if (fs::remove(manual, ec) && !ec)
+                            startCapture("manual");
+                    } else if (!autoCaptureUsed) {
+                        ec.clear();
+                        if (fs::exists(automatic, ec) && !ec) {
+                            ec.clear();
+                            if (fs::remove(automatic, ec) && !ec) {
+                                havePrevious = false;
+                                capture.EnableMonitoring();
+                                LOGI("RE5_BOUNDARY automatic monitoring armed");
                             }
                         }
-                    } else {
-                        const auto hint{root / "ARM_CAPTURE.rename_this_file_when_ready"};
+                    }
+                    for (const auto &name : {
+                        "ARM_CAPTURE.rename_this_file_when_ready",
+                        "AUTO_CAPTURE.rename_this_file_when_ready"}) {
+                        const auto hint{root / name};
                         ec.clear();
                         if (!fs::exists(hint, ec) && !ec) {
                             std::ofstream out(hint);
                             if (out)
-                                out << "Rename this file to ARM_CAPTURE just before or while the remaining RE5 black scene is visible.\n";
+                                out << "Rename to " << (name[0] == 'A' && name[1] == 'U'
+                                    ? "AUTO_CAPTURE" : "ARM_CAPTURE")
+                                    << " when ready to arm a RE5 diagnostic.\n";
                         }
                     }
                 }
             }
 
-            if (capture.active.load(std::memory_order_acquire)) {
-                capture.RecordPresent(fmt::format(
-                    "PRESENT approx_present={} texture=0x{:X} dimensions={}x{} format={} layout={} just_armed={}",
-                    capture.presentIndex.load(std::memory_order_relaxed),
-                    reinterpret_cast<uintptr_t>(texture.get()), texture->dimensions.width, texture->dimensions.height,
-                    vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout), justArmed));
-                if (!justArmed) {
-                    const auto next{capture.presentIndex.fetch_add(1, std::memory_order_acq_rel) + 1};
-                    if (next >= diagnostic::Re5PassBoundaryCapture::FrameCount) {
-                        capture.Stop();
-                        LOGI("RE5_BOUNDARY capture complete");
+            if (capture.RecordingMetadata()) {
+                const auto frameNumber{capture.monitorPresent.fetch_add(1, std::memory_order_acq_rel) + 1};
+                if (capture.active.load(std::memory_order_acquire)) {
+                    capture.RecordPresent(fmt::format(
+                        "PRESENT monitor_present={} approx_present={} texture=0x{:X} "
+                        "dimensions={}x{} format={} layout={} just_armed={}",
+                        frameNumber, capture.presentIndex.load(std::memory_order_relaxed),
+                        reinterpret_cast<uintptr_t>(texture.get()), texture->dimensions.width,
+                        texture->dimensions.height, vk::to_string(texture->format->vkFormat),
+                        vk::to_string(texture->layout), justArmed));
+                    if (!justArmed) {
+                        const auto next{capture.presentIndex.fetch_add(1, std::memory_order_acq_rel) + 1};
+                        if (next >= diagnostic::Re5PassBoundaryCapture::FrameCount) {
+                            capture.Stop();
+                            LOGI("RE5_BOUNDARY capture complete");
+                        }
                     }
+                    justArmed = false;
                 }
-                justArmed = false;
+
+                const auto vkFormat{texture->format->vkFormat};
+                const bool supported{
+                    vkFormat == vk::Format::eR8G8B8A8Unorm ||
+                    vkFormat == vk::Format::eR8G8B8A8Srgb ||
+                    vkFormat == vk::Format::eB8G8R8A8Unorm ||
+                    vkFormat == vk::Format::eB8G8R8A8Srgb
+                };
+                if (!pending && capture.RecordingMetadata() && supported &&
+                    texture->dimensions.width >= 8 && texture->dimensions.height >= 8 &&
+                    texture->sampleCount == vk::SampleCountFlagBits::e1 &&
+                    texture->layout != vk::ImageLayout::eUndefined && texture->GetBacking() &&
+                    (texture->usage & vk::ImageUsageFlagBits::eTransferSrc)) {
+                    constexpr size_t SampleBytes{9 * 4 * 4 * 4};
+                    auto staging{gpu.memory.AllocateStagingBuffer(SampleBytes)};
+                    // The previous GPU writer must be submitted before the probe.
+                    if (texture->cycle)
+                        texture->cycle->WaitSubmit();
+                    const auto oldLayout{texture->layout};
+                    auto probeCycle{gpu.scheduler.Submit([&, staging](vk::raii::CommandBuffer &commandBuffer) {
+                        const vk::ImageSubresourceRange subresource{
+                            .aspectMask = vk::ImageAspectFlagBits::eColor, .levelCount = 1, .layerCount = 1
+                        };
+                        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                            vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                            vk::ImageMemoryBarrier{
+                                .image = texture->GetBacking(),
+                                .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
+                                .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                                .oldLayout = oldLayout,
+                                .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .subresourceRange = subresource,
+                            });
+                        std::array<vk::BufferImageCopy, 9> areas{};
+                        for (u32 i{}; i < areas.size(); ++i) {
+                            const auto x{std::min(texture->dimensions.width - 4,
+                                texture->dimensions.width * ((i % 3) + 1) / 4)};
+                            const auto y{std::min(texture->dimensions.height - 4,
+                                texture->dimensions.height * ((i / 3) + 1) / 4)};
+                            areas[i] = vk::BufferImageCopy{
+                                .bufferOffset = i * 64,
+                                .imageSubresource = {
+                                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                                    .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1
+                                },
+                                .imageOffset = vk::Offset3D{static_cast<i32>(x), static_cast<i32>(y), 0},
+                                .imageExtent = vk::Extent3D{4, 4, 1},
+                            };
+                        }
+                        commandBuffer.copyImageToBuffer(texture->GetBacking(),
+                            vk::ImageLayout::eTransferSrcOptimal, staging->vkBuffer,
+                            vk::ArrayProxy(static_cast<u32>(areas.size()), areas.data()));
+                        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                            vk::PipelineStageFlagBits::eHost, {}, {}, vk::BufferMemoryBarrier{
+                                .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                                .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .buffer = staging->vkBuffer, .offset = 0, .size = SampleBytes,
+                            }, {});
+                        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                            vk::PipelineStageFlagBits::eAllCommands, {}, {}, {},
+                            vk::ImageMemoryBarrier{
+                                .image = texture->GetBacking(),
+                                .srcAccessMask = vk::AccessFlagBits::eTransferRead,
+                                .dstAccessMask = vk::AccessFlagBits::eMemoryRead |
+                                    vk::AccessFlagBits::eMemoryWrite,
+                                .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+                                .newLayout = oldLayout,
+                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                .subresourceRange = subresource,
+                            });
+                    })};
+                    probeCycle->AttachObjects(texture, staging);
+                    // Preserve ordering against the existing presentation copy.
+                    texture->cycle = probeCycle;
+                    pending.emplace(PendingProbe{
+                        std::move(staging), std::move(probeCycle), frameNumber,
+                        texture->dimensions.width, texture->dimensions.height,
+                        reinterpret_cast<uintptr_t>(texture.get())
+                    });
+                }
             }
         }
 
