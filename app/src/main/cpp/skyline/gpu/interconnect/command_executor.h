@@ -228,6 +228,7 @@ namespace skyline::gpu::interconnect {
             vk::ImageSubresourceRange range{};
             std::string metadata;
             std::uint64_t targetArea{};
+            std::uint32_t targetPriority{};
             std::uint32_t operationCount{};
             bool focusCandidate{};
             std::vector<SampledInput> focusedInputs;
