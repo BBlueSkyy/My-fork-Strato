@@ -388,6 +388,7 @@ namespace skyline::gpu {
         size_t surfaceSize{}, deswizzledSurfaceSize{};
         size_t deswizzledLayerStride{}, layerStride{};
         bool everUsedAsRt{};
+        bool everUsedAsGpuWrite{};
         u32 lastRenderPassIndex{};
         texture::RenderPassUsage lastRenderPassUsage{texture::RenderPassUsage::None};
         void UpdateRenderPassUsage(u32,texture::RenderPassUsage);
@@ -1586,6 +1587,47 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(Texture::IsGuestLayoutReversible(array));
     }
 
+    void CheckStorageWriterTracking(GPU &gpu) {
+        std::vector<u8> bytes(64 * 64 * 4, 0x31);
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = {64,64,1};
+        guest.mipLevelCount = 1;
+        guest.viewMipCount = 1;
+        guest.layerCount = 1;
+        guest.layerStride = guest.CalculateLayerSize();
+        guest.mappings = {span<u8>{bytes.data(), bytes.size()}};
+
+        auto sampled{std::make_shared<Texture>(gpu, guest)};
+        sampled->SetupGuestMappings();
+        sampled->dirtyState = Texture::DirtyState::Clean;
+        *gpu.state.settings->freeGuestTextureMemory = false;
+        auto sampledCommands{gpu.scheduler.AllocateCommandBuffer()};
+        sampled->SynchronizeHostInline(*sampledCommands, sampledCommands.GetFenceCycle(), true);
+        assert(sampled->dirtyState == Texture::DirtyState::Clean && !sampled->everUsedAsGpuWrite);
+
+        auto storage{std::make_shared<Texture>(gpu, guest)};
+        storage->SetupGuestMappings();
+        storage->dirtyState = Texture::DirtyState::Clean;
+        UsageTracker usage;
+        storage->MarkGpuDirty(usage);
+        assert(storage->everUsedAsGpuWrite && usage.dirtyIntervals.count == 1);
+        auto storageCommands{gpu.scheduler.AllocateCommandBuffer()};
+        storage->SynchronizeHostInline(*storageCommands, storageCommands.GetFenceCycle(), true);
+        assert(storage->dirtyState == Texture::DirtyState::GpuDirty);
+
+        // The option's existing ownership policy is unchanged: enabling it may
+        // still mark a sampled-only backing GPU-owned so guest pages can be freed.
+        auto freeGuestSampled{std::make_shared<Texture>(gpu, guest)};
+        freeGuestSampled->SetupGuestMappings();
+        freeGuestSampled->dirtyState = Texture::DirtyState::Clean;
+        *gpu.state.settings->freeGuestTextureMemory = true;
+        auto freeCommands{gpu.scheduler.AllocateCommandBuffer()};
+        freeGuestSampled->SynchronizeHostInline(*freeCommands, freeCommands.GetFenceCycle(), true);
+        assert(freeGuestSampled->dirtyState == Texture::DirtyState::GpuDirty && !freeGuestSampled->everUsedAsGpuWrite);
+        *gpu.state.settings->freeGuestTextureMemory = false;
+    }
+
     void CheckReadOnlyAliasWriteGate(GPU &gpu) {
         std::vector<u8> bytes(90112 * 6, 0x4D);
         GuestTexture guest;
@@ -1702,6 +1744,7 @@ int main() {
             CheckCpuWriteBeforeSubmit(gpu);
             CheckRegistrationAfterReadback(gpu);
             CheckMaterializationVsWriteback();
+            CheckStorageWriterTracking(gpu);
             CheckReadOnlyAliasWriteGate(gpu);
             for (bool reverse : {false, true}) CheckPromotion(gpu, reverse);
             for (bool cpuDirty : {false, true})

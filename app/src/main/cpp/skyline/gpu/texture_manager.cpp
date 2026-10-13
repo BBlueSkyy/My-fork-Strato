@@ -410,7 +410,9 @@ namespace skyline::gpu {
 
                                 if (existing == sliceSources.end()) {
                                     sliceSources.push_back({source, level, slice});
-                                } else if (!existing->texture->everUsedAsRt && source->everUsedAsRt) {
+                                } else if (!existing->texture->everUsedAsGpuWrite && source->everUsedAsGpuWrite) {
+                                    // Storage-image writers are just as authoritative
+                                    // as render targets for overlapping slice history.
                                     existing->texture = source;
                                 }
 

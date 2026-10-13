@@ -1075,6 +1075,7 @@ namespace skyline::gpu {
         std::unique_lock<std::recursive_mutex> aliasLock;
         if (alias) aliasLock = std::unique_lock{alias->operationMutex};
         if (!guest) return;
+        everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
         if (auto group{aliasGroup.load()}) {
             {
@@ -1108,8 +1109,10 @@ namespace skyline::gpu {
         if (!guest)
             return;
 
-        // FIXME (TEXMAN): This should really be tracked on the texture usage side
-        if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsRt)
+        // With Free Guest Texture Memory disabled, generic executor attachment
+        // synchronization must not invent GPU ownership for sampled-only images.
+        // RT and storage paths call RecordGpuWrite before submission.
+        if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
             gpuDirty = false;
 
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
@@ -1194,8 +1197,9 @@ namespace skyline::gpu {
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
 
         TRACE_EVENT("gpu", "Texture::SynchronizeHostInline");
-        // FIXME (TEXMAN): This should really be tracked on the texture usage side
-        if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsRt)
+        // Preserve the Free Guest Texture Memory policy while still tracking
+        // real storage/RT writers when the option is disabled.
+        if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
             gpuDirty = false;
 
         {

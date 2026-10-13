@@ -453,6 +453,7 @@ namespace skyline::gpu {
         u32 lastRenderPassIndex{}; //!< The index of the last render pass that used this texture
         texture::RenderPassUsage lastRenderPassUsage{texture::RenderPassUsage::None}; //!< The type of usage in the last render pass
         bool everUsedAsRt{}; //!< If this texture has ever been used as a rendertarget
+        bool everUsedAsGpuWrite{}; //!< Set only by actual RT/storage/write paths, not by generic attachment synchronization.
         vk::PipelineStageFlags pendingStageMask{}; //!< List of pipeline stages that are yet to be flushed for reads since the last time this texture was used an an RT
         vk::PipelineStageFlags readStageMask{}; //!< Set of pipeline stages that this texture has been read in since it was last used as an RT
 
