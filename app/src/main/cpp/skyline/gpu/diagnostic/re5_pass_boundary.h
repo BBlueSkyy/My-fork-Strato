@@ -2,6 +2,7 @@
 #pragma once
 
 #include <atomic>
+#include <deque>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -30,7 +31,9 @@ namespace skyline::gpu::diagnostic {
         };
 
         std::atomic<bool> active{false};
+        std::atomic<bool> monitoring{false}; //!< Metadata-only history until a visual trigger.
         std::atomic<std::uint32_t> presentIndex{0};
+        std::atomic<std::uint64_t> monitorPresent{0};
 
       private:
         std::mutex mutex;
@@ -38,6 +41,21 @@ namespace skyline::gpu::diagnostic {
         std::uint32_t nextPass{};
         std::uint32_t texmanEvents{};
         std::size_t readbackBytes{};
+        std::deque<std::string> recentTexman, recentPasses, recentProbes;
+
+        static void PushRecent(std::deque<std::string> &ring, std::string line, std::size_t limit) {
+            if (ring.size() >= limit)
+                ring.pop_front();
+            ring.push_back(std::move(line));
+        }
+
+        static void WriteRecent(const std::filesystem::path &directory, const char *name,
+                                const std::deque<std::string> &ring) {
+            std::ofstream out(directory / name, std::ios::trunc);
+            for (const auto &line : ring)
+                if (out)
+                    out << line << '\n';
+        }
 
         void AppendLocked(const char *name, const std::string &line) {
             if (path.empty())
@@ -48,9 +66,31 @@ namespace skyline::gpu::diagnostic {
         }
 
       public:
+        void EnableMonitoring() {
+            std::scoped_lock lock{mutex};
+            if (active.load(std::memory_order_acquire) || monitoring.load(std::memory_order_acquire))
+                return;
+            recentTexman.clear();
+            recentPasses.clear();
+            recentProbes.clear();
+            monitorPresent.store(0, std::memory_order_relaxed);
+            monitoring.store(true, std::memory_order_release);
+        }
+
+        bool RecordingMetadata() const {
+            return active.load(std::memory_order_acquire) || monitoring.load(std::memory_order_acquire);
+        }
+
         void Start(std::string directory) {
             std::scoped_lock lock{mutex};
+            monitoring.store(false, std::memory_order_release);
             path = std::move(directory);
+            WriteRecent(path, "pretrigger_texman.txt", recentTexman);
+            WriteRecent(path, "pretrigger_passes.txt", recentPasses);
+            WriteRecent(path, "pretrigger_screen_probes.txt", recentProbes);
+            recentTexman.clear();
+            recentPasses.clear();
+            recentProbes.clear();
             nextPass = 0;
             texmanEvents = 0;
             readbackBytes = 0;
@@ -79,10 +119,26 @@ namespace skyline::gpu::diagnostic {
 
         void RecordTexman(std::string line) {
             std::scoped_lock lock{mutex};
-            if (!active.load(std::memory_order_acquire) || texmanEvents >= MaxTexmanEvents)
-                return;
-            ++texmanEvents;
-            AppendLocked("texman_decisions.txt", line);
+            if (active.load(std::memory_order_acquire)) {
+                if (texmanEvents++ < MaxTexmanEvents)
+                    AppendLocked("texman_decisions.txt", line);
+            } else if (monitoring.load(std::memory_order_acquire)) {
+                PushRecent(recentTexman, std::move(line), 4096);
+            }
+        }
+
+        void RecordPrePass(std::string line) {
+            std::scoped_lock lock{mutex};
+            if (monitoring.load(std::memory_order_acquire))
+                PushRecent(recentPasses, std::move(line), 1024);
+        }
+
+        void RecordScreenProbe(std::string line) {
+            std::scoped_lock lock{mutex};
+            if (monitoring.load(std::memory_order_acquire))
+                PushRecent(recentProbes, std::move(line), 128);
+            else if (!path.empty())
+                AppendLocked("screen_probes.txt", line);
         }
 
         void RecordPresent(std::string line) {
