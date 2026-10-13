@@ -8,6 +8,7 @@
 
 namespace skyline::gpu {
     class Texture;
+    struct GuestTexture;
     namespace texture {
         /**
          * Atomic shared_ptr wrapper for Android libc++ versions that do not
@@ -50,5 +51,6 @@ namespace skyline::gpu {
         std::shared_ptr<Texture> target;
         std::vector<std::shared_ptr<Texture>> registration;
         std::vector<std::shared_ptr<void>> guestMemoryLeases{};
+        std::shared_ptr<GuestTexture> registrationLayout{};
     };
 }

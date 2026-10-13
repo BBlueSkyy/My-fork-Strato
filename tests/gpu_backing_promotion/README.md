@@ -66,3 +66,16 @@ validation of runtime dependencies reserved for Part 2.
 
 Negative manager control: `TEXMAN_BASELINE_MANAGER_REF=956ad8f6 python3
 tests/gpu_backing_promotion/run.py` must fail at distinct-stride creation.
+
+Part 1B additionally reproduces exact guest mappings containing a historical
+host representation that fails CanReconcileGuestLayout while a valid new
+stride is requested. Grouped and ungrouped history, executor and direct lookups,
+newer GPU writers before/after readback, and a historical full-match candidate
+are covered. Retirement must not encode stale bytes or revive retained cached
+views/writers; a non-reversible authoritative GPU writer remains rejected.
+A failed authoritative readback must leave both writer ownership and historical
+entries intact for retry. Existing three-alias and repeated-read counters remain
+asserted. No runtime Vulkan transport or FreeGuest policy changes are included.
+The all-history/no-eligible-member case and a converted writer marked Clean by
+skipped readback are also covered: only an actual completed guest encoding
+permits retirement of the latest GPU writer.

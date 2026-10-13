@@ -147,3 +147,33 @@ Android allocation, scheduler and memory mirror interfaces remain host adapters.
 the distinct-stride creation fails with the original unrepresentable-layout
 exception. The current body passes. The completed-readback registration and
 pre-submit CPU-write tests were also observed failing before their fixes.
+
+### Part 1B: historical exact mappings
+
+An exact mapping match includes historical images before layout compatibility
+is classified. Requiring every such image to round-trip the requested layout
+can reject a legitimate representation because an older host format is no
+longer reversible. The manager now identifies an eligible registration layout;
+registration locks and inspects the complete history, including existing groups,
+and validates the requested layout even when no existing alias is eligible,
+before deciding whether an ineligible image can be retired.
+
+Successful guest encoding records the GPU writer serial. A Clean flag alone
+cannot prove encoding: converted-format readback may have been skipped.
+An ineligible writer with unpreserved GPU contents remains rejected unless a
+strictly newer writer has superseded it. Completed readback makes guest memory
+the bridge even when the historical writer itself cannot join the new group.
+Only the newest eligible writer is read back. Retirement and group publication
+happen after successful readback; failed recording retains GPU ownership.
+Retired images remain stale, leave manager lookup selection, and cannot be
+revived as writers through retained cached views. Their backing/fence ownership
+is retained until ordinary lifetime handling releases it. Eligible images alone
+form the coherent group, and guest leases are acquired only for those images.
+
+The host regression includes an old host representation rejected by
+CanReconcileGuestLayout on the same guest mapping as a legitimate distinct
+stride, both with and without an existing group or executor context. It checks
+unencoded authoritative rejection, completed-readback retirement, stale encoding
+prevention, retained writer rejection, rollback after readback failure, and
+stable repeated lookup/upload counters. This isolates the reported guard; it
+does not substitute for a new RE5 device test or expand into Part 2.

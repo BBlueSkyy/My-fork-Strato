@@ -408,10 +408,13 @@ namespace skyline::gpu {
         mutable std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
         texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup{};
         std::atomic<bool> aliasStale{};
+        std::atomic<bool> aliasRetired{}; //!< Obsolete non-reversible representations cannot reclaim writer ownership.
         u64 gpuWriteSerial{};
+        u64 gpuReadbackSerial{}; //!< Updated only after successful guest encoding.
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const GuestTexture &requested) const;
-        static void RegisterAliases(std::vector<std::shared_ptr<Texture>> textures);
+        static bool IsGuestLayoutReversible(const GuestTexture &value);
+        static std::shared_ptr<texture::AliasGroup> RegisterAliases(std::vector<std::shared_ptr<Texture>> textures, const GuestTexture *requested = nullptr);
         void RequireAliasCoherence(ContextTag context);
         void ReconcileAliases(); // Called outside executor/resource locks.
         void RecordGpuWrite();

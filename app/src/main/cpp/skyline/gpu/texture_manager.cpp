@@ -230,23 +230,31 @@ namespace skyline::gpu {
         if (unrepresentableMatch || separateGroup) {
             // Validate existing-group adoption too: an unsupported third layout
             // cannot become a writer just because its guest mappings match.
-            for (const auto &alias : exactAliases)
-                if (!alias->CanReconcileGuestLayout(guestTexture))
-                    throw exception("Cannot safely represent this guest mip/layer layout on the overlapping texture backing");
-            bool registered{separateGroup && std::all_of(exactAliases.begin(), exactAliases.end(), [&](const auto &alias) {
+            // Exact guest mappings identify history, not necessarily reversible
+            // representations. Put an eligible layout first for registration;
+            // the remaining history must pass its separate ownership check there.
+            const auto eligibleEnd{std::stable_partition(exactAliases.begin(), exactAliases.end(), [&](const auto &alias) {
+                return alias->CanReconcileGuestLayout(guestTexture);
+            })};
+            if (!Texture::IsGuestLayoutReversible(guestTexture) || ConvertHostCompatibleFormat(guestTexture.format, gpu.traits) != guestTexture.format)
+                throw exception("Cannot safely represent this guest mip/layer layout on the overlapping texture backing");
+            bool registered{eligibleEnd == exactAliases.end() && separateGroup && std::all_of(exactAliases.begin(), exactAliases.end(), [&](const auto &alias) {
                 return alias->aliasGroup.load() == separateGroup;
             })};
             if (!registered) {
                 if (tag) {
                     std::vector<std::shared_ptr<void>> leases;
                     leases.reserve(exactAliases.size());
-                    for (const auto &alias : exactAliases) leases.push_back(alias->PinGuestMemory());
-                    throw TextureAliasReconciliationRequest{{}, exactAliases, std::move(leases)};
+                    for (auto it{exactAliases.begin()}; it != eligibleEnd; ++it) leases.push_back((*it)->PinGuestMemory());
+                    throw TextureAliasReconciliationRequest{{}, exactAliases, std::move(leases), std::make_shared<GuestTexture>(guestTexture)};
                 }
-                Texture::RegisterAliases(exactAliases);
-                separateGroup = exactAliases.front()->aliasGroup.load();
+                separateGroup = Texture::RegisterAliases(exactAliases, &guestTexture);
             }
         }
+
+        if (fullMatch && fullMatch->aliasRetired.load()) fullMatch.reset();
+        if (layerMipMatch && layerMipMatch->aliasRetired.load()) layerMipMatch.reset();
+        if (depthSliceMatch && depthSliceMatch->aliasRetired.load()) depthSliceMatch.reset();
 
         if (!tag) {
             // BufferQueue lookups have no executor retry boundary. Reconcile

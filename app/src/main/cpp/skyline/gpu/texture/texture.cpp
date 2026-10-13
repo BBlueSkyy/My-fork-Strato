@@ -784,90 +784,159 @@ namespace skyline::gpu {
         }
     }
 
+    bool Texture::IsGuestLayoutReversible(const GuestTexture &value) {
+        if (!value.format || !value.format->bpb || value.format->vkAspect != vk::ImageAspectFlagBits::eColor ||
+            value.GetImageType() != vk::ImageType::e2D || value.baseArrayLayer || !value.layerCount ||
+            !value.dimensions.width || !value.dimensions.height || !value.mipLevelCount ||
+            value.mipLevelCount > static_cast<u32>(std::bit_width(std::max(value.dimensions.width, value.dimensions.height))))
+            return false;
+        size_t layerBytes{};
+        if (value.tileConfig.mode == texture::TileMode::Block) {
+            if (!std::has_single_bit(static_cast<u32>(value.tileConfig.blockHeight)) || value.tileConfig.blockDepth != 1) return false;
+            auto layouts{texture::GetBlockLinearMipLayout(value.dimensions,
+                value.format->blockHeight, value.format->blockWidth, value.format->bpb,
+                value.format->blockHeight, value.format->blockWidth, value.format->bpb,
+                value.tileConfig.blockHeight, value.tileConfig.blockDepth, value.mipLevelCount)};
+            size_t uploadOffset{};
+            const auto uploadAlignment{std::lcm<size_t>(4, value.format->bpb)};
+            for (const auto &level : layouts) {
+                // Existing staging copies are tightly packed. Do not enable a
+                // layout whose mip offsets violate Vulkan buffer-copy alignment.
+                if (uploadOffset % uploadAlignment) return false;
+                uploadOffset += level.linearSize * value.layerCount;
+                layerBytes += level.blockLinearSize;
+            }
+        } else {
+            return false; // Pitch/linear reconstruction is outside this block-linear fallback.
+        }
+        const size_t stride{value.layerStride ? value.layerStride : value.CalculateLayerSize()};
+        size_t mapped{};
+        for (const auto &mapping : value.mappings) {
+            if (!mapping.valid() || mapping.size() > SIZE_MAX - mapped) return false;
+            mapped += mapping.size();
+        }
+        return stride && layerBytes <= stride && layerBytes <= mapped &&
+            value.layerCount - 1 <= (mapped - layerBytes) / stride;
+    }
+
     bool Texture::CanReconcileGuestLayout(const GuestTexture &requested) const {
         std::scoped_lock stateLock{stateMutex};
-        auto reversible{[](const GuestTexture &value) {
-            if (!value.format || !value.format->bpb || value.format->vkAspect != vk::ImageAspectFlagBits::eColor ||
-                value.GetImageType() != vk::ImageType::e2D || value.baseArrayLayer || !value.layerCount ||
-                !value.dimensions.width || !value.dimensions.height || !value.mipLevelCount ||
-                value.mipLevelCount > static_cast<u32>(std::bit_width(std::max(value.dimensions.width, value.dimensions.height))))
-                return false;
-            size_t layerBytes{};
-            if (value.tileConfig.mode == texture::TileMode::Block) {
-                if (!std::has_single_bit(static_cast<u32>(value.tileConfig.blockHeight)) || value.tileConfig.blockDepth != 1) return false;
-                auto layouts{texture::GetBlockLinearMipLayout(value.dimensions,
-                    value.format->blockHeight, value.format->blockWidth, value.format->bpb,
-                    value.format->blockHeight, value.format->blockWidth, value.format->bpb,
-                    value.tileConfig.blockHeight, value.tileConfig.blockDepth, value.mipLevelCount)};
-                size_t uploadOffset{};
-                const auto uploadAlignment{std::lcm<size_t>(4, value.format->bpb)};
-                for (const auto &level : layouts) {
-                    // Existing staging copies are tightly packed. Do not enable a
-                    // layout whose mip offsets violate Vulkan buffer-copy alignment.
-                    if (uploadOffset % uploadAlignment) return false;
-                    uploadOffset += level.linearSize * value.layerCount;
-                    layerBytes += level.blockLinearSize;
-                }
-            } else {
-                return false; // Pitch/linear reconstruction is outside this block-linear fallback.
-            }
-            const size_t stride{value.layerStride ? value.layerStride : value.CalculateLayerSize()};
-            size_t mapped{};
-            for (const auto &mapping : value.mappings) {
-                if (!mapping.valid() || mapping.size() > SIZE_MAX - mapped) return false;
-                mapped += mapping.size();
-            }
-            return stride && layerBytes <= stride && layerBytes <= mapped &&
-                value.layerCount - 1 <= (mapped - layerBytes) / stride;
-        }};
         // A converted format cannot be re-encoded losslessly (e.g. decoded BCn).
         // Discarded padding/tails also cannot be recovered from this image.
         return guest && format == guest->format && ConvertHostCompatibleFormat(requested.format, gpu.traits) == requested.format && !memoryFreed &&
             sampleCount == vk::SampleCountFlagBits::e1 && tiling == vk::ImageTiling::eOptimal &&
-            reversible(*guest) && reversible(requested) &&
+            IsGuestLayoutReversible(*guest) && IsGuestLayoutReversible(requested) &&
             guest->mappings.size() == requested.mappings.size() &&
             std::equal(guest->mappings.begin(), guest->mappings.end(), requested.mappings.begin(),
                 [](const auto &a, const auto &b) { return a.data() == b.data() && a.size() == b.size(); });
     }
 
-    void Texture::RegisterAliases(std::vector<std::shared_ptr<Texture>> textures) {
-        // Registration happens only after the executor releases its locks. Include
-        // every existing member so a third cached alias cannot retain old ownership.
+    std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(std::vector<std::shared_ptr<Texture>> textures, const GuestTexture *requested) {
+        if (textures.empty()) return {};
+        // The requested layout also covers a cache containing only ineligible
+        // history. Direct callers use their first eligible member as the reference.
+        const auto reference{textures.front()};
         for (size_t i{}; i < textures.size(); ++i) {
             if (auto group{textures[i]->aliasGroup.load()}) {
                 std::scoped_lock metadata{group->mutex};
                 for (const auto &weak : group->members)
-                    if (auto member{weak.lock()}; member && std::find(textures.begin(), textures.end(), member) == textures.end())
+                    if (auto member{weak.lock()}; member && !member->aliasRetired.load() && std::find(textures.begin(), textures.end(), member) == textures.end())
                         textures.push_back(std::move(member));
             }
         }
         std::sort(textures.begin(), textures.end(), [](const auto &a, const auto &b) { return std::less<Texture *>{}(a.get(), b.get()); });
         textures.erase(std::unique(textures.begin(), textures.end()), textures.end());
-        if (textures.empty()) return;
-        // Stable pointer order. Trap callbacks use try-lock and never wait while
-        // holding stateMutex; metadata locks above were released before these locks.
+        // Registration runs after executor submission releases its resource locks.
+        // Trap callbacks only try-lock these resources while holding stateMutex.
         std::vector<std::unique_lock<Texture>> locks;
         for (auto &texture : textures) locks.emplace_back(*texture);
-        for (const auto &texture : textures)
-            if (!texture->CanReconcileGuestLayout(*textures.front()->guest))
+        if (!requested) {
+            if (!reference->guest || !reference->CanReconcileGuestLayout(*reference->guest))
                 throw exception("Cannot losslessly reconcile these texture alias layouts");
+            requested = &*reference->guest;
+        }
+        if (!IsGuestLayoutReversible(*requested) || ConvertHostCompatibleFormat(requested->format, reference->gpu.traits) != requested->format)
+            throw exception("Cannot losslessly reconcile the requested guest layout");
+        std::vector<std::shared_ptr<Texture>> eligible, historical;
+        for (const auto &texture : textures) {
+            if (!texture->aliasRetired.load() && texture->CanReconcileGuestLayout(*requested))
+                eligible.push_back(texture);
+            else
+                historical.push_back(texture);
+        }
+        const auto newest{*std::max_element(textures.begin(), textures.end(), [](const auto &a, const auto &b) {
+            return a->gpuWriteSerial < b->gpuWriteSerial;
+        })};
+        // A non-reversible GPU writer cannot be encoded through guest memory.
+        // Retirement is safe only after readback or a strictly newer writer has
+        // superseded it. An untracked/tied writer is deliberately rejected.
+        for (const auto &texture : historical) {
+            std::scoped_lock stateLock{texture->stateMutex};
+            bool unpreserved{texture->dirtyState == DirtyState::GpuDirty || texture->memoryFreed ||
+                texture->gpuWriteSerial > texture->gpuReadbackSerial};
+            if (auto previousGroup{texture->aliasGroup.load()}) {
+                std::scoped_lock metadata{previousGroup->mutex};
+                unpreserved |= previousGroup->writerIdentity == texture.get() &&
+                    previousGroup->guestGeneration != previousGroup->generation;
+            }
+            if (!texture->aliasStale.load() && unpreserved &&
+                texture->gpuWriteSerial >= newest->gpuWriteSerial)
+                throw exception("Cannot retire an authoritative non-reversible texture alias");
+        }
         auto group{std::make_shared<texture::AliasGroup>()};
-        group->members.reserve(textures.size());
-        auto ordered{textures};
-        std::stable_sort(ordered.begin(), ordered.end(), [](const auto &a, const auto &b) { return a->gpuWriteSerial < b->gpuWriteSerial; });
-        // Only the newest writer may encode these bytes. Older GpuDirty images
-        // must not overwrite its already-completed readback when it is Clean.
-        ordered.back()->SynchronizeGuest(false, true);
-        group->writer = ordered.back();
-        group->writerIdentity = ordered.back().get();
-        for (auto &texture : textures) {
-            group->members.emplace_back(texture);
-            texture->aliasStale = texture != ordered.back();
+        group->members.reserve(eligible.size());
+        for (const auto &texture : eligible) group->members.emplace_back(texture);
+        // A surviving stale member is not the current image, even if it has
+        // the highest remaining serial after historical writer retirement.
+        if (newest->aliasStale.load()) {
+            const auto previousGroup{newest->aliasGroup.load()};
+            if (!previousGroup)
+                throw exception("Stale texture alias has no authoritative guest generation");
+            std::scoped_lock operation{previousGroup->operationMutex};
+            std::scoped_lock metadata{previousGroup->mutex};
+            if (previousGroup->guestGeneration != previousGroup->generation)
+                throw exception("Stale texture alias cannot replace an unpreserved writer");
+        }
+        const bool newestEligible{!newest->aliasStale.load() && std::find(eligible.begin(), eligible.end(), newest) != eligible.end()};
+        if (!eligible.empty()) {
+            const auto writer{newestEligible ? newest : eligible.front()};
+            group->writer = writer;
+            group->writerIdentity = writer.get();
+        }
+        // Only the newest writer may encode these bytes. A completed readback
+        // from even a historical layout already makes guest memory authoritative.
+        if (newestEligible) {
+            const auto previousState{[&] {
+                std::scoped_lock stateLock{newest->stateMutex};
+                return newest->dirtyState;
+            }()};
+            try {
+                newest->SynchronizeGuest(false, true);
+                std::scoped_lock stateLock{newest->stateMutex};
+                if (previousState != DirtyState::CpuDirty && newest->gpuWriteSerial > newest->gpuReadbackSerial)
+                    throw exception("Texture alias writer has no completed guest encoding");
+            } catch (...) {
+                std::scoped_lock stateLock{newest->stateMutex};
+                newest->dirtyState = previousState;
+                throw;
+            }
+        }
+        // No retirement/publication before the authoritative readback succeeds.
+        for (const auto &texture : historical) {
+            texture->aliasStale = true;
+            texture->aliasRetired = true;
+            texture->replaced = true; // Exclude manager lookups; retained views are guarded too.
+        }
+        for (auto &texture : eligible) {
+            texture->aliasStale = !newestEligible || texture != newest;
             texture->aliasGroup.store(group);
         }
+        return group;
     }
 
     void Texture::RequireAliasCoherence(ContextTag context) {
+        if (aliasRetired.load())
+            throw exception("Retired texture alias must be resolved through the texture manager");
         if (!aliasStale.load()) return;
         // Caller may already own this Texture through the executor. Never take
         // another Texture's lock here; unwind and release all executor locks first.
@@ -876,6 +945,8 @@ namespace skyline::gpu {
     }
 
     void Texture::ReconcileAliases() {
+        if (aliasRetired.load())
+            throw exception("Cannot reconcile a retired non-reversible texture alias");
         auto group{aliasGroup.load()};
         if (!group || !aliasStale.load()) return;
         std::shared_ptr<Texture> writer;
@@ -934,6 +1005,8 @@ namespace skyline::gpu {
     }
 
     void Texture::RecordGpuWrite() {
+        if (aliasRetired.load())
+            throw exception("Cannot write through a retired non-reversible texture alias");
         auto alias{aliasGroup.load()};
         std::unique_lock<std::recursive_mutex> aliasLock;
         if (alias) aliasLock = std::unique_lock{alias->operationMutex};
@@ -1140,10 +1213,13 @@ namespace skyline::gpu {
             throw exception("Host -> Guest synchronization of images tiled as '{}' isn't implemented", vk::to_string(tiling));
         }
 
-        if (alias) {
+        {
             std::scoped_lock lock{stateMutex};
-            dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
-            memoryFreed = false;
+            gpuReadbackSerial = gpuWriteSerial;
+            if (alias) {
+                dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
+                memoryFreed = false;
+            }
         }
         if (auto group{aliasGroup.load()}) {
             std::scoped_lock metadata{group->mutex};

@@ -279,6 +279,35 @@ namespace skyline::gpu {
     }
     struct UsageTracker { struct Intervals { unsigned count{}; void Insert(span<u8>) { ++count; } } dirtyIntervals; };
     struct TextureView;
+    struct GuestTexture {
+        NativeFormat *format{};
+        vk::Extent3D dimensions{128, 128, 1};
+        u32 baseArrayLayer{}, mipLevelCount{3}, layerStride{90112};
+        u32 viewMipBase{}, viewMipCount{8}, layerCount{6};
+        vk::ImageViewType viewType{vk::ImageViewType::eCube};
+        vk::ImageAspectFlags aspect{vk::ImageAspectFlagBits::eColor};
+        vk::ComponentMapping swizzle{};
+        struct TileConfig {
+            texture::TileMode mode{texture::TileMode::Block}; size_t blockHeight{1}, blockDepth{1}; u32 pitch{};
+            bool operator==(const TileConfig &) const = default;
+        } tileConfig;
+        using Mappings = std::vector<span<u8>>;
+        Mappings mappings;
+        vk::ImageType GetImageType() const {
+            if (viewType==vk::ImageViewType::e3D || dimensions.depth>1) return vk::ImageType::e3D;
+            if (viewType==vk::ImageViewType::e1D || viewType==vk::ImageViewType::e1DArray) return vk::ImageType::e1D;
+            return vk::ImageType::e2D;
+        }
+        u32 GetLayerStride() { return layerStride; }
+        u32 GetViewLayerCount() const { return layerCount; }
+        u32 GetViewDepth() const { return dimensions.depth; }
+        u32 CalculateLayerSize() const {
+            auto layouts{texture::GetBlockLinearMipLayout(dimensions,1,1,4,1,1,4,tileConfig.blockHeight,tileConfig.blockDepth,mipLevelCount)};
+            size_t bytes{}; for (const auto &level : layouts) bytes += level.blockLinearSize;
+            return bytes;
+        }
+    };
+
     class Texture : public std::enable_shared_from_this<Texture> {
       public:
         using BackingType = std::variant<vk::Image, memory::Image>;
@@ -295,34 +324,7 @@ namespace skyline::gpu {
         GPU &gpu;
         NativeFormat native;
         NativeFormat *format{&native};
-        struct Guest {
-            NativeFormat *format{};
-            vk::Extent3D dimensions{128, 128, 1};
-            u32 baseArrayLayer{}, mipLevelCount{3}, layerStride{90112};
-            u32 viewMipBase{}, viewMipCount{8}, layerCount{6};
-            vk::ImageViewType viewType{vk::ImageViewType::eCube};
-            vk::ImageAspectFlags aspect{vk::ImageAspectFlagBits::eColor};
-            vk::ComponentMapping swizzle{};
-            struct TileConfig {
-                texture::TileMode mode{texture::TileMode::Block}; size_t blockHeight{1}, blockDepth{1}; u32 pitch{};
-                bool operator==(const TileConfig &) const = default;
-            } tileConfig;
-            using Mappings = std::vector<span<u8>>;
-            Mappings mappings;
-            vk::ImageType GetImageType() const {
-                if (viewType==vk::ImageViewType::e3D || dimensions.depth>1) return vk::ImageType::e3D;
-                if (viewType==vk::ImageViewType::e1D || viewType==vk::ImageViewType::e1DArray) return vk::ImageType::e1D;
-                return vk::ImageType::e2D;
-            }
-            u32 GetLayerStride() { return layerStride; }
-            u32 GetViewLayerCount() const { return layerCount; }
-            u32 GetViewDepth() const { return dimensions.depth; }
-            u32 CalculateLayerSize() const {
-                auto layouts{texture::GetBlockLinearMipLayout(dimensions,1,1,4,1,1,4,tileConfig.blockHeight,tileConfig.blockDepth,mipLevelCount)};
-                size_t bytes{}; for (const auto &level : layouts) bytes += level.blockLinearSize;
-                return bytes;
-            }
-        };
+        using Guest = GuestTexture;
         std::optional<Guest> guest{Guest{}};
         Texture(GPU &gpu, Guest value) : Texture(gpu,value.format->vkFormat,value.dimensions,value.mipLevelCount,value.layerCount) {
             guest=std::move(value);
@@ -352,7 +354,8 @@ namespace skyline::gpu {
         mutable std::recursive_mutex stateMutex;
         std::atomic<std::shared_ptr<texture::AliasGroup>> aliasGroup{};
         std::atomic<bool> aliasStale{};
-        u64 gpuWriteSerial{};
+        std::atomic<bool> aliasRetired{};
+        u64 gpuWriteSerial{},gpuReadbackSerial{};
         bool replaced{};
         vk::PipelineStageFlags pendingStageMask{}, readStageMask{};
         std::recursive_mutex mutex;
@@ -361,7 +364,8 @@ namespace skyline::gpu {
         bool try_lock() { return mutex.try_lock(); }
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const Guest &) const;
-        static void RegisterAliases(std::vector<std::shared_ptr<Texture>>);
+        static bool IsGuestLayoutReversible(const GuestTexture &);
+        static std::shared_ptr<texture::AliasGroup> RegisterAliases(std::vector<std::shared_ptr<Texture>>, const GuestTexture * = nullptr);
         void RequireAliasCoherence(ContextTag);
         void ReconcileAliases();
         void RecordGpuWrite();
@@ -451,7 +455,6 @@ namespace skyline::gpu {
     };
     struct ContextLock { ContextLock(ContextTag, Texture &) {} };
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
-    using GuestTexture = Texture::Guest;
     #include "manager_class.inc"
     namespace texture {
         #include "depth_offset.inc"
@@ -1296,6 +1299,166 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         gpu.scheduler.Complete();
     }
 
+    // Exact mappings also find obsolete representations whose host format
+    // cannot round-trip. They are not necessarily the current guest writer.
+    void CheckHistoricalAlias(GPU &gpu, bool authoritative, bool writerReadBack, bool alreadyGrouped, bool executorContext, bool skippedReadback = false) {
+        std::vector<u8> bytes(90112*6,0x39),expected{bytes};
+        TextureManager manager{gpu}; // Guest mappings outlive every manager entry.
+        GuestTexture descriptor;
+        descriptor.format=format::R8G8B8A8Unorm; descriptor.dimensions=vk::Extent3D{128,128,1};
+        descriptor.layerCount=6; descriptor.layerStride=90112; descriptor.mipLevelCount=descriptor.viewMipCount=1;
+        descriptor.viewType=vk::ImageViewType::e2DArray; descriptor.mappings.push_back(span<u8>{bytes});
+        auto oldDescriptor{descriptor};
+        if (alreadyGrouped) { oldDescriptor.layerCount=3; oldDescriptor.layerStride=180224; }
+        else oldDescriptor.dimensions.width=16;
+        auto old{manager.FindOrCreate(oldDescriptor)};
+        AliasRead(old->texture);
+        WriteAliasRenderTarget(old->texture,{1,0,0,1});
+        { std::scoped_lock lock{*old->texture}; old->texture->SynchronizeGuest(false,true); }
+        auto current{manager.FindOrCreate(descriptor)};
+        AliasRead(current->texture);
+        if (alreadyGrouped) Texture::RegisterAliases({current->texture,old->texture});
+        if (authoritative) {
+            WriteAliasRenderTarget(old->texture,{0,0,1,1});
+            if (writerReadBack) {
+                std::scoped_lock lock{*old->texture}; old->texture->SynchronizeGuest(false,true);
+            }
+            expected=bytes;
+        } else {
+            WriteAliasRenderTarget(current->texture,{0,1,0,1});
+            expected=bytes; EncodeAliasBase(current->texture,expected,{0,255,0,255});
+            if (writerReadBack) {
+                std::scoped_lock lock{*current->texture}; current->texture->SynchronizeGuest(false,true);
+            }
+            // Its old GPU contents are still present but superseded by current.
+            old->texture->dirtyState=Texture::DirtyState::GpuDirty;
+        }
+        NativeFormat converted{*old->texture->format};
+        old->texture->format=&converted; // Same allocation, non-reversible host representation.
+        if (skippedReadback) {
+            std::scoped_lock lock{*old->texture}; old->texture->SynchronizeGuest(false,true);
+            assert(old->texture->gpuReadbackSerial < old->texture->gpuWriteSerial);
+        }
+        // The superseded historical image may no longer have guest backing of
+        // its own. Only eligible aliases should acquire reconciliation leases.
+        if (!authoritative) old->texture->memoryFreed=true;
+        auto different{descriptor}; different.layerCount=3; different.layerStride=180224;
+        assert(!old->texture->CanReconcileGuestLayout(different));
+        assert(current->texture->CanReconcileGuestLayout(different));
+        const auto before{bytes};
+        std::shared_ptr<TextureView> next;
+        bool rejected{};
+        unsigned registrations{};
+        interconnect::CommandExecutor executor;
+        try {
+            texture::RetryBackingPromotion([&] { next=manager.FindOrCreate(different,executorContext ? 1 : 0); },[&](const auto &request) {
+                using Request=std::remove_cvref_t<decltype(request)>;
+                if constexpr(std::is_same_v<Request,TextureAliasReconciliationRequest>) ++registrations;
+                executor.HandleTextureBackingPromotion(request);
+            });
+        } catch (const std::runtime_error &) { rejected=true; }
+        if (authoritative && !writerReadBack) {
+            assert(rejected && !next && bytes==before);
+            assert(!old->texture->aliasStale && !old->texture->replaced);
+            assert(old->texture->dirtyState==(skippedReadback && !alreadyGrouped ? Texture::DirtyState::Clean : Texture::DirtyState::GpuDirty));
+        } else {
+            assert(!rejected && next && registrations==static_cast<unsigned>(executorContext) && bytes==expected);
+            assert(old->texture->aliasStale && old->texture->replaced);
+            assert(current->texture->aliasGroup.load()==next->texture->aliasGroup.load());
+            { std::scoped_lock lock{*old->texture}; old->texture->SynchronizeGuest(false,true); }
+            assert(bytes==expected); // A retired stale image cannot encode over the writer.
+            bool cachedRejected{};
+            try { old->texture->RequireAliasCoherence(1); } catch (const std::runtime_error &) { cachedRejected=true; }
+            assert(cachedRejected); // Retained views cannot revive an obsolete writer.
+            bool writeRejected{};
+            try { old->texture->RecordGpuWrite(); } catch (const std::runtime_error &) { writeRejected=true; }
+            assert(writeRejected);
+            AliasRead(next->texture); VerifyAliasHost(next->texture,expected);
+            AliasRead(current->texture); VerifyAliasHost(current->texture,expected);
+            WriteAliasRenderTarget(next->texture,{1,1,0,1}); EncodeAliasBase(next->texture,expected,{255,255,0,255});
+            AliasRead(current->texture); VerifyAliasHost(current->texture,expected);
+            const auto submissions{gpu.scheduler.submissions},allocations{gpu.memory.count};
+            for (unsigned i{};i<8;++i) {
+                assert(manager.FindOrCreate(different)->texture==next->texture);
+                assert(manager.FindOrCreate(descriptor)->texture==current->texture);
+                AliasRead(next->texture); AliasRead(current->texture);
+            }
+            assert(gpu.scheduler.submissions==submissions && gpu.memory.count==allocations);
+        }
+        old->texture->format=old->texture->guest->format;
+        old->texture->memoryFreed=false;
+        gpu.scheduler.Complete();
+    }
+
+    void CheckOnlyHistoricalAliases(GPU &gpu, bool readBack, bool executorContext) {
+        std::vector<u8> bytes(90112*6,0x58),expected{bytes};
+        TextureManager manager{gpu};
+        GuestTexture descriptor;
+        descriptor.format=format::R8G8B8A8Unorm; descriptor.dimensions=vk::Extent3D{128,128,1};
+        descriptor.layerCount=6; descriptor.layerStride=90112; descriptor.mipLevelCount=descriptor.viewMipCount=1;
+        descriptor.viewType=vk::ImageViewType::e2DArray; descriptor.mappings.push_back(span<u8>{bytes});
+        auto old{manager.FindOrCreate(descriptor)};
+        AliasRead(old->texture); WriteAliasRenderTarget(old->texture,{1,0,1,1});
+        EncodeAliasBase(old->texture,expected,{255,0,255,255});
+        if (readBack) { std::scoped_lock lock{*old->texture}; old->texture->SynchronizeGuest(false,true); }
+        NativeFormat converted{*old->texture->format}; old->texture->format=&converted;
+        if (!readBack) { // Clean from a skipped conversion is not preservation.
+            std::scoped_lock lock{*old->texture}; old->texture->SynchronizeGuest(false,true);
+            assert(old->texture->dirtyState==Texture::DirtyState::Clean && bytes!=expected);
+        }
+        auto requested{descriptor}; requested.layerStride=180224; requested.layerCount=3;
+        std::shared_ptr<TextureView> next;
+        interconnect::CommandExecutor executor;
+        bool rejected{};
+        try {
+            texture::RetryBackingPromotion([&] { next=manager.FindOrCreate(requested,executorContext ? 1 : 0); },[&](const auto &request) {
+                executor.HandleTextureBackingPromotion(request);
+            });
+        } catch(const std::runtime_error &) { rejected=true; }
+        if (!readBack) {
+            assert(rejected && !next && !old->texture->aliasRetired && !old->texture->replaced);
+            assert(bytes!=expected);
+        } else {
+            assert(!rejected && next && next->texture!=old->texture && old->texture->aliasRetired);
+            assert(bytes==expected);
+            AliasRead(next->texture); VerifyAliasHost(next->texture,expected);
+            const auto submissions{gpu.scheduler.submissions},allocations{gpu.memory.count};
+            for (unsigned i{};i<8;++i) {
+                assert(manager.FindOrCreate(requested)->texture==next->texture);
+                AliasRead(next->texture);
+            }
+            assert(gpu.scheduler.submissions==submissions && gpu.memory.count==allocations);
+        }
+        old->texture->format=old->texture->guest->format;
+        gpu.scheduler.Complete();
+    }
+
+    void CheckHistoricalAliasReadbackFailure(GPU &gpu) {
+        std::vector<u8> bytes(90112*6,0x42),expected{bytes};
+        auto make{[&](u32 stride,u32 layers) {
+            auto value{std::make_shared<Texture>(gpu,vk::Format::eR8G8B8A8Unorm,vk::Extent3D{128,128,1},1,layers)};
+            value->guest->layerStride=stride; value->guest->viewType=vk::ImageViewType::e2DArray;
+            value->guest->viewMipCount=1; value->guest->mappings.push_back(span<u8>{bytes});
+            value->mirror=bytes; value->dirtyState=Texture::DirtyState::CpuDirty;
+            return value;
+        }};
+        auto historical{make(90112,6)},current{make(180224,3)};
+        WriteAliasRenderTarget(historical,{1,0,0,1});
+        WriteAliasRenderTarget(current,{0,1,0,1}); EncodeAliasBase(current,expected,{0,255,0,255});
+        NativeFormat converted{*historical->format}; historical->format=&converted;
+        const auto before{bytes};
+        gpu.scheduler.failRecording=true;
+        bool failed{}; try { Texture::RegisterAliases({current,historical}); } catch (const std::bad_alloc &) { failed=true; }
+        gpu.scheduler.failRecording=false;
+        assert(failed && bytes==before && current->dirtyState==Texture::DirtyState::GpuDirty);
+        assert(!historical->aliasStale && !historical->aliasRetired && !historical->replaced);
+        assert(!current->aliasGroup.load());
+        Texture::RegisterAliases({current,historical});
+        assert(bytes==expected && historical->aliasRetired && historical->aliasStale);
+        historical->format=historical->guest->format;
+        gpu.scheduler.Complete();
+    }
+
     void CheckAliasTraps(GPU &gpu) {
         TextureManager manager{gpu};
         std::vector<u8> bytes(90112*6,0x77),expected{bytes};
@@ -1380,7 +1543,17 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(a->dirtyState==Texture::DirtyState::GpuDirty && a->gpuWriteSerial<b->gpuWriteSerial);
         Texture::RegisterAliases({b,a});
         assert(bytes==expected); // Older GpuDirty cannot replace an already-read-back newer writer.
+        NativeFormat converted{*b->format}; b->format=&converted;
+        Texture::RegisterAliases({a,b},&*a->guest);
+        assert(b->aliasRetired && a->aliasStale);
+        // The highest surviving serial still belongs to a stale image. Adding
+        // another eligible alias must keep guest bytes authoritative, not revive it.
+        auto c{make(270336,2)};
+        Texture::RegisterAliases({a,c});
+        assert(a->aliasStale && c->aliasStale && bytes==expected);
         AliasRead(a); VerifyAliasHost(a,expected);
+        AliasRead(c); VerifyAliasHost(c,expected);
+        b->format=b->guest->format;
         gpu.scheduler.Complete();
     }
 
@@ -1463,6 +1636,14 @@ int main() {
             CheckSeparateLayouts(gpu);
             CheckIndependentAliases(gpu);
             CheckManagerAliases(gpu);
+            for (bool authoritative : {false,true})
+                for (bool readBack : {false,true})
+                    for (bool grouped : {false,true})
+                        for (bool context : {false,true}) CheckHistoricalAlias(gpu,authoritative,readBack,grouped,context);
+            CheckHistoricalAlias(gpu,true,false,false,true,true);
+            for (bool readBack : {false,true})
+                for (bool context : {false,true}) CheckOnlyHistoricalAliases(gpu,readBack,context);
+            CheckHistoricalAliasReadbackFailure(gpu);
             CheckAliasTraps(gpu);
             CheckCpuWriteBeforeSubmit(gpu);
             CheckRegistrationAfterReadback(gpu);
@@ -1476,5 +1657,5 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
-    std::puts("Production Texman: full FindOrCreate separate-layout fallback, three aliases, alternating RT writers, stale invalidation, real CPU traps/contention, failed download/upload recovery, test-only Vulkan transport, no redundant copies, views/fences; existing promotion and 1-to-8 mip expansion (6 faces) passed; zero Vulkan validation errors");
+    std::puts("Production Texman: full FindOrCreate separate-layout fallback, three aliases, alternating RT writers, stale invalidation, historical non-reversible alias retirement/authority/rollback, real CPU traps/contention, failed download/upload recovery, test-only Vulkan transport, no redundant copies, views/fences; existing promotion and 1-to-8 mip expansion (6 faces) passed; zero Vulkan validation errors");
 }
