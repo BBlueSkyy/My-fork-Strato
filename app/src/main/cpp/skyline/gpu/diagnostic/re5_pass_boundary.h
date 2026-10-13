@@ -23,8 +23,16 @@ namespace skyline::gpu::diagnostic {
         static constexpr std::uint32_t MaxPasses{48};
         static constexpr std::uint32_t MaxTexmanEvents{512};
         static constexpr std::size_t MaxReadbackBytes{128ULL * 1024 * 1024};
+        // Separate low-footprint sampling budget, not charged as full-image captures.
+        static constexpr std::uint32_t MaxFocusedProbes{96};
+        static constexpr std::size_t MaxFocusedBytes{256ULL * 1024};
 
         struct PassTicket {
+            std::uint32_t index{};
+            std::uint32_t present{};
+            std::string directory;
+        };
+        struct FocusedTicket {
             std::uint32_t index{};
             std::uint32_t present{};
             std::string directory;
@@ -41,6 +49,8 @@ namespace skyline::gpu::diagnostic {
         std::uint32_t nextPass{};
         std::uint32_t texmanEvents{};
         std::size_t readbackBytes{};
+        std::uint32_t focusedProbes{};
+        std::size_t focusedBytes{};
         std::deque<std::string> recentTexman, recentPasses, recentProbes;
 
         static void PushRecent(std::deque<std::string> &ring, std::string line, std::size_t limit) {
@@ -94,6 +104,8 @@ namespace skyline::gpu::diagnostic {
             nextPass = 0;
             texmanEvents = 0;
             readbackBytes = 0;
+            focusedProbes = 0;
+            focusedBytes = 0;
             presentIndex.store(0, std::memory_order_relaxed);
             {
                 std::ofstream(std::filesystem::path(path) / "pass_boundary.txt", std::ios::trunc)
@@ -115,6 +127,15 @@ namespace skyline::gpu::diagnostic {
                 return std::nullopt;
             readbackBytes += bytes;
             return PassTicket{nextPass++, presentIndex.load(std::memory_order_relaxed), path};
+        }
+
+        std::optional<FocusedTicket> ReserveFocused(std::size_t bytes) {
+            std::scoped_lock lock{mutex};
+            if (!active.load(std::memory_order_acquire) || !bytes ||
+                focusedProbes >= MaxFocusedProbes || bytes > MaxFocusedBytes - focusedBytes)
+                return std::nullopt;
+            focusedBytes += bytes;
+            return FocusedTicket{focusedProbes++, presentIndex.load(std::memory_order_relaxed), path};
         }
 
         void RecordTexman(std::string line) {
