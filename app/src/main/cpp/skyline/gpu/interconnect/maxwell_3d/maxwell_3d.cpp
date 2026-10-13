@@ -450,58 +450,87 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto *pipeline{activeState.GetPipeline()};
         if (!pipeline)
             return {};
+
+        constexpr u64 TargetFs{0xF3805B306B15F89AULL};
         const auto hash{pipeline->sourcePackedState.shaderHashes[static_cast<size_t>(engine::Pipeline::Shader::Type::Pixel)]};
-        const u32 target{hash == 0xF3805B306B15F89AULL ? 0U : 1U};
-        if (hash != 0xF3805B306B15F89AULL && hash != 0xB141A1171435D55EULL)
+        if (hash != TargetFs || !HasDiagnosticSceneAttachments(activeState))
             return {};
-        auto *depth{activeState.GetDepthAttachment()};
-        if (!HasDiagnosticSceneAttachments(activeState))
+
+        // Probe only the draw that actually carries the known 128x128 Cube at
+        // FS binding 21. This avoids spending the scalar budget on unrelated F380 draws.
+        const DiagnosticImageBinding *cube{};
+        for (const auto &image : diagnosticImageBindings) {
+            if (image.stage == 4 && image.binding == 21 && image.view &&
+                image.view->type == vk::ImageViewType::eCube && image.view->texture &&
+                image.view->texture->dimensions.width == 128 &&
+                image.view->texture->dimensions.height == 128) {
+                cube = &image;
+                break;
+            }
+        }
+        if (!cube)
             return {};
+
         const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
-        if (!capture.SampleScalarDraw(interval, target))
+        if (!capture.SampleScalarDraw(interval, 0))
             return {};
         auto ticket{capture.ReserveScalarProbe(interval)};
         if (!ticket)
             return {};
+
+        constexpr u32 LodCbufIndex{12};
+        constexpr u32 LodOffset{4};
+        auto *depth{activeState.GetDepthAttachment()};
         auto probe{std::make_shared<DiagnosticScalarProbe>()};
-        probe->descriptor = diagnosticUniformBuffers[target];
-        probe->byteOffset = target == 0 ? 0x1C0 : 0;
+        probe->descriptor = diagnosticUniformBuffers[0];
+        probe->byteOffset = LodOffset;
         probe->index = ticket->index;
         probe->directory = std::move(ticket->directory);
         probe->metadata = fmt::format(
-            "probe={} approx_present={} kind={} count={} instances={} fs={:016X} stage=4 cbuf={} byte_offset={} "
-            "binding={} array_element={} descriptor_set=0x{:X} descriptor_mode={} source={} "
-            "guest_time=draw_preparation gpu_time=natural_render_pass_end depth_texture=0x{:X}\n",
-            probe->index, interval, kind, count, instances, hash, target + 3, probe->byteOffset,
+            "probe={} purpose=cubemap_explicit_lod approx_present={} kind={} count={} instances={} "
+            "fs={:016X} stage=4 cbuf=12 byte_offset=4 binding={} array_element={} "
+            "descriptor_set=0x{:X} descriptor_mode={} source={} depth_texture=0x{:X}\n",
+            probe->index, interval, kind, count, instances, hash,
             probe->descriptor.binding, probe->descriptor.element,
             activeDescriptorSet ? reinterpret_cast<uintptr_t>(static_cast<VkDescriptorSet>(**activeDescriptorSet)) : 0,
             ctx.gpu.traits.supportsPushDescriptors ? "push" : "allocated_set",
             !probe->descriptor.info ? "unavailable" : probe->descriptor.immutableMegaBuffer ? "megabuffer" : "buffer_view",
-            reinterpret_cast<uintptr_t>(depth->texture.get()));
-        probe->metadata += "shaders=";
-        for (const auto shaderHash : pipeline->sourcePackedState.shaderHashes)
-            probe->metadata += fmt::format("{:016X},", shaderHash);
-        probe->metadata += '\n';
-        for (auto *view : activeState.GetColorAttachments())
-            if (view && view->texture)
-                probe->metadata += fmt::format("color_texture=0x{:X} dimensions={}x{} format={}\n",
-                    reinterpret_cast<uintptr_t>(view->texture.get()), view->texture->dimensions.width,
-                    view->texture->dimensions.height, vk::to_string(view->texture->format->vkFormat));
-        auto &view{constantBuffers.boundConstantBuffers[4][target + 3].view};
-        if (view && diagnostic::ScalarRangeValid(view.size, probe->byteOffset)) {
+            depth && depth->texture ? reinterpret_cast<uintptr_t>(depth->texture.get()) : 0);
+
+        const auto textureIndex{cube->rawHandle & ((1U << 20) - 1U)};
+        const auto samplerIndex{cube->rawHandle >> 20};
+        probe->metadata += fmt::format(
+            "cube_binding=21 cube_array_element={} cube_handle=0x{:08X} texture_index={} sampler_index={} "
+            "texture_id={} view_mip={}+{} view_layer={}+{}\n",
+            cube->element, cube->rawHandle, textureIndex, samplerIndex,
+            cube->view->texture->diagnosticIdentity,
+            cube->view->range.baseMipLevel, cube->view->range.levelCount,
+            cube->view->range.baseArrayLayer, cube->view->range.layerCount);
+        if (cube->info)
+            probe->metadata += fmt::format("vk_sampler=0x{:X} vk_image_view=0x{:X} descriptor_layout={}\n",
+                reinterpret_cast<uintptr_t>(static_cast<VkSampler>(cube->info->sampler)),
+                reinterpret_cast<uintptr_t>(static_cast<VkImageView>(cube->info->imageView)),
+                vk::to_string(cube->info->imageLayout));
+        probe->metadata += samplers.DiagnosticLodSummary(samplerIndex, textureIndex) + "\n";
+
+        auto &view{constantBuffers.boundConstantBuffers[4][LodCbufIndex].view};
+        if (view && diagnostic::ScalarRangeValid(view.size, LodOffset)) {
             ContextLock lock{ctx.executor.tag, view};
             const auto base{view.GetOffset()};
-            auto guest{view.GetBuffer()->PeekDiagnosticGuestScalar(base + probe->byteOffset)};
+            const auto guest{view.GetBuffer()->PeekDiagnosticGuestScalar(base + LodOffset)};
             probe->metadata += fmt::format(
                 "guest_status={} guest_map=0x{:X} guest_view_offset={} guest_view_size={} direct={} gpu_dirty={} direct_shadow={}\n",
                 guest.bits ? "mirror_observed_without_synchronization" : "mirror_unavailable", guest.guestMap,
                 base, view.size, guest.direct, guest.gpuDirty, guest.directShadow);
             if (guest.bits)
-                probe->metadata += fmt::format("guest_bits=0x{:08X} guest_float={}\n", *guest.bits, std::bit_cast<float>(*guest.bits));
+                probe->metadata += fmt::format("guest_bits=0x{:08X} guest_float={}\n",
+                    *guest.bits, std::bit_cast<float>(*guest.bits));
         } else {
             probe->metadata += "guest_status=unbound_or_out_of_range\n";
         }
-        probe->metadata += "note=guest_mirror_may_be_stale_or_differ_from_direct_shadow; gpu_read_is_postpass_not_shader_execution_proof\n";
+        probe->metadata +=
+            "note=gpu_bits/gpu_float below are copied from_the_actual_uniform_descriptor_after_the_natural_pass; "
+            "the probe_does_not_modify_LOD_sampler_or_texture_state\n";
         return probe;
     }
 

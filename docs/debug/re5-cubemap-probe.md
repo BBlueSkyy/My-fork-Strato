@@ -17,10 +17,13 @@ prove that a cube sample causes the black geometry.
   guest mip filter, fixed-point min/max clamps, the clamping values used for
   Vulkan sampler creation, mip bias, and filter mode. It does not create or
   refresh a sampler.
-- For the same descriptor records `cbuf 12 + 0x4` as raw bits and float
-  **from the unsynchronized guest mirror**. A GPU-dirty/direct-backed guest
-  buffer can differ from the actual uniform buffer contents read by the
-  shader, and the byte has not yet been proven to be a dynamic LOD instruction.
+- For the F380 draw that actually carries the 128x128 Cube at FS binding 21,
+  the scalar probe now targets `FS cbuf 12 + 0x4`. It records both the
+  unsynchronized guest mirror and a four-byte readback from the **actual Vulkan
+  uniform descriptor backing used by that draw**, after the natural render-pass
+  end. The same file records the exact sampled descriptor's VkSampler handle and
+  the TSC-derived min/max LOD, mip filter and bias. This observes the explicit
+  LOD input without changing it; the post-pass copy is not an instruction trace.
 - On the **first qualifying draw per capture** (across executors), snapshots
   the sampled texture's *current backing* at the natural render-pass end,
   using the existing image-to-staging readback helper and fence callback. The
@@ -71,3 +74,14 @@ across executions. Equal LOD mirror values do not establish equal GPU values.
 The pure gate/range unit test passed locally. Android integration and
 on-device Vulkan correctness must still be validated by the PR build/device.
 Maintain this PR as Draft. No merge or master modifications.
+
+
+## Focused LOD follow-up
+
+The scalar budget is now spent only on F380 draws that have the known
+128x128 Cube at FS binding 21. In each qualifying `scalar_###.txt`, compare
+`guest_float` with `gpu_float`, and read the adjacent sampler summary.
+A nonzero/higher explicit LOD together with zero higher cube mips would support
+the missing-mip-content hypothesis. LOD 0 (after considering the recorded clamp)
+would reject that simple explanation and redirect the investigation to the
+cubemap producer/content path. No rendering value is overridden.

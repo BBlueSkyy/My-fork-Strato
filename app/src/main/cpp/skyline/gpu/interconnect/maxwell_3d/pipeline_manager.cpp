@@ -861,8 +861,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                  constantBuffers[i][cbufIdx].view, cbufIdx,
                                                                  stage.stage,
                                                                  srcStageMask, dstStageMask)};
-                                 if (i == 4 && (cbufIdx == 3 || cbufIdx == 4))
-                                     diagnosticUniformBuffers[cbufIdx - 3] = {
+                                 if (i == 4 && (cbufIdx == 12 || cbufIdx == 4))
+                                     diagnosticUniformBuffers[cbufIdx == 12 ? 0 : 1] = {
                                          &bufferDescs[bufferIdx],
                                          uniformBaseBinding + static_cast<u32>(&desc - stage.uniformBufferDescs.data()),
                                          static_cast<u32>(arrayIdx), std::holds_alternative<BufferBinding>(binding)};
@@ -1001,8 +1001,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                                stageConstantBuffers[cbufIdx].view, cbufIdx,
                                                                                stageDescInfo.stage,
                                                                                srcStageMask, dstStageMask)};
-                                               if (stageIndex == 4 && (cbufIdx == 3 || cbufIdx == 4))
-                                                   diagnosticUniformBuffers[cbufIdx - 3] = {
+                                               if (stageIndex == 4 && (cbufIdx == 12 || cbufIdx == 4))
+                                                   diagnosticUniformBuffers[cbufIdx == 12 ? 0 : 1] = {
                                                        &bufferDescs[bufferIdx], usage.binding,
                                                        static_cast<u32>(arrayIdx), std::holds_alternative<BufferBinding>(binding)};
                                                return binding;

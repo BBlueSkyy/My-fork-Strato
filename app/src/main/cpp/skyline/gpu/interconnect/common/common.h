@@ -122,7 +122,8 @@ namespace skyline::gpu::interconnect {
         vk::DescriptorSetLayout descriptorSetLayout;
         vk::PipelineBindPoint bindPoint;
         u32 descriptorSetIndex;
-        // FS cbuf 3 and 4, identified from the guest shaders in the supplied cache.
+        // Diagnostic slot 0 is FS cbuf 12 (explicit cubemap LOD source for F380);
+        // slot 1 retains FS cbuf 4 as a control. These are observation-only.
         std::array<DiagnosticUniformBuffer, 2> diagnosticUniformBuffers{};
         span<DiagnosticImageBinding> diagnosticImageBindings{};
     };
