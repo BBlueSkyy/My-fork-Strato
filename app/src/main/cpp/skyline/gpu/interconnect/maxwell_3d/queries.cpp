@@ -27,7 +27,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     Queries::Counter::Counter(GPU &gpu, vk::QueryType type)
         : gpu{gpu},
           queryType{type},
-          accumulatorBuffer{gpu.memory.AllocateBuffer(sizeof(u64))} {}
+          accumulatorBuffer{std::make_shared<memory::Buffer>(gpu.memory.AllocateBuffer(sizeof(u64)))} {}
 
     Queries::Counter::~Counter() = default;
 
@@ -61,7 +61,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
 
             if (!selected) {
-                selected = std::make_shared<QueryBank>(gpu, queryType, accumulatorBuffer);
+                selected = std::make_shared<QueryBank>(gpu, queryType, *accumulatorBuffer);
                 banks.emplace_back(selected);
             }
 
@@ -96,7 +96,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto active{std::move(*activeSegment)};
         activeSegment.reset();
 
-        ctx.executor.AddCommand([bank = std::move(active.segment.bank), queryIndex = active.segment.queryIndex]
+        ctx.executor.AddCommand([bank = std::move(active.bank), queryIndex = active.queryIndex]
                                 (vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &) {
             commandBuffer.endQuery(*bank->pool, queryIndex);
         });
@@ -143,7 +143,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         auto *batch{currentRenderPassBatch};
         batch->queryCount++;
-        activeSegment = ActiveSegment{segment, batch};
+        activeSegment = segment;
 
         vk::QueryControlFlags flags{};
         if (gpu.traits.supportsOcclusionQueryPrecise)
@@ -159,8 +159,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     void Queries::Counter::ScheduleResolve(InterconnectContext &ctx, std::vector<SegmentRef> segments, bool resetAccumulator,
                                            std::optional<BufferView> reportView, BufferBinding timestampBuffer, bool report64) {
+        // The channel's Maxwell state can be destroyed before its executor drains.
+        // Keep the accumulator alive through both deferred recording and GPU use.
+        ctx.executor.AttachDependency(accumulatorBuffer);
         ctx.executor.AddPostRpCommand(
-            [this, segments = std::move(segments), resetAccumulator, reportView, timestampBuffer, report64]
+            [accumulator = accumulatorBuffer, segments = std::move(segments), resetAccumulator, reportView, timestampBuffer, report64]
             (vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) mutable {
                 bool reset{resetAccumulator};
 
@@ -186,8 +189,19 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     offset += count;
                 }
 
-                if (segments.empty() && reset)
-                    commandBuffer.fillBuffer(accumulatorBuffer.vkBuffer, 0, sizeof(u64), 0);
+                if (segments.empty() && reset) {
+                    // A reset may follow a compute accumulation or a report reading
+                    // the accumulator in this same submission (WAW / WAR).
+                    commandBuffer.pipelineBarrier(
+                        vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer,
+                        vk::PipelineStageFlagBits::eTransfer,
+                        {},
+                        vk::MemoryBarrier{
+                            .srcAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite,
+                            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+                        }, {}, {});
+                    commandBuffer.fillBuffer(accumulator->vkBuffer, 0, sizeof(u64), 0);
+                }
 
                 if (!reportView)
                     return;
@@ -195,6 +209,22 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 gpu.helperShaders.queryResolveHelperShader.PrepareForTransfer(commandBuffer);
 
                 auto dstBinding{reportView->GetBinding(gpu)};
+
+                // A report may replace data used by an earlier draw, conditional
+                // predicate or DMA command. Scope the dependency to the report,
+                // rather than serializing unrelated buffers or graphics work.
+                vk::BufferMemoryBarrier reportBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .buffer = dstBinding.buffer,
+                    .offset = dstBinding.offset,
+                    .size = report64 ? sizeof(u64) * 2 : sizeof(u32),
+                };
+                commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                              vk::PipelineStageFlagBits::eTransfer,
+                                              {}, {}, reportBarrier, {});
 
                 if (timestampBuffer) {
                     commandBuffer.copyBuffer(timestampBuffer.buffer, dstBinding.buffer, vk::BufferCopy{
@@ -214,11 +244,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         {}, {});
                 }
 
-                commandBuffer.copyBuffer(accumulatorBuffer.vkBuffer, dstBinding.buffer, vk::BufferCopy{
+                commandBuffer.copyBuffer(accumulator->vkBuffer, dstBinding.buffer, vk::BufferCopy{
                     .srcOffset = 0,
                     .dstOffset = dstBinding.offset,
                     .size = report64 ? sizeof(u64) : sizeof(u32),
                 });
+
+                reportBarrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+                reportBarrier.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+                commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                              vk::PipelineStageFlagBits::eAllCommands,
+                                              {}, {}, reportBarrier, {});
             });
     }
 
@@ -238,6 +274,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     void Queries::Counter::Report(InterconnectContext &ctx, BufferView reportView, std::optional<u64> timestamp) {
         EndActive(ctx);
+
+        // A report is a guest memory write at this point in the command stream.
+        // Deferring it past later draws would let vertex/SSBO/indirect readers see
+        // the old value. Vulkan query copies and the compute resolve require an
+        // outside-render-pass scope; close the pass, without submitting the slot.
+        ctx.executor.BreakRenderPass();
 
         auto segments{std::move(pendingSegments)};
         pendingSegments.clear();
@@ -277,7 +319,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (!view.view)
             return;
 
-        usedQueryAddresses.emplace(u64{address});
         ctx.executor.AttachBuffer(*view);
 
         view->GetBuffer()->BlockSequencedCpuBackingWrites();
@@ -299,9 +340,5 @@ namespace skyline::gpu::interconnect::maxwell3d {
         for (auto &counter : counters)
             counter.Flush(ctx);
         view.PurgeCaches();
-    }
-
-    bool Queries::QueryPresentAtAddress(soc::gm20b::IOVA address) {
-        return usedQueryAddresses.contains(u64{address});
     }
 }

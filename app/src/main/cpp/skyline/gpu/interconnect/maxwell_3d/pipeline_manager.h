@@ -252,6 +252,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         bool CheckBindingMatch(Pipeline *other);
 
+        void InheritDescriptorBufferViews(const Pipeline &other);
+
+        bool MayWriteBuffer(Buffer *buffer) const;
+
         u32 GetTotalSampledImageCount() const;
 
         bool UsesRenderArea() const {

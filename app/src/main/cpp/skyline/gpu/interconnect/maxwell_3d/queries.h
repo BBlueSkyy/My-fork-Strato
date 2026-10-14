@@ -6,7 +6,6 @@
 #include <limits>
 #include <memory>
 #include <optional>
-#include <unordered_set>
 #include <vector>
 #include <soc/gm20b/gmmu.h>
 #include <gpu/buffer.h>
@@ -43,21 +42,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 u32 queryCount;
             };
 
-            struct ActiveSegment {
-                SegmentRef segment;
-                RenderPassBatch *batch;
-            };
-
             GPU &gpu;
             vk::QueryType queryType;
-            memory::Buffer accumulatorBuffer;
+            std::shared_ptr<memory::Buffer> accumulatorBuffer;
 
             std::vector<std::shared_ptr<QueryBank>> banks;
             std::vector<std::shared_ptr<QueryBank>> executionBanks;
             ContextTag executionTag{};
             u32 executionQueryCount{};
 
-            std::optional<ActiveSegment> activeSegment;
+            std::optional<SegmentRef> activeSegment;
             RenderPassBatch *currentRenderPassBatch{};
             u32 currentRenderPassIndex{std::numeric_limits<u32>::max()};
 
@@ -85,7 +79,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         std::array<Counter, static_cast<u32>(CounterType::MaxValue)> counters;
         CachedMappedBufferView view{};
-        std::unordered_set<u64> usedQueryAddresses;
 
       public:
         Queries(GPU &gpu);
@@ -104,7 +97,5 @@ namespace skyline::gpu::interconnect::maxwell3d {
          * @brief Materializes pending segments into the persistent counter accumulator.
          */
         void Flush(InterconnectContext &ctx);
-
-        bool QueryPresentAtAddress(soc::gm20b::IOVA address);
     };
 }

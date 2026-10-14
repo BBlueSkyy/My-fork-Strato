@@ -3,16 +3,23 @@
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) buffer ConditionalScratch {
-    uint lhs;
-    uint rhs;
+    uint lhsLow;
+    uint lhsHigh;
+    uint rhsLow;
+    uint rhsHigh;
     uint predicate;
 } scratchData;
 
 layout(push_constant) uniform PushConstants {
     uint notEqual;
+    uint nonZero;
 } pc;
 
 void main() {
-    bool equal = scratchData.lhs == scratchData.rhs;
+    if (pc.nonZero != 0u) {
+        scratchData.predicate = scratchData.lhsLow != 0u ? 1u : 0u;
+        return;
+    }
+    bool equal = scratchData.lhsLow == scratchData.rhsLow && scratchData.lhsHigh == scratchData.rhsHigh;
     scratchData.predicate = (pc.notEqual != 0u ? !equal : equal) ? 1u : 0u;
 }

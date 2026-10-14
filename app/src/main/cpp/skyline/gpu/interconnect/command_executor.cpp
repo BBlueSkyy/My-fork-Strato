@@ -68,7 +68,6 @@ namespace skyline::gpu::interconnect {
           semaphore{gpu.vkDevice, vk::SemaphoreCreateInfo{}},
           cycle{std::make_shared<FenceCycle>(gpu.vkDevice, *fence, *semaphore, true)},
           nodes{allocator},
-          pendingPreRenderPassEndNodes{allocator},
           pendingPostRenderPassNodes{allocator} {
         Begin();
     }
@@ -81,7 +80,6 @@ namespace skyline::gpu::interconnect {
           cycle{std::move(other.cycle)},
           allocator{std::move(other.allocator)},
           nodes{std::move(other.nodes)},
-          pendingPreRenderPassEndNodes{std::move(other.pendingPreRenderPassEndNodes)},
           pendingPostRenderPassNodes{std::move(other.pendingPostRenderPassNodes)},
           ready{other.ready} {}
 
@@ -417,7 +415,6 @@ namespace skyline::gpu::interconnect {
                 for (auto &callback : subpassBoundaryCallbacks)
                     callback();
 
-                slot->nodes.splice(slot->nodes.end(), slot->pendingPreRenderPassEndNodes);
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
                 renderPassIndex++;
@@ -453,7 +450,6 @@ namespace skyline::gpu::interconnect {
             for (auto &callback : subpassBoundaryCallbacks)
                 callback();
 
-            slot->nodes.splice(slot->nodes.end(), slot->pendingPreRenderPassEndNodes);
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
             renderPassIndex++;
@@ -566,12 +562,6 @@ namespace skyline::gpu::interconnect {
                 slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::move(hooks.before));
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
         }
-
-        if (hooks.beforeRenderPassEnd)
-            slot->pendingPreRenderPassEndNodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::move(hooks.beforeRenderPassEnd));
-
-        if (hooks.afterRenderPass)
-            slot->pendingPostRenderPassNodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::move(hooks.afterRenderPass));
 
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
             Submit();

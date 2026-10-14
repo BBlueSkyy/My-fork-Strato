@@ -63,7 +63,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                beginMethodTopology : type::ConvertPrimitiveTopologyToDrawTopology(*registers.primitiveTopology);
     }
 
-    bool Maxwell3D::CheckRenderEnable(bool allowGpuCondition) {
+    bool Maxwell3D::CheckRenderEnable() {
         using ConditionMode = gpu::interconnect::maxwell3d::Maxwell3D::RenderConditionMode;
 
         interconnect.ClearRenderCondition();
@@ -78,50 +78,14 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                 return true;
             case Registers::RenderEnable::Mode::False:
                 return false;
-            case Registers::RenderEnable::Mode::Conditional: {
-                const auto address{registers.renderEnable->offset};
-                if (interconnect.QueryPresentAtAddress(u64{address})) {
-                    if (allowGpuCondition &&
-                        interconnect.SetRenderCondition(IOVA{u64{address}}, {}, ConditionMode::NonZero))
-                        return true;
-
-                    // No CPU readback fallback here: rendering conservatively is preferable to
-                    // stalling the GPU/GPFIFO path on hosts without conditional rendering.
-                    return true;
-                }
-
-                return channelCtx.asCtx->gmmu.Read<u32>(address) != 0;
-            }
-            case Registers::RenderEnable::Mode::RenderIfEqual: {
-                const auto lhs{registers.renderEnable->offset};
-                const auto rhs{registers.renderEnable->offset + 16};
-                if (interconnect.QueryPresentAtAddress(u64{lhs}) ||
-                    interconnect.QueryPresentAtAddress(u64{rhs})) {
-                    if (allowGpuCondition &&
-                        interconnect.SetRenderCondition(IOVA{u64{lhs}}, IOVA{u64{rhs}}, ConditionMode::Equal))
-                        return true;
-
-                    return true;
-                }
-
-                return channelCtx.asCtx->gmmu.Read<u32>(lhs) ==
-                    channelCtx.asCtx->gmmu.Read<u32>(rhs);
-            }
-            case Registers::RenderEnable::Mode::RenderIfNotEqual: {
-                const auto lhs{registers.renderEnable->offset};
-                const auto rhs{registers.renderEnable->offset + 16};
-                if (interconnect.QueryPresentAtAddress(u64{lhs}) ||
-                    interconnect.QueryPresentAtAddress(u64{rhs})) {
-                    if (allowGpuCondition &&
-                        interconnect.SetRenderCondition(IOVA{u64{lhs}}, IOVA{u64{rhs}}, ConditionMode::NotEqual))
-                        return true;
-
-                    return true;
-                }
-
-                return channelCtx.asCtx->gmmu.Read<u32>(lhs) !=
-                    channelCtx.asCtx->gmmu.Read<u32>(rhs);
-            }
+            case Registers::RenderEnable::Mode::Conditional:
+                return interconnect.CheckRenderCondition(IOVA{u64{registers.renderEnable->offset}}, {}, ConditionMode::NonZero);
+            case Registers::RenderEnable::Mode::RenderIfEqual:
+                return interconnect.CheckRenderCondition(IOVA{u64{registers.renderEnable->offset}},
+                    IOVA{u64{registers.renderEnable->offset + 16}}, ConditionMode::Equal);
+            case Registers::RenderEnable::Mode::RenderIfNotEqual:
+                return interconnect.CheckRenderCondition(IOVA{u64{registers.renderEnable->offset}},
+                    IOVA{u64{registers.renderEnable->offset + 16}}, ConditionMode::NotEqual);
         }
 
         return true;

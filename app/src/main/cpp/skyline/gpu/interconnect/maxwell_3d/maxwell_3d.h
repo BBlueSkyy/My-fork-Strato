@@ -60,15 +60,26 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
         };
 
+        struct RenderConditionResources {
+            memory::Buffer scratch;
+            DescriptorAllocator::ActiveDescriptorSet descriptorSet;
+
+            explicit RenderConditionResources(GPU &gpu);
+        };
+
+        struct RenderConditionInput {
+            Buffer *buffer{};
+            vk::DeviceSize offset{};
+            u64 generation{};
+
+            bool operator==(const RenderConditionInput &) const = default;
+        };
+
         struct RenderConditionBinding {
-            BufferView view{};
             BufferBinding binding{};
             bool enabled{};
-            bool useView{};
 
-            BufferBinding Resolve(GPU &gpu) const {
-                return useView ? view.GetBinding(gpu) : binding;
-            }
+            BufferBinding Resolve(GPU &) const { return binding; }
         };
 
         InterconnectContext ctx;
@@ -87,16 +98,22 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         CachedMappedBufferView renderConditionLhsView{};
         CachedMappedBufferView renderConditionRhsView{};
-        std::optional<memory::Buffer> renderConditionScratch{};
-        std::optional<DescriptorAllocator::ActiveDescriptorSet> renderConditionDescriptorSet{};
+        std::shared_ptr<RenderConditionResources> renderConditionResources;
+        std::optional<RenderConditionKey> requestedRenderCondition{};
         std::optional<RenderConditionKey> preparedRenderCondition{};
+        std::optional<RenderConditionInput> preparedRenderConditionLhs{};
+        std::optional<RenderConditionInput> preparedRenderConditionRhs{};
         ContextTag preparedRenderConditionExecutionTag{};
-        bool renderConditionDirty{true};
         RenderConditionBinding activeRenderCondition{};
+
+        void RefreshRenderCondition();
+
+        void InvalidateRenderConditionAfterDraw(bool transformFeedbackEnable);
 
         static constexpr size_t DescriptorBatchSize{0x100};
         std::shared_ptr<boost::container::static_vector<DescriptorAllocator::ActiveDescriptorSet, DescriptorBatchSize>> attachedDescriptorSets;
         DescriptorAllocator::ActiveDescriptorSet *activeDescriptorSet{};
+        Pipeline *activeDescriptorPipeline{};
         std::vector<TextureView *> activeDescriptorSetSampledImages{};
 
         size_t UpdateQuadConversionBuffer(u32 count, u32 firstVertex);
@@ -150,6 +167,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         void ClearRenderCondition();
 
+        bool CheckRenderCondition(soc::gm20b::IOVA lhs, std::optional<soc::gm20b::IOVA> rhs, RenderConditionMode mode);
+
         bool SetRenderCondition(soc::gm20b::IOVA lhs, std::optional<soc::gm20b::IOVA> rhs, RenderConditionMode mode);
 
         void Clear(engine::ClearSurface &clearSurface);
@@ -171,6 +190,5 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         void ResetCounter(engine::ClearReportValue::Type type);
 
-        bool QueryPresentAtAddress(soc::gm20b::IOVA address);
     };
 }

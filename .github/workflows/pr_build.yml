@@ -55,6 +55,12 @@ jobs:
             tests/gpu/texture_view_range_tests.cpp -o /tmp/texman-view-range-tests
           /tmp/texman-view-range-tests
 
+      - name: Occlusion and conditional rendering regressions
+        run: |
+          python3 tests/gpu_queries/run.py
+          python3 tests/gpu_conditional/run.py
+          python3 tests/gpu_draw_texture/run.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"

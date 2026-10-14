@@ -80,7 +80,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
             }
         } deferredDraw{};
 
-        bool CheckRenderEnable(bool allowGpuCondition = true);
+        bool CheckRenderEnable();
 
         type::DrawTopology ApplyTopologyOverride(type::DrawTopology beginMethodTopology);
 

@@ -233,6 +233,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return false;
     }
 
+    bool TransformFeedbackBufferState::MayWriteBuffer(Buffer *buffer) const {
+        auto boundView{view.view};
+        return engine->streamOutEnable && engine->streamOutBuffer.size &&
+            boundView && boundView.GetBuffer() == buffer;
+    }
+
     void TransformFeedbackBufferState::PurgeCaches() {
         view.PurgeCaches();
     }
@@ -463,6 +469,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     Pipeline *ActiveState::GetPipeline() {
         return pipeline.Get().pipeline;
+    }
+
+    bool ActiveState::MayWriteTransformFeedbackBuffer(Buffer *buffer) {
+        for (auto &state : transformFeedbackBuffers)
+            if (state.Get().MayWriteBuffer(buffer))
+                return true;
+        return false;
     }
 
     span<TextureView *> ActiveState::GetColorAttachments() {

@@ -43,7 +43,6 @@ namespace skyline::gpu::interconnect {
             std::shared_ptr<FenceCycle> cycle;
             LinearAllocatorState<> allocator;
             std::list<node::NodeVariant, LinearAllocator<node::NodeVariant>> nodes;
-            std::list<node::NodeVariant, LinearAllocator<node::NodeVariant>> pendingPreRenderPassEndNodes;
             std::list<node::NodeVariant, LinearAllocator<node::NodeVariant>> pendingPostRenderPassNodes;
             std::mutex beginLock;
             std::condition_variable beginCondition;
@@ -314,12 +313,9 @@ namespace skyline::gpu::interconnect {
          * @note Any supplied texture should be attached prior and not undergo any persistent layout transitions till execution
          */
         using SubpassFunction = std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)>;
-        using CommandFunction = std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)>;
 
         struct SubpassHooks {
             SubpassFunction before;
-            CommandFunction beforeRenderPassEnd;
-            CommandFunction afterRenderPass;
         };
 
         using SubpassHookFactory = std::function<SubpassHooks(u32 renderPassIndex)>;

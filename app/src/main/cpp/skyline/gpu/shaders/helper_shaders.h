@@ -135,7 +135,7 @@ namespace skyline::gpu {
     };
 
     /**
-     * @brief Produces a 32-bit conditional-rendering predicate from two GPU-visible u32 values
+     * @brief Resolves a u32 nonzero test or a u64 equality comparison to a Vulkan u32 predicate
      */
     class ConditionalCompareHelperShader {
       private:
@@ -147,13 +147,14 @@ namespace skyline::gpu {
       public:
         struct PushConstants {
             u32 notEqual;
+            u32 nonZero;
         };
 
         ConditionalCompareHelperShader(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem);
 
         DescriptorAllocator::ActiveDescriptorSet CreateDescriptorSet(GPU &gpu, vk::Buffer scratchBuffer);
 
-        void Compare(vk::raii::CommandBuffer &commandBuffer, vk::DescriptorSet descriptorSet, bool notEqual);
+        void Compare(vk::raii::CommandBuffer &commandBuffer, vk::DescriptorSet descriptorSet, bool notEqual, bool nonZero);
     };
 
     /**

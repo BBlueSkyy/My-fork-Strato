@@ -554,7 +554,7 @@ namespace skyline::gpu {
         vk::DescriptorBufferInfo bufferInfo{
             .buffer = scratchBuffer,
             .offset = 0,
-            .range = sizeof(u32) * 3,
+            .range = sizeof(u32) * 5,
         };
         vk::WriteDescriptorSet write{
             .dstSet = *descriptorSet,
@@ -567,11 +567,11 @@ namespace skyline::gpu {
         return descriptorSet;
     }
 
-    void ConditionalCompareHelperShader::Compare(vk::raii::CommandBuffer &commandBuffer, vk::DescriptorSet descriptorSet, bool notEqual) {
+    void ConditionalCompareHelperShader::Compare(vk::raii::CommandBuffer &commandBuffer, vk::DescriptorSet descriptorSet, bool notEqual, bool nonZero) {
         commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *pipeline);
         commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *pipelineLayout, 0, descriptorSet, nullptr);
 
-        PushConstants pushConstants{notEqual ? 1U : 0U};
+        PushConstants pushConstants{notEqual ? 1U : 0U, nonZero ? 1U : 0U};
         commandBuffer.pushConstants(*pipelineLayout, vk::ShaderStageFlagBits::eCompute, 0,
                                     vk::ArrayProxy<const PushConstants>{pushConstants});
         commandBuffer.dispatch(1, 1, 1);
