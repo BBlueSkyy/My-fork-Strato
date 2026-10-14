@@ -564,7 +564,12 @@ namespace skyline::gpu::interconnect {
 
         // Full backing copies include all mips/layers, so charge the real
         // staging allocation, not just the selected subresource's bytes.
-        const auto ticket{capture.ReservePass(texture->surfaceSize)};
+        // Only store a scene-pass entry when the PRE and POST readbacks can
+        // both be allocated. The 1920x1080 presentation target keeps its
+        // existing post-pass-only diagnostic and shares the same budget.
+        const auto ticket{focusedComposition
+            ? capture.ReservePairedPass(texture->surfaceSize)
+            : capture.ReservePass(texture->surfaceSize)};
         if (!ticket)
             return;
 
@@ -590,6 +595,46 @@ namespace skyline::gpu::interconnect {
             range.baseMipLevel, range.baseArrayLayer, analysisOffset, analysisSize,
             texture->surfaceSize, guestMap, guestBytes);
 
+        // The renderPassIt node is the actual VkRenderPass start, whereas
+        // this method runs when the pass is finished *building*. Insert PRE
+        // here so the command recorder sees: PRE copy, beginRenderPass,
+        // original four draws, endRenderPass, POST copy. No pass splitting.
+        //
+        // This opt-in GPU transfer introduces a dependency and may mask a
+        // synchronization race. Compare normal gameplay (monitor mode only)
+        // with this capture before inferring causality from PRE/POST changes.
+        std::shared_ptr<memory::StagingBuffer> preStaging;
+        if (focusedComposition) {
+            preStaging = gpu.memory.AllocateStagingBuffer(texture->surfaceSize);
+            slot->nodes.emplace(renderPassIt, std::in_place_type_t<node::FunctionNode>(),
+                [texture, preStaging](vk::raii::CommandBuffer &commands,
+                                      const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    cycle->AttachObjects(texture, preStaging);
+                    texture->CopyIntoStagingBuffer(commands, preStaging);
+                    // Wait for the diagnostic transfer read to complete
+                    // before the unchanged pass begins writing the image.
+                    // Keep the same Vulkan layout on both sides.
+                    commands.pipelineBarrier(
+                        vk::PipelineStageFlagBits::eTransfer,
+                        vk::PipelineStageFlagBits::eAllCommands, {}, {}, {},
+                        vk::ImageMemoryBarrier{
+                            .srcAccessMask = vk::AccessFlagBits::eTransferRead,
+                            .dstAccessMask = vk::AccessFlagBits::eMemoryRead |
+                                             vk::AccessFlagBits::eMemoryWrite,
+                            .oldLayout = texture->layout,
+                            .newLayout = texture->layout,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .image = texture->GetBacking(),
+                            .subresourceRange = {
+                                .aspectMask = texture->format->vkAspect,
+                                .levelCount = texture->levelCount,
+                                .layerCount = texture->layerCount,
+                            },
+                        });
+                });
+        }
+
         auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
         slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
             [texture, staging](vk::raii::CommandBuffer &commands,
@@ -605,6 +650,64 @@ namespace skyline::gpu::interconnect {
             vkFormat == vk::Format::eB8G8R8A8Unorm ||
             vkFormat == vk::Format::eB8G8R8A8Srgb
         };
+        if (preStaging) {
+            diagnosticBoundaryCallbacks.emplace_back(
+                [preStaging, directory = ticket->directory, index,
+                 metadata, analysisOffset, analysisSize, rgba8] {
+                    const auto status{vmaInvalidateAllocation(
+                        preStaging->vmaAllocator, preStaging->vmaAllocation,
+                        0, preStaging->size())};
+                    std::ofstream out(std::filesystem::path(directory) /
+                        fmt::format("pre_pass_{:03}.txt", index), std::ios::trunc);
+                    if (!out)
+                        return;
+                    out << "PRE_RENDER_PASS: bytes captured immediately before beginRenderPass; "
+                           "no Vulkan draw in this pass has executed.\\n";
+                    out << metadata
+                        << "paired_post=pass_" << fmt::format("{:03}", index)
+                        << ".txt invalidate_result=" << static_cast<int>(status) << '\\n';
+                    if (status != VK_SUCCESS)
+                        return;
+
+                    const auto *bytes{
+                        static_cast<const u8 *>(preStaging->data()) + analysisOffset};
+                    std::uint64_t hash{1469598103934665603ULL};
+                    std::uint64_t sum{}, rgbSum{}, blackRgb{}, opaqueAlpha{};
+                    size_t zeroBytes{};
+                    for (size_t i{}; i < analysisSize; ++i) {
+                        const auto value{bytes[i]};
+                        zeroBytes += value == 0;
+                        sum += value;
+                        hash = (hash ^ value) * 1099511628211ULL;
+                    }
+                    out << fmt::format(
+                        "stats zero_bytes={} total_bytes={} zero_ratio={:.6f} "
+                        "mean_byte={:.6f} fnv1a64=0x{:016X}\\nfirst_bytes=",
+                        zeroBytes, analysisSize,
+                        static_cast<double>(zeroBytes) / analysisSize,
+                        static_cast<double>(sum) / analysisSize, hash);
+                    for (size_t i{}; i < std::min<size_t>(analysisSize, 32); ++i)
+                        out << fmt::format("{:02X}", bytes[i]);
+                    out << '\\n';
+                    if (rgba8 && analysisSize % 4 == 0) {
+                        const auto pixels{analysisSize / 4};
+                        for (size_t i{}; i < analysisSize; i += 4) {
+                            const auto rgb{static_cast<u32>(bytes[i]) +
+                                           bytes[i + 1] + bytes[i + 2]};
+                            rgbSum += rgb;
+                            blackRgb += rgb == 0;
+                            opaqueAlpha += bytes[i + 3] == 255;
+                        }
+                        out << fmt::format(
+                            "rgb8 pixels={} rgb_mean={:.6f} black_rgb_ratio={:.6f} "
+                            "opaque_alpha_ratio={:.6f}\\n",
+                            pixels, static_cast<double>(rgbSum) / (pixels * 3),
+                            static_cast<double>(blackRgb) / pixels,
+                            static_cast<double>(opaqueAlpha) / pixels);
+                    }
+                });
+        }
+
         diagnosticBoundaryCallbacks.emplace_back(
             [staging, directory = ticket->directory, index, metadata = std::move(metadata),
              analysisOffset, analysisSize, rgba8] {
