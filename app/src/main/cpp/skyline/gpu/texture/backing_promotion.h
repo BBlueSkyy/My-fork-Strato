@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "alias_group.h"
 #include <algorithm>
 #include <array>
 #include <memory>
@@ -12,6 +13,8 @@ namespace skyline::gpu {
     struct TextureBackingPromotionRequest {
         std::shared_ptr<Texture> texture;
         vk::Format format;
+        uint32_t levels{}; // Zero preserves the current mip chain (format-only promotion).
+        std::shared_ptr<void> guestMemoryLease{}; // Keep unrepresented guest mip bytes through executor submission.
     };
 
     namespace texture {
@@ -23,6 +26,11 @@ namespace skyline::gpu {
                     return;
                 } catch (const TextureBackingPromotionRequest &request) {
                     resolve(request);
+                } catch (const TextureAliasReconciliationRequest &request) {
+                    if constexpr (requires { resolve(request); })
+                        resolve(request);
+                    else
+                        throw;
                 }
             }
         }
@@ -58,7 +66,8 @@ namespace skyline::gpu {
         template<typename CommandBuffer>
         void RecordBackingPromotion(CommandBuffer &commands, vk::Image source, vk::Image destination,
                                     vk::ImageLayout layout, uint32_t levels, uint32_t layers,
-                                    const std::vector<vk::ImageCopy> &copies) {
+                                    const std::vector<vk::ImageCopy> &copies, uint32_t destinationLevels = 0,
+                                    vk::Buffer initialization = {}, const std::vector<vk::BufferImageCopy> &uploads = {}) {
             const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, levels, 0, layers};
             std::array<vk::ImageMemoryBarrier, 2> before{};
             before[0].srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
@@ -75,8 +84,13 @@ namespace skyline::gpu {
                 barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 barrier.subresourceRange = range;
             }
+            before[1].subresourceRange.levelCount = destinationLevels ? destinationLevels : levels;
             commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, before);
             commands.copyImage(source, vk::ImageLayout::eTransferSrcOptimal, destination, vk::ImageLayout::eTransferDstOptimal, copies);
+            // The upload covers only added mips; existing levels come from the GPU
+            // image even when their corresponding guest bytes are stale.
+            if (!uploads.empty())
+                commands.copyBufferToImage(initialization, destination, vk::ImageLayout::eTransferDstOptimal, uploads);
             auto after{before};
             after[0].srcAccessMask = vk::AccessFlagBits::eTransferRead;
             after[1].srcAccessMask = vk::AccessFlagBits::eTransferWrite;

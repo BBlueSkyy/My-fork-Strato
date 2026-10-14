@@ -392,6 +392,7 @@ namespace skyline::gpu::interconnect {
         void Submit(std::function<void()> &&callback = {}, bool wait = false);
 
         void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &request);
+        void HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request);
 
         template<typename Operation>
         void RunWithTextureBackingRetry(Operation &&operation) {
