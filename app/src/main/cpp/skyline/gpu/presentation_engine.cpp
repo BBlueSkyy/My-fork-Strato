@@ -199,6 +199,10 @@ namespace skyline::gpu {
                                << "Full pass readbacks now select 1280x720 focused composition or 1920x1080 outputs only.\n"
                                << "The screen detector reads the source before swapchain CopyFrom, not the Android swapchain.\n"
                                << "pretrigger_present_sources.txt maps the presenting texture to preceding pass metadata.\n"
+                               << "Focused 1280x720 scene passes now get paired pre_pass_NNN.txt (before beginRenderPass) and pass_NNN.txt (after endRenderPass).\n"
+                               << "The paired readback keeps four draws within the original render pass; it does not inspect per-draw outputs.\n"
+                               << "Pre-pass transfer adds an image memory dependency and may mask a Vulkan race; compare with normal monitoring.\n"
+                               << "Other 1920x1080 passes remain post-only; pair IDs refer to the same texture/mip/layer and submission.\n"
                                << "Pass readbacks remain bounded and can perturb race timing.\n"
                                << detail << '\n';
                     LOGI("RE5_BOUNDARY trigger={} directory={}", reason, dir.string());
