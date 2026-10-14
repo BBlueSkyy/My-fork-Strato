@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <string>
+
 #include <tsl/robin_map.h>
 #include <shader_compiler/frontend/ir/program.h>
 #include <gpu/graphics_pipeline_assembler.h>
@@ -253,6 +255,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
         bool CheckBindingMatch(Pipeline *other);
 
         u32 GetTotalSampledImageCount() const;
+
+        /**
+         * Diagnostic metadata only. Report shader-visible descriptor references
+         * and bound view sizes without reading or synchronizing guest memory.
+         */
+        void AppendDiagnosticBindings(std::string &out, const ConstantBufferSet &constantBuffers) const;
+
 
         bool UsesRenderArea() const {
             return usesRenderArea;

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <gpu/texture/backing_promotion.h>
+#include <string>
 
 #include <boost/container/stable_vector.hpp>
 #include <renderdoc_app.h>
@@ -216,6 +217,29 @@ namespace skyline::gpu::interconnect {
         std::vector<vk::ImageView> lastSubpassColorAttachments; //!< The set of color attachments used in the last subpass
         vk::ImageView lastSubpassDepthStencilAttachment{}; //!< The depth stencil attachment used in the last subpass
 
+        struct DiagnosticBoundaryPass {
+            struct SampledInput {
+                std::shared_ptr<Texture> texture;
+                vk::ImageSubresourceRange range{};
+                std::uint32_t step{};
+                std::uint32_t slot{};
+            };
+            std::shared_ptr<Texture> target;
+            vk::ImageSubresourceRange range{};
+            std::string metadata;
+            std::uint64_t targetArea{};
+            std::uint32_t targetPriority{};
+            std::uint32_t operationCount{};
+            bool focusCandidate{};
+            std::vector<SampledInput> focusedInputs;
+        };
+        std::optional<DiagnosticBoundaryPass> diagnosticBoundaryPass;
+        std::vector<std::function<void()>> diagnosticBoundaryCallbacks;
+        void TrackDiagnosticBoundaryPass(vk::Rect2D renderArea, span<TextureView *> sampledImages,
+                                         span<TextureView *> colorAttachments, TextureView *depthStencilAttachment);
+        void QueueDiagnosticBoundaryPassReadback();
+        void QueueFocusedInputProbes(const DiagnosticBoundaryPass &pass);
+
         std::vector<std::function<void()>> flushCallbacks; //!< Set of persistent callbacks that will be called at the start of Execute in order to flush data required for recording
         std::vector<std::function<void()>> pipelineChangeCallbacks; //!< Set of persistent callbacks that will be called after any non-Maxwell 3D engine changes the active pipeline
 
@@ -311,7 +335,7 @@ namespace skyline::gpu::interconnect {
          * @param exclusiveSubpass If this subpass should be the only subpass in a render pass
          * @note Any supplied texture should be attached prior and not undergo any persistent layout transitions till execution
          */
-        void AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {});
+        void AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, std::string diagnosticState = {});
 
         /**
          * @brief Adds a subpass that clears the entirety of the specified attachment with a color value, it may utilize VK_ATTACHMENT_LOAD_OP_CLEAR for a more efficient clear when possible

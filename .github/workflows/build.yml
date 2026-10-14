@@ -1,9 +1,9 @@
-# A workflow to verify the build on every push to the master branch
+# A workflow to verify the build on master and the isolated RE5 diagnostic branch
 name: Build
 
 on:
   push: 
-    branches: [ master ]
+    branches: [ master, debug/re5-pass-boundary ]
 
 jobs:
   build:

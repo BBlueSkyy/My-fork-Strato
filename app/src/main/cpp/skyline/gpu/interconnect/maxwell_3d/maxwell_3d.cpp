@@ -3,6 +3,8 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <cmath>
+#include <fmt/format.h>
+#include <gpu/diagnostic/re5_pass_boundary.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -21,6 +23,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         : ctx{channelCtx, channelCtx.executor, gpu, trap, memoryManager},
           activeState{manager, registerBundle.activeStateRegisters},
           clearEngineRegisters{registerBundle.clearRegisters},
+          diagnosticViewport0{registerBundle.activeStateRegisters.viewportsRegisters[0].viewport0},
+          diagnosticViewport{registerBundle.activeStateRegisters.viewportsRegisters[0].viewport},
+          diagnosticBlendConstants{registerBundle.activeStateRegisters.blendConstantsRegisters.blendConsts},
           constantBuffers{manager, registerBundle.constantBufferSelectorRegisters},
           samplers{manager, registerBundle.samplerPoolRegisters},
           samplerBinding{registerBundle.samplerBinding},
@@ -119,7 +124,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (drawParams->transformFeedbackEnable)
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
-         !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+         !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
+         DescribeDiagnosticOperation("draw_inline_index", scissor, true));
           ctx.executor.AddCheckpoint("After inline index draw");
      
         });
@@ -191,6 +197,94 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return scissor;
     }
 
+
+    std::string Maxwell3D::DescribeDiagnosticOperation(const char *kind, vk::Rect2D area,
+                                                       bool programmable) {
+        auto &capture{diagnostic::Re5PassBoundary()};
+        if (!capture.RecordingMetadata())
+            return {};
+
+        const auto &clip{clearEngineRegisters.surfaceClip};
+        if (!((clip.horizontal.width == 1280 && clip.vertical.height == 720) ||
+              (clip.horizontal.width == 1920 && clip.vertical.height == 1080)))
+            return {};
+
+        const auto &scissor{clearEngineRegisters.scissor0};
+        const auto &viewportClip{clearEngineRegisters.viewportClip0};
+        auto output{fmt::format(
+            "operation_state={} render_area={},{},{}x{} surface_clip={},{},{}x{} "
+            "scissor0_enable={} scissor0_raw={},{},{},{} "
+            "viewport0_offset={},{} viewport0_scale={},{} "
+            "viewport_current_offset={},{} viewport_current_scale={},{} "
+            "viewport_clip0={},{},{}x{} blend_constants={},{},{},{}",
+            kind, area.offset.x, area.offset.y, area.extent.width, area.extent.height,
+            clip.horizontal.x, clip.vertical.y, clip.horizontal.width, clip.vertical.height,
+            scissor.enable, scissor.horizontal.xMin, scissor.vertical.yMin,
+            scissor.horizontal.xMax, scissor.vertical.yMax,
+            diagnosticViewport0.offsetX, diagnosticViewport0.offsetY,
+            diagnosticViewport0.scaleX, diagnosticViewport0.scaleY,
+            diagnosticViewport.offsetX, diagnosticViewport.offsetY,
+            diagnosticViewport.scaleX, diagnosticViewport.scaleY,
+            viewportClip.horizontal.x0, viewportClip.vertical.y0,
+            viewportClip.horizontal.width, viewportClip.vertical.height,
+            diagnosticBlendConstants[0], diagnosticBlendConstants[1],
+            diagnosticBlendConstants[2], diagnosticBlendConstants[3])};
+
+        if (!programmable) {
+            output += " pipeline=helper_or_clear shader_hashes=not_applicable";
+            return output;
+        }
+
+        // A pipeline pointer alone is not a shader identity; preserve both
+        // its stable packed-state key and every guest shader hash.
+        auto *pipeline{activeState.GetPipeline()};
+        if (!pipeline) {
+            output += " pipeline=null";
+            return output;
+        }
+        const auto &p{pipeline->sourcePackedState};
+        output += fmt::format(
+            " pipeline_ptr=0x{:X} pipeline_key=0x{:016X} "
+            "depth_test={} depth_write={} depth_func={} depth_bounds={} "
+            "stencil_test={} stencil_front_func={} stencil_back_func={} "
+            "alpha_test={} alpha_func={} alpha_ref={} "
+            "logic_enable={} logic_op={} discard={} viewport_transform={} dynamic_state={} "
+            "shader_hashes=",
+            reinterpret_cast<uintptr_t>(pipeline),
+            static_cast<std::uint64_t>(PackedPipelineStateHash{}(p)),
+            p.depthTestEnable, p.depthWriteEnable, static_cast<u32>(p.depthFunc),
+            p.depthBoundsTestEnable, p.stencilTestEnable,
+            static_cast<u32>(p.stencilFront.func), static_cast<u32>(p.stencilBack.func),
+            p.alphaTestEnable, static_cast<u32>(p.alphaFunc), p.alphaRef,
+            p.logicOpEnable, static_cast<u32>(p.logicOp),
+            p.rasterizerDiscardEnable, p.viewportTransformEnable, p.dynamicStateActive);
+        for (size_t i{}; i < p.shaderHashes.size(); ++i)
+            output += fmt::format("{}{:016X}", i ? "," : "", p.shaderHashes[i]);
+
+        output += " " + diagnosticDrawDescriptors;
+        pipeline->AppendDiagnosticBindings(output, constantBuffers.boundConstantBuffers);
+        output += fmt::format(" recent_cpu_cbuf_uploads={}", diagnosticRecentCbufUploads.size());
+        for (const auto &upload : diagnosticRecentCbufUploads)
+            output += " [" + upload + "]";
+
+        for (size_t i{}; i < p.attachmentBlendStates.size(); ++i) {
+            const auto &blend{p.attachmentBlendStates[i]};
+            if (!blend.colorWriteMask && !blend.blendEnable)
+                continue;
+            output += fmt::format(
+                " blend[{}]=enable:{},write:{:X},color_op:{},src_color:{},dst_color:{},"
+                "alpha_op:{},src_alpha:{},dst_alpha:{}",
+                i, blend.blendEnable, static_cast<u32>(blend.colorWriteMask),
+                static_cast<u32>(blend.colorBlendOp),
+                static_cast<u32>(blend.srcColorBlendFactor),
+                static_cast<u32>(blend.dstColorBlendFactor),
+                static_cast<u32>(blend.alphaBlendOp),
+                static_cast<u32>(blend.srcAlphaBlendFactor),
+                static_cast<u32>(blend.dstAlphaBlendFactor));
+        }
+        return output;
+    }
+
      void Maxwell3D::PrepareDraw(StateUpdateBuilder &builder,
                                  engine::DrawTopology topology, bool indexed, bool estimateIndexBufferSize, u32 firstIndex, u32 count,
                                  vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
@@ -246,6 +340,56 @@ namespace skyline::gpu::interconnect::maxwell3d {
              }
          }
 
+         // Observe the actual descriptor-update path chosen for this draw.
+         // Reporting must not read guest/GPU constant buffer contents, force
+         // synchronization, or affect any recorded Vulkan command.
+         {
+             auto &capture{diagnostic::Re5PassBoundary()};
+             const auto &clip{clearEngineRegisters.surfaceClip};
+             if (capture.RecordingMetadata() &&
+                 clip.horizontal.width == 1280 && clip.vertical.height == 720) {
+                 diagnosticDrawDescriptors = fmt::format(
+                     "descriptor_update={} writes={} copies={} buffer_bindings={} sampled_views={}",
+                     descUpdateInfo ? "yes" : "reused",
+                     descUpdateInfo ? descUpdateInfo->writes.size() : 0,
+                     descUpdateInfo ? descUpdateInfo->copies.size() : 0,
+                     descUpdateInfo ? descUpdateInfo->bufferDescDynamicBindings.size() : 0,
+                     activeDescriptorSetSampledImages.size());
+                 if (descUpdateInfo) {
+                     size_t writeCount{};
+                     for (const auto &write : descUpdateInfo->writes) {
+                         if (writeCount++ >= 24) {
+                             diagnosticDrawDescriptors += " writes_truncated=1";
+                             break;
+                         }
+                         diagnosticDrawDescriptors += fmt::format(
+                             " write[binding={},type={},count={}]",
+                             write.dstBinding, vk::to_string(write.descriptorType),
+                             write.descriptorCount);
+                     }
+                     size_t bufferCount{};
+                     for (const auto &binding : descUpdateInfo->bufferDescDynamicBindings) {
+                         if (bufferCount >= 24) {
+                             diagnosticDrawDescriptors += " dynamic_bindings_truncated=1";
+                             break;
+                         }
+                         if (const auto *view{std::get_if<BufferView>(&binding)}) {
+                             diagnosticDrawDescriptors += fmt::format(
+                                 " dynamic_buffer[{}]=view,bytes:{}",
+                                 bufferCount, view->size);
+                         } else if (const auto *allocation{std::get_if<BufferBinding>(&binding)}) {
+                             diagnosticDrawDescriptors += fmt::format(
+                                 " dynamic_buffer[{}]=fixed,offset:{},bytes:{}",
+                                 bufferCount, allocation->offset, allocation->size);
+                         }
+                         ++bufferCount;
+                     }
+                 }
+             } else {
+                 diagnosticDrawDescriptors.clear();
+             }
+         }
+
          if (pipeline->UsesRenderArea()) {
              const auto &surfaceClip{clearEngineRegisters.surfaceClip};
              builder.SetRenderArea(
@@ -260,6 +404,28 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Maxwell3D::LoadConstantBuffer(span<u32> data, u32 offset) {
+        auto &capture{diagnostic::Re5PassBoundary()};
+        if (capture.RecordingMetadata()) {
+            // Hash ONLY the CPU-provided LOAD_CBUF payload. The actual bytes
+            // consumed by the GPU may differ if the guest later updates the
+            // bound buffer through a different path or via GPU work.
+            constexpr std::uint64_t FnvBasis{1469598103934665603ULL};
+            constexpr std::uint64_t FnvPrime{1099511628211ULL};
+            auto hash{FnvBasis};
+            const auto *bytes{reinterpret_cast<const u8 *>(data.data())};
+            for (size_t i{}; i < data.size_bytes(); ++i) {
+                hash ^= bytes[i];
+                hash *= FnvPrime;
+            }
+            std::string info{fmt::format(
+                "load_seq={} offset={} cpu_supplied_bytes={} payload_fnv1a64={:016X} first_u32=",
+                ++diagnosticCbufUploadSequence, offset, data.size_bytes(), hash)};
+            for (size_t i{}; i < std::min<size_t>(data.size(), 4); ++i)
+                info += fmt::format("{}{:08X}", i ? "," : "", data[i]);
+            diagnosticRecentCbufUploads.push_back(std::move(info));
+            if (diagnosticRecentCbufUploads.size() > 12)
+                diagnosticRecentCbufUploads.pop_front();
+        }
         constantBuffers.Load(ctx, data, offset);
     }
 
@@ -374,7 +540,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 ctx.executor.AddSubpass(std::move(executionCallback), renderArea,
                                         sampledImages, {}, colorAttachments, {},
                                         false, vk::PipelineStageFlagBits::eAllGraphics,
-                                        vk::PipelineStageFlagBits::eAllGraphics);
+                                        vk::PipelineStageFlagBits::eAllGraphics,
+                                        DescribeDiagnosticOperation("draw_texture_helper", renderArea, false));
             },
             **sampler, renderArea
         );
@@ -432,7 +599,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                   (clearSurface.aEnable ? vk::ColorComponentFlagBits::eA : vk::ColorComponentFlags{}),
                                                                   {clearEngineRegisters.colorClearValue}, &*view, [=](auto &&executionCallback) {
                         auto dst{view.get()};
-                        ctx.executor.AddSubpass(std::move(executionCallback), renderArea, {}, {}, span<TextureView *>{dst}, nullptr);
+                        ctx.executor.AddSubpass(std::move(executionCallback), renderArea, {}, {}, span<TextureView *>{dst}, nullptr,
+                                                false, {}, {},
+                                                DescribeDiagnosticOperation("partial_clear_helper", renderArea, false) +
+                                                fmt::format(" color_raw={:08X},{:08X},{:08X},{:08X}",
+                                                    clearEngineRegisters.colorClearValue[0],
+                                                    clearEngineRegisters.colorClearValue[1],
+                                                    clearEngineRegisters.colorClearValue[2],
+                                                    clearEngineRegisters.colorClearValue[3]));
                     });
                     ctx.executor.NotifyPipelineChange();
                 } else if (needsAttachmentClearCmd(view)) {
@@ -476,7 +650,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
             std::array<TextureView *, 1> colorAttachments{colorView ? &*colorView : nullptr};
             ctx.executor.AddSubpass([clearAttachments, clearRects](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32) {
                 commandBuffer.clearAttachments(clearAttachments, span(clearRects).first(clearAttachments.size()));
-            }, renderArea, {}, {}, colorView ? colorAttachments : span<TextureView *>{}, depthStencilView ? &*depthStencilView : nullptr);
+            }, renderArea, {}, {}, colorView ? colorAttachments : span<TextureView *>{}, depthStencilView ? &*depthStencilView : nullptr,
+               false, {}, {}, DescribeDiagnosticOperation("clear_attachments", renderArea, false) +
+               fmt::format(" clear_color_raw={:08X},{:08X},{:08X},{:08X} clear_depth={} clear_stencil={} rectangles={}x{}",
+                   clearEngineRegisters.colorClearValue[0], clearEngineRegisters.colorClearValue[1],
+                   clearEngineRegisters.colorClearValue[2], clearEngineRegisters.colorClearValue[3],
+                   clearEngineRegisters.depthClearValue, clearEngineRegisters.stencilClearValue,
+                   scissor.extent.width, scissor.extent.height));
         }
 
         ctx.executor.AddCheckpoint("After clear");
@@ -542,7 +722,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
-        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
+         DescribeDiagnosticOperation("draw", scissor, true));
         ctx.executor.AddCheckpoint("After draw");
     
         });
@@ -608,7 +789,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
-        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
+         DescribeDiagnosticOperation("draw_indirect", scissor, true));
         ctx.executor.AddCheckpoint("After indirect draw");
     
         });
