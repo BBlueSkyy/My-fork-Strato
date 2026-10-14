@@ -9,6 +9,7 @@
 #include <gpu/texture/texture.h>
 #include "common.h"
 #include "tic.h"
+#include "texture_cache.h"
 
 namespace skyline::gpu::interconnect {
     class TexturePoolState : dirty::CachedManualDirty {
@@ -56,16 +57,15 @@ namespace skyline::gpu::interconnect {
         std::shared_ptr<TextureView> nullTextureView{};
         dirty::ManualDirtyState<TexturePoolState> texturePool;
 
-        tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
+        using TextureHeaderKey = texture_cache::Key<TextureImageControl, Shader::TextureType>;
+        using TextureHeaderKeyHash = texture_cache::KeyHash<
+            TextureImageControl, Shader::TextureType, util::ObjectHash<TextureImageControl>>;
+        tsl::robin_map<TextureHeaderKey, std::shared_ptr<TextureView>, TextureHeaderKeyHash> textureHeaderStore;
         tsl::robin_map<TexelBufferViewKey, std::unique_ptr<vk::raii::BufferView>, TexelBufferViewKeyHash> texelBufferViewStore;
 
         vk::raii::BufferView *GetOrCreateTexelBufferView(InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format);
 
-        struct CacheEntry {
-            TextureImageControl tic;
-            TextureView *view;
-            u64 sequenceNumber;
-        };
+        using CacheEntry = texture_cache::Entry<TextureImageControl, Shader::TextureType, TextureView>;
         std::vector<CacheEntry> textureHeaderCache;
 
       public:
