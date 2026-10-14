@@ -11,6 +11,7 @@
 namespace skyline {
     namespace kernel::type {
         class KMemory;
+        class KProcess;
     }
 
     namespace memory {
@@ -261,11 +262,28 @@ namespace skyline {
             const DeviceState &state;
             std::map<u8 *, ChunkDescriptor> chunks;
 
+            enum class ProcessAliasKind : u8 {
+                SharedCode,
+                Code,
+            };
+
+            struct ProcessAliasDescriptor {
+                u8 *sourceAddress;
+                size_t size;
+                u64 sourceProcessId;
+                ProcessAliasKind kind;
+            };
+
+            std::map<u8 *, ProcessAliasDescriptor> processAliases;
             std::vector<std::shared_ptr<type::KMemory>> memRefs;
 
             void MapInternal(const std::pair<u8 *, ChunkDescriptor> &newDesc, bool reprotectHost = true);
 
             void ForeachChunkInRange(span<u8> memory, auto editCallback);
+
+            bool CanContainProcessAlias(span<u8> memory) const;
+            bool ValidateProcessAlias(span<u8> destination, span<u8> source, u64 sourceProcessId, ProcessAliasKind kind) const;
+            void RemoveProcessAlias(span<u8> destination);
 
           public:
             memory::AddressSpaceType addressSpaceType{};
@@ -376,6 +394,11 @@ namespace skyline {
             bool IsRangeMapped(span<u8> region);
 
             /**
+             * @brief Checks whether every memory block in a guest range is mapped and writable
+             */
+            bool IsRangeWritable(span<u8> region);
+
+            /**
              * @brief Atomically validates that the entire range is currently Unmapped (Free) and, if so,
              * maps it as Heap-backed physical memory (mirrors MapHeapMemory's ChunkDescriptor)
              * @return False if any chunk within the range - including gaps, which are surfaced as explicit
@@ -387,6 +410,31 @@ namespace skyline {
              * call, which releases the lock in between)
              */
             bool MapPhysicalMemoryIfAllowed(span<u8> memory);
+
+            /**
+             * @brief Changes permissions on process code / alias-code memory (svcSetProcessMemoryPermission)
+             */
+            Result SetProcessMemoryPermission(span<u8> memory, memory::Permission permission);
+
+            /**
+             * @brief Maps source-process pages into this process as SharedCode (svcMapProcessMemory)
+             */
+            Result MapProcessMemory(MemoryManager &sourceMemory, u64 sourceProcessId, span<u8> source, span<u8> destination);
+
+            /**
+             * @brief Unmaps a SharedCode mapping previously created by MapProcessMemory
+             */
+            Result UnmapProcessMemory(MemoryManager &sourceMemory, u64 sourceProcessId, span<u8> source, span<u8> destination);
+
+            /**
+             * @brief Borrows normal memory and maps it as AliasCode in the same process (svcMapProcessCodeMemory)
+             */
+            Result MapProcessCodeMemory(u64 processId, span<u8> source, span<u8> destination);
+
+            /**
+             * @brief Removes an AliasCode mapping and restores the borrowed source memory
+             */
+            Result UnmapProcessCodeMemory(u64 processId, span<u8> source, span<u8> destination);
 
             // Various mapping functions for use by the guest, argument validity must be checked by the caller
             void MapCodeMemory(span<u8> memory, memory::Permission permission);

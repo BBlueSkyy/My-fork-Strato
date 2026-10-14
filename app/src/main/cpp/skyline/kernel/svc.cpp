@@ -1082,6 +1082,8 @@ namespace skyline::kernel::svc {
             TotalMemoryUsageWithoutSystemResource = 22,
             // 11.0.0+
             FreeThreadCount = 24,
+            // 13.0.0+
+            ThreadTickCount = 25,
             // 18.0.0+
             AliasRegionExtraSize = 28,
             // 19.0.0+
@@ -1099,7 +1101,8 @@ namespace skyline::kernel::svc {
 
         InfoState info{static_cast<u32>(ctx.w1)};
         KHandle handle{ctx.w2};
-        u64 id1{ctx.x3};
+        // GetInfo64From32 packs the 64-bit subtype in R0 (low) and R3 (high).
+        const u64 id1{state.process->is64bit() ? ctx.x3 : (static_cast<u64>(ctx.w3) << 32) | ctx.w0};
 
         constexpr u64 totalPhysicalMemory{0xF8000000}; // ~4 GB of RAM
 
@@ -1108,6 +1111,22 @@ namespace skyline::kernel::svc {
             case InfoState::IsCurrentProcessBeingDebugged:
             case InfoState::PrivilegedProcessId:
                 break;
+
+            case InfoState::ResourceLimit: {
+                // Horizon requires INVALID_HANDLE and subtype 0 for this InfoType.
+                if (handle != 0) {
+                    ctx.w0 = result::InvalidHandle;
+                    return;
+                }
+                if (id1 != 0) {
+                    ctx.w0 = result::InvalidCombination;
+                    return;
+                }
+
+                state.process->RefreshResourceLimitValues();
+                out = state.process->InsertItem(state.process->resourceLimit);
+                break;
+            }
 
             case InfoState::AllowedCpuIdBitmask:
                 out = state.process->npdm.threadInfo.coreMask.to_ullong();
@@ -1203,9 +1222,47 @@ namespace skyline::kernel::svc {
                 out = 0; // Stubbed
                 break;
            
-            case InfoState::FreeThreadCount:
-                out = 64; // Stubbed: reports a generous number of free threads.
+            case InfoState::FreeThreadCount: {
+                state.process->RefreshResourceLimitValues();
+                const i64 limit{state.process->resourceLimit->GetLimitValue(type::LimitableResource::Threads)};
+                const i64 current{state.process->resourceLimit->GetCurrentValue(type::LimitableResource::Threads)};
+                out = static_cast<u64>(std::max<i64>(0, limit - current));
                 break;
+            }
+
+            case InfoState::ThreadTickCount: {
+                // Horizon accepts either all cores (-1) or one of the four virtual cores.
+                if (id1 != std::numeric_limits<u64>::max() && id1 >= constant::CoreCount) {
+                    ctx.w0 = result::InvalidCombination;
+                    return;
+                }
+
+                std::shared_ptr<type::KThread> thread;
+                try {
+                    thread = state.process->GetHandle<type::KThread>(handle);
+                } catch (const std::exception &) {
+                    ctx.w0 = result::InvalidHandle;
+                    return;
+                }
+
+                const bool currentThread{thread == state.thread};
+                if (id1 == std::numeric_limits<u64>::max()) {
+                    // Release Horizon kernels accumulate total scheduled time. If the queried
+                    // thread is the caller, include its currently-running slice as well.
+                    out = thread->GetCpuTime();
+                    if (currentThread && thread->timesliceStart) {
+                        const u64 currentTick{util::GetTimeTicks()};
+                        out += currentTick - thread->timesliceStart;
+                    }
+                } else {
+                    out = thread->GetCpuTime(static_cast<u8>(id1));
+                    if (currentThread && thread->coreId == id1 && thread->timesliceStart) {
+                        const u64 currentTick{util::GetTimeTicks()};
+                        out += currentTick - thread->timesliceStart;
+                    }
+                }
+                break;
+            }
 
             case InfoState::RandomEntropy:
                 out = util::GetTimeTicks();
@@ -1272,6 +1329,71 @@ namespace skyline::kernel::svc {
         ctx.w0 = Result{};
     }
 
+    namespace {
+        std::shared_ptr<type::KResourceLimit> GetResourceLimitObject(const DeviceState &state, KHandle handle) {
+            try {
+                return state.process->GetHandle<type::KResourceLimit>(handle);
+            } catch (const std::exception &) {
+                return {};
+            }
+        }
+
+        bool ReadLimitableResource(u32 raw, type::LimitableResource &out) {
+            if (raw >= static_cast<u32>(type::LimitableResource::Count))
+                return false;
+            out = static_cast<type::LimitableResource>(raw);
+            return true;
+        }
+
+        void WriteResourceLimitValue(const DeviceState &state, SvcContext &ctx, i64 value) {
+            const u64 raw{static_cast<u64>(value)};
+            if (state.process->is64bit()) {
+                ctx.x1 = raw;
+            } else {
+                ctx.w1 = static_cast<u32>(raw);
+                ctx.w2 = static_cast<u32>(raw >> 32);
+            }
+        }
+    }
+
+    void GetResourceLimitLimitValue(const DeviceState &state, SvcContext &ctx) {
+        const KHandle handle{ctx.w1};
+        type::LimitableResource resource{};
+        if (!ReadLimitableResource(ctx.w2, resource)) {
+            ctx.w0 = result::InvalidEnumValue;
+            return;
+        }
+
+        auto limit{GetResourceLimitObject(state, handle)};
+        if (!limit) {
+            ctx.w0 = result::InvalidHandle;
+            return;
+        }
+
+        state.process->RefreshResourceLimitValues();
+        WriteResourceLimitValue(state, ctx, limit->GetLimitValue(resource));
+        ctx.w0 = Result{};
+    }
+
+    void GetResourceLimitCurrentValue(const DeviceState &state, SvcContext &ctx) {
+        const KHandle handle{ctx.w1};
+        type::LimitableResource resource{};
+        if (!ReadLimitableResource(ctx.w2, resource)) {
+            ctx.w0 = result::InvalidEnumValue;
+            return;
+        }
+
+        auto limit{GetResourceLimitObject(state, handle)};
+        if (!limit) {
+            ctx.w0 = result::InvalidHandle;
+            return;
+        }
+
+        state.process->RefreshResourceLimitValues();
+        WriteResourceLimitValue(state, ctx, limit->GetCurrentValue(resource));
+        ctx.w0 = Result{};
+    }
+
     void FlushProcessDataCache(const DeviceState &state, SvcContext &ctx) {
         KHandle handle{ctx.w0};
         // Horizon's 32-bit ABI passes the two 64-bit arguments in R2/R3 and R1/R4.
@@ -1305,6 +1427,209 @@ namespace skyline::kernel::svc {
         // Guest CPU memory is host-coherent; GPU writes to these pages are tracked by memory traps.
         std::atomic_thread_fence(std::memory_order_seq_cst);
         ctx.w0 = Result{};
+    }
+
+    namespace {
+        std::shared_ptr<type::KProcess> GetProcessFromHandle(const DeviceState &state, KHandle handle, bool allowPseudo) {
+            constexpr KHandle ProcessSelf{0xFFFF8001};
+            if (!allowPseudo && handle == ProcessSelf)
+                return {};
+
+            try {
+                return state.process->GetHandle<type::KProcess>(handle);
+            } catch (const std::exception &) {
+                return {};
+            }
+        }
+
+        bool ValidateProcessRange(const std::shared_ptr<type::KProcess> &process, u64 address, u64 size) {
+            if (address >= address + size)
+                return false;
+            return process->memory.AddressSpaceContains(span<u8>{reinterpret_cast<u8 *>(address), static_cast<size_t>(size)});
+        }
+    }
+
+    void SetProcessMemoryPermission(const DeviceState &state, SvcContext &ctx) {
+        KHandle handle{ctx.w0};
+        u64 address{state.process->is64bit() ? ctx.x1 : (static_cast<u64>(ctx.w3) << 32) | ctx.w2};
+        u64 size{state.process->is64bit() ? ctx.x2 : (static_cast<u64>(ctx.w4) << 32) | ctx.w1};
+        u32 permissionRaw{state.process->is64bit() ? ctx.w3 : ctx.w5};
+
+        if (!util::IsPageAligned(reinterpret_cast<u8 *>(address))) {
+            ctx.w0 = result::InvalidAddress;
+            return;
+        }
+        if (!size || !util::IsPageAligned(size)) {
+            ctx.w0 = result::InvalidSize;
+            return;
+        }
+        if (address >= address + size) {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        memory::Permission permission{static_cast<u8>(permissionRaw)};
+        if (permissionRaw > 0x7 || (permission.w && (!permission.r || permission.x))) {
+            ctx.w0 = result::InvalidNewMemoryPermission;
+            return;
+        }
+        if (permissionRaw != 0 && permissionRaw != 1 && permissionRaw != 3 && permissionRaw != 4 && permissionRaw != 5) {
+            ctx.w0 = result::InvalidNewMemoryPermission;
+            return;
+        }
+
+        auto process{GetProcessFromHandle(state, handle, true)};
+        if (!process) {
+            ctx.w0 = result::InvalidHandle;
+            return;
+        }
+        if (!ValidateProcessRange(process, address, size)) {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        ctx.w0 = process->memory.SetProcessMemoryPermission(
+            span<u8>{reinterpret_cast<u8 *>(address), static_cast<size_t>(size)}, permission);
+    }
+
+    void MapProcessMemory(const DeviceState &state, SvcContext &ctx) {
+        u64 destination{state.process->is64bit() ? ctx.x0 : static_cast<u64>(ctx.w0)};
+        KHandle handle{ctx.w1};
+        u64 source{state.process->is64bit() ? ctx.x2 : (static_cast<u64>(ctx.w3) << 32) | ctx.w2};
+        u64 size{state.process->is64bit() ? ctx.x3 : static_cast<u64>(ctx.w4)};
+
+        if (!util::IsPageAligned(reinterpret_cast<u8 *>(destination)) || !util::IsPageAligned(reinterpret_cast<u8 *>(source))) {
+            ctx.w0 = result::InvalidAddress;
+            return;
+        }
+        if (!size || !util::IsPageAligned(size)) {
+            ctx.w0 = result::InvalidSize;
+            return;
+        }
+        if (destination >= destination + size || source >= source + size) {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        auto sourceProcess{GetProcessFromHandle(state, handle, false)};
+        if (!sourceProcess) {
+            ctx.w0 = result::InvalidHandle;
+            return;
+        }
+        if (!ValidateProcessRange(sourceProcess, source, size)) {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        ctx.w0 = state.process->memory.MapProcessMemory(
+            sourceProcess->memory, sourceProcess->id,
+            span<u8>{reinterpret_cast<u8 *>(source), static_cast<size_t>(size)},
+            span<u8>{reinterpret_cast<u8 *>(destination), static_cast<size_t>(size)});
+    }
+
+    void UnmapProcessMemory(const DeviceState &state, SvcContext &ctx) {
+        u64 destination{state.process->is64bit() ? ctx.x0 : static_cast<u64>(ctx.w0)};
+        KHandle handle{ctx.w1};
+        u64 source{state.process->is64bit() ? ctx.x2 : (static_cast<u64>(ctx.w3) << 32) | ctx.w2};
+        u64 size{state.process->is64bit() ? ctx.x3 : static_cast<u64>(ctx.w4)};
+
+        if (!util::IsPageAligned(reinterpret_cast<u8 *>(destination)) || !util::IsPageAligned(reinterpret_cast<u8 *>(source))) {
+            ctx.w0 = result::InvalidAddress;
+            return;
+        }
+        if (!size || !util::IsPageAligned(size)) {
+            ctx.w0 = result::InvalidSize;
+            return;
+        }
+        if (destination >= destination + size || source >= source + size) {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        auto sourceProcess{GetProcessFromHandle(state, handle, false)};
+        if (!sourceProcess) {
+            ctx.w0 = result::InvalidHandle;
+            return;
+        }
+        if (!ValidateProcessRange(sourceProcess, source, size)) {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        ctx.w0 = state.process->memory.UnmapProcessMemory(
+            sourceProcess->memory, sourceProcess->id,
+            span<u8>{reinterpret_cast<u8 *>(source), static_cast<size_t>(size)},
+            span<u8>{reinterpret_cast<u8 *>(destination), static_cast<size_t>(size)});
+    }
+
+    void MapProcessCodeMemory(const DeviceState &state, SvcContext &ctx) {
+        KHandle handle{ctx.w0};
+        u64 destination{state.process->is64bit() ? ctx.x1 : (static_cast<u64>(ctx.w3) << 32) | ctx.w2};
+        u64 source{state.process->is64bit() ? ctx.x2 : (static_cast<u64>(ctx.w4) << 32) | ctx.w1};
+        u64 size{state.process->is64bit() ? ctx.x3 : (static_cast<u64>(ctx.w6) << 32) | ctx.w5};
+
+        if (!util::IsPageAligned(reinterpret_cast<u8 *>(destination)) || !util::IsPageAligned(reinterpret_cast<u8 *>(source))) {
+            ctx.w0 = result::InvalidAddress;
+            return;
+        }
+        if (!size || !util::IsPageAligned(size)) {
+            ctx.w0 = result::InvalidSize;
+            return;
+        }
+        if (destination >= destination + size || source >= source + size) {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        auto process{GetProcessFromHandle(state, handle, false)};
+        if (!process) {
+            ctx.w0 = result::InvalidHandle;
+            return;
+        }
+        if (!ValidateProcessRange(process, source, size)) {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        ctx.w0 = process->memory.MapProcessCodeMemory(
+            process->id,
+            span<u8>{reinterpret_cast<u8 *>(source), static_cast<size_t>(size)},
+            span<u8>{reinterpret_cast<u8 *>(destination), static_cast<size_t>(size)});
+    }
+
+    void UnmapProcessCodeMemory(const DeviceState &state, SvcContext &ctx) {
+        KHandle handle{ctx.w0};
+        u64 destination{state.process->is64bit() ? ctx.x1 : (static_cast<u64>(ctx.w3) << 32) | ctx.w2};
+        u64 source{state.process->is64bit() ? ctx.x2 : (static_cast<u64>(ctx.w4) << 32) | ctx.w1};
+        u64 size{state.process->is64bit() ? ctx.x3 : (static_cast<u64>(ctx.w6) << 32) | ctx.w5};
+
+        if (!util::IsPageAligned(reinterpret_cast<u8 *>(destination)) || !util::IsPageAligned(reinterpret_cast<u8 *>(source))) {
+            ctx.w0 = result::InvalidAddress;
+            return;
+        }
+        if (!size || !util::IsPageAligned(size)) {
+            ctx.w0 = result::InvalidSize;
+            return;
+        }
+        if (destination >= destination + size || source >= source + size) {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        auto process{GetProcessFromHandle(state, handle, false)};
+        if (!process) {
+            ctx.w0 = result::InvalidHandle;
+            return;
+        }
+        if (!ValidateProcessRange(process, source, size)) {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        ctx.w0 = process->memory.UnmapProcessCodeMemory(
+            process->id,
+            span<u8>{reinterpret_cast<u8 *>(source), static_cast<size_t>(size)},
+            span<u8>{reinterpret_cast<u8 *>(destination), static_cast<size_t>(size)});
     }
 
     void MapPhysicalMemory(const DeviceState &state, SvcContext &ctx) {
@@ -1472,19 +1797,38 @@ namespace skyline::kernel::svc {
             };
             static_assert(sizeof(ThreadContext) == 0x320);
 
-            auto &context{*state.process->memory.TranslateVirtualPointer<ThreadContext *>(ctx.x0)};
+            const u64 contextAddress{state.process->is64bit() ? ctx.x0 : static_cast<u64>(ctx.w0)};
+            if (contextAddress > std::numeric_limits<u64>::max() - sizeof(ThreadContext)) {
+                ctx.w0 = result::InvalidPointer;
+                return;
+            }
+            span<u8> contextRange{reinterpret_cast<u8 *>(contextAddress), sizeof(ThreadContext)};
+            if (!state.process->memory.AddressSpaceContains(contextRange) || !state.process->memory.IsRangeWritable(contextRange)) {
+                ctx.w0 = result::InvalidPointer;
+                return;
+            }
+
+            auto &context{*state.process->memory.TranslateVirtualPointer<ThreadContext *>(contextAddress)};
             context = {}; // Zero-initialize the contents of the context as not all fields are set
 
             if (state.process->is64bit()) {
                 auto &targetContext{dynamic_cast<type::KNceThread *>(thread.get())->ctx};
                 for (size_t i{}; i < targetContext.gpr.regs.size(); i++)
                     context.gpr[i] = targetContext.gpr.regs[i];
+                for (size_t i{}; i < targetContext.calleeSavedGpr.size(); i++)
+                    context.gpr[19 + i] = targetContext.calleeSavedGpr[i];
+
+                context.fp = targetContext.fp;
+                context.lr = targetContext.lr;
+                context.sp = targetContext.sp;
+                context.pc = targetContext.pc;
+                context.pstate = targetContext.nzcv & 0xF0000000U;
 
                 for (size_t i{}; i < targetContext.fpr.regs.size(); i++)
                     context.vreg[i] = targetContext.fpr.regs[i];
 
-                context.fpcr = targetContext.fpr.fpcr;
-                context.fpsr = targetContext.fpr.fpsr;
+                context.fpcr = targetContext.fpcr;
+                context.fpsr = targetContext.fpsr;
 
                 context.tpidr = reinterpret_cast<u64>(targetContext.tpidrEl0);
             } else { // 32 bit
@@ -1511,8 +1855,7 @@ namespace skyline::kernel::svc {
                 context.tpidr = targetContext.tpidr;
             }
 
-            // Note: We don't write the whole context as we only store the parts required according to the ARMv8 ABI for syscall handling
-            LOGD("Written partial context for thread #{}", thread->id);
+            LOGD("Written thread context for thread #{}", thread->id);
 
             ctx.w0 = Result{};
         } catch (const std::out_of_range &) {
@@ -1668,8 +2011,8 @@ namespace skyline::kernel::svc {
         SVC_ENTRY(UnmapPhysicalMemory), // 0x2D
         SVC_NONE, // 0x2E
         SVC_NONE, // 0x2F
-        SVC_NONE, // 0x30
-        SVC_NONE, // 0x31
+        SVC_ENTRY(GetResourceLimitLimitValue), // 0x30
+        SVC_ENTRY(GetResourceLimitCurrentValue), // 0x31
         SVC_ENTRY(SetThreadActivity), // 0x32
         SVC_ENTRY(GetThreadContext3), // 0x33
         SVC_ENTRY(WaitForAddress), // 0x34
@@ -1735,12 +2078,12 @@ namespace skyline::kernel::svc {
         SVC_NONE, // 0x70
         SVC_NONE, // 0x71
         SVC_NONE, // 0x72
-        SVC_NONE, // 0x73
-        SVC_NONE, // 0x74
-        SVC_NONE, // 0x75
+        SVC_ENTRY(SetProcessMemoryPermission), // 0x73
+        SVC_ENTRY(MapProcessMemory), // 0x74
+        SVC_ENTRY(UnmapProcessMemory), // 0x75
         SVC_NONE, // 0x76
-        SVC_NONE, // 0x77
-        SVC_NONE, // 0x78
+        SVC_ENTRY(MapProcessCodeMemory), // 0x77
+        SVC_ENTRY(UnmapProcessCodeMemory), // 0x78
         SVC_NONE, // 0x79
         SVC_NONE, // 0x7A
         SVC_NONE, // 0x7B

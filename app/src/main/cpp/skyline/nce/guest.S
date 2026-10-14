@@ -20,6 +20,19 @@ SaveCtx:
     STP X16, X17, [LR, #(8 * 16)]
     STR X18, [LR, #(8 * 18)]
 
+    /* Store callee-saved GP registers for GetThreadContext3 snapshots.
+     * STP's signed scaled immediate only reaches +504 bytes, while these
+     * snapshot GPR fields start at 0x2E0. X18 is already saved above, so it is
+     * safe to use temporarily as a nearby base and restore it afterwards. */
+    ADD X18, LR, #0x200
+    STP X19, X20, [X18, #0xE0]
+    STP X21, X22, [X18, #0xF0]
+    STP X23, X24, [X18, #0x100]
+    STP X25, X26, [X18, #0x110]
+    STP X27, X28, [X18, #0x120]
+    STR X29, [X18, #0x130]
+    LDR X18, [LR, #(8 * 18)]
+
     /* Store FP Registers */
     STP Q0, Q1, [LR, #(0xA0 + 16 * 0)]
     STP Q2, Q3, [LR, #(0xA0 + 16 * 2)]
@@ -39,12 +52,20 @@ SaveCtx:
     STP Q30, Q31, [LR, #(0xA0 + 16 * 30)]
 
 
-    /* Store System Registers */
+    /* Store System Registers and the guest control-flow state.
+     * The caller reserved 16 bytes before BL SaveCtx. [SP, #16] after the
+     * scratch push below is that caller slot, containing the guest LR/resume
+     * address. The original guest SP is therefore current SP + 32. */
     STR X0, [SP, #-16]!
+    LDR X0, [SP, #16]
+    STR X0, [LR, #0x338]
+    STR X0, [LR, #0x348]
+    ADD X0, SP, #32
+    STR X0, [LR, #0x340]
     MRS	X0, FPSR
-    STR	W0, [LR, #0x298]
+    STR	W0, [LR, #0x2D8]
     MRS	X0, FPCR
-    STR	W0, [LR, #0x29C]
+    STR	W0, [LR, #0x2DC]
     MRS	X0, NZCV
     STR	W0, [LR, #0x2C0]
     LDR X0, [SP], #16
@@ -78,9 +99,9 @@ LoadCtx:
     LDP Q30, Q31, [LR, #(0xA0 + 16 * 30)]
 
     /* Load System Registers */
-    LDR	W0, [LR, #0x298]
+    LDR	W0, [LR, #0x2D8]
     MSR	FPSR, X0
-    LDR	W0, [LR, #0x29C]
+    LDR	W0, [LR, #0x2DC]
     MSR	FPCR, X0
     LDR	W0, [LR, #0x2C0]
     MSR	NZCV, X0

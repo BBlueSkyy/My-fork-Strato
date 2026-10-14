@@ -16,6 +16,7 @@ namespace skyline::kernel::type {
         KTransferMemory,
         KSession,
         KEvent,
+        KResourceLimit,
     };
 
     /**
