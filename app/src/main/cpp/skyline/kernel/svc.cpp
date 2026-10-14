@@ -1657,16 +1657,18 @@ namespace skyline::kernel::svc {
         if (!size || !util::IsPageAligned(size)) { ctx.w0 = result::InvalidSize; return; }
         if (address > std::numeric_limits<u64>::max() - size) { ctx.w0 = result::InvalidMemoryRegion; return; }
         if (operation > 3) { ctx.w0 = result::InvalidEnumValue; return; }
+        // Horizon: 0=MapOwner(RW), 1=MapSlave(R/RX),
+        // 2=UnmapOwner, 3=UnmapSlave.
         if ((operation == 0 && permission != 3) ||
-            (operation == 2 && permission != 1 && permission != 5) ||
-            ((operation == 1 || operation == 3) && permission != 0)) {
+            (operation == 1 && permission != 1 && permission != 5) ||
+            ((operation == 2 || operation == 3) && permission != 0)) {
             ctx.w0 = result::InvalidNewMemoryPermission; return;
         }
         std::shared_ptr<type::KCodeMemory> memory;
         try { memory = state.process->GetHandle<type::KCodeMemory>(handle); }
         catch (const std::exception &) { ctx.w0 = result::InvalidHandle; return; }
         memory::Permission perm; perm.raw = permission;
-        ctx.w0 = (operation == 0 || operation == 2) ? memory->Map(address, size, perm, operation == 2)
+        ctx.w0 = (operation == 0 || operation == 1) ? memory->Map(address, size, perm, operation == 1)
                                                    : memory->Unmap(address, size, operation == 3);
     }
 
