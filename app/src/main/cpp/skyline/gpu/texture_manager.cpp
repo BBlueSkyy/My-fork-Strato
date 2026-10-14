@@ -7,6 +7,7 @@
 #include "texture_manager.h"
 #include "texture/backing_promotion.h"
 #include "texture/view_range.h"
+#include "texture/mapping_match.h"
 
 namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
@@ -192,18 +193,29 @@ namespace skyline::gpu {
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
                         (sameTileConfig || blockMipCandidate) &&
                         (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
-                    size_t memOffset{static_cast<size_t>(guestMapping.data() - hostMapping->texture->guest->mappings.front().data())};
+                    // A physical address difference is not a logical offset in
+                    // guest mappings: separate mappings may be discontiguous.
+                    // The entire requested range must also be backed by the
+                    // *same* sequence of physical bytes, not just its first span.
+                    const auto firstHostIndex{static_cast<size_t>(std::distance(hostMappings.begin(), hostMapping->iterator))};
+                    const auto logicalOffset{texture::FindContainedMappingOffset(hostMappings, guestTexture.mappings, firstHostIndex)};
+                    if (!logicalOffset)
+                        continue;
+                    const size_t memOffset{*logicalOffset};
 
-                    std::optional<texture::MipLevelLayout> requestedMipLayout;
-                    if (blockMipCandidate) {
-                        auto requestedLayouts{texture::GetBlockLinearMipLayout(
-                            guestTexture.dimensions,
-                            guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
-                            guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
-                            guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth, 1)};
-                        if (!requestedLayouts.empty())
-                            requestedMipLayout = requestedLayouts.front();
-                    }
+                    // The destination mip's footprint alone does not prove a
+                    // multi-mip request is compatible. Check each requested
+                    // mip against its parent using effective block heights,
+                    // depth and geometry, including mips outside the view.
+                    const bool blockLayout{matchGuestTexture.tileConfig.mode == texture::TileMode::Block &&
+                        guestTexture.tileConfig.mode == texture::TileMode::Block &&
+                        matchGuestTexture.GetImageType() == guestTexture.GetImageType()};
+                    const auto requestedLayouts{blockLayout ? texture::GetBlockLinearMipLayout(
+                        guestTexture.dimensions,
+                        guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
+                        guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
+                        guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
+                        guestTexture.mipLevelCount) : std::vector<texture::MipLevelLayout>{}};
 
                     size_t layerMemOffset{};
                     bool matched{};
@@ -212,19 +224,27 @@ namespace skyline::gpu {
                         size_t levelMemOffset{};
 
                         for (const auto &mipLevel : hostMapping->texture->mipLayouts) {
-                            bool layoutMatches{mipLevel.blockLinearSize == guestTexture.CalculateLayerSize()};
-                            if (blockMipCandidate) {
-                                layoutMatches = requestedMipLayout &&
-                                    mipLevel.dimensions == guestTexture.dimensions &&
-                                    mipLevel.blockHeight == requestedMipLayout->blockHeight &&
-                                    mipLevel.blockDepth == requestedMipLayout->blockDepth &&
-                                    mipLevel.blockLinearSize == requestedMipLayout->blockLinearSize;
+                            bool layoutMatches{};
+                            if (blockLayout && !requestedLayouts.empty() &&
+                                level < hostMapping->texture->mipLayouts.size() &&
+                                requestedLayouts.size() <= hostMapping->texture->mipLayouts.size() - level) {
+                                layoutMatches = std::equal(requestedLayouts.begin(), requestedLayouts.end(),
+                                    hostMapping->texture->mipLayouts.begin() + level,
+                                    [](const auto &requested, const auto &parent) {
+                                        return requested.dimensions == parent.dimensions &&
+                                            requested.blockHeight == parent.blockHeight &&
+                                            requested.blockDepth == parent.blockDepth &&
+                                            requested.blockLinearSize == parent.blockLinearSize;
+                                    });
+                            } else if (!blockLayout && guestTexture.mipLevelCount == 1) {
+                                // Conservative legacy fallback for non-block
+                                // single-mip views: geometry must also agree.
+                                layoutMatches = mipLevel.dimensions == guestTexture.dimensions &&
+                                    mipLevel.blockLinearSize == guestTexture.CalculateLayerSize();
                             }
 
-                            if (layerMemOffset + levelMemOffset == memOffset && layoutMatches) {
+                            if (layoutMatches && layerMemOffset + levelMemOffset == memOffset) {
                                 auto range{requestedRange};
-                                // Test before addition, including the whole requested
-                                // range, not just the starting subresource.
                                 if (range.baseMipLevel <= hostMapping->texture->levelCount - level &&
                                     range.baseArrayLayer <= hostMapping->texture->layerCount - layer) {
                                     range.baseMipLevel += level;
@@ -239,9 +259,6 @@ namespace skyline::gpu {
                                 }
                             }
 
-                            // These offsets describe the parent's physical mip chain.
-                            // Advancing only after an address equality (the old code)
-                            // made every non-zero mip mathematically unreachable.
                             ++level;
                             levelMemOffset += mipLevel.blockLinearSize;
                         }

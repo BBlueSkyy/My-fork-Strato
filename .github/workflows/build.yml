@@ -3,7 +3,7 @@ name: Build
 
 on:
   push: 
-    branches: [ master ]
+    branches: [ master, fix/texman-mapping-mips-r123 ]
 
 jobs:
   build:
@@ -39,6 +39,9 @@ jobs:
         run: |
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
+
+      - name: Texman physical mapping unit tests (UBSan)
+        run: bash tests/gpu/run_texture_mapping_match.sh
 
       - name: Android Assemble
         env:

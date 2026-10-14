@@ -12,6 +12,7 @@
 #include <gpu/texture/backing_promotion.h>
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
+#include <gpu/texture/mapping_match.h>
 #include <bit>
 #include <chrono>
 #include <numeric>
@@ -1288,6 +1289,30 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         gpu.scheduler.Complete();
     }
 
+    // R2: a 2x2 two-mip view must never reuse the 32x8 / 16x4
+    // subresources of an unrelated 64x16 parent simply because its first
+    // level occupies the same number of block-linear bytes.
+    void CheckManagerRejectsWrongMipChain(GPU &gpu) {
+        TextureManager manager{gpu};
+        std::vector<u8> bytes(8192, 0x53);
+        GuestTexture parent;
+        parent.format = format::R8G8B8A8Unorm;
+        parent.dimensions = {64, 16, 1};
+        parent.viewType = vk::ImageViewType::e2D;
+        parent.layerCount = 1;
+        parent.mipLevelCount = parent.viewMipCount = 7;
+        parent.mappings.push_back(span<u8>{bytes});
+        auto parentView{manager.FindOrCreate(parent)};
+        auto child{parent};
+        child.dimensions = {2, 2, 1};
+        child.mipLevelCount = child.viewMipCount = 2;
+        child.mappings.clear();
+        child.mappings.push_back(span<u8>{bytes.data() + 4096, 1024});
+        auto childView{manager.FindOrCreate(child)};
+        assert(childView->texture != parentView->texture);
+        assert(childView->texture->mipLayouts[0].dimensions == child.dimensions);
+    }
+
     // Exact mappings also find obsolete representations whose host format
     // cannot round-trip. They are not necessarily the current guest writer.
     void CheckHistoricalAlias(GPU &gpu, bool authoritative, bool writerReadBack, bool alreadyGrouped, bool executorContext, bool skippedReadback = false) {
@@ -1808,6 +1833,7 @@ int main() {
             CheckSeparateLayouts(gpu);
             CheckIndependentAliases(gpu);
             CheckManagerAliases(gpu);
+            CheckManagerRejectsWrongMipChain(gpu);
             for (bool authoritative : {false,true})
                 for (bool readBack : {false,true})
                     for (bool grouped : {false,true})
