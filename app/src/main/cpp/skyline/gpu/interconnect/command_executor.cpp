@@ -662,10 +662,10 @@ namespace skyline::gpu::interconnect {
                     if (!out)
                         return;
                     out << "PRE_RENDER_PASS: bytes captured immediately before beginRenderPass; "
-                           "no Vulkan draw in this pass has executed.\\n";
+                           "no Vulkan draw in this pass has executed.\n";
                     out << metadata
                         << "paired_post=pass_" << fmt::format("{:03}", index)
-                        << ".txt invalidate_result=" << static_cast<int>(status) << '\\n';
+                        << ".txt invalidate_result=" << static_cast<int>(status) << '\n';
                     if (status != VK_SUCCESS)
                         return;
 
@@ -682,13 +682,13 @@ namespace skyline::gpu::interconnect {
                     }
                     out << fmt::format(
                         "stats zero_bytes={} total_bytes={} zero_ratio={:.6f} "
-                        "mean_byte={:.6f} fnv1a64=0x{:016X}\\nfirst_bytes=",
+                        "mean_byte={:.6f} fnv1a64=0x{:016X}\nfirst_bytes=",
                         zeroBytes, analysisSize,
                         static_cast<double>(zeroBytes) / analysisSize,
                         static_cast<double>(sum) / analysisSize, hash);
                     for (size_t i{}; i < std::min<size_t>(analysisSize, 32); ++i)
                         out << fmt::format("{:02X}", bytes[i]);
-                    out << '\\n';
+                    out << '\n';
                     if (rgba8 && analysisSize % 4 == 0) {
                         const auto pixels{analysisSize / 4};
                         for (size_t i{}; i < analysisSize; i += 4) {
@@ -700,7 +700,7 @@ namespace skyline::gpu::interconnect {
                         }
                         out << fmt::format(
                             "rgb8 pixels={} rgb_mean={:.6f} black_rgb_ratio={:.6f} "
-                            "opaque_alpha_ratio={:.6f}\\n",
+                            "opaque_alpha_ratio={:.6f}\n",
                             pixels, static_cast<double>(rgbSum) / (pixels * 3),
                             static_cast<double>(blackRgb) / pixels,
                             static_cast<double>(opaqueAlpha) / pixels);
