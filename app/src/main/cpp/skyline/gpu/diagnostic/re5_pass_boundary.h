@@ -132,6 +132,19 @@ namespace skyline::gpu::diagnostic {
             return PassTicket{nextPass++, presentIndex.load(std::memory_order_relaxed), path};
         }
 
+        // Charge both GPU staging allocations atomically. A paired capture
+        // must never silently record only PRE or POST, and must not overflow
+        // the shared full-image budget.
+        std::optional<PassTicket> ReservePairedPass(std::size_t backingBytes) {
+            std::scoped_lock lock{mutex};
+            if (!active.load(std::memory_order_acquire) || !backingBytes ||
+                nextPass >= MaxPasses ||
+                backingBytes > (MaxReadbackBytes - readbackBytes) / 2)
+                return std::nullopt;
+            readbackBytes += 2 * backingBytes;
+            return PassTicket{nextPass++, presentIndex.load(std::memory_order_relaxed), path};
+        }
+
         std::optional<FocusedTicket> ReserveFocused(std::size_t bytes) {
             std::scoped_lock lock{mutex};
             if (!active.load(std::memory_order_acquire) || !bytes ||
