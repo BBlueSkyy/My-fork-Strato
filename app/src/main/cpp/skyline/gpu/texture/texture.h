@@ -526,6 +526,10 @@ namespace skyline::gpu {
         vk::SampleCountFlagBits sampleCount;
         bool replaced{};
 
+        bool IsObsoleteForViewReuse() const {
+            return replaced || aliasRetired.load(std::memory_order_acquire);
+        }
+
         /**
          * @brief Creates a texture object wrapping the supplied backing with the supplied attributes
          * @param layout The initial layout of the texture, it **must** be eUndefined or ePreinitialized
