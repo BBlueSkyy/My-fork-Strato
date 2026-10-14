@@ -293,6 +293,9 @@ namespace skyline::gpu {
         } tileConfig;
         using Mappings = std::vector<span<u8>>;
         Mappings mappings;
+        bool MappingsValid() const {
+            return std::all_of(mappings.begin(), mappings.end(), [](const auto &mapping) { return mapping.valid(); });
+        }
         vk::ImageType GetImageType() const {
             if (viewType==vk::ImageViewType::e3D || dimensions.depth>1) return vk::ImageType::e3D;
             if (viewType==vk::ImageViewType::e1D || viewType==vk::ImageViewType::e1DArray) return vk::ImageType::e1D;
@@ -1185,6 +1188,21 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         descriptor.mipLevelCount=descriptor.viewMipCount=1;
         descriptor.layerCount=6; descriptor.layerStride=90112;
         descriptor.mappings.push_back(span<u8>{guest});
+        // The production manager must reject a missing mapping before front()
+        // rather than reading an invalid span or populating the overlap map.
+        {
+            auto missing{descriptor};
+            missing.mappings.clear();
+            bool rejected{};
+            try { manager.FindOrCreate(missing); }
+            catch (const std::runtime_error &) { rejected = true; }
+            assert(rejected);
+            missing.mappings.push_back(span<u8>{});
+            rejected = false;
+            try { manager.FindOrCreate(missing); }
+            catch (const std::runtime_error &) { rejected = true; }
+            assert(rejected);
+        }
         auto a{manager.FindOrCreate(descriptor)};
         { std::scoped_lock lock{*a->texture}; a->texture->SynchronizeHost(false); }
         WriteAliasRenderTarget(a->texture,{1,0,1,1});
