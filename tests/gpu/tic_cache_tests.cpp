@@ -24,6 +24,9 @@ namespace {
     struct Texture {
         bool replaced{};
         std::atomic<bool> aliasRetired{};
+        bool IsObsoleteForViewReuse() const {
+            return replaced || aliasRetired.load(std::memory_order_acquire);
+        }
     };
     struct TextureView {
         std::shared_ptr<Texture> texture;
