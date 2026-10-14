@@ -282,8 +282,7 @@ namespace skyline::gpu::interconnect {
         TextureImageControl &textureHeader{textureHeaders[index]};
         auto &texture{textureHeaderStore[TextureHeaderKey{textureHeader, shaderType}]};
 
-        if (!texture || texture->texture->replaced ||
-            texture->texture->aliasRetired.load(std::memory_order_acquire)) {
+        if (!texture || texture->texture->IsObsoleteForViewReuse()) {
             // If the entry didn't exist prior then we need to convert the TIC to a GuestTexture
             GuestTexture guest{};
             if (auto format{ConvertTicFormat(textureHeader.formatWord, textureHeader.isSrgb)}) {
