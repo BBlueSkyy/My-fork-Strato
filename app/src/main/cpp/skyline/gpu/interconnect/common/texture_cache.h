@@ -45,8 +45,7 @@ namespace skyline::gpu::interconnect::texture_cache {
 
         bool Matches(const Tic &requestedTic, ShaderType requestedType) const {
             return view && shaderType == requestedType && tic == requestedTic &&
-                   !view->texture->replaced &&
-                   !view->texture->aliasRetired.load(std::memory_order_acquire);
+                   !view->texture->IsObsoleteForViewReuse();
         }
     };
 }
