@@ -261,18 +261,15 @@ namespace skyline::gpu::interconnect {
 
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
-        if (textureHeaderCache.size() != textureHeaders.size()) {
+        if (textureHeaderCache.size() != textureHeaders.size())
             textureHeaderCache.resize(textureHeaders.size());
-            std::fill(textureHeaderCache.begin(), textureHeaderCache.end(), CacheEntry{});
-        } else if (textureHeaders.size() > index && textureHeaderCache[index].view) {
-            auto &cached{textureHeaderCache[index]};
-            if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber)
-                return cached.view;
-
-            if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
-                cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
-                return cached.view;
-            }
+        if (index < textureHeaders.size()) {
+            const auto &cached{textureHeaderCache[index]};
+            // Even within one channel sequence, alias retirement or backing
+            // replacement can invalidate a previously resolved view. Always
+            // validate both the TIC and the shader-requested image view type.
+            if (cached.Matches(textureHeaders[index], shaderType))
+                return cached.view.get();
         }
 
         if (index >= textureHeaders.size()) {
@@ -283,9 +280,10 @@ namespace skyline::gpu::interconnect {
         }
 
         TextureImageControl &textureHeader{textureHeaders[index]};
-        auto &texture{textureHeaderStore[textureHeader]};
+        auto &texture{textureHeaderStore[TextureHeaderKey{textureHeader, shaderType}]};
 
-        if (!texture || texture->texture->replaced) {
+        if (!texture || texture->texture->replaced ||
+            texture->texture->aliasRetired.load(std::memory_order_acquire)) {
             // If the entry didn't exist prior then we need to convert the TIC to a GuestTexture
             GuestTexture guest{};
             if (auto format{ConvertTicFormat(textureHeader.formatWord, textureHeader.isSrgb)}) {
@@ -380,7 +378,7 @@ namespace skyline::gpu::interconnect {
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
         }
 
-        textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber};
+        textureHeaderCache[index] = CacheEntry{textureHeader, shaderType, texture};
         return texture.get();
     }
 
