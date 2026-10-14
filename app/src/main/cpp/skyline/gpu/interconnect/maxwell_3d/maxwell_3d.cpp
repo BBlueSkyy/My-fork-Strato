@@ -261,6 +261,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
         for (size_t i{}; i < p.shaderHashes.size(); ++i)
             output += fmt::format("{}{:016X}", i ? "," : "", p.shaderHashes[i]);
 
+        output += " " + diagnosticDrawDescriptors;
+        pipeline->AppendDiagnosticBindings(output, constantBuffers.boundConstantBuffers);
+        output += fmt::format(" recent_cpu_cbuf_uploads={}", diagnosticRecentCbufUploads.size());
+        for (const auto &upload : diagnosticRecentCbufUploads)
+            output += " [" + upload + "]";
+
         for (size_t i{}; i < p.attachmentBlendStates.size(); ++i) {
             const auto &blend{p.attachmentBlendStates[i]};
             if (!blend.colorWriteMask && !blend.blendEnable)
@@ -334,6 +340,56 @@ namespace skyline::gpu::interconnect::maxwell3d {
              }
          }
 
+         // Observe the actual descriptor-update path chosen for this draw.
+         // Reporting must not read guest/GPU constant buffer contents, force
+         // synchronization, or affect any recorded Vulkan command.
+         {
+             auto &capture{diagnostic::Re5PassBoundary()};
+             const auto &clip{clearEngineRegisters.surfaceClip};
+             if (capture.RecordingMetadata() &&
+                 clip.horizontal.width == 1280 && clip.vertical.height == 720) {
+                 diagnosticDrawDescriptors = fmt::format(
+                     "descriptor_update={} writes={} copies={} buffer_bindings={} sampled_views={}",
+                     descUpdateInfo ? "yes" : "reused",
+                     descUpdateInfo ? descUpdateInfo->writes.size() : 0,
+                     descUpdateInfo ? descUpdateInfo->copies.size() : 0,
+                     descUpdateInfo ? descUpdateInfo->bufferDescDynamicBindings.size() : 0,
+                     activeDescriptorSetSampledImages.size());
+                 if (descUpdateInfo) {
+                     size_t writeCount{};
+                     for (const auto &write : descUpdateInfo->writes) {
+                         if (writeCount++ >= 24) {
+                             diagnosticDrawDescriptors += " writes_truncated=1";
+                             break;
+                         }
+                         diagnosticDrawDescriptors += fmt::format(
+                             " write[binding={},type={},count={}]",
+                             write.dstBinding, vk::to_string(write.descriptorType),
+                             write.descriptorCount);
+                     }
+                     size_t bufferCount{};
+                     for (const auto &binding : descUpdateInfo->bufferDescDynamicBindings) {
+                         if (bufferCount >= 24) {
+                             diagnosticDrawDescriptors += " dynamic_bindings_truncated=1";
+                             break;
+                         }
+                         if (const auto *view{std::get_if<BufferView>(&binding)}) {
+                             diagnosticDrawDescriptors += fmt::format(
+                                 " dynamic_buffer[{}]=view,bytes:{}",
+                                 bufferCount, view->size);
+                         } else if (const auto *allocation{std::get_if<BufferBinding>(&binding)}) {
+                             diagnosticDrawDescriptors += fmt::format(
+                                 " dynamic_buffer[{}]=fixed,offset:{},bytes:{}",
+                                 bufferCount, allocation->offset, allocation->size);
+                         }
+                         ++bufferCount;
+                     }
+                 }
+             } else {
+                 diagnosticDrawDescriptors.clear();
+             }
+         }
+
          if (pipeline->UsesRenderArea()) {
              const auto &surfaceClip{clearEngineRegisters.surfaceClip};
              builder.SetRenderArea(
@@ -348,6 +404,28 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Maxwell3D::LoadConstantBuffer(span<u32> data, u32 offset) {
+        auto &capture{diagnostic::Re5PassBoundary()};
+        if (capture.RecordingMetadata()) {
+            // Hash ONLY the CPU-provided LOAD_CBUF payload. The actual bytes
+            // consumed by the GPU may differ if the guest later updates the
+            // bound buffer through a different path or via GPU work.
+            constexpr std::uint64_t FnvBasis{1469598103934665603ULL};
+            constexpr std::uint64_t FnvPrime{1099511628211ULL};
+            auto hash{FnvBasis};
+            const auto *bytes{reinterpret_cast<const u8 *>(data.data())};
+            for (size_t i{}; i < data.size_bytes(); ++i) {
+                hash ^= bytes[i];
+                hash *= FnvPrime;
+            }
+            std::string info{fmt::format(
+                "load_seq={} offset={} cpu_supplied_bytes={} payload_fnv1a64={:016X} first_u32=",
+                ++diagnosticCbufUploadSequence, offset, data.size_bytes(), hash)};
+            for (size_t i{}; i < std::min<size_t>(data.size(), 4); ++i)
+                info += fmt::format("{}{:08X}", i ? "," : "", data[i]);
+            diagnosticRecentCbufUploads.push_back(std::move(info));
+            if (diagnosticRecentCbufUploads.size() > 12)
+                diagnosticRecentCbufUploads.pop_front();
+        }
         constantBuffers.Load(ctx, data, offset);
     }
 
