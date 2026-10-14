@@ -3,7 +3,7 @@ name: Build
 
 on:
   push: 
-    branches: [ master, fix/texman-mapping-mips-r123 ]
+    branches: [ master, fix/texman-mapping-mips-r123, fix/texman-tic-cache-view-validity ]
 
 jobs:
   build:
@@ -42,6 +42,9 @@ jobs:
 
       - name: Texman physical mapping unit tests (UBSan)
         run: bash tests/gpu/run_texture_mapping_match.sh
+
+      - name: Typed TIC cache regression tests (ASan/UBSan)
+        run: bash tests/gpu/run_tic_cache_tests.sh
 
       - name: Android Assemble
         env:
