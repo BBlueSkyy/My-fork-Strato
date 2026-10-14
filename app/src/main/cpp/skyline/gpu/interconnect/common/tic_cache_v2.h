@@ -87,14 +87,14 @@ namespace skyline::gpu::interconnect::tic_cache {
             indexEntries.assign(indexEntries.size(), {});
         }
 
-        std::shared_ptr<View> Lookup(std::size_t index, const Tic &tic, ShaderType shaderType) {
+        View *Lookup(std::size_t index, const Tic &tic, ShaderType shaderType) {
             if (index >= indexEntries.size())
                 return {};
 
             const CacheKey key{tic, shaderType};
             auto &entry{indexEntries[index]};
             if (entry.epoch == epoch && entry.key == key && Reusable(entry.view))
-                return entry.view;
+                return entry.view.get();
 
             auto it{sharedViews.find(key)};
             if (it == sharedViews.end())
@@ -106,7 +106,7 @@ namespace skyline::gpu::interconnect::tic_cache {
             }
 
             entry = IndexEntry{key, it->second, epoch};
-            return entry.view;
+            return entry.view.get();
         }
 
         void Remember(std::size_t index, const Tic &tic, ShaderType shaderType,
