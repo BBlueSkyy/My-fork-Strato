@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <string>
+
 #include <tsl/robin_map.h>
 #include <shader_compiler/frontend/ir/program.h>
 #include <gpu/graphics_pipeline_assembler.h>
