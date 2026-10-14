@@ -261,8 +261,12 @@ namespace skyline::gpu::interconnect {
 
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
-        if (textureHeaderCache.size() != textureHeaders.size())
+        if (textureHeaderCache.size() != textureHeaders.size()) {
             textureHeaderCache.resize(textureHeaders.size());
+            // Preserve the previous cache-reset contract when the TIC pool
+            // changes extent, rather than retaining entries from another pool.
+            std::fill(textureHeaderCache.begin(), textureHeaderCache.end(), CacheEntry{});
+        }
         if (index < textureHeaders.size()) {
             const auto &cached{textureHeaderCache[index]};
             // Even within one channel sequence, alias retirement or backing
