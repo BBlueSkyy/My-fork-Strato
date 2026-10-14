@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <optional>
 #include <vulkan/vulkan_raii.hpp>
 #include <gpu/descriptor_allocator.h>
 #include <gpu/graphics_pipeline_assembler.h>
@@ -77,17 +78,16 @@ namespace skyline::gpu {
              * @brief Records a sequenced GPU blit operation
              * @param srcRect A subrect of the source input texture that will be blitted from
              * @param dstRect A subrect of the destination input texture that the source subrect will be blitted into
-             * @param dstSrcScaleFactorX Scale factor in the X direction from the destination image to the source image
-             * @param dstSrcScaleFactorY ^ but Y
              * @param bilinearFilter Type of filter to use for sampling the source texture, false will use nearest-neighbour and true will use bilinear filtering
              * @param recordCb Callback used to record the blit commands for sequenced execution on the GPU
              */
             void Blit(GPU &gpu, BlitRect srcRect, BlitRect dstRect,
                       vk::Extent2D srcImageDimensions, vk::Extent2D dstImageDimensions,
-                      float dstSrcScaleFactorX, float dstSrcScaleFactorY,
                       bool bilinearFilter,
                       TextureView *srcImageView, TextureView *dstImageView,
-                      std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb);
+                      std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb,
+                      vk::Sampler overrideSampler = {},
+                      std::optional<vk::Rect2D> overrideScissor = std::nullopt);
     };
 
     /**

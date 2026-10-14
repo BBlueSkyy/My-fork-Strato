@@ -542,6 +542,15 @@ namespace skyline::service::fssrv {
 
         const std::string hostPath{state.os->publicAppFilesPath + "/switch" + *saveDataPath};
         auto [fileSystem, error]{vfs::OsFileSystem::OpenExistingWithin(hostPath, state.os->publicAppFilesPath + "/switch")};
+        if ((error == std::errc::no_such_file_or_directory || error == std::errc::not_a_directory) &&
+            input->spaceId == SaveDataSpaceId::Temporary && input->attribute.type == SaveDataType::Temporary) {
+            const auto creationResult{CreateSaveDataDirectory(state.os->publicAppFilesPath, input->spaceId,
+                                                              input->attribute, defaultProgramId, true)};
+            if (creationResult)
+                return creationResult;
+
+            std::tie(fileSystem, error) = vfs::OsFileSystem::OpenExistingWithin(hostPath, state.os->publicAppFilesPath + "/switch");
+        }
         if (error == std::errc::no_such_file_or_directory || error == std::errc::not_a_directory)
             return result::EntityNotFound;
         if (error)

@@ -336,6 +336,18 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                     interconnect.Clear(clearSurface);
             })
 
+            ENGINE_STRUCT_CASE(drawTexture, srcY, {
+                // The final DRAW_TEXTURE register triggers fixed-function
+                // textured-rectangle rasterization independently of shaders.
+                if (CheckRenderEnable()) {
+                    const auto &selection{*registers.ctSelect};
+                    interconnect.DrawTexture(*registers.drawTexture,
+                                             *registers.windowOrigin,
+                                             *registers.surfaceClip,
+                                             selection.count ? selection[0] : 0);
+                }
+            })
+
             ENGINE_CASE(begin, {
                 // If we reach here then we aren't in a deferred draw so theres no need to flush anything
                 if (begin.instanceId == Registers::Begin::InstanceId::Subsequent)

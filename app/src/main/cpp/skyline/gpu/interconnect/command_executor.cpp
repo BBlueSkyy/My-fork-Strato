@@ -397,6 +397,11 @@ namespace skyline::gpu::interconnect {
 
         span<TextureView *> depthStencilAttachmentSpan{depthStencilAttachment ? span<TextureView *>(depthStencilAttachment) : span<TextureView *>()};
         auto outputAttachmentViews{ranges::views::concat(colorAttachments, depthStencilAttachmentSpan)};
+        // One operation cannot define an order for two distinct writers of
+        // the same guest bytes. Multiple views of one backing remain valid.
+        boost::container::small_vector<TextureView *, 8> writers;
+        for (auto view : outputAttachmentViews) if (view) writers.push_back(view);
+        Texture::ValidateAliasWrites(writers);
         bool attachmentsMatch{std::equal(lastSubpassInputAttachments.begin(), lastSubpassInputAttachments.end(), inputAttachments.begin(), inputAttachments.end(), ViewsEqual) &&
                               std::equal(lastSubpassColorAttachments.begin(), lastSubpassColorAttachments.end(), colorAttachments.begin(), colorAttachments.end(), ViewsEqual) &&
                               ViewsEqual(lastSubpassDepthStencilAttachment, depthStencilAttachment)};
@@ -476,6 +481,10 @@ namespace skyline::gpu::interconnect {
     }
 
     bool CommandExecutor::AttachTexture(TextureView *view) {
+        // Cached TICs/descriptors bypass FindOrCreate. Check them before any node
+        // for this operation is published; retry submits prior work only.
+        view->texture->RequireAliasCoherence(tag);
+
         bool didLock{view->LockWithTag(tag)};
         if (didLock) {
             // TODO: fixup remaining bugs with this and add better heuristics to avoid pauses
@@ -485,6 +494,8 @@ namespace skyline::gpu::interconnect {
             //    preserveAttachedTextures.emplace_back(view->texture);
         }
 
+        if (view->texture->HasAliases())
+            view->texture->SynchronizeHost(false); // Initialize before claiming a GPU write, once per generation.
         return didLock;
     }
 
@@ -803,6 +814,22 @@ namespace skyline::gpu::interconnect {
             std::unique_lock lock{mutex};
             cv.wait(lock, [&gpuDone] { return gpuDone; });
         }
+    }
+
+    void CommandExecutor::HandleTextureBackingPromotion(const TextureBackingPromotionRequest &request) {
+        // Restart preparation after submitting old nodes. In particular, allocator
+        // pointers and descriptors from the interrupted operation must not be reused.
+        Submit();
+        ContextLock lock{tag, *request.texture};
+        request.texture->PromoteBackingForView(request.format, request.levels);
+    }
+
+    void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {
+        Submit();
+        if (!request.registration.empty())
+            Texture::RegisterAliases(request.registration, request.registrationLayout.get());
+        if (request.target)
+            request.target->ReconcileAliases();
     }
 
     void CommandExecutor::AddDeferredAction(std::function<void()> &&callback) {

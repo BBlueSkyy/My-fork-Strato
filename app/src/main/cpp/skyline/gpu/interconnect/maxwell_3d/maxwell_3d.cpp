@@ -2,6 +2,7 @@
 // Copyright © 2022 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <cmath>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -93,6 +94,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
      void Maxwell3D::DrawWithInlineIndex(engine::DrawTopology topology, bool transformFeedbackEnable,
                                      span<u8> indexData, engine::IndexBuffer::IndexSize indexSize,
                                      u32 count, u32 instanceCount) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
      TRACE_EVENT("gpu", "DrawWithInlineIndex", "count", count, "instanceCount", instanceCount);
 
        StateUpdateBuilder builder{*ctx.executor.allocator};
@@ -147,7 +149,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
              return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
          });
           ctx.executor.AddCheckpoint("After inline index draw");
-     }    
+     
+        });
+    }    
    
      vk::Rect2D Maxwell3D::GetClearScissor() {
         const auto &clearSurfaceControl{clearEngineRegisters.clearSurfaceControl};
@@ -269,6 +273,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
                  }
              }
          }
+
+         if (pipeline->UsesRenderArea()) {
+             const auto &surfaceClip{clearEngineRegisters.surfaceClip};
+             builder.SetRenderArea(
+                 *pipeline->compiledPipeline.pipelineLayout,
+                 {
+                     static_cast<f32>(surfaceClip.horizontal.width),
+                     static_cast<f32>(surfaceClip.vertical.height),
+                     0.0f,
+                     0.0f,
+                 });
+         }
     }
 
     void Maxwell3D::LoadConstantBuffer(span<u32> data, u32 offset) {
@@ -284,6 +300,116 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     void Maxwell3D::DisableQuickConstantBufferBind() {
         constantBuffers.DisableQuickBind();
+    }
+
+    void Maxwell3D::DrawTexture(const engine::DrawTexture &params,
+                                 const engine::WindowOrigin &origin,
+                                 const engine::SurfaceClip &clip, size_t colorTargetIndex) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
+        TRACE_EVENT("gpu", "Maxwell3D::DrawTexture");
+
+        // DRAW_TEXTURE uses its own texture/sampler IDs, not the shaders or
+        // descriptors of the previously selected programmable pipeline.
+        samplers.Update(ctx, samplerBinding.value == engine::SamplerBinding::Value::ViaHeaderBinding);
+        auto *source{textures.GetTexture(ctx, params.textureIndex, Shader::TextureType::Color2D)};
+        auto *sampler{samplers.GetSampler(ctx, params.samplerIndex)};
+        auto destination{activeState.GetColorRenderTargetForClear(ctx, colorTargetIndex)};
+        if (!source || !sampler || !destination)
+            return;
+
+        auto *dest{destination.get()};
+        if (source == dest || source->texture.get() == dest->texture.get()) {
+            // A feedback loop needs explicit Vulkan layout/dependency support.
+            LOGW("DRAW_TEXTURE source and destination refer to the same image");
+            return;
+        }
+
+        constexpr float Fixed12Scale{1.0f / 4096.0f};
+        constexpr double Fixed32Scale{1.0 / 4294967296.0};
+
+        const float width{params.dstWidth * Fixed12Scale};
+        const float height{params.dstHeight * Fixed12Scale};
+        const float x{params.dstX * Fixed12Scale};
+        float y{params.dstY * Fixed12Scale};
+        if (origin.lowerLeft)
+            y = static_cast<float>(clip.vertical.height) - y;
+        // Window-origin bit 4 flips triangle/shader Y. DRAW_TEXTURE already
+        // supplies window coordinates and only uses the origin mode (bit 0).
+
+        const float srcX{params.srcX * Fixed12Scale};
+        const float srcY{params.srcY * Fixed12Scale};
+        const float srcWidth{static_cast<float>(params.duDx * Fixed32Scale) * width};
+        const float srcHeight{static_cast<float>(params.dvDy * Fixed32Scale) * height};
+
+        // Aliases and TIC base levels can select a mip of a larger backing image.
+        // Coordinates are relative to that view, as are Vulkan sampler UVs.
+        auto viewDimensions{[](TextureView *view) {
+            const auto mip{std::min(view->range.baseMipLevel, 31U)};
+            return vk::Extent2D{
+                std::max(1U, view->texture->dimensions.width >> mip),
+                std::max(1U, view->texture->dimensions.height >> mip)
+            };
+        }};
+        const auto srcDims{viewDimensions(source)};
+        const auto dstDims{viewDimensions(dest)};
+        float left{std::max({std::min(x, x + width), 0.0f, static_cast<float>(clip.horizontal.x)})};
+        float top{std::max({std::min(y, y + height), 0.0f, static_cast<float>(clip.vertical.y)})};
+        float right{std::min({std::max(x, x + width), static_cast<float>(dstDims.width),
+                             static_cast<float>(clip.horizontal.x) + clip.horizontal.width})};
+        float bottom{std::min({std::max(y, y + height), static_cast<float>(dstDims.height),
+                              static_cast<float>(clip.vertical.y) + clip.vertical.height})};
+        const auto &scissor0{clearEngineRegisters.scissor0};
+        if (scissor0.enable) {
+            left = std::max(left, static_cast<float>(scissor0.horizontal.xMin));
+            right = std::min(right, static_cast<float>(scissor0.horizontal.xMax));
+            const float scissorTop{origin.lowerLeft
+                ? static_cast<float>(clip.vertical.height) - scissor0.vertical.yMax
+                : static_cast<float>(scissor0.vertical.yMin)};
+            const float scissorBottom{origin.lowerLeft
+                ? static_cast<float>(clip.vertical.height) - scissor0.vertical.yMin
+                : static_cast<float>(scissor0.vertical.yMax)};
+            top = std::max(top, scissorTop);
+            bottom = std::min(bottom, scissorBottom);
+        }
+        if (!(right > left && bottom > top) || !srcDims.width || !srcDims.height)
+            return;
+
+        const auto x0{static_cast<i32>(std::floor(left))};
+        const auto y0{static_cast<i32>(std::floor(top))};
+        const auto x1{static_cast<i32>(std::ceil(right))};
+        const auto y1{static_cast<i32>(std::ceil(bottom))};
+        const vk::Rect2D renderArea{
+            {x0, y0}, {static_cast<u32>(x1 - x0), static_cast<u32>(y1 - y0)}
+        };
+
+        // AttachTexture only keeps the backing locked through submission. Retain
+        // the sampled view on the fence cycle too, even if its TIC cache is replaced.
+        ctx.executor.AttachDependency(source->shared_from_this());
+        ctx.executor.AttachDependency(destination);
+        ctx.executor.AttachTexture(source);
+        ctx.executor.AttachTexture(dest);
+        dest->texture->MarkGpuDirty(ctx.executor.usageTracker);
+
+        ctx.executor.AddCheckpoint("Before draw texture");
+        ctx.gpu.helperShaders.blitHelperShader.Blit(
+            ctx.gpu,
+            {.width = srcWidth, .height = srcHeight, .x = srcX, .y = srcY},
+            {.width = width, .height = height, .x = x, .y = y},
+            srcDims, dstDims, false, source, dest,
+            [this, renderArea, source, dest](auto &&executionCallback) {
+                std::array<TextureView *, 1> sampledImages{source};
+                std::array<TextureView *, 1> colorAttachments{dest};
+                ctx.executor.AddSubpass(std::move(executionCallback), renderArea,
+                                        sampledImages, {}, colorAttachments, {},
+                                        false, vk::PipelineStageFlagBits::eAllGraphics,
+                                        vk::PipelineStageFlagBits::eAllGraphics);
+            },
+            **sampler, renderArea
+        );
+        ctx.executor.AddCheckpoint("After draw texture");
+        ctx.executor.NotifyPipelineChange();
+    
+        });
     }
 
     void Maxwell3D::FlushQueries() {
@@ -428,11 +554,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Maxwell3D::Clear(engine::ClearSurface &clearSurface) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
         auto scissor{GetClearScissor()};
         if (scissor.extent.width == 0 || scissor.extent.height == 0)
             return;
 
         TRACE_EVENT("gpu", "Maxwell3D::Clear");
+        // Resolve all requested attachment views before publishing any clear node.
+        // If a backing promotion is required, the retry starts from a clean preparation state.
+        auto requestedColor{(clearSurface.rEnable || clearSurface.gEnable || clearSurface.bEnable || clearSurface.aEnable)
+            ? activeState.GetColorRenderTargetForClear(ctx, clearSurface.mrtSelect) : std::shared_ptr<TextureView>{}};
+        auto requestedDepth{(clearSurface.stencilEnable || clearSurface.zEnable)
+            ? activeState.GetDepthRenderTargetForClear(ctx) : std::shared_ptr<TextureView>{}};
         queries.Pause(ctx);
         ctx.executor.AddCheckpoint("Before clear");
 
@@ -471,7 +604,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         std::shared_ptr<TextureView> depthStencilView{};
 
         if (clearSurface.rEnable || clearSurface.gEnable || clearSurface.bEnable || clearSurface.aEnable) {
-            if (auto view{activeState.GetColorRenderTargetForClear(ctx, clearSurface.mrtSelect)}) {
+            if (auto view{requestedColor}) {
                 ctx.executor.AttachTexture(&*view);
 
                 bool partialClear{!(clearSurface.rEnable && clearSurface.gEnable && clearSurface.bEnable && clearSurface.aEnable)};
@@ -500,7 +633,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
 
         if (clearSurface.stencilEnable || clearSurface.zEnable) {
-            if (auto view{activeState.GetDepthRenderTargetForClear(ctx)}) {
+            if (auto view{requestedDepth}) {
                 ctx.executor.AttachTexture(&*view);
 
                 bool viewHasDepth{view->range.aspectMask & vk::ImageAspectFlagBits::eDepth}, viewHasStencil{view->range.aspectMask & vk::ImageAspectFlagBits::eStencil};
@@ -535,9 +668,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
 
         ctx.executor.AddCheckpoint("After clear");
+    
+        });
     }
 
     void Maxwell3D::Draw(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, u32 count, u32 first, u32 instanceCount, u32 vertexOffset, u32 firstInstance) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
         TRACE_EVENT("gpu", "Draw", "indexed", indexed, "count", count, "instanceCount", instanceCount);
 
         StateUpdateBuilder builder{*ctx.executor.allocator};
@@ -612,9 +748,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
         ctx.executor.AddCheckpoint("After draw");
+    
+        });
     }
 
     void Maxwell3D::DrawIndirect(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, span<u8> indirectBuffer, u32 count, u32 stride) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
         if (!count)
             return;
 
@@ -691,6 +830,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
         ctx.executor.AddCheckpoint("After indirect draw");
+    
+        });
     }
 
     void Maxwell3D::Query(soc::gm20b::IOVA address, engine::SemaphoreInfo::CounterType type, std::optional<u64> timestamp) {

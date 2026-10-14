@@ -154,6 +154,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         void Clear(engine::ClearSurface &clearSurface);
 
+        // Maxwell3D fixed-function textured rectangle drawing.
+        void DrawTexture(const engine::DrawTexture &params,
+                         const engine::WindowOrigin &origin,
+                         const engine::SurfaceClip &clip, size_t colorTargetIndex);
+
         void Draw(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, u32 count, u32 first, u32 instanceCount, u32 vertexOffset, u32 firstInstance);
 
         void DrawIndirect(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, span<u8> indirectBuffer, u32 count, u32 stride);

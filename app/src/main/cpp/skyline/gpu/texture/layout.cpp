@@ -2,6 +2,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include "layout.h"
+#include "pitch_linear.h"
 
 namespace skyline::gpu::texture {
     #pragma pack(push, 0)
@@ -503,31 +504,15 @@ namespace skyline::gpu::texture {
         );
     }
 
-    void CopyPitchLinearToLinear(const GuestTexture &guest, u8 *guestInput, u8 *linearOutput) {
-        auto sizeLine{guest.format->GetSize(guest.dimensions.width, 1)}; //!< The size of a single line of pixel data
-        auto sizeStride{guest.tileConfig.pitch}; //!< The size of a single stride of pixel data
-
-        auto inputLine{guestInput};
-        auto outputLine{linearOutput};
-
-        for (size_t line{}; line < guest.dimensions.height; line++) {
-            std::memcpy(outputLine, inputLine, sizeLine);
-            inputLine += sizeStride;
-            outputLine += sizeLine;
-        }
+    void CopyPitchLinearToLinear(const GuestTexture &guest, std::span<const u8> guestInput, std::span<u8> linearOutput) {
+        const auto layout{GetPitchLinearLayout(guest.dimensions.width, guest.dimensions.height,
+            guest.format->blockWidth, guest.format->blockHeight, guest.format->bpb, guest.tileConfig.pitch, guest.dimensions.depth, guest.mipLevelCount)};
+        CopyPitchedRows(guestInput, guest.tileConfig.pitch, linearOutput, layout.rowBytes, layout.rowBytes, layout.rowCount);
     }
 
-    void CopyLinearToPitchLinear(const GuestTexture &guest, u8 *linearInput, u8 *guestOutput) {
-        auto sizeLine{guest.format->GetSize(guest.dimensions.width, 1)}; //!< The size of a single line of pixel data
-        auto sizeStride{guest.tileConfig.pitch}; //!< The size of a single stride of pixel data
-
-        auto inputLine{linearInput};
-        auto outputLine{guestOutput};
-
-        for (size_t line{}; line < guest.dimensions.height; line++) {
-            std::memcpy(outputLine, inputLine, sizeLine);
-            inputLine += sizeLine;
-            outputLine += sizeStride;
-        }
+    void CopyLinearToPitchLinear(const GuestTexture &guest, std::span<const u8> linearInput, std::span<u8> guestOutput) {
+        const auto layout{GetPitchLinearLayout(guest.dimensions.width, guest.dimensions.height,
+            guest.format->blockWidth, guest.format->blockHeight, guest.format->bpb, guest.tileConfig.pitch, guest.dimensions.depth, guest.mipLevelCount)};
+        CopyPitchedRows(linearInput, layout.rowBytes, guestOutput, guest.tileConfig.pitch, layout.rowBytes, layout.rowCount);
     }
 }

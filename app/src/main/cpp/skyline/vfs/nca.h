@@ -436,6 +436,7 @@ namespace skyline {
 
             std::shared_ptr<FileSystem> OpenPfs0(size_t index);
             std::shared_ptr<Backing> OpenRawSection(size_t index);
+            std::shared_ptr<Backing> OpenRawStorageWithPatch(NCA *base, size_t index);
             std::shared_ptr<Backing> BuildRomFsBacking(size_t index, NCA *base = nullptr);
             PatchMetaStorage CreatePatchMetaStorage(const NCASectionHeader &section, std::shared_ptr<Backing> raw, size_t offset);
             std::shared_ptr<Backing> CreateAesCtrExBacking(const NCASectionHeader &section, std::shared_ptr<Backing> raw, size_t offset,

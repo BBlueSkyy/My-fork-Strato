@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "alias_group.h"
+
 #include <range/v3/view.hpp>
 #include <range/v3/algorithm.hpp>
 #include <common/spin_lock.h>
@@ -13,6 +15,9 @@
 #include <gpu/usage_tracker.h>
 
 namespace skyline::gpu {
+    namespace interconnect {
+        class CommandExecutor;
+    }
     namespace texture {
         enum class RenderPassUsage : u8 {
             None,
@@ -319,6 +324,7 @@ namespace skyline::gpu {
     class TextureView : public std::enable_shared_from_this<TextureView> {
       private:
         vk::ImageView vkView{};
+        u64 vkViewGeneration{};
 
       public:
         LockableSharedPtr<Texture> texture;
@@ -358,6 +364,9 @@ namespace skyline::gpu {
          */
         bool try_lock();
 
+        // Supported subset of the backing usage for this view format.
+        vk::ImageUsageFlags GetUsage() const;
+
         /**
          * @return A VkImageView that corresponds to the properties of this view
          * @note The texture **must** be locked prior to calling this
@@ -374,6 +383,10 @@ namespace skyline::gpu {
      * @note This class conforms to the Lockable and BasicLockable C++ named requirements
      */
     class Texture : public std::enable_shared_from_this<Texture> {
+        friend class interconnect::CommandExecutor;
+        friend class PresentationEngine;
+        friend class TextureManager;
+
       private:
         GPU &gpu;
         RecursiveSpinLock mutex; //!< Synchronizes any mutations to the texture or its backing
@@ -381,6 +394,7 @@ namespace skyline::gpu {
         std::condition_variable_any backingCondition; //!< Signalled when a valid backing has been swapped in
         using BackingType = std::variant<vk::Image, vk::raii::Image, memory::Image>;
         BackingType backing; //!< The Vulkan image that backs this texture, it is nullable
+        vk::ImageType backingImageType; //!< Immutable image type supplied at allocation/wrapping.
 
         span<u8> mirror{}; //!< A contiguous mirror of all the guest mappings to allow linear access on the CPU
         span<u8> alignedMirror{}; //!< The mirror mapping aligned to page size to reflect the full mapping
@@ -391,7 +405,25 @@ namespace skyline::gpu {
             GpuDirty, //!< The GPU texture has been modified but the CPU mappings have not been updated
         } dirtyState{DirtyState::CpuDirty}; //!< The state of the CPU mappings with respect to the GPU texture
         bool memoryFreed{}; //!< If the guest backing memory has been freed
-        std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
+        mutable std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
+        texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup{};
+        std::atomic<bool> aliasStale{};
+        std::atomic<bool> aliasRetired{}; //!< Obsolete non-reversible representations cannot reclaim writer ownership.
+        std::atomic<bool> aliasReadOnly{}; //!< Materializable aliases without a lossless GPU -> guest path may only be sampled/read.
+        u64 gpuWriteSerial{};
+        u64 gpuReadbackSerial{}; //!< Updated only after successful guest encoding.
+        bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
+        bool CanReconcileGuestLayout(const GuestTexture &requested) const;
+        static bool CanMaterializeGuestLayout(const GuestTexture &value);
+        static bool IsGuestLayoutReversible(const GuestTexture &value);
+        static std::shared_ptr<texture::AliasGroup> RegisterAliases(std::vector<std::shared_ptr<Texture>> textures, const GuestTexture *requested = nullptr);
+        void RequireAliasCoherence(ContextTag context);
+        void ReconcileAliases(); // Called outside executor/resource locks.
+        void RecordGpuWrite();
+        static void ValidateAliasWrites(span<TextureView *> writers);
+        std::shared_ptr<void> PinGuestMemory();
+
+        u32 guestMemoryPins{}; //!< Mip expansion still needs guest bytes not represented by the current image.
 
         /**
          * @brief Storage for all metadata about a specific view into the buffer, used to prevent redundant view creation and duplication of VkBufferView(s)
@@ -407,12 +439,21 @@ namespace skyline::gpu {
         };
 
         std::vector<TextureViewStorage> views;
+        u64 backingGeneration{1};
+        std::vector<vk::Format> backingViewFormats; //!< Empty means no explicit image-format list.
+
+        bool ViewFormatAdmitted(vk::Format requested) const;
+        void PromoteBackingForView(vk::Format requested, u32 requestedLevels = 0);
+        bool ViewRangeFits(vk::ImageViewType type, const vk::ImageSubresourceRange &range, u32 levels = 0) const;
+        bool CanGrowMipLevels(u32 levels) const;
+        std::shared_ptr<void> PinGuestMemoryForMipGrowth(u32 levels);
 
         std::shared_ptr<memory::StagingBuffer> downloadStagingBuffer{};
 
         u32 lastRenderPassIndex{}; //!< The index of the last render pass that used this texture
         texture::RenderPassUsage lastRenderPassUsage{texture::RenderPassUsage::None}; //!< The type of usage in the last render pass
         bool everUsedAsRt{}; //!< If this texture has ever been used as a rendertarget
+        bool everUsedAsGpuWrite{}; //!< Set only by actual RT/storage/write paths, not by generic attachment synchronization.
         vk::PipelineStageFlags pendingStageMask{}; //!< List of pipeline stages that are yet to be flushed for reads since the last time this texture was used an an RT
         vk::PipelineStageFlags readStageMask{}; //!< Set of pipeline stages that this texture has been read in since it was last used as an RT
 
@@ -489,7 +530,7 @@ namespace skyline::gpu {
          * @brief Creates a texture object wrapping the supplied backing with the supplied attributes
          * @param layout The initial layout of the texture, it **must** be eUndefined or ePreinitialized
          */
-        Texture(GPU &gpu, BackingType &&backing, texture::Dimensions dimensions, texture::Format format, vk::ImageLayout layout, vk::ImageTiling tiling, vk::ImageCreateFlags flags, vk::ImageUsageFlags usage, u32 levelCount = 1, u32 layerCount = 1, vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1);
+        Texture(GPU &gpu, BackingType &&backing, texture::Dimensions dimensions, texture::Format format, vk::ImageLayout layout, vk::ImageTiling tiling, vk::ImageCreateFlags flags, vk::ImageUsageFlags usage, u32 levelCount = 1, u32 layerCount = 1, vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1, vk::ImageType imageType = vk::ImageType::e2D);
 
         /**
          * @brief Creates a texture object wrapping the guest texture with a backing that can represent the guest texture data
@@ -553,7 +594,13 @@ namespace skyline::gpu {
          * @note All memory residing in the current backing is not copied to the new backing, it must be handled externally
          * @note The texture **must** be locked prior to calling this
          */
-        void SwapBacking(BackingType &&backing, vk::ImageLayout layout = vk::ImageLayout::eUndefined);
+        // The replacement's real creation flags and optional format list are part of
+        // its view-admission contract; never inherit permissions from the old image.
+        void SwapBacking(BackingType &&backing, vk::ImageCreateFlags flags, vk::ImageLayout layout = vk::ImageLayout::eUndefined, std::vector<vk::Format> viewFormats = {});
+
+        // Valid while locked and until this generation finishes recording. Empty
+        // means no explicit list, rather than a list containing the native format.
+        span<const vk::Format> GetBackingViewFormats() const { return backingViewFormats; }
 
         /**
          * @brief Transitions the backing to the supplied layout, if the backing already is in this layout then this does nothing
@@ -594,7 +641,7 @@ namespace skyline::gpu {
         /**
          * @return A cached or newly created view into this texture with the supplied attributes
          */
-        std::shared_ptr<TextureView> GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format = {}, vk::ComponentMapping mapping = {});
+        std::shared_ptr<TextureView> GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format = {}, vk::ComponentMapping mapping = {}, ContextTag context = {});
 
         /**
          * @brief Copies the contents of the supplied source texture into the current texture

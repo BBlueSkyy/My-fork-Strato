@@ -498,7 +498,7 @@ namespace skyline::vfs {
         return pfs;
     }
 
-    std::shared_ptr<Backing> NCA::OpenRawStorageWithPatch(NCA &base, size_t index) {
+    std::shared_ptr<Backing> NCA::OpenRawStorageWithPatch(NCA *base, size_t index) {
         auto patch{OpenRawSection(index)};
         const auto &info{sections[index].bktr.relocation};
         if (info.size == 0)
@@ -524,10 +524,10 @@ namespace skyline::vfs {
 
         // Original offsets address the WHOLE corresponding decrypted section, including hash levels.
         std::shared_ptr<Backing> original{std::make_shared<RegionBacking>(backing, 0, 0)};
-        if (base.HasSection(index)) {
-            if (base.sections[index].raw.header.fsType != sections[index].raw.header.fsType || base.sections[index].bktr.relocation.size != 0)
+        if (base && base->HasSection(index)) {
+            if (base->sections[index].raw.header.fsType != sections[index].raw.header.fsType || base->sections[index].bktr.relocation.size != 0)
                 throw loader_exception(LoaderResult::ParsingError, "Incompatible base NCA section for indirect storage");
-            original = base.OpenRawSection(index);
+            original = base->OpenRawSection(index);
         }
 
         std::vector<RelocationBucket> buckets;
@@ -541,8 +541,11 @@ namespace skyline::vfs {
             for (size_t j{}; j < bucket.numberEntries; ++j) {
                 const auto &entry{bucket.relocationEntries[j]};
                 const u64 next{j + 1 < bucket.numberEntries ? bucket.relocationEntries[j + 1].addressPatch : end};
-                if (entry.fromPatch > 1 || entry.addressPatch >= next ||
-                    !InRange(entry.addressSource, next - entry.addressPatch, entry.fromPatch ? info.offset : original->size))
+                if (entry.fromPatch > 1 || entry.addressPatch >= next)
+                    throw loader_exception(LoaderResult::ParsingError, "Invalid BKTR relocation entry");
+                if (!entry.fromPatch && (!base || !base->HasSection(index)))
+                    throw loader_exception(LoaderResult::ParsingError, "BKTR relocation requires a missing base NCA section");
+                if (!InRange(entry.addressSource, next - entry.addressPatch, entry.fromPatch ? info.offset : original->size))
                     throw loader_exception(LoaderResult::ParsingError, "BKTR relocation is outside its physical source");
             }
             entries += bucket.numberEntries;
@@ -555,13 +558,17 @@ namespace skyline::vfs {
         return std::make_shared<BKTR>(original, std::make_shared<RegionBacking>(patch, 0, info.offset), root, std::move(buckets));
     }
 
+    std::shared_ptr<Backing> NCA::OpenRawStorageWithPatch(NCA &base, size_t index) {
+        return OpenRawStorageWithPatch(&base, index);
+    }
+
     std::shared_ptr<Backing> NCA::BuildRomFsBacking(size_t index, NCA *base) {
         const auto &section{sections[index]};
         const auto &ivfc{section.romfs.ivfc};
         if (section.raw.header.hashType != NcaSectionHashType::HierarchicalIntegrity ||
             ivfc.magic != util::MakeMagic<u32>("IVFC") || ivfc.levelCount < 2 || ivfc.levelCount > constant::IvfcMaxLevel + 1)
             throw loader_exception(LoaderResult::ParsingError, "Invalid IVFC header/level count (NCA fields must be little endian)");
-        auto raw{base ? OpenRawStorageWithPatch(*base, index) : OpenRawSection(index)};
+        auto raw{section.bktr.relocation.size != 0 ? OpenRawStorageWithPatch(base, index) : OpenRawSection(index)};
         for (size_t i{}; i < ivfc.levelCount - 1; ++i) {
             const auto &level{ivfc.levels[i]};
             if (level.size == 0 || level.blockSize > 32 || !InRange(level.offset, level.size, raw->size))
@@ -612,8 +619,7 @@ namespace skyline::vfs {
             return {};
 
         for (size_t i{}; i < sections.size(); ++i) {
-            if (!HasSection(i) || sections[i].raw.header.fsType != NcaSectionFsType::RomFs ||
-                sections[i].bktr.relocation.size != 0)
+            if (!HasSection(i) || sections[i].raw.header.fsType != NcaSectionFsType::RomFs)
                 continue;
             romFs = BuildRomFsBacking(i);
             return romFs;

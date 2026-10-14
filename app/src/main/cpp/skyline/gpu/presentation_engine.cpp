@@ -99,6 +99,8 @@ namespace skyline::gpu {
 
         frame.fence.Wait(state.soc->host1x);
 
+        // A retained display view may belong to an older guest representation.
+        frame.textureView->texture->ReconcileAliases();
         std::scoped_lock textureLock(*frame.textureView);
 
         auto texture{frame.textureView->texture};
