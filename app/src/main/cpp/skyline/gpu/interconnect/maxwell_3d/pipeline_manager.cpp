@@ -777,7 +777,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         // This is intentionally a descriptor/CPU-binding report, not a GPU
         // uniform readback. It must never call ConstantBuffer::Read, resolve
         // a BufferView, wait on a fence or mutate the descriptor set.
-        out += fmt::format(" descriptor_layout_uniforms={} descriptor_layout_storage={} "
+        out += fmt::format(" descriptor_layout_buffer_descriptors={} descriptor_layout_storage={} "
                            "descriptor_layout_sampled_images={} descriptor_layout_writes={} ",
                            descriptorInfo.totalBufferDescCount,
                            descriptorInfo.totalStorageBufferCount,
