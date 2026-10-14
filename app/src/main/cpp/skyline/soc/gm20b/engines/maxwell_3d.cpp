@@ -463,7 +463,6 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                                 });
                                 break;
                             case type::SemaphoreInfo::CounterType::SamplesPassed:
-                                // Return a fake result for now
                                 interconnect.Query({registers.semaphore->address}, info.counterType,
                                                    registers.semaphore->info.structureSize == type::SemaphoreInfo::StructureSize::FourWords ?
                                                    GetGpuTimeTicks() : std::optional<u64>{});
