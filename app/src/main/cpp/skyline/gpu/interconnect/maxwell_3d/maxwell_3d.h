@@ -4,6 +4,7 @@
 #pragma once
 
 #include <string>
+#include <deque>
 #include <gpu/descriptor_allocator.h>
 #include <gpu/interconnect/common/samplers.h>
 #include <gpu/interconnect/common/textures.h>
@@ -51,6 +52,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         const engine::Viewport &diagnosticViewport0;
         const engine::Viewport &diagnosticViewport;
         const std::array<float, engine::BlendColorChannelCount> &diagnosticBlendConstants;
+        // CPU-supplied guest data only. No CPU reads of GPU-visible CBUF memory.
+        std::deque<std::string> diagnosticRecentCbufUploads;
+        std::string diagnosticDrawDescriptors;
+        std::uint64_t diagnosticCbufUploadSequence{};
         ConstantBuffers constantBuffers;
         Samplers samplers;
         const engine::SamplerBinding &samplerBinding;
