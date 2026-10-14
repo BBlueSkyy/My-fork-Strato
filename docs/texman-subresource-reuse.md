@@ -102,6 +102,24 @@ optimization: a change of representation after GPU writes uses the existing
 synchronous guest readback and can incur a wait. Android/game behavior requires
 device testing; this does not establish that RE5's black graphics are resolved.
 
+## Post-audit merge boundaries (2026-10-14)
+
+The PR is kept separate from #343 (physical mapping / mip-chain matcher
+regressions), #344 (TIC cache validity), and #345 (TIC Cache V2). Fixing these
+other subsystems has not removed the RE5 black flickers. Do not infer from
+the working RE5 character/scenery rendering that the remaining black flashes
+or blurring were introduced or fixed here.
+
+The cleanup follow-up adds an early invalid-mapping guard to FindOrCreate and
+keeps an integration regression for empty mappings, rather than dereferencing
+`mappings.front()`. A small view-range CPU test also runs under UBSan in the
+PR build. The Vulkan host test harness is separate from the Android CI build
+and must not be represented as having run as part of that job.
+
+Known Texman matcher issues R1/R2/R3 remain isolated in #343; their resolution
+and merge order require a separate decision. This PR does not silently
+cherry-pick that patch set.
+
 ## Local validation
 
 `tests/gpu/texture_view_range_tests.cpp` checks the captured 1-versus-8 case,
