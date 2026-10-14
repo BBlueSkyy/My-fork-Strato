@@ -793,7 +793,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     const size_t slot{static_cast<size_t>(desc.index) + arrayIndex};
                     if (slot >= engine::ShaderStageConstantBufferCount)
                         continue;
-                    const auto &view{constantBuffers[stageIndex][slot].view};
+                    // BufferView::operator bool() is non-const. Copy the
+                    // lightweight view handle; do not alter the guest binding.
+                    auto view{constantBuffers[stageIndex][slot].view};
                     out += fmt::format(
                         " cbuf[stage={},slot={}]=bound:{},view_bytes:{},shader_used_bytes:{}",
                         stageIndex, slot, static_cast<bool>(view), view.size,
