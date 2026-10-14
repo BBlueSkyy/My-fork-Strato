@@ -149,17 +149,21 @@ git diff --check
   pass. `tests/gpu_backing_promotion/run.py` fails to compile identically on the
   untouched master: its host fixture lacks pitch-linear helpers and has stale
   dirty-state/Extent3D declarations. It was not repaired in this query change.
-- The PR workflow runs the new host regressions before Android assembly. A full
-  Android SDK/NDK build was not performed locally. CI is started at publication;
-  its result is intentionally not followed in this session.
+- The PR workflow runs the new host regressions before Android assembly. The full
+  Android PR build completed successfully at commit `4974c59` (GitHub Actions run
+  [38643539897](https://github.com/BBlueSkyy/My-fork-Strato/actions/runs/38643539897)).
+  The earlier host-only syntax check is not being counted as a full Android build.
 
-**Device/performance gate remains open.** No Android device, game execution or
-Bulletstorm FPS measurement was available. The report-ordering fix can increase
-render-pass boundaries versus the original PR's deferred reports; no causal FPS
-claim or performance improvement is asserted. GPU accumulation, asynchronous pool
-reuse and unchanged-input predicate reuse remain. Test Bulletstorm on the same
-scene, driver, resolution and warmed shader cache, as well as representative
-occlusion/conditional-heavy games, before merge.
+**Device regression observations (manual, not a benchmark).** Bulletstorm runs
+around 30 FPS once shaders are compiled, as it did on master according to the
+user's comparison. The distant-character lighting and water artifacts were
+present before this PR; they were also observed across the user's two drivers.
+Other games tested by the user behaved as before, with no new regression reported.
+These observations do not establish identical GPU frame times or prove zero
+regressions across all games. Reports now end the active render pass to preserve
+command-stream ordering; additional render-pass boundaries may affect workloads
+not yet benchmarked. GPU accumulation, asynchronous pool reuse and unchanged-input
+predicate reuse remain.
 
 **Hardware accuracy limits are explicit.** Without `occlusionQueryPrecise`, Vulkan
 only guarantees visibility-style query behavior, not exact sample counts. NonZero
@@ -169,5 +173,9 @@ hardware evidence justified changing this behavior during the audit. Equality an
 difference are corrected to 64 bits; this unresolved NonZero question is not
 presented as solved.
 
-The branch needs a successful Android build and device regression/performance
-validation before being recommended for merge.
+**Merge disposition (2026-10-14).** Android CI succeeded and the available device
+checks found no new regression. The remaining `NonZero` semantic uncertainty and
+unbenchmarked frame-time effects are documented above. This PR is eligible for
+merge based on the available evidence; further accuracy/performance improvements
+can be investigated separately without conflating preexisting game artifacts
+with query regressions.
