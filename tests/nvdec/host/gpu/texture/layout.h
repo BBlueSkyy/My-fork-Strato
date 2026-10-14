@@ -7,7 +7,7 @@ struct MipLevelLayout {
  MipLevelLayout(Dimensions d,size_t l,size_t t,size_t b,size_t h,size_t z):dimensions(d),linearSize(l),targetLinearSize(t),blockLinearSize(b),blockHeight(h),blockDepth(z){}
 };
 struct HostFormat { size_t blockWidth,blockHeight,bpb; size_t GetSize(u32 w,u32 h) const {return size_t(w)*h*bpb;} };
-struct GuestTexture {Dimensions dimensions; const HostFormat *format; struct {size_t blockHeight,blockDepth;u32 pitch;} tileConfig;};
+struct GuestTexture {Dimensions dimensions; const HostFormat *format; struct {size_t blockHeight,blockDepth;u32 pitch;} tileConfig;u32 mipLevelCount{1};};
 size_t GetBlockLinearLayerSize(Dimensions,size_t,size_t,size_t,size_t,size_t);
 void CopyPitchToBlockLinear(Dimensions,size_t,size_t,size_t,u32,size_t,size_t,u8*,u8*);
 void CopyBlockLinearToPitch(Dimensions,size_t,size_t,size_t,u32,size_t,size_t,u8*,u8*);

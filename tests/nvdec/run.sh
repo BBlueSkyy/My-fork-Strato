@@ -5,8 +5,10 @@ repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 build_dir="${TMPDIR:-/tmp}/strato-nvdec-tests"
 mkdir -p "$build_dir"
 # Compile the production layout implementation with only its platform-heavy include
-# replaced by host type declarations. No layout/conversion algorithm is mocked.
-sed 's/#include "layout.h"/#include <gpu\/texture\/layout.h>/' \
+# replaced by host type declarations. The copied source lives outside the production
+# directory, so rewrite texture-local includes to their repository include paths too.
+sed -e 's/#include "layout.h"/#include <gpu\/texture\/layout.h>/' \
+    -e 's/#include "pitch_linear.h"/#include <gpu\/texture\/pitch_linear.h>/' \
  "$repo_root/app/src/main/cpp/skyline/gpu/texture/layout.cpp" > "$build_dir/layout.cpp"
 read -r -a ffmpeg_flags <<< "${FFMPEG_CFLAGS:-$(pkg-config --cflags libavcodec libavutil libswscale)} ${FFMPEG_LIBS:-$(pkg-config --libs libavcodec libavutil libswscale)}"
 "${CXX:-c++}" -std=c++20 -O1 -g ${NVDEC_SANITIZER_FLAGS:-} -Wall -Wextra -Wno-unknown-pragmas \
