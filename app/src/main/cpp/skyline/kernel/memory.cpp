@@ -554,7 +554,7 @@ namespace skyline::kernel {
         // Unmapped chunks whose attributeChangeAllowed is always false)
         bool allowed{true};
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
-            if (!desc.second.state.attributeChangeAllowed) [[unlikely]] {
+            if (!desc.second.state.attributeChangeAllowed || desc.second.attributes.isBorrowed) [[unlikely]] {
                 allowed = false;
                 LOGW("SetRegionCpuCachingIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which doesn't allow attribute changes", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
             }
@@ -577,7 +577,7 @@ namespace skyline::kernel {
 
         bool allowed{true};
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
-            if (!desc.second.state.attributeChangeAllowed) [[unlikely]] {
+            if (!desc.second.state.attributeChangeAllowed || desc.second.attributes.isBorrowed) [[unlikely]] {
                 allowed = false;
                 LOGW("SetRegionPermissionLockedIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which doesn't allow attribute changes", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
             }
@@ -758,7 +758,7 @@ namespace skyline::kernel {
     ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
         if (desc.second.state == memory::states::Unmapped) {
             toMap.emplace_back(desc.first, desc.second.size);
-        } else if (desc.second.state != memory::states::Heap) [[unlikely]] {
+        } else if (desc.second.state != memory::states::Heap || desc.second.attributes.isBorrowed) [[unlikely]] {
             allowed = false;
             LOGW("MapPhysicalMemoryIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which is neither Unmapped nor Heap", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
         }
