@@ -369,8 +369,8 @@ namespace skyline::gpu::interconnect {
         }
 
         const auto textureHeader{headers[index]};
-        if (auto cached{ticCache.Lookup(index, textureHeader, shaderType)})
-            return cached.get();
+        if (auto *cached{ticCache.Lookup(index, textureHeader, shaderType)})
+            return cached;
 
         auto guest{DecodeGuestTic(textureHeader, shaderType)};
         if (!guest) {
