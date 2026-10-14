@@ -259,6 +259,12 @@ namespace skyline::kernel::svc {
      */
     void SignalToAddress(const DeviceState &state, SvcContext &ctx);
 
+    /** Create shared code memory from a page-aligned heap region. */
+    void CreateCodeMemory(const DeviceState &state, SvcContext &ctx);
+
+    /** Map and unmap code memory with Horizon permissions. */
+    void ControlCodeMemory(const DeviceState &state, SvcContext &ctx);
+
     /**
      * @brief A per-SVC descriptor with its name and a function pointer
      * @note The descriptor is nullable, the validity of the descriptor can be checked with the boolean operator
