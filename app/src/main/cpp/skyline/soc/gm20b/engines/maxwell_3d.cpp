@@ -82,7 +82,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                 const auto address{registers.renderEnable->offset};
                 if (interconnect.QueryPresentAtAddress(u64{address})) {
                     if (allowGpuCondition &&
-                        interconnect.SetRenderCondition(address, {}, ConditionMode::NonZero))
+                        interconnect.SetRenderCondition(IOVA{u64{address}}, {}, ConditionMode::NonZero))
                         return true;
 
                     // No CPU readback fallback here: rendering conservatively is preferable to
@@ -98,7 +98,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                 if (interconnect.QueryPresentAtAddress(u64{lhs}) ||
                     interconnect.QueryPresentAtAddress(u64{rhs})) {
                     if (allowGpuCondition &&
-                        interconnect.SetRenderCondition(lhs, rhs, ConditionMode::Equal))
+                        interconnect.SetRenderCondition(IOVA{u64{lhs}}, IOVA{u64{rhs}}, ConditionMode::Equal))
                         return true;
 
                     return true;
@@ -113,7 +113,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                 if (interconnect.QueryPresentAtAddress(u64{lhs}) ||
                     interconnect.QueryPresentAtAddress(u64{rhs})) {
                     if (allowGpuCondition &&
-                        interconnect.SetRenderCondition(lhs, rhs, ConditionMode::NotEqual))
+                        interconnect.SetRenderCondition(IOVA{u64{lhs}}, IOVA{u64{rhs}}, ConditionMode::NotEqual))
                         return true;
 
                     return true;
