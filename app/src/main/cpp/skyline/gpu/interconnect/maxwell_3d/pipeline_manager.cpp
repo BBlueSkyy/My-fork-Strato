@@ -773,6 +773,45 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return descriptorInfo.totalCombinedImageSamplerCount;
     }
 
+    void Pipeline::AppendDiagnosticBindings(std::string &out, const ConstantBufferSet &constantBuffers) const {
+        // This is intentionally a descriptor/CPU-binding report, not a GPU
+        // uniform readback. It must never call ConstantBuffer::Read, resolve
+        // a BufferView, wait on a fence or mutate the descriptor set.
+        out += fmt::format(" descriptor_layout_uniforms={} descriptor_layout_storage={} "
+                           "descriptor_layout_sampled_images={} descriptor_layout_writes={} ",
+                           descriptorInfo.totalBufferDescCount,
+                           descriptorInfo.totalStorageBufferCount,
+                           descriptorInfo.totalCombinedImageSamplerCount,
+                           descriptorInfo.totalWriteDescCount);
+
+        for (size_t stageIndex{}; stageIndex < engine::ShaderStageCount; ++stageIndex) {
+            if (!(stageMask & (1U << stageIndex)))
+                continue;
+            const auto &stage{descriptorInfo.stages[stageIndex]};
+            for (const auto &desc : stage.uniformBufferDescs) {
+                for (u32 arrayIndex{}; arrayIndex < desc.count; ++arrayIndex) {
+                    const size_t slot{static_cast<size_t>(desc.index) + arrayIndex};
+                    if (slot >= engine::ShaderStageConstantBufferCount)
+                        continue;
+                    const auto &view{constantBuffers[stageIndex][slot].view};
+                    out += fmt::format(
+                        " cbuf[stage={},slot={}]=bound:{},view_bytes:{},shader_used_bytes:{}",
+                        stageIndex, slot, static_cast<bool>(view), view.size,
+                        slot < stage.constantBufferUsedSizes.size()
+                            ? stage.constantBufferUsedSizes[slot] : 0U);
+                }
+            }
+            for (const auto &desc : stage.storageBufferDescs)
+                out += fmt::format(" ssbo_desc[stage={},cbuf_slot={},cbuf_offset={},count={},has_size={},written={}]",
+                                   stageIndex, desc.cbuf_index, desc.cbuf_offset,
+                                   desc.count, desc.has_size, desc.is_written);
+            for (const auto &desc : stage.combinedImageSamplerDescs)
+                out += fmt::format(" image_desc[stage={},cbuf_slot={},cbuf_offset={},count={},type={},secondary={}]",
+                                   stageIndex, desc.cbuf_index, desc.cbuf_offset,
+                                   desc.count, static_cast<u32>(desc.type), desc.has_secondary);
+        }
+    }
+
     DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
 
