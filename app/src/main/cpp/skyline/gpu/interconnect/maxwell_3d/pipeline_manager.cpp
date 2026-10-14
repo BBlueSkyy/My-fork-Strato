@@ -769,6 +769,35 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return true;
     }
 
+    void Pipeline::InheritDescriptorBufferViews(const Pipeline &other) {
+        storageBufferViews = other.storageBufferViews;
+        texelBufferViews = other.texelBufferViews;
+        lastExecutionTag = other.lastExecutionTag;
+    }
+
+    bool Pipeline::MayWriteBuffer(Buffer *buffer) const {
+        size_t storageIndex{}, texelIndex{};
+        auto matches{[buffer](const CachedMappedBufferView &cached) {
+            auto view{cached.view};
+            return view && view.GetBuffer() == buffer;
+        }};
+        for (size_t i{}; i < descriptorInfo.stages.size(); ++i) {
+            if (!(stageMask & (1 << i)))
+                continue;
+            const auto &stage{descriptorInfo.stages[i]};
+            for (const auto &desc : stage.storageBufferDescs)
+                for (u32 element{}; element < desc.count; ++element)
+                    if (matches(storageBufferViews[storageIndex++]) && desc.is_written)
+                        return true;
+            texelIndex += stage.uniformTexelBufferDescTotalCount;
+            for (const auto &desc : stage.storageTexelBufferDescs)
+                for (u32 element{}; element < desc.count; ++element)
+                    if (matches(texelBufferViews[texelIndex++]) && desc.is_written)
+                        return true;
+        }
+        return false;
+    }
+
     u32 Pipeline::GetTotalSampledImageCount() const {
         return descriptorInfo.totalCombinedImageSamplerCount;
     }

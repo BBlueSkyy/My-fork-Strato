@@ -52,7 +52,8 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
             .constantBufferSelectorRegisters = {*registers.constantBufferSelector},
             .samplerPoolRegisters = {*registers.texSamplerPool, *registers.texHeaderPool},
             .samplerBinding = *registers.samplerBinding,
-            .texturePoolRegisters = {*registers.texHeaderPool}
+            .texturePoolRegisters = {*registers.texHeaderPool},
+            .sampleCounterEnable = *registers.sampleCounterEnable
         };
     }
     #undef REGTYPE
@@ -63,12 +64,14 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
     }
 
     bool Maxwell3D::CheckRenderEnable() {
+        using ConditionMode = gpu::interconnect::maxwell3d::Maxwell3D::RenderConditionMode;
+
+        interconnect.ClearRenderCondition();
+
         if (registers.renderEnableOverride->mode == Registers::RenderEnableOverride::Mode::AlwaysRender)
             return true;
         else if (registers.renderEnableOverride->mode == Registers::RenderEnableOverride::Mode::NeverRender)
             return false;
-
-
 
         switch (registers.renderEnable->mode) {
             case Registers::RenderEnable::Mode::True:
@@ -76,32 +79,17 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
             case Registers::RenderEnable::Mode::False:
                 return false;
             case Registers::RenderEnable::Mode::Conditional:
-                // TODO: Use indirect draws to emulate conditional rendering with queries, for now just ignore such cases as they would decrease performance anyway by forcing a CPU sync
-                if (interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset}))
-                    return true;
-
-                return channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset) != 0;
+                return interconnect.CheckRenderCondition(IOVA{u64{registers.renderEnable->offset}}, {}, ConditionMode::NonZero);
             case Registers::RenderEnable::Mode::RenderIfEqual:
-                // TODO: See above
-                if (interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset}) ||
-                    interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset + 16}))
-                    return true;
-
-                return channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset) ==
-                    channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset + 16);
+                return interconnect.CheckRenderCondition(IOVA{u64{registers.renderEnable->offset}},
+                    IOVA{u64{registers.renderEnable->offset + 16}}, ConditionMode::Equal);
             case Registers::RenderEnable::Mode::RenderIfNotEqual:
-                // TODO: See above
-                if (interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset}) ||
-                    interconnect.QueryPresentAtAddress(u64{registers.renderEnable->offset + 16}))
-                    return true;
-
-                return channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset) !=
-                    channelCtx.asCtx->gmmu.Read<u32>(registers.renderEnable->offset + 16);
+                return interconnect.CheckRenderCondition(IOVA{u64{registers.renderEnable->offset}},
+                    IOVA{u64{registers.renderEnable->offset + 16}}, ConditionMode::NotEqual);
         }
 
         return true;
     }
-
 
     Maxwell3D::Maxwell3D(const DeviceState &state, ChannelContext &channelCtx, MacroState &macroState)
         : MacroEngineBase{macroState},
@@ -110,7 +98,10 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
           dirtyManager{registers},
           interconnect{*state.gpu, channelCtx, state.process->trap, state.process->memory, dirtyManager, MakeEngineRegisters(registers)},
           channelCtx{channelCtx} {
-        channelCtx.executor.AddFlushCallback([this]() { FlushEngineState(); });
+        channelCtx.executor.AddFlushCallback([this]() {
+            FlushEngineState();
+            interconnect.FlushQueries();
+        });
         InitializeRegisters();
     }
 
@@ -472,7 +463,6 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
                                 });
                                 break;
                             case type::SemaphoreInfo::CounterType::SamplesPassed:
-                                // Return a fake result for now
                                 interconnect.Query({registers.semaphore->address}, info.counterType,
                                                    registers.semaphore->info.structureSize == type::SemaphoreInfo::StructureSize::FourWords ?
                                                    GetGpuTimeTicks() : std::optional<u64>{});
