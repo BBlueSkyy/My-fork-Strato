@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <fstream>
+#include <limits>
 #include <cxxabi.h>
 #include <linux/elf.h>
 #include "common/signal.h"
@@ -11,7 +12,7 @@
 #include "kernel/types/KProcess.h"
 #include "kernel/svc.h"
 #include "nce/guest.h"
-#include "nce/instructions.h"
+#include "nce/trampoline.h"
 #include "nce.h"
 
 namespace skyline::nce {
@@ -21,12 +22,21 @@ namespace skyline::nce {
         return killAllThreads ? "ExitProcess" : "ExitThread";
     }
 
-    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx) {
+    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, const u64 *guestStack, u64 guestFp, u64 svcPc) {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
+            // PC is supplied directly by the patch emitter. Hidden .patch
+            // pages intentionally have no guest read permission, so never
+            // reconstruct the PC by dereferencing a trampoline return address.
+            ctx->svcCallsite = {svcPc, 0, reinterpret_cast<u64>(guestStack) + 16, guestFp};
+            try {
+                state.process->memory.ReadMemoryIfReadable(reinterpret_cast<u64>(guestStack), &ctx->svcCallsite.lr, sizeof(u64));
+            } catch (const signal::SignalException &) {
+                ctx->svcCallsite.lr = 0; // Diagnostic capture must not abort the syscall.
+            }
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
@@ -239,50 +249,6 @@ namespace skyline::nce {
         });
     }
 
-    constexpr size_t TrampolineSize{18}; // Size of the main SVC trampoline function in u32 units
-
-    /**
-     * @brief Writes a trampoline to the given target address that saves the current context and calls the given function
-     */
-    u32 *WriteTrampoline(u32 *code, u64 target) {
-        /* Hook Trampoline */
-        /* Store LR in 16B of pre-allocated stack */
-        *code++ = 0xF90007FE; // STR LR, [SP, #8]
-
-        /* Replace Skyline TLS with host TLS */
-        *code++ = 0xD53BD041; // MRS X1, TPIDR_EL0
-        *code++ = 0xF9415022; // LDR X2, [X1, #0x2A0] (ThreadContext::hostTpidrEl0)
-        *code++ = 0xD51BD042; // MSR TPIDR_EL0, X2
-
-        /* Replace guest stack with host stack */
-        *code++ = 0x910003E2; // MOV X2, SP
-        *code++ = 0xF9415423; // LDR X3, [X1, #0x2A8] (ThreadContext::hostSp)
-        *code++ = 0x9100007F; // MOV SP, X3
-
-        /* Store Skyline TLS + guest SP on stack */
-        *code++ = 0xA9BF0BE1; // STP X1, X2, [SP, #-16]!
-
-        /* Jump to SvcHandler */
-        for (const auto &mov : instructions::MoveRegister(registers::X2, target)) {
-            if (mov)
-                *code++ = mov;
-            else
-                *code++ = 0xD503201F; // NOP
-        }
-        *code++ = 0xD63F0040; // BLR X2
-
-        /* Restore Skyline TLS + guest SP */
-        *code++ = 0xA8C10BE1; // LDP X1, X2, [SP], #16
-        *code++ = 0xD51BD041; // MSR TPIDR_EL0, X1
-        *code++ = 0x9100005F; // MOV SP, X2
-
-        /* Restore LR and Return */
-        *code++ = 0xF94007FE; // LDR LR, [SP, #8]
-        *code++ = 0xD65F03C0; // RET
-
-        return code;
-    }
-
     constexpr size_t RescaleClockSize{19}; //!< The size of the RescaleClock function in 32-bit ARMv8 instructions
 
     /**
@@ -351,7 +317,7 @@ namespace skyline::nce {
             auto instructionOffset{static_cast<size_t>(instruction - start)};
 
             if (svc.Verify()) {
-                size += 7;
+                size += 11; // per-SVC trampoline plus four PC-immediate instructions
                 offsets.push_back(instructionOffset);
             } else if (mrs.Verify()) {
                 if (mrs.srcReg == TpidrroEl0 || mrs.srcReg == TpidrEl0) {
@@ -411,6 +377,9 @@ namespace skyline::nce {
                 patch++;
 
                 /* Jump to main SVC trampoline */
+                for (const auto &mov : instructions::MoveRegister(registers::X4,
+                        reinterpret_cast<u64>(end) + textOffset + offset * sizeof(u32)))
+                    *patch++ = mov ? mov : 0xD503201F;
                 *patch++ = instructions::Movz(registers::W0, static_cast<u16>(svc.value)).raw;
                 *patch = instructions::BL(static_cast<i32>(startOffset() + guest::SaveCtxSize)).raw;
                 patch++;
