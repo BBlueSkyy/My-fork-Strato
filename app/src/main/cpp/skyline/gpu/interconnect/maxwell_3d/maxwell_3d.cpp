@@ -49,6 +49,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         });
     }
 
+    void Maxwell3D::InvalidateTicCache() {
+        textures.InvalidateTicCache();
+    }
+
     vk::DeviceSize Maxwell3D::UpdateQuadConversionBuffer(u32 count, u32 firstVertex) {
         vk::DeviceSize offset{conversion::quads::GetRequiredBufferSize(firstVertex, sizeof(u32))};
         vk::DeviceSize size{conversion::quads::GetRequiredBufferSize(count, sizeof(u32)) + offset};
