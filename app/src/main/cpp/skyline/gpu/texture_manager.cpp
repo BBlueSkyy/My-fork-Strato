@@ -15,6 +15,10 @@ namespace skyline::gpu {
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
+        // Never dereference an empty guest mapping sequence or try to resolve
+        // invalid physical spans through the Texman overlap table.
+        if (guestTexture.mappings.empty() || guestTexture.mappings.front().empty() || !guestTexture.MappingsValid())
+            throw exception("Cannot resolve texture with missing or invalid guest mappings");
         auto guestMapping{guestTexture.mappings.front()};
         if (!texture::SubresourceRangeFits(guestTexture.mipLevelCount, guestTexture.viewMipBase, guestTexture.viewMipCount)) {
             throw exception("Guest texture view exceeds its declared mip chain");
@@ -41,7 +45,6 @@ namespace skyline::gpu {
          * 5) Create a new texture and insert it in the map then return it
          */
 
-        std::shared_ptr<Texture> match{};
         boost::container::small_vector<std::shared_ptr<Texture>, 4> matches{};
         auto mappingEnd{std::upper_bound(textures.begin(), textures.end(), guestMapping, [guestMapping](const auto &value, const auto &element) {
             return guestMapping.end() < element.end();
