@@ -3,7 +3,7 @@ name: Build
 
 on:
   push: 
-    branches: [ master ]
+    branches: [ master, wip/tic-cache-v2 ]
 
 jobs:
   build:
@@ -39,6 +39,9 @@ jobs:
         run: |
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
+
+      - name: TIC Cache V2 host regression tests (ASan/UBSan)
+        run: bash tests/gpu/run_tic_cache_v2.sh
 
       - name: Android Assemble
         env:
