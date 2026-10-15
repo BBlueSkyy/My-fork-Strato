@@ -4,6 +4,7 @@
 #include <cxxabi.h>
 #include "symbol_hooks.h"
 #include "symbol_hook_table.h"
+#include "npad_sdk_probe.h"
 
 namespace skyline::hle {
     std::string Demangle(const std::string_view mangledName) {
@@ -20,9 +21,6 @@ namespace skyline::hle {
     std::vector<HookedSymbolEntry> GetExecutableSymbols(span<Elf64_Sym> dynsym, span<char> dynstr) {
         std::vector<HookedSymbolEntry> executableSymbols{};
 
-        if constexpr (HookedSymbols.empty())
-            return executableSymbols;
-
         for (auto &symbol : dynsym) {
             if (symbol.st_name == 0 || symbol.st_value == 0)
                 continue;
@@ -31,6 +29,16 @@ namespace skyline::hle {
                 continue;
 
             std::string_view symbolName{dynstr.data() + symbol.st_name};
+
+            if (symbolName.find("GetNpadState") != std::string_view::npos) {
+                const auto prettyName{Demangle(symbolName)};
+                if (auto probe{MakeNpadSdkProbe(prettyName)}) {
+                    LOGI("HID-SDK installed symbol={} entry=0x{:X} coverage=dynamic-symbol-calls", prettyName, symbol.st_value);
+                    executableSymbols.emplace_back(std::string{symbolName}, *probe, &symbol.st_value);
+                    continue;
+                }
+                LOGI("HID-SDK unsupported-symbol {}", prettyName);
+            }
 
             auto item{std::find_if(HookedSymbols.begin(), HookedSymbols.end(), [&symbolName](const auto &item) {
                 return item.name == symbolName;
