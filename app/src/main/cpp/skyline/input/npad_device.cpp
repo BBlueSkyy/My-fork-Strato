@@ -238,6 +238,12 @@ namespace skyline::input {
     }
 
     void NpadDevice::WriteNextEntry(NpadControllerInfo &info, NpadControllerState entry) {
+        // DIAGNOSTIC ONLY: force the analog payload and derived stick directions
+        // to neutral in every guest-visible Npad sample (active and SystemExt).
+        // Keep button inputs, connection status and RingLifo metadata unchanged.
+        // This is not an emulation fix and must not be merged into master.
+        entry.leftX = entry.leftY = entry.rightX = entry.rightY = 0;
+        entry.buttons.raw &= ~(0xFFULL << 16);
         auto &lastEntry{info.state.at(info.header.currentEntry)};
 
         info.header.timestamp = util::GetTimeTicks();
