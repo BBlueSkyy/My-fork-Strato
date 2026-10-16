@@ -7,6 +7,11 @@
 #include <cstdint>
 
 namespace skyline::service::nvdrv::device::nvhost::detail {
+    /** Validate the region to remap without overflowing offset + length. */
+    constexpr bool FitsMappingSubrange(std::uint64_t totalSize, std::uint64_t offset, std::uint64_t length) {
+        return offset <= totalSize && length <= totalSize - offset;
+    }
+
     /**
      * @brief Forget a fixed GPU mapping when it is explicitly unmapped.
      *
@@ -17,11 +22,6 @@ namespace skyline::service::nvdrv::device::nvhost::detail {
      * This does not change the GMMU mapping or the allocator. The caller must
      * hold the AsGpu mutex, and must remove the mapping from mappingMap itself.
      */
-    /** Validate the region to remap without overflowing offset + length. */
-    constexpr bool FitsMappingSubrange(std::uint64_t totalSize, std::uint64_t offset, std::uint64_t length) {
-        return offset <= totalSize && length <= totalSize - offset;
-    }
-
     template <typename AllocationMap, typename MappingPtr>
     void ForgetFixedMapping(AllocationMap &allocations, const MappingPtr &mapping) {
         if (!mapping->fixed)
