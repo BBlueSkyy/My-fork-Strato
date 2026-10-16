@@ -252,6 +252,13 @@ namespace skyline::gpu {
                 state.process->Kill(false);
             else
                 std::rethrow_exception(std::current_exception());
+        } catch (const vk::DeviceLostError &e) {
+            gpu.ReportDeviceLoss("presentation thread");
+            LOGE("{}", e.what());
+            if (state.process)
+                state.process->Kill(false);
+            else
+                std::rethrow_exception(std::current_exception());
         } catch (const std::exception &e) {
             LOGE("{}", e.what());
             if (state.process)

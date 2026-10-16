@@ -281,6 +281,18 @@ namespace skyline::gpu {
             vk::PhysicalDeviceSubgroupProperties>()};
 
         traits = TraitManager{deviceFeatures2, enabledFeatures2, deviceExtensions, enabledExtensions, deviceProperties2, physicalDevice};
+        // The pinned Vulkan-Hpp predates this extension, so query and chain its raw Vulkan feature structure.
+        auto deviceFaultFeatures{QueryDeviceFaultFeatures(
+            std::any_of(deviceExtensions.begin(), deviceExtensions.end(), [](const auto &extension) {
+                return std::string_view(extension.extensionName) == "VK_EXT_device_fault";
+            }), static_cast<VkPhysicalDevice>(*physicalDevice), physicalDevice.getDispatcher()->vkGetPhysicalDeviceFeatures2)};
+        traits.supportsDeviceFault = deviceFaultFeatures.deviceFault;
+        if (traits.supportsDeviceFault) {
+            enabledExtensions.push_back(std::array<char, VK_MAX_EXTENSION_NAME_SIZE>{"VK_EXT_device_fault"});
+            deviceFaultFeatures.pNext = enabledFeatures2.get<vk::PhysicalDeviceFeatures2>().pNext;
+            enabledFeatures2.get<vk::PhysicalDeviceFeatures2>().pNext = &deviceFaultFeatures;
+        }
+
         traits.ApplyDriverPatches(context, mapping);
 
         std::vector<const char *> pEnabledExtensions;
@@ -418,5 +430,34 @@ namespace skyline::gpu {
             graphicsPipelineCacheManager.emplace(state,
                                                  state.os->publicAppFilesPath + "graphics_pipeline_cache/" + titleId);
         graphicsPipelineManager.emplace(*this, *state.jvm);
+    }
+
+    void GPU::ReportDeviceLoss(const char *context) noexcept {
+        try {
+            if (!traits.supportsDeviceFault)
+                return;
+            auto getFaultInfo{reinterpret_cast<PFN_vkGetDeviceFaultInfoEXT>(vkDevice.getProcAddr("vkGetDeviceFaultInfoEXT"))};
+            auto report{deviceFaultDiagnostics.CaptureAfterDeviceLoss(true, static_cast<VkDevice>(*vkDevice), getFaultInfo)};
+            if (!report)
+                return;
+
+            auto boundedDescription{[](const auto &description) {
+                return std::string_view(description.data(), std::find(description.begin(), description.end(), '\0') - description.begin());
+            }};
+            LOGE("Vulkan device fault ({}) query result: {}, description: {}, addresses: {}, vendor entries: {}, truncated: {}",
+                 context, vk::to_string(static_cast<vk::Result>(report->result)), boundedDescription(report->description), report->addressCount, report->vendorCount, report->truncated);
+            for (u32 i{}; i < report->addressCount; i++) {
+                const auto &address{report->addresses[i]};
+                LOGE("Vulkan device fault address: type={}, reported=0x{:X}, precision={}", static_cast<u32>(address.addressType), address.reportedAddress, address.addressPrecision);
+            }
+            for (u32 i{}; i < report->vendorCount; i++) {
+                const auto &vendor{report->vendors[i]};
+                std::array<char, VK_MAX_DESCRIPTION_SIZE> description;
+                std::copy(std::begin(vendor.description), std::end(vendor.description), description.begin());
+                LOGE("Vulkan device fault vendor: {}, code=0x{:X}, data=0x{:X}", boundedDescription(description), vendor.vendorFaultCode, vendor.vendorFaultData);
+            }
+        } catch (...) {
+            // Fault reporting must never replace the original device-loss exception or prevent shutdown.
+        }
     }
 }
