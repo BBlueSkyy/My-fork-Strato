@@ -61,6 +61,11 @@ jobs:
           python3 tests/gpu_conditional/run.py
           python3 tests/gpu_draw_texture/run.py
 
+      - name: Presentation ownership and host1x regressions
+        run: |
+          python3 tests/hosbinder/run.py
+          bash tests/host1x/run.sh
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
