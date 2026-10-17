@@ -298,14 +298,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Maxwell3D::LoadConstantBuffer(span<u32> data, u32 offset) {
-        constantBuffers.Load(ctx, data, offset);
+        ctx.executor.RunWithTextureBackingRetry([&] {
+            constantBuffers.Load(ctx, data, offset);
+        });
     }
 
     void Maxwell3D::BindConstantBuffer(engine::ShaderStage stage, u32 index, bool enable) {
-        if (enable)
-            constantBuffers.Bind(ctx, stage, index);
-        else
-            constantBuffers.Unbind(stage, index);
+        ctx.executor.RunWithTextureBackingRetry([&] {
+            if (enable)
+                constantBuffers.Bind(ctx, stage, index);
+            else
+                constantBuffers.Unbind(stage, index);
+        });
     }
 
     void Maxwell3D::DisableQuickConstantBufferBind() {

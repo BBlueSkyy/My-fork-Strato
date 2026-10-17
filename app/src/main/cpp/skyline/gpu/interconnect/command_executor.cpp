@@ -517,6 +517,7 @@ namespace skyline::gpu::interconnect {
     }
 
     bool CommandExecutor::AttachBuffer(BufferView &view) {
+        gpu.buffer.PrepareBufferAccess(*view.GetBuffer(), false, view.GetOffset(), view.size);
         bool didLock{view.LockWithTag(tag)};
         if (didLock)
             AttachBufferBase(view.GetBuffer()->shared_from_this());
@@ -525,6 +526,7 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::AttachLockedBufferView(BufferView &view, ContextLock<BufferView> &&lock) {
+        gpu.buffer.PrepareBufferAccess(*view.GetBuffer(), false, view.GetOffset(), view.size);
         if (lock.OwnsLock()) {
             // Transfer ownership to executor so that the resource will stay locked for the period it is used on the GPU
             AttachBufferBase(view.GetBuffer()->shared_from_this());
@@ -533,6 +535,7 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::AttachLockedBuffer(std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
+        gpu.buffer.PrepareBufferAccess(*buffer);
         if (lock.OwnsLock()) {
             AttachBufferBase(std::move(buffer));
             lock.Release(); // See AttachLockedBufferView(...)
@@ -810,6 +813,11 @@ namespace skyline::gpu::interconnect {
             std::unique_lock lock{mutex};
             cv.wait(lock, [&gpuDone] { return gpuDone; });
         }
+    }
+
+    void CommandExecutor::HandleTextureBackingPromotion(const BufferMappingReconciliationRequest &request) {
+        Submit();
+        request.Complete();
     }
 
     void CommandExecutor::HandleTextureBackingPromotion(const TextureBackingPromotionRequest &request) {

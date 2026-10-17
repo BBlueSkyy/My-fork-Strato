@@ -16,30 +16,32 @@ namespace skyline::gpu::interconnect {
           executor{channelCtx.executor} {}
 
     void Inline2Memory::UploadSingleMapping(span<u8> dst, span<u8> src) {
-        auto dstBuf{gpu.buffer.FindOrCreate(dst, executor.tag, [this](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
-            executor.AttachLockedBuffer(buffer, std::move(lock));
-        })};
-        ContextLock dstBufLock{executor.tag, dstBuf};
+        executor.RunWithTextureBackingRetry([&] {
+            auto dstBuf{gpu.buffer.FindOrCreate(dst, executor.tag, [this](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
+                executor.AttachLockedBuffer(buffer, std::move(lock));
+            })};
+            ContextLock dstBufLock{executor.tag, dstBuf};
 
 
-        dstBuf.Write(src, 0, executor.usageTracker, [&]() {
-            executor.AttachLockedBufferView(dstBuf, std::move(dstBufLock));
-            // This will prevent any CPU accesses to backing for the duration of the usage
-            dstBuf.GetBuffer()->BlockAllCpuBackingWrites();
+            dstBuf.Write(src, 0, executor.usageTracker, [&]() {
+                executor.AttachLockedBufferView(dstBuf, std::move(dstBufLock));
+                // This will prevent any CPU accesses to backing for the duration of the usage
+                dstBuf.GetBuffer()->BlockAllCpuBackingWrites();
 
-            auto srcGpuAllocation{gpu.megaBufferAllocator.Push(executor.cycle, src)};
-            executor.AddOutsideRpCommand([srcGpuAllocation, dstBuf, src](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &pGpu) {
-                auto dstBufBinding{dstBuf.GetBinding(pGpu)};
-                vk::BufferCopy copyRegion{
-                    .size = src.size_bytes(),
-                    .srcOffset = srcGpuAllocation.offset,
-                    .dstOffset = dstBufBinding.offset,
-                };
-                commandBuffer.copyBuffer(srcGpuAllocation.buffer, dstBufBinding.buffer, copyRegion);
-                commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, vk::MemoryBarrier{
-                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-                    .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite
-                }, {}, {});
+                auto srcGpuAllocation{gpu.megaBufferAllocator.Push(executor.cycle, src)};
+                executor.AddOutsideRpCommand([srcGpuAllocation, dstBuf, src](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &pGpu) {
+                    auto dstBufBinding{dstBuf.GetBinding(pGpu)};
+                    vk::BufferCopy copyRegion{
+                        .size = src.size_bytes(),
+                        .srcOffset = srcGpuAllocation.offset,
+                        .dstOffset = dstBufBinding.offset,
+                    };
+                    commandBuffer.copyBuffer(srcGpuAllocation.buffer, dstBufBinding.buffer, copyRegion);
+                    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, vk::MemoryBarrier{
+                        .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                        .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite
+                    }, {}, {});
+                });
             });
         });
     }

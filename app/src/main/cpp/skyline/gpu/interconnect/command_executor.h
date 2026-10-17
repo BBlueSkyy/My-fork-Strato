@@ -420,6 +420,7 @@ namespace skyline::gpu::interconnect {
         // allocator, hazard tracking, nodes or submission cycle.
         void NotifyMemoryMappingChange(u64 generation);
 
+        void HandleTextureBackingPromotion(const BufferMappingReconciliationRequest &request);
         void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &request);
         void HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request);
 

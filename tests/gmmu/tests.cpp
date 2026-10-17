@@ -9,6 +9,7 @@
 #include <functional>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -24,6 +25,7 @@
 #include <boost/container/small_vector.hpp>
 namespace skyline {
 using u8=uint8_t; using u32=uint32_t; using u64=uint64_t;
+namespace constant { inline constexpr size_t PageSize=4096; }
 template<class T, size_t Extent=std::dynamic_extent> struct span : std::span<T,Extent> {
     using std::span<T,Extent>::span;
     span(std::span<T,Extent> v):std::span<T,Extent>(v){}
@@ -43,6 +45,7 @@ inline size_t segmentWriteBytes{}; // Test-only accounting at the real SegmentTa
 using SharedSpinLock=std::shared_mutex; // Android lock transport only.
 namespace util {
 template<class T> constexpr T DivideCeil(T x,T y) { return (x+y-1)/y; }
+template<class T,class U> constexpr T AlignDown(T x,U y) { return x&~(y-1); }
 template<class T,class U> constexpr T AlignUp(T x,U y) { return (x+y-1)&~(y-1); }
 template<class T> concept TrivialObject=std::is_trivially_copyable_v<T> && !requires(T v){v.data();};
 }
@@ -237,11 +240,16 @@ namespace skyline::gpu::interconnect {
     struct BufferView {
         std::shared_ptr<Buffer> buffer;
         span<u8> memory;
+        size_t size{};
+        BufferView() = default;
+        BufferView(std::shared_ptr<Buffer> buffer, span<u8> memory) : buffer{std::move(buffer)}, memory{memory}, size{memory.size()} {}
+        size_t GetOffset() const { return 0; }
         explicit operator bool() const { return bool(buffer); }
         std::shared_ptr<Buffer> GetBuffer() const { return buffer; }
     };
     struct Buffer : std::enable_shared_from_this<Buffer> {
         span<u8> memory;
+        std::vector<u8> owned;
         BufferView TryGetView(span<u8> requested) {
             return requested.data()>=memory.data() && requested.data()+requested.size()<=memory.data()+memory.size() ?
                 BufferView{shared_from_this(),requested} : BufferView{};
@@ -249,6 +257,11 @@ namespace skyline::gpu::interconnect {
     };
     struct BufferManager {
         unsigned lookups{};
+        void PrepareBufferAccess(Buffer&, bool=false, u64=0, u64=std::numeric_limits<u64>::max()) {}
+        BufferView FindOrCreateDisjoint(const std::vector<span<u8>> &, size_t offset, size_t size, u64, auto&&) {
+            auto buffer=std::make_shared<Buffer>(); buffer->owned.resize(offset+size); buffer->memory=span<u8>{buffer->owned};
+            return {buffer, buffer->memory.subspan(offset,size)};
+        }
         BufferView FindOrCreate(span<u8> memory,u64,auto&&) {
             ++lookups;
             auto buffer=std::make_shared<Buffer>(); buffer->memory=memory;
@@ -331,13 +344,13 @@ namespace skyline::gpu::interconnect {
         cached.Update(ctx,Page,Page);
         assert(cached.view.memory.data()==b.data()); // Same IOVA must not preserve an obsolete PA.
         cached.Update(ctx,Page,Page*2);
-        assert(cached.view.memory.size()==Page && splitWarnings==1); // Never pretend disjoint physical pages are contiguous.
+        assert(cached.view.size==Page*2 && splitWarnings==0); // A logical view covers every physical fragment.
         mm.Unmap(Page,Page);
         cached.Update(ctx,Page,Page);
         assert(!cached.view);
         mm.MapSparse(Page,Page);
         cached.Update(ctx,Page,Page);
-        assert(!cached.view);
+        assert(cached.view && cached.view.size == Page);
         mm.Map(Page,tail.data(),Page);
         cached.Update(ctx,Page,Page);
         assert(cached.view.memory.data()==tail.data());
