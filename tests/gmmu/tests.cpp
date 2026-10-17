@@ -238,6 +238,23 @@ namespace skyline::gpu::interconnect {
         struct Gpu { BufferManager buffer; } gpu;
         struct Executor { u64 tag{1}; void AttachLockedBuffer(std::shared_ptr<Buffer>,ContextLock<Buffer>&&){} } executor;
     };
+    struct CommandExecutor {
+        u64 mappingGeneration{};
+        std::vector<std::function<void()>> flushCallbacks;
+        void Submit() = delete; // Mapping invalidation must never submit GPU work.
+        void NotifyMemoryMappingChange(u64);
+    };
+    #include "mapping_notify.inc"
+    void CheckMappingNotification() {
+        CommandExecutor executor;
+        unsigned flushes{};
+        executor.flushCallbacks.push_back([&]{++flushes;});
+        executor.NotifyMemoryMappingChange(1);
+        executor.NotifyMemoryMappingChange(1);
+        assert(flushes==1);
+        executor.NotifyMemoryMappingChange(2);
+        assert(flushes==2);
+    }
     unsigned splitWarnings{};
     #define LOGW(...) (++splitWarnings)
     #include "buffer_class.inc"
@@ -270,12 +287,35 @@ namespace skyline::gpu::interconnect {
         assert(cached.view.memory.data()==tail.data());
     }
 }
+namespace skyline::gpu {
+    struct UsageTracker { struct Intervals {
+        unsigned writes{}; void Insert(span<u8> memory) { assert(memory.valid()); ++writes; }
+    } dirtyIntervals; };
+    struct Texture {
+        struct Guest { std::vector<span<u8>> mappings; };
+        std::optional<Guest> guest;
+        void RecordGpuWrite() {} // Alias publication/transport remains outside this GMMU integration test.
+        void MarkGpuDirty(UsageTracker&);
+    };
+    #include "mark_dirty.inc"
+    void CheckHostOnlyFallback() {
+        Texture texture; UsageTracker tracker;
+        texture.MarkGpuDirty(tracker);
+        assert(tracker.dirtyIntervals.writes==0);
+        std::array<u8,16> memory{};
+        texture.guest.emplace(Texture::Guest{{span<u8>{memory}}});
+        texture.MarkGpuDirty(tracker);
+        assert(tracker.dirtyIntervals.writes==1);
+    }
+}
 int main(int argc,char**argv) {
     std::string name=argc>1?argv[1]:"all";
     if(name=="sparse" || name=="all") CheckSparse();
     if(name=="remap" || name=="all") CheckRemap();
     if(name=="l2" || name=="all") CheckL2Tail();
     if(name=="cache" || name=="all") skyline::gpu::interconnect::CheckCachedRemap();
+    if(name=="host" || name=="all") skyline::gpu::CheckHostOnlyFallback();
+    if(name=="notify" || name=="all") skyline::gpu::interconnect::CheckMappingNotification();
     if(name=="copy") CheckSparseCopy();
     if(name=="fault") CheckUnmappedIo();
     if(name=="io" || name=="all") { CheckWriteCallback(); CheckSparseCopy(); CheckUnmappedIo(); CheckFragmentedIo(); }

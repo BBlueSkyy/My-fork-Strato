@@ -175,11 +175,13 @@ namespace skyline::soc::gm20b {
             }
         }
 
+        channelCtx.executor.NotifyMemoryMappingChange(channelCtx.asCtx->gmmu.GetMappingGeneration());
+
         auto pushBufferMappedRanges{channelCtx.asCtx->gmmu.TranslateRange(gpEntry.Address(), gpEntry.size * sizeof(u32))};
 
         bool pushBufferCopied{}; //!< Set by the below lambda in order to track if the pushbuffer is a copy of guest memory or not
         auto pushBuffer{[&]() -> span<u32> {
-            if (pushBufferMappedRanges.size() == 1) {
+            if (pushBufferMappedRanges.size() == 1 && pushBufferMappedRanges.front().valid()) {
                 return pushBufferMappedRanges.front().cast<u32>();
             } else {
                 // Create an intermediate copy of pushbuffer data if it's split across multiple mappings
@@ -193,7 +195,7 @@ namespace skyline::soc::gm20b {
         bool pushbufferDirty{false};
 
         for (auto range : pushBufferMappedRanges) {
-            if (channelCtx.executor.usageTracker.dirtyIntervals.Intersect(range)) {
+            if (range.valid() && channelCtx.executor.usageTracker.dirtyIntervals.Intersect(range)) {
                 if (skipDirtyFlushes)
                     pushbufferDirty = true;
                 else

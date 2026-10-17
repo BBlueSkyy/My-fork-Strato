@@ -6,7 +6,7 @@ with tempfile.TemporaryDirectory(prefix='strato-gmmu-') as tmp:
     tmp = pathlib.Path(tmp)
     for name in ('address_space.h', 'address_space.inc', 'segment_table.h'):
         path = 'app/src/main/cpp/skyline/common/' + name
-        baseline = os.environ.get('GMMU_BASELINE_REF')
+        baseline = os.environ.get('GMMU_TABLE_BASELINE_REF') if name == 'segment_table.h' else None
         source = subprocess.check_output(['git','show',baseline+':'+path],cwd=ROOT,text=True) if baseline else (ROOT/path).read_text()
         source = '\n'.join(line for line in source.splitlines() if not line.startswith('#include'))
         (tmp / name).write_text(source)
@@ -21,12 +21,20 @@ with tempfile.TemporaryDirectory(prefix='strato-gmmu-') as tmp:
     cache_header = (ROOT/'app/src/main/cpp/skyline/gpu/interconnect/common/common.h').read_text()
     cache_source = (ROOT/'app/src/main/cpp/skyline/gpu/interconnect/common/common.cpp').read_text()
     (tmp/'buffer_class.inc').write_text(extract(cache_header,'class CachedMappedBufferView')+';')
+    texture_source=(ROOT/'app/src/main/cpp/skyline/gpu/texture/texture.cpp').read_text()
+    texture_baseline=os.environ.get('GMMU_TEXTURE_BASELINE_REF')
+    if texture_baseline:
+        texture_source=subprocess.check_output(['git','show',texture_baseline+':app/src/main/cpp/skyline/gpu/texture/texture.cpp'],cwd=ROOT,text=True)
+    (tmp/'mark_dirty.inc').write_text(extract(texture_source,'void Texture::MarkGpuDirty('))
     (tmp/'buffer_update.inc').write_text('\n'.join(extract(cache_source,signature) for signature in
         ('void CachedMappedBufferView::Update(', 'void CachedMappedBufferView::PurgeCaches(')))
+    executor=(ROOT/'app/src/main/cpp/skyline/gpu/interconnect/command_executor.cpp').read_text()
+    signature='void CommandExecutor::NotifyMemoryMappingChange('
+    (tmp/'mapping_notify.inc').write_text(extract(executor,signature) if signature in executor else '')
     compiler = os.environ.get('CXX', 'c++')
     binary = tmp / 'tests'
     subprocess.run([compiler, '-std=c++20', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
-        '-Wno-unused-variable', '-Wno-unused-parameter', '-Wno-reorder', '-Wno-self-assign', '-fsanitize=address,undefined',
+        '-D_GLIBCXX_ASSERTIONS', '-Wno-unused-variable', '-Wno-unused-parameter', '-Wno-reorder', '-Wno-self-assign', '-fsanitize=address,undefined',
         '-fno-sanitize-recover=all', '-pthread', '-I'+str(tmp),
         '-I'+os.environ.get('BOOST_INCLUDE_DIR','/usr/include'),
         str(ROOT/'tests/gmmu/tests.cpp'), '-o', str(binary)], check=True)

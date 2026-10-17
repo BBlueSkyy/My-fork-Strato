@@ -748,6 +748,12 @@ namespace skyline::gpu::interconnect {
         }
     }
 
+    void CommandExecutor::NotifyMemoryMappingChange(u64 generation) {
+        if (mappingGeneration == generation) return;
+        for (const auto &callback : flushCallbacks) callback();
+        mappingGeneration = generation;
+    }
+
     void CommandExecutor::Submit(std::function<void()> &&callback, bool wait) {
         for (const auto &flushCallback : flushCallbacks)
             flushCallback();
