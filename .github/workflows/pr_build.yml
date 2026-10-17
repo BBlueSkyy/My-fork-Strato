@@ -66,6 +66,11 @@ jobs:
           python3 tests/gpu_texture_mappings/run.py
           python3 tests/gpu_constant_buffers/run.py
 
+      - name: ARM64 translation and buffer regressions (QEMU/UBSan)
+        run: |
+          sudo apt-get install -y g++-aarch64-linux-gnu qemu-user
+          python3 tests/run_arm64.py
+
       - name: Sparse texture and alias Vulkan regressions
         env:
           CXX: clang++
