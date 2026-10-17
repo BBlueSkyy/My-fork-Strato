@@ -8,10 +8,16 @@
 
 namespace skyline::gpu::interconnect {
     void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn) {
-        // Ignore size for the mapping end check here as we don't support buffers split across multiple mappings so only the first one would be used anyway. It's also impossible for the mapping to have been remapped with a larger one since the original lookup because the we force the mapping to be reset after semaphores
-        if (address < blockMappingStartAddr || address >= blockMappingEndAddr) {
+        auto &gmmu{ctx.channelCtx.asCtx->gmmu};
+        const auto generation{gmmu.GetMappingGeneration()};
+        // A semaphore flush still purges pipeline caches. Also retranslate this
+        // local cache when nvhost replaces the same IOVA between updates.
+        if (mappingAddressSpace != &gmmu || mappingGeneration != generation ||
+            address < blockMappingStartAddr || address >= blockMappingEndAddr) {
+            mappingAddressSpace = &gmmu;
+            mappingGeneration = generation;
             u64 blockOffset{};
-            std::tie(blockMapping, blockOffset) = ctx.channelCtx.asCtx->gmmu.LookupBlock(address);
+            std::tie(blockMapping, blockOffset) = gmmu.LookupBlock(address);
             if (!blockMapping.valid()) {
                 view = {};
                 blockMappingEndAddr = 0;
@@ -26,7 +32,7 @@ namespace skyline::gpu::interconnect {
         auto fullMapping{blockMapping.subspan(address - blockMappingStartAddr)};
 
         if (splitMappingWarn && fullMapping.size() < size)
-            LOGW("Split buffer mappings are not supported");
+            LOGW("GPU buffer crosses disjoint or nonresident mappings (requested: 0x{:X}, resident prefix: 0x{:X})", size, fullMapping.size());
 
         // Mapping covering just the requested input view (or less in the case of split mappings)
         auto viewMapping{fullMapping.first(std::min(fullMapping.size(), size))};
