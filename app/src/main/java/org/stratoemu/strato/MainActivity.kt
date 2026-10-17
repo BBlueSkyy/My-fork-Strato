@@ -30,6 +30,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import dagger.hilt.android.AndroidEntryPoint
 import org.stratoemu.strato.adapter.*
@@ -210,35 +211,78 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // Diagnostic build only: long-press the log icon to export the latest
-            // capture and recent emulator log, without navigating Android/data.
+            // Diagnostic APK: trigger and export without using Android/data.
+            // Regular tap still shares the normal emulator log.
             binding.logIcon.setOnLongClickListener {
-                lifecycleScope.launch {
-                    val archive = withContext(Dispatchers.IO) {
-                        runCatching { GpuCaptureExport.createArchive(this@MainActivity) }
-                    }
-                    archive.onSuccess { file ->
-                        val relative = file.relativeTo(getPublicFilesDir()).invariantSeparatorsPath
-                        val uri = DocumentsContract.buildDocumentUri(
-                            DocumentsProvider.AUTHORITY,
-                            DocumentsProvider.ROOT_ID + "/" + relative
-                        )
-                        val intent = Intent(Intent.ACTION_SEND).apply {
-                            type = "application/zip"
-                            putExtra(Intent.EXTRA_STREAM, uri)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            clipData = ClipData.newUri(contentResolver, "Strato GPU capture", uri)
+                MaterialAlertDialogBuilder(this@MainActivity)
+                    .setTitle("Mini-RenderDoc (GPU)")
+                    .setItems(arrayOf(
+                        "Armar captura para o próximo jogo",
+                        "Compartilhar captura/diagnóstico (ZIP)"
+                    )) { _, choice ->
+                        when (choice) {
+                            0 -> {
+                                try {
+                                    val root = File(getPublicFilesDir(), "gpu_capture/cosmic_shake")
+                                    if (!root.isDirectory && !root.mkdirs())
+                                        throw java.io.IOException("Não foi possível criar a pasta")
+                                    val trigger = File(root, "ARM_CAPTURE")
+                                    if (!trigger.exists() && !trigger.createNewFile())
+                                        throw java.io.IOException("Não foi possível armar a captura")
+                                    Snackbar.make(
+                                        this@MainActivity.findViewById(android.R.id.content),
+                                        "Captura armada. Abra o jogo; serão capturados até 6 frames.",
+                                        Snackbar.LENGTH_LONG
+                                    ).show()
+                                } catch (error: Exception) {
+                                    Snackbar.make(
+                                        this@MainActivity.findViewById(android.R.id.content),
+                                        "Falha ao armar captura: " +
+                                            (error.localizedMessage ?: "erro desconhecido"),
+                                        Snackbar.LENGTH_LONG
+                                    ).show()
+                                }
+                            }
+                            1 -> {
+                                lifecycleScope.launch {
+                                    val archive = withContext(Dispatchers.IO) {
+                                        runCatching {
+                                            GpuCaptureExport.createArchive(this@MainActivity)
+                                        }
+                                    }
+                                    archive.onSuccess { file ->
+                                        val relative = file.relativeTo(
+                                            getPublicFilesDir()
+                                        ).invariantSeparatorsPath
+                                        val uri = DocumentsContract.buildDocumentUri(
+                                            DocumentsProvider.AUTHORITY,
+                                            DocumentsProvider.ROOT_ID + "/" + relative
+                                        )
+                                        val intent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "application/zip"
+                                            putExtra(Intent.EXTRA_STREAM, uri)
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            clipData = ClipData.newUri(
+                                                contentResolver, "Strato GPU capture", uri
+                                            )
+                                        }
+                                        startActivity(Intent.createChooser(
+                                            intent, "Compartilhar captura GPU"
+                                        ))
+                                    }.onFailure { error ->
+                                        Snackbar.make(
+                                            this@MainActivity.findViewById(android.R.id.content),
+                                            "Falha ao exportar captura GPU: " +
+                                                (error.localizedMessage ?: "erro desconhecido"),
+                                            Snackbar.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            }
                         }
-                        startActivity(Intent.createChooser(intent, "Compartilhar captura GPU"))
-                    }.onFailure { error ->
-                        Snackbar.make(
-                            this@MainActivity.findViewById(android.R.id.content),
-                            "Falha ao exportar captura GPU: " +
-                                (error.localizedMessage ?: "erro desconhecido"),
-                            Snackbar.LENGTH_LONG
-                        ).show()
                     }
-                }
+                    .setNegativeButton("Cancelar", null)
+                    .show()
                 true
             }
 
