@@ -9,6 +9,9 @@ with tempfile.TemporaryDirectory(prefix='strato-gmmu-') as tmp:
         baseline = os.environ.get('GMMU_TABLE_BASELINE_REF') if name == 'segment_table.h' else None
         source = subprocess.check_output(['git','show',baseline+':'+path],cwd=ROOT,text=True) if baseline else (ROOT/path).read_text()
         source = '\n'.join(line for line in source.splitlines() if not line.startswith('#include'))
+        if name == 'segment_table.h':
+            source=source.replace('void Set(size_t start, size_t end, SegmentType segment) {',
+                'void Set(size_t start, size_t end, SegmentType segment) { segmentWriteBytes += end - start;')
         (tmp / name).write_text(source)
     def extract(source, signature):
         start = source.index(signature)
@@ -31,6 +34,13 @@ with tempfile.TemporaryDirectory(prefix='strato-gmmu-') as tmp:
     executor=(ROOT/'app/src/main/cpp/skyline/gpu/interconnect/command_executor.cpp').read_text()
     signature='void CommandExecutor::NotifyMemoryMappingChange('
     (tmp/'mapping_notify.inc').write_text(extract(executor,signature) if signature in executor else '')
+    shader_header=(ROOT/'app/src/main/cpp/skyline/gpu/interconnect/common/shader_cache.h').read_text()
+    shader_source=(ROOT/'app/src/main/cpp/skyline/gpu/interconnect/common/shader_cache.cpp').read_text()
+    shader_class=extract(shader_header,'class ShaderCache').replace('private:', 'public:')
+    shader_class=shader_class[:-1]+'void SelectMirrorForTest(InterconnectContext&, span<u8>);\n};'
+    (tmp/'shader_class.inc').write_text(shader_class)
+    selection=extract(shader_source,'if (!mirrorBlock.valid()')
+    (tmp/'shader_select.inc').write_text('void ShaderCache::SelectMirrorForTest(InterconnectContext &ctx, span<u8> blockMapping) {'+selection+'}')
     compiler = os.environ.get('CXX', 'c++')
     binary = tmp / 'tests'
     subprocess.run([compiler, '-std=c++20', '-O1', '-g', '-Wall', '-Wextra', '-Werror',

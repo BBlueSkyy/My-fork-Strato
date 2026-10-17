@@ -270,7 +270,10 @@ namespace skyline {
         for (; current != blocks.end() && current->virt <= end; ++current) {
             auto next{std::next(current)};
             const size_t blockEnd{next == blocks.end() ? size_t{this->vaLimit} + 1 : next->virt};
-            if (current->phys || current->extraInfo.sparseMapped)
+            // Sparse/unmapped entries stay empty in the fast table. Their
+            // authoritative interval lookup avoids rewriting an entire sparse
+            // reservation whenever one small resident tile is replaced.
+            if (current->phys && !current->extraInfo.sparseMapped)
                 blockSegmentTable.Set(current->virt, blockEnd,
                     {current->virt, current->phys, blockEnd - current->virt, current->extraInfo});
         }

@@ -22,10 +22,14 @@ namespace skyline::gpu::interconnect {
 
         // Skip looking up the mirror if it is the same as the one used for the previous update
         if (!mirrorBlock.valid() || !mirrorBlock.contains(blockMapping)) {
-            auto mirrorIt{mirrorMap.find(blockMapping.data())};
+            // A contiguous extension can keep the same physical base while
+            // growing its mirror/trap coverage. Retain older entries so their
+            // binary spans and trap callbacks remain alive.
+            const MirrorKey key{blockMapping.data(), blockMapping.size()};
+            auto mirrorIt{mirrorMap.find(key)};
             if (mirrorIt == mirrorMap.end()) {
                 // Allocate a host mirror for the mapping and trap the guest region
-                auto newIt{mirrorMap.emplace(blockMapping.data(), std::make_unique<MirrorEntry>(ctx.memory.CreateMirror(blockMapping)))};
+                auto newIt{mirrorMap.emplace(key, std::make_unique<MirrorEntry>(ctx.memory.CreateMirror(blockMapping)))};
 
                 // We need to create the trap after allocating the entry so that we have an `invalid` pointer we can pass in
                 auto trapHandle{ctx.trap.CreateTrap(blockMapping, [mutex = &trapMutex]() {

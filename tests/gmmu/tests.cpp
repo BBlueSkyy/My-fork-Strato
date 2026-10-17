@@ -19,6 +19,7 @@
 #include <string>
 #include <sys/mman.h>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 #include <boost/container/small_vector.hpp>
 namespace skyline {
@@ -27,6 +28,10 @@ template<class T, size_t Extent=std::dynamic_extent> struct span : std::span<T,E
     using std::span<T,Extent>::span;
     span(std::span<T,Extent> v):std::span<T,Extent>(v){}
     bool valid() const { return this->data()!=nullptr; }
+    bool contains(span other) const {
+        const auto start=reinterpret_cast<uintptr_t>(this->data()), address=reinterpret_cast<uintptr_t>(other.data());
+        return address>=start && address-start<=this->size() && other.size()<=this->size()-(address-start);
+    }
     void copy_from(span other) { std::copy(other.begin(),other.end(),this->begin()); }
 };
 template<class T> span(T*,size_t)->span<T>;
@@ -34,6 +39,7 @@ template<class... T> struct exception : std::runtime_error {
     exception(const char* message,T&&...):std::runtime_error(message){}
 };
 template<class... T> exception(const char*,T&&...)->exception<T...>;
+inline size_t segmentWriteBytes{}; // Test-only accounting at the real SegmentTable::Set boundary.
 using SharedSpinLock=std::shared_mutex; // Android lock transport only.
 namespace util {
 template<class T> constexpr T DivideCeil(T x,T y) { return (x+y-1)/y; }
@@ -203,11 +209,28 @@ void CheckFragmentedIo() {
     mm.Copy(Page*8+17,Page+17,Page*3-34);
     assert(output[16]==0x99 && output[17]==0xA5 && output[Page*2]==0xA5 && output.back()==0x99);
 }
+void CheckSparseRemapWork() {
+    auto update=[](u64 reservation) {
+        FlatMemoryManager<u64,0,40,12,17> mm;
+        std::vector<u8> page(Page,0x51);
+        mm.MapSparse(Page,reservation);
+        segmentWriteBytes=0;
+        mm.Map(Page*3,page.data(),Page);
+        const auto work=segmentWriteBytes;
+        auto ranges=mm.TranslateMappings(Page*2,Page*3);
+        assert(ranges.size()==3 && ranges[0].kind==MemoryMappingKind::Sparse &&
+            ranges[1].memory.data()==page.data() && ranges[2].kind==MemoryMappingKind::Sparse);
+        return work;
+    };
+    const auto small=update(1ULL<<24), large=update(1ULL<<34);
+    assert(large==small && large<=Page*4); // Work must not scale with the untouched sparse reservation.
+}
 // Compile both production specializations, including 32-bit host1x endpoints.
 namespace skyline {
 template class FlatMemoryManager<u64,0,40,12,17>;
 template class FlatMemoryManager<u32,0,32,12,17>;
 }
+namespace tsl { template<class K,class V,class H=std::hash<K>> using robin_map=std::unordered_map<K,V,H>; }
 namespace skyline::gpu::interconnect {
     struct Buffer;
     template<class T> struct ContextLock {};
@@ -236,6 +259,19 @@ namespace skyline::gpu::interconnect {
         struct AddressSpace { MM gmmu; } addressSpace;
         struct Channel { AddressSpace *asCtx; } channelCtx{&addressSpace};
         struct Gpu { BufferManager buffer; } gpu;
+        struct Memory { span<u8> CreateMirror(span<u8> mapping) { return mapping; } } memory;
+        struct Trap {
+            struct Entry { span<u8> memory; std::function<bool()> write; };
+            std::vector<Entry> entries;
+            u64 CreateTrap(span<u8> memory, auto&&, auto&&, auto&& write) {
+                entries.push_back({memory,write}); return entries.size();
+            }
+            void TrapRegions(u64,bool) {}
+            void Write(u8* address) {
+                for(auto &entry:entries)
+                    if(address>=entry.memory.data() && address<entry.memory.data()+entry.memory.size()) assert(entry.write());
+            }
+        } trap;
         struct Executor { u64 tag{1}; void AttachLockedBuffer(std::shared_ptr<Buffer>,ContextLock<Buffer>&&){} } executor;
     };
     struct CommandExecutor {
@@ -254,6 +290,26 @@ namespace skyline::gpu::interconnect {
         assert(flushes==1);
         executor.NotifyMemoryMappingChange(2);
         assert(flushes==2);
+    }
+    using ContextTag=u64; using TrapHandle=u64;
+    struct ShaderBinary { span<u8> binary; u32 baseOffset; };
+    #include "shader_class.inc"
+    #include "shader_select.inc"
+    void CheckShaderMirrorGrowth() {
+        InterconnectContext ctx;
+        std::vector<u8> bytes(Page*2,0x31);
+        ctx.addressSpace.gmmu.Map(Page,bytes.data(),Page);
+        ShaderCache cache;
+        cache.SelectMirrorForTest(ctx,ctx.addressSpace.gmmu.LookupBlock(Page).first);
+        const auto old=cache.entry->mirror;
+        ctx.addressSpace.gmmu.Map(Page*2,bytes.data()+Page,Page);
+        cache.SelectMirrorForTest(ctx,ctx.addressSpace.gmmu.LookupBlock(Page*2).first);
+        assert(cache.entry->mirror.size()>=Page*2 && old.size()==Page && old[0]==0x31);
+        cache.entry->dirty=false;
+        bytes[Page]=0x42;
+        ctx.trap.Write(bytes.data()+Page);
+        cache.SelectMirrorForTest(ctx,ctx.addressSpace.gmmu.LookupBlock(Page*2).first);
+        assert(cache.entry->mirror[Page]==0x42 && cache.entry->dirty); // The enlarged region needs its own write trap.
     }
     unsigned splitWarnings{};
     #define LOGW(...) (++splitWarnings)
@@ -316,6 +372,8 @@ int main(int argc,char**argv) {
     if(name=="cache" || name=="all") skyline::gpu::interconnect::CheckCachedRemap();
     if(name=="host" || name=="all") skyline::gpu::CheckHostOnlyFallback();
     if(name=="notify" || name=="all") skyline::gpu::interconnect::CheckMappingNotification();
+    if(name=="work" || name=="all") CheckSparseRemapWork();
+    if(name=="shader" || name=="all") skyline::gpu::interconnect::CheckShaderMirrorGrowth();
     if(name=="copy") CheckSparseCopy();
     if(name=="fault") CheckUnmappedIo();
     if(name=="io" || name=="all") { CheckWriteCallback(); CheckSparseCopy(); CheckUnmappedIo(); CheckFragmentedIo(); }
