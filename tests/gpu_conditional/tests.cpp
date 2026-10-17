@@ -172,7 +172,7 @@ struct UsageTracker { struct Intervals { void Insert(int) {} } dirtyIntervals, s
 struct GenerationBuffer {
     // Alias transport is inactive for these single-range generation fixtures.
     struct Authority {
-        void PrepareBufferAccess(auto &, bool = false, u64 = 0, u64 = ~u64{}) {}
+        void PrepareBufferAccess(auto &, bool = false, u64 = 0, u64 = ~u64{}, bool = false) {}
         void NotifyBufferWrite(auto &, u64, u64) {}
     };
     struct { Authority buffer; } gpu;
@@ -180,6 +180,7 @@ struct GenerationBuffer {
     std::array<u8, 1> mirror{};
     enum class DirtyState { Clean, CpuDirty, GpuDirty } dirtyState{DirtyState::Clean};
     bool HasSparseHoles(u64, u64) const { return false; }
+    bool HasRepeatedPhysicalMappings() const { return false; }
     bool SequencedCpuBackingWritesBlocked() const { return false; }
     bool PollFence() const { return true; }
     void ClearSparseHoles(bool = false) {}
@@ -194,6 +195,7 @@ struct GenerationBuffer {
     void MarkGpuDirtyImpl() { alreadyGpuDirty = true; }
     bool WriteImplDirect(span<u8>,u64,UsageTracker &,const std::function<void()> &) { return false; }
     bool WriteImplStaged(span<u8>,u64,const std::function<void()> &) { return false; }
+    void WriteImmediateRepeated(span<u8>,u64) { throw exception("Unexpected repeated physical transport"); }
     void CopyFromImplDirect(u64,GenerationBuffer *,u64,u64,UsageTracker &,const std::function<void()> &) {}
     void CopyFromImplStaged(u64,GenerationBuffer *,u64,u64,UsageTracker &,const std::function<void()> &) {}
 };

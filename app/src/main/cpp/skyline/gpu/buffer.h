@@ -54,6 +54,7 @@ namespace skyline::gpu {
         IntervalList<u8 *> aliasPendingWrites; //!< Resident writes awaiting alias reconciliation, including submitted cycles.
         void ClearSparseHoles(bool clearBacking = false);
         bool HasSparseHoles(vk::DeviceSize offset, vk::DeviceSize size) const;
+        bool HasRepeatedPhysicalMappings() const;
         void TrackGuestUsage(IntervalList<u8 *> &intervals, vk::DeviceSize offset, vk::DeviceSize size);
         std::shared_ptr<FenceCycle> cycle{}; //!< A fence cycle for when any host operation mutating the buffer has completed, it must be waited on prior to any mutations to the backing
         size_t id;
@@ -169,6 +170,7 @@ namespace skyline::gpu {
                              UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback = {});
 
         bool WriteImplStaged(span<u8> data, vk::DeviceSize offset, const std::function<void()> &gpuCopyCallback = {});
+        void WriteImmediateRepeated(span<u8> data, vk::DeviceSize offset);
 
         void ReadImplDirect(const std::function<void()> &flushHostCallback, span<u8> data, vk::DeviceSize offset);
 

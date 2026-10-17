@@ -12,6 +12,7 @@ namespace skyline::gpu {
         std::shared_ptr<Buffer> target;
         bool write;
         vk::DeviceSize offset, size;
+        bool allowRepeatedCpuWrite{}; //!< Only ordered, immediately writable CPU transports may opt in.
         void Complete() const;
     };
 }

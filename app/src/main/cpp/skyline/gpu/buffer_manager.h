@@ -78,7 +78,8 @@ namespace skyline::gpu {
       public:
         SpinLock recreationMutex;
 
-        void PrepareBufferAccess(Buffer &target, bool write = false, vk::DeviceSize offset = 0, vk::DeviceSize size = VK_WHOLE_SIZE);
+        void PrepareBufferAccess(Buffer &target, bool write = false, vk::DeviceSize offset = 0, vk::DeviceSize size = VK_WHOLE_SIZE,
+                                 bool allowRepeatedCpuWrite = false);
         void NotifyBufferWrite(Buffer &source, vk::DeviceSize offset, vk::DeviceSize size);
         BufferView FindOrCreateDisjoint(const std::vector<GuestBuffer> &mappings, vk::DeviceSize offset, vk::DeviceSize size,
                                        ContextTag tag, const std::function<void(std::shared_ptr<Buffer>, ContextLock<Buffer> &&)> &attachBuffer);

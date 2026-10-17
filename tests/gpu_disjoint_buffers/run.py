@@ -22,8 +22,8 @@ with tempfile.TemporaryDirectory(prefix='strato-gpu-buffers-') as directory:
         '\n'.join(extract(buffer,sig) for sig in ('Buffer *BufferDelegate::GetBuffer(',
         'void BufferDelegate::Link(', 'vk::DeviceSize BufferDelegate::GetOffset(')))
     (tmp/'authority.inc').write_text('\n'.join(extract(buffer,sig) for sig in (
-        'void Buffer::VisitPhysicalRanges(', 'void Buffer::TrackGuestUsage(', 'void Buffer::ClearSparseHoles(', 'bool Buffer::HasSparseHoles(',
-        'void Buffer::unlock(', 'bool Buffer::Write(', 'bool Buffer::WriteImplStaged(', 'void Buffer::CopyFrom(', 'void Buffer::SynchronizeHost(', 'bool Buffer::SynchronizeGuest(', 'void Buffer::MarkGpuDirty('))+'\n'+
+        'void Buffer::VisitPhysicalRanges(', 'void Buffer::TrackGuestUsage(', 'void Buffer::ClearSparseHoles(', 'bool Buffer::HasSparseHoles(', 'bool Buffer::HasRepeatedPhysicalMappings(',
+        'void Buffer::unlock(', 'bool Buffer::Write(', 'bool Buffer::WriteImplStaged(', 'void Buffer::WriteImmediateRepeated(', 'void Buffer::CopyFrom(', 'void Buffer::SynchronizeHost(', 'bool Buffer::SynchronizeGuest(', 'void Buffer::MarkGpuDirty('))+'\n'+
         '\n'.join(extract(manager,sig) for sig in ('void BufferMappingReconciliationRequest::Complete(',
         'std::vector<std::shared_ptr<Buffer>> BufferManager::SnapshotAliases(', 'static bool PhysicalRangesOverlap(',
         'void BufferManager::PrepareBufferAccess(', 'void BufferManager::NotifyBufferWrite(', 'BufferView BufferManager::FindOrCreateDisjoint(', 'BufferManager::LockedBuffer BufferManager::CoalesceBuffers(')))

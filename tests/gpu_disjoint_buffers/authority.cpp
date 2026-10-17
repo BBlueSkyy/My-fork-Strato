@@ -93,7 +93,8 @@ struct Buffer:std::enable_shared_from_this<Buffer> {
     bool AllCpuBackingWritesBlocked(){return backingImmutability==BackingImmutability::AllWrites;}
     void AdvanceSequence(){++sequence;}
     void WaitOnFence(){++waits;if(cycle && fenceCompletion)fenceCompletion();cycle={};}
-    bool PollFence(){return true;}
+    bool fenceReady{true};
+    bool PollFence(){return !cycle || fenceReady;}
     bool RefreshGpuWritesActiveDirect(bool,const std::function<void()> & = {}){directGpuWritesActive=false;return false;}
     void SetupStagedTraps(){}
     BufferView GetView(vk::DeviceSize offset,vk::DeviceSize size){return {this,offset,size};}
@@ -102,11 +103,13 @@ struct Buffer:std::enable_shared_from_this<Buffer> {
     void TrackGuestUsage(IntervalList<u8*>&,vk::DeviceSize,vk::DeviceSize);
     void ClearSparseHoles(bool=false);
     bool HasSparseHoles(vk::DeviceSize,vk::DeviceSize)const;
+    bool HasRepeatedPhysicalMappings()const;
     void SynchronizeHost(bool=false);
     bool SynchronizeGuest(bool=false,bool=false);
     void MarkGpuDirty(UsageTracker&);
     bool Write(span<u8>,vk::DeviceSize,UsageTracker&,const std::function<void()>& callback = {});
     bool WriteImplStaged(span<u8>,vk::DeviceSize,const std::function<void()>&);
+    void WriteImmediateRepeated(span<u8>,vk::DeviceSize);
     bool WriteImplDirect(span<u8>,vk::DeviceSize,UsageTracker&,const std::function<void()>&){throw exception("Unexpected direct transport call");}
     void CopyFrom(vk::DeviceSize,Buffer*,vk::DeviceSize,vk::DeviceSize,UsageTracker&,const std::function<void()>&);
     void CopyFromImplDirect(vk::DeviceSize,Buffer*,vk::DeviceSize,vk::DeviceSize,UsageTracker&,const std::function<void()>&){throw exception("Mixed copy entered direct-only path");}
@@ -121,7 +124,7 @@ template<class T> struct ContextLock {
     bool OwnsLock()const{return first;}
     void Release(){first=false;}
 };
-struct BufferMappingReconciliationRequest { BufferManager *manager; std::shared_ptr<Buffer>target;bool write;vk::DeviceSize offset,size;void Complete()const; };
+struct BufferMappingReconciliationRequest { BufferManager *manager; std::shared_ptr<Buffer>target;bool write;vk::DeviceSize offset,size;bool allowRepeatedCpuWrite{};void Complete()const; };
 struct BufferManager {
     GPU gpu{.state={},.buffer=*this}; int delegateAllocatorState{};size_t nextBufferId{};
     std::vector<std::shared_ptr<Buffer>> aggregateBuffers;std::vector<std::weak_ptr<Buffer>>aliasBuffers;std::atomic<bool>hasAggregates{};std::mutex aliasMutex;
@@ -134,7 +137,7 @@ struct BufferManager {
     using LockedBuffers=std::vector<LockedBuffer>;
     LockedBuffer CoalesceBuffers(span<u8>,const LockedBuffers&,ContextTag);
     std::vector<std::shared_ptr<Buffer>>SnapshotAliases();
-    void PrepareBufferAccess(Buffer&,bool=false,vk::DeviceSize=0,vk::DeviceSize=VK_WHOLE_SIZE);
+    void PrepareBufferAccess(Buffer&,bool=false,vk::DeviceSize=0,vk::DeviceSize=VK_WHOLE_SIZE,bool=false);
     void NotifyBufferWrite(Buffer&,vk::DeviceSize,vk::DeviceSize);
     BufferView FindOrCreateDisjoint(const std::vector<GuestBuffer>&,vk::DeviceSize,vk::DeviceSize,ContextTag,const std::function<void(std::shared_ptr<Buffer>,ContextLock<Buffer>&&)>&);
 };
@@ -149,7 +152,111 @@ std::shared_ptr<Buffer> Make(BufferManager &manager,std::vector<GuestBuffer> map
 }
 void Fill(span<u8> bytes,u8 value){std::fill(bytes.begin(),bytes.end(),value);}
 #ifndef GPU_DISJOINT_BOUNDARY_TEST
+void TestRepeatedCpuWrites() {
+    BufferManager manager;
+    auto a=GuestBuffer{physical.data,Page}, b=GuestBuffer{physical.data+Page*3,Page};
+    UsageTracker usage;
+    unsigned callbacks{};
+    auto write=[&](const std::shared_ptr<Buffer> &buffer,span<u8> input,size_t offset=0) {
+        const auto waits=buffer->waits;
+        assert(!buffer->Write(input,offset,usage,[&]{++callbacks;}));
+        assert(buffer->waits==waits && callbacks==0);
+    };
+    {
+        Fill(a,0x19);Fill(b,0x27);
+        auto repeated=Make(manager,{a,a,b});repeated->SynchronizeHost();
+        std::vector<u8> input(16,0xA6);
+        write(repeated,input,7);
+        for(size_t i{};i<Page;++i) {
+            const auto expected=i>=7 && i<23 ? 0xA6 : 0x19;
+            assert(a[i]==expected && repeated->backing->bytes[i]==expected && repeated->backing->bytes[Page+i]==expected);
+            assert(repeated->backing->bytes[Page*2+i]==0x27);
+        }
+        input.assign(Page*2,0x31);std::fill(input.begin()+Page,input.end(),0x62);
+        write(repeated,input);
+        assert(std::all_of(a.begin(),a.end(),[](u8 value){return value==0x62;}));
+        assert(std::all_of(repeated->backing->bytes.begin(),repeated->backing->bytes.begin()+Page*2,[](u8 value){return value==0x62;}));
+        assert(repeated->dirtyState==Buffer::DirtyState::Clean);
+    }
+    {
+        auto overlapping=Make(manager,{{physical.data,Page*2},{physical.data+Page,Page*2}});
+        Fill(overlapping->mirror,0x10);overlapping->SynchronizeHost();
+        std::vector<u8> input(Page*4);
+        for(size_t page{};page<4;++page)std::fill_n(input.begin()+page*Page,Page,static_cast<u8>(page+1));
+        write(overlapping,input);
+        const u8 expected[]{1,3,3,4};
+        for(size_t page{};page<4;++page)
+            for(size_t i{};i<Page;++i)
+                assert(overlapping->mirror[page*Page+i]==expected[page] && overlapping->backing->bytes[page*Page+i]==expected[page]);
+    }
+    {
+        auto sparse=Make(manager,{a,{nullptr,Page},a});
+        Fill(a,0x10);sparse->SynchronizeHost();
+        std::vector<u8> input(Page*3,0xFF);
+        std::fill(input.begin()+Page*2,input.end(),0xD4);
+        write(sparse,input);
+        for(size_t i{};i<Page;++i)
+            assert(sparse->mirror[i]==0xD4 && sparse->mirror[Page+i]==0 && sparse->mirror[Page*2+i]==0xD4 &&
+                   sparse->backing->bytes[i]==0xD4 && sparse->backing->bytes[Page+i]==0 && sparse->backing->bytes[Page*2+i]==0xD4);
+    }
+    {
+        auto deferred=Make(manager,{a,a});Fill(a,0x15);deferred->SynchronizeHost();
+        deferred->dirtyState=Buffer::DirtyState::CpuDirty;
+        std::vector<u8> input(5,0xE8);write(deferred,input,11);
+        assert(deferred->backing->bytes[11]==0x15 && deferred->backing->bytes[Page+11]==0x15);
+        deferred->SynchronizeHost();
+        assert(deferred->backing->bytes[11]==0xE8 && deferred->backing->bytes[Page+11]==0xE8);
+    }
+    {
+        auto guarded=Make(manager,{a,a});Fill(a,0x28);guarded->SynchronizeHost();
+        std::vector<u8> input(8,0xF9);
+        auto rejects=[&](auto operation) {
+            const auto mirror=std::vector<u8>(guarded->mirror.begin(),guarded->mirror.end()),backing=guarded->backing->bytes;
+            const auto generation=guarded->writeGeneration,sequence=guarded->sequence;
+            const auto tracked=usage.sequencedIntervals.intervals.size(),pending=guarded->aliasPendingWrites.intervals.size();
+            bool rejected{};try{operation();}catch(const exception&){rejected=true;}
+            assert(rejected && guarded->writeGeneration==generation && guarded->sequence==sequence &&
+                   usage.sequencedIntervals.intervals.size()==tracked && guarded->aliasPendingWrites.intervals.size()==pending &&
+                   std::equal(mirror.begin(),mirror.end(),guarded->mirror.begin()) && backing==guarded->backing->bytes && callbacks==0);
+        };
+        rejects([&]{guarded->Write(input,guarded->mirror.size()-3,usage);});
+        rejects([&]{guarded->Write(input,std::numeric_limits<vk::DeviceSize>::max(),usage);});
+        guarded->backingImmutability=Buffer::BackingImmutability::SequencedWrites;
+        rejects([&]{guarded->Write(input,0,usage);});guarded->AllowAllBackingWrites();
+        guarded->dirtyState=Buffer::DirtyState::GpuDirty;
+        rejects([&]{guarded->Write(input,0,usage);});guarded->dirtyState=Buffer::DirtyState::Clean;
+        guarded->cycle=std::make_shared<FenceCycle>();guarded->fenceReady=false;
+        rejects([&]{guarded->Write(input,0,usage);});guarded->cycle={};guarded->fenceReady=true;
+        rejects([&]{guarded->MarkGpuDirty(usage);});
+        auto source=Make(manager,{b},false);source->SynchronizeHost();
+        rejects([&]{guarded->CopyFrom(0,source.get(),0,8,usage,[]{});});
+    }
+    {
+        auto repeated=Make(manager,{a,a});Fill(a,0x28);repeated->SynchronizeHost();
+        auto directReader=Make(manager,{a},false);directReader->isDirect=true;
+        directReader->cycle=std::make_shared<FenceCycle>();
+        std::vector<u8> input(8,0x64);write(repeated,input);
+        assert(directReader->waits==1); // Preserve authority over an imported alias's previous readers.
+    }
+    {
+        auto repeated=Make(manager,{a,a});Fill(a,0x28);repeated->SynchronizeHost();
+        auto queued=Make(manager,{a},false);queued->dirtyState=Buffer::DirtyState::GpuDirty;
+        Fill(queued->backing->bytes,0x54);queued->backingImmutability=Buffer::BackingImmutability::AllWrites;
+        std::vector<u8> input(8,0x75);
+        const auto generation=repeated->writeGeneration,sequence=repeated->sequence;
+        bool requested{};
+        try{repeated->Write(input,0,usage);}catch(const BufferMappingReconciliationRequest &request) {
+            requested=true;assert(request.allowRepeatedCpuWrite && request.target==repeated);
+            assert(repeated->writeGeneration==generation && repeated->sequence==sequence && a[0]==0x28);
+            queued->AllowAllBackingWrites();request.Complete();
+        }
+        assert(requested && a[0]==0x54);
+        write(repeated,input);repeated->SynchronizeHost();
+        assert(repeated->backing->bytes[0]==0x75 && repeated->backing->bytes[Page]==0x75 && repeated->backing->bytes[8]==0x54);
+    }
+}
 int main(){
+    TestRepeatedCpuWrites();
     auto a=GuestBuffer{physical.data,Page},b=GuestBuffer{physical.data+Page*2,Page},c=GuestBuffer{physical.data+Page*4,Page};
     Fill(a,0x11);Fill(b,0x22);Fill(c,0x33);
     BufferManager manager;

@@ -10,7 +10,7 @@ namespace skyline::gpu {
     BufferManager::BufferManager(GPU &gpu) : gpu{gpu} {}
 
     void BufferMappingReconciliationRequest::Complete() const {
-        manager->PrepareBufferAccess(*target, write, offset, size);
+        manager->PrepareBufferAccess(*target, write, offset, size, allowRepeatedCpuWrite);
     }
 
     std::vector<std::shared_ptr<Buffer>> BufferManager::SnapshotAliases() {
@@ -32,18 +32,18 @@ namespace skyline::gpu {
         return first.valid() && second.valid() && (a <= b ? b - a < first.size() : a - b < second.size());
     }
 
-    void BufferManager::PrepareBufferAccess(Buffer &target, bool write, vk::DeviceSize offset, vk::DeviceSize size) {
+    void BufferManager::PrepareBufferAccess(Buffer &target, bool write, vk::DeviceSize offset, vk::DeviceSize size, bool allowRepeatedCpuWrite) {
         if (!hasAggregates || !target.aliasValid)
             return;
         if (size == VK_WHOLE_SIZE)
             size = target.mirror.size() - offset;
         std::vector<GuestBuffer> targetMappings;
         target.VisitPhysicalRanges(offset, size, [&](GuestBuffer mapping) { targetMappings.push_back(mapping); });
-        if (write && target.isAggregate) {
-            for (size_t a{}; a < target.guestMappings.size(); ++a)
-                for (size_t b{a + 1}; b < target.guestMappings.size(); ++b)
-                    if (PhysicalRangesOverlap(target.guestMappings[a], target.guestMappings[b]))
-                        throw exception("Writable GPU buffer aliases the same physical bytes at multiple logical offsets");
+        if (write && target.HasRepeatedPhysicalMappings()) {
+            std::scoped_lock stateLock{target.stateMutex};
+            if (!allowRepeatedCpuWrite || target.dirtyState == Buffer::DirtyState::GpuDirty ||
+                target.SequencedCpuBackingWritesBlocked() || !target.PollFence())
+                throw exception("Repeated physical buffer writes require an immediately writable ordered CPU transport");
         }
 
         // Read-only aliases may coexist. A write changes authority only for actual
@@ -63,7 +63,7 @@ namespace skyline::gpu {
                 pendingOverlap |= source->aliasPendingWrites.Intersect(mapping);
             const bool sourceWrites{pendingOverlap || source->dirtyState == Buffer::DirtyState::GpuDirty || source->directGpuWritesActive};
             if (source->SequencedCpuBackingWritesBlocked() && (sourceWrites || write))
-                throw BufferMappingReconciliationRequest{this, target.shared_from_this(), write, offset, size};
+                throw BufferMappingReconciliationRequest{this, target.shared_from_this(), write, offset, size, allowRepeatedCpuWrite};
             if (!sourceWrites && !(write && source->isDirect && source->cycle))
                 continue;
             // Use the raw recursive mutex: a temporary ContextLock with another
@@ -74,7 +74,7 @@ namespace skyline::gpu {
             if (!source->aliasValid)
                 continue;
             if (source->SequencedCpuBackingWritesBlocked())
-                throw BufferMappingReconciliationRequest{this, target.shared_from_this(), write, offset, size};
+                throw BufferMappingReconciliationRequest{this, target.shared_from_this(), write, offset, size, allowRepeatedCpuWrite};
             source->WaitOnFence();
             if (!sourceWrites)
                 continue;
@@ -88,7 +88,7 @@ namespace skyline::gpu {
                 if (target.dirtyState == Buffer::DirtyState::GpuDirty)
                     throw exception("Conflicting GPU-dirty aliases cannot both own the same physical bytes");
                 if (target.AllCpuBackingWritesBlocked())
-                    throw BufferMappingReconciliationRequest{this, target.shared_from_this(), write, offset, size};
+                    throw BufferMappingReconciliationRequest{this, target.shared_from_this(), write, offset, size, allowRepeatedCpuWrite};
                 target.dirtyState = Buffer::DirtyState::CpuDirty;
                 target.AdvanceSequence();
             }

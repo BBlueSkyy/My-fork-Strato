@@ -329,6 +329,71 @@ namespace skyline::gpu {
         return false;
     }
 
+    void Buffer::WriteImmediateRepeated(span<u8> data, vk::DeviceSize offset) {
+        std::scoped_lock lock{stateMutex};
+        std::vector<GuestBuffer> written;
+        size_t logicalOffset{}, consumed{};
+        for (const auto mapping : guestMappings) {
+            if (offset >= mapping.size()) {
+                offset -= mapping.size();
+                logicalOffset += mapping.size();
+                continue;
+            }
+            const auto amount{std::min<vk::DeviceSize>(data.size() - consumed, mapping.size() - offset)};
+            if (mapping.valid() && amount) {
+                // Each mapping is linear, but separate mappings can share PA.
+                // Process them in logical order so the last write to PA wins.
+                std::memcpy(mirror.data() + logicalOffset + offset, data.data() + consumed, amount);
+                if (dirtyState == DirtyState::Clean)
+                    written.push_back(mapping.subspan(offset, amount));
+            }
+            consumed += amount;
+            if (consumed == data.size())
+                break;
+            logicalOffset += mapping.size();
+            offset = 0;
+        }
+        // CpuDirty already schedules a complete mirror upload. Sparse holes were
+        // skipped above and retain their initialized zero contents.
+        if (written.empty())
+            return;
+
+        // Merge changed physical ranges before projecting them back to every
+        // logical backing copy. Read final mirror values, including later writes
+        // through aliases, and copy each changed backing byte only once.
+        std::sort(written.begin(), written.end(), [](GuestBuffer a, GuestBuffer b) {
+            return reinterpret_cast<uintptr_t>(a.data()) < reinterpret_cast<uintptr_t>(b.data());
+        });
+        size_t count{};
+        for (const auto range : written) {
+            const auto address{reinterpret_cast<uintptr_t>(range.data())};
+            if (count && address - reinterpret_cast<uintptr_t>(written[count - 1].data()) <= written[count - 1].size()) {
+                auto &previous{written[count - 1]};
+                const auto extent{address - reinterpret_cast<uintptr_t>(previous.data()) + range.size()};
+                previous = {previous.data(), std::max(previous.size(), extent)};
+            } else {
+                written[count++] = range;
+            }
+        }
+        written.resize(count);
+        logicalOffset = 0;
+        for (const auto mapping : guestMappings) {
+            if (mapping.valid()) {
+                const auto address{reinterpret_cast<uintptr_t>(mapping.data())};
+                for (const auto range : written) {
+                    const auto rangeAddress{reinterpret_cast<uintptr_t>(range.data())};
+                    const auto begin{std::max(address, rangeAddress)};
+                    const auto mappingOffset{begin - address}, rangeOffset{begin - rangeAddress};
+                    if (mappingOffset < mapping.size() && rangeOffset < range.size()) {
+                        const auto amount{std::min(mapping.size() - mappingOffset, range.size() - rangeOffset)};
+                        std::memcpy(backing->data() + logicalOffset + mappingOffset, mirror.data() + logicalOffset + mappingOffset, amount);
+                    }
+                }
+            }
+            logicalOffset += mapping.size();
+        }
+    }
+
     void Buffer::ReadImplDirect(const std::function<void()> &flushHostCallback, span<u8> data, vk::DeviceSize offset) {
         // If GPU writes are active then wait until that's no longer the case
         RefreshGpuWritesActiveDirect(true, flushHostCallback);
@@ -454,6 +519,24 @@ namespace skyline::gpu {
             if (!size)
                 break;
             offset = 0;
+        }
+        return false;
+    }
+
+    bool Buffer::HasRepeatedPhysicalMappings() const {
+        if (!isAggregate)
+            return false;
+        for (size_t a{}; a < guestMappings.size(); ++a) {
+            if (!guestMappings[a].valid())
+                continue;
+            const auto first{reinterpret_cast<uintptr_t>(guestMappings[a].data())};
+            for (size_t b{a + 1}; b < guestMappings.size(); ++b) {
+                if (!guestMappings[b].valid())
+                    continue;
+                const auto second{reinterpret_cast<uintptr_t>(guestMappings[b].data())};
+                if (first <= second ? second - first < guestMappings[a].size() : first - second < guestMappings[b].size())
+                    return true;
+            }
         }
         return false;
     }
@@ -607,7 +690,8 @@ namespace skyline::gpu {
     }
 
     bool Buffer::Write(span<u8> data, vk::DeviceSize offset, UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
-        gpu.buffer.PrepareBufferAccess(*this, true, offset, data.size());
+        const bool repeatedWrite{HasRepeatedPhysicalMappings()};
+        gpu.buffer.PrepareBufferAccess(*this, true, offset, data.size(), repeatedWrite);
         if (isAggregate && HasSparseHoles(offset, data.size()) &&
             (SequencedCpuBackingWritesBlocked() || !PollFence() || dirtyState == DirtyState::GpuDirty))
             throw exception("Sequenced writes crossing sparse buffer holes require native sparse binding");
@@ -618,6 +702,10 @@ namespace skyline::gpu {
         TrackGuestUsage(usageTracker.sequencedIntervals, offset, data.size());
         gpu.buffer.NotifyBufferWrite(*this, offset, data.size());
 
+        if (repeatedWrite) {
+            WriteImmediateRepeated(data, offset);
+            return false;
+        }
         if (isDirect)
             return WriteImplDirect(data, offset, usageTracker, gpuCopyCallback);
         else {
