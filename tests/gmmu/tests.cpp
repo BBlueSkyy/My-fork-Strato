@@ -208,11 +208,74 @@ namespace skyline {
 template class FlatMemoryManager<u64,0,40,12,17>;
 template class FlatMemoryManager<u32,0,32,12,17>;
 }
+namespace skyline::gpu::interconnect {
+    struct Buffer;
+    template<class T> struct ContextLock {};
+    struct BufferView {
+        std::shared_ptr<Buffer> buffer;
+        span<u8> memory;
+        explicit operator bool() const { return bool(buffer); }
+        std::shared_ptr<Buffer> GetBuffer() const { return buffer; }
+    };
+    struct Buffer : std::enable_shared_from_this<Buffer> {
+        span<u8> memory;
+        BufferView TryGetView(span<u8> requested) {
+            return requested.data()>=memory.data() && requested.data()+requested.size()<=memory.data()+memory.size() ?
+                BufferView{shared_from_this(),requested} : BufferView{};
+        }
+    };
+    struct BufferManager {
+        unsigned lookups{};
+        BufferView FindOrCreate(span<u8> memory,u64,auto&&) {
+            ++lookups;
+            auto buffer=std::make_shared<Buffer>(); buffer->memory=memory;
+            return {buffer,memory};
+        }
+    };
+    struct InterconnectContext {
+        struct AddressSpace { MM gmmu; } addressSpace;
+        struct Channel { AddressSpace *asCtx; } channelCtx{&addressSpace};
+        struct Gpu { BufferManager buffer; } gpu;
+        struct Executor { u64 tag{1}; void AttachLockedBuffer(std::shared_ptr<Buffer>,ContextLock<Buffer>&&){} } executor;
+    };
+    unsigned splitWarnings{};
+    #define LOGW(...) (++splitWarnings)
+    #include "buffer_class.inc"
+    #include "buffer_update.inc"
+    void CheckCachedRemap() {
+        InterconnectContext ctx;
+        std::vector<u8> a(Page*2), b(Page), tail(Page);
+        auto &mm=ctx.addressSpace.gmmu;
+        mm.Map(Page,a.data(),Page);
+        mm.Map(Page*2,a.data()+Page,Page);
+        CachedMappedBufferView cached{};
+        cached.Update(ctx,Page,Page*2);
+        assert(cached.view && cached.view.memory.size()==Page*2 && splitWarnings==0);
+        const auto lookups=ctx.gpu.buffer.lookups;
+        cached.Update(ctx,Page,Page);
+        assert(ctx.gpu.buffer.lookups==lookups); // Unchanged physical backing reuses BufferManager views.
+        mm.Map(Page,b.data(),Page);
+        cached.Update(ctx,Page,Page);
+        assert(cached.view.memory.data()==b.data()); // Same IOVA must not preserve an obsolete PA.
+        cached.Update(ctx,Page,Page*2);
+        assert(cached.view.memory.size()==Page && splitWarnings==1); // Never pretend disjoint physical pages are contiguous.
+        mm.Unmap(Page,Page);
+        cached.Update(ctx,Page,Page);
+        assert(!cached.view);
+        mm.MapSparse(Page,Page);
+        cached.Update(ctx,Page,Page);
+        assert(!cached.view);
+        mm.Map(Page,tail.data(),Page);
+        cached.Update(ctx,Page,Page);
+        assert(cached.view.memory.data()==tail.data());
+    }
+}
 int main(int argc,char**argv) {
     std::string name=argc>1?argv[1]:"all";
     if(name=="sparse" || name=="all") CheckSparse();
     if(name=="remap" || name=="all") CheckRemap();
     if(name=="l2" || name=="all") CheckL2Tail();
+    if(name=="cache" || name=="all") skyline::gpu::interconnect::CheckCachedRemap();
     if(name=="copy") CheckSparseCopy();
     if(name=="fault") CheckUnmappedIo();
     if(name=="io" || name=="all") { CheckWriteCallback(); CheckSparseCopy(); CheckUnmappedIo(); CheckFragmentedIo(); }
