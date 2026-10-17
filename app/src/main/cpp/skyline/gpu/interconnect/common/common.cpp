@@ -72,6 +72,8 @@ namespace skyline::gpu::interconnect {
     }
 
     void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset, std::source_location location) {
+        if (!view || srcOffset > view.size || dstBuffer.size() > view.size - srcOffset)
+            throw exception("Constant buffer read exceeds its mapped view");
         ContextLock lock{executor.tag, view};
         view.Read(lock.IsFirstUsage(), [location, srcOffset, size = dstBuffer.size()] {
             // TODO: here we should trigger `Execute()`, however that doesn't currently work due to Read being called mid-draw and attached objects not handling this case

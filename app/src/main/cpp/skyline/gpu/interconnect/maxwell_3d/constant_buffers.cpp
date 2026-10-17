@@ -2,6 +2,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu/buffer_manager.h>
+#include <limits>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include "constant_buffers.h"
@@ -16,20 +17,41 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     void ConstantBufferSelectorState::Flush(InterconnectContext &ctx, size_t minSize) {
         const auto &selector{engine->constantBufferSelector};
-        // Constant buffer selector size is often left at the default value of 0x10000 which can end up being larger than the underlying mapping so avoid warning for split mappings here
-        view.Update(ctx, selector.address, std::max<size_t>(minSize, selector.size), false);
+        auto &gmmu{ctx.channelCtx.asCtx->gmmu};
+        const auto capacity{std::max<size_t>(minSize, selector.size)};
+        const auto generation{gmmu.GetMappingGeneration()};
+        size_t available{};
+        // The declaration is often the default 64 KiB capacity. Only the actual
+        // access is required; clip optional capacity at the first unmapped byte.
+        for (const auto &mapping : gmmu.TranslateMappings(selector.address, capacity)) {
+            if (mapping.kind == MemoryMappingKind::Unmapped)
+                break;
+            available += mapping.memory.size();
+        }
+        mappingAddressSpace = &gmmu;
+        mappingGeneration = generation;
+        selectorAddress = selector.address;
+        selectorCapacity = capacity;
+        mappedPrefixSize = available;
+        view.Update(ctx, selector.address, available >= minSize ? available : 0, false);
     }
 
     bool ConstantBufferSelectorState::Refresh(InterconnectContext &ctx, size_t minSize) {
         const auto &selector{engine->constantBufferSelector};
-        size_t selectorMinSize{std::max<size_t>(minSize, selector.size)};
-        if (view->size != selectorMinSize)
-            view.Update(ctx, selector.address, selectorMinSize, false);
-
+        auto &gmmu{ctx.channelCtx.asCtx->gmmu};
+        if (mappingAddressSpace != &gmmu || mappingGeneration != gmmu.GetMappingGeneration() ||
+            selectorAddress != selector.address || selectorCapacity != std::max<size_t>(minSize, selector.size)) {
+            Flush(ctx, minSize);
+        } else {
+            // Keep the normal cache access path, including alias preflight, even
+            // when the selector's optional capacity needs no new translation.
+            view.Update(ctx, selector.address, mappedPrefixSize >= minSize ? mappedPrefixSize : 0, false);
+        }
         return false;
     }
 
     void ConstantBufferSelectorState::PurgeCaches() {
+        mappingAddressSpace = nullptr;
         view.PurgeCaches();
     }
 
@@ -42,7 +64,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
     void ConstantBuffers::Load(InterconnectContext &ctx, span<u32> data, u32 offset) {
         TRACE_EVENT("gpu", "ConstantBuffers::Load");
 
-        auto &view{*selectorState.UpdateGet(ctx, data.size_bytes()).view};
+        if (data.size_bytes() > std::numeric_limits<size_t>::max() - offset)
+            throw exception("Constant buffer load range overflows its address space");
+        const auto requiredSize{static_cast<size_t>(offset) + data.size_bytes()};
+        auto &view{*selectorState.UpdateGet(ctx, requiredSize).view};
+        if (!view)
+            throw exception("Constant buffer load exceeds its mapped selector");
         auto srcCpuBuf{data.cast<u8>()};
 
         ContextLock lock{ctx.executor.tag, view};
