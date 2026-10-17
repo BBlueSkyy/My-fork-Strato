@@ -51,7 +51,7 @@ constexpr u64 Page=4096;
 void CheckSparse() {
     MM mm; std::vector<u8> memory(Page,0x53);
     mm.Map(Page,memory.data(),Page);
-    mm.Map(Page*2,MM::SparsePlaceholderAddress(),Page,{true});
+    mm.MapSparse(Page*2,Page);
     auto mappings=mm.TranslateRange(Page,Page*2);
     assert(mappings.size()==2 && mappings[0].data()==memory.data());
     assert(mappings[1].data()==nullptr && mappings[1].size()==Page); // Never feed a sentinel to CreateMirrors.
@@ -87,7 +87,8 @@ void CheckRandomMappings() {
         const u64 first=rng()%240, count=1+rng()%15, mode=rng()%3, base=rng()%480;
         const auto before=mm.GetMappingGeneration();
         if(mode==0) mm.Unmap(first*Page,count*Page);
-        else mm.Map(first*Page,mode==1?MM::SparsePlaceholderAddress():physical.data()+base*Page,count*Page,{mode==1});
+        else if(mode==1) mm.MapSparse(first*Page,count*Page);
+        else mm.Map(first*Page,physical.data()+base*Page,count*Page);
         assert(mm.GetMappingGeneration()==before+1);
         for(u64 i=0;i<count;++i) model[first+i]={mode==2?physical.data()+(base+i)*Page:nullptr,
             mode==0?MemoryMappingKind::Unmapped:mode==1?MemoryMappingKind::Sparse:MemoryMappingKind::Resident};
@@ -130,6 +131,78 @@ void CheckEndpoints() {
     try { small.Map(1,bytes.data(),Page); } catch(const std::runtime_error&) { invalid=true; }
     assert(invalid && !small.LookupBlock(0).first.valid());
 }
+void CheckWriteCallback() {
+    MM mm; std::vector<u8> bytes(Page), input(Page,0x71);
+    mm.Map(Page,bytes.data(),Page);
+    unsigned callbacks{};
+    mm.Write(Page,span<u8>{input},[&](span<u8> memory) {
+        assert(memory.data()==bytes.data() && memory.size()==Page);
+        ++callbacks;
+    });
+    assert(bytes==input && callbacks==1);
+}
+void CheckSparseCopy() {
+    MM mm; std::vector<u8> bytes(Page,0x77);
+    mm.Map(Page,bytes.data(),Page);
+    mm.MapSparse(Page*2,Page);
+    unsigned callbacks{};
+    mm.Copy(Page*2,Page,Page,[&](span<u8>) { ++callbacks; });
+    assert(callbacks==0); // Discarding a sparse destination must not dereference its placeholder.
+    mm.Copy(Page,Page*2,Page,[&](span<u8> memory) { assert(memory.data()==bytes.data()); ++callbacks; });
+    assert(callbacks==1 && std::all_of(bytes.begin(),bytes.end(),[](auto b){return b==0;}));
+}
+void CheckUnmappedIo() {
+    MM mm; std::array<u8,16> bytes{};
+    bool fault{};
+    try { mm.Read(bytes.data(),0,bytes.size()); } catch(const std::runtime_error&) { fault=true; }
+    assert(fault);
+    fault=false;
+    try { mm.Write(0,bytes.data(),bytes.size()); } catch(const std::runtime_error&) { fault=true; }
+    assert(fault);
+}
+void CheckFragmentedIo() {
+    MM mm;
+    std::vector<u8> a(Page,0x12), b(Page,0x34), destination(Page*3,0xEF), input(Page*3,0xA5);
+    mm.Map(Page,a.data(),Page);
+    mm.MapSparse(Page*2,Page);
+    mm.Map(Page*3,b.data(),Page);
+    std::vector<u8> expected; expected.insert(expected.end(),a.begin(),a.end());
+    expected.resize(Page*2,0); expected.insert(expected.end(),b.begin(),b.end());
+    unsigned accesses{};
+    auto callback=[&](span<u8> memory) { assert(memory.valid() && memory.size()<=Page); ++accesses; };
+    mm.Read(destination.data(),Page,destination.size(),callback);
+    assert(destination==expected && accesses==2);
+    accesses=0;
+    auto got=mm.ReadTill(destination,Page,[](span<u8>)->std::optional<size_t>{return std::nullopt;},callback);
+    assert(got.size()==Page*3 && accesses==2 && destination==expected);
+    destination.resize(Page*4);
+    got=mm.ReadTill(destination,Page,[](span<u8>)->std::optional<size_t>{return std::nullopt;});
+    assert(got.size()==Page*3); // Unmapped tail stops ReadTill, never walks past blocks.end().
+    accesses=0;
+    mm.Write(Page,span<u8>{input},callback);
+    assert(accesses==2 && a==b && a.front()==0xA5);
+    mm.Read(destination.data(),Page,Page*3);
+    assert(std::all_of(destination.begin()+Page,destination.begin()+Page*2,[](auto b){return b==0;}));
+    bool fault{};
+    try { mm.Read(destination.data(),Page,Page*4); } catch(const std::runtime_error&) { fault=true; }
+    assert(fault);
+    fault=false;
+    try { mm.ReadTill(destination,Page,[](span<u8> s)->std::optional<size_t>{return s.size()+1;}); }
+    catch(const std::runtime_error&) { fault=true; }
+    assert(fault);
+    mm.Read(nullptr,0,0); mm.Write(0,static_cast<u8 *>(nullptr),u64{0}); mm.Copy(0,0,0);
+    fault=false;
+    try { mm.Copy(Page,MM::VaMaximum-4,16); } catch(const std::runtime_error&) { fault=true; }
+    assert(fault);
+    // Independent source/destination boundaries: resident + sparse sources,
+    // and resident + sparse destinations, without scratch copies.
+    std::vector<u8> output(Page*3,0x99);
+    mm.Map(Page*8,output.data(),Page);
+    mm.MapSparse(Page*9,Page);
+    mm.Map(Page*10,output.data()+Page*2,Page);
+    mm.Copy(Page*8+17,Page+17,Page*3-34);
+    assert(output[16]==0x99 && output[17]==0xA5 && output[Page*2]==0xA5 && output.back()==0x99);
+}
 // Compile both production specializations, including 32-bit host1x endpoints.
 namespace skyline {
 template class FlatMemoryManager<u64,0,40,12,17>;
@@ -140,6 +213,9 @@ int main(int argc,char**argv) {
     if(name=="sparse" || name=="all") CheckSparse();
     if(name=="remap" || name=="all") CheckRemap();
     if(name=="l2" || name=="all") CheckL2Tail();
+    if(name=="copy") CheckSparseCopy();
+    if(name=="fault") CheckUnmappedIo();
+    if(name=="io" || name=="all") { CheckWriteCallback(); CheckSparseCopy(); CheckUnmappedIo(); CheckFragmentedIo(); }
     if(name=="all") CheckEndpoints();
     if(name=="random" || name=="all") CheckRandomMappings();
     std::cout<<"PASS: "<<name<<'\n';
