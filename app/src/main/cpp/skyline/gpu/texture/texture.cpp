@@ -1247,7 +1247,7 @@ namespace skyline::gpu {
     }
 
     void Texture::RecordGpuWrite() {
-        RequireAliasCoherence(0);
+        RequireAliasCoherence(ContextTag{});
         if (aliasReadOnly.load())
             throw exception("Cannot write through a materialized read-only texture alias");
         if (aliasRetired.load())
