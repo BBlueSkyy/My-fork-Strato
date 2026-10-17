@@ -30,10 +30,14 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     baseline = os.environ.get("TEXMAN_BASELINE_VIEWS_REF")
     view_source = subprocess.check_output(["git", "show", baseline + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"],
         cwd=ROOT, text=True) if baseline else source
+    transfer_baseline = os.environ.get("TEXMAN_BASELINE_UPLOAD_REF")
+    transfer_source = subprocess.check_output(["git", "show", transfer_baseline + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"],
+        cwd=ROOT, text=True) if transfer_baseline else source
     # Optional negative control: replace only the two view APIs with their
     # actual baseline bodies. The current bounds test must then fail.
     (directory / "production.inc").write_text("\n".join(function(
-        view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
+        view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else
+        transfer_source if signature in ("void Texture::SynchronizeHost(", "void Texture::SynchronizeHostInline(") else source,
         signature) for signature in (
         "void Texture::SetupGuestMappings(",
         "bool Texture::CanMaterializeGuestLayout(",
@@ -116,7 +120,10 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
                     "-I" + str(ROOT / "app/src/main/cpp/skyline"),
                     "-isystem" + os.environ.get("VULKAN_HPP_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp")),
                     "-isystem" + os.environ.get("VULKAN_HEADERS_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp/Vulkan-Headers/include")),
-                    "-isystem" + os.environ.get("BOOST_INCLUDE_DIR", "/usr/include"),
+                    # Do not re-add /usr/include: Clang's C++ include_next must
+                    # reach libc after its standard-library headers.
+                    *(["-isystem" + os.environ["BOOST_INCLUDE_DIR"]]
+                      if os.environ.get("BOOST_INCLUDE_DIR", "/usr/include") != "/usr/include" else []),
                     str(ROOT / "tests/gpu_backing_promotion/tests.cpp"),
                     os.environ.get("VULKAN_LOADER_LIBRARY", "-lvulkan"),
                     "-o", str(directory / "tests")], check=True)

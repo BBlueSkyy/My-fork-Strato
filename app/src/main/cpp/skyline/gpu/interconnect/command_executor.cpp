@@ -437,10 +437,10 @@ namespace skyline::gpu::interconnect {
 
         for (auto view : outputAttachmentViews)
             if (view)
-                view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget);
+                view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget, usageTracker);
 
         for (auto view : sampledImages)
-            view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
+            view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled, usageTracker);
 
         return gotoNext;
     }
@@ -490,6 +490,9 @@ namespace skyline::gpu::interconnect {
             //    preserveAttachedTextures.emplace_back(view->texture);
         }
 
+        // An alias writer may have invalidated the image while LockWithTag
+        // waited. Register lock ownership first so reconciliation can unwind it.
+        view->texture->RequireAliasCoherence(tag);
         if (view->texture->HasAliases())
             view->texture->SynchronizeHost(false); // Initialize before claiming a GPU write, once per generation.
         return didLock;
@@ -715,7 +718,7 @@ namespace skyline::gpu::interconnect {
                 }
 
                 texture->cycle = cycle;
-                texture->UpdateRenderPassUsage(0, texture::RenderPassUsage::None);
+                texture->UpdateRenderPassUsage(0, texture::RenderPassUsage::None, usageTracker);
             }
 
             // Wait on texture syncs to finish before beginning the cmdbuf

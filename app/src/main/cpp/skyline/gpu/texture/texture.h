@@ -669,7 +669,7 @@ namespace skyline::gpu {
         /**
          * @brief Updates renderpass usage tracking information
          */
-        void UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage);
+        void UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage, UsageTracker &usageTracker);
 
         /**
          * @return The last usage of the texture

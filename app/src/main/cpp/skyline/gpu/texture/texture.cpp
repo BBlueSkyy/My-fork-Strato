@@ -1185,6 +1185,7 @@ namespace skyline::gpu {
 
     void Texture::MarkGpuDirty(UsageTracker &usageTracker) {
         RecordGpuWrite();
+        if (!guest) return;
         for (auto mapping : guest->mappings)
             if (mapping.valid())
                 usageTracker.RecordGpuWrite(mapping);
@@ -1234,7 +1235,10 @@ namespace skyline::gpu {
                 auto uploadCycle{commandBuffer.GetFenceCycle()};
                 const auto previousLayout{layout};
                 try {
-                    uploadCycle->AttachObjects(stagingBuffer, shared_from_this());
+                    // Attach separately: a second allocation failure must leave
+                    // the first dependency linked so Cancel can release it.
+                    uploadCycle->AttachObject(stagingBuffer);
+                    uploadCycle->AttachObject(shared_from_this());
                     uploadCycle->ChainCycle(cycle);
                     commandBuffer->begin(vk::CommandBufferBeginInfo{
                         .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
@@ -1303,7 +1307,8 @@ namespace skyline::gpu {
             if (stagingBuffer) {
                 // A recording failure must leave the source bytes retryable.
                 // Attach before recording any command that refers to the buffer.
-                pCycle->AttachObjects(stagingBuffer, shared_from_this());
+                pCycle->AttachObject(stagingBuffer);
+                pCycle->AttachObject(shared_from_this());
                 pCycle->ChainCycle(cycle);
                 const auto previousLayout{layout};
                 try {
@@ -1751,10 +1756,10 @@ namespace skyline::gpu {
         return lastRenderPassUsage == renderPassUsage || lastRenderPassIndex != renderPassIndex || lastRenderPassUsage == texture::RenderPassUsage::None;
     }
 
-    void Texture::UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage) {
+    void Texture::UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage, UsageTracker &usageTracker) {
         // Reject a read-only alias before mutating render-pass/write tracking.
         if (renderPassUsage == texture::RenderPassUsage::RenderTarget)
-            RecordGpuWrite();
+            MarkGpuDirty(usageTracker);
 
         lastRenderPassUsage = renderPassUsage;
         lastRenderPassIndex = renderPassIndex;

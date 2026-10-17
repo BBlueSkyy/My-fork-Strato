@@ -9,6 +9,8 @@ Base: master 66637da0. Branch: wip/texman-v3. Draft #353; #244 unchanged.
   retention precedes submission for standalone images as well as aliases.
 - Readback publishes dirty state, freed-memory status and readback serial only
   after actual encoding succeeds. Existing converted-format fallback remains.
+- Render-target writes enter both hazard sets through the same writer path as
+  storage images. Cached attachments revalidate coherence after acquiring locks.
 - Stale aliases must reconcile before claiming a GPU write. Restore discarded
   current-writer bytes before validating an implicit alias reference.
 - Free Guest Texture Memory preserves padding/tails that a different layout can
@@ -19,8 +21,11 @@ Base: master 66637da0. Branch: wip/texman-v3. Draft #353; #244 unchanged.
 Validation: `python3 tests/gpu_usage/run.py` (ASan/UBSan, 180000 randomized
 queries); `python3 tests/gpu_backing_promotion/run.py` with Clang, lavapipe,
 validation and UBSan; existing queries/conditional/draw-texture suites.
-Transfer tests inject allocation, attachment and recording failures, retry and
-compare bytes. Existing alias, trap, mip growth and view/promotion tests run too.
+Transfer tests inject staging/command-buffer allocation and dependency
+attachment failures, retry and compare bytes. Partial attachment uses the real
+AtomicForwardList with a failing node allocator; a baseline negative control
+reproduces the leaked staging dependency. Actual post-barrier Vulkan recording
+exceptions abort the worker and are not claimed as a retry test. Existing alias, trap, mip growth and view/promotion tests run too.
 
 The Vulkan harness was stale on master: missing pitch helpers/GetSize, fake
 DirtyState incompatible with extracted methods, ambiguous Extent3D assignments,
@@ -34,3 +39,11 @@ keeps modified state until synchronization is ready and distinguishes deferred
 copies from authoritative writes. Strato retains its own fences and guest-memory
 bridge; no dependency-graph algorithm was imported.
 https://git.axenov.dev/Museum/ryujinx/src/commit/2382717600939e0e970f47f404cd62672c097ad4/Ryujinx.Graphics.Gpu/Image/TextureGroupHandle.cs
+
+Review: a fresh reviewer identified missing render-target hazard publication,
+a coherence check before a blocking lock, and partial batch-attachment leakage.
+All three were corrected with regressions, including baseline failure controls.
+Concurrency boundary: post-lock revalidation closes the lock-wait window; this
+stage does not add submission-wide serialization across concurrent GPFIFO
+channels using different alias images. Such cross-channel alias use remains a
+known limitation and is not claimed as solved by this draft.

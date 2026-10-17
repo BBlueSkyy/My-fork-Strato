@@ -66,6 +66,23 @@ VKAPI_ATTR VkBool32 VKAPI_CALL ValidationMessage(VkDebugUtilsMessageSeverityFlag
     return VK_FALSE;
 }
 
+// Fail only production dependency-list node allocation, without perturbing
+// Vulkan, shared_ptr control blocks or unrelated test allocations.
+namespace dependencyFault {
+    struct Tag {};
+    inline Tag tag;
+    inline int allocationsBeforeFailure{-1};
+}
+void *operator new(size_t size, dependencyFault::Tag) {
+    if (dependencyFault::allocationsBeforeFailure == 0) throw std::bad_alloc{};
+    if (dependencyFault::allocationsBeforeFailure > 0) --dependencyFault::allocationsBeforeFailure;
+    return ::operator new(size);
+}
+void operator delete(void *pointer, dependencyFault::Tag) noexcept { ::operator delete(pointer); }
+#define new new(dependencyFault::tag)
+#include <common/atomic_forward_list.h>
+#undef new
+
 namespace skyline::gpu {
     namespace texture {
         using Dimensions = vk::Extent3D;
@@ -77,6 +94,9 @@ namespace skyline::gpu {
     #include "sizes.inc"
     namespace memory {
         struct StagingBuffer {
+            static inline int live{};
+            StagingBuffer() { ++live; }
+            ~StagingBuffer() { --live; }
             vk::raii::DeviceMemory allocation{nullptr};
             vk::raii::Buffer buffer{nullptr};
             vk::Buffer vkBuffer{};
@@ -104,7 +124,10 @@ namespace skyline::gpu {
         vk::raii::CommandBuffer commands;
         bool submitted{}, cancelled{};
         unsigned submitWaits{}, gpuWaits{};
-        std::vector<std::shared_ptr<void>> dependencies;
+        struct Dependencies : skyline::AtomicForwardList<std::shared_ptr<void>> {
+            void clear() { Clear(); }
+            bool empty() { bool result{true}; Iterate([&](const auto &) { result = false; }); return result; }
+        } dependencies;
         std::shared_ptr<FenceCycle> previous;
         static inline bool failAttachment{};
         FenceCycle(const vk::raii::Device &device, vk::raii::CommandBuffer &&commands)
@@ -120,9 +143,12 @@ namespace skyline::gpu {
         void Cancel() { cancelled = true; dependencies.clear(); previous.reset(); }
         void AttachObject(const std::shared_ptr<void> &object) {
             if (failAttachment) throw std::bad_alloc{};
-            dependencies.push_back(object);
+            dependencies.Append(object);
         }
-        template<typename... Args> void AttachObjects(const Args &...objects) { (AttachObject(objects), ...); }
+        template<typename... Args> void AttachObjects(const Args &...objects) {
+            if (failAttachment) throw std::bad_alloc{};
+            dependencies.Append(objects...); // Actual production batch attachment implementation.
+        }
         void ChainCycle(std::shared_ptr<FenceCycle> cycle) { previous = std::move(cycle); }
     };
 
@@ -396,7 +422,7 @@ namespace skyline::gpu {
         bool everUsedAsGpuWrite{};
         u32 lastRenderPassIndex{};
         texture::RenderPassUsage lastRenderPassUsage{texture::RenderPassUsage::None};
-        void UpdateRenderPassUsage(u32,texture::RenderPassUsage);
+        void UpdateRenderPassUsage(u32,texture::RenderPassUsage,UsageTracker &);
         static void ValidateAliasWrites(span<TextureView *>);
         void MarkGpuDirty(UsageTracker &);
         std::shared_ptr<memory::StagingBuffer> downloadStagingBuffer;
@@ -464,7 +490,12 @@ namespace skyline::gpu {
             : texture{std::move(texture)}, type{type}, format{format}, mapping{mapping}, range{range} {}
         vk::ImageUsageFlags GetUsage() const;
         vk::ImageView GetView();
-        bool LockWithTag(ContextTag) { return false; } // Executor tag/resource-lock host boundary.
+        std::function<void()> beforeLock;
+        bool reportsAcquiredLock{};
+        bool LockWithTag(ContextTag) {
+            if (beforeLock) beforeLock();
+            return reportsAcquiredLock; // Executor tag/resource-lock host boundary.
+        }
     };
     struct ContextLock { ContextLock(ContextTag, Texture &) {} };
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
@@ -1099,7 +1130,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         });
         texture->cycle->AttachObjects(resources,texture);
         texture->cycle->ChainCycle(previous);
-        texture->UpdateRenderPassUsage(1,texture::RenderPassUsage::RenderTarget);
+        UsageTracker usage;
+        texture->UpdateRenderPassUsage(1,texture::RenderPassUsage::RenderTarget,usage);
         texture->SynchronizeHost(true); // Actual executor submission dirty-state transition.
     }
 
@@ -1722,10 +1754,63 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         *gpu.state.settings->freeGuestTextureMemory = false;
     }
 
+    void CheckRenderTargetUsage(GPU &gpu) {
+        std::vector<u8> first(8192), second(8192);
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = vk::Extent3D{64,64,1};
+        guest.mipLevelCount = guest.viewMipCount = guest.layerCount = 1;
+        guest.viewType = vk::ImageViewType::e2D;
+        guest.layerStride = guest.CalculateLayerSize();
+        guest.mappings = {span<u8>{first}, {}, span<u8>{second}};
+        auto value{std::make_shared<Texture>(gpu, guest)};
+        UsageTracker usage;
+        value->UpdateRenderPassUsage(1, texture::RenderPassUsage::Sampled, usage);
+        assert(!usage.RequiresGpuFlush(span<u8>{first}) && !usage.HasSequencedWrite(span<u8>{second}));
+        const auto serial{texture::gpuWriteSequence.load()};
+        value->UpdateRenderPassUsage(1, texture::RenderPassUsage::RenderTarget, usage);
+        assert(value->gpuWriteSerial == serial + 1); // Exactly one authority publication.
+        for (auto mapping : {span<u8>{first}, span<u8>{second}})
+            assert(usage.RequiresGpuFlush(mapping) && usage.HasSequencedWrite(mapping));
+        usage.OnSubmit();
+        assert(usage.RequiresGpuFlush(span<u8>{first}) && !usage.HasSequencedWrite(span<u8>{first}));
+        auto hostOnly{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm)};
+        hostOnly->guest.reset();
+        UsageTracker hostUsage;
+        hostOnly->UpdateRenderPassUsage(1, texture::RenderPassUsage::RenderTarget, hostUsage);
+        assert(!hostUsage.RequiresGpuFlush(span<u8>{first}));
+    }
+
+    void CheckAttachmentRevalidation(GPU &gpu) {
+        std::vector<u8> bytes(16384, 0x23);
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = vk::Extent3D{64,64,1};
+        guest.mipLevelCount = guest.viewMipCount = guest.layerCount = 1;
+        guest.viewType = vk::ImageViewType::e2D;
+        guest.layerStride = guest.CalculateLayerSize();
+        guest.mappings = {span<u8>{bytes}};
+        auto a{std::make_shared<Texture>(gpu, guest)}, b{std::make_shared<Texture>(gpu, guest)};
+        a->SetupGuestMappings(); b->SetupGuestMappings();
+        Texture::RegisterAliases({a,b});
+        AliasRead(a); AliasRead(b);
+        auto view{b->GetView(vk::ImageViewType::e2D,{vk::ImageAspectFlagBits::eColor,0,1,0,1},b->format,{},0)};
+        view->beforeLock = [&] { a->RecordGpuWrite(); };
+        view->reportsAcquiredLock = true;
+        interconnect::CommandExecutor executor;
+        bool rejected{};
+        try { executor.AttachTexture(view.get()); }
+        catch (const TextureAliasReconciliationRequest &request) { rejected = request.target == b; }
+        assert(rejected && b->aliasStale && executor.attachedTextures.size() == 1);
+        view->beforeLock = {};
+        AliasRead(b);
+        gpu.scheduler.Complete();
+    }
+
     void CheckStandaloneTransferFailures(GPU &gpu) {
         for (bool inlineUpload : {false, true}) {
             for (bool gpuDirty : {false, true}) {
-                for (bool failAttachment : {false, true}) {
+                for (unsigned failurePoint{}; failurePoint < 3; ++failurePoint) {
                     std::vector<u8> bytes(64 * 64 * 4, 0x53);
                     GuestTexture guest;
                     guest.format = format::R8G8B8A8Unorm;
@@ -1740,17 +1825,20 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
                     auto commands{gpu.scheduler.AllocateCommandBuffer()};
                     commands->begin(vk::CommandBufferBeginInfo{});
                     const auto oldLayout{value->layout};
-                    gpu.memory.failAllocation = !failAttachment;
-                    FenceCycle::failAttachment = failAttachment;
+                    const auto liveBefore{memory::StagingBuffer::live};
+                    gpu.memory.failAllocation = failurePoint == 0;
+                    dependencyFault::allocationsBeforeFailure = failurePoint ? static_cast<int>(failurePoint) - 1 : -1;
                     bool failed{};
                     try {
                         if (inlineUpload) value->SynchronizeHostInline(*commands, commands.GetFenceCycle(), gpuDirty);
                         else value->SynchronizeHost(gpuDirty);
                     } catch (const std::bad_alloc &) { failed = true; }
-                    gpu.memory.failAllocation = FenceCycle::failAttachment = false;
+                    gpu.memory.failAllocation = false;
+                    dependencyFault::allocationsBeforeFailure = -1;
                     assert(failed && value->dirtyState == Texture::DirtyState::CpuDirty &&
                            !value->memoryFreed && value->layout == oldLayout);
                     commands.GetFenceCycle()->Cancel();
+                    assert(memory::StagingBuffer::live == liveBefore); // No leaked partial dependency chain.
                     // Retry must upload the actual bytes, rather than treating the
                     // failed transfer as synchronized or downloading an empty image.
                     value->SynchronizeHost(false);
@@ -1827,7 +1915,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         const auto oldPass{texture->lastRenderPassUsage};
         const auto oldPassIndex{texture->lastRenderPassIndex};
         bool rtRejected{};
-        try { texture->UpdateRenderPassUsage(77, texture::RenderPassUsage::RenderTarget); } catch (const std::runtime_error &) { rtRejected = true; }
+        try { texture->UpdateRenderPassUsage(77, texture::RenderPassUsage::RenderTarget,usage); } catch (const std::runtime_error &) { rtRejected = true; }
         assert(rtRejected && texture->lastRenderPassUsage == oldPass && texture->lastRenderPassIndex == oldPassIndex && !texture->everUsedAsRt);
 
         texture->dirtyState = Texture::DirtyState::GpuDirty;
@@ -1900,6 +1988,8 @@ int main() {
             std::fprintf(stderr, "RUN CheckSeparateLayouts\n");
             CheckSeparateLayouts(gpu);
             std::fprintf(stderr, "RUN CheckStandaloneTransferFailures\n");
+            CheckRenderTargetUsage(gpu);
+            CheckAttachmentRevalidation(gpu);
             CheckStandaloneTransferFailures(gpu);
             std::fprintf(stderr, "RUN CheckIndependentAliases\n");
             CheckIndependentAliases(gpu);
