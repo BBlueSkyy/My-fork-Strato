@@ -49,6 +49,7 @@ import org.stratoemu.strato.settings.SettingsActivity
 import org.stratoemu.strato.utils.GpuDriverHelper
 import org.stratoemu.strato.utils.WindowInsetsHelper
 import javax.inject.Inject
+import java.io.File
 import kotlin.math.ceil
 import com.google.android.material.R as MaterialR
 
