@@ -125,6 +125,11 @@ namespace skyline::gpu {
              * @return If the supplied format is texel-layout compatible with the current format
              */
             constexpr bool IsCompatible(const FormatBase &other) const {
+                // Both guest D24 encodings use the same Vulkan format, but
+                // their packed bytes need different depth/stencil decoding.
+                if (vkFormat == vk::Format::eD24UnormS8Uint && other.vkFormat == vk::Format::eD24UnormS8Uint &&
+                    stencilFirst != other.stencilFirst)
+                    return false;
                 return vkFormat == other.vkFormat
                     || (vkFormat == vk::Format::eD32Sfloat && other.vkFormat == vk::Format::eR32Sfloat)
                     || (!vk::isCompressed(vkFormat) && !vk::isCompressed(other.vkFormat) && componentCount(vkFormat) == componentCount(other.vkFormat) &&
