@@ -357,6 +357,36 @@ namespace skyline::gpu::interconnect {
     }
 }
 namespace skyline::gpu {
+    struct GuestTexture {
+        std::vector<span<u8>> mappings;
+        std::vector<bool> sparseMappings;
+        size_t mappingOffset{}, logicalSize{Page * 3 - 32};
+        size_t GetSize() const { return logicalSize; }
+        bool MappingsValid() const;
+        #include "guest_set.inc"
+    };
+    #include "guest_valid.inc"
+    void CheckTypedSparseTextures() {
+        MM mm; std::vector<u8> first(Page), last(Page);
+        mm.Map(Page, first.data(), Page);
+        mm.MapSparse(Page * 2, Page);
+        mm.Map(Page * 3, last.data(), Page);
+        GuestTexture texture;
+        texture.SetMappings(mm, Page + 32);
+        assert(texture.MappingsValid() && texture.mappingOffset == 32);
+        assert(texture.mappings.size() == 3 && texture.mappings.front().data() == first.data() + 32);
+        assert(texture.mappings.front().size() == Page - 32 && texture.mappings.back().data() == last.data());
+        assert(!texture.sparseMappings[0] && texture.sparseMappings[1] && !texture.sparseMappings[2]);
+        mm.Unmap(Page * 2, Page);
+        texture.SetMappings(mm, Page + 32);
+        assert(!texture.MappingsValid() && !texture.sparseMappings[1]);
+        mm.Map(Page * 2, first.data(), Page);
+        texture.SetMappings(mm, Page + 32);
+        assert(texture.MappingsValid() && texture.mappings[1].data() == first.data());
+        mm.MapSparse(Page, Page * 3);
+        texture.SetMappings(mm, Page + 32);
+        assert(texture.MappingsValid() && texture.sparseMappings.front());
+    }
     struct UsageTracker { struct Intervals {
         unsigned writes{}; void Insert(span<u8> memory) { assert(memory.valid()); ++writes; }
     } dirtyIntervals; };
@@ -379,7 +409,7 @@ namespace skyline::gpu {
 }
 int main(int argc,char**argv) {
     std::string name=argc>1?argv[1]:"all";
-    if(name=="sparse" || name=="all") CheckSparse();
+    if(name=="sparse" || name=="all") { CheckSparse(); skyline::gpu::CheckTypedSparseTextures(); }
     if(name=="remap" || name=="all") CheckRemap();
     if(name=="l2" || name=="all") CheckL2Tail();
     if(name=="cache" || name=="all") skyline::gpu::interconnect::CheckCachedRemap();

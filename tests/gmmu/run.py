@@ -28,6 +28,9 @@ with tempfile.TemporaryDirectory(prefix='strato-gmmu-') as tmp:
     texture_baseline=os.environ.get('GMMU_TEXTURE_BASELINE_REF')
     if texture_baseline:
         texture_source=subprocess.check_output(['git','show',texture_baseline+':app/src/main/cpp/skyline/gpu/texture/texture.cpp'],cwd=ROOT,text=True)
+    guest_header=(ROOT/'app/src/main/cpp/skyline/gpu/texture/texture.h').read_text()
+    (tmp/'guest_set.inc').write_text(extract(guest_header,'template<typename MemoryManager>'))
+    (tmp/'guest_valid.inc').write_text(extract(texture_source,'bool GuestTexture::MappingsValid('))
     (tmp/'mark_dirty.inc').write_text(extract(texture_source,'void Texture::MarkGpuDirty('))
     (tmp/'buffer_update.inc').write_text('\n'.join(extract(cache_source,signature) for signature in
         ('void CachedMappedBufferView::Update(', 'void CachedMappedBufferView::PurgeCaches(')))

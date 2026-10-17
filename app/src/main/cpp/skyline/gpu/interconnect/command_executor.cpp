@@ -830,8 +830,10 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {
         Submit();
-        if (!request.registration.empty())
-            Texture::RegisterAliases(request.registration, request.registrationLayout.get());
+        if (!request.registration.empty()) {
+            if (request.mappingRegistration) Texture::RegisterMappingAliases(request.registration);
+            else Texture::RegisterAliases(request.registration, request.registrationLayout.get());
+        }
         if (request.target)
             request.target->ReconcileAliases();
     }

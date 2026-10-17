@@ -64,6 +64,13 @@ jobs:
           python3 tests/gpu_sparse_mappings/run.py
           python3 tests/gpu_disjoint_buffers/run.py
 
+      - name: Sparse texture and alias Vulkan regressions
+        env:
+          CXX: clang++
+        run: |
+          sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
+          python3 tests/gpu_backing_promotion/run.py
+
       - name: Occlusion and conditional rendering regressions
         run: |
           python3 tests/gpu_queries/run.py

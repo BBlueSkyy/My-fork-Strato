@@ -31,10 +31,12 @@ namespace skyline::gpu {
             }
         };
 
-        // Only identical, ordered guest mappings join a group. Images retain
+        // Exact-layout groups use identical ordered mappings; mappingAliases groups
+        // also join sparse/resident intersections. Images retain
         // their own layout, views, locks and fences. This mutex protects metadata
         // only: never acquire a texture/state lock or wait on a fence under it.
         struct AliasGroup {
+            bool mappingAliases{}; //!< Members may expose different resident subsets of sparse layouts
             std::mutex mutex;
             // Acquire after a Texture lock. Serializes guest encoding and writer
             // publication across different members, including CPU trap callbacks.
@@ -52,5 +54,6 @@ namespace skyline::gpu {
         std::vector<std::shared_ptr<Texture>> registration;
         std::vector<std::shared_ptr<void>> guestMemoryLeases{};
         std::shared_ptr<GuestTexture> registrationLayout{};
+        bool mappingRegistration{};
     };
 }

@@ -26,6 +26,9 @@ namespace skyline::gpu {
         };
 
         GPU &gpu;
+        std::vector<std::shared_ptr<Texture>> sparseTextures;
+        std::shared_ptr<texture::AliasGroup> PrepareMappingAliases(const GuestTexture &, ContextTag);
+        std::shared_ptr<TextureView> FindOrCreateSparse(const GuestTexture &, ContextTag);
         std::vector<TextureMapping> textures; //!< A sorted vector of all texture mappings
 
       public:
