@@ -6,6 +6,7 @@ image views, copy commands and fences use the Vulkan ICD and validation layer.
 """
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 
@@ -50,6 +51,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         "bool Texture::CanGrowMipLevels(",
         "std::shared_ptr<void> Texture::PinGuestMemoryForMipGrowth(",
         "std::shared_ptr<void> Texture::PinGuestMemory(",
+        "bool Texture::CanDiscardGuestMemory(",
         "void Texture::FreeGuest(",
         "boost::container::small_vector<vk::BufferImageCopy, 10> Texture::GetBufferImageCopies(",
         "void Texture::CopyFromStagingBuffer(",
@@ -108,13 +110,13 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "attach.inc").write_text(function(executor,"bool CommandExecutor::AttachTexture("))
     (directory / "retry.inc").write_text(function(executor,
         "void CommandExecutor::HandleTextureBackingPromotion("))
-    subprocess.run([os.environ.get("CXX", "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror",
-                    "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS", "-Wno-unknown-pragmas", "-Wno-unused-parameter", "-fsanitize=undefined",
+    subprocess.run([os.environ.get("CXX", shutil.which("clang++") or "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror",
+                    "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS", "-Wno-unknown-pragmas", "-Wno-unused-parameter", "-Wno-reorder-init-list", "-fsanitize=undefined",
                     "-fno-sanitize-recover=all", "-pthread", "-I" + str(directory),
                     "-I" + str(ROOT / "app/src/main/cpp/skyline"),
-                    "-I" + os.environ.get("VULKAN_HPP_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp")),
-                    "-I" + os.environ.get("VULKAN_HEADERS_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp/Vulkan-Headers/include")),
-                    "-I" + os.environ.get("BOOST_INCLUDE_DIR", "/usr/include"),
+                    "-isystem" + os.environ.get("VULKAN_HPP_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp")),
+                    "-isystem" + os.environ.get("VULKAN_HEADERS_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp/Vulkan-Headers/include")),
+                    "-isystem" + os.environ.get("BOOST_INCLUDE_DIR", "/usr/include"),
                     str(ROOT / "tests/gpu_backing_promotion/tests.cpp"),
                     os.environ.get("VULKAN_LOADER_LIBRARY", "-lvulkan"),
                     "-o", str(directory / "tests")], check=True)

@@ -582,14 +582,33 @@ namespace skyline::gpu {
         }
     }
 
+    bool Texture::CanDiscardGuestMemory() const {
+        // Another representation can expose padding/tails as real texels.
+        // Only discard when every mapped byte is recoverable from this image.
+        if (!guest || guest->baseArrayLayer || guest->GetImageType() != vk::ImageType::e2D ||
+            guest->tileConfig.mode != texture::TileMode::Block || guest->tileConfig.blockDepth != 1 ||
+            guest->mipLevelCount != levelCount || mipLayouts.size() != levelCount || !layerCount ||
+            sampleCount != vk::SampleCountFlagBits::e1)
+            return false;
+        size_t encodedLayerSize{};
+        for (const auto &level : mipLayouts) {
+            if (level.linearSize != level.blockLinearSize || level.targetLinearSize != level.linearSize ||
+                level.blockLinearSize > SIZE_MAX - encodedLayerSize)
+                return false;
+            encodedLayerSize += level.blockLinearSize;
+        }
+        const auto guestStride{guest->layerStride ? guest->layerStride : guest->CalculateLayerSize()};
+        return encodedLayerSize == guestStride && mirror.size() % layerCount == 0 &&
+            mirror.size() / layerCount == encodedLayerSize;
+    }
+
     void Texture::FreeGuest() {
-        // A read-only alias may need the guest representation again after another
-        // alias becomes the writer. Preserve those bytes without changing the
-        // global Free Guest Texture Memory policy for ordinary textures.
+        // Read-only aliases and padding/tails cannot be reconstructed from this
+        // image. Preserve their guest bytes even when memory discard is enabled.
         if (aliasReadOnly.load())
             return;
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
-        if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
+        if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && CanDiscardGuestMemory() && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
             gpu.state.process->memory.FreeMemory(mirror);
             memoryFreed = true;
         }
@@ -933,8 +952,9 @@ namespace skyline::gpu {
         // Trap callbacks only try-lock these resources while holding stateMutex.
         std::vector<std::unique_lock<Texture>> locks;
         for (auto &texture : textures) locks.emplace_back(*texture);
+        const bool implicitRequested{!requested};
         if (!requested) {
-            if (!reference->guest || !reference->CanReconcileGuestLayout(*reference->guest))
+            if (!reference->guest)
                 throw exception("Cannot losslessly reconcile these texture alias layouts");
             requested = &*reference->guest;
         }
@@ -977,6 +997,11 @@ namespace skyline::gpu {
                 throw;
             }
         }
+
+        // Eligibility depends on guest bytes being present. Restore a discarded
+        // latest writer before validating the implicit reference layout too.
+        if (implicitRequested && !reference->CanReconcileGuestLayout(*requested))
+            throw exception("Cannot losslessly reconcile these texture alias layouts");
 
         std::vector<std::shared_ptr<Texture>> eligible, historical;
         for (const auto &texture : textures) {
@@ -1136,6 +1161,9 @@ namespace skyline::gpu {
         auto alias{aliasGroup.load()};
         std::unique_lock<std::recursive_mutex> aliasLock;
         if (alias) aliasLock = std::unique_lock{alias->operationMutex};
+        // A superseded image cannot regain authority merely by being bound as
+        // a writer. Reconcile first, even when a caller bypasses manager lookup.
+        RequireAliasCoherence(ContextTag{});
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
@@ -1200,41 +1228,32 @@ namespace skyline::gpu {
             auto stagingBuffer{SynchronizeHostImpl()};
             if (stagingBuffer) {
                 if (cycle) cycle->WaitSubmit();
-                if (alias) {
-                    auto commandBuffer{gpu.scheduler.AllocateCommandBuffer()};
-                    auto uploadCycle{commandBuffer.GetFenceCycle()};
-                    const auto previousLayout{layout};
-                    try {
-                        // Retain resources before submission; allocation/recording
-                        // failures must not strand a queued image upload.
-                        uploadCycle->AttachObjects(stagingBuffer, shared_from_this());
-                        uploadCycle->ChainCycle(cycle);
-                        commandBuffer->begin(vk::CommandBufferBeginInfo{
-                            .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
-                        });
-                        CopyFromStagingBuffer(*commandBuffer, stagingBuffer);
-                        commandBuffer->end();
-                        gpu.scheduler.SubmitCommandBuffer(*commandBuffer, uploadCycle);
-                    } catch (...) {
-                        uploadCycle->Cancel();
-                        layout = previousLayout;
-                        throw;
-                    }
-                    cycle = std::move(uploadCycle);
-                } else {
-                    auto lCycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commandBuffer) {
-                        CopyFromStagingBuffer(commandBuffer, stagingBuffer);
-                    })};
-                    lCycle->AttachObjects(stagingBuffer, shared_from_this());
-                    lCycle->ChainCycle(cycle);
-                    cycle = lCycle;
+                // Retain resources and predecessor fences before recording or
+                // submitting: a failed attachment must never strand a GPU upload.
+                auto commandBuffer{gpu.scheduler.AllocateCommandBuffer()};
+                auto uploadCycle{commandBuffer.GetFenceCycle()};
+                const auto previousLayout{layout};
+                try {
+                    uploadCycle->AttachObjects(stagingBuffer, shared_from_this());
+                    uploadCycle->ChainCycle(cycle);
+                    commandBuffer->begin(vk::CommandBufferBeginInfo{
+                        .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+                    });
+                    CopyFromStagingBuffer(*commandBuffer, stagingBuffer);
+                    commandBuffer->end();
+                    gpu.scheduler.SubmitCommandBuffer(*commandBuffer, uploadCycle);
+                } catch (...) {
+                    uploadCycle->Cancel();
+                    layout = previousLayout;
+                    throw;
                 }
+                cycle = std::move(uploadCycle);
             }
         } catch (...) {
-            if (alias) {
-                std::scoped_lock lock{stateMutex};
-                dirtyState = DirtyState::CpuDirty;
-            }
+            // Guest bytes remain authoritative until upload succeeds, whether
+            // this image belongs to an alias group or stands alone.
+            std::scoped_lock lock{stateMutex};
+            dirtyState = DirtyState::CpuDirty;
             throw;
         }
 
@@ -1279,12 +1298,26 @@ namespace skyline::gpu {
             gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
-        auto stagingBuffer{SynchronizeHostImpl()};
-        if (stagingBuffer) {
-            CopyFromStagingBuffer(commandBuffer, stagingBuffer);
-            pCycle->AttachObjects(stagingBuffer, shared_from_this());
-            pCycle->ChainCycle(cycle);
-            cycle = pCycle;
+        try {
+            auto stagingBuffer{SynchronizeHostImpl()};
+            if (stagingBuffer) {
+                // A recording failure must leave the source bytes retryable.
+                // Attach before recording any command that refers to the buffer.
+                pCycle->AttachObjects(stagingBuffer, shared_from_this());
+                pCycle->ChainCycle(cycle);
+                const auto previousLayout{layout};
+                try {
+                    CopyFromStagingBuffer(commandBuffer, stagingBuffer);
+                } catch (...) {
+                    layout = previousLayout;
+                    throw;
+                }
+                cycle = pCycle;
+            }
+        } catch (...) {
+            std::scoped_lock lock{stateMutex};
+            dirtyState = DirtyState::CpuDirty;
+            throw;
         }
 
         {
@@ -1320,16 +1353,20 @@ namespace skyline::gpu {
                 return;
             }
 
-            if (!alias) {
-                dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
-                memoryFreed = false;
-            } // Group writer remains authoritative until the encoded readback succeeds.
+            // Keep the GPU authoritative throughout readback. A failed staging
+            // allocation, submission, wait or guest encoding must be retryable.
         }
 
-        if (layout == vk::ImageLayout::eUndefined || format != guest->format)
-            // If the state of the host texture is undefined then so can the guest
-            // If the texture has differing formats on the guest and host, we don't support converting back in that case as it may involve recompression of a decompressed texture
+        if (layout == vk::ImageLayout::eUndefined || format != guest->format) {
+            // Preserve the existing unsupported/converted-format fallback; it
+            // cannot provide a lossless encoding or advance gpuReadbackSerial.
+            if (!alias) {
+                std::scoped_lock lock{stateMutex};
+                dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
+                memoryFreed = false;
+            }
             return;
+        }
 
         WaitOnBacking();
 
@@ -1355,10 +1392,8 @@ namespace skyline::gpu {
         {
             std::scoped_lock lock{stateMutex};
             gpuReadbackSerial = gpuWriteSerial;
-            if (alias) {
-                dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
-                memoryFreed = false;
-            }
+            dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
+            memoryFreed = false;
         }
         if (auto group{aliasGroup.load()}) {
             std::scoped_lock metadata{group->mutex};

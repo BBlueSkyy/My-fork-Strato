@@ -64,6 +64,14 @@ jobs:
           python3 tests/gpu_conditional/run.py
           python3 tests/gpu_draw_texture/run.py
 
+      - name: Texture authority regressions (Vulkan/UBSan)
+        env:
+          CXX: clang++
+        run: |
+          sudo apt-get install -y libboost-dev libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
+          export VK_DRIVER_FILES=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
+          python3 tests/gpu_backing_promotion/run.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"

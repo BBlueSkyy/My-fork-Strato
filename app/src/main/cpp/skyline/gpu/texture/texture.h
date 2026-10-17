@@ -492,6 +492,7 @@ namespace skyline::gpu {
          * @brief Frees the guest side copy of the texture
          * @note `stateMutex` must be locked when calling this function
          */
+        bool CanDiscardGuestMemory() const;
         void FreeGuest();
 
         /**
