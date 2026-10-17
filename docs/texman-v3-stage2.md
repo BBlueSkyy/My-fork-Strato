@@ -14,9 +14,18 @@ Continue wip/texman-v3/#353; no merge, no new PR, no CI polling.
 
 Implementation plan:
 - [x] 1. Reuse V2 guest-range helpers, replace end-only mapping comparison and cross-segment pointer subtraction, and reconcile equivalent partitions through the existing V3 authority group. Add failing fragmented-mapping/alias regressions; validate Vulkan and pitch tests; publish.
-- [ ] 2. Reuse the storage/index boundary, cache physical layouts and deduplicate overlaps across every segment. Test nested mappings, later-segment-only overlap, precedence and disjoint queries; validate production manager, #340/#341 and V3 tests; publish.
+- [x] 2. Reuse the storage/index boundary, cache physical layouts and deduplicate overlaps across every segment. Test nested mappings, later-segment-only overlap, precedence and disjoint queries; validate production manager, #340/#341 and V3 tests; publish.
 - [ ] 3. Fresh review, fix material findings with regressions, publish any fixes. Request ARM64 builds through normal pushes; report SHA and run URL only. Stop for device tests.
 
 Constraints: no NCA/kernel/audio changes; retain UsageTracker, real writer hooks,
 transfer rollback, padding protection, stale/retired alias gates and Vulkan 1.1.
 No repeated audits or CI-log analysis. Frame-time/RAM effects need device tests.
+
+Validation: the production manager failed the fragmented-parent and later-segment
+readback regressions before their fixes. The current methods pass real Vulkan
+content/authority/view tests with synchronization validation and UBSan. The index
+is checked against a full overlap oracle for 300 two-segment storages and 3000
+queries, including nested intervals, endpoint exclusion, deterministic tie order
+and retained storage lifetime. Query bounds use start-address and prefix-end
+binary searches; parent ranges are cached once, and each storage is matched once
+per lookup. Insert reserves all capacity before publishing a resource's segments.

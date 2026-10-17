@@ -12,6 +12,7 @@
 #include <gpu/texture/backing_promotion.h>
 #include <gpu/usage_tracker.h>
 #include <gpu/texture/guest_range.h>
+#include <gpu/texture/mapping_cache.h>
 #include <gpu/texture/pitch_linear.h>
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
@@ -1811,6 +1812,52 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         gpu.scheduler.Complete();
     }
 
+    void CheckNestedMappingIndex(GPU &gpu) {
+        std::vector<u8> bytes(16384,0x13);
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = vk::Extent3D{64,64,1};
+        guest.mipLevelCount = guest.viewMipCount = guest.layerCount = 1;
+        guest.viewType = vk::ImageViewType::e2D;
+        guest.layerStride = 16384;
+        guest.mappings = {span<u8>{bytes}};
+        TextureManager manager{gpu};
+        auto parent{manager.FindOrCreate(guest)};
+        auto nested{guest};
+        nested.dimensions = vk::Extent3D{16,16,1};
+        nested.layerStride = nested.CalculateLayerSize();
+        nested.mappings = {span<u8>{bytes.data()+4096,nested.layerStride}};
+        auto small{manager.FindOrCreate(nested)};
+        assert(small->texture != parent->texture);
+        assert(manager.FindOrCreate(guest)->texture == parent->texture); // Nested interval cannot hide its parent.
+        gpu.scheduler.Complete();
+    }
+
+    void CheckSecondaryMappingOverlap(GPU &gpu) {
+        std::vector<u8> bytes(16384,0x13), unrelated(8192,0x21), expected{bytes};
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = vk::Extent3D{64,64,1};
+        guest.mipLevelCount = guest.viewMipCount = guest.layerCount = 1;
+        guest.viewType = vk::ImageViewType::e2D;
+        guest.layerStride = 16384;
+        guest.mappings = {span<u8>{bytes}};
+        TextureManager manager{gpu};
+        auto writer{manager.FindOrCreate(guest)};
+        WriteAliasRenderTarget(writer->texture,{0,0,1,1});
+        EncodeAliasBase(writer->texture,expected,{0,0,255,255});
+        guest.mappings = {span<u8>{unrelated}, span<u8>{bytes.data()+8192,8192}};
+        // Stop at the explicit host mirror boundary after the manager's actual
+        // overlap readback. Android supports these noncontiguous mirrors.
+        bool mirrorBoundary{};
+        try { manager.FindOrCreate(guest); }
+        catch (const std::runtime_error &error) {
+            mirrorBoundary = std::string(error.what()) == "Host mirror adapter supports physically contiguous partitions only";
+        }
+        assert(mirrorBoundary && bytes == expected); // A later query segment must flush the GPU writer too.
+        gpu.scheduler.Complete();
+    }
+
     void CheckRenderTargetUsage(GPU &gpu) {
         std::vector<u8> first(8192), second(8192);
         GuestTexture guest;
@@ -2045,6 +2092,8 @@ int main() {
             std::fprintf(stderr, "RUN CheckSeparateLayouts\n");
             CheckSeparateLayouts(gpu);
             std::fprintf(stderr, "RUN CheckStandaloneTransferFailures\n");
+            CheckSecondaryMappingOverlap(gpu);
+            CheckNestedMappingIndex(gpu);
             CheckSegmentedMappings(gpu);
             CheckSegmentedAliasAuthority(gpu);
             CheckRenderTargetUsage(gpu);
