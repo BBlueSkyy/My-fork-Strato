@@ -31,7 +31,7 @@ namespace skyline::gpu {
             }
         };
 
-        // Only identical, ordered guest mappings join a group. Images retain
+        // Only identical, ordered guest bytes join a group; mapping partitions may differ. Images retain
         // their own layout, views, locks and fences. This mutex protects metadata
         // only: never acquire a texture/state lock or wait on a fence under it.
         struct AliasGroup {
@@ -52,5 +52,8 @@ namespace skyline::gpu {
         std::vector<std::shared_ptr<Texture>> registration;
         std::vector<std::shared_ptr<void>> guestMemoryLeases{};
         std::shared_ptr<GuestTexture> registrationLayout{};
+        // Partial overlaps need a CPU bridge after pending executor writes have
+        // been submitted, without registering incompatible guest ranges as aliases.
+        std::vector<std::shared_ptr<Texture>> guestSynchronization{};
     };
 }

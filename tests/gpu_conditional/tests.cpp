@@ -168,7 +168,7 @@ struct ActiveState {
     bool MayWriteTransformFeedbackBuffer(Buffer *);
 };
 #include "writers.inc"
-struct UsageTracker { struct Intervals { void Insert(int) {} } dirtyIntervals, sequencedIntervals; };
+struct UsageTracker { void RecordGpuWrite(int) {} void RecordSequencedWrite(int) {} };
 struct GenerationBuffer {
     u64 writeGeneration{}; bool alreadyGpuDirty{}, everHadInlineUpdate{}, isDirect{}; std::optional<int> guest{1};
     u64 GetWriteGeneration() const { return writeGeneration; }

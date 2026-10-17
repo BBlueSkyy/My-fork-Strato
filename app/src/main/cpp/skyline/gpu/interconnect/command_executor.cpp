@@ -437,10 +437,10 @@ namespace skyline::gpu::interconnect {
 
         for (auto view : outputAttachmentViews)
             if (view)
-                view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget);
+                view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget, usageTracker);
 
         for (auto view : sampledImages)
-            view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
+            view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled, usageTracker);
 
         return gotoNext;
     }
@@ -490,6 +490,9 @@ namespace skyline::gpu::interconnect {
             //    preserveAttachedTextures.emplace_back(view->texture);
         }
 
+        // An alias writer may have invalidated the image while LockWithTag
+        // waited. Register lock ownership first so reconciliation can unwind it.
+        view->texture->RequireAliasCoherence(tag);
         if (view->texture->HasAliases())
             view->texture->SynchronizeHost(false); // Initialize before claiming a GPU write, once per generation.
         return didLock;
@@ -715,7 +718,7 @@ namespace skyline::gpu::interconnect {
                 }
 
                 texture->cycle = cycle;
-                texture->UpdateRenderPassUsage(0, texture::RenderPassUsage::None);
+                texture->UpdateRenderPassUsage(0, texture::RenderPassUsage::None, usageTracker);
             }
 
             // Wait on texture syncs to finish before beginning the cmdbuf
@@ -739,7 +742,7 @@ namespace skyline::gpu::interconnect {
         attachedBuffers.clear();
         allocator->Reset();
         renderPassIndex = 0;
-        usageTracker.sequencedIntervals.Clear();
+        usageTracker.OnSubmit();
 
         // Periodically clear preserve attachments just in case there are new waiters which would otherwise end up waiting forever
         if ((submissionNumber % (2U << *state.settings->executorSlotCountScale)) == 0) {
@@ -789,8 +792,6 @@ namespace skyline::gpu::interconnect {
         ResetInternal();
 
         if (wait) {
-            usageTracker.dirtyIntervals.Clear();
-
             std::condition_variable cv;
             std::mutex mutex;
             bool gpuDone{};
@@ -803,6 +804,7 @@ namespace skyline::gpu::interconnect {
 
             std::unique_lock lock{mutex};
             cv.wait(lock, [&gpuDone] { return gpuDone; });
+            usageTracker.OnWaitComplete();
         }
     }
 
@@ -816,6 +818,10 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {
         Submit();
+        for (const auto &texture : request.guestSynchronization) {
+            std::scoped_lock lock{*texture};
+            texture->SynchronizeGuest(false, true);
+        }
         if (!request.registration.empty())
             Texture::RegisterAliases(request.registration, request.registrationLayout.get());
         if (request.target)
