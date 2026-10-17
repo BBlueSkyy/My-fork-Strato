@@ -52,5 +52,8 @@ namespace skyline::gpu {
         std::vector<std::shared_ptr<Texture>> registration;
         std::vector<std::shared_ptr<void>> guestMemoryLeases{};
         std::shared_ptr<GuestTexture> registrationLayout{};
+        // Partial overlaps need a CPU bridge after pending executor writes have
+        // been submitted, without registering incompatible guest ranges as aliases.
+        std::vector<std::shared_ptr<Texture>> guestSynchronization{};
     };
 }

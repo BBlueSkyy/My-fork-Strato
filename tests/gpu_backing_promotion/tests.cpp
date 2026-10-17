@@ -407,6 +407,7 @@ namespace skyline::gpu {
         u64 gpuWriteSerial{},gpuReadbackSerial{};
         bool replaced{};
         vk::PipelineStageFlags pendingStageMask{}, readStageMask{};
+        std::atomic<ContextTag> tag{};
         std::recursive_mutex mutex;
         void lock() { mutex.lock(); }
         void unlock() { mutex.unlock(); }
@@ -566,7 +567,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             UsageTracker usageTracker;
             bool AttachTexture(TextureView *);
             unsigned submissions{};
-            void Submit() { ++submissions; }
+            std::function<void()> submitPending; // Pending command-node host boundary.
+            void Submit() { ++submissions; if (auto work = std::exchange(submitPending, {})) work(); }
             void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &);
             void HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &);
         };
@@ -1813,27 +1815,35 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckNestedMappingIndex(GPU &gpu) {
-        std::vector<u8> bytes(16384,0x13);
+        std::vector<u8> bytes(20480,0x13);
         GuestTexture guest;
         guest.format = format::R8G8B8A8Unorm;
         guest.dimensions = vk::Extent3D{64,64,1};
-        guest.mipLevelCount = guest.viewMipCount = guest.layerCount = 1;
+        guest.mipLevelCount = 2; guest.viewMipCount = guest.layerCount = 1;
         guest.viewType = vk::ImageViewType::e2D;
-        guest.layerStride = 16384;
+        guest.layerStride = 20480;
         guest.mappings = {span<u8>{bytes}};
         TextureManager manager{gpu};
         auto parent{manager.FindOrCreate(guest)};
         auto nested{guest};
         nested.dimensions = vk::Extent3D{16,16,1};
+        nested.mipLevelCount = 1;
         nested.layerStride = nested.CalculateLayerSize();
         nested.mappings = {span<u8>{bytes.data()+4096,nested.layerStride}};
         auto small{manager.FindOrCreate(nested)};
         assert(small->texture != parent->texture);
-        assert(manager.FindOrCreate(guest)->texture == parent->texture); // Nested interval cannot hide its parent.
+        auto mip{nested};
+        mip.dimensions = vk::Extent3D{32,32,1};
+        mip.layerStride = mip.CalculateLayerSize();
+        mip.mappings = {span<u8>{bytes.data()+16384,mip.layerStride}};
+        auto selected{manager.FindOrCreate(mip)};
+        // The nested interval ends before the query; it must not terminate the
+        // search and hide the longer parent's second mip.
+        assert(selected->texture == parent->texture && selected->range.baseMipLevel == 1);
         gpu.scheduler.Complete();
     }
 
-    void CheckSecondaryMappingOverlap(GPU &gpu) {
+    void CheckSecondaryMappingOverlap(GPU &gpu, bool pendingWrite = false) {
         std::vector<u8> bytes(16384,0x13), unrelated(8192,0x21), expected{bytes};
         GuestTexture guest;
         guest.format = format::R8G8B8A8Unorm;
@@ -1844,17 +1854,40 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         guest.mappings = {span<u8>{bytes}};
         TextureManager manager{gpu};
         auto writer{manager.FindOrCreate(guest)};
-        WriteAliasRenderTarget(writer->texture,{0,0,1,1});
+        interconnect::CommandExecutor executor;
+        if (pendingWrite) {
+            AliasRead(writer->texture);
+            writer->texture->RecordGpuWrite();
+            writer->texture->tag = executor.tag;
+            executor.submitPending = [&] {
+                assert(bytes != expected && writer->texture->guestMemoryPins == 1);
+                WriteAliasRenderTarget(writer->texture,{0,0,1,1});
+                writer->texture->tag = 0; // Real Submit releases attached texture locks.
+            };
+        } else {
+            WriteAliasRenderTarget(writer->texture,{0,0,1,1});
+        }
         EncodeAliasBase(writer->texture,expected,{0,0,255,255});
         guest.mappings = {span<u8>{unrelated}, span<u8>{bytes.data()+8192,8192}};
         // Stop at the explicit host mirror boundary after the manager's actual
         // overlap readback. Android supports these noncontiguous mirrors.
-        bool mirrorBoundary{};
-        try { manager.FindOrCreate(guest); }
-        catch (const std::runtime_error &error) {
-            mirrorBoundary = std::string(error.what()) == "Host mirror adapter supports physically contiguous partitions only";
+        for (unsigned lookup{}; lookup < (pendingWrite ? 2U : 1U); ++lookup) {
+            if (lookup) writer->texture->tag = executor.tag; // Clean sampled attachment: no extra submission.
+            bool mirrorBoundary{};
+            try {
+                texture::RetryBackingPromotion([&] { manager.FindOrCreate(guest, pendingWrite ? executor.tag : 0); },
+                    [&](const auto &request) {
+                        assert(executor.submissions == 0); // Retry makes progress; never loop on a clean overlap.
+                        executor.HandleTextureBackingPromotion(request);
+                    });
+            }
+            catch (const std::runtime_error &error) {
+                mirrorBoundary = std::string(error.what()) == "Host mirror adapter supports physically contiguous partitions only";
+            }
+            assert(mirrorBoundary && bytes == expected); // A later query segment must flush the GPU writer too.
+            assert(executor.submissions == static_cast<unsigned>(pendingWrite) && writer->texture->guestMemoryPins == 0);
         }
-        assert(mirrorBoundary && bytes == expected); // A later query segment must flush the GPU writer too.
+        writer->texture->tag = 0;
         gpu.scheduler.Complete();
     }
 
@@ -2093,6 +2126,7 @@ int main() {
             CheckSeparateLayouts(gpu);
             std::fprintf(stderr, "RUN CheckStandaloneTransferFailures\n");
             CheckSecondaryMappingOverlap(gpu);
+            CheckSecondaryMappingOverlap(gpu, true);
             CheckNestedMappingIndex(gpu);
             CheckSegmentedMappings(gpu);
             CheckSegmentedAliasAuthority(gpu);

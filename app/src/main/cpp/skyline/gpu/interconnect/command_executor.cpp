@@ -818,6 +818,10 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {
         Submit();
+        for (const auto &texture : request.guestSynchronization) {
+            std::scoped_lock lock{*texture};
+            texture->SynchronizeGuest(false, true);
+        }
         if (!request.registration.empty())
             Texture::RegisterAliases(request.registration, request.registrationLayout.get());
         if (request.target)

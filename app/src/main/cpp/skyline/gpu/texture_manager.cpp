@@ -444,9 +444,30 @@ namespace skyline::gpu {
             }
         }
 
-        for (auto &texture : matches)
-            if (!separateGroup || texture->aliasGroup.load() != separateGroup)
+        if (tag) {
+            TextureAliasReconciliationRequest request{};
+            for (const auto &texture : matches) {
+                if ((!separateGroup || texture->aliasGroup.load() != separateGroup) &&
+                    texture->tag.load() == tag && texture->gpuWriteSerial != texture->gpuReadbackSerial) {
+                    // RecordGpuWrite precedes command-node submission. Neither
+                    // dirtyState nor cycle necessarily describes that write yet.
+                    // Restart preparation at the existing executor boundary.
+                    request.guestSynchronization.push_back(texture);
+                    std::scoped_lock stateLock{texture->stateMutex};
+                    if (!texture->memoryFreed)
+                        request.guestMemoryLeases.push_back(texture->PinGuestMemory());
+                }
+            }
+            if (!request.guestSynchronization.empty())
+                throw request;
+        }
+
+        for (auto &texture : matches) {
+            if (!separateGroup || texture->aliasGroup.load() != separateGroup) {
+                ContextLock lock{tag, *texture};
                 texture->SynchronizeGuest(false, true);
+            }
+        }
 
         // Create a texture as we cannot find one that matches
 
