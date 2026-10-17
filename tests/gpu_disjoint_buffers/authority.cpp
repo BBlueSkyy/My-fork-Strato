@@ -20,7 +20,7 @@
 #include <vector>
 using u8=uint8_t; using u32=uint32_t;
 struct FenceCycle {};
-struct BufferDelegate;
+class BufferDelegate;
 namespace vk { using DeviceSize=uint64_t; }
 constexpr vk::DeviceSize VK_WHOLE_SIZE=~vk::DeviceSize{};
 namespace constant { constexpr size_t PageSize=4096; }
