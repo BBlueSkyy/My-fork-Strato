@@ -45,6 +45,10 @@ namespace skyline::service::hid {
     }
 
     Result IHidServer::ActivateDebugPad(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        state.input->debugPad.Activate(util::GetTimeTicks());
         return {};
     }
 

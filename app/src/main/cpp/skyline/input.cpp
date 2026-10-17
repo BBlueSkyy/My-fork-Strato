@@ -67,6 +67,7 @@ namespace skyline::input {
           kHid{std::make_shared<kernel::type::KSharedMemory>(state, sizeof(HidSharedMemory))},
           hid{InitializeHidSharedMemory(kHid->host)},
           npad{state, hid},
+          debugPad{hid->debugPad},
           touch{state, hid},
           gesture{hid},
           mouse{hid},
@@ -115,6 +116,7 @@ namespace skyline::input {
             std::array<UpdateCallback, 3> updateCallbacks{
                 UpdateCallback{NPadUpdatePeriod, [&](UpdateCallback &callback) {
                     npad.UpdateControllerSharedMemory();
+                    debugPad.UpdateSharedMemory(util::GetTimeTicks());
                 }},
                 UpdateCallback{SixAxisUpdatePeriod, [&](UpdateCallback &callback) {
                     npad.UpdateSixAxisSharedMemory();

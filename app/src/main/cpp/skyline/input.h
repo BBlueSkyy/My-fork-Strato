@@ -8,6 +8,7 @@
 #include "common.h"
 #include "kernel/types/KSharedMemory.h"
 #include "input/shared_mem.h"
+#include "input/debugpad.h"
 #include "input/gesture.h"
 #include "input/keyboard.h"
 #include "input/mouse.h"
@@ -29,6 +30,7 @@ namespace skyline::input {
         HidSharedMemory *hid; //!< A pointer to HID Shared Memory on the host
 
         NpadManager npad;
+        DebugPadManager debugPad;
         TouchManager touch;
         GestureManager gesture;
         MouseManager mouse;
