@@ -61,6 +61,12 @@ jobs:
           python3 tests/gpu_conditional/run.py
           python3 tests/gpu_draw_texture/run.py
 
+      - name: Depth and stencil serialization regressions
+        run: |
+          python3 tests/gpu_depth_stencil/run.py
+          python3 tests/gpu_depth_stencil_guest/run.py
+          python3 tests/gpu_depth_stencil_clear/run.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"

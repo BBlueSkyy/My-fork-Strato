@@ -185,7 +185,8 @@ namespace skyline::gpu::interconnect::node {
         if (attachmentDescription.loadOp == vk::AttachmentLoadOp::eLoad) {
             attachmentDescription.loadOp = vk::AttachmentLoadOp::eClear;
 
-            clearValues.resize(attachmentIndex + 1);
+            if (clearValues.size() <= attachmentIndex)
+                clearValues.resize(attachmentIndex + 1);
             clearValues[attachmentIndex].color = value;
 
             return true;
@@ -205,14 +206,18 @@ namespace skyline::gpu::interconnect::node {
                 return false;
 
         auto &attachmentDescription{attachmentDescriptions.at(attachmentIndex)};
-        if (attachmentDescription.loadOp == vk::AttachmentLoadOp::eLoad) {
+        if (attachmentDescription.loadOp == vk::AttachmentLoadOp::eLoad && attachmentDescription.stencilLoadOp == vk::AttachmentLoadOp::eLoad) {
             attachmentDescription.loadOp = vk::AttachmentLoadOp::eClear;
+            // This path clears all aspects of the view. Vulkan uses a separate
+            // operation for stencil; either operation is ignored if absent.
+            attachmentDescription.stencilLoadOp = vk::AttachmentLoadOp::eClear;
 
-            clearValues.resize(attachmentIndex + 1);
+            if (clearValues.size() <= attachmentIndex)
+                clearValues.resize(attachmentIndex + 1);
             clearValues[attachmentIndex].depthStencil = value;
 
             return true;
-        } else if (attachmentDescription.loadOp == vk::AttachmentLoadOp::eClear && clearValues[attachmentIndex].depthStencil == value) {
+        } else if (attachmentDescription.loadOp == vk::AttachmentLoadOp::eClear && attachmentDescription.stencilLoadOp == vk::AttachmentLoadOp::eClear && clearValues[attachmentIndex].depthStencil == value) {
             return true;
         }
 

@@ -85,6 +85,11 @@ namespace skyline::gpu {
                 if (std::find(exactAliases.begin(), exactAliases.end(), hostMapping->texture) == exactAliases.end())
                     exactAliases.push_back(hostMapping->texture);
                 auto &matchGuestTexture{*hostMapping->texture->guest};
+                const bool packedDepthStencilAlias{
+                    matchGuestTexture.format->vkFormat == vk::Format::eD24UnormS8Uint &&
+                    guestTexture.format->vkFormat == vk::Format::eD24UnormS8Uint &&
+                    matchGuestTexture.format->stencilFirst != guestTexture.format->stencilFirst
+                };
 
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
                     (matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
@@ -103,13 +108,14 @@ namespace skyline::gpu {
                     // aliases are handled by the representable view paths below.
                     fullMatch = hostMapping->texture;
                 } else {
-                    if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
+                    if (packedDepthStencilAlias || (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
                         matchGuestTexture.tileConfig == guestTexture.tileConfig &&
                         ((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                           matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
-                          matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()) || matchGuestTexture.viewMipBase > 0)) {
-                        // The old full-match predicate would have reused this
-                        // image, despite incompatible backing bounds/layout. Do
+                          matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()) || matchGuestTexture.viewMipBase > 0))) {
+                        // A different D24 packed order needs its own decoded
+                        // image and the same byte-mediated alias authority as
+                        // incompatible backing bounds/layouts. Do
                         // not send it through unsynchronized overlap readback:
                         // that would create a second, incoherent GPU writer.
                         unrepresentableMatch = hostMapping->texture;

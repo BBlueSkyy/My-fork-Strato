@@ -15,6 +15,7 @@
 #include "image_format_policy.h"
 #include "backing_promotion.h"
 #include "view_range.h"
+#include "depth_stencil.h"
 #include <bit>
 #include <numeric>
 
@@ -301,11 +302,17 @@ namespace skyline::gpu {
 
         WaitOnBacking();
 
+        const auto depthStencilAspects{vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil};
+        const bool combinedDepthStencil{format->vkAspect == depthStencilAspects};
+        const bool singleDepthStencil{!combinedDepthStencil && static_cast<bool>(format->vkAspect & depthStencilAspects)};
+        const auto stagingSize{combinedDepthStencil ? texture::GetDepthStencilTransferSize(surfaceSize, mipLayouts, layerCount, format->bpb) :
+            singleDepthStencil ? texture::GetSingleAspectTransferSize(mipLayouts, layerCount) : surfaceSize};
+
         u8 *bufferData;
         auto stagingBuffer{[&]() -> std::shared_ptr<memory::StagingBuffer> {
             if (tiling == vk::ImageTiling::eOptimal || !std::holds_alternative<memory::Image>(backing)) {
                 // We need a staging buffer for all optimal copies (since we aren't aware of the host optimal layout) and linear textures which we cannot map on the CPU since we do not have access to their backing VkDeviceMemory
-                auto stagingBuffer{gpu.memory.AllocateStagingBuffer(surfaceSize)};
+                auto stagingBuffer{gpu.memory.AllocateStagingBuffer(stagingSize)};
                 bufferData = stagingBuffer->data();
                 return stagingBuffer;
             } else if (tiling == vk::ImageTiling::eLinear) {
@@ -338,7 +345,7 @@ namespace skyline::gpu {
                 else if (guest->tileConfig.mode == texture::TileMode::Pitch)
                     texture::CopyPitchLinearToLinear(*guest, {pointer, guestLayerStride}, {outputLayer, deswizzledLayerStride});
                 else if (guest->tileConfig.mode == texture::TileMode::Linear)
-                    std::memcpy(outputLayer, pointer, surfaceSize);
+                    std::memcpy(outputLayer, pointer, deswizzledLayerStride);
                 pointer += guestLayerStride;
                 outputLayer += deswizzledLayerStride;
             }
@@ -429,14 +436,25 @@ namespace skyline::gpu {
             }
         }
 
+        if (stagingBuffer && combinedDepthStencil) {
+            const auto packing{format->vkFormat == vk::Format::eD32SfloatS8Uint ? texture::DepthStencilPacking::Depth32FloatStencil8 :
+                guest->format->stencilFirst ? texture::DepthStencilPacking::Stencil8Depth24 : texture::DepthStencilPacking::Depth24Stencil8};
+            texture::UnpackDepthStencil({stagingBuffer->data(), stagingBuffer->size()}, packing, mipLayouts, layerCount, surfaceSize);
+        } else if (stagingBuffer && singleDepthStencil) {
+            texture::UnpackSingleAspect({stagingBuffer->data(), stagingBuffer->size()}, mipLayouts, layerCount);
+        }
         return stagingBuffer;
     }
 
     boost::container::small_vector<vk::BufferImageCopy, 10> Texture::GetBufferImageCopies() {
         boost::container::small_vector<vk::BufferImageCopy, 10> bufferImageCopies;
 
+        const bool combinedDepthStencil{format->vkAspect == (vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil)};
         auto pushBufferImageCopyWithAspect{[&](vk::ImageAspectFlagBits aspect) {
-            vk::DeviceSize bufferOffset{};
+            // Combined formats use four bytes per depth texel and one per
+            // stencil texel. Keep stencil after the packed guest surface so
+            // CPU conversion can use the same staging allocation in place.
+            vk::DeviceSize bufferOffset{combinedDepthStencil && aspect == vk::ImageAspectFlagBits::eStencil ? texture::DepthStencilAlign(surfaceSize) : 0};
             u32 mipLevel{};
             for (auto &level : mipLayouts) {
                 bufferImageCopies.emplace_back(
@@ -450,7 +468,10 @@ namespace skyline::gpu {
                         .imageExtent = level.dimensions,
                     }
                 );
-                bufferOffset += level.targetLinearSize * layerCount;
+                bufferOffset += combinedDepthStencil ? (level.targetLinearSize / format->bpb * layerCount) *
+                    (aspect == vk::ImageAspectFlagBits::eDepth ? 4 : 1) : level.targetLinearSize * layerCount;
+                if (aspect != vk::ImageAspectFlagBits::eColor)
+                    bufferOffset = texture::DepthStencilAlign(bufferOffset);
             }
         }};
 
@@ -477,7 +498,6 @@ namespace skyline::gpu {
         // Undefined -> General transition, which leaves a WRITE_AFTER_WRITE
         // hazard when an alias/backing is refreshed while already in General.
         commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, vk::ImageMemoryBarrier{
-            .image = image,
             .srcAccessMask = layout == vk::ImageLayout::eUndefined ? vk::AccessFlags{} :
                 vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
             .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
@@ -485,6 +505,7 @@ namespace skyline::gpu {
             .newLayout = vk::ImageLayout::eGeneral,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
             .subresourceRange = range,
         });
 
@@ -495,13 +516,13 @@ namespace skyline::gpu {
         // Make the transfer write visible to the next use without a global
         // execution wait. This dependency is scoped to this image/subresource set.
         commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, vk::ImageMemoryBarrier{
-            .image = image,
             .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
             .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
             .oldLayout = layout,
             .newLayout = layout,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
             .subresourceRange = range,
         });
     }
@@ -512,13 +533,13 @@ namespace skyline::gpu {
         // available to this copy. Depend on all possible prior writers, but keep
         // the memory dependency scoped to this image.
         commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, vk::ImageMemoryBarrier{
-            .image = image,
             .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
             .dstAccessMask = vk::AccessFlagBits::eTransferRead,
             .oldLayout = layout,
             .newLayout = layout,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
             .subresourceRange = {
                 .aspectMask = format->vkAspect,
                 .levelCount = levelCount,
@@ -546,6 +567,17 @@ namespace skyline::gpu {
             throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
         auto guestOutput{mirror.data()};
 
+        const auto depthStencilAspects{vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil};
+        if (format->vkAspect == depthStencilAspects) {
+            const auto packing{format->vkFormat == vk::Format::eD32SfloatS8Uint ? texture::DepthStencilPacking::Depth32FloatStencil8 :
+                guest->format->stencilFirst ? texture::DepthStencilPacking::Stencil8Depth24 : texture::DepthStencilPacking::Depth24Stencil8};
+            const auto size{texture::GetDepthStencilTransferSize(surfaceSize, mipLayouts, layerCount, format->bpb)};
+            texture::PackDepthStencil({hostBuffer, size}, packing, mipLayouts, layerCount, surfaceSize);
+        } else if (format->vkAspect & depthStencilAspects) {
+            const auto size{texture::GetSingleAspectTransferSize(mipLayouts, layerCount)};
+            texture::PackSingleAspect({hostBuffer, size}, mipLayouts, layerCount);
+        }
+
         auto guestLayerStride{guest->GetLayerStride()};
         if (levelCount == 1) {
             for (size_t layer{}; layer < layerCount; layer++) {
@@ -554,7 +586,7 @@ namespace skyline::gpu {
                 else if (guest->tileConfig.mode == texture::TileMode::Pitch)
                     texture::CopyLinearToPitchLinear(*guest, {hostBuffer, layerStride}, {guestOutput, guestLayerStride});
                 else if (guest->tileConfig.mode == texture::TileMode::Linear)
-                    std::memcpy(hostBuffer, guestOutput, layerStride);
+                    std::memcpy(guestOutput, hostBuffer, layerStride);
                 guestOutput += guestLayerStride;
                 hostBuffer += layerStride;
             }
@@ -837,7 +869,15 @@ namespace skyline::gpu {
     }
 
     bool Texture::CanMaterializeGuestLayout(const GuestTexture &value) {
-        if (!value.format || !value.format->bpb || value.format->vkAspect != vk::ImageAspectFlagBits::eColor ||
+        // D24's two guest orders preserve all 32 bits through the separate
+        // Vulkan depth/stencil planes. Keep padded D32S8 and other DS layouts
+        // outside the lossless alias bridge.
+        const bool packedDepthStencil{value.format && value.format->vkFormat == vk::Format::eD24UnormS8Uint &&
+            value.format->vkAspect == (vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil) &&
+            value.format->bpb == 4 && value.format->blockWidth == 1 && value.format->blockHeight == 1 &&
+            value.GetImageType() == vk::ImageType::e2D && value.tileConfig.mode == texture::TileMode::Block &&
+            value.tileConfig.blockDepth == 1};
+        if (!value.format || !value.format->bpb || (value.format->vkAspect != vk::ImageAspectFlagBits::eColor && !packedDepthStencil) ||
             value.baseArrayLayer || !value.layerCount || !value.dimensions.width || !value.dimensions.height ||
             !value.dimensions.depth || !value.mipLevelCount)
             return false;
@@ -895,7 +935,7 @@ namespace skyline::gpu {
     bool Texture::IsGuestLayoutReversible(const GuestTexture &value) {
         // Writer authority remains deliberately narrower than materialization:
         // the alias group currently has a proven lossless GPU -> guest path only
-        // for native 2D block-linear color layouts with non-interleaved Z.
+        // for native 2D block-linear color and packed D24 layouts with non-interleaved Z.
         return CanMaterializeGuestLayout(value) &&
             value.GetImageType() == vk::ImageType::e2D &&
             value.tileConfig.mode == texture::TileMode::Block &&
@@ -1334,8 +1374,12 @@ namespace skyline::gpu {
         WaitOnBacking();
 
         if (tiling == vk::ImageTiling::eOptimal || !std::holds_alternative<memory::Image>(backing)) {
-            if (!downloadStagingBuffer)
-                downloadStagingBuffer = gpu.memory.AllocateStagingBuffer(surfaceSize);
+            if (!downloadStagingBuffer) {
+                const auto depthStencilAspects{vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil};
+                const auto stagingSize{format->vkAspect == depthStencilAspects ? texture::GetDepthStencilTransferSize(surfaceSize, mipLayouts, layerCount, format->bpb) :
+                    format->vkAspect & depthStencilAspects ? texture::GetSingleAspectTransferSize(mipLayouts, layerCount) : surfaceSize};
+                downloadStagingBuffer = gpu.memory.AllocateStagingBuffer(stagingSize);
+            }
 
             WaitOnFence();
             auto lCycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commandBuffer) {
