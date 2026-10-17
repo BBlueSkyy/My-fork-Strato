@@ -5,26 +5,29 @@ a TextureManager, shader, or driver defect. This branch observes selected GPU pa
 inputs and outputs without substituting textures, changing shaders or altering
 texture matching.
 
-## Trigger
+## Trigger and export (Android 12+)
 
-1. Install an APK from this draft branch and enter the corrupted main menu.
-2. The diagnostic app creates `gpu_capture/cosmic_shake/` when emulation
-   starts. In Android's **Files/Documents** picker, Strato Dev's own
-   storage provider exposes this folder even if `Android/data` is hidden.
-3. Rename `ARM_CAPTURE.rename_this_file_when_ready` to `ARM_CAPTURE`.
-   This requires an app-files-aware file picker; no frame capture can be
-   obtained before the game reaches GPU presentation.
-4. Let six frames present, return to the **Strato Dev main screen**, then
-   **long-press the log icon** to share a ZIP directly through Android's
-   Sharesheet (no direct Android/data browsing needed).
-5. Send the ZIP, driver name/version and a screenshot of the corrupted frame.
-   If the trigger never fired, the ZIP will contain `diagnostic-status.txt`
-   and the last up to 256 KiB of `emulation.log`, which help locate the
-   startup failure.
+1. Install the **Dev** APK from this Draft PR.
+2. On the Strato Dev main screen **long-press the log icon** (normal
+   tap still shares the emulator log). Select **Armar captura para o
+   próximo jogo**. This creates `gpu_capture/cosmic_shake/ARM_CAPTURE`
+   directly in app storage: no Android/data access required.
+3. Open Battle for Bikini Bottom Rehydrated or Cosmic Shake. When it
+   reaches presentation, the native code consumes the trigger and
+   captures up to six presented frames. The capture does not require
+   reaching the main menu, but a crash before presentation cannot
+   generate GPU pixel readbacks.
+4. Return to the Strato Dev main screen; long-press the log icon again,
+   then choose **Compartilhar captura/diagnóstico (ZIP)**. The Android
+   Sharesheet offers a ZIP from the app's own DocumentsProvider.
+5. Send the ZIP and driver name/version. Even if no capture triggered,
+   `diagnostic-status.txt` and `emulation-tail.txt` should help
+   determine whether the code reached presentation.
 
-Manual trigger is preferred: the older automatic blackout detector is not a
-reliable signal for a scene that is corrupted continuously. Leave AUTO_CAPTURE
-unarmed. No capture occurs unless explicitly armed.
+The manual trigger file may alternatively be renamed using Android's
+Files picker through Strato Dev's document provider. The automatic
+blackout trigger is not reliable for continuously corrupted scenes
+and should be left unarmed. This is diagnostic-only; do not merge.
 
 ## Output
 
