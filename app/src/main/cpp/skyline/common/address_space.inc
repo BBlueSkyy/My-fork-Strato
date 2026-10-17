@@ -224,56 +224,79 @@ namespace skyline {
     }
 
 
-    MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
-        TRACE_EVENT("containers", "FlatMemoryManager::TranslateRange");
+    MM_MEMBER(void)::ReplaceMappingLocked(VaType virt, u8 *phys, VaType size, MemoryManagerBlockInfo info) {
+        ValidateRange(virt, size);
+        if (!size) return;
+        constexpr VaType pageMask{(VaType{1} << VaGranularityBits) - 1};
+        if ((virt | size) & pageMask)
+            throw exception("GPU mapping is not page aligned");
+        auto &blocks{this->blocks};
+        // Allocate before mutating either representation. Erase/insert below
+        // cannot allocate, and block/table publication remains under one lock.
+        if (blocks.capacity() - blocks.size() < 2)
+            blocks.reserve(std::max(blocks.size() + 2, blocks.capacity() * 2));
+        const size_t end{size_t{virt} + size};
+        auto first{std::lower_bound(blocks.begin(), blocks.end(), virt)};
+        auto after{std::upper_bound(blocks.begin(), blocks.end(), end,
+            [](auto address, const auto &block) { return address < block.virt; })};
+        auto tail{*std::prev(after)};
+        if (tail.phys && !tail.extraInfo.sparseMapped) tail.phys += end - tail.virt;
+        const bool hasTail{end <= this->vaLimit};
+        if (hasTail) tail.virt = static_cast<VaType>(end);
+        const auto index{first - blocks.begin()};
+        blocks.erase(first, after);
+        blocks.insert(blocks.begin() + index, {virt, phys, info});
+        if (hasTail) blocks.insert(blocks.begin() + index + 1, tail);
 
-        TranslatedAddressRange ranges;
-
-        auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [] (auto virt, const auto &block) {
-            return virt < block.virt;
-        })};
-
-        auto predecessor{std::prev(successor)};
-
-        u8 *blockPhys{predecessor->phys + (virt - predecessor->virt)};
-        VaType blockSize{std::min(successor->virt - virt, size)};
-
-        while (size) {
-            if (predecessor->phys) {
-                span cpuBlock{blockPhys, blockSize};
-                if (cpuAccessCallback)
-                    cpuAccessCallback(cpuBlock);
-
-                // Batch contiguous ranges into one
-                if (!ranges.empty() && ranges.back().data() + ranges.back().size() == cpuBlock.data())
-                    ranges.back() = {ranges.back().data(), ranges.back().size() + cpuBlock.size()};
-                else
-                    ranges.push_back(cpuBlock);
-            } else {
-                ranges.push_back(span<u8>{static_cast<u8*>(nullptr), blockSize});
-            }
-
-            size -= blockSize;
-
-            if (size) {
-                predecessor = successor++;
-                blockPhys = predecessor->phys;
-                blockSize = std::min(successor->virt - predecessor->virt, size);
-            }
+        // Merge equivalent neighbours without discarding sparse/resident state.
+        for (size_t i{index ? static_cast<size_t>(index - 1) : 0}; i + 1 < blocks.size() && blocks[i].virt <= end;) {
+            const auto &left{blocks[i]};
+            const auto &right{blocks[i + 1]};
+            const bool sameKind{left.extraInfo.sparseMapped == right.extraInfo.sparseMapped};
+            const bool contiguous{sameKind && (left.extraInfo.sparseMapped ||
+                (!left.phys && !right.phys) || (left.phys && right.phys &&
+                reinterpret_cast<uintptr_t>(left.phys) + (right.virt - left.virt) == reinterpret_cast<uintptr_t>(right.phys)))};
+            if (contiguous) blocks.erase(blocks.begin() + i + 1);
+            else ++i;
         }
 
+        // Clear only the changed pages. Refresh surviving head/tail blocks too:
+        // their cached extents must no longer cross the replacement interval.
+        blockSegmentTable.Set(virt, end, {});
+        auto current{std::upper_bound(blocks.begin(), blocks.end(), virt,
+            [](auto address, const auto &block) { return address < block.virt; })};
+        if (current - blocks.begin() > 1) --current;
+        --current;
+        for (; current != blocks.end() && current->virt <= end; ++current) {
+            auto next{std::next(current)};
+            const size_t blockEnd{next == blocks.end() ? size_t{this->vaLimit} + 1 : next->virt};
+            if (current->phys || current->extraInfo.sparseMapped)
+                blockSegmentTable.Set(current->virt, blockEnd,
+                    {current->virt, current->phys, blockEnd - current->virt, current->extraInfo});
+        }
+        mappingGeneration.fetch_add(1, std::memory_order_release);
+    }
+
+    MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
+        TranslatedAddressRange ranges;
+        while (size) {
+            const auto entry{LookupEntryLocked(virt)};
+            const auto length{std::min<size_t>(size, entry.extent - (virt - entry.virt))};
+            span<u8> memory{MappingKind(entry) == MemoryMappingKind::Resident ? entry.phys + (virt - entry.virt) : nullptr, length};
+            if (memory.valid() && cpuAccessCallback) cpuAccessCallback(memory);
+            if (memory.valid() && !ranges.empty() && ranges.back().valid() &&
+                reinterpret_cast<uintptr_t>(ranges.back().data()) + ranges.back().size() == reinterpret_cast<uintptr_t>(memory.data()))
+                ranges.back() = {ranges.back().data(), ranges.back().size() + length};
+            else
+                ranges.push_back(memory);
+            virt += length;
+            size -= length;
+        }
         return ranges;
     }
 
-    MM_MEMBER()::FlatMemoryManager() {
-        sparseMap = static_cast<u8 *>(mmap(0, SparseMapSize, PROT_READ, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0));
-        if (!sparseMap)
-            throw exception("Failed to mmap sparse map!");
-    }
-
-    MM_MEMBER()::~FlatMemoryManager() {
-        munmap(sparseMap, SparseMapSize);
-    }
+    MM_MEMBER()::FlatMemoryManager() = default;
+    MM_MEMBER()::~FlatMemoryManager() = default;
 
     MM_MEMBER(void)::Read(u8 *destination, VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
         TRACE_EVENT("containers", "FlatMemoryManager::Read");

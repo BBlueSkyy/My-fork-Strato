@@ -55,6 +55,13 @@ jobs:
             tests/gpu/texture_view_range_tests.cpp -o /tmp/texman-view-range-tests
           /tmp/texman-view-range-tests
 
+      - name: GMMU translation regressions (ASan/UBSan)
+        env:
+          CXX: clang++
+        run: |
+          sudo apt-get install -y libboost-dev
+          python3 tests/gmmu/run.py
+
       - name: Occlusion and conditional rendering regressions
         run: |
           python3 tests/gpu_queries/run.py
