@@ -412,7 +412,7 @@ namespace skyline::gpu::interconnect {
                         "layers={} base_layer={} tile_mode={} pitch={} "
                         "segments={} ranges={}",
                         ticCapture.presentIndex.load(std::memory_order_relaxed),
-                        ctx.executor.submissionNumber, ctx.executor.renderPassIndex,
+                        ctx.executor.submissionNumber, ctx.executor.GetRenderPassIndex().value_or(0),
                         ctx.channelCtx.channelSequenceNumber, index,
                         static_cast<u32>(shaderType), textureHeader.Iova(),
                         guest.GetSize(), mappedBytes, invalidBytes,
