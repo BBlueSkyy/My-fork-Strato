@@ -7,6 +7,7 @@
 #include <common/trace.h>
 #include <common/settings.h>
 #include "texture.h"
+#include "guest_range.h"
 #include "layout.h"
 #include "pitch_linear.h"
 #include "adreno_aliasing.h"
@@ -928,9 +929,10 @@ namespace skyline::gpu {
         return guest && format == guest->format && ConvertHostCompatibleFormat(requested.format, gpu.traits) == requested.format && !memoryFreed &&
             sampleCount == vk::SampleCountFlagBits::e1 && tiling == vk::ImageTiling::eOptimal &&
             IsGuestLayoutReversible(*guest) && IsGuestLayoutReversible(requested) &&
-            guest->mappings.size() == requested.mappings.size() &&
-            std::equal(guest->mappings.begin(), guest->mappings.end(), requested.mappings.begin(),
-                [](const auto &a, const auto &b) { return a.data() == b.data() && a.size() == b.size(); });
+            [&] {
+                const texture::GuestResourceRanges existing{guest->mappings}, target{requested.mappings};
+                return existing.Size() == target.Size() && existing.FindContainedOffset(target) == 0;
+            }();
     }
 
     std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(std::vector<std::shared_ptr<Texture>> textures, const GuestTexture *requested) {

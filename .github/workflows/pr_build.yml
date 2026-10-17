@@ -58,6 +58,9 @@ jobs:
       - name: Usage tracker regressions (ASan/UBSan)
         run: python3 tests/gpu_usage/run.py
 
+      - name: Texture mapping regressions (ASan/UBSan)
+        run: bash tests/texture/run.sh
+
       - name: Occlusion and conditional rendering regressions
         run: |
           python3 tests/gpu_queries/run.py

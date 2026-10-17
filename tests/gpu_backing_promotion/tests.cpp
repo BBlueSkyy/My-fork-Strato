@@ -11,6 +11,7 @@
 #include <cstring>
 #include <gpu/texture/backing_promotion.h>
 #include <gpu/usage_tracker.h>
+#include <gpu/texture/guest_range.h>
 #include <gpu/texture/pitch_linear.h>
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
@@ -260,7 +261,17 @@ namespace skyline::gpu {
             struct Memory {
                 unsigned discards{};
                 span<u8> CreateMirror(span<u8> mapping) { return mapping; }
-                span<u8> CreateMirrors(const std::vector<span<u8>> &) { throw std::runtime_error("Host mapping adapter tests one contiguous mapping"); }
+                span<u8> CreateMirrors(const std::vector<span<u8>> &mappings) {
+                    assert(!mappings.empty());
+                    auto begin{mappings.front().data()};
+                    size_t size{};
+                    for (auto mapping : mappings) {
+                        if (mapping.data() != begin + size)
+                            throw std::runtime_error("Host mirror adapter supports physically contiguous partitions only");
+                        size += mapping.size();
+                    }
+                    return {begin, size};
+                }
                 void FreeMemory(span<u8> mirror) { ++discards; std::fill(mirror.begin(), mirror.end(), 0); }
             } memory;
             struct Trap {
@@ -1754,6 +1765,52 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         *gpu.state.settings->freeGuestTextureMemory = false;
     }
 
+    void CheckSegmentedMappings(GPU &gpu) {
+        std::vector<u8> bytes(16384, 0x31);
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = vk::Extent3D{64,64,1};
+        guest.mipLevelCount = guest.viewMipCount = guest.layerCount = 1;
+        guest.viewType = vk::ImageViewType::e2D;
+        guest.layerStride = guest.CalculateLayerSize();
+        guest.mappings = {span<u8>{bytes.data(),8192}, span<u8>{bytes.data()+8192,8192}};
+        TextureManager manager{gpu};
+        auto parent{manager.FindOrCreate(guest)};
+        guest.mappings = {span<u8>{bytes}};
+        auto whole{manager.FindOrCreate(guest)};
+        assert(whole->texture == parent->texture); // A query may cross cached segment boundaries.
+        guest.mappings = {span<u8>{bytes.data(),4096}, span<u8>{bytes.data()+4096,12288}};
+        assert(manager.FindOrCreate(guest)->texture == parent->texture);
+        gpu.scheduler.Complete();
+    }
+
+    void CheckSegmentedAliasAuthority(GPU &gpu) {
+        std::vector<u8> bytes(90112 * 6, 0x37), expected{bytes};
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = vk::Extent3D{128,128,1};
+        guest.mipLevelCount = guest.viewMipCount = 1;
+        guest.layerCount = 6; guest.layerStride = 90112;
+        guest.viewType = vk::ImageViewType::e2DArray;
+        guest.mappings = {span<u8>{bytes}};
+        TextureManager manager{gpu};
+        auto parent{manager.FindOrCreate(guest)};
+        WriteAliasRenderTarget(parent->texture, {1,0,0,1});
+        EncodeAliasBase(parent->texture, expected, {255,0,0,255});
+        guest.layerCount = 3; guest.layerStride = 180224;
+        guest.mappings = {span<u8>{bytes.data(),270336}, span<u8>{bytes.data()+270336,270336}};
+        auto alternate{manager.FindOrCreate(guest)};
+        assert(alternate->texture != parent->texture && parent->texture->HasAliases() &&
+               parent->texture->aliasGroup.load() == alternate->texture->aliasGroup.load());
+        assert(bytes == expected);
+        AliasRead(alternate->texture); VerifyAliasHost(alternate->texture,expected);
+        WriteAliasRenderTarget(alternate->texture, {0,1,0,1});
+        EncodeAliasBase(alternate->texture,expected,{0,255,0,255});
+        assert(parent->texture->aliasStale);
+        AliasRead(parent->texture); VerifyAliasHost(parent->texture,expected);
+        gpu.scheduler.Complete();
+    }
+
     void CheckRenderTargetUsage(GPU &gpu) {
         std::vector<u8> first(8192), second(8192);
         GuestTexture guest;
@@ -1988,6 +2045,8 @@ int main() {
             std::fprintf(stderr, "RUN CheckSeparateLayouts\n");
             CheckSeparateLayouts(gpu);
             std::fprintf(stderr, "RUN CheckStandaloneTransferFailures\n");
+            CheckSegmentedMappings(gpu);
+            CheckSegmentedAliasAuthority(gpu);
             CheckRenderTargetUsage(gpu);
             CheckAttachmentRevalidation(gpu);
             CheckStandaloneTransferFailures(gpu);
