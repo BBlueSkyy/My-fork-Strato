@@ -61,6 +61,7 @@ jobs:
         run: |
           sudo apt-get install -y libboost-dev
           python3 tests/gmmu/run.py
+          python3 tests/gpu_sparse_mappings/run.py
 
       - name: Occlusion and conditional rendering regressions
         run: |
