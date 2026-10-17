@@ -1159,7 +1159,7 @@ namespace skyline::gpu {
         RecordGpuWrite();
         for (auto mapping : guest->mappings)
             if (mapping.valid())
-                usageTracker.dirtyIntervals.Insert(mapping);
+                usageTracker.RecordGpuWrite(mapping);
     }
 
     void Texture::SynchronizeHost(bool gpuDirty) {

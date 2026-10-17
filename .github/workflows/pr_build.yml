@@ -55,6 +55,9 @@ jobs:
             tests/gpu/texture_view_range_tests.cpp -o /tmp/texman-view-range-tests
           /tmp/texman-view-range-tests
 
+      - name: Usage tracker regressions (ASan/UBSan)
+        run: python3 tests/gpu_usage/run.py
+
       - name: Occlusion and conditional rendering regressions
         run: |
           python3 tests/gpu_queries/run.py

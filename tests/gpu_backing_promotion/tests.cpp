@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <gpu/texture/backing_promotion.h>
+#include <gpu/usage_tracker.h>
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
 #include <bit>
@@ -277,7 +278,6 @@ namespace skyline::gpu {
         inline auto R8G8B8A8Unorm{&rgba}, B8G8R8A8Unorm{&bgra};
         inline auto R8G8B8A8Srgb{&rgbaSrgb}, B8G8R8A8Srgb{&bgraSrgb};
     }
-    struct UsageTracker { struct Intervals { unsigned count{}; void Insert(span<u8>) { ++count; } } dirtyIntervals; };
     struct TextureView;
     struct GuestTexture {
         NativeFormat *format{};
@@ -1687,7 +1687,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         storage->dirtyState = Texture::DirtyState::Clean;
         UsageTracker usage;
         storage->MarkGpuDirty(usage);
-        assert(storage->everUsedAsGpuWrite && usage.dirtyIntervals.count == 1);
+        assert(storage->everUsedAsGpuWrite && usage.RequiresGpuFlush(span<u8>{bytes.data(), bytes.size()}));
         auto storageCommands{gpu.scheduler.AllocateCommandBuffer()};
         storage->SynchronizeHostInline(*storageCommands, storageCommands.GetFenceCycle(), true);
         assert(storage->dirtyState == Texture::DirtyState::GpuDirty);
@@ -1731,7 +1731,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         UsageTracker usage;
         bool storageRejected{};
         try { texture->MarkGpuDirty(usage); } catch (const std::runtime_error &) { storageRejected = true; }
-        assert(storageRejected && usage.dirtyIntervals.count == 0 && group->generation == generation);
+        assert(storageRejected && !usage.RequiresGpuFlush(span<u8>{bytes.data(), bytes.size()}) && group->generation == generation);
 
         const auto oldPass{texture->lastRenderPassUsage};
         const auto oldPassIndex{texture->lastRenderPassIndex};
