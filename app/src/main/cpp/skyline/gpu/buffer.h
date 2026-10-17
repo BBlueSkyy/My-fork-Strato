@@ -4,6 +4,7 @@
 #pragma once
 
 #include <boost/functional/hash.hpp>
+#include <common/interval_list.h>
 #include <common/linear_allocator.h>
 #include <common/spin_lock.h>
 #include <common/trap_manager.h>
