@@ -1772,7 +1772,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         std::vector<u8> pitchBytes(64 * 32 * 4);
         GuestTexture pitch;
         pitch.format = format::R8G8B8A8Unorm;
-        pitch.dimensions = {64,32,1};
+        pitch.dimensions = vk::Extent3D{64,32,1};
         pitch.mipLevelCount = 1;
         pitch.viewMipCount = 1;
         pitch.layerCount = 1;
@@ -1790,7 +1790,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
 
         GuestTexture volume;
         volume.format = format::R8G8B8A8Unorm;
-        volume.dimensions = {16,16,4};
+        volume.dimensions = vk::Extent3D{16,16,4};
         volume.viewType = vk::ImageViewType::e3D;
         volume.layerCount = 1;
         volume.mipLevelCount = 3;
@@ -1858,7 +1858,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         std::vector<u8> bytes(64 * 64 * 4, 0x31);
         GuestTexture guest;
         guest.format = format::R8G8B8A8Unorm;
-        guest.dimensions = {64,64,1};
+        guest.dimensions = vk::Extent3D{64,64,1};
         guest.mipLevelCount = 1;
         guest.viewMipCount = 1;
         guest.layerCount = 1;
@@ -1900,7 +1900,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         std::vector<u8> bytes(90112 * 6, 0x4D);
         GuestTexture guest;
         guest.format = format::R8G8B8A8Unorm;
-        guest.dimensions = {128,128,1};
+        guest.dimensions = vk::Extent3D{128,128,1};
         guest.mipLevelCount = 8;
         guest.viewMipCount = 8;
         guest.layerCount = 6;
