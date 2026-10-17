@@ -5,6 +5,7 @@
 
 #include <adrenotools/driver.h>
 #include "gpu/trait_manager.h"
+#include "gpu/device_fault.h"
 #include "gpu/memory_manager.h"
 #include "gpu/command_scheduler.h"
 #include "gpu/presentation_engine.h"
@@ -29,6 +30,7 @@ namespace skyline::gpu {
      */
     class GPU {
       private:
+        DeviceFaultDiagnostics deviceFaultDiagnostics; //!< One-shot guard is initialized before GPU worker threads
         const DeviceState &state; // We access the device state inside Texture (and Buffers) for setting up NCE memory tracking
         friend Texture;
         friend Buffer;
@@ -78,5 +80,8 @@ namespace skyline::gpu {
          * @brief Should be called after loader population to initialize the per-title caches
          */
         void Initialise();
+
+        /** @brief Log optional diagnostics after an observed Vulkan device loss, preserving the original failure. */
+        void ReportDeviceLoss(const char *context) noexcept;
     };
 }

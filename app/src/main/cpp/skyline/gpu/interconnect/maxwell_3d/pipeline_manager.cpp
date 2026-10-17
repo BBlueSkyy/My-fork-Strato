@@ -10,6 +10,7 @@
 #include <gpu/graphics_pipeline_assembler.h>
 #include <gpu/shader_manager.h>
 #include <shader_compiler/backend/spirv/emit_spirv.h>
+#include <shader_compiler/frontend/maxwell/geometry_passthrough_link.h>
 #include <gpu.h>
 #include <jvm.h>
 #include <vulkan/vulkan_enums.hpp>
@@ -109,11 +110,19 @@ namespace skyline::gpu::interconnect::maxwell3d {
         switch (topology) {
             case engine::DrawTopology::Points:
                 return Shader::OutputTopology::PointList;
+            case engine::DrawTopology::Lines:
+            case engine::DrawTopology::LineLoop:
             case engine::DrawTopology::LineStrip:
+            case engine::DrawTopology::LineListAdjcy:
+            case engine::DrawTopology::LineStripAdjcy:
                 return Shader::OutputTopology::LineStrip;
             default:
                 return Shader::OutputTopology::TriangleStrip;
         }
+    }
+
+    static bool HasConventionalGeometryStage(bool guestGeometryPresent, bool layerGeometryPresent, bool nativePassthrough) {
+        return (guestGeometryPresent || layerGeometryPresent) && !nativePassthrough;
     }
     /**
      * @notes Roughly based on https://github.com/yuzu-emu/yuzu/blob/4ffbbc534884841f9a5536e57539bf3d1642af26/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp#L127
@@ -122,6 +131,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         Shader::RuntimeInfo info;
         if (lastProgram) {
             info.previous_stage_stores = lastProgram->info.stores;
+            info.previous_stage_legacy_stores_mapping = lastProgram->info.legacy_stores_mapping;
             if (lastProgram->is_geometry_passthrough)
                 info.previous_stage_stores.mask |= lastProgram->info.passthrough.mask;
         } else {
@@ -147,6 +157,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 info.tess_spacing = ConvertShaderTessSpacing(packedState.spacing);
                 break;
             case Shader::Stage::Geometry:
+                // A native passthrough stage forwards the predecessor's position and
+                // transform feedback; ordinary and emulated GS stages own these.
+                if (program.is_geometry_passthrough)
+                    break;
+
                 if (program.output_topology == Shader::OutputTopology::PointList)
                     info.fixed_state_point_size = packedState.pointSize;
 
@@ -232,7 +247,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     return accessor.IsTexturePixelFormatInteger(BindlessHandle{ .raw = index }.textureIndex);
                 }, [&](u32 index) {
                     return accessor.GetTextureCompareFunc(index);
-                })};
+                }, !packedState.transformFeedbackEnable &&
+                   !packedState.shaderHashes[stageIdx(PipelineStage::Tessellation)] &&
+                   packedState.topology != engine::DrawTopology::LineListAdjcy &&
+                   packedState.topology != engine::DrawTopology::LineStripAdjcy &&
+                   packedState.topology != engine::DrawTopology::TriangleListAdjcy &&
+                   packedState.topology != engine::DrawTopology::TriangleStripAdjcy)};
             if (i == stageIdx(PipelineStage::Vertex) && packedState.shaderHashes[stageIdx(PipelineStage::VertexCullBeforeFetch)]) {
                 ignoreVertexCullBeforeFetch = true;
                 programs[i] = gpu.shader->CombineVertexShaders(programs[stageIdx(PipelineStage::VertexCullBeforeFetch)], program, binary.binary);
@@ -240,11 +260,21 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 programs[i] = program;
             }
 
-            if (programs[i].info.requires_layer_emulation)
+            if (programs[i].info.requires_layer_emulation || programs[i].info.requires_viewport_index_emulation)
                 layerConversionSourceProgram = &programs[i];
         }
 
-        bool hasGeometry{packedState.shaderHashes[stageIdx(PipelineStage::Geometry)] && !programs[stageIdx(PipelineStage::Geometry)].is_geometry_passthrough};
+        if (packedState.shaderHashes[stageIdx(PipelineStage::Geometry)]) {
+            Shader::IR::Program *source{};
+            for (u32 i{}; i < stageIdx(PipelineStage::Geometry); ++i)
+                if (packedState.shaderHashes[i]) source = &programs[i];
+            if (source) Shader::Maxwell::LinkGeometryPassthrough(*source, programs[stageIdx(PipelineStage::Geometry)]);
+        }
+
+        bool hasGeometry{HasConventionalGeometryStage(
+            packedState.shaderHashes[stageIdx(PipelineStage::Geometry)] != 0,
+            layerConversionSourceProgram != nullptr,
+            programs[stageIdx(PipelineStage::Geometry)].is_geometry_passthrough)};
         Shader::Backend::Bindings bindings{};
         Shader::IR::Program *lastProgram{};
 

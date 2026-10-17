@@ -43,7 +43,8 @@ namespace skyline::gpu {
         bool supportsImageReadWithoutFormat{}; //!< If a storage image can be read without a format
         bool supportsTopologyListRestart{}; //!< If the device supports using primitive restart for topology lists (with VK_EXT_primitive_topology_list_restart)
         bool supportsTopologyPatchListRestart{}; //!< If the device supports using primitive restart for topology patch lists (with VK_EXT_primitive_topology_list_restart)
-        bool supportsGeometryShaders; //!< If the device supports the 'geometryShader' Vulkan feature
+        bool supportsGeometryShaderPassthrough{}; //!< If VK_NV_geometry_shader_passthrough and geometry shaders are enabled
+        bool supportsGeometryShaders{}; //!< If the device supports the 'geometryShader' Vulkan feature
         bool supportsVertexPipelineStoresAndAtomics{}; //!< If the device supports the 'vertexPipelineStoresAndAtomics' Vulkan feature
         bool supportsFragmentStoresAndAtomics{}; //!< If the device supports the 'fragmentStoresAndAtomics' Vulkan feature
         bool supportsShaderStorageImageWriteWithoutFormat{}; //!< If the device supports the 'shaderStorageImageWriteWithoutFormat' Vulkan feature
@@ -51,6 +52,7 @@ namespace skyline::gpu {
         bool supportsWideLines{}; //!< If the device supports the 'wideLines' Vulkan feature
         bool supportsDepthClamp{}; //!< If the device supports the 'depthClamp' Vulkan feature
         bool supportsExtendedDynamicState{}; //!< If the device supports the 'VK_EXT_extended_dynamic_state' Vulkan extension
+        bool supportsDeviceFault{}; //!< If VK_EXT_device_fault and its deviceFault feature are enabled for post-loss diagnostics
         bool supportsNullDescriptor{}; //!< If the device supports the null descriptor feature in the 'VK_EXT_robustness2' Vulkan extension
         u32 subgroupSize{}; //!< Size of a subgroup on the host GPU
         u32 hostVisibleCoherentCachedMemoryType{std::numeric_limits<u32>::max()};

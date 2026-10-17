@@ -55,7 +55,7 @@ namespace skyline::gpu {
         auto &replacementMap{spv ? hostShaderReplacements : guestShaderReplacements};
         auto it{replacementMap.find(hash)};
         if (it != replacementMap.end()) {
-            LOGI("Replacing shader with hash: 0x{:X}", hash);
+            LOGI("Replacing shader with hash: 0x{:X} ({})", hash, spv ? "host SPIR-V" : "guest Maxwell");
             return it->second;
         }
 
@@ -88,7 +88,7 @@ namespace skyline::gpu {
             .support_snorm_render_buffer = true,
             .support_viewport_index_layer = gpu.traits.supportsShaderViewportIndexLayer,
             .min_ssbo_alignment = traits.minimumStorageBufferAlignment,
-            .support_geometry_shader_passthrough = false,
+            .support_geometry_shader_passthrough = traits.supportsGeometryShaderPassthrough,
             .has_broken_texture_shadow_compare = traits.quirks.brokenTextureShadowCompare,
         };
 
@@ -119,7 +119,7 @@ namespace skyline::gpu {
             .support_demote_to_helper_invocation = traits.supportsShaderDemoteToHelper,
             .support_int64_atomics = traits.supportsAtomicInt64,
             .support_derivative_control = true,
-            .support_geometry_shader_passthrough = false,
+            .support_geometry_shader_passthrough = traits.supportsGeometryShaderPassthrough,
             .support_native_ndc = false,
             .warp_size_potentially_larger_than_guest = TegraX1WarpSize < traits.subgroupSize,
             .lower_left_origin_mode = false,
@@ -424,14 +424,16 @@ namespace skyline::gpu {
                                                            u64 hash, span<u8> binary, u32 baseOffset,
                                                            u32 textureConstantBufferIndex,
                                                            bool viewportTransformEnabled,
-                                                           const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc) {
+                                                           const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc, bool allowNativePassthrough) {
         binary = ProcessShaderBinary(false, hash, binary);
 
         std::scoped_lock lock{poolMutex};
 
         GraphicsEnvironment environment{postVtgShaderAttributeSkipMask, stage, binary, baseOffset, textureConstantBufferIndex, viewportTransformEnabled, constantBufferRead, getTextureType, isTexturePixelFormatInteger, getTextureCompareFunc};
         Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset + sizeof(Shader::ProgramHeader))}};
-        return  Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
+        auto translateInfo{hostTranslateInfo};
+        translateInfo.support_geometry_shader_passthrough &= allowNativePassthrough;
+        return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, translateInfo);
     }
 
     Shader::IR::Program ShaderManager::CombineVertexShaders(Shader::IR::Program &vertexA, Shader::IR::Program &vertexB, span<u8> vertexBBinary) {
