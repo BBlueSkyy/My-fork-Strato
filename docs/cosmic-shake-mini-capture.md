@@ -8,15 +8,19 @@ texture matching.
 ## Trigger
 
 1. Install an APK from this draft branch and enter the corrupted main menu.
-2. Locate the app's public files directory, then `gpu_capture/cosmic_shake/`.
-   If no directory appears, present several frames first.
+2. The diagnostic app creates `gpu_capture/cosmic_shake/` when emulation
+   starts. In Android's **Files/Documents** picker, Strato Dev's own
+   storage provider exposes this folder even if `Android/data` is hidden.
 3. Rename `ARM_CAPTURE.rename_this_file_when_ready` to `ARM_CAPTURE`.
-4. Let six frames present, then exit the game and preserve
-   `gpu_capture/cosmic_shake/capture_001/` (or the next numbered directory).
-   On Android with restricted app-directory access, retrieve the folder with
-   an authorized file manager or ADB where permitted.
-5. Send the capture folder (ZIP), the emulator log, driver name/version and
-   a screenshot of the corrupted frame.
+   This requires an app-files-aware file picker; no frame capture can be
+   obtained before the game reaches GPU presentation.
+4. Let six frames present, return to the **Strato Dev main screen**, then
+   **long-press the log icon** to share a ZIP directly through Android's
+   Sharesheet (no direct Android/data browsing needed).
+5. Send the ZIP, driver name/version and a screenshot of the corrupted frame.
+   If the trigger never fired, the ZIP will contain `diagnostic-status.txt`
+   and the last up to 256 KiB of `emulation.log`, which help locate the
+   startup failure.
 
 Manual trigger is preferred: the older automatic blackout detector is not a
 reliable signal for a scene that is corrupted continuously. Leave AUTO_CAPTURE
