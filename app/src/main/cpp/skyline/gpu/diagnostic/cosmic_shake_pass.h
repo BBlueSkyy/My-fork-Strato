@@ -10,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 namespace skyline::gpu::diagnostic {
@@ -23,6 +24,7 @@ namespace skyline::gpu::diagnostic {
         static constexpr std::uint32_t FrameCount{6};
         static constexpr std::uint32_t MaxPasses{36};
         static constexpr std::uint32_t MaxTexmanEvents{512};
+        static constexpr std::uint32_t MaxDistinctTicFaults{256};
         static constexpr std::size_t MaxReadbackBytes{96ULL * 1024 * 1024};
         // Separate low-footprint sampling budget, not charged as full-image captures.
         static constexpr std::uint32_t MaxFocusedProbes{64};
@@ -49,6 +51,8 @@ namespace skyline::gpu::diagnostic {
         std::string path;
         std::uint32_t nextPass{};
         std::uint32_t texmanEvents{};
+        std::uint64_t totalTicFaults{};
+        std::unordered_set<std::uint64_t> observedTicIovas;
         std::size_t readbackBytes{};
         std::uint32_t focusedProbes{};
         std::size_t focusedBytes{};
@@ -107,6 +111,8 @@ namespace skyline::gpu::diagnostic {
             recentProbes.clear();
             nextPass = 0;
             texmanEvents = 0;
+            totalTicFaults = 0;
+            observedTicIovas.clear();
             readbackBytes = 0;
             focusedProbes = 0;
             focusedBytes = 0;
@@ -116,12 +122,42 @@ namespace skyline::gpu::diagnostic {
                     << "Cosmic Shake pass-boundary diagnostic; stats are post-render-pass observations.\n";
                 std::ofstream(std::filesystem::path(path) / "texman_decisions.txt", std::ios::trunc)
                     << "Bounded TextureManager decisions while capture is active.\n";
+                std::ofstream(std::filesystem::path(path) / "tic_gmmu_faults.txt", std::ios::trunc)
+                    << "First " << MaxDistinctTicFaults << " distinct unmapped TIC IOVAs during capture. "
+                       "Context is the descriptor lookup submission/pass, not a guaranteed draw ID.\n";
             }
             active.store(true, std::memory_order_release);
         }
 
         void Stop() {
-            active.store(false, std::memory_order_release);
+            std::scoped_lock lock{mutex};
+            if (!active.exchange(false, std::memory_order_acq_rel))
+                return;
+            AppendLocked("tic_gmmu_faults.txt",
+                "SUMMARY attempted_unmapped_lookups=" + std::to_string(totalTicFaults) +
+                " distinct_recorded_iovas=" + std::to_string(observedTicIovas.size()) +
+                " distinct_limit=" + std::to_string(MaxDistinctTicFaults));
+        }
+
+        // The fast inactive test avoids lock/formatting overhead in normal emulation.
+        // Record only the first failure per IOVA to avoid huge files when a guest
+        // repeatedly samples the same unmapped texture thousands of times.
+        bool ReserveTicFault(std::uint64_t iova) {
+            if (!active.load(std::memory_order_acquire))
+                return false;
+            std::scoped_lock lock{mutex};
+            if (!active.load(std::memory_order_relaxed))
+                return false;
+            ++totalTicFaults;
+            if (observedTicIovas.size() >= MaxDistinctTicFaults)
+                return false;
+            return observedTicIovas.insert(iova).second;
+        }
+
+        void RecordTicFault(std::string line) {
+            std::scoped_lock lock{mutex};
+            if (!path.empty())
+                AppendLocked("tic_gmmu_faults.txt", line);
         }
 
         std::optional<PassTicket> ReservePass(std::size_t bytes) {
