@@ -423,7 +423,9 @@ namespace skyline::gpu::interconnect {
                         static_cast<u32>(textureHeader.headerType),
                         guest.mipLevelCount, guest.viewMipBase, guest.viewMipCount,
                         guest.layerCount, guest.baseArrayLayer,
-                        static_cast<u32>(guest.tileConfig.mode), guest.tileConfig.pitch,
+                        static_cast<u32>(guest.tileConfig.mode),
+                        guest.tileConfig.mode == texture::TileMode::Pitch
+                            ? guest.tileConfig.pitch : 0U,
                         segmentCount, ranges));
                 }
                 LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
