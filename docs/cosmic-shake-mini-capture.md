@@ -32,6 +32,13 @@ and should be left unarmed. This is diagnostic-only; do not merge.
 ## Output
 
 - `texman_decisions.txt`: texture reuse/matching, guest mappings, mips/layers.
+- `tic_gmmu_faults.txt`: up to 256 distinct unmapped TIC IOVAs with
+  TIC index, shader type, current submission/render-pass counter,
+  requested texture size, mapped/unmapped segment ranges, first invalid
+  offset, dimensions/mip count, format, tiling and a summary of lookup
+  occurrences during six captured frames. This associates descriptor
+  lookup context with nearby GPU work, **not** a proven shader draw ID.
+  The original null-texture fallback is unchanged.
 - `pass_boundary.txt` / `pass_NNN.txt`: candidate output images, pass
   sequence, image views, formats, host buffer statistics/hashes and raw preview.
 - `pre_pass_NNN.txt`: paired input state before affected 1280×720 passes,
