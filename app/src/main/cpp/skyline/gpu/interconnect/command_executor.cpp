@@ -403,6 +403,17 @@ namespace skyline::gpu::interconnect {
                texture.layout != vk::ImageLayout::eUndefined;
     }
 
+    static bool IsNarutoAtlasImage(const Texture &texture) {
+        return texture.dimensions.width > 0 && texture.dimensions.width <= 2048 &&
+               texture.dimensions.height > 0 && texture.dimensions.height <= 2048 &&
+               texture.dimensions.depth == 1 && texture.layerCount == 1 &&
+               texture.sampleCount == vk::SampleCountFlagBits::e1 &&
+               texture.surfaceSize > 0 && texture.surfaceSize <= 8ULL * 1024 * 1024 &&
+               texture.format->IsCompressed() &&
+               (texture.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+               texture.layout != vk::ImageLayout::eUndefined;
+    }
+
     void CommandExecutor::TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color) {
         auto &capture{diagnostic::NarutoUiCapture()};
         if (!capture.active.load(std::memory_order_acquire))
@@ -471,9 +482,11 @@ namespace skyline::gpu::interconnect {
         }
         if (!compressedSample)
             return;
+        bool foundUiOutput{};
         for (auto *view : color) {
             if (!view || !view->texture || !IsNarutoUiPassImage(*view->texture))
                 continue;
+            foundUiOutput = true;
             const auto &texture{view->texture};
             const auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
                 [&](const DiagnosticPassImage &entry) { return entry.texture.get() == texture.get(); })};
@@ -489,6 +502,48 @@ namespace skyline::gpu::interconnect {
             capture.Record(fmt::format("UI_CANDIDATE executor=0x{:X} submission={} rp={} texture=0x{:X} dimensions={}x{}",
                 reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
                 reinterpret_cast<uintptr_t>(texture.get()), texture->dimensions.width, texture->dimensions.height));
+        }
+        if (!foundUiOutput)
+            return;
+
+        // Capture the actual BCn image backing behind sampled atlas views. Readback
+        // remains GPU-ordered in the existing executor stream; raw blocks can be
+        // decoded offline without changing the guest's shader or texture state.
+        for (auto *view : sampled) {
+            if (!view || !view->texture || !IsNarutoAtlasImage(*view->texture))
+                continue;
+            const auto &texture{view->texture};
+            const auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
+                [&](const DiagnosticPassImage &entry) { return entry.texture.get() == texture.get(); })};
+            if (it == diagnosticPassImages.end()) {
+                if (diagnosticPassImages.size() < 24)
+                    diagnosticPassImages.push_back({texture, false, true, true});
+            } else {
+                it->priority = true;
+                it->atlas = true;
+            }
+            uintptr_t guestMap{};
+            if (texture->guest && !texture->guest->mappings.empty())
+                guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+            capture.Record(fmt::format(
+                "ATLAS_SAMPLE executor=0x{:X} submission={} rp={} texture=0x{:X} guest_map=0x{:X} "
+                "format={} {}x{} mips={} base_mip={} mip_count={} layers={} bytes={}",
+                reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
+                reinterpret_cast<uintptr_t>(texture.get()), guestMap,
+                vk::to_string(texture->format->vkFormat),
+                texture->dimensions.width, texture->dimensions.height, texture->levelCount,
+                view->range.baseMipLevel, view->range.levelCount, texture->layerCount,
+                texture->surfaceSize));
+        }
+
+        // The original 6+ sprite draws shared a single render pass. Capture a
+        // few intermediate results rather than just the already-corrupt final
+        // target. Pass splitting is strictly opt-in and bounded (draws 1,3,6).
+        const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+        if (const auto ordinal{capture.ProbeUiDraw(interval)}) {
+            capture.Record(fmt::format("UI_DRAW_PROBE ordinal={} executor=0x{:X} submission={} rp={}",
+                                       *ordinal, reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex));
+            BreakRenderPass();
         }
     }
 
@@ -510,17 +565,22 @@ namespace skyline::gpu::interconnect {
 
         for (const auto &entry : images) {
             const auto &texture{entry.texture};
-            if (!entry.priority || !IsNarutoUiPassImage(*texture))
+            if (!entry.priority)
+                continue;
+            const bool atlas{entry.atlas};
+            if (atlas ? !IsNarutoAtlasImage(*texture) : !IsNarutoUiPassImage(*texture))
                 continue;
 
-            const auto snapshotId{capture.ReservePassSnapshot(interval, texture->surfaceSize)};
+            const auto identity{reinterpret_cast<uintptr_t>(texture.get())};
+            const auto snapshotId{atlas ?
+                capture.ReserveAtlasSnapshot(interval, identity, texture->surfaceSize) :
+                capture.ReservePassSnapshot(interval, texture->surfaceSize)};
             if (!snapshotId)
                 continue;
             const auto index{*snapshotId};
             const auto width{texture->dimensions.width};
             const auto height{texture->dimensions.height};
             const auto format{vk::to_string(texture->format->vkFormat)};
-            const auto identity{reinterpret_cast<uintptr_t>(texture.get())};
             const auto executorIdentity{reinterpret_cast<uintptr_t>(this)};
             uintptr_t guestMap{};
             size_t guestBytes{};
@@ -530,19 +590,20 @@ namespace skyline::gpu::interconnect {
                 for (const auto &mapping : texture->guest->mappings)
                     guestBytes += mapping.size();
             }
-            const auto fileName{fmt::format("pass_{:02}_rp{}_{}x{}_{}.raw",
-                index, renderPassIndex, width, height, format)};
+            const auto fileName{fmt::format("{}_{:02}_rp{}_{}x{}_{}.raw",
+                atlas ? "atlas" : "pass", index, renderPassIndex, width, height, format)};
             const auto rawPath{directory / fileName};
-            const auto metaPath{directory / fmt::format("pass_{:02}.txt", index)};
+            const auto metaPath{directory / fmt::format("{}_{:02}.txt", atlas ? "atlas" : "pass", index)};
             const auto meta{fmt::format(
                 "capture_index={} approx_present={} render_pass={} submission={} "
-                "kind={} focus=ui_candidate_or_downstream executor=0x{:X} texture=0x{:X} dimensions={}x{} "
-                "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} "
+                "kind={} focus={} executor=0x{:X} texture=0x{:X} dimensions={}x{} "
+                "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} mips={} layers={} "
                 "note=recorded_after_render_pass_end_not_exact_frame_correlation\n",
                 index, interval, renderPassIndex, submissionNumber,
-                entry.renderTarget ? "render_target" : "sampled_input", executorIdentity, identity,
-                width, height, format, vk::to_string(texture->layout),
-                texture->surfaceSize, guestMap, guestBytes)};
+                atlas ? "sampled_atlas" : entry.renderTarget ? "render_target" : "sampled_input",
+                atlas ? "compressed_sprite_source" : "ui_candidate_or_downstream",
+                executorIdentity, identity, width, height, format, vk::to_string(texture->layout),
+                texture->surfaceSize, guestMap, guestBytes, texture->levelCount, texture->layerCount)};
             auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
             slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
                 [texture, staging](vk::raii::CommandBuffer &commandBuffer,
@@ -568,7 +629,7 @@ namespace skyline::gpu::interconnect {
             capture.Record(fmt::format(
                 "PHASE2_SNAPSHOT index={} rp={} submission={} executor=0x{:X} interval={} kind={} texture=0x{:X} {}x{} format={}",
                 index, renderPassIndex, submissionNumber, executorIdentity, interval,
-                entry.renderTarget ? "rt" : "sampled", identity, width, height, format));
+                atlas ? "atlas" : entry.renderTarget ? "rt" : "sampled", identity, width, height, format));
         }
     }
 
