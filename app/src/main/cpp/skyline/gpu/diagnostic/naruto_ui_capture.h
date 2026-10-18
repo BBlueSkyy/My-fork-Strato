@@ -51,7 +51,11 @@ namespace skyline::gpu::diagnostic {
         // than the already-understood pre-first-text image. Both snapshots
         // would double diagnostic cost without improving localization.
         static constexpr std::uint32_t MaxPostSecondTextSnapshots{MaxUiMidpointSnapshots};
-        static constexpr std::size_t MaxPostSecondTextBytes{MaxUiMidpointBytes};
+        // 24 x 1600x900 RGBA8 = 138,240,000 bytes. Previous 72 MiB
+        // stopped after 13 frames and missed faults occurring later in the
+        // 24-frame presentation window. This larger quota is only for the
+        // manually armed post-text probe, not production rendering.
+        static constexpr std::size_t MaxPostSecondTextBytes{144ULL * 1024 * 1024};
         // Reserve budget for late UI composition and each of the four intervals.
         // Phase 6 only needs the first UI draw before/after images. Keep one
         // atlas per interval; the shader/CB/TSC evidence is tiny by comparison.
