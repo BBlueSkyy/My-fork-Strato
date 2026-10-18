@@ -321,3 +321,59 @@ pre-Fermi, the text draw or subsequent writers require examination.
 The logo-over-nameplate glitch was not clearly captured. The production
 GPU renderer remains unchanged, PR #359 preserved, #360 Draft/unmerged,
 and no GitHub Actions monitoring.
+
+## Two text-strip draws per Maxwell submission — updated checkpoint (2026-10-18)
+
+The diagnostic APK at commit 065d611 yielded a complete capture: 23
+ui_pretext snapshots, 23 composed reverse-Fermi sources, 24 VI sources,
+and 24 focused draw screenshots at 1120x630 on Qualcomm 0.777.0.
+
+**Pixel proof:** In nearly every ui_pretext image the P1 move list is
+not yet present; its absence before the first text draw is NORMAL.
+Normal Fermi output has three bars, some intervals only two, and the
+output of cycle 10 has **no** P1 move-list pixels added at all.
+In an offline crop x=65..515, y=436..569, the fraction of dark RGB pixels
+(<60 each channel) for cycle 10 is **0.023 before text**, **0.024 before
+the reverse Fermi blit**, and **0.023 in VI frame 11**. The regional
+mean absolute channel difference between pre-text and composed Fermi is
+only ~0.05/255. For a normal cycle 8, dark fractions are
+0.021 before text and 0.586 after; regional MAE is ~91.99/255.
+The CPU dark-pixel fraction increases from ~0.216 to ~0.586 in the same
+bad cycle, so the compositor still updates the other side. Intermediate
+cycles 7, 9 and 11–14 produce only part of the P1 list.
+
+**Corrected draw count:** examining the *entire* gpu_events trace between
+pre-text and Fermi reveals **TWO** text-strip consumer draws per ordinary
+Maxwell submission, separated by ~60 sprite draws, not one. The earlier
+statement that only one was emitted was based on the selection behavior
+of the previous diagnostic, and was incomplete. The corresponding two
+draws in normal cycle 9 and failed cycle 10 have identical shader hashes,
+live source image identities and destination; the only difference in
+the qualifying post-pretext draw signature list is an extra unrelated
+54-index sprite draw in cycle 10. This does not prove source pixels,
+shader execution or blend state match. Both text-strip draws are
+scheduled in the same Maxwell submission (e.g. 2363 versus 2365),
+which is more reliable for grouping than present_index_approx.
+
+**New diagnostic-only probe (after 065d611):** stop allocating the
+redundant full-size pre-first-text readbacks and spend the same bounded
+budget (24 images, 72 MiB) on the **actual render-target contents
+immediately AFTER the second text-strip consumer in each Maxwell
+submission**. Group by executor identity, Maxwell submission number and
+target backing, incrementing at the point where those actual draws are
+recorded. This does not use the approximate VI interval to count draws.
+The files are ui_posttext2_XX_* with corresponding .txt metadata and
+UI_COMPOSITOR_POSTTEXT2 trace events. The original Fermi source and
+VI source snapshots remain enabled and capped. It can perturb a race
+while a manual capture is armed but adds no waits or rendering changes
+during normal emulation.
+
+**Next decision:** align each ui_posttext2 with pre-reverse Fermi and
+VI by observed content/submission. If a bad P1 is already missing
+immediately after the second text draw, investigate the text producer,
+sampled RGBA strip, blend and preceding sprite work. If present there
+but absent pre-Fermi, investigate the later sprite draws or resource
+overwrites in Maxwell3D. Either case must be verified before a
+functional change. The intermittent logo-over-nameplate artifact is
+not clearly visible in this capture. Preserve #359; PR #360 remains
+diagnostic-only Draft and unmerged; do not monitor Actions.
