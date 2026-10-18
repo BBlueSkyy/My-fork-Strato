@@ -62,6 +62,10 @@ jobs:
           python3 tests/gpu_conditional/run.py
           python3 tests/gpu_draw_texture/run.py
 
+      - name: Mini-RenderDoc budget regressions
+        if: ${{ startsWith(github.head_ref, 'debug/naruto-ui-') }}
+        run: bash tests/naruto_ui_capture/run.sh
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
