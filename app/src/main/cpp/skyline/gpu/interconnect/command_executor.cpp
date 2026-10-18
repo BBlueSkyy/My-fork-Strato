@@ -403,6 +403,18 @@ namespace skyline::gpu::interconnect {
                texture.layout != vk::ImageLayout::eUndefined;
     }
 
+    static bool IsRecordedFlipOutput(diagnostic::UiFrameCapture &capture, const Texture &texture) {
+        if (!IsNarutoUiPassImage(texture) || !texture.guest)
+            return false;
+        const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+        for (const auto &mapping : texture.guest->mappings) {
+            if (mapping.valid() &&
+                capture.IsFlippedDestination(interval, reinterpret_cast<uintptr_t>(mapping.data()), mapping.size()))
+                return true;
+        }
+        return false;
+    }
+
     static bool IsNarutoAtlasImage(const Texture &texture) {
         return texture.dimensions.width > 0 && texture.dimensions.width <= 2048 &&
                texture.dimensions.height > 0 && texture.dimensions.height <= 2048 &&
@@ -483,7 +495,7 @@ namespace skyline::gpu::interconnect {
             return false;
         TextureView *target{};
         for (auto *view : color) {
-            if (view && view->texture && IsNarutoUiPassImage(*view->texture)) {
+            if (view && view->texture && IsRecordedFlipOutput(capture, *view->texture)) {
                 target = view;
                 break;
             }
@@ -523,7 +535,7 @@ namespace skyline::gpu::interconnect {
             return;
         bool foundUiOutput{};
         for (auto *view : color) {
-            if (!view || !view->texture || !IsNarutoUiPassImage(*view->texture))
+            if (!view || !view->texture || !IsRecordedFlipOutput(capture, *view->texture))
                 continue;
             foundUiOutput = true;
             const auto &texture{view->texture};
