@@ -21,6 +21,14 @@ int main() {
     assert(!capture.IsWatchedMapping(0x0FFF, 1));
     assert(!capture.IsWatchedMapping(0, 8));
 
+    assert(capture.ProbeUiDraw(0) == 1);
+    assert(!capture.ProbeUiDraw(0)); // #2
+    assert(capture.ProbeUiDraw(0) == 3);
+    assert(!capture.ProbeUiDraw(0)); // #4
+    assert(!capture.ProbeUiDraw(0)); // #5
+    assert(capture.ProbeUiDraw(0) == 6);
+    assert(!capture.ProbeUiDraw(UiFrameCapture::FrameCount));
+
     for (std::uint32_t i{}; i < UiFrameCapture::PassSnapshotsPerInterval; ++i)
         assert(capture.ReservePassSnapshot(0, 5760000));
     assert(!capture.ReservePassSnapshot(0, 5760000));
@@ -34,7 +42,16 @@ int main() {
 
     capture.Start(root.string());
     assert(!capture.IsWatchedMapping(0x1000, 1)); // no cross-session leakage
-    assert(capture.ReservePassSnapshot(0, 5760000)); // budget reset
+    assert(capture.ProbeUiDraw(0) == 1); // ordinals reset
+    assert(capture.ReserveAtlasSnapshot(0, 0x1234, 8192));
+    assert(!capture.ReserveAtlasSnapshot(0, 0x1234, 8192)); // deduplicated
+    assert(!capture.ReserveAtlasSnapshot(0, 0, 8192));
+    assert(!capture.ReserveAtlasSnapshot(UiFrameCapture::FrameCount, 0x99, 8192));
+    assert(capture.ReserveAtlasSnapshot(0, 0x5678, 8192));
+    assert(capture.ReserveAtlasSnapshot(0, 0x9999, 8192));
+    assert(!capture.ReserveAtlasSnapshot(0, 0xAAAA, 8192)); // per-frame atlas cap
+    assert(!capture.ReserveAtlasSnapshot(1, 0x1234, 8192)); // across intervals
+    assert(capture.ReservePassSnapshot(0, 5760000)); // pass budget still shared
     capture.Finish();
     fs::remove_all(root);
 }
