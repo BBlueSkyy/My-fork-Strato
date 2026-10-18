@@ -21,6 +21,19 @@ int main() {
     assert(!capture.IsWatchedMapping(0x0FFF, 1));
     assert(!capture.IsWatchedMapping(0, 8));
 
+    assert(!capture.IsFlippedDestination(0, 0x2000, 0x100));
+    capture.MarkFlippedDestination(0, 0x2000, 0x100);
+    assert(capture.IsFlippedDestination(0, 0x2000, 0x100));
+    assert(capture.IsFlippedDestination(0, 0x20FF, 1));
+    assert(!capture.IsFlippedDestination(0, 0x2100, 1));
+    assert(!capture.IsFlippedDestination(0, 0x1FFF, 1));
+    assert(!capture.IsFlippedDestination(1, 0x2000, 0x100)); // no cross-interval leakage
+    capture.MarkFlippedDestination(1, 0x4000, 0x100);
+    assert(capture.IsFlippedDestination(1, 0x4000, 0x100));
+    assert(!capture.IsFlippedDestination(1, 0x2000, 0x100));
+    capture.MarkFlippedDestination(0, 0x3000, 0x100); // late flip overwrites old candidate
+    assert(!capture.IsFlippedDestination(0, 0x2000, 0x100));
+    assert(capture.IsFlippedDestination(0, 0x3000, 0x100));
     assert(capture.ClaimPreUiDraw(0));
     assert(!capture.ClaimPreUiDraw(0)); // only one before-first-draw snapshot
     assert(!capture.ClaimPreUiDraw(UiFrameCapture::FrameCount));
@@ -47,6 +60,7 @@ int main() {
 
     capture.Start(root.string());
     assert(!capture.IsWatchedMapping(0x1000, 1)); // no cross-session leakage
+    assert(!capture.IsFlippedDestination(0, 0x3000, 0x100)); // flip registry reset
     assert(capture.ClaimPreUiDraw(0)); // pre-draw ownership reset
     assert(capture.ProbeUiDraw(0) == 1); // ordinals reset
     assert(capture.ReserveAtlasSnapshot(0, 0x1234, 8192));
