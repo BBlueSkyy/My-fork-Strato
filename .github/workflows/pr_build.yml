@@ -66,21 +66,31 @@ jobs:
           python3 tests/gpu_sampled_layout/run.py
           python3 tests/gpu_submission/run.py
 
+      - name: Mini-RenderDoc budget and watch regressions
+        run: bash tests/naruto_ui_capture/run.sh
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
+        run: |
+          if [[ "${{ github.head_ref }}" == "debug/naruto-connections-mini-renderdoc" ]]; then
+            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevReldebug
+          else
+            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
+          fi
       - name: Rename APKs
         if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
         run: |
-          mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
+          if [[ "${{ github.head_ref }}" != "debug/naruto-connections-mini-renderdoc" ]]; then
+            mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
+          fi
           mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
 
       - name: Upload Release APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
+        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && github.head_ref != 'debug/naruto-connections-mini-renderdoc' }}
         uses: actions/upload-artifact@v4
         with:
           name: strato-pr${{ github.event.number }}-release.apk
