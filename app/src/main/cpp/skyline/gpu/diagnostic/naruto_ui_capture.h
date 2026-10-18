@@ -290,6 +290,14 @@ namespace skyline::gpu::diagnostic {
                     textDrawCycles.push_back({target, 1});
                 return std::nullopt;
             }
+            // CompleteUiCompositorCycle() resets this existing target to 0.
+            // The next qualifying text draw must re-arm the target before the
+            // second draw can request a new snapshot. Without this transition,
+            // all subsequent cycles silently stop generating ui_posttext2.
+            if (it->draws == 0) {
+                it->draws = 1;
+                return std::nullopt;
+            }
             if (it->draws != 1)
                 return std::nullopt;
             it->draws = 2; // One probe per completed UI composition cycle.
