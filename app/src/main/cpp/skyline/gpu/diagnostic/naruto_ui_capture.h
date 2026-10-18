@@ -16,6 +16,16 @@
 #include <utility>
 
 namespace skyline::gpu::diagnostic {
+    // Shape-only portion of the opt-in RGBA8 text-strip filter. Unlike the
+    // original 1024..1280 width limit, this also handles larger internal
+    // framebuffer resolutions (e.g. 1664x64/96 from a 1600x900 output).
+    // This is NOT a production texture classification or a game-specific fix.
+    constexpr bool IsWideTextStripGeometry(std::uint32_t width, std::uint32_t height) {
+        return width >= 512 && width <= 2048 &&
+               height >= 16 && height <= 192 &&
+               width >= 6 * height;
+    }
+
     class UiFrameCapture {
       public:
         std::atomic<bool> active{false};
