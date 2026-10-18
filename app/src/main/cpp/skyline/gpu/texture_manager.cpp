@@ -103,15 +103,29 @@ namespace skyline::gpu {
                     // aliases are handled by the representable view paths below.
                     fullMatch = hostMapping->texture;
                 } else {
+                    // Sampled TICs may auto-size Y while the render target keeps
+                    // its declared block height. These are distinct encodings
+                    // of the same allocation and must share writer history.
+                    const bool sampledYLayoutAlias{
+                        matchGuestTexture.tileConfig.mode == texture::TileMode::Block && guestTexture.tileConfig.mode == texture::TileMode::Block &&
+                        matchGuestTexture.tileConfig.blockDepth == 1 && guestTexture.tileConfig.blockDepth == 1 &&
+                        matchGuestTexture.tileConfig.blockHeight != guestTexture.tileConfig.blockHeight &&
+                        matchGuestTexture.dimensions == guestTexture.dimensions &&
+                        matchGuestTexture.dimensions.depth == 1 &&
+                        matchGuestTexture.format->vkAspect == vk::ImageAspectFlagBits::eColor &&
+                        !matchGuestTexture.baseArrayLayer && !guestTexture.baseArrayLayer &&
+                        matchGuestTexture.GetImageType() == vk::ImageType::e2D && guestTexture.GetImageType() == vk::ImageType::e2D &&
+                        matchGuestTexture.mipLevelCount == 1 && guestTexture.mipLevelCount == 1 &&
+                        matchGuestTexture.layerCount == guestTexture.layerCount && matchGuestTexture.GetLayerStride() == requestedStride
+                    };
                     if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                        matchGuestTexture.tileConfig == guestTexture.tileConfig &&
-                        ((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
+                        (sampledYLayoutAlias || (matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                         ((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                           matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
-                          matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()) || matchGuestTexture.viewMipBase > 0)) {
-                        // The old full-match predicate would have reused this
-                        // image, despite incompatible backing bounds/layout. Do
-                        // not send it through unsynchronized overlap readback:
-                        // that would create a second, incoherent GPU writer.
+                          matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()) || matchGuestTexture.viewMipBase > 0)))) {
+                        // These layouts cannot share a VkImage backing. Preserve
+                        // their writer history through submission-safe alias
+                        // reconciliation rather than unsynchronized readback.
                         unrepresentableMatch = hostMapping->texture;
                     } else {
                         matches.push_back(hostMapping->texture);

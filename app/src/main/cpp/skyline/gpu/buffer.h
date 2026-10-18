@@ -175,6 +175,10 @@ namespace skyline::gpu {
 
       public:
         void UpdateCycle(const std::shared_ptr<FenceCycle> &newCycle) {
+            // A lifetime chain alone does not order independent record threads'
+            // queue submissions, including clean and directly imported buffers.
+            if (cycle && cycle != newCycle)
+                cycle->WaitSubmit();
             newCycle->ChainCycle(cycle);
             cycle = newCycle;
         }
