@@ -377,3 +377,53 @@ overwrites in Maxwell3D. Either case must be verified before a
 functional change. The intermittent logo-over-nameplate artifact is
 not clearly visible in this capture. Preserve #359; PR #360 remains
 diagnostic-only Draft and unmerged; do not monitor Actions.
+
+
+## 1600×900 Qualcomm capture: text-strip classifier corrected (2026-10-18)
+
+The latest capture has 24 complete VI sources, 13 pre-reverse Fermi
+sources (72 MiB budget exhausted at 1600×900), 12 initial draw
+snapshots, and 3,066 TEXT_CONSUMER_DRAW records. **All 3,066 records
+are kind=compressed_sprite**; there are **zero** kind=text_strip,
+zero ui_posttext2 files, and zero UI_COMPOSITOR_POSTTEXT2 events.
+The lack of this probe is a *diagnostic selection failure*, not
+proof that guest text draws disappeared.
+
+The routine DRAW samples (1/16 only) reveal actual full-screen
+blended consumers bound to **1664×96, 1664×64, 768×96, and 704×96
+RGBA8** source images. Our IsDiagnosticTextStrip filter previously
+accepted only width 1024..1280, inherited from 1120×630 captures.
+Thus it incorrectly excluded these real 1600×900 compositor inputs.
+
+**Pixel result:** VI frame 16 loses almost all P1 bars and frame
+17 restores them. Offline dark-pixel fraction RGB<75 in
+x=95..624,y=655..814: VI15=0.5487 (partial), VI16=0.0745 (absent),
+VI17=0.6688 (full). The CPU equivalent remains approximately 0.668.
+VI frames 9,11,13,15,21,23 show varying partial lists.
+The reverse-Fermi buffer aligns to VI N+1 for the 13 pairs available,
+but the strongest VI16 failure is OUTSIDE the saved Fermi budget.
+The Connections logo error is not clearly shown in this session.
+
+**Diagnostic-only updates after 951a0c0**:
+- Use a reusable shape predicate width 512..2048, height 16..192,
+  width>=6×height, retaining the RGBA8 format, color-image checks
+  and staging compatibility. Tests cover original 1184×32/64 and
+  observed 1664×64/96, 768×96, 704×96 sizes, plus negatives.
+- Count text consumers **per compositor target between reverse
+  Fermi blits**, not per individual Maxwell submission. The same
+  UI composition can span multiple executor submissions. The
+  second text draw should produce ui_posttext2_XX images and events;
+  this grouping does not imply exact present-frame association.
+- Increase only the manually armed post-text readback budget from
+  72 to **144 MiB** to cover 24 × 1600×900 RGBA8 frames (138.24 MB).
+  Retain a hard cap of 24 snapshots. Normal emulation does no extra
+  readback, CPU waits or special rendering.
+- Preserve #359 and all production paths. This is not an emulator
+  bug fix until a source/draw/attachment mismatch is demonstrated.
+
+**Next Qualcomm test:** after a new #360 reldebug APK compiles,
+check that the ZIP contains ui_posttext2_XX.raw/.txt. If it does,
+compare each post-text target with pre-reverse-Fermi input and VI,
+using metadata + image-content alignment. If absent again, inspect
+format/transfer capabilities and actual binding traces without
+inferring a rendering defect from diagnostic absence.
