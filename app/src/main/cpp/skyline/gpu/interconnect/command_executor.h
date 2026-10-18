@@ -227,6 +227,7 @@ namespace skyline::gpu::interconnect {
             std::shared_ptr<Texture> texture;
             bool renderTarget{};
             bool priority{};
+            bool atlas{};
         };
         std::vector<DiagnosticPassImage> diagnosticPassImages;
         std::vector<std::function<void()>> diagnosticReadbackCallbacks;
