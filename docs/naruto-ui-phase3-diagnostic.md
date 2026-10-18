@@ -19,16 +19,16 @@ After the previous capture verified that the **first UI sprite draw itself**
 creates the black fragments, this revision dumps only bounded raw guest
 bytes at the *selected first sprite draw*, after real draw-state preparation:
 
-- `ui_draw_indices.bin`: bytes from Maxwell index-buffer IOVA,
+- `ui_draw_iN_indices.bin`: bytes from Maxwell index-buffer IOVA,
   up to the last firstIndex+count position and capped at 4096 bytes.
   Read `UI_REAL_INDEX_BUFFER` for element width and index offset.
-- `ui_draw_vbo0.bin` through `ui_draw_vbo3.bin` for enabled
+- `ui_draw_iN_vbo0.bin` through `ui_draw_iN_vbo3.bin` for enabled
   streams 0–3. Each is at most 4096 bytes, containing actual guest
   vertex-buffer contents. `UI_REAL_VERTEX_BUFFER` provides **real
   Maxwell stride**, frequency and address. This is more reliable than
   `packedState.vertexStrides`, which can be zero when dynamic stride
   state is enabled.
-- `ui_draw_tsc_prefix.bin`: at most 512 bytes from the guest
+- `ui_draw_iN_tsc_prefix.bin`: at most 512 bytes from the guest
   sampler-control pool, with base and maximum index recorded.
   **It does not establish which TSC descriptor is bound**; those
   indices depend on bindless shader handles, so don't infer them from
@@ -37,7 +37,7 @@ bytes at the *selected first sprite draw*, after real draw-state preparation:
   formats, streams, offsets, first index, base vertex and instance
   count. Existing `pre_XX`/`pass_XX` images establish the effect.
 
-All data is read from the game's currently valid GMMU mappings, with
+Here iN is the approximate presentation interval (i0–i3), so later frames do not overwrite earlier dump files. All data is read from the game's currently valid GMMU mappings, with
 fixed per-file limits. A short or unmapped region is recorded explicitly
 (`fully_mapped=false`). Draw and shader behavior are unchanged.
 The complete compiled SPIR-V is **not** exported by this revision; shader
