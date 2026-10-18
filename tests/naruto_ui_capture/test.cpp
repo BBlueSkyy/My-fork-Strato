@@ -21,6 +21,11 @@ int main() {
     assert(!capture.IsWatchedMapping(0x0FFF, 1));
     assert(!capture.IsWatchedMapping(0, 8));
 
+    assert(capture.ClaimPreUiDraw(0));
+    assert(!capture.ClaimPreUiDraw(0)); // only one before-first-draw snapshot
+    assert(!capture.ClaimPreUiDraw(UiFrameCapture::FrameCount));
+    assert(capture.ClaimPreUiDraw(1)); // separate approximate presentation interval
+    assert(!capture.ClaimPreUiDraw(1));
     assert(capture.ProbeUiDraw(0) == 1);
     assert(!capture.ProbeUiDraw(0)); // #2
     assert(capture.ProbeUiDraw(0) == 3);
@@ -42,6 +47,7 @@ int main() {
 
     capture.Start(root.string());
     assert(!capture.IsWatchedMapping(0x1000, 1)); // no cross-session leakage
+    assert(capture.ClaimPreUiDraw(0)); // pre-draw ownership reset
     assert(capture.ProbeUiDraw(0) == 1); // ordinals reset
     assert(capture.ReserveAtlasSnapshot(0, 0x1234, 8192));
     assert(!capture.ReserveAtlasSnapshot(0, 0x1234, 8192)); // deduplicated
