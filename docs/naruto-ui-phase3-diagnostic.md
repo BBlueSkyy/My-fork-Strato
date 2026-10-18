@@ -1,45 +1,72 @@
-# Naruto UI: targeted mini-RenderDoc diagnostic (PR #336)
+# Naruto UI phase 4 — small glitches after PR #356
 
-This branch is diagnostic-only, **not** a rendering fix. No title-ID or shader-hash
-conditions influence guest GPU emulation. Baseline: the Oct 17 capture of Naruto Storm 4
-showed a logo in present source 0, absent in sources 1–3; all four sources were captured
-before copying to the Android swapchain. The supplied emulation.log was Silksong,
-not Naruto. The previous capture exhausted 160 MiB on 29 early full-screen snapshots.
+## Confirmed result
 
-## What phase 3 changes
+The user tested PR #356 and confirmed it eliminated the full UI flicker.
+The combined diagnostic PR #357 preserved that fix. Its Naruto Storm 4
+capture showed that the black rectangles and fragmented heading already exist
+in the UI render target **before** the Fermi2D vertical flip; the Fermi2D
+copy carries the corruption forward rather than introducing it.
 
-* A **blended draw sampling a compressed image** identifies a *candidate* sprite/UI
-  output (heuristic, not proof). Preserve its guest backing ranges under a lock.
-* Later draws/blits sampling those ranges mark their color destinations as downstream
-  candidates, even across command executors, by guest-memory range overlap.
-* Readbacks occur **after render pass endings**; only candidate and downstream color
-  targets spend the bounded snapshot budget (up to 4 per approximate presentation
-  interval and 16 total; hard cap still 160 MiB). No early scene-only snapshots.
-* In active captures, Fermi2D and MaxwellDMA record source/destination IOVA and
-  transfer parameters. The present thread records each real frame ID, source texture,
-  guest backing and fence cycle identity, separately from the approximate interval.
+The source of the corruption is **not yet proven**. Potential contributors
+include BC3 atlas contents/layout/mips, texture alias freshness, blending,
+texture coordinates and per-instance vertex state. No shader-hash, game-ID or
+driver-specific functional workarounds have been added.
 
-This is a targeted hypothesis test. If the UI is not drawn using blended compressed
-assets, a candidate may not be selected. If there are no pass snapshots, inspect
-`gpu_events.txt` for `UI_CANDIDATE` before broadening the heuristic.
+## Phase 4 capture strategy
 
-## Android reproduction
+When manually armed only, the capture now observes:
+- **UI sprite draw boundaries 1, 3 and 6** per *approximate* presentation
+  interval. A render-pass boundary is inserted after these selected draws,
+  allowing an intermediate image snapshot after each. This changes
+  render-pass grouping during diagnostics; it is NEVER enabled in normal play.
+- Up to **three unique compressed texture atlases per approximate interval**,
+  deduplicated across the four intervals. Atlas files are named
+  `atlas_XX_rpYY_WIDTHxHEIGHT_FORMAT.raw`; accompanying `atlas_XX.txt`
+  contains dimensions, Vulkan block-compression format, image mip count,
+  guest mapping, executor and submission. Raw BC3 blocks need offline
+  decompression, including handling any mip-level packing.
+- Full-screen UI outputs and their downstream consumers as
+  `pass_XX_rpYY_WIDTHxHEIGHT_FORMAT.raw` and `pass_XX.txt`.
+- Fermi2D source/destination blits, MaxwellDMA commands, presented frame
+  sources, backing addresses and completion-cycle identities in
+  `gpu_events.txt`.
 
-1. Build and install the *new* reldebug APK for this branch (the old Oct 11 APK
-   does **not** contain phase 3).
-2. Reproduce Naruto Storm 4 menu flicker.
-3. In the Strato public files folder, rename
-   `gpu_capture/naruto_ui/ARM_CAPTURE.rename_this_file_when_ready` to `ARM_CAPTURE`.
-4. Remain on the flickering screen until four presentations finish. Zip the new
-   `capture_###` directory **after** the `MINIRD_NARUTO_PHASE2 wrote snapshot`
-   readback messages stop. `capture_complete.txt` alone does not guarantee
-   every asynchronous snapshot file has been written.
-5. Include the `emulation.log` from the **same Naruto session** (check title ID).
+Maximum intermediate readbacks: 8/approximate interval, 32/session, still
+bounded by **160 MiB** across all intermediates. The image and event counts
+may be lower than those limits. Four actual presentation sources are saved
+separately. Since the presentation counter is asynchronous, an interval does
+**not** establish exact correspondence to a presented frame.
 
-Compare captured final presentation sources against `UI_CANDIDATE`,
-`PHASE2_SNAPSHOT`, `FERMI2D`, `MAXWELL_DMA` and `PRESENT_SOURCE` events.
-Identify the first divergence, not just the first missing final logo.
-The `present_index_approx` tag is **not an exact frame-boundary timestamp**.
-GPU readbacks perturb timing and cannot themselves establish a runtime fix.
+## Android procedure
 
-Host regression test: `bash tests/naruto_ui_capture/run.sh`.
+1. Install **only the new PR #357 reldebug APK** after its build succeeds.
+   The older #357 APK captured final render passes but lacked per-draw/atlas
+   snapshots. A full release APK is deliberately skipped for diagnostic
+   branches to reduce compilation time.
+2. With Naruto Storm 4 displaying the broken `Game Mode Select` menu,
+   find the public Strato directory `gpu_capture/naruto_ui/`.
+3. Rename `ARM_CAPTURE.rename_this_file_when_ready` to `ARM_CAPTURE`.
+4. Keep the menu visible until four presented frames have been captured.
+   Wait for all `MINIRD_NARUTO_PHASE2 wrote snapshot` messages; the presence
+   of `capture_complete.txt` is **not** sufficient to prove all async image
+   callbacks have written files.
+5. Zip the newly created `capture_###` directory and include the matching
+   `emulation.log` and one screenshot showing the remaining artifacts.
+
+Check for the events `UI_DRAW_PROBE`, `ATLAS_SAMPLE`, `PHASE2_SNAPSHOT`
+and filenames starting with `atlas_`. The first corrupted *draw-stage*
+snapshot narrows the cause further. A correct atlas image with a broken
+first draw shifts attention to UV/vertex/blend/shader semantics; corrupted
+source atlas data shifts attention to texture layout, cache and upload.
+
+No diagnosis is complete until the extracted raw images have been inspected.
+
+## Validation and CI
+
+Host test: `bash tests/naruto_ui_capture/run.sh`.
+The PR workflow for mini-RenderDoc branches builds **only reldebug**
+(`assembleDevReldebug`), with Gradle build cache. All regular PRs continue
+building release and reldebug. Existing GPU host regressions and the new
+capture-budget test still run. CI green is not evidence that a graphic fix
+was achieved.
