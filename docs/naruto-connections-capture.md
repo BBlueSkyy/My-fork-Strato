@@ -211,3 +211,39 @@ reads. If it contains the P1 list but the corresponding presentation
 source lacks it, focus on Fermi2D, synchronization and presentation.
 Neither alone identifies the exact cause. No runtime functional fix.
 Keep PR #360 Draft and preserve #359, without monitoring Actions.
+
+## Corrected Fermi source selection (2026-10-18, next manual capture)
+
+The latest 24-frame Qualcomm capture includes all 24 new Fermi input
+snapshots (1120x630 RGBA8), but each shows **background and characters
+only**, before any skill-bar or nameplate UI is composed. Absence of P1
+bars in these snapshots is expected; it is **not evidence** for a broken
+Maxwell compositor or Fermi2D blit.
+
+The live trace establishes the actual producer/consumer chain by *host
+texture identity and guest mapping*:
+
+1. Forward Fermi2D: source texture 0xB4000079EFA95668 (guest
+   0x18BF6B0000) -> target 0xB4000079EFA975A8 (guest 0x180FCA4000).
+2. 3,206 sampled-image UI consumer draw records target precisely
+   0xB4000079EFA975A8, which is the Fermi forward destination.
+3. Reverse Fermi2D: source 0xB4000079EFA975A8 -> target
+   0xB4000079EFA95668. The **reverse source**, not the forward source,
+   contains the composed UI that needs to be checked for flicker.
+4. The VI presentation sources are further texture backings
+   (not necessarily the same as the reverse Fermi target), so the path
+   must not be conflated with direct scan-out of the intermediate.
+
+The above addresses are **offline observations only**, not embedded in code.
+The capture now tracks real full-resolution targets of qualifying
+Maxwell3D UI consumer draws, and selects Fermi blit inputs **only when
+that same live texture was observed as a compositor target**. It then
+locks the matching source/destination direction for its usual quota:
+24 snapshots/72 MiB. The unchanged source filenames remain
+fermi_input_XX_*; metadata now labels the post-compositor / pre-reverse
+boundary, and events use FERMI_COMPOSITED_UI_SOURCE. The raw image may
+be upside down versus VI; validate orientation visually when comparing
+by content, not ordinal alone.
+
+This is still *diagnostic only*, not a functional GPU fix. #359 remains
+intact; no title-ID/driver/guest-address selector was introduced.
