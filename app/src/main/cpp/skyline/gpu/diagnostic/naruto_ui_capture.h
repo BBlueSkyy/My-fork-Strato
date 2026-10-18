@@ -42,7 +42,8 @@ namespace skyline::gpu::diagnostic {
         std::uint32_t nextPassIndex{};
         std::size_t passBytes{};
         std::array<std::uint32_t, FrameCount> atlasCountByInterval{};
-        std::array<std::uint32_t, FrameCount> uiDrawCountByInterval{};
+        // Independent quotas for glyph-RT writer, strip compositor, and full-size consumer.
+        std::array<std::array<std::uint32_t, 3>, FrameCount> textFocusCounts{};
         std::array<bool, FrameCount> preUiDrawClaimed{};
         // One full-surface vertically flipped blit destination per approximate
         // presentation interval. Discover at runtime; never key on a game ID.
@@ -59,7 +60,7 @@ namespace skyline::gpu::diagnostic {
             events.clear();
             passCountByInterval.fill(0);
             atlasCountByInterval.fill(0);
-            uiDrawCountByInterval.fill(0);
+            textFocusCounts.fill({});
             preUiDrawClaimed.fill(false);
             flippedDestinations.fill({});
             capturedAtlasIdentities.clear();
@@ -136,38 +137,33 @@ namespace skyline::gpu::diagnostic {
                                          : start - guestAddress < bytes;
         }
 
-        // The prior first-draw probe consumed snapshots on background passes.
-        // Wait until the draw immediately before the first late checkpoint.
-        bool ShouldProbeUiPreDraw(std::uint32_t interval) {
-            std::scoped_lock lock(mutex);
-            return active.load(std::memory_order_acquire) &&
-                   interval < FrameCount &&
-                   uiDrawCountByInterval[interval] >= 95 &&
-                   !preUiDrawClaimed[interval];
-        }
+        enum class TextFocus : std::uint8_t { GlyphOutput, StripComposite, FullConsumer };
 
-        // First *matching* sprite draw in each approximate presentation interval.
-        // Claim before recording the draw, so a true pre-draw image can be queued.
-        bool ClaimPreUiDraw(std::uint32_t interval) {
-            std::scoped_lock lock(mutex);
-            if (!active.load(std::memory_order_acquire) || interval >= FrameCount ||
-                preUiDrawClaimed[interval] || uiDrawCountByInterval[interval] < 95)
-                return false;
-            preUiDrawClaimed[interval] = true;
-            return true;
-        }
-
-        // A tiny number of intermediate UI draw boundaries is sampled. This
-        // intentionally changes render-pass grouping only while capture is armed,
-        // never during regular gameplay.
-        std::optional<std::uint32_t> ProbeUiDraw(std::uint32_t interval) {
+        // These scopes are selected only after a render target/source has been
+        // identified by its format/geometry while capture is armed. They are not
+        // based on the game ID or specific shader hash. This reserves the budget
+        // for actual text operations instead of unrelated 1120x630 effects.
+        std::optional<std::uint32_t> ClaimTextFocus(std::uint32_t interval, TextFocus kind) {
             std::scoped_lock lock(mutex);
             if (!active.load(std::memory_order_acquire) || interval >= FrameCount)
                 return std::nullopt;
-            const auto ordinal{++uiDrawCountByInterval[interval]};
-            if (ordinal == 96 || ordinal == 192 || ordinal == 384 || ordinal == 768)
-                return ordinal;
-            return std::nullopt;
+            constexpr std::array<std::uint32_t, 3> limits{2, 1, 1};
+            const auto stage{static_cast<std::size_t>(kind)};
+            auto &number{textFocusCounts[interval][stage]};
+            if (number >= limits[stage])
+                return std::nullopt;
+            return ++number;
+        }
+
+        // Pre-draw readback on the first matching glyph writer, not a fixed
+        // ordinal from an unrelated compositor. At most once per interval.
+        bool ClaimPreUiDraw(std::uint32_t interval) {
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_acquire) || interval >= FrameCount ||
+                preUiDrawClaimed[interval])
+                return false;
+            preUiDrawClaimed[interval] = true;
+            return true;
         }
 
         // Suppress redundant atlases across executors and presentation intervals.

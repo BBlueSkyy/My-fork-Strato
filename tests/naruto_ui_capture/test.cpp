@@ -42,20 +42,20 @@ int main() {
         assert(!capture.ProbeUiDraw(0));
     assert(capture.ShouldProbeUiPreDraw(0));
     assert(capture.ClaimPreUiDraw(0));
-    assert(!capture.ClaimPreUiDraw(0)); // one true pre-draw per interval
-    assert(!capture.ShouldProbeUiPreDraw(0));
-    assert(capture.ProbeUiDraw(0) == 96);
-    for (std::uint32_t i{97}; i < 192; ++i)
-        assert(!capture.ProbeUiDraw(0));
-    assert(capture.ProbeUiDraw(0) == 192);
-    for (std::uint32_t i{193}; i < 384; ++i)
-        assert(!capture.ProbeUiDraw(0));
-    assert(capture.ProbeUiDraw(0) == 384);
-    for (std::uint32_t i{385}; i < 768; ++i)
-        assert(!capture.ProbeUiDraw(0));
-    assert(capture.ProbeUiDraw(0) == 768);
-    assert(!capture.ProbeUiDraw(0));
-    assert(!capture.ProbeUiDraw(UiFrameCapture::FrameCount));
+    assert(!capture.ClaimPreUiDraw(0));
+    assert(!capture.ClaimPreUiDraw(UiFrameCapture::FrameCount));
+    assert(capture.ClaimPreUiDraw(1));
+    assert(!capture.ClaimPreUiDraw(1));
+    using TextFocus = UiFrameCapture::TextFocus;
+    assert(capture.ClaimTextFocus(0, TextFocus::GlyphOutput) == 1);
+    assert(capture.ClaimTextFocus(0, TextFocus::GlyphOutput) == 2);
+    assert(!capture.ClaimTextFocus(0, TextFocus::GlyphOutput));
+    assert(capture.ClaimTextFocus(0, TextFocus::StripComposite) == 1);
+    assert(!capture.ClaimTextFocus(0, TextFocus::StripComposite));
+    assert(capture.ClaimTextFocus(0, TextFocus::FullConsumer) == 1);
+    assert(!capture.ClaimTextFocus(0, TextFocus::FullConsumer));
+    assert(!capture.ClaimTextFocus(UiFrameCapture::FrameCount, TextFocus::GlyphOutput));
+    assert(capture.ClaimTextFocus(1, TextFocus::GlyphOutput) == 1);
 
     for (std::uint32_t i{}; i < UiFrameCapture::PassSnapshotsPerInterval; ++i)
         assert(capture.ReservePassSnapshot(0, 5760000));
@@ -71,12 +71,9 @@ int main() {
     capture.Start(root.string());
     assert(!capture.IsWatchedMapping(0x1000, 1)); // no cross-session leakage
     assert(!capture.IsFlippedDestination(0, 0x3000, 0x100)); // flip registry reset
-    assert(!capture.ClaimPreUiDraw(0)); // ordinal gating reset
-    for (std::uint32_t i{1}; i < 96; ++i)
-        assert(!capture.ProbeUiDraw(0));
-    assert(capture.ShouldProbeUiPreDraw(0));
-    assert(capture.ClaimPreUiDraw(0)); // pre-draw ownership reset
-    assert(capture.ProbeUiDraw(0) == 96);
+    assert(capture.ClaimPreUiDraw(0)); // one-shot ownership resets
+    assert(capture.ClaimTextFocus(0, TextFocus::GlyphOutput) == 1);
+    assert(capture.ClaimTextFocus(0, TextFocus::StripComposite) == 1);
     assert(capture.ReserveAtlasSnapshot(0, 0x1234, 8192));
     assert(!capture.ReserveAtlasSnapshot(0, 0x1234, 8192)); // deduplicated
     assert(!capture.ReserveAtlasSnapshot(0, 0, 8192));

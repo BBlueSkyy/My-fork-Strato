@@ -63,3 +63,24 @@ atlases at probes, Fermi2D, GMMU/TIC, descriptors, and presented sources
 are retained, capped at 6000 total. Draw ordinals and interval indices are
 not identical between asynchronous GPU drivers. These wide-spaced checkpoints
 improve late-pass coverage but do **not guarantee** the precise bad UI draw.
+
+## Dedicated Qualcomm text-chain capture (subsequent iteration)
+
+The Oct 18 video and Qualcomm-only mini-RenderDoc prove *both* the logo
+covering names and the missing P1 move list occur on the proprietary driver.
+The previous text-like draws wrote to **1184×64 RGBA8**, using a **1024×1024 R8**
+source with **456 indices**, or composited **1184×32 RGBA8** to **1184×64**.
+The old capture only accepted full-size RTs, and consequently missed all
+these tiny writer passes. This version captures the **first two glyph-to-strip
+writes** (plus true pre-draw and first R8 atlas), the first strip-to-strip
+composition, and the first text-strip-to-full-size consumer each approximate
+presentation interval. These categories are selected by image geometry and
+Vulkan format, not by game Title ID, shader hashes, or driver-specific
+rendering behavior. Budget: at most six snapshots per interval, 24 globally,
+160 MiB total. TEXT_FOCUS messages record pipeline hashes, writer/reader
+identities, guest mappings, dimensions, indexed draw argument, and GPU
+submission/render-pass IDs for correlation. Captures and render-pass splits
+remain completely inactive until manually armed; they can perturb timing.
+
+For now, repeat **only the Qualcomm proprietary** capture and log. Turnip
+can be compared later. This is diagnostic only, not a functional fix.

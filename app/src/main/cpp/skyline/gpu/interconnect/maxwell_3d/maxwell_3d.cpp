@@ -203,7 +203,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (auto *pipeline{activeState.GetPipeline()})
                 ctx.executor.MarkDiagnosticUiOutput(
                     activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
-                    static_cast<bool>(pipeline->sourcePackedState.GetAttachmentBlendState(0).blendEnable));
+                    static_cast<bool>(pipeline->sourcePackedState.GetAttachmentBlendState(0).blendEnable),
+                    shaderHashes, count, true);
         }
           ctx.executor.AddCheckpoint("After inline index draw");
      
@@ -1053,7 +1054,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (auto *pipeline{activeState.GetPipeline()})
                 ctx.executor.MarkDiagnosticUiOutput(
                     activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
-                    static_cast<bool>(pipeline->sourcePackedState.GetAttachmentBlendState(0).blendEnable));
+                    static_cast<bool>(pipeline->sourcePackedState.GetAttachmentBlendState(0).blendEnable),
+                    shaderHashes, count, indexed);
         }
         ctx.executor.AddCheckpoint("After draw");
     
@@ -1180,7 +1182,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (auto *pipeline{activeState.GetPipeline()})
                 ctx.executor.MarkDiagnosticUiOutput(
                     activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
-                    static_cast<bool>(pipeline->sourcePackedState.GetAttachmentBlendState(0).blendEnable));
+                    static_cast<bool>(pipeline->sourcePackedState.GetAttachmentBlendState(0).blendEnable),
+                    shaderHashes, count, indexed);
         }
         ctx.executor.AddCheckpoint("After indirect draw");
     

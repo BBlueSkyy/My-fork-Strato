@@ -285,7 +285,9 @@ namespace skyline::gpu::interconnect {
 
         // Diagnostic only: annotate a full-screen blended/compressed-sprite pass.
         // Called after adding the draw, while its active attachments are known.
-        void MarkDiagnosticUiOutput(span<TextureView *> sampled, span<TextureView *> color, bool blendingEnabled);
+        void MarkDiagnosticUiOutput(span<TextureView *> sampled, span<TextureView *> color,
+                                    bool blendingEnabled, std::string_view shaderHashes,
+                                    u32 drawArgument, bool indexed);
 
         CommandExecutor(const DeviceState &state);
 
