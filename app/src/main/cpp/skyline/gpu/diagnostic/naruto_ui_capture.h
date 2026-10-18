@@ -40,6 +40,7 @@ namespace skyline::gpu::diagnostic {
         std::size_t passBytes{};
         std::array<std::uint32_t, FrameCount> atlasCountByInterval{};
         std::array<std::uint32_t, FrameCount> uiDrawCountByInterval{};
+        std::array<bool, FrameCount> preUiDrawClaimed{};
         std::vector<std::uintptr_t> capturedAtlasIdentities;
         // Guest backing ranges shared across Maxwell3D, Fermi2D and VI executors.
         // No texture pointers, shader hashes or game IDs are used as persistent keys.
@@ -53,6 +54,7 @@ namespace skyline::gpu::diagnostic {
             passCountByInterval.fill(0);
             atlasCountByInterval.fill(0);
             uiDrawCountByInterval.fill(0);
+            preUiDrawClaimed.fill(false);
             capturedAtlasIdentities.clear();
             nextPassIndex = 0;
             passBytes = 0;
@@ -103,6 +105,17 @@ namespace skyline::gpu::diagnostic {
                     return true;
             }
             return false;
+        }
+
+        // First *matching* sprite draw in each approximate presentation interval.
+        // Claim before recording the draw, so a true pre-draw image can be queued.
+        bool ClaimPreUiDraw(std::uint32_t interval) {
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_acquire) || interval >= FrameCount ||
+                preUiDrawClaimed[interval])
+                return false;
+            preUiDrawClaimed[interval] = true;
+            return true;
         }
 
         // A tiny number of intermediate UI draw boundaries is sampled. This
