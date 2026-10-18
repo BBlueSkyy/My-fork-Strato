@@ -192,6 +192,16 @@ namespace skyline::gpu::interconnect {
             }
         }
 
+        // Only full-surface inverted blits are relevant to the generic
+        // producer -> Fermi2D transfer. Never activate outside manual capture.
+        if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire) &&
+            dvDy < 0.0f && dstRectX == 0 && dstRectY == 0 &&
+            dstRectWidth == dstGuestTexture.dimensions.width &&
+            dstRectHeight == dstGuestTexture.dimensions.height &&
+            srcGuestTexture.dimensions.width == dstGuestTexture.dimensions.width &&
+            srcGuestTexture.dimensions.height == dstGuestTexture.dimensions.height)
+            executor.ProbeDiagnosticFermiInput(srcTextureView.get(), dstTextureView.get());
+
         executor.AddCheckpoint("Before blit");
         gpu.helperShaders.blitHelperShader.Blit(
             gpu,
