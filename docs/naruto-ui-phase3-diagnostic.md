@@ -13,6 +13,41 @@ include BC3 atlas contents/layout/mips, texture alias freshness, blending,
 texture coordinates and per-instance vertex state. No shader-hash, game-ID or
 driver-specific functional workarounds have been added.
 
+## Phase 5.2: bounded first-draw geometry and sampler-pool evidence
+
+After the previous capture verified that the **first UI sprite draw itself**
+creates the black fragments, this revision dumps only bounded raw guest
+bytes at the *selected first sprite draw*, after real draw-state preparation:
+
+- `ui_draw_indices.bin`: bytes from Maxwell index-buffer IOVA,
+  up to the last firstIndex+count position and capped at 4096 bytes.
+  Read `UI_REAL_INDEX_BUFFER` for element width and index offset.
+- `ui_draw_vbo0.bin` through `ui_draw_vbo3.bin` for enabled
+  streams 0–3. Each is at most 4096 bytes, containing actual guest
+  vertex-buffer contents. `UI_REAL_VERTEX_BUFFER` provides **real
+  Maxwell stride**, frequency and address. This is more reliable than
+  `packedState.vertexStrides`, which can be zero when dynamic stride
+  state is enabled.
+- `ui_draw_tsc_prefix.bin`: at most 512 bytes from the guest
+  sampler-control pool, with base and maximum index recorded.
+  **It does not establish which TSC descriptor is bound**; those
+  indices depend on bindless shader handles, so don't infer them from
+  this prefix alone.
+- `UI_PRE_VERTEX_ATTRIBUTE` and `UI_PRE_DRAW_STATE` identify attribute
+  formats, streams, offsets, first index, base vertex and instance
+  count. Existing `pre_XX`/`pass_XX` images establish the effect.
+
+All data is read from the game's currently valid GMMU mappings, with
+fixed per-file limits. A short or unmapped region is recorded explicitly
+(`fully_mapped=false`). Draw and shader behavior are unchanged.
+The complete compiled SPIR-V is **not** exported by this revision; shader
+hashes still identify the compiled stages for later offline comparison.
+
+No other unbounded GPU readback or game-specific workaround was added.
+Compile only the diagnostic reldebug APK. Send both
+`capture_001.zip` and `emulation.log`; avoid a further test until
+a green build is confirmed.
+
 ## Phase 5.1: select the correct sprite compositor (Oct 18 capture correction)
 
 The first Phase-5 on-device capture selected a **scene** renderer with 92
