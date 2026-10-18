@@ -655,13 +655,17 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
         binding.gameView.holder.addCallback(this)
 
-        binding.gameView.setAspectRatio(
-            when (emulationSettings.aspectRatio) {
-                0 -> Rational(16, 9)
-                1 -> Rational(21, 9)
-                else -> null
-            }
-        )
+        if (emulationSettings.aspectRatio == 3) {
+            binding.gameView.setBalancedFullscreen()
+        } else {
+            binding.gameView.setAspectRatio(
+                when (emulationSettings.aspectRatio) {
+                    0 -> Rational(16, 9)
+                    1 -> Rational(21, 9)
+                    else -> null
+                }
+            )
+        }
 
         lifecycleScope.launch(Dispatchers.Main) {
             lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
