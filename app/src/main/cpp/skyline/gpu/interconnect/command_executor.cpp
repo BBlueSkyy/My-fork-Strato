@@ -408,8 +408,24 @@ namespace skyline::gpu::interconnect {
         if (!capture.active.load(std::memory_order_acquire))
             return;
 
-        // Color targets before sampled inputs, so the limited budget favors
-        // the result of a pass rather than an atlas used by its shader.
+        // Follow an already identified output into subsequent postprocessing,
+        // including a different command executor. Keep the watch by guest backing
+        // because Texture* may change when a view/alias is recreated.
+        bool followsUi{};
+        for (auto *view : sampled) {
+            if (!view || !view->texture || !view->texture->guest)
+                continue;
+            for (const auto &mapping : view->texture->guest->mappings) {
+                if (capture.IsWatchedMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size())) {
+                    followsUi = true;
+                    break;
+                }
+            }
+            if (followsUi)
+                break;
+        }
+        // Color targets before sampled inputs. Only a candidate output or one
+        // of its downstream consumers receives the scarce image readback budget.
         const auto track{[&](span<TextureView *> views, bool rt) {
             for (auto *view : views) {
                 if (!view || !view->texture)
@@ -423,13 +439,57 @@ namespace skyline::gpu::interconnect {
                     })};
                 if (it != diagnosticPassImages.end()) {
                     it->renderTarget |= rt;
+                    it->priority |= (rt && followsUi);
                 } else if (diagnosticPassImages.size() < 24) {
-                    diagnosticPassImages.push_back({std::move(texture), rt});
+                    diagnosticPassImages.push_back({std::move(texture), rt, rt && followsUi});
                 }
             }
         }};
         track(color, true);
         track(sampled, false);
+        if (followsUi) {
+            for (auto *view : color) {
+                if (!view || !view->texture || !IsNarutoUiPassImage(*view->texture) || !view->texture->guest)
+                    continue;
+                for (const auto &mapping : view->texture->guest->mappings)
+                    capture.WatchMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
+            }
+        }
+    }
+
+    void CommandExecutor::MarkDiagnosticUiOutput(span<TextureView *> sampled, span<TextureView *> color, bool blendingEnabled) {
+        auto &capture{diagnostic::NarutoUiCapture()};
+        if (!blendingEnabled || !capture.active.load(std::memory_order_acquire))
+            return;
+        // General sprite/composite heuristic; neither shader hash nor Title ID.
+        bool compressedSample{};
+        for (auto *view : sampled) {
+            if (view && view->texture && view->texture->format->IsCompressed()) {
+                compressedSample = true;
+                break;
+            }
+        }
+        if (!compressedSample)
+            return;
+        for (auto *view : color) {
+            if (!view || !view->texture || !IsNarutoUiPassImage(*view->texture))
+                continue;
+            const auto &texture{view->texture};
+            const auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
+                [&](const DiagnosticPassImage &entry) { return entry.texture.get() == texture.get(); })};
+            if (it != diagnosticPassImages.end())
+                it->priority = true;
+            else if (diagnosticPassImages.size() < 24)
+                diagnosticPassImages.push_back({texture, true, true});
+
+            if (texture->guest) {
+                for (const auto &mapping : texture->guest->mappings)
+                    capture.WatchMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
+            }
+            capture.Record(fmt::format("UI_CANDIDATE executor=0x{:X} submission={} rp={} texture=0x{:X} dimensions={}x{}",
+                reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
+                reinterpret_cast<uintptr_t>(texture.get()), texture->dimensions.width, texture->dimensions.height));
+        }
     }
 
     void CommandExecutor::QueueDiagnosticPassReadbacks() {
@@ -450,7 +510,7 @@ namespace skyline::gpu::interconnect {
 
         for (const auto &entry : images) {
             const auto &texture{entry.texture};
-            if (!IsNarutoUiPassImage(*texture))
+            if (!entry.priority || !IsNarutoUiPassImage(*texture))
                 continue;
 
             const auto snapshotId{capture.ReservePassSnapshot(interval, texture->surfaceSize)};
@@ -476,7 +536,7 @@ namespace skyline::gpu::interconnect {
             const auto metaPath{directory / fmt::format("pass_{:02}.txt", index)};
             const auto meta{fmt::format(
                 "capture_index={} approx_present={} render_pass={} submission={} "
-                "kind={} executor=0x{:X} texture=0x{:X} dimensions={}x{} "
+                "kind={} focus=ui_candidate_or_downstream executor=0x{:X} texture=0x{:X} dimensions={}x{} "
                 "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} "
                 "note=recorded_after_render_pass_end_not_exact_frame_correlation\n",
                 index, interval, renderPassIndex, submissionNumber,
