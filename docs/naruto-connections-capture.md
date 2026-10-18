@@ -29,7 +29,7 @@ alone does not prove cause.
 
 Four raw presented source frames, up to 24 globally named pass/atlas snapshots
 (6/interval, 2 sampled atlases/interval), max 8 MiB per backing and 160 MiB
-intermediate total; 12 MiB/presentation and 2400 bounded GPU events.
+intermediate total; 12 MiB/presentation and 6000 bounded GPU events.
 Supports compressed and uncompressed color atlases, full-sized targets,
 actual descriptor-array counts and trait flags, shaders, CPU-side CBUF prefixes,
 vertex/index data, TIC/TSC mapping, and Fermi2D/DMA events.
@@ -84,3 +84,52 @@ remain completely inactive until manually armed; they can perturb timing.
 
 For now, repeat **only the Qualcomm proprietary** capture and log. Turnip
 can be compared later. This is diagnostic only, not a functional fix.
+
+## Consumer-paired capture — Qualcomm 0.777.0 (next test)
+
+The first focused capture (3bf63d5) validated the R8 glyph atlas and the
+1184x32/64 RGBA strips. It did **not** isolate a bad draw that consumes those
+intermediates, nor establish why a BC3 logo could appear on the nameplates.
+No functional GPU code has been changed. This diagnostic replaces the earlier
+glyph and strip readback selection with two **full-target consumer** categories:
+
+- `text_strip`: a blended full-sized color draw actually bound to an
+  1184x32/64 RGBA text strip (geometry-based, no title/shader ID).
+- `compressed_sprite`: a blended full-sized color draw sampling a 1024x1024
+  compressed color asset, observed in the menu's full-resolution draws.
+
+Each approximate presentation interval reserves at most **three ordered readbacks
+per category**: destination *before* the selected draw, actual bound source
+*before sampling*, and destination *after* the draw. The snapshots are ordered
+in the same executor command stream, and grouped by `draw_id` and `role` in
+`pre_*.txt` / `pass_*.txt` and `gpu_events.txt`. The source is deliberately
+copied **before** the draw: source content captured afterward can be misleading
+for aliased or overwritten textures. Two categories x three readbacks = the
+existing budget of six snapshots per interval (24 overall, 160 MiB). If a
+candidate's source is not eligible for staging or a budget is exhausted, the
+file may be absent; check `PHASE2_SNAPSHOT` rather than assuming presence.
+
+`TEXT_CONSUMER_DRAW` also logs **every qualifying candidate** regardless of
+whether its snapshots fit in the quota. The line contains draw ID, shader
+hashes, indexed argument, real sampled-image descriptor slots, image/mapping
+identities, view mip/layer counts, executor/submission/renderpass IDs, and
+current texture cycles. A cycle identity is not proof that it was the last
+completed Vulkan GPU writer. `draw_id` correlates events and copies from a
+single command stream; it is **not** a GPU-global execution order or an exact
+presentation-frame identifier. `present_index_approx` remains approximate.
+
+**How to collect:** install a new #360 reldebug APK if its build completes,
+keep Qualcomm 0.777.0 selected, remain on the Connections character-selection
+screen with the P1 skills intermittently missing, and arm a fresh capture as
+above. Capture both a good and a bad P1 state if possible; send ZIP,
+matching emulation.log and a screenshot/video. Do not capture Turnip yet.
+Before inferring a cause, compare the paired pre/source/post files for each
+`draw_id`, then compare ROI differences in P1 skills and both nameplates.
+Because selection is bounded to the **first** candidate of each category in
+each interval, this is not guaranteed to hit the bad nameplate; in that case
+use the unfiltered `TEXT_CONSUMER_DRAW` lines to choose later ordinals for a
+further focused run, rather than applying speculative sampler/alias changes.
+
+This branch remains **diagnostic-only**, Draft and unmerged; it does not
+revert or touch PR #359's runtime corrections. Capture readbacks are opt-in and
+can affect GPU timing. Do not monitor GitHub Actions automatically.
