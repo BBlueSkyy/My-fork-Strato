@@ -598,12 +598,11 @@ namespace skyline::gpu::interconnect {
 
         if (match->kind == diagnostic::UiFrameCapture::TextFocus::FullConsumer) {
             const auto target{match->target->texture};
-            // Draw nodes have already been recorded. Key by the GPU executor,
-            // Maxwell submission and actual target, never by present interval.
-            // The source trace proves two distinct text-strip draws per normal
-            // submission, despite asynchronous Fermi/VI event interleaving.
+            // Draw nodes have already been recorded. Pair the two observed
+            // text consumers by the live compositor backing across Maxwell
+            // submissions, ending this group at the reverse Fermi blit.
+            // Neither present index nor shader/game ID determines grouping.
             if (auto secondId{capture.ClaimPostSecondText(
-                    reinterpret_cast<uintptr_t>(this), submissionNumber,
                     reinterpret_cast<uintptr_t>(target.get()), target->surfaceSize)}) {
                 BreakRenderPass(); // Ensure the second text draw completes first.
                 auto staging{gpu.memory.AllocateStagingBuffer(target->surfaceSize)};
