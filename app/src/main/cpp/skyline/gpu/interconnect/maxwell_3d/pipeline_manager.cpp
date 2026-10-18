@@ -801,7 +801,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     void Pipeline::CaptureDiagnosticFirstUiDraw(InterconnectContext &ctx,
                                                 ConstantBufferSet &constantBuffers,
-                                                Samplers &samplers, u32 interval) {
+                                                Samplers &samplers, u32 interval, u64 drawId) {
         auto &capture{diagnostic::NarutoUiCapture()};
         if (!capture.active.load(std::memory_order_acquire) ||
             interval >= diagnostic::UiFrameCapture::FrameCount)
@@ -836,14 +836,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     continue;
                 std::vector<u8> bytes(length);
                 cb.Read(ctx.executor, span<u8>{bytes.data(), bytes.size()}, 0);
-                const auto name{fmt::format("ui_i{}_s{}_cb{}.bin", interval, stage, idx)};
+                const auto name{fmt::format("ui_i{}_d{}_s{}_cb{}.bin", interval, drawId, stage, idx)};
                 std::ofstream output{directory / name, std::ios::binary | std::ios::trunc};
                 if (output) {
                     output.write(reinterpret_cast<const char *>(bytes.data()),
                                  static_cast<std::streamsize>(bytes.size()));
                     capture.Record(fmt::format(
-                        "UI_ACTUAL_CBUF interval={} stage={} cb={} bytes={} view_bytes={} used_bytes={} file={} success={} source=cpu_backing_view",
-                        interval, stage, idx, length, cb.view.size, info.constantBufferUsedSizes[idx],
+                        "UI_ACTUAL_CBUF interval={} draw_id={} stage={} cb={} bytes={} view_bytes={} used_bytes={} file={} success={} source=cpu_backing_view",
+                        interval, drawId, stage, idx, length, cb.view.size, info.constantBufferUsedSizes[idx],
                         name, output.good()));
                     ++dumpedBuffers;
                 }
@@ -860,11 +860,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                     handle.textureIndex,
                                                                     effective, tsc)};
                     capture.Record(fmt::format(
-                        "UI_ACTUAL_SAMPLER interval={} stage={} element={} cb={} cb_offset=0x{:X} "
+                        "UI_ACTUAL_SAMPLER interval={} draw_id={} stage={} element={} cb={} cb_offset=0x{:X} "
                         "handle=0x{:08X} texture_index={} sampler_index={} effective_tsc={} "
                         "tsc_found={} header_binding={} addr_uv=({},{}) minmag=({},{}) mip={} "
                         "lod=({},{}) anisotropy={} normalized={}",
-                        interval, stage, element, desc.cbuf_index, desc.cbuf_offset,
+                        interval, drawId, stage, element, desc.cbuf_index, desc.cbuf_offset,
                         handle.raw, handle.textureIndex, handle.samplerIndex, effective,
                         found, static_cast<bool>(samplers.GetDiagnosticHeaderBinding()),
                         found ? static_cast<u32>(tsc.addressModeU) : 0,
