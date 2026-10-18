@@ -223,6 +223,7 @@ namespace skyline::gpu::interconnect {
         struct DiagnosticPassImage {
             std::shared_ptr<Texture> texture;
             bool renderTarget{};
+            bool priority{};
         };
         std::vector<DiagnosticPassImage> diagnosticPassImages;
         std::vector<std::function<void()>> diagnosticReadbackCallbacks;
@@ -272,6 +273,10 @@ namespace skyline::gpu::interconnect {
         ContextTag executionTag{};
         bool captureNextExecution{};
         UsageTracker usageTracker;
+
+        // Diagnostic only: annotate a full-screen blended/compressed-sprite pass.
+        // Called after adding the draw, while its active attachments are known.
+        void MarkDiagnosticUiOutput(span<TextureView *> sampled, span<TextureView *> color, bool blendingEnabled);
 
         CommandExecutor(const DeviceState &state);
 
