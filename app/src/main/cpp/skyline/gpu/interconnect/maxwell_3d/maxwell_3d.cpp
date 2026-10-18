@@ -851,10 +851,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
                         static_cast<bool>(blend.blendEnable))) {
                     auto &capture{diagnostic::NarutoUiCapture()};
+                    const auto focusDrawId{ctx.executor.GetDiagnosticPreDrawId()};
                     capture.Record(fmt::format(
-                        "UI_PRE_DRAW_STATE indexed={} count={} instances={} first={} vertex_offset={} first_instance={} topology={} "
+                        "UI_PRE_DRAW_STATE draw_id={} indexed={} count={} instances={} first={} vertex_offset={} first_instance={} topology={} "
                         "scissor={},{},{}x{} conditional={} divisor_supported={} zero_divisor_supported={}",
-                        indexed, count, instanceCount, first, vertexOffset, firstInstance, static_cast<u32>(topology),
+                        focusDrawId, indexed, count, instanceCount, first, vertexOffset, firstInstance, static_cast<u32>(topology),
                         scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height,
                         activeRenderCondition.enabled, ctx.gpu.traits.supportsVertexAttributeDivisor,
                         ctx.gpu.traits.supportsVertexAttributeZeroDivisor));
@@ -909,7 +910,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         auto directory{std::filesystem::path(capture.CaptureDirectory())};
                         if (directory.empty())
                             return;
-                        auto out{std::ofstream(directory / fmt::format("ui_draw_i{}_{}.bin", capture.presentIndex.load(std::memory_order_acquire), name),
+                        auto out{std::ofstream(directory / fmt::format("ui_draw_i{}_d{}_{}.bin", capture.presentIndex.load(std::memory_order_acquire), focusDrawId, name),
                                                std::ios::binary | std::ios::trunc)};
                         if (!out)
                             return;
@@ -928,8 +929,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                 break;
                         }
                         out.close();
-                        capture.Record(fmt::format("UI_DRAW_BUFFER name={} iova=0x{:X} wanted={} written={} fully_mapped={}",
-                                                   name, iova, wanted, written, valid && written == wanted));
+                        capture.Record(fmt::format("UI_DRAW_BUFFER draw_id={} name={} iova=0x{:X} wanted={} written={} fully_mapped={}",
+                                                   focusDrawId, name, iova, wanted, written, valid && written == wanted));
                     }};
 
                     if (indexed && !directState.inputAssembly.NeedsQuadConversion()) {
@@ -971,15 +972,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
                     const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
                     pipeline->CaptureDiagnosticFirstUiDraw(
-                        ctx, constantBuffers.boundConstantBuffers, samplers, interval);
+                        ctx, constantBuffers.boundConstantBuffers, samplers, interval, focusDrawId);
                     const auto dir{std::filesystem::path(capture.CaptureDirectory())};
                     for (auto hash : pipeline->sourcePackedState.shaderHashes) {
                         if (!hash)
                             continue;
-                        const auto filename{fmt::format("ui_i{}_shader_{:016X}.spv", interval, hash)};
+                        const auto filename{fmt::format("ui_i{}_d{}_shader_{:016X}.spv", interval, focusDrawId, hash)};
                         const bool found{ctx.gpu.shader->ExportDiagnosticSpirv(hash, dir / filename)};
-                        capture.Record(fmt::format("UI_PRE_SHADER hash={:016X} spv_found={} filename={}",
-                                                   hash, found, filename));
+                        capture.Record(fmt::format("UI_PRE_SHADER draw_id={} hash={:016X} spv_found={} filename={}",
+                                                   focusDrawId, hash, found, filename));
                     }
                 }
             }
