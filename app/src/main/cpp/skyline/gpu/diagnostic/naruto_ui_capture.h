@@ -22,6 +22,7 @@ namespace skyline::gpu::diagnostic {
         std::atomic<std::uint32_t> presentIndex{0};
         std::atomic<std::uint32_t> eventCount{0};
         std::atomic<std::uint32_t> sampledDrawEvents{0};
+        std::atomic<std::uint64_t> nextFocusedDrawId{1};
         static constexpr std::uint32_t MaxEvents{6000};
         static constexpr std::uint32_t FrameCount{4};
         // Reserve budget for late UI composition and each of the four intervals.
@@ -43,8 +44,9 @@ namespace skyline::gpu::diagnostic {
         std::size_t passBytes{};
         std::array<std::uint32_t, FrameCount> atlasCountByInterval{};
         // Independent quotas for glyph-RT writer, strip compositor, and full-size consumer.
-        std::array<std::array<std::uint32_t, 3>, FrameCount> textFocusCounts{};
+        std::array<std::array<std::uint32_t, 4>, FrameCount> textFocusCounts{};
         std::array<bool, FrameCount> preUiDrawClaimed{};
+        std::array<bool, FrameCount> preSpriteDrawClaimed{};
         // One full-surface vertically flipped blit destination per approximate
         // presentation interval. Discover at runtime; never key on a game ID.
         std::array<std::pair<std::uintptr_t, std::size_t>, FrameCount> flippedDestinations{};
@@ -62,6 +64,7 @@ namespace skyline::gpu::diagnostic {
             atlasCountByInterval.fill(0);
             textFocusCounts.fill({});
             preUiDrawClaimed.fill(false);
+            preSpriteDrawClaimed.fill(false);
             flippedDestinations.fill({});
             capturedAtlasIdentities.clear();
             nextPassIndex = 0;
@@ -69,6 +72,7 @@ namespace skyline::gpu::diagnostic {
             watchedMappings.clear();
             eventCount.store(0, std::memory_order_relaxed);
             sampledDrawEvents.store(0, std::memory_order_relaxed);
+            nextFocusedDrawId.store(1, std::memory_order_relaxed);
             presentIndex.store(0, std::memory_order_relaxed);
             active.store(true, std::memory_order_release);
         }
@@ -137,7 +141,7 @@ namespace skyline::gpu::diagnostic {
                                          : start - guestAddress < bytes;
         }
 
-        enum class TextFocus : std::uint8_t { GlyphOutput, StripComposite, FullConsumer };
+        enum class TextFocus : std::uint8_t { GlyphOutput, StripComposite, FullConsumer, FullSprite };
 
         // These scopes are selected only after a render target/source has been
         // identified by its format/geometry while capture is armed. They are not
@@ -147,12 +151,28 @@ namespace skyline::gpu::diagnostic {
             std::scoped_lock lock(mutex);
             if (!active.load(std::memory_order_acquire) || interval >= FrameCount)
                 return std::nullopt;
-            constexpr std::array<std::uint32_t, 3> limits{2, 1, 1};
+            // Spend readbacks on the actual full-resolution consumers, not upstream glyphs
+            // already validated in the preceding capture.
+            constexpr std::array<std::uint32_t, 4> limits{0, 0, 1, 1};
             const auto stage{static_cast<std::size_t>(kind)};
             auto &number{textFocusCounts[interval][stage]};
             if (number >= limits[stage])
                 return std::nullopt;
             return ++number;
+        }
+
+        std::uint64_t NextFocusedDrawId() {
+            return nextFocusedDrawId.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        // Independent pre-draw quotas for the first text and compressed-sprite consumers.
+        bool ClaimPreSpriteDraw(std::uint32_t interval) {
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_acquire) || interval >= FrameCount ||
+                preSpriteDrawClaimed[interval])
+                return false;
+            preSpriteDrawClaimed[interval] = true;
+            return true;
         }
 
         // Pre-draw readback on the first matching glyph writer, not a fixed
