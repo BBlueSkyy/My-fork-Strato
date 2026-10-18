@@ -26,11 +26,16 @@ confirmed first sprite draw after the Fermi2D-selected destination.
   module hashes are exported as `ui_iN_shader_HASH.spv`, if retained.
   `UI_PRE_SHADER spv_found=false` explicitly reports a cache miss.
   No background shader I/O occurs during ordinary compilation.
-- The pipeline's shader-stage metadata selects up to twelve bound CBUF
-  prefixes of 512 bytes each, written to `ui_iN_sSTAGE_cbINDEX.bin`.
-  Larger referenced fields are resolved separately for texture handles.
-  These are the bytes visible through Strato's **existing CPU-side CBUF
-  read path**, which can report stale GPU-dirty backing limitations.
+- Up to twelve **actually bound** constant-buffer views are captured
+  from the selected pipeline's shader stages, maximum **4096 bytes per
+  buffer**, written as `ui_iN_sSTAGE_cbINDEX.bin`. This overrides the
+  previous diagnostic's defective filter: `StageDescriptorInfo` does not
+  populate `constantBufferUsedSizes`, leaving that array zero, even when
+  compiled SPIR-V actually reads vertex-stage CBUF2. The logged
+  `used_bytes=0` therefore means metadata missing, **not** an absent CBUF.
+  No production descriptor sizes or GPU code are modified.
+  The files reflect Strato's existing **CPU-side CBUF read path** and could
+  be stale if backing data was written by the GPU.
 - `UI_ACTUAL_SAMPLER` reports the *actual bindless handle* used for each
   combined texture/sampler descriptor, computed through the production
   `ReadBindlessHandle` path, and the effective TSC index after applying
