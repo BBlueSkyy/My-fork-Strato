@@ -141,3 +141,34 @@ Each selected pre-draw diagnostic now writes indices/VBOs as
 text-strip and compressed-sprite captures from overwriting one another.
 Inspect `UI_ACTUAL_CBUF` / `UI_ACTUAL_SAMPLER` / `UI_PRE_SHADER` for
 corresponding IDs. These dumps are read-only diagnostics, not emulation fixes.
+
+## Intermittent-flash capture extension (Qualcomm 0.777.0)
+
+The user confirmed the P1 move list was **actually flickering** during the
+previous recording, while the Connections logo over nameplates appears
+**randomly**, not consistently. The preceding capture only recorded four
+presentation sources between ~83.890 and ~84.011 seconds (about 121 ms);
+it therefore cannot be interpreted as four seconds of glitch-free rendering.
+
+For a single manually armed capture, this revision reads back **24**
+consecutive pre-swapchain presentation source images (roughly a one-second
+span, depending on actual frame pacing). Detailed pre/source/post draw
+snapshots remain restricted to the original first four approximate intervals:
+6 readbacks per interval, 24 total, 160 MiB total budget. Frames 4..23
+have no extra detailed draw readbacks; the approximate interval marker is
+clamped to 4 (out of eligibility). The existing static diagnostic image
+readback may affect frame pacing; do not treat timestamps as a normal
+performance trace.
+
+This gives a longer source sequence to check whether corruption is present
+**before** the Android swapchain copy, but does not capture pixels *after*
+the swapchain copy. For an exact on-screen comparison, provide a **screen
+recording** made simultaneously with capture (preferably including a few
+seconds before and after the one-second capture). If video shows a glitch but
+none of the 24 source images does, that is evidence to investigate
+presentation scheduling, timing perturbation, or post-source stages, **not**
+proof that the Vulkan swapchain itself is defective.
+
+Keep Qualcomm proprietary as first priority. No gameplay rendering changes,
+title-ID hacks, new performance waits outside the opt-in probe, merge, or
+automated GitHub Actions monitoring.
