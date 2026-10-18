@@ -11,6 +11,7 @@ add_executable(vfs_tests storage_tests.cpp
     "${SKYLINE}/vfs/bktr.cpp"
     "${SKYLINE}/vfs/nca.cpp"
     "${SKYLINE}/vfs/cnmt.cpp"
+    "${SKYLINE}/vfs/nacp.cpp"
     "${SKYLINE}/loader/program_content.cpp"
     "${SKYLINE}/loader/resolve_content.cpp"
     "${SKYLINE}/vfs/ctr_encrypted_backing.cpp"

@@ -83,6 +83,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         bool Refresh(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask);
 
+        bool MayWriteBuffer(Buffer *buffer) const;
+
         void PurgeCaches();
     };
 
@@ -267,6 +269,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask);
 
         Pipeline *GetPipeline();
+
+        bool MayWriteTransformFeedbackBuffer(Buffer *buffer);
 
         span<TextureView *> GetColorAttachments();
 

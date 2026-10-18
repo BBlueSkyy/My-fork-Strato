@@ -18,12 +18,12 @@ namespace skyline::gpu::interconnect::node {
             if (gpu.traits.supportsImagelessFramebuffers)
                 attachmentInfo.push_back(vk::FramebufferAttachmentImageInfo{
                     .flags = view->texture->flags,
-                    .usage = view->texture->usage,
-                    .width = view->texture->dimensions.width,
-                    .height = view->texture->dimensions.height,
+                    .usage = view->GetUsage(),
+                    .width = std::max(1U, view->texture->dimensions.width >> view->range.baseMipLevel),
+                    .height = std::max(1U, view->texture->dimensions.height >> view->range.baseMipLevel),
                     .layerCount = view->range.layerCount,
-                    .viewFormatCount = 1,
-                    .pViewFormats = &view->format->vkFormat,
+                    .viewFormatCount = view->texture->GetBackingViewFormats().empty() ? 1 : static_cast<u32>(view->texture->GetBackingViewFormats().size()),
+                    .pViewFormats = view->texture->GetBackingViewFormats().empty() ? &view->format->vkFormat : view->texture->GetBackingViewFormats().data(),
                 });
 
             attachmentDescriptions.push_back(vk::AttachmentDescription{

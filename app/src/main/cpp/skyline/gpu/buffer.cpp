@@ -414,6 +414,7 @@ namespace skyline::gpu {
     }
 
     void Buffer::MarkGpuDirty(UsageTracker &usageTracker) {
+        ++writeGeneration;
         if (!guest)
             return;
 
@@ -521,6 +522,7 @@ namespace skyline::gpu {
     }
 
     bool Buffer::Write(span<u8> data, vk::DeviceSize offset, UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
+        ++writeGeneration;
         AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
         everHadInlineUpdate = true;
 
@@ -535,6 +537,7 @@ namespace skyline::gpu {
     void Buffer::CopyFrom(vk::DeviceSize dstOffset,
                           Buffer *src, vk::DeviceSize srcOffset, vk::DeviceSize size,
                           UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
+        ++writeGeneration;
         AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
         everHadInlineUpdate = true;
 

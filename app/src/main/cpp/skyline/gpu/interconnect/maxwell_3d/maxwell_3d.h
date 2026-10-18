@@ -40,9 +40,48 @@ namespace skyline::gpu::interconnect::maxwell3d {
             SamplerPoolState::EngineRegisters samplerPoolRegisters;
             const engine::SamplerBinding &samplerBinding;
             TexturePoolState::EngineRegisters texturePoolRegisters;
+            const u32 &sampleCounterEnable;
+        };
+
+        enum class RenderConditionMode : u8 {
+            NonZero,
+            Equal,
+            NotEqual,
         };
 
       private:
+        struct RenderConditionKey {
+            RenderConditionMode mode;
+            u64 lhs;
+            u64 rhs;
+
+            bool operator==(const RenderConditionKey &other) const {
+                return mode == other.mode && lhs == other.lhs && rhs == other.rhs;
+            }
+        };
+
+        struct RenderConditionResources {
+            memory::Buffer scratch;
+            DescriptorAllocator::ActiveDescriptorSet descriptorSet;
+
+            explicit RenderConditionResources(GPU &gpu);
+        };
+
+        struct RenderConditionInput {
+            Buffer *buffer{};
+            vk::DeviceSize offset{};
+            u64 generation{};
+
+            bool operator==(const RenderConditionInput &) const = default;
+        };
+
+        struct RenderConditionBinding {
+            BufferBinding binding{};
+            bool enabled{};
+
+            BufferBinding Resolve(GPU &) const { return binding; }
+        };
+
         InterconnectContext ctx;
         ActiveState activeState;
         ClearEngineRegisters clearEngineRegisters;
@@ -50,15 +89,31 @@ namespace skyline::gpu::interconnect::maxwell3d {
         Samplers samplers;
         const engine::SamplerBinding &samplerBinding;
         Textures textures;
+        const u32 &sampleCounterEnable;
         std::shared_ptr<memory::Buffer> quadConversionBuffer{};
         bool quadConversionBufferAttached{};
         BufferView indirectBufferView;
         std::shared_ptr<memory::Buffer> inlineIndexBuffer{};
         Queries queries;
 
+        CachedMappedBufferView renderConditionLhsView{};
+        CachedMappedBufferView renderConditionRhsView{};
+        std::shared_ptr<RenderConditionResources> renderConditionResources;
+        std::optional<RenderConditionKey> requestedRenderCondition{};
+        std::optional<RenderConditionKey> preparedRenderCondition{};
+        std::optional<RenderConditionInput> preparedRenderConditionLhs{};
+        std::optional<RenderConditionInput> preparedRenderConditionRhs{};
+        ContextTag preparedRenderConditionExecutionTag{};
+        RenderConditionBinding activeRenderCondition{};
+
+        void RefreshRenderCondition();
+
+        void InvalidateRenderConditionAfterDraw(bool transformFeedbackEnable);
+
         static constexpr size_t DescriptorBatchSize{0x100};
         std::shared_ptr<boost::container::static_vector<DescriptorAllocator::ActiveDescriptorSet, DescriptorBatchSize>> attachedDescriptorSets;
         DescriptorAllocator::ActiveDescriptorSet *activeDescriptorSet{};
+        Pipeline *activeDescriptorPipeline{};
         std::vector<TextureView *> activeDescriptorSetSampledImages{};
 
         size_t UpdateQuadConversionBuffer(u32 count, u32 firstVertex);
@@ -105,6 +160,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
          */
         void DisableQuickConstantBufferBind();
 
+        /**
+         * @brief Flushes pending occlusion-query segments after all deferred Maxwell work is emitted.
+         */
+        void FlushQueries();
+
+        void ClearRenderCondition();
+
+        bool CheckRenderCondition(soc::gm20b::IOVA lhs, std::optional<soc::gm20b::IOVA> rhs, RenderConditionMode mode);
+
+        bool SetRenderCondition(soc::gm20b::IOVA lhs, std::optional<soc::gm20b::IOVA> rhs, RenderConditionMode mode);
+
         void Clear(engine::ClearSurface &clearSurface);
 
         // Maxwell3D fixed-function textured rectangle drawing.
@@ -124,6 +190,5 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         void ResetCounter(engine::ClearReportValue::Type type);
 
-        bool QueryPresentAtAddress(soc::gm20b::IOVA address);
     };
 }

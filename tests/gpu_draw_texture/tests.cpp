@@ -14,6 +14,8 @@ using i32 = std::int32_t;
 using i64 = std::int64_t;
 using u32 = std::uint32_t;
 struct FakeSampler;
+struct GPU;
+struct FenceCycle {};
 #define TRACE_EVENT(...)
 #define LOGW(...)
 namespace vk {
@@ -25,6 +27,9 @@ namespace vk {
     enum class Filter { eNearest, eLinear };
     enum class SamplerMipmapMode { eNearest, eLinear };
     using Sampler = u32;
+    using RenderPass = u32;
+    struct ConditionalRenderingBeginInfoEXT { u32 buffer{}; std::size_t offset{}; };
+    namespace raii { struct CommandBuffer { bool render{true}; void beginConditionalRenderingEXT(ConditionalRenderingBeginInfoEXT info) { render = info.buffer != 0; } void endConditionalRenderingEXT() { render = true; } }; }
     namespace raii { using Sampler = FakeSampler; }
 }
 struct TextureSamplerControl {
@@ -61,26 +66,30 @@ struct TextureView : std::enable_shared_from_this<TextureView> {
 };
 struct FakeSampler { u32 index; u32 operator*() const { return index + 100; } };
 struct Executor {
+    template<typename Operation> void RunWithTextureBackingRetry(Operation &&operation) { operation(); }
     int usageTracker{}, pipelineChanges{}, blits{};
+    GPU *gpu{};
     std::vector<std::shared_ptr<void>> dependencies;
     std::vector<TextureView *> attached;
     vk::Rect2D area{};
     void AttachDependency(std::shared_ptr<void> value) { dependencies.push_back(value); }
     void AttachTexture(TextureView *view) { attached.push_back(view); }
     void AddCheckpoint(const char *) {}
-    void NotifyPipelineChange() { pipelineChanges++; }
+    void NotifyPipelineChange();
     template <class F, class I, class C>
     void AddSubpass(F function, vk::Rect2D rect, I sampled, std::initializer_list<int>,
                     C colors, std::initializer_list<int>, bool, vk::PipelineStageFlags,
-                    vk::PipelineStageFlags) {
+                    vk::PipelineStageFlags, std::function<int(u32)> hook = {}) {
+        if (hook) hook(0);
         if (sampled[0] != attached[0] || colors[0] != attached[1])
             throw std::runtime_error("incorrect Vulkan resources");
         area = rect;
-        function();
-        blits++;
+        vk::raii::CommandBuffer commandBuffer;
+        function(commandBuffer, std::shared_ptr<FenceCycle>{}, *gpu, 0, 0);
     }
 };
 struct Rect { float width, height, x, y; };
+void CountBlit(GPU &, bool);
 struct BlitRecorder {
     Rect src{}, dst{};
     vk::Extent2D srcDims{}, dstDims{};
@@ -95,12 +104,15 @@ struct BlitRecorder {
         srcDims = sourceDimensions; dstDims = destinationDimensions;
         sampler = selectedSampler;
         scissor = selectedScissor;
-        callback([] {});
+        callback([&](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) { CountBlit(gpu, commandBuffer.render); });
     }
 };
 // The helper boundary records arguments; it does not emulate sampling or Vulkan.
-struct GPU { struct { BlitRecorder blitHelperShader; } helperShaders; };
-struct Context { GPU gpu; Executor executor; };
+struct GPU { struct { BlitRecorder blitHelperShader; } helperShaders; int *blits{}; bool queryActive{}; int samples{}; };
+void Executor::NotifyPipelineChange() { pipelineChanges++; gpu->queryActive = false; }
+struct Context { GPU gpu; Executor executor; Context() { executor.gpu = &gpu; gpu.blits = &executor.blits; }
+    Context(Context &&other) : gpu{std::move(other.gpu)}, executor{std::move(other.executor)} { executor.gpu = &gpu; gpu.blits = &executor.blits; } };
+void CountBlit(GPU &gpu, bool enabled) { if (enabled) { ++*gpu.blits; if (gpu.queryActive) gpu.samples++; } }
 using InterconnectContext = Context;
 struct Samplers {
     struct Pool {
@@ -132,8 +144,17 @@ struct ActiveState {
         return destination;
     }
 };
+struct Queries {
+    enum class CounterType { Occulusion };
+    int PrepareDraw(Context &ctx, CounterType, bool enabled, u32) { ctx.gpu.queryActive = enabled; return 0; }
+};
 struct Maxwell3D {
     Context ctx;
+    struct RenderConditionBinding { bool enabled{}; u32 predicate{1}; struct Binding { u32 buffer; std::size_t offset; }; Binding Resolve(GPU &) const { return {predicate, 0}; } };
+    RenderConditionBinding activeRenderCondition{};
+    Queries queries;
+    u32 sampleCounterEnable{};
+    void RefreshRenderCondition() {}
     Samplers samplers;
     Textures textures;
     ActiveState activeState;
@@ -165,6 +186,20 @@ int main() {
         try { body(); std::cout << "PASS " << name << '\n'; }
         catch (const std::exception &e) { failures++; std::cerr << "FAIL " << name << ": " << e.what() << '\n'; }
     };
+    test("zero GPU predicate suppresses DRAW_TEXTURE", [] {
+        auto gpu = Fixture(); gpu.ctx.executor.gpu = &gpu.ctx.gpu; gpu.ctx.gpu.blits = &gpu.ctx.executor.blits;
+        gpu.activeRenderCondition = {true, 0};
+        gpu.DrawTexture(Parameters(), {true, false}, {{0, 1280}, {0, 720}}, 0);
+        Check(gpu.ctx.executor.blits == 0, "false query predicate rendered a textured rectangle");
+    });
+    test("DRAW_TEXTURE contributes samples only while enabled", [] {
+        auto gpu = Fixture(); gpu.sampleCounterEnable = 1;
+        gpu.DrawTexture(Parameters(), {true, false}, {{0, 1280}, {0, 720}}, 0);
+        Check(gpu.ctx.gpu.samples == 1, "enabled helper draw was not counted");
+        gpu.sampleCounterEnable = 0;
+        gpu.DrawTexture(Parameters(), {true, false}, {{0, 1280}, {0, 720}}, 0);
+        Check(gpu.ctx.gpu.samples == 1, "disabled helper draw contributed samples");
+    });
     test("explicit TSC0 with TIC8 and linked shader binding", [] {
         auto gpu = Fixture();
         gpu.DrawTexture(Parameters(), {true, false}, {{0, 1280}, {0, 720}}, 2);

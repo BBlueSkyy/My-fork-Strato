@@ -116,28 +116,32 @@ namespace skyline::service::nvdrv::device::nvhost {
         if (!vm.initialised)
             return PosixResult::InvalidArgument;
 
+        auto allocationIt{allocationMap.find(offset)};
+        if (allocationIt == allocationMap.end())
+            return PosixResult::InvalidArgument;
+
+        auto allocation{allocationIt->second};
+
+        if (allocation.pageSize != pageSize || allocation.size != (static_cast<u64>(pages) * pageSize))
+            return PosixResult::InvalidArgument;
+
         try {
-            auto allocation{allocationMap[offset]};
-
-            if (allocation.pageSize != pageSize || allocation.size != (static_cast<u64>(pages) * pageSize))
-                return PosixResult::InvalidArgument;
-
             for (const auto &mapping : allocation.mappings)
                 FreeMappingLocked(mapping->offset);
-
-            // Unset sparse flag if required
-            if (allocation.sparse)
-                asCtx->gmmu.Unmap(offset, allocation.size);
-
-            bool bigPage{pageSize != VM::PageSize};
-            auto &allocator{bigPage ? *vm.bigPageAllocator : *vm.smallPageAllocator};
-            u32 pageSizeBits{bigPage ? vm.bigPageSizeBits : VM::PageSizeBits};
-
-            allocator.Free(static_cast<u32>(offset >> pageSizeBits), static_cast<u32>(allocation.size >> pageSizeBits));
-            allocationMap.erase(offset);
         } catch (const std::out_of_range &e) {
             return PosixResult::InvalidArgument;
         }
+
+        // Unset sparse flag if required
+        if (allocation.sparse)
+            asCtx->gmmu.Unmap(offset, allocation.size);
+
+        bool bigPage{pageSize != VM::PageSize};
+        auto &allocator{bigPage ? *vm.bigPageAllocator : *vm.smallPageAllocator};
+        u32 pageSizeBits{bigPage ? vm.bigPageSizeBits : VM::PageSizeBits};
+
+        allocator.Free(static_cast<u32>(offset >> pageSizeBits), static_cast<u32>(allocation.size >> pageSizeBits));
+        allocationMap.erase(allocationIt);
 
         return PosixResult::Success;
     }

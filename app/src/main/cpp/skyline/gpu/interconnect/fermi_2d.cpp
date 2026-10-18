@@ -123,6 +123,7 @@ namespace skyline::gpu::interconnect {
           executor{channelCtx.executor} {}
 
     void Fermi2D::Blit(const Surface &srcSurface, const Surface &dstSurface, float srcRectX, float srcRectY, u32 dstRectWidth, u32 dstRectHeight, u32 dstRectX, u32 dstRectY, float duDx, float dvDy, SampleModeOrigin sampleOrigin, bool resolve, SampleModeFilter filter) {
+        executor.RunWithTextureBackingRetry([&] {
         TRACE_EVENT("gpu", "Fermi2D::Blit");
 
         // Blit shader always samples from centre so adjust if necessary
@@ -149,6 +150,7 @@ namespace skyline::gpu::interconnect {
         executor.AttachTexture(dstTextureView.get());
         dstTextureView->texture->MarkGpuDirty(executor.usageTracker);
 
+        executor.NotifyPipelineChange();
         if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire)) {
             auto &capture{diagnostic::NarutoUiCapture()};
             const auto guestAddress{[](const GuestTexture &t) -> uintptr_t {
@@ -197,8 +199,7 @@ namespace skyline::gpu::interconnect {
         );
         executor.AddCheckpoint("After blit");
 
-
-        executor.NotifyPipelineChange();
+        });
     }
 
 }

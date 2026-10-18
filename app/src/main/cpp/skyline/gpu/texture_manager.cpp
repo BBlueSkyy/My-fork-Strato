@@ -2,16 +2,34 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/trace.h>
+#include <gpu.h>
 #include "texture/layout.h"
 #include "texture_manager.h"
+#include "texture/backing_promotion.h"
+#include "texture/view_range.h"
 
 namespace skyline::gpu {
+    texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
+        // Never dereference an empty guest mapping sequence or try to resolve
+        // invalid physical spans through the Texman overlap table.
+        if (guestTexture.mappings.empty() || guestTexture.mappings.front().empty() || !guestTexture.MappingsValid())
+            throw exception("Cannot resolve texture with missing or invalid guest mappings");
         auto guestMapping{guestTexture.mappings.front()};
+        if (!texture::SubresourceRangeFits(guestTexture.mipLevelCount, guestTexture.viewMipBase, guestTexture.viewMipCount)) {
+            throw exception("Guest texture view exceeds its declared mip chain");
+        }
+        const vk::ImageSubresourceRange requestedRange{
+            guestTexture.aspect, guestTexture.viewMipBase,
+            guestTexture.viewMipCount == VK_REMAINING_MIP_LEVELS && guestTexture.viewMipBase < guestTexture.mipLevelCount ?
+                guestTexture.mipLevelCount - guestTexture.viewMipBase : guestTexture.viewMipCount,
+            guestTexture.baseArrayLayer, guestTexture.GetViewLayerCount(),
+        };
+        const auto requestedStride{guestTexture.layerStride ? guestTexture.layerStride : guestTexture.CalculateLayerSize()};
 
         /*
          * Iterate over all textures that overlap with the first mapping of the guest texture and compare the mappings:
@@ -27,7 +45,6 @@ namespace skyline::gpu {
          * 5) Create a new texture and insert it in the map then return it
          */
 
-        std::shared_ptr<Texture> match{};
         boost::container::small_vector<std::shared_ptr<Texture>, 4> matches{};
         auto mappingEnd{std::upper_bound(textures.begin(), textures.end(), guestMapping, [guestMapping](const auto &value, const auto &element) {
             return guestMapping.end() < element.end();
@@ -35,7 +52,10 @@ namespace skyline::gpu {
             return guestMapping.begin() < element.end();
         })};
 
+        std::vector<std::shared_ptr<Texture>> exactAliases;
+        std::shared_ptr<texture::AliasGroup> separateGroup;
         std::shared_ptr<Texture> fullMatch{};
+        std::shared_ptr<Texture> unrepresentableMatch{};
         std::shared_ptr<Texture> layerMipMatch{};
         std::shared_ptr<Texture> depthSliceMatch{};
         u32 matchLevel{};
@@ -62,17 +82,40 @@ namespace skyline::gpu {
 
             if (firstHostMapping == hostMappings.begin() && firstHostMapping->begin() == guestMapping.begin() && mappingMatch && lastHostMapping == hostMappings.end() && lastGuestMapping.end() == std::prev(lastHostMapping)->end()) {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
+                if (std::find(exactAliases.begin(), exactAliases.end(), hostMapping->texture) == exactAliases.end())
+                    exactAliases.push_back(hostMapping->texture);
                 auto &matchGuestTexture{*hostMapping->texture->guest};
 
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                    ((((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
-                        matchGuestTexture.dimensions.height == guestTexture.dimensions.height) || matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) &&
-                        matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth())
-                        || matchGuestTexture.viewMipBase > 0)
-                    && matchGuestTexture.tileConfig == guestTexture.tileConfig) {
+                    (matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
+                       matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
+                       matchGuestTexture.dimensions.depth == guestTexture.dimensions.depth)
+                    && matchGuestTexture.GetImageType() == guestTexture.GetImageType()
+                    && matchGuestTexture.tileConfig == guestTexture.tileConfig
+                    && (guestTexture.GetViewLayerCount() == 1 || matchGuestTexture.GetLayerStride() == requestedStride)
+                    && (hostMapping->texture->ViewRangeFits(guestTexture.viewType, requestedRange) ||
+                        (hostMapping->texture->ViewRangeFits(guestTexture.viewType, requestedRange, guestTexture.mipLevelCount) &&
+                         hostMapping->texture->CanGrowMipLevels(guestTexture.mipLevelCount)))) {
+                    // Equal block-linear allocation sizes do not make differently-sized
+                    // images interchangeable. A VkImageView cannot restrict a 16x1
+                    // backing to the logical 1x1 extent described by a TIC, so reusing
+                    // such a backing changes normalized sampling coordinates. Mip/layer
+                    // aliases are handled by the representable view paths below.
                     fullMatch = hostMapping->texture;
                 } else {
-                    matches.push_back(hostMapping->texture);
+                    if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
+                        matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                        ((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
+                          matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
+                          matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()) || matchGuestTexture.viewMipBase > 0)) {
+                        // The old full-match predicate would have reused this
+                        // image, despite incompatible backing bounds/layout. Do
+                        // not send it through unsynchronized overlap readback:
+                        // that would create a second, incoherent GPU writer.
+                        unrepresentableMatch = hostMapping->texture;
+                    } else {
+                        matches.push_back(hostMapping->texture);
+                    }
                 }
             } else {
                 auto &matchGuestTexture{*hostMapping->texture->guest};
@@ -136,26 +179,71 @@ namespace skyline::gpu {
 
                 }
 
-                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) && matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                const bool sameTileConfig{matchGuestTexture.tileConfig == guestTexture.tileConfig};
+                const bool blockMipCandidate{
+                    matchGuestTexture.GetImageType() == vk::ImageType::e2D &&
+                    guestTexture.GetImageType() == vk::ImageType::e2D &&
+                    matchGuestTexture.tileConfig.mode == texture::TileMode::Block &&
+                    guestTexture.tileConfig.mode == texture::TileMode::Block &&
+                    guestTexture.mipLevelCount == 1 &&
+                    guestTexture.viewMipBase == 0 &&
+                    guestTexture.viewMipCount == 1
+                };
+                if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
+                        (sameTileConfig || blockMipCandidate) &&
                         (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
                     size_t memOffset{static_cast<size_t>(guestMapping.data() - hostMapping->texture->guest->mappings.front().data())};
+
+                    std::optional<texture::MipLevelLayout> requestedMipLayout;
+                    if (blockMipCandidate) {
+                        auto requestedLayouts{texture::GetBlockLinearMipLayout(
+                            guestTexture.dimensions,
+                            guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
+                            guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
+                            guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth, 1)};
+                        if (!requestedLayouts.empty())
+                            requestedMipLayout = requestedLayouts.front();
+                    }
+
                     size_t layerMemOffset{};
                     bool matched{};
                     for (u32 layer{}; layer < hostMapping->texture->layerCount; layer++) {
                         u32 level{};
                         size_t levelMemOffset{};
 
-                        for (auto &mipLevel : hostMapping->texture->mipLayouts) {
-                            if (layerMemOffset + levelMemOffset == memOffset) {
-                                if (mipLevel.blockLinearSize == guestTexture.CalculateLayerSize()) {
-                                    matched = true;
-                                    matchLayer = layer;
-                                    matchLevel = level;
-                                    break;
-                                }
-                                level++;
-                                levelMemOffset += mipLevel.blockLinearSize;
+                        for (const auto &mipLevel : hostMapping->texture->mipLayouts) {
+                            bool layoutMatches{mipLevel.blockLinearSize == guestTexture.CalculateLayerSize()};
+                            if (blockMipCandidate) {
+                                layoutMatches = requestedMipLayout &&
+                                    mipLevel.dimensions == guestTexture.dimensions &&
+                                    mipLevel.blockHeight == requestedMipLayout->blockHeight &&
+                                    mipLevel.blockDepth == requestedMipLayout->blockDepth &&
+                                    mipLevel.blockLinearSize == requestedMipLayout->blockLinearSize;
                             }
+
+                            if (layerMemOffset + levelMemOffset == memOffset && layoutMatches) {
+                                auto range{requestedRange};
+                                // Test before addition, including the whole requested
+                                // range, not just the starting subresource.
+                                if (range.baseMipLevel <= hostMapping->texture->levelCount - level &&
+                                    range.baseArrayLayer <= hostMapping->texture->layerCount - layer) {
+                                    range.baseMipLevel += level;
+                                    range.baseArrayLayer += layer;
+                                    if (hostMapping->texture->ViewRangeFits(guestTexture.viewType, range) &&
+                                        (range.layerCount == 1 || matchGuestTexture.GetLayerStride() == requestedStride)) {
+                                        matched = true;
+                                        matchLayer = layer;
+                                        matchLevel = level;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // These offsets describe the parent's physical mip chain.
+                            // Advancing only after an address equality (the old code)
+                            // made every non-zero mip mathematically unreachable.
+                            ++level;
+                            levelMemOffset += mipLevel.blockLinearSize;
                         }
 
                         if (matched)
@@ -176,6 +264,73 @@ namespace skyline::gpu {
             }
          }
 
+        bool requestedReadOnlyAlias{};
+        for (const auto &alias : exactAliases)
+            if (auto group{alias->aliasGroup.load()}) { separateGroup = std::move(group); break; }
+        if (unrepresentableMatch || separateGroup) {
+            const bool requestedMaterializable{Texture::CanMaterializeGuestLayout(guestTexture)};
+            const bool requestedLossless{Texture::IsGuestLayoutReversible(guestTexture) &&
+                ConvertHostCompatibleFormat(guestTexture.format, gpu.traits) == guestTexture.format};
+            if (!requestedMaterializable)
+                throw exception("Cannot safely materialize this guest mip/layer layout on the overlapping texture backing");
+
+            if (requestedLossless) {
+                // Exact guest mappings identify history, not necessarily reversible
+                // representations. Put an eligible layout first for registration;
+                // the remaining history must pass its separate ownership check there.
+                const auto eligibleEnd{std::stable_partition(exactAliases.begin(), exactAliases.end(), [&](const auto &alias) {
+                    return alias->CanReconcileGuestLayout(guestTexture);
+                })};
+                bool registered{eligibleEnd == exactAliases.end() && separateGroup && std::all_of(exactAliases.begin(), exactAliases.end(), [&](const auto &alias) {
+                    return alias->aliasGroup.load() == separateGroup;
+                })};
+                if (!registered) {
+                    if (tag) {
+                        std::vector<std::shared_ptr<void>> leases;
+                        leases.reserve(exactAliases.size());
+                        for (auto it{exactAliases.begin()}; it != eligibleEnd; ++it) leases.push_back((*it)->PinGuestMemory());
+                        throw TextureAliasReconciliationRequest{{}, exactAliases, std::move(leases), std::make_shared<GuestTexture>(guestTexture)};
+                    }
+                    separateGroup = Texture::RegisterAliases(exactAliases, &guestTexture);
+                }
+            } else {
+                // Host-converted or otherwise non-lossless representations may be
+                // materialized for sampling, but they cannot own the guest bytes.
+                // Establish/retain a group whose authority is a lossless existing
+                // representation, then join the new representation read-only.
+                requestedReadOnlyAlias = true;
+                const auto writerEligibleEnd{std::stable_partition(exactAliases.begin(), exactAliases.end(), [](const auto &alias) {
+                    return alias->guest && alias->CanReconcileGuestLayout(*alias->guest);
+                })};
+                if (writerEligibleEnd == exactAliases.begin())
+                    throw exception("Cannot materialize a read-only texture alias without a lossless authoritative representation");
+
+                bool registered{separateGroup && std::all_of(exactAliases.begin(), exactAliases.end(), [&](const auto &alias) {
+                    return alias->aliasGroup.load() == separateGroup;
+                })};
+                if (!registered) {
+                    if (tag) {
+                        std::vector<std::shared_ptr<void>> leases;
+                        leases.reserve(static_cast<size_t>(std::distance(exactAliases.begin(), writerEligibleEnd)));
+                        for (auto it{exactAliases.begin()}; it != writerEligibleEnd; ++it) leases.push_back((*it)->PinGuestMemory());
+                        throw TextureAliasReconciliationRequest{{}, exactAliases, std::move(leases), {}};
+                    }
+                    separateGroup = Texture::RegisterAliases(exactAliases);
+                }
+            }
+        }
+
+        if (fullMatch && fullMatch->aliasRetired.load()) fullMatch.reset();
+        if (layerMipMatch && layerMipMatch->aliasRetired.load()) layerMipMatch.reset();
+        if (depthSliceMatch && depthSliceMatch->aliasRetired.load()) depthSliceMatch.reset();
+
+        if (!tag) {
+            // BufferQueue lookups have no executor retry boundary. Reconcile
+            // before taking the selected Texture's view lock.
+            const auto selected{depthSliceMatch ? depthSliceMatch : layerMipMatch ? layerMipMatch : fullMatch};
+            if (selected) selected->ReconcileAliases();
+        }
+
         if (depthSliceMatch) {
             // Prefer the real 3D storage over an independently cached slice. The latter
             // would otherwise retain stale contents after the guest renders into another
@@ -190,25 +345,24 @@ namespace skyline::gpu {
                 .levelCount = 1,
                 .baseArrayLayer = depthSlice,
                 .layerCount = guestTexture.GetViewLayerCount(),
-            }, guestTexture.format, guestTexture.swizzle);
+            }, guestTexture.format, guestTexture.swizzle, tag);
         } else if (layerMipMatch) {
             ContextLock textureLock{tag, *layerMipMatch};
-            return layerMipMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
-                .aspectMask = guestTexture.aspect,
-                .baseMipLevel = guestTexture.viewMipBase + matchLevel,
-                .levelCount = guestTexture.viewMipCount,
-                .baseArrayLayer = guestTexture.baseArrayLayer + matchLayer,
-                .layerCount = guestTexture.GetViewLayerCount(),
-            }, guestTexture.format, guestTexture.swizzle);
+            auto range{requestedRange};
+            range.baseMipLevel += matchLevel;
+            range.baseArrayLayer += matchLayer;
+            return layerMipMatch->GetView(guestTexture.viewType, range, guestTexture.format, guestTexture.swizzle, tag);
         } else if (fullMatch) {
             ContextLock textureLock{tag, *fullMatch};
-            return fullMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
-                .aspectMask = guestTexture.aspect,
-                .baseMipLevel = guestTexture.viewMipBase,
-                .levelCount = guestTexture.viewMipCount,
-                .baseArrayLayer = guestTexture.baseArrayLayer,
-                .layerCount = guestTexture.GetViewLayerCount(),
-            }, guestTexture.format, guestTexture.swizzle);
+            if (!fullMatch->ViewRangeFits(guestTexture.viewType, requestedRange)) {
+                // Submit only at a genuine backing incompatibility. Retrying also
+                // rebuilds descriptors whose preparation used the previous image.
+                if (tag)
+                    throw TextureBackingPromotionRequest{fullMatch, fullMatch->format->vkFormat, guestTexture.mipLevelCount,
+                        fullMatch->PinGuestMemoryForMipGrowth(guestTexture.mipLevelCount)};
+                fullMatch->PromoteBackingForView(fullMatch->format->vkFormat, guestTexture.mipLevelCount);
+            }
+            return fullMatch->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
         }
 
         if (guestTexture.GetImageType() == vk::ImageType::e3D &&
@@ -293,7 +447,9 @@ namespace skyline::gpu {
 
                                 if (existing == sliceSources.end()) {
                                     sliceSources.push_back({source, level, slice});
-                                } else if (!existing->texture->everUsedAsRt && source->everUsedAsRt) {
+                                } else if (!existing->texture->everUsedAsGpuWrite && source->everUsedAsGpuWrite) {
+                                    // Storage-image writers are just as authoritative
+                                    // as render targets for overlapping slice history.
                                     existing->texture = source;
                                 }
 
@@ -314,13 +470,21 @@ namespace skyline::gpu {
         }
 
         for (auto &texture : matches)
-            texture->SynchronizeGuest(false, true);
+            if (!separateGroup || texture->aliasGroup.load() != separateGroup)
+                texture->SynchronizeGuest(false, true);
 
         // Create a texture as we cannot find one that matches
 
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();
+        texture->aliasReadOnly = requestedReadOnlyAlias;
+        if (separateGroup) {
+            std::scoped_lock metadata{separateGroup->mutex};
+            separateGroup->members.emplace_back(texture);
+            texture->aliasGroup.store(separateGroup);
+            texture->aliasStale = separateGroup->guestGeneration != separateGroup->generation;
+        }
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto it{texture->guest->mappings.begin()};
         textures.emplace(mappingEnd, TextureMapping{texture, it, guestMapping});
@@ -331,12 +495,7 @@ namespace skyline::gpu {
             textures.emplace(mapping, TextureMapping{texture, it, guestMapping});
         }
 
-        return texture->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
-            .aspectMask = guestTexture.aspect,
-            .baseMipLevel = guestTexture.viewMipBase,
-            .levelCount = guestTexture.viewMipCount,
-            .baseArrayLayer = guestTexture.baseArrayLayer,
-            .layerCount = guestTexture.GetViewLayerCount(),
-        }, guestTexture.format, guestTexture.swizzle);
+        if (!tag) texture->ReconcileAliases();
+        return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
     }
 }

@@ -18,6 +18,7 @@ namespace skyline::gpu {
         bool supportsSamplerReductionMode{}; //!< If the device supports explicitly specifying a reduction mode for sampling (with VK_EXT_sampler_filter_minmax)
         bool supportsCustomBorderColor{}; //!< If the device supports a custom border color without format (VK_EXT_custom_border_color)
         bool supportsAnisotropicFiltering{}; //!< If the device supports anisotropic filtering for sampling
+        bool supportsOcclusionQueryPrecise{}; //!< If precise occlusion-query sample counts are supported
         bool supportsLastProvokingVertex{}; //!< If the device supports setting the last vertex as the provoking vertex (with VK_EXT_provoking_vertex)
         bool supportsLogicOp{}; //!< If the device supports framebuffer logical operations during blending
         bool supportsVertexAttributeDivisor{}; //!< If the device supports a divisor for instance-rate vertex attributes (with VK_EXT_vertex_attribute_divisor)
@@ -38,6 +39,7 @@ namespace skyline::gpu {
         bool supportsFloatControls{}; //!< If extensive control over FP behavior is exposed (with VK_KHR_shader_float_controls)
         vk::PhysicalDeviceFloatControlsProperties floatControls{}; //!< Specifics of FP behavior control (All members will be zero'd out when unavailable)
         bool supportsTransformFeedback{}; //!< If the 'VK_EXT_transform_feedback' extension is supported with neccessary features for emulation
+        bool supportsConditionalRendering{}; //!< If VK_EXT_conditional_rendering is supported and enabled
         bool supportsImageReadWithoutFormat{}; //!< If a storage image can be read without a format
         bool supportsTopologyListRestart{}; //!< If the device supports using primitive restart for topology lists (with VK_EXT_primitive_topology_list_restart)
         bool supportsTopologyPatchListRestart{}; //!< If the device supports using primitive restart for topology patch lists (with VK_EXT_primitive_topology_list_restart)
@@ -53,6 +55,7 @@ namespace skyline::gpu {
         u32 subgroupSize{}; //!< Size of a subgroup on the host GPU
         u32 hostVisibleCoherentCachedMemoryType{std::numeric_limits<u32>::max()};
         u32 minimumStorageBufferAlignment{}; //!< Minimum alignment for storage buffers passed to shaders
+        u32 maximumStorageBufferRange{}; //!< Vulkan limit for storage descriptor ranges
 
         u32 vendorId{}; //!< The `vendorID` Vulkan property
         u32 deviceId{}; //!< The `deviceID` Vulkan property
@@ -118,6 +121,7 @@ namespace skyline::gpu {
             vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT,
             vk::PhysicalDeviceImagelessFramebufferFeatures,
             vk::PhysicalDeviceTransformFeedbackFeaturesEXT,
+            vk::PhysicalDeviceConditionalRenderingFeaturesEXT,
             vk::PhysicalDeviceIndexTypeUint8FeaturesEXT,
             vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
             vk::PhysicalDeviceRobustness2FeaturesEXT>;

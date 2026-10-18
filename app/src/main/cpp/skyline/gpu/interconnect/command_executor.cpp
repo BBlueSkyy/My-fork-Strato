@@ -585,6 +585,11 @@ namespace skyline::gpu::interconnect {
 
         span<TextureView *> depthStencilAttachmentSpan{depthStencilAttachment ? span<TextureView *>(depthStencilAttachment) : span<TextureView *>()};
         auto outputAttachmentViews{ranges::views::concat(colorAttachments, depthStencilAttachmentSpan)};
+        // One operation cannot define an order for two distinct writers of
+        // the same guest bytes. Multiple views of one backing remain valid.
+        boost::container::small_vector<TextureView *, 8> writers;
+        for (auto view : outputAttachmentViews) if (view) writers.push_back(view);
+        Texture::ValidateAliasWrites(writers);
         bool attachmentsMatch{std::equal(lastSubpassInputAttachments.begin(), lastSubpassInputAttachments.end(), inputAttachments.begin(), inputAttachments.end(), ViewsEqual) &&
                               std::equal(lastSubpassColorAttachments.begin(), lastSubpassColorAttachments.end(), colorAttachments.begin(), colorAttachments.end(), ViewsEqual) &&
                               ViewsEqual(lastSubpassDepthStencilAttachment, depthStencilAttachment)};
@@ -597,6 +602,9 @@ namespace skyline::gpu::interconnect {
         if (splitRenderPass) {
             // We need to create a render pass if one doesn't already exist or the current one isn't compatible
             if (renderPass != nullptr) {
+                for (auto &callback : subpassBoundaryCallbacks)
+                    callback();
+
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
                 QueueDiagnosticPassReadbacks();
@@ -608,6 +616,9 @@ namespace skyline::gpu::interconnect {
             subpassCount = 1;
         } else if (!attachmentsMatch) {
             // The last subpass had different attachments, so we need to create a new one
+            for (auto &callback : subpassBoundaryCallbacks)
+                callback();
+
             addSubpass();
             subpassCount++;
             gotoNext = true;
@@ -628,6 +639,9 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::FinishRenderPass() {
         if (renderPass) {
+            for (auto &callback : subpassBoundaryCallbacks)
+                callback();
+
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
             QueueDiagnosticPassReadbacks();
@@ -656,6 +670,10 @@ namespace skyline::gpu::interconnect {
     }
 
     bool CommandExecutor::AttachTexture(TextureView *view) {
+        // Cached TICs/descriptors bypass FindOrCreate. Check them before any node
+        // for this operation is published; retry submits prior work only.
+        view->texture->RequireAliasCoherence(tag);
+
         bool didLock{view->LockWithTag(tag)};
         if (didLock) {
             // TODO: fixup remaining bugs with this and add better heuristics to avoid pauses
@@ -665,6 +683,8 @@ namespace skyline::gpu::interconnect {
             //    preserveAttachedTextures.emplace_back(view->texture);
         }
 
+        if (view->texture->HasAliases())
+            view->texture->SynchronizeHost(false); // Initialize before claiming a GPU write, once per generation.
         return didLock;
     }
 
@@ -716,12 +736,25 @@ namespace skyline::gpu::interconnect {
         cycle->AttachObject(dependency);
     }
 
-    void CommandExecutor::AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
+    void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory) {
         bool gotoNext{CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask)};
-        if (gotoNext)
-            slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassFunctionNode>(), std::forward<decltype(function)>(function));
-        else
+
+        SubpassHooks hooks{};
+        if (hookFactory)
+            hooks = hookFactory(renderPassIndex);
+
+        if (gotoNext) {
+            if (hooks.before) {
+                slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassFunctionNode>(), std::move(hooks.before));
+                slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
+            } else {
+                slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassFunctionNode>(), std::forward<decltype(function)>(function));
+            }
+        } else {
+            if (hooks.before)
+                slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::move(hooks.before));
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
+        }
 
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
             Submit();
@@ -732,6 +765,10 @@ namespace skyline::gpu::interconnect {
             FinishRenderPass();
 
         slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::forward<decltype(function)>(function));
+    }
+
+    void CommandExecutor::BreakRenderPass() {
+        FinishRenderPass();
     }
 
     void CommandExecutor::AddCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function) {
@@ -748,6 +785,13 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::InsertPostRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function) {
         slot->pendingPostRenderPassNodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::forward<decltype(function)>(function));
+    }
+
+    void CommandExecutor::AddPostRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function) {
+        if (renderPass)
+            slot->pendingPostRenderPassNodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::forward<decltype(function)>(function));
+        else
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::forward<decltype(function)>(function));
     }
 
     void CommandExecutor::AddFullBarrier() {
@@ -816,6 +860,10 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::NotifyPipelineChange() {
         for (auto &callback : pipelineChangeCallbacks)
             callback();
+    }
+
+    void CommandExecutor::AddSubpassBoundaryCallback(std::function<void()> &&callback) {
+        subpassBoundaryCallbacks.emplace_back(std::move(callback));
     }
 
     std::optional<u32> CommandExecutor::GetRenderPassIndex() {
@@ -955,6 +1003,22 @@ namespace skyline::gpu::interconnect {
             std::unique_lock lock{mutex};
             cv.wait(lock, [&gpuDone] { return gpuDone; });
         }
+    }
+
+    void CommandExecutor::HandleTextureBackingPromotion(const TextureBackingPromotionRequest &request) {
+        // Restart preparation after submitting old nodes. In particular, allocator
+        // pointers and descriptors from the interrupted operation must not be reused.
+        Submit();
+        ContextLock lock{tag, *request.texture};
+        request.texture->PromoteBackingForView(request.format, request.levels);
+    }
+
+    void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {
+        Submit();
+        if (!request.registration.empty())
+            Texture::RegisterAliases(request.registration, request.registrationLayout.get());
+        if (request.target)
+            request.target->ReconcileAliases();
     }
 
     void CommandExecutor::AddDeferredAction(std::function<void()> &&callback) {
