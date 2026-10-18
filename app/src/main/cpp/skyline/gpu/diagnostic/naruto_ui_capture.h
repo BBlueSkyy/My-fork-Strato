@@ -33,7 +33,7 @@ namespace skyline::gpu::diagnostic {
         // per presentation-sized interval. This is distinct from draw probes.
         static constexpr std::uint32_t MaxFermiSourceSnapshots{24};
         static constexpr std::size_t MaxFermiSourceBytes{72ULL * 1024 * 1024};
-        // One diagnostic intermediate RT immediately before the second
+        // One diagnostic intermediate RT immediately before the first
         // full-resolution text consumer per completed composition cycle.
         static constexpr std::uint32_t MaxUiMidpointSnapshots{24};
         static constexpr std::size_t MaxUiMidpointBytes{72ULL * 1024 * 1024};
@@ -64,8 +64,8 @@ namespace skyline::gpu::diagnostic {
         // full-resolution UI consumer draw. The first Fermi blit receives
         // background only; its reverse direction reads this composed target.
         std::vector<std::uintptr_t> uiCompositorTargets;
-        // Kept behind the diagnostic mutex. Zero=awaiting first qualifying
-        // strip, one=awaiting second, two=midpoint already claimed.
+        // Kept behind the diagnostic mutex. Zero=eligible for pre-text probe,
+        // one=already claimed for this composition cycle.
         std::vector<std::pair<std::uintptr_t, std::uint8_t>> uiTextConsumersByTarget;
         std::uint32_t uiMidpointSnapshotCount{};
         std::size_t uiMidpointBytes{};
@@ -210,12 +210,11 @@ namespace skyline::gpu::diagnostic {
                 uiCompositorTargets.push_back(identity);
         }
 
-        // Observe the first and second qualifying text-strip draw for the
-        // same full-sized compositor target. Capture BEFORE the second draw,
-        // so the image contains the work that precedes it. This is a generic
-        // diagnostic grouping, not a claim that the first group always belongs
-        // to one particular UI region.
-        std::optional<std::uint32_t> ClaimUiMidpointBeforeText(
+        // Observed trace: exactly ONE qualifying full-sized text-strip
+        // consumer per compositor cycle. Capture the target BEFORE that draw,
+        // after the preceding sprite draws. Do not require a second consumer:
+        // that previously yielded zero snapshots.
+        std::optional<std::uint32_t> ClaimUiBeforeText(
             std::uintptr_t targetIdentity, std::size_t bytes) {
             if (!targetIdentity || !active.load(std::memory_order_acquire))
                 return std::nullopt;
@@ -225,17 +224,14 @@ namespace skyline::gpu::diagnostic {
             auto it{std::find_if(uiTextConsumersByTarget.begin(), uiTextConsumersByTarget.end(),
                 [targetIdentity](const auto &entry) { return entry.first == targetIdentity; })};
             if (it == uiTextConsumersByTarget.end()) {
-                if (uiTextConsumersByTarget.size() < 16)
-                    uiTextConsumersByTarget.emplace_back(targetIdentity, 1);
-                return std::nullopt;
+                if (uiTextConsumersByTarget.size() >= 16)
+                    return std::nullopt;
+                it = uiTextConsumersByTarget.emplace(
+                    uiTextConsumersByTarget.end(), targetIdentity, 0);
             }
-            if (it->second == 0) {
-                it->second = 1;
+            if (it->second != 0)
                 return std::nullopt;
-            }
-            if (it->second != 1)
-                return std::nullopt;
-            it->second = 2; // Never repeat this cycle, even if the budget is full.
+            it->second = 1; // Mark claimed for this cycle, even if out of quota.
             if (!bytes || uiMidpointSnapshotCount >= MaxUiMidpointSnapshots ||
                 uiMidpointBytes > MaxUiMidpointBytes ||
                 bytes > MaxUiMidpointBytes - uiMidpointBytes)
@@ -244,8 +240,8 @@ namespace skyline::gpu::diagnostic {
             return uiMidpointSnapshotCount++;
         }
 
-        // A pre-reverse Fermi probe consumes the composed surface. Arm the
-        // next draw grouping on that surface, without crossing render cycles.
+        // A pre-reverse Fermi probe ends this compositor cycle. Re-arm the
+        // first pre-text capture of the next cycle.
         void CompleteUiCompositorCycle(std::uintptr_t targetIdentity) {
             if (!active.load(std::memory_order_acquire))
                 return;
