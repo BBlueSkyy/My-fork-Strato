@@ -61,13 +61,18 @@ jobs:
           python3 tests/gpu_conditional/run.py
           python3 tests/gpu_draw_texture/run.py
 
+      - name: Texture layout and submission regressions
+        run: |
+          python3 tests/gpu_sampled_layout/run.py
+          python3 tests/gpu_submission/run.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand assembleDevRelease assembleDevReldebug
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
       - name: Rename APKs
         if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
         run: |

@@ -351,7 +351,6 @@ namespace skyline::gpu::interconnect {
                     break;
             }
 
-            size_t size; //!< The size of the texture in bytes
             if (textureHeader.headerType == TextureImageControl::HeaderType::Pitch) {
                 guest.tileConfig = {
                     .mode = texture::TileMode::Pitch,
@@ -367,6 +366,19 @@ namespace skyline::gpu::interconnect {
                 throw exception("Unsupported TIC Header Type: {}", static_cast<u32>(textureHeader.headerType));
             }
 
+            if (guest.tileConfig.mode == texture::TileMode::Block && guest.mipLevelCount == 1 && !guest.baseArrayLayer &&
+                guest.GetImageType() == vk::ImageType::e2D && guest.tileConfig.blockDepth == 1 &&
+                guest.format->vkAspect == vk::ImageAspectFlagBits::eColor) {
+                // TIC sampled surfaces auto-size Y blocks, including at level zero.
+                // Limit this to layouts supported by the lossless alias bridge.
+                // Cache the declared allocation first: array layers still advance by
+                // the header's stride even when sampling uses fewer Y GOBs.
+                guest.GetLayerStride();
+                const auto heightBlocks{util::DivideCeil<u32>(guest.dimensions.height, guest.format->blockHeight)};
+                constexpr u32 GobHeight{8};
+                while (guest.tileConfig.blockHeight > 1 && heightBlocks <= (guest.tileConfig.blockHeight >> 1) * GobHeight)
+                    guest.tileConfig.blockHeight >>= 1;
+            }
 
             auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
             guest.mappings.assign(mappings.begin(), mappings.end());

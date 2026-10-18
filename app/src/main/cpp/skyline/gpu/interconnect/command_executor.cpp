@@ -707,13 +707,25 @@ namespace skyline::gpu::interconnect {
 
             boost::container::small_vector<FenceCycle *, 8> chainedCycles;
             for (const auto &texture : ranges::views::concat(attachedTextures, preserveAttachedTextures)) {
-                texture->SynchronizeHostInline(slot->commandBuffer, cycle, true);
-                // We don't need to attach the Texture to the cycle as a TextureView will already be attached
-                if (ranges::find(chainedCycles, texture->cycle.get()) == chainedCycles.end()) {
-                    cycle->ChainCycle(texture->cycle);
-                    chainedCycles.emplace_back(texture->cycle.get());
+                // SynchronizeHostInline may replace the previous cycle with this
+                // cycle for CPU-dirty staged uploads, so order that predecessor first.
+                const auto previousCycle{texture->cycle};
+                if (ranges::find(chainedCycles, previousCycle.get()) == chainedCycles.end()) {
+                    // Chaining fence completion does not order Vulkan queue submissions
+                    // from independent command-record threads. Ensure the previous
+                    // writer has reached vkQueueSubmit before submitting this consumer.
+                    // WaitSubmit is CPU submission-only: it never waits for GPU completion.
+                    if (previousCycle && previousCycle != cycle)
+                        previousCycle->WaitSubmit();
+                    cycle->ChainCycle(previousCycle);
+                    chainedCycles.emplace_back(previousCycle.get());
                 }
 
+                texture->SynchronizeHostInline(slot->commandBuffer, cycle, true);
+                // Retain any lifetime dependency introduced during synchronization.
+                // A TextureView already keeps the texture itself alive.
+                if (texture->cycle != previousCycle)
+                    cycle->ChainCycle(texture->cycle);
                 texture->cycle = cycle;
                 texture->UpdateRenderPassUsage(0, texture::RenderPassUsage::None);
             }

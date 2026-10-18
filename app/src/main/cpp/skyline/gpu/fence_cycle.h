@@ -23,8 +23,9 @@ namespace skyline::gpu {
         std::atomic_flag alreadyDestroyed{}; //!< If the cycle's dependencies are already destroyed, this prevents multiple destructions
         const vk::raii::Device &device;
         std::recursive_timed_mutex mutex;
-        std::condition_variable_any submitCondition;
-        bool submitted{}; //!< If the fence has been submitted to the GPU
+        std::mutex submitMutex; //!< Independent of the mutex held during GPU fence waits
+        std::condition_variable submitCondition;
+        std::atomic<bool> submitted{}; //!< If the fence has been submitted to the GPU
         vk::Fence fence;
         vk::Semaphore semaphore; //!< Semaphore that will be signalled upon GPU completion of the fence
         bool semaphoreSubmitWait{}; //!< If the semaphore needs to be waited on (on GPU) before the fence's command buffer begins. Used to ensure fences that wouldn't otherwise be unsignalled are unsignalled
@@ -67,7 +68,11 @@ namespace skyline::gpu {
          * @brief Signals this fence regardless of if the underlying fence has been signalled or not
          */
         void Cancel() {
-            signalled.test_and_set(std::memory_order_release);
+            {
+                std::scoped_lock lock{submitMutex};
+                signalled.test_and_set(std::memory_order_release);
+            }
+            submitCondition.notify_all();
             DestroyDependencies();
         }
 
@@ -102,17 +107,9 @@ namespace skyline::gpu {
          * @brief Waits for submission of the command buffer associated with this cycle to the GPU
          */
         void WaitSubmit() {
-            if (signalled.test(std::memory_order_consume))
+            if (signalled.test(std::memory_order_acquire) || submitted.load(std::memory_order_acquire))
                 return;
 
-            std::unique_lock lock{mutex};
-            if (submitted)
-                return;
-
-            if (signalled.test(std::memory_order_consume))
-                return;
-
-            lock.unlock();
             {
                 std::shared_lock chainLock{chainMutex};
 
@@ -120,9 +117,10 @@ namespace skyline::gpu {
                     cycle->WaitSubmit();
                 });
             }
-            lock.lock();
-
-            submitCondition.wait(lock, [this] { return submitted; });
+            std::unique_lock lock{submitMutex};
+            submitCondition.wait(lock, [this] {
+                return submitted.load(std::memory_order_acquire) || signalled.test(std::memory_order_acquire);
+            });
         }
 
         /**
@@ -145,9 +143,8 @@ namespace skyline::gpu {
                 });
             }
 
+            WaitSubmit();
             std::unique_lock lock{mutex};
-
-            submitCondition.wait(lock, [&] { return submitted; });
 
             if (signalled.test(std::memory_order_relaxed)) {
                 if (shouldDestroy)
@@ -214,7 +211,7 @@ namespace skyline::gpu {
                 return true;
             }
 
-            if (!submitted)
+            if (!submitted.load(std::memory_order_acquire))
                 return false;
 
             auto status{(*device).getFenceStatus(fence, *device.getDispatcher())};
@@ -263,8 +260,10 @@ namespace skyline::gpu {
          * @brief Notifies all waiters that the command buffer associated with this cycle has been submitted
          */
         void NotifySubmitted() {
-            std::scoped_lock lock{mutex};
-            submitted = true;
+            {
+                std::scoped_lock lock{submitMutex};
+                submitted.store(true, std::memory_order_release);
+            }
             submitCondition.notify_all();
         }
     };
