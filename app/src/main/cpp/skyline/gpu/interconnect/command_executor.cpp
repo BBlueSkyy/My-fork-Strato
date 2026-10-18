@@ -646,10 +646,12 @@ namespace skyline::gpu::interconnect {
                 texture->surfaceSize, guestMap, guestBytes, texture->levelCount, texture->layerCount)};
             auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
             slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
-                [texture, staging](vk::raii::CommandBuffer &commandBuffer,
+                [texture, staging, beforeUiDraw = entry.beforeUiDraw](vk::raii::CommandBuffer &commandBuffer,
                                    const std::shared_ptr<FenceCycle> &cycle, GPU &) {
                     cycle->AttachObjects(texture, staging);
                     texture->CopyIntoStagingBuffer(commandBuffer, staging);
+                    if (beforeUiDraw)
+                        RecordFullBarrier(commandBuffer); // Transfer read must complete before the next color write.
                 });
             diagnosticReadbackCallbacks.emplace_back(
                 [staging, rawPath, metaPath, meta, index] {
