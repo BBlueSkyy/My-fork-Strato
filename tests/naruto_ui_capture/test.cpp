@@ -7,6 +7,16 @@
 int main() {
     namespace fs = std::filesystem;
     using skyline::gpu::diagnostic::UiFrameCapture;
+    using skyline::gpu::diagnostic::IsWideTextStripGeometry;
+    static_assert(IsWideTextStripGeometry(1184, 32));
+    static_assert(IsWideTextStripGeometry(1184, 64));
+    static_assert(IsWideTextStripGeometry(1664, 64));
+    static_assert(IsWideTextStripGeometry(1664, 96));
+    static_assert(IsWideTextStripGeometry(768, 96));
+    static_assert(!IsWideTextStripGeometry(1024, 1024));
+    static_assert(!IsWideTextStripGeometry(224, 64));
+    static_assert(!IsWideTextStripGeometry(512, 10));
+    static_assert(!IsWideTextStripGeometry(2049, 64));
     const fs::path root{fs::temp_directory_path() / "strato_naruto_ui_capture_regression"};
     fs::create_directories(root);
     static_assert(UiFrameCapture::PresentFrameCount == 24);
