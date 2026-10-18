@@ -133,3 +133,11 @@ further focused run, rather than applying speculative sampler/alias changes.
 This branch remains **diagnostic-only**, Draft and unmerged; it does not
 revert or touch PR #359's runtime corrections. Capture readbacks are opt-in and
 can affect GPU timing. Do not monitor GitHub Actions automatically.
+
+Each selected pre-draw diagnostic now writes indices/VBOs as
+`ui_draw_i<interval>_d<draw_id>_<name>.bin`, constant buffers as
+`ui_i<interval>_d<draw_id>_s<stage>_cb<index>.bin`, and SPIR-V as
+`ui_i<interval>_d<draw_id>_shader_<hash>.spv`. The ID prevents the
+text-strip and compressed-sprite captures from overwriting one another.
+Inspect `UI_ACTUAL_CBUF` / `UI_ACTUAL_SAMPLER` / `UI_PRE_SHADER` for
+corresponding IDs. These dumps are read-only diagnostics, not emulation fixes.
