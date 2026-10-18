@@ -288,6 +288,10 @@ namespace skyline::gpu::interconnect {
 
         std::uint64_t GetDiagnosticPreDrawId() const { return diagnosticPendingPreDrawId; }
 
+        // Opt-in capture of the actual full-surface blit input at the
+        // Maxwell3D -> Fermi2D boundary, strictly before this blit.
+        void ProbeDiagnosticFermiInput(TextureView *source, TextureView *destination);
+
         // Diagnostic only: annotate a full-screen blended/compressed-sprite pass.
         // Called after adding the draw, while its active attachments are known.
         void MarkDiagnosticUiOutput(span<TextureView *> sampled, span<TextureView *> color,
