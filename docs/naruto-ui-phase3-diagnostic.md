@@ -13,6 +13,42 @@ include BC3 atlas contents/layout/mips, texture alias freshness, blending,
 texture coordinates and per-instance vertex state. No shader-hash, game-ID or
 driver-specific functional workarounds have been added.
 
+## Phase 5: exact pre/post comparison and draw-state capture
+
+This new diagnostic is designed around the remaining **black blocks in the
+2D UI**, not the previously fixed whole-UI flicker.
+
+A new `pre_XX_rpYY_WIDTHxHEIGHT_FORMAT.raw` (and `pre_XX.txt`)
+now reads the **color destination before the first blended draw sampling
+a compressed atlas** in each approximate presentation interval. The
+readback is placed in the same GPU command stream **before** the draw is
+recorded. The corresponding `pass_XX` from the first sprite-draw boundary
+provides an after-draw comparison. The two images must be matched by
+`texture`, `guest_map`, `executor` and `present_index_approx`; IDs are not
+stable across separate boots.
+
+The events include `PRE_UI_DRAW`, `UI_PRE_DRAW_STATE`,
+`UI_PRE_DRAW_BLEND`, `UI_PRE_VERTEX_BINDING`,
+`UI_PRE_VERTEX_ATTRIBUTE`, `UI_PRE_SAMPLED`, `UI_PRE_SHADER`
+and `PHASE2_SNAPSHOT ... kind=pre_ui`.
+
+The draw-state records contain indexed/draw offsets and instance count,
+all enabled vertex stream strides/rates/divisors, active attributes' stream,
+offset, numeric type and component width, color blend factors and ops,
+and sampled atlas view format/base mip/mip count/layer range.
+These details let us directly check guest vertex/instance interpretation and
+blending against Eden/Ryujinx instead of issuing another broad GPU rewrite.
+
+If the `pre_XX` already has the black shards, the first sprite draw is
+**not proven to create them**: trace the preceding producer. If `pre_XX`
+is clean but the corresponding post-draw `pass_XX` has shards, inspect
+the captured vertex/UV/blend state and exact source atlas.
+
+The probe itself inserts a render-pass boundary and image readback only
+during the armed capture, so it can perturb frame timing. Normal gameplay
+and the #356 submission-order fix are unchanged. No Title ID, hash-based
+rendering hack, or sleep is used.
+
 ## Phase 4 capture strategy
 
 When manually armed only, the capture now observes:
