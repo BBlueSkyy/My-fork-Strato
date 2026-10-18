@@ -499,12 +499,13 @@ namespace skyline::gpu::interconnect {
         if (!match)
             return false;
 
-        // Before the *second* qualifying text consumer, capture the output
-        // of the earlier compositor group. This is a diagnostic separation
-        // point, not an assumption about particular guest screen coordinates.
+        // Only one qualifying text-strip consumer is emitted in each observed
+        // composition cycle. Capture the full-size target BEFORE that draw
+        // to separate earlier sprites from the final text overlay. This is
+        // selected by real draw bindings, not game or screen coordinates.
         if (match->kind == diagnostic::UiFrameCapture::TextFocus::FullConsumer) {
             const auto target{match->target->texture};
-            if (auto midpointId{capture.ClaimUiMidpointBeforeText(
+            if (auto midpointId{capture.ClaimUiBeforeText(
                     reinterpret_cast<uintptr_t>(target.get()), target->surfaceSize)}) {
                 BreakRenderPass(); // The earlier graphics writes precede this copy.
                 auto staging{gpu.memory.AllocateStagingBuffer(target->surfaceSize)};
@@ -517,16 +518,16 @@ namespace skyline::gpu::interconnect {
                     });
 
                 const auto directory{std::filesystem::path(capture.CaptureDirectory())};
-                const auto rawPath{directory / fmt::format("ui_midpoint_{:02}_{}x{}_{}.raw",
+                const auto rawPath{directory / fmt::format("ui_pretext_{:02}_{}x{}_{}.raw",
                     *midpointId, target->dimensions.width, target->dimensions.height,
                     vk::to_string(target->format->vkFormat))};
-                const auto metaPath{directory / fmt::format("ui_midpoint_{:02}.txt", *midpointId)};
+                const auto metaPath{directory / fmt::format("ui_pretext_{:02}.txt", *midpointId)};
                 const auto guestMap{target->guest && !target->guest->mappings.empty()
                     ? reinterpret_cast<uintptr_t>(target->guest->mappings.front().data()) : 0};
                 const auto meta{fmt::format(
-                    "midpoint_id={} approx_present={} executor=0x{:X} submission={} "
+                    "pretext_id={} approx_present={} executor=0x{:X} submission={} "
                     "render_pass={} target=0x{:X} guest_map=0x{:X} cycle=0x{:X} "
-                    "note=pre_second_text_consumer_not_exact_presentation_frame\n",
+                    "note=pre_first_text_consumer_after_sprite_draws_not_exact_presentation_frame\n",
                     *midpointId, capture.presentIndex.load(std::memory_order_acquire),
                     reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
                     reinterpret_cast<uintptr_t>(target.get()), guestMap,
@@ -535,7 +536,7 @@ namespace skyline::gpu::interconnect {
                     [staging, rawPath, metaPath, meta, id = *midpointId] {
                         std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
                         if (!raw) {
-                            LOGE("MINIRD_CONNECTIONS UI midpoint {} could not open output", id);
+                            LOGE("MINIRD_CONNECTIONS UI pre-text {} could not open output", id);
                             return;
                         }
                         raw.write(reinterpret_cast<const char *>(staging->data()),
@@ -544,10 +545,10 @@ namespace skyline::gpu::interconnect {
                         std::ofstream info(metaPath, std::ios::trunc);
                         if (info)
                             info << meta;
-                        LOGI("MINIRD_CONNECTIONS wrote UI midpoint {}: {}", id, rawPath.string());
+                        LOGI("MINIRD_CONNECTIONS wrote UI pre-text {}: {}", id, rawPath.string());
                     });
                 capture.Record(fmt::format(
-                    "UI_COMPOSITOR_MIDPOINT id={} executor=0x{:X} submission={} "
+                    "UI_COMPOSITOR_PRETEXT id={} executor=0x{:X} submission={} "
                     "target=0x{:X} guest_map=0x{:X}",
                     *midpointId, reinterpret_cast<uintptr_t>(this), submissionNumber,
                     reinterpret_cast<uintptr_t>(target.get()), guestMap));
