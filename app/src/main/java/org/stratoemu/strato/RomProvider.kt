@@ -86,6 +86,11 @@ class RomProvider @Inject constructor(
             return
 
         switchDirectory.walkTopDown()
+            // An in-progress installer uses a hidden staging directory. Never
+            // expose an incomplete NRO if a library scan runs during its copy.
+            .onEnter { directory ->
+                directory == switchDirectory || !directory.name.startsWith(".")
+            }
             .filter { it.isFile && it.extension.equals("nro", ignoreCase = true) }
             .forEach { file ->
                 val uri = Uri.fromFile(file)
