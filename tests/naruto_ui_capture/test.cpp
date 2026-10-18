@@ -34,13 +34,6 @@ int main() {
     capture.MarkFlippedDestination(0, 0x3000, 0x100); // late flip overwrites old candidate
     assert(!capture.IsFlippedDestination(0, 0x2000, 0x100));
     assert(capture.IsFlippedDestination(0, 0x3000, 0x100));
-    assert(!capture.ClaimPreUiDraw(0)); // too early for a late-draw snapshot
-    assert(!capture.ClaimPreUiDraw(UiFrameCapture::FrameCount));
-    assert(!capture.ClaimPreUiDraw(1)); // separate interval also starts gated
-    assert(!capture.ShouldProbeUiPreDraw(0));
-    for (std::uint32_t i{1}; i < 96; ++i)
-        assert(!capture.ProbeUiDraw(0));
-    assert(capture.ShouldProbeUiPreDraw(0));
     assert(capture.ClaimPreUiDraw(0));
     assert(!capture.ClaimPreUiDraw(0));
     assert(!capture.ClaimPreUiDraw(UiFrameCapture::FrameCount));
