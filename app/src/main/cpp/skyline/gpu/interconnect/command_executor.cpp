@@ -604,6 +604,77 @@ namespace skyline::gpu::interconnect {
         BreakRenderPass();
     }
 
+    void CommandExecutor::ProbeDiagnosticFermiInput(TextureView *source, TextureView *destination) {
+        auto &capture{diagnostic::NarutoUiCapture()};
+        if (!capture.active.load(std::memory_order_acquire) || !source || !destination ||
+            !source->texture || !destination->texture ||
+            !IsNarutoUiPassImage(*source->texture) ||
+            source->texture.get() == destination->texture.get())
+            return;
+
+        const auto src{source->texture};
+        const auto dst{destination->texture};
+        const auto id{capture.ReserveFermiSource(reinterpret_cast<uintptr_t>(src.get()),
+                                                 reinterpret_cast<uintptr_t>(dst.get()),
+                                                 src->surfaceSize)};
+        if (!id)
+            return;
+        // Same GPU command stream as the imminent blit, with no CPU GPU-fence
+        // wait. This captures pixels BEFORE Fermi2D samples the source.
+        BreakRenderPass();
+        auto staging{gpu.memory.AllocateStagingBuffer(src->surfaceSize)};
+        slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+            [src, staging](vk::raii::CommandBuffer &commandBuffer,
+                           const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                cycle->AttachObjects(src, staging);
+                src->CopyIntoStagingBuffer(commandBuffer, staging);
+                RecordFullBarrier(commandBuffer);
+            });
+
+        const auto directory{std::filesystem::path(capture.CaptureDirectory())};
+        const auto rawName{fmt::format("fermi_input_{:02}_{}x{}_{}.raw",
+                                      *id, src->dimensions.width, src->dimensions.height,
+                                      vk::to_string(src->format->vkFormat))};
+        const auto rawPath{directory / rawName};
+        const auto metaPath{directory / fmt::format("fermi_input_{:02}.txt", *id)};
+        const auto mapAddress{[](const auto &texture) -> uintptr_t {
+            return texture->guest && !texture->guest->mappings.empty()
+                ? reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data()) : 0;
+        }};
+        const auto meta{fmt::format(
+            "fermi_input_id={} approx_present={} executor=0x{:X} submission={} "
+            "source=0x{:X} dest=0x{:X} source_guest=0x{:X} dest_guest=0x{:X} "
+            "source_cycle=0x{:X} dest_cycle=0x{:X} dimensions={}x{} format={} "
+            "note=GPU_ordered_pre_blit_not_exact_present_frame\n",
+            *id, capture.presentIndex.load(std::memory_order_acquire),
+            reinterpret_cast<uintptr_t>(this), submissionNumber,
+            reinterpret_cast<uintptr_t>(src.get()), reinterpret_cast<uintptr_t>(dst.get()),
+            mapAddress(src), mapAddress(dst),
+            reinterpret_cast<uintptr_t>(src->cycle.get()),
+            reinterpret_cast<uintptr_t>(dst->cycle.get()),
+            src->dimensions.width, src->dimensions.height, vk::to_string(src->format->vkFormat))};
+        diagnosticReadbackCallbacks.emplace_back([staging, rawPath, metaPath, meta, id = *id] {
+            std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+            if (!raw) {
+                LOGE("MINIRD_CONNECTIONS Fermi input {} could not open output", id);
+                return;
+            }
+            raw.write(reinterpret_cast<const char *>(staging->data()),
+                      static_cast<std::streamsize>(staging->size()));
+            raw.close();
+            std::ofstream info(metaPath, std::ios::trunc);
+            if (info)
+                info << meta;
+            LOGI("MINIRD_CONNECTIONS wrote Fermi input {}: {}", id, rawPath.string());
+        });
+        capture.Record(fmt::format(
+            "FERMI_INPUT_SNAPSHOT id={} executor=0x{:X} submission={} "
+            "source=0x{:X} dest=0x{:X} source_guest=0x{:X} dest_guest=0x{:X}",
+            *id, reinterpret_cast<uintptr_t>(this), submissionNumber,
+            reinterpret_cast<uintptr_t>(src.get()), reinterpret_cast<uintptr_t>(dst.get()),
+            mapAddress(src), mapAddress(dst)));
+    }
+
     void CommandExecutor::QueueDiagnosticPassReadbacks() {
         if (diagnosticPassImages.empty())
             return;
