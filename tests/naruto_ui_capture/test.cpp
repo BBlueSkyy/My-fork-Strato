@@ -13,6 +13,9 @@ int main() {
     static_assert(IsWideTextStripGeometry(1664, 64));
     static_assert(IsWideTextStripGeometry(1664, 96));
     static_assert(IsWideTextStripGeometry(768, 96));
+    static_assert(IsWideTextStripGeometry(704, 96));
+    static_assert(UiFrameCapture::MaxPostSecondTextBytes >=
+                  24ULL * 1600 * 900 * 4);
     static_assert(!IsWideTextStripGeometry(1024, 1024));
     static_assert(!IsWideTextStripGeometry(224, 64));
     static_assert(!IsWideTextStripGeometry(512, 10));
