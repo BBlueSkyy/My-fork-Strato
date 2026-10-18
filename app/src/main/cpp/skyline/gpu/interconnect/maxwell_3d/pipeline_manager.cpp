@@ -823,10 +823,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 if (dumpedBuffers >= 12)
                     break;
                 auto &cb{constantBuffers[stage][idx]};
-                if (!cb.view || !info.constantBufferUsedSizes[idx])
+                if (!cb.view)
                     continue;
-                const std::size_t length{std::min<std::size_t>(
-                    {512, info.constantBufferUsedSizes[idx], cb.view.size})};
+                // StageDescriptorInfo::constantBufferUsedSizes has no producer in
+                // the graphics pipeline. A zero means "unknown", not "unused":
+                // the compiled first-sprite VS accesses c2_u_4 yet the previous
+                // diagnostic skipped *all* CBUF files. Bound views are the
+                // authoritative source for this opt-in CPU-side snapshot.
+                // Do not change production descriptor sizing or shader behavior.
+                const std::size_t length{std::min<std::size_t>(4096, cb.view.size)};
                 if (!length)
                     continue;
                 std::vector<u8> bytes(length);
@@ -837,8 +842,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     output.write(reinterpret_cast<const char *>(bytes.data()),
                                  static_cast<std::streamsize>(bytes.size()));
                     capture.Record(fmt::format(
-                        "UI_ACTUAL_CBUF interval={} stage={} cb={} bytes={} used_bytes={} file={} success={}",
-                        interval, stage, idx, length, info.constantBufferUsedSizes[idx],
+                        "UI_ACTUAL_CBUF interval={} stage={} cb={} bytes={} view_bytes={} used_bytes={} file={} success={} source=cpu_backing_view",
+                        interval, stage, idx, length, cb.view.size, info.constantBufferUsedSizes[idx],
                         name, output.good()));
                     ++dumpedBuffers;
                 }
