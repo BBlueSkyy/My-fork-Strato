@@ -3,6 +3,11 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <cmath>
+#include <algorithm>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <limits>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -31,6 +36,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
           samplerBinding{registerBundle.samplerBinding},
           textures{manager, registerBundle.texturePoolRegisters},
           sampleCounterEnable{registerBundle.sampleCounterEnable},
+          captureVertexStreams{registerBundle.activeStateRegisters.pipelineRegisters.vertexInputRegisters.vertexStreams},
+          captureIndexBuffer{registerBundle.activeStateRegisters.indexBufferRegisters.indexBuffer},
+          captureSamplerPool{registerBundle.samplerPoolRegisters.texSamplerPool},
           directState{activeState.directState},
           queries{gpu} {
         ctx.executor.AddFlushCallback([this] {
@@ -886,6 +894,79 @@ namespace skyline::gpu::interconnect::maxwell3d {
                             view->range.baseMipLevel, view->range.levelCount,
                             view->range.baseArrayLayer, view->range.layerCount, texture->levelCount));
                     }
+                    // Diagnostic-only GMMU snapshot of the *actual guest
+                    // registers* behind this exact selected sprite draw.
+                    // Read a bounded prefix only; no GPU readback/synchronization
+                    // or host-side emulation state is changed.
+                    const auto dumpGuest{[&](const char *name, u64 iova, std::size_t wanted) {
+                        constexpr std::size_t MaxDump{16 * 1024};
+                        wanted = std::min(wanted, MaxDump);
+                        if (!iova || !wanted)
+                            return;
+                        const auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(iova, wanted)};
+                        auto directory{std::filesystem::path(capture.CaptureDirectory())};
+                        if (directory.empty())
+                            return;
+                        auto out{std::ofstream(directory / fmt::format("ui_draw_{}.bin", name),
+                                               std::ios::binary | std::ios::trunc)};
+                        if (!out)
+                            return;
+                        std::size_t written{};
+                        bool valid{true};
+                        for (const auto &mapping : mappings) {
+                            if (!mapping.valid()) {
+                                valid = false;
+                                break;
+                            }
+                            const auto amount{std::min(mapping.size(), wanted - written)};
+                            out.write(reinterpret_cast<const char *>(mapping.data()),
+                                      static_cast<std::streamsize>(amount));
+                            written += amount;
+                            if (written == wanted)
+                                break;
+                        }
+                        out.close();
+                        capture.Record(fmt::format("UI_DRAW_BUFFER name={} iova=0x{:X} wanted={} written={} fully_mapped={}",
+                                                   name, iova, wanted, written, valid && written == wanted));
+                    }};
+
+                    if (indexed && !directState.inputAssembly.NeedsQuadConversion()) {
+                        const auto indexSize{1U << static_cast<u32>(captureIndexBuffer.indexSize)};
+                        if (indexSize == 1 || indexSize == 2 || indexSize == 4) {
+                            capture.Record(fmt::format(
+                                "UI_REAL_INDEX_BUFFER iova=0x{:X} limit=0x{:X} index_size={} first={} count={}",
+                                u64{captureIndexBuffer.address}, u64{captureIndexBuffer.limit},
+                                indexSize, first, count));
+                            const auto prefix{std::min<std::size_t>(
+                                (static_cast<std::size_t>(first) + static_cast<std::size_t>(count)) * indexSize,
+                                4096)};
+                            dumpGuest("indices", u64{captureIndexBuffer.address}, prefix);
+                        }
+                    }
+                    for (u32 stream{}; stream < captureVertexStreams.size(); ++stream) {
+                        const auto &vbo{captureVertexStreams[stream]};
+                        if (!vbo.format.enable)
+                            continue;
+                        const u32 stride{vbo.format.stride};
+                        capture.Record(fmt::format(
+                            "UI_REAL_VERTEX_BUFFER stream={} iova=0x{:X} stride={} frequency={} format=0x{:X}",
+                            stream, u64{vbo.location}, stride, vbo.frequency, vbo.format.raw));
+                        // Draw uses 30 indices: a few KiB per enabled stream
+                        // suffices to reconstruct the accessed position/UV
+                        // records with the separate index dump.
+                        if (stride && stream < 4)
+                            dumpGuest(fmt::format("vbo{}", stream).c_str(),
+                                      u64{vbo.location}, std::min<std::size_t>(4096, stride * 128ULL));
+                    }
+                    // A small sampler-pool prefix for offline TSC inspection.
+                    // Actual bindless indices require shader handle tracing;
+                    // do not claim these TSCs are necessarily bound.
+                    capture.Record(fmt::format("UI_TSC_POOL base=0x{:X} max_index={}",
+                                               u64{captureSamplerPool.offset}, captureSamplerPool.maximumIndex));
+                    if (captureSamplerPool.maximumIndex < 65536)
+                        dumpGuest("tsc_prefix", u64{captureSamplerPool.offset},
+                                  std::min<std::size_t>(512, (static_cast<std::size_t>(captureSamplerPool.maximumIndex) + 1) * 32));
+
                     for (auto hash : pipeline->sourcePackedState.shaderHashes)
                         if (hash)
                             capture.Record(fmt::format("UI_PRE_SHADER hash={:016X}", hash));
