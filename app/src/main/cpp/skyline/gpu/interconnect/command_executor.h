@@ -228,9 +228,12 @@ namespace skyline::gpu::interconnect {
             bool renderTarget{};
             bool priority{};
             bool atlas{};
-            bool beforeUiDraw{}; // Snapshot of destination before first matching sprite draw.
+            bool beforeUiDraw{}; // Snapshot of destination before the selected draw.
+            std::uint64_t drawId{}; // Correlates GPU-ordered pre/source/post within one draw.
+            const char *role{}; // Static diagnostic label, never owned by a guest resource.
         };
         std::vector<DiagnosticPassImage> diagnosticPassImages;
+        std::uint64_t diagnosticPendingPreDrawId{}; // Only the immediately following GPU draw may consume it.
         std::vector<std::function<void()>> diagnosticReadbackCallbacks;
         void TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color);
         void QueueDiagnosticPassReadbacks();
