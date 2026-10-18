@@ -57,10 +57,14 @@ int main() {
     assert(!capture.ClaimPreSpriteDraw(0));
     assert(!capture.ClaimPreSpriteDraw(UiFrameCapture::FrameCount));
     assert(capture.ClaimPreSpriteDraw(1));
-    // Capture one full-sized Fermi2D input per blit pair. Reversed or different
-    // directions do not consume the quota.
+    // Background-only Fermi source is never eligible. Register the
+    // compositor's actual target as observed from a GPU consumer draw.
     assert(!capture.ReserveFermiSource(0, 0xF200, 2822400));
     assert(!capture.ReserveFermiSource(0xF100, 0xF100, 2822400));
+    assert(!capture.ReserveFermiSource(0xF100, 0xF200, 2822400));
+    capture.ObserveUiCompositorTarget(0xF100);
+    capture.ObserveUiCompositorTarget(0xF100); // deduplicate observed texture
+    assert(!capture.ReserveFermiSource(0xF200, 0xF100, 2822400)); // background
     for (std::uint32_t i{}; i < UiFrameCapture::MaxFermiSourceSnapshots; ++i) {
         assert(capture.ReserveFermiSource(0xF100, 0xF200, 2822400) == i);
         assert(!capture.ReserveFermiSource(0xF200, 0xF100, 2822400));
@@ -85,7 +89,10 @@ int main() {
     assert(fs::exists(root / "gpu_events.txt"));
 
     capture.Start(root.string());
-    assert(capture.ReserveFermiSource(0xF200, 0xF100, 2822400) == 0); // reset direction/counter
+    // New session MUST clear the former observed targets/direction.
+    assert(!capture.ReserveFermiSource(0xF100, 0xF200, 2822400));
+    capture.ObserveUiCompositorTarget(0xF200);
+    assert(capture.ReserveFermiSource(0xF200, 0xF100, 2822400) == 0);
     assert(!capture.ReserveFermiSource(0xF100, 0xF200, 2822400));
     assert(!capture.IsWatchedMapping(0x1000, 1)); // no cross-session leakage
     assert(!capture.IsFlippedDestination(0, 0x3000, 0x100)); // flip registry reset
