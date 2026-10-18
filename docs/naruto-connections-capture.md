@@ -268,17 +268,17 @@ some other command classes. No basis exists to modify Fermi2D or Vulkan
 presentation; those stages follow the already incomplete source.
 
 **New opt-in probe:** take one readback of the live full-size Maxwell
-compositor target just before its *second* qualifying text-strip draw.
-The first qualifying strip sets the counter; the second triggers the copy
-and ends that cycle's capture. A reverse Fermi input event resets the
+compositor target just before its *first* qualifying text-strip draw.
+The first qualifying strip triggers the readback; later draws in that
+cycle do not repeat it. A reverse Fermi input event resets the
 counter so the next UI composition cycle can be sampled. These are generic
 runtime observations, not hardcoded title identifiers, shader hashes,
 guest addresses or P1 screen coordinates.
 
-Files: ui_midpoint_XX_<width>x<height>_<format>.raw plus matching .txt;
-trace marker UI_COMPOSITOR_MIDPOINT. Maximum **24** midpoint images and
+Files: ui_pretext_XX_<width>x<height>_<format>.raw plus matching .txt;
+trace marker UI_COMPOSITOR_PRETEXT. Maximum **24** midpoint images and
 **72 MiB**, independent of prior Fermi/VI/draw quotas. GPU copying and
-memory barrier are in the same command stream before the second strip;
+memory barrier are in the same command stream before the first strip;
 normal emulation remains unchanged outside the manually armed capture.
 
 **Next:** align each midpoint by content/temporal order (ordinal is not exact
@@ -288,3 +288,36 @@ Maxwell passes/overwrites. If absent at midpoint too, investigate the
 earlier Maxwell drawing/texture/state/synchronization. This does not itself
 prove a particular synchronization/barrier bug. PR #359 preserved, #360
 Draft and unmerged; no Actions monitoring.
+
+## New capture: failed midpoint trigger, frame 6 P1 disappearance
+
+The latest Qualcomm 0.777.0 capture has 24 VI images at 1600x900,
+13 pre-reverse Fermi sources and 24 focused readbacks. The intended
+midpoint probe produced **zero** files and no UI_COMPOSITOR_MIDPOINT
+events. This is a diagnostic selection error, not a missing guest draw:
+the trace records **exactly one** qualifying full-resolution text-strip
+consumer per composition cycle, whereas the previous probe required two.
+That draw follows about 131 compressed-sprite consumers.
+
+Fermi input 05 lacks P1 bars and corresponds to VI 06, where the same
+bars remain missing, while CPU stays normal. Offline fraction of near-black
+RGB pixels in the P1 bar crop was 0.5518 (Fermi 04 normal), 0.0805 (Fermi
+05 failed), 0.0826 (VI 06 failed), and 0.5469 (Fermi 06 recovered). CPU
+fraction stays ~0.656. All 13 pre-reverse inputs most closely match
+presentation source N+1 by full-frame comparison after vertical inversion.
+
+The corrected *diagnostic-only* probe runs **before the first text-strip
+consumer** of a given full-resolution RT per composition cycle, after the
+earlier sprite draws. It rearms at the pre-reverse Fermi boundary.
+New file prefix: ui_pretext_XX, trace event UI_COMPOSITOR_PRETEXT.
+Budget remains 24 snapshots /72 MiB; at 1600x900 it allows only 13
+full-sized images, so collection can stop before all 24 presentation frames.
+No game ID, shader hash, IOVA or screen-space region is embedded.
+
+Next capture must compare pre-text output and pre-reverse Fermi source for
+a P1 failure. If P1 bars are absent pre-text, the failure is in the
+earlier sprite composition or input state; if present pre-text but absent
+pre-Fermi, the text draw or subsequent writers require examination.
+The logo-over-nameplate glitch was not clearly captured. The production
+GPU renderer remains unchanged, PR #359 preserved, #360 Draft/unmerged,
+and no GitHub Actions monitoring.
