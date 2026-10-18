@@ -109,7 +109,7 @@ namespace engine {
 enum class ShaderStage { Vertex };
 constexpr size_t ShaderStageCount=1,ShaderStageConstantBufferCount=4;
 }
-#define LOGW(...)
+#define LOGW(...) [](const auto &...) {}(__VA_ARGS__)
 #include "cache.inc"
 #include "read.inc"
 }
