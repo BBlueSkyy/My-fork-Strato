@@ -56,6 +56,10 @@ namespace skyline::gpu::diagnostic {
         std::array<bool, FrameCount> preUiDrawClaimed{};
         std::array<bool, FrameCount> preSpriteDrawClaimed{};
         std::optional<std::pair<std::uintptr_t, std::uintptr_t>> fermiSourceDirection;
+        // Live backing identities actually written by a qualifying
+        // full-resolution UI consumer draw. The first Fermi blit receives
+        // background only; its reverse direction reads this composed target.
+        std::vector<std::uintptr_t> uiCompositorTargets;
         std::uint32_t fermiSourceSnapshotCount{};
         std::size_t fermiSourceBytes{};
         // One full-surface vertically flipped blit destination per approximate
@@ -77,6 +81,7 @@ namespace skyline::gpu::diagnostic {
             preUiDrawClaimed.fill(false);
             preSpriteDrawClaimed.fill(false);
             fermiSourceDirection.reset();
+            uiCompositorTargets.clear();
             fermiSourceSnapshotCount = 0;
             fermiSourceBytes = 0;
             flippedDestinations.fill({});
@@ -179,16 +184,31 @@ namespace skyline::gpu::diagnostic {
             return nextFocusedDrawId.fetch_add(1, std::memory_order_relaxed);
         }
 
-        // Pick the first observed full-screen Fermi2D source -> destination
-        // direction; sample that same direction on later flips. The opposite
-        // direction normally returns the result to its original backing and
-        // would waste half the cap. No title/driver/guest-address constants.
+        // The host texture identity is observed as an *actual render target*
+        // from Maxwell3D; no game ID, shader hash, magic guest IOVA, screen ROI
+        // or driver name participates in selecting the Fermi source.
+        void ObserveUiCompositorTarget(std::uintptr_t identity) {
+            if (!identity || !active.load(std::memory_order_acquire))
+                return;
+            std::scoped_lock lock(mutex);
+            if (active.load(std::memory_order_relaxed) &&
+                uiCompositorTargets.size() < 16 &&
+                std::find(uiCompositorTargets.begin(), uiCompositorTargets.end(), identity) ==
+                    uiCompositorTargets.end())
+                uiCompositorTargets.push_back(identity);
+        }
+
+        // Only snapshot an image we saw receiving actual UI compositor draws,
+        // never the first background-only Fermi input. Lock the chosen reverse
+        // direction after its first match so subsequent observations agree.
         std::optional<std::uint32_t> ReserveFermiSource(
             std::uintptr_t sourceIdentity, std::uintptr_t destinationIdentity, std::size_t bytes) {
             std::scoped_lock lock(mutex);
             if (!active.load(std::memory_order_acquire) || !sourceIdentity || !destinationIdentity ||
                 sourceIdentity == destinationIdentity || !bytes ||
                 fermiSourceSnapshotCount >= MaxFermiSourceSnapshots ||
+                std::find(uiCompositorTargets.begin(), uiCompositorTargets.end(), sourceIdentity) ==
+                    uiCompositorTargets.end() ||
                 fermiSourceBytes > MaxFermiSourceBytes ||
                 bytes > MaxFermiSourceBytes - fermiSourceBytes)
                 return std::nullopt;
