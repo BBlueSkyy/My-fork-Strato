@@ -903,6 +903,12 @@ namespace skyline::gpu::interconnect {
                 texture->SynchronizeHostInline(slot->commandBuffer, cycle, true);
                 // We don't need to attach the Texture to the cycle as a TextureView will already be attached
                 if (ranges::find(chainedCycles, texture->cycle.get()) == chainedCycles.end()) {
+                    // Chaining fence completion does not order Vulkan queue submissions
+                    // from independent command-record threads. Ensure the previous
+                    // writer has reached vkQueueSubmit before submitting this consumer.
+                    // WaitSubmit is CPU submission-only: it never waits for GPU completion.
+                    if (texture->cycle && texture->cycle != cycle)
+                        texture->cycle->WaitSubmit();
                     cycle->ChainCycle(texture->cycle);
                     chainedCycles.emplace_back(texture->cycle.get());
                 }
