@@ -57,11 +57,14 @@ int main() {
     assert(capture.NextFocusedDrawId() == 1);
     assert(capture.NextFocusedDrawId() == 2);
 
-    for (std::uint32_t i{}; i < UiFrameCapture::PassSnapshotsPerInterval; ++i)
-        assert(capture.ReservePassSnapshot(0, 5760000));
-    assert(!capture.ReservePassSnapshot(0, 5760000));
-    for (std::uint32_t frame{1}; frame < UiFrameCapture::FrameCount; ++frame)
-        assert(capture.ReservePassSnapshot(frame, 5760000));
+    // Exactly one pre-destination, pre-source and post-destination for each
+    // of the two consumer categories: six readbacks per presentation interval.
+    for (std::uint32_t frame{}; frame < UiFrameCapture::FrameCount; ++frame) {
+        for (std::uint32_t i{}; i < UiFrameCapture::PassSnapshotsPerInterval; ++i)
+            assert(capture.ReservePassSnapshot(frame, 2822400));
+        assert(!capture.ReservePassSnapshot(frame, 1));
+    }
+    assert(!capture.ReservePassSnapshot(0, 1)); // global snapshot count also exhausted
     assert(!capture.ReservePassSnapshot(UiFrameCapture::FrameCount, 1024));
     capture.Record("test_event=1");
     capture.Finish();
