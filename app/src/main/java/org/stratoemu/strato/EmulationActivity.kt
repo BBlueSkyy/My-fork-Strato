@@ -655,17 +655,16 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
         binding.gameView.holder.addCallback(this)
 
-        if (emulationSettings.aspectRatio == 3) {
-            binding.gameView.setBalancedFullscreen()
-        } else {
-            binding.gameView.setAspectRatio(
-                when (emulationSettings.aspectRatio) {
-                    0 -> Rational(16, 9)
-                    1 -> Rational(21, 9)
-                    else -> null
-                }
-            )
-        }
+        // Balanced fullscreen uses the full Android surface; the final
+        // Vulkan presentation copy reduces stretching in the image center.
+        // Never enlarge/crop the SurfaceView: game UI must remain visible.
+        binding.gameView.setAspectRatio(
+            when (emulationSettings.aspectRatio) {
+                0 -> Rational(16, 9)
+                1 -> Rational(21, 9)
+                else -> null
+            }
+        )
 
         lifecycleScope.launch(Dispatchers.Main) {
             lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {

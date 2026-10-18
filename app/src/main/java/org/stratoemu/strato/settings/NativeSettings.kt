@@ -32,6 +32,7 @@ data class NativeSettings(
     var gpuDriverLibraryName : String,
     var forceTripleBuffering : Boolean,
     var disableFrameThrottling : Boolean,
+    var balancedFullscreen : Boolean,
     var executorSlotCountScale : Int,
     var executorFlushThreshold : Int,
     var useDirectMemoryImport : Boolean,
@@ -60,6 +61,9 @@ data class NativeSettings(
         if (pref.gpuDriver == EmulationSettings.SYSTEM_GPU_DRIVER) "" else GpuDriverHelper.getLibraryName(context, pref.gpuDriver),
         pref.forceTripleBuffering,
         pref.disableFrameThrottling,
+        pref.aspectRatio == 3 && context.resources.displayMetrics.let {
+            maxOf(it.widthPixels, it.heightPixels).toFloat() / minOf(it.widthPixels, it.heightPixels).coerceAtLeast(1) > 16f / 9f + 0.01f
+        },
         pref.executorSlotCountScale,
         pref.executorFlushThreshold,
         pref.useDirectMemoryImport,
