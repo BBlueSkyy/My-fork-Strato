@@ -286,6 +286,8 @@ namespace skyline::gpu::interconnect {
         // blended BCn sprite draw. Only called while the capture is active.
         bool ProbeDiagnosticUiPreDraw(span<TextureView *> sampled, span<TextureView *> color, bool blendingEnabled);
 
+        std::uint64_t GetDiagnosticPreDrawId() const { return diagnosticPendingPreDrawId; }
+
         // Diagnostic only: annotate a full-screen blended/compressed-sprite pass.
         // Called after adding the draw, while its active attachments are known.
         void MarkDiagnosticUiOutput(span<TextureView *> sampled, span<TextureView *> color,
