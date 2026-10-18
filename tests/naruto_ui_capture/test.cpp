@@ -40,15 +40,22 @@ int main() {
     assert(capture.ClaimPreUiDraw(1));
     assert(!capture.ClaimPreUiDraw(1));
     using TextFocus = UiFrameCapture::TextFocus;
-    assert(capture.ClaimTextFocus(0, TextFocus::GlyphOutput) == 1);
-    assert(capture.ClaimTextFocus(0, TextFocus::GlyphOutput) == 2);
+    // All six snapshots per interval now belong to full-resolution draws:
+    // pre/post destination and sampled source for text + compressed sprite.
     assert(!capture.ClaimTextFocus(0, TextFocus::GlyphOutput));
-    assert(capture.ClaimTextFocus(0, TextFocus::StripComposite) == 1);
     assert(!capture.ClaimTextFocus(0, TextFocus::StripComposite));
     assert(capture.ClaimTextFocus(0, TextFocus::FullConsumer) == 1);
     assert(!capture.ClaimTextFocus(0, TextFocus::FullConsumer));
-    assert(!capture.ClaimTextFocus(UiFrameCapture::FrameCount, TextFocus::GlyphOutput));
-    assert(capture.ClaimTextFocus(1, TextFocus::GlyphOutput) == 1);
+    assert(capture.ClaimTextFocus(0, TextFocus::FullSprite) == 1);
+    assert(!capture.ClaimTextFocus(0, TextFocus::FullSprite));
+    assert(!capture.ClaimTextFocus(UiFrameCapture::FrameCount, TextFocus::FullSprite));
+    assert(capture.ClaimTextFocus(1, TextFocus::FullConsumer) == 1);
+    assert(capture.ClaimPreSpriteDraw(0));
+    assert(!capture.ClaimPreSpriteDraw(0));
+    assert(!capture.ClaimPreSpriteDraw(UiFrameCapture::FrameCount));
+    assert(capture.ClaimPreSpriteDraw(1));
+    assert(capture.NextFocusedDrawId() == 1);
+    assert(capture.NextFocusedDrawId() == 2);
 
     for (std::uint32_t i{}; i < UiFrameCapture::PassSnapshotsPerInterval; ++i)
         assert(capture.ReservePassSnapshot(0, 5760000));
@@ -65,8 +72,12 @@ int main() {
     assert(!capture.IsWatchedMapping(0x1000, 1)); // no cross-session leakage
     assert(!capture.IsFlippedDestination(0, 0x3000, 0x100)); // flip registry reset
     assert(capture.ClaimPreUiDraw(0)); // one-shot ownership resets
-    assert(capture.ClaimTextFocus(0, TextFocus::GlyphOutput) == 1);
-    assert(capture.ClaimTextFocus(0, TextFocus::StripComposite) == 1);
+    assert(!capture.ClaimTextFocus(0, TextFocus::GlyphOutput));
+    assert(!capture.ClaimTextFocus(0, TextFocus::StripComposite));
+    assert(capture.ClaimTextFocus(0, TextFocus::FullConsumer) == 1);
+    assert(capture.ClaimTextFocus(0, TextFocus::FullSprite) == 1);
+    assert(capture.NextFocusedDrawId() == 1);
+    assert(capture.ClaimPreSpriteDraw(0));
     assert(capture.ReserveAtlasSnapshot(0, 0x1234, 8192));
     assert(!capture.ReserveAtlasSnapshot(0, 0x1234, 8192)); // deduplicated
     assert(!capture.ReserveAtlasSnapshot(0, 0, 8192));
