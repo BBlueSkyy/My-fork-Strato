@@ -543,6 +543,10 @@ namespace skyline::gpu::interconnect {
             diagnosticPendingPreDrawId = 0;
             return;
         }
+        // Mark the *produced* full-resolution target, not the background
+        // Fermi2D input. The following reverse blit can then snapshot
+        // precisely the texture that received these compositor draws.
+        capture.ObserveUiCompositorTarget(reinterpret_cast<uintptr_t>(match->target->texture.get()));
         const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
         const bool sprite{match->kind == diagnostic::UiFrameCapture::TextFocus::FullSprite};
         const auto drawId{diagnosticPendingPreDrawId ? diagnosticPendingPreDrawId : capture.NextFocusedDrawId()};
@@ -645,7 +649,7 @@ namespace skyline::gpu::interconnect {
             "fermi_input_id={} approx_present={} executor=0x{:X} submission={} "
             "source=0x{:X} dest=0x{:X} source_guest=0x{:X} dest_guest=0x{:X} "
             "source_cycle=0x{:X} dest_cycle=0x{:X} dimensions={}x{} format={} "
-            "note=GPU_ordered_pre_blit_not_exact_present_frame\n",
+            "note=GPU_ordered_after_UI_compositor_before_reverse_Fermi_blit_not_exact_present_frame\n",
             *id, capture.presentIndex.load(std::memory_order_acquire),
             reinterpret_cast<uintptr_t>(this), submissionNumber,
             reinterpret_cast<uintptr_t>(src.get()), reinterpret_cast<uintptr_t>(dst.get()),
@@ -668,7 +672,7 @@ namespace skyline::gpu::interconnect {
             LOGI("MINIRD_CONNECTIONS wrote Fermi input {}: {}", id, rawPath.string());
         });
         capture.Record(fmt::format(
-            "FERMI_INPUT_SNAPSHOT id={} executor=0x{:X} submission={} "
+            "FERMI_COMPOSITED_UI_SOURCE id={} executor=0x{:X} submission={} "
             "source=0x{:X} dest=0x{:X} source_guest=0x{:X} dest_guest=0x{:X}",
             *id, reinterpret_cast<uintptr_t>(this), submissionNumber,
             reinterpret_cast<uintptr_t>(src.get()), reinterpret_cast<uintptr_t>(dst.get()),
