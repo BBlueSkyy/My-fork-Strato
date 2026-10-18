@@ -499,6 +499,61 @@ namespace skyline::gpu::interconnect {
         if (!match)
             return false;
 
+        // Before the *second* qualifying text consumer, capture the output
+        // of the earlier compositor group. This is a diagnostic separation
+        // point, not an assumption about particular guest screen coordinates.
+        if (match->kind == diagnostic::UiFrameCapture::TextFocus::FullConsumer) {
+            const auto target{match->target->texture};
+            if (auto midpointId{capture.ClaimUiMidpointBeforeText(
+                    reinterpret_cast<uintptr_t>(target.get()), target->surfaceSize)}) {
+                BreakRenderPass(); // The earlier graphics writes precede this copy.
+                auto staging{gpu.memory.AllocateStagingBuffer(target->surfaceSize)};
+                slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                    [target, staging](vk::raii::CommandBuffer &commandBuffer,
+                                      const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                        cycle->AttachObjects(target, staging);
+                        target->CopyIntoStagingBuffer(commandBuffer, staging);
+                        RecordFullBarrier(commandBuffer);
+                    });
+
+                const auto directory{std::filesystem::path(capture.CaptureDirectory())};
+                const auto rawPath{directory / fmt::format("ui_midpoint_{:02}_{}x{}_{}.raw",
+                    *midpointId, target->dimensions.width, target->dimensions.height,
+                    vk::to_string(target->format->vkFormat))};
+                const auto metaPath{directory / fmt::format("ui_midpoint_{:02}.txt", *midpointId)};
+                const auto guestMap{target->guest && !target->guest->mappings.empty()
+                    ? reinterpret_cast<uintptr_t>(target->guest->mappings.front().data()) : 0};
+                const auto meta{fmt::format(
+                    "midpoint_id={} approx_present={} executor=0x{:X} submission={} "
+                    "render_pass={} target=0x{:X} guest_map=0x{:X} cycle=0x{:X} "
+                    "note=pre_second_text_consumer_not_exact_presentation_frame\n",
+                    *midpointId, capture.presentIndex.load(std::memory_order_acquire),
+                    reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
+                    reinterpret_cast<uintptr_t>(target.get()), guestMap,
+                    reinterpret_cast<uintptr_t>(target->cycle.get()))};
+                diagnosticReadbackCallbacks.emplace_back(
+                    [staging, rawPath, metaPath, meta, id = *midpointId] {
+                        std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                        if (!raw) {
+                            LOGE("MINIRD_CONNECTIONS UI midpoint {} could not open output", id);
+                            return;
+                        }
+                        raw.write(reinterpret_cast<const char *>(staging->data()),
+                                  static_cast<std::streamsize>(staging->size()));
+                        raw.close();
+                        std::ofstream info(metaPath, std::ios::trunc);
+                        if (info)
+                            info << meta;
+                        LOGI("MINIRD_CONNECTIONS wrote UI midpoint {}: {}", id, rawPath.string());
+                    });
+                capture.Record(fmt::format(
+                    "UI_COMPOSITOR_MIDPOINT id={} executor=0x{:X} submission={} "
+                    "target=0x{:X} guest_map=0x{:X}",
+                    *midpointId, reinterpret_cast<uintptr_t>(this), submissionNumber,
+                    reinterpret_cast<uintptr_t>(target.get()), guestMap));
+            }
+        }
+
         const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
         const bool sprite{match->kind == diagnostic::UiFrameCapture::TextFocus::FullSprite};
         if (!(sprite ? capture.ClaimPreSpriteDraw(interval) : capture.ClaimPreUiDraw(interval)))
@@ -618,6 +673,9 @@ namespace skyline::gpu::interconnect {
 
         const auto src{source->texture};
         const auto dst{destination->texture};
+        // The reverse blit ends one logical UI composition cycle. Do this
+        // even if the pre-Fermi readback budget was exhausted.
+        capture.CompleteUiCompositorCycle(reinterpret_cast<uintptr_t>(src.get()));
         const auto id{capture.ReserveFermiSource(reinterpret_cast<uintptr_t>(src.get()),
                                                  reinterpret_cast<uintptr_t>(dst.get()),
                                                  src->surfaceSize)};
