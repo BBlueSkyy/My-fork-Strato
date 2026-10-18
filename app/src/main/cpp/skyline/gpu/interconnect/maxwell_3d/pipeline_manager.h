@@ -260,7 +260,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         // pipeline at the selected first sprite draw; diagnostic only.
         void CaptureDiagnosticFirstUiDraw(InterconnectContext &ctx,
                                           ConstantBufferSet &constantBuffers,
-                                          Samplers &samplers, u32 interval);
+                                          Samplers &samplers, u32 interval, u64 drawId);
 
         u32 GetTotalSampledImageCount() const;
 
