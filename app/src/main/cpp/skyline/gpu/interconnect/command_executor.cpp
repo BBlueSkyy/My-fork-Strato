@@ -513,6 +513,11 @@ namespace skyline::gpu::interconnect {
         BreakRenderPass();
         diagnosticPassImages.push_back({match->target->texture, true, true, false, true,
                                         drawId, "before_consumer"});
+        // Capture the descriptor-resolved source BEFORE it is sampled. Copying
+        // it after the draw could falsely blame a producer when the output
+        // aliases the source backing or a subsequent writer modifies it.
+        diagnosticPassImages.push_back({match->source->texture, false, true, false, true,
+                                        drawId, "source_before_sampling"});
         capture.Record(fmt::format(
             "TEXT_CONSUMER_PRE draw_id={} kind={} interval={} executor=0x{:X} "
             "submission={} rp={} source=0x{:X} source_cycle=0x{:X} "
@@ -586,14 +591,11 @@ namespace skyline::gpu::interconnect {
         const auto ordinal{capture.ClaimTextFocus(interval, match->kind)};
         if (!ordinal)
             return;
-        // Copy the real descriptor-bound source in the same command stream
-        // immediately following this draw, alongside the resulting target.
-        // The pre-target readback above supplies the baseline for ROI diffs.
+        // The pre-draw source and destination have already been queued on
+        // this command stream. Only the destination needs a post-draw copy.
         diagnosticPassImages.clear();
         diagnosticPassImages.push_back({match->target->texture, true, true, false, false,
                                         drawId, "after_consumer"});
-        diagnosticPassImages.push_back({match->source->texture, false, true, false, false,
-                                        drawId, "actual_sampled_source"});
         capture.Record(fmt::format("TEXT_FOCUS stage={} ordinal={} draw_id={} "
                                    "executor=0x{:X} submission={} rp={}",
                                    sprite ? "sprite_to_full" : "text_to_full",
@@ -658,8 +660,11 @@ namespace skyline::gpu::interconnect {
                 "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} mips={} layers={} "
                 "draw_id={} role={} note=late_draw_boundary_approximate_presentation\n",
                 index, interval, renderPassIndex, submissionNumber,
-                atlas ? "sampled_atlas" : entry.beforeUiDraw ? "pre_ui_render_target" : entry.renderTarget ? "render_target" : "sampled_input",
-                atlas ? "glyph_or_sampled_source" : entry.beforeUiDraw ? "before_first_matching_text_draw" : "text_writer_or_consumer",
+                atlas ? "sampled_atlas" : entry.beforeUiDraw ?
+                    (entry.renderTarget ? "pre_ui_render_target" : "sampled_input_before_draw") :
+                    entry.renderTarget ? "render_target" : "sampled_input",
+                atlas ? "glyph_or_sampled_source" : entry.beforeUiDraw ?
+                    "before_first_matching_consumer_draw" : "consumer_output",
                 executorIdentity, identity, width, height, format, vk::to_string(texture->layout),
                 texture->surfaceSize, guestMap, guestBytes, texture->levelCount, texture->layerCount,
                 entry.drawId, entry.role ? entry.role : "legacy")};
