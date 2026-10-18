@@ -29,6 +29,10 @@ namespace skyline::gpu::diagnostic {
         // flickers can be missed by a ~120 ms four-frame presentation window.
         // Outside FrameCount the detailed per-draw quota remains inactive.
         static constexpr std::uint32_t PresentFrameCount{24};
+        // At most one full-sized input to the first full-screen inverted blit
+        // per presentation-sized interval. This is distinct from draw probes.
+        static constexpr std::uint32_t MaxFermiSourceSnapshots{24};
+        static constexpr std::size_t MaxFermiSourceBytes{72ULL * 1024 * 1024};
         // Reserve budget for late UI composition and each of the four intervals.
         // Phase 6 only needs the first UI draw before/after images. Keep one
         // atlas per interval; the shader/CB/TSC evidence is tiny by comparison.
@@ -51,6 +55,9 @@ namespace skyline::gpu::diagnostic {
         std::array<std::array<std::uint32_t, 4>, FrameCount> textFocusCounts{};
         std::array<bool, FrameCount> preUiDrawClaimed{};
         std::array<bool, FrameCount> preSpriteDrawClaimed{};
+        std::optional<std::pair<std::uintptr_t, std::uintptr_t>> fermiSourceDirection;
+        std::uint32_t fermiSourceSnapshotCount{};
+        std::size_t fermiSourceBytes{};
         // One full-surface vertically flipped blit destination per approximate
         // presentation interval. Discover at runtime; never key on a game ID.
         std::array<std::pair<std::uintptr_t, std::size_t>, FrameCount> flippedDestinations{};
@@ -69,6 +76,9 @@ namespace skyline::gpu::diagnostic {
             textFocusCounts.fill({});
             preUiDrawClaimed.fill(false);
             preSpriteDrawClaimed.fill(false);
+            fermiSourceDirection.reset();
+            fermiSourceSnapshotCount = 0;
+            fermiSourceBytes = 0;
             flippedDestinations.fill({});
             capturedAtlasIdentities.clear();
             nextPassIndex = 0;
@@ -167,6 +177,28 @@ namespace skyline::gpu::diagnostic {
 
         std::uint64_t NextFocusedDrawId() {
             return nextFocusedDrawId.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        // Pick the first observed full-screen Fermi2D source -> destination
+        // direction; sample that same direction on later flips. The opposite
+        // direction normally returns the result to its original backing and
+        // would waste half the cap. No title/driver/guest-address constants.
+        std::optional<std::uint32_t> ReserveFermiSource(
+            std::uintptr_t sourceIdentity, std::uintptr_t destinationIdentity, std::size_t bytes) {
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_acquire) || !sourceIdentity || !destinationIdentity ||
+                sourceIdentity == destinationIdentity || !bytes ||
+                fermiSourceSnapshotCount >= MaxFermiSourceSnapshots ||
+                fermiSourceBytes > MaxFermiSourceBytes ||
+                bytes > MaxFermiSourceBytes - fermiSourceBytes)
+                return std::nullopt;
+            const auto direction{std::make_pair(sourceIdentity, destinationIdentity)};
+            if (fermiSourceDirection && *fermiSourceDirection != direction)
+                return std::nullopt;
+            if (!fermiSourceDirection)
+                fermiSourceDirection = direction;
+            fermiSourceBytes += bytes;
+            return fermiSourceSnapshotCount++;
         }
 
         // Independent pre-draw quotas for the first text and compressed-sprite consumers.
