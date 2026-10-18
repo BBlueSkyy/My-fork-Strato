@@ -423,12 +423,12 @@ namespace skyline::gpu::interconnect {
                texture.layout != vk::ImageLayout::eUndefined;
     }
 
-    // Readback eligibility is separate from draw selection. The first trace
-    // showed that text was produced in small offscreen RGBA render targets,
-    // excluded by the original full-size-only classification.
+    // Readback eligibility is separate from draw selection. RGBA text strips
+    // can scale in width from 1184 to 1664 (and vary in height). Select using
+    // generic wide-and-shallow geometry instead of a fixed resolution range.
     static bool IsDiagnosticTextStrip(const Texture &texture) {
-        return texture.dimensions.width >= 1024 && texture.dimensions.width <= 1280 &&
-               texture.dimensions.height >= 16 && texture.dimensions.height <= 128 &&
+        return diagnostic::IsWideTextStripGeometry(texture.dimensions.width,
+                                                   texture.dimensions.height) &&
                texture.format->vkFormat == vk::Format::eR8G8B8A8Unorm &&
                IsNarutoAtlasImage(texture);
     }
