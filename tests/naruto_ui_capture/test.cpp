@@ -34,15 +34,16 @@ int main() {
     capture.MarkFlippedDestination(0, 0x3000, 0x100); // late flip overwrites old candidate
     assert(!capture.IsFlippedDestination(0, 0x2000, 0x100));
     assert(capture.IsFlippedDestination(0, 0x3000, 0x100));
-    assert(capture.ClaimPreUiDraw(0));
-    assert(!capture.ClaimPreUiDraw(0)); // only one before-first-draw snapshot
+    assert(!capture.ClaimPreUiDraw(0)); // too early for a late-draw snapshot
     assert(!capture.ClaimPreUiDraw(UiFrameCapture::FrameCount));
-    assert(capture.ClaimPreUiDraw(1)); // separate approximate presentation interval
-    assert(!capture.ClaimPreUiDraw(1));
+    assert(!capture.ClaimPreUiDraw(1)); // separate interval also starts gated
     assert(!capture.ShouldProbeUiPreDraw(0));
     for (std::uint32_t i{1}; i < 96; ++i)
         assert(!capture.ProbeUiDraw(0));
     assert(capture.ShouldProbeUiPreDraw(0));
+    assert(capture.ClaimPreUiDraw(0));
+    assert(!capture.ClaimPreUiDraw(0)); // one true pre-draw per interval
+    assert(!capture.ShouldProbeUiPreDraw(0));
     assert(capture.ProbeUiDraw(0) == 96);
     for (std::uint32_t i{97}; i < 192; ++i)
         assert(!capture.ProbeUiDraw(0));
@@ -70,8 +71,12 @@ int main() {
     capture.Start(root.string());
     assert(!capture.IsWatchedMapping(0x1000, 1)); // no cross-session leakage
     assert(!capture.IsFlippedDestination(0, 0x3000, 0x100)); // flip registry reset
+    assert(!capture.ClaimPreUiDraw(0)); // ordinal gating reset
+    for (std::uint32_t i{1}; i < 96; ++i)
+        assert(!capture.ProbeUiDraw(0));
+    assert(capture.ShouldProbeUiPreDraw(0));
     assert(capture.ClaimPreUiDraw(0)); // pre-draw ownership reset
-    assert(!capture.ProbeUiDraw(0)); // ordinals reset
+    assert(capture.ProbeUiDraw(0) == 96);
     assert(capture.ReserveAtlasSnapshot(0, 0x1234, 8192));
     assert(!capture.ReserveAtlasSnapshot(0, 0x1234, 8192)); // deduplicated
     assert(!capture.ReserveAtlasSnapshot(0, 0, 8192));

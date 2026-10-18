@@ -151,7 +151,7 @@ namespace skyline::gpu::diagnostic {
         bool ClaimPreUiDraw(std::uint32_t interval) {
             std::scoped_lock lock(mutex);
             if (!active.load(std::memory_order_acquire) || interval >= FrameCount ||
-                preUiDrawClaimed[interval])
+                preUiDrawClaimed[interval] || uiDrawCountByInterval[interval] < 95)
                 return false;
             preUiDrawClaimed[interval] = true;
             return true;
