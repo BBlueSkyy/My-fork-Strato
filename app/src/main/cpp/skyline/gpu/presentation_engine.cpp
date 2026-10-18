@@ -234,6 +234,13 @@ namespace skyline::gpu {
                         static_cast<u32>(frame.transform), static_cast<u32>(frame.scalingMode),
                         validReadback);
 
+                session.Record(fmt::format(
+                    "PRESENT_SOURCE frame_index={} frame_id={} source_texture=0x{:X} "
+                    "guest_map=0x{:X} guest_bytes={} source_cycle=0x{:X} dimensions={}x{} eligible={}",
+                    captureIndex, frame.id, reinterpret_cast<uintptr_t>(texture.get()),
+                    guestMap, guestSize, reinterpret_cast<uintptr_t>(texture->cycle.get()),
+                    texture->dimensions.width, texture->dimensions.height, validReadback));
+
                 if (validReadback) {
                     // Same proven readback path as earlier mini-RenderDoc diagnostic PRs.
                     // Wait only on this explicit, opt-in diagnostic path.
