@@ -834,6 +834,64 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");
+        if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire)) {
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto blend{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                if (ctx.executor.ProbeDiagnosticUiPreDraw(
+                        activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
+                        static_cast<bool>(blend.blendEnable))) {
+                    auto &capture{diagnostic::NarutoUiCapture()};
+                    capture.Record(fmt::format(
+                        "UI_PRE_DRAW_STATE indexed={} count={} instances={} first={} vertex_offset={} first_instance={} topology={} "
+                        "scissor={},{},{}x{} conditional={} divisor_supported={} zero_divisor_supported={}",
+                        indexed, count, instanceCount, first, vertexOffset, firstInstance, static_cast<u32>(topology),
+                        scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height,
+                        activeRenderCondition.enabled, ctx.gpu.traits.supportsVertexAttributeDivisor,
+                        ctx.gpu.traits.supportsVertexAttributeZeroDivisor));
+                    capture.Record(fmt::format(
+                        "UI_PRE_DRAW_BLEND mask=0x{:X} enabled={} color_op={} src_color={} dst_color={} "
+                        "alpha_op={} src_alpha={} dst_alpha={}",
+                        static_cast<u32>(blend.colorWriteMask), static_cast<bool>(blend.blendEnable),
+                        static_cast<u32>(blend.colorBlendOp), static_cast<u32>(blend.srcColorBlendFactor),
+                        static_cast<u32>(blend.dstColorBlendFactor), static_cast<u32>(blend.alphaBlendOp),
+                        static_cast<u32>(blend.srcAlphaBlendFactor), static_cast<u32>(blend.dstAlphaBlendFactor)));
+                    for (u32 i{}; i < pipeline->sourcePackedState.vertexBindings.size(); ++i) {
+                        const auto binding{pipeline->sourcePackedState.vertexBindings[i]};
+                        if (!binding.enable)
+                            continue;
+                        capture.Record(fmt::format(
+                            "UI_PRE_VERTEX_BINDING index={} stride={} instanced={} divisor={}",
+                            i, pipeline->sourcePackedState.vertexStrides[i],
+                            binding.GetInputRate() == vk::VertexInputRate::eInstance, binding.divisor));
+                    }
+                    for (u32 i{}; i < pipeline->sourcePackedState.vertexAttributes.size(); ++i) {
+                        const auto &attribute{pipeline->sourcePackedState.vertexAttributes[i]};
+                        if (attribute.source != engine::VertexAttribute::Source::Active)
+                            continue;
+                        capture.Record(fmt::format(
+                            "UI_PRE_VERTEX_ATTRIBUTE location={} stream={} offset={} numerical_type={} component_widths={}",
+                            i, static_cast<u32>(attribute.stream), static_cast<u32>(attribute.offset),
+                            static_cast<u32>(attribute.numericalType), static_cast<u32>(attribute.componentBitWidths)));
+                    }
+                    for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 12; ++i) {
+                        auto *view{activeDescriptorSetSampledImages[i]};
+                        if (!view || !view->texture)
+                            continue;
+                        const auto &texture{view->texture};
+                        capture.Record(fmt::format(
+                            "UI_PRE_SAMPLED slot={} texture=0x{:X} format={} width={} height={} "
+                            "mip_base={} mip_count={} layer_base={} layer_count={} level_count={} ",
+                            i, reinterpret_cast<uintptr_t>(texture.get()),
+                            vk::to_string(texture->format->vkFormat), texture->dimensions.width, texture->dimensions.height,
+                            view->range.baseMipLevel, view->range.levelCount,
+                            view->range.baseArrayLayer, view->range.layerCount, texture->levelCount));
+                    }
+                    for (auto hash : pipeline->sourcePackedState.shaderHashes)
+                        if (hash)
+                            capture.Record(fmt::format("UI_PRE_SHADER hash={:016X}", hash));
+                }
+            }
+        }
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
 
