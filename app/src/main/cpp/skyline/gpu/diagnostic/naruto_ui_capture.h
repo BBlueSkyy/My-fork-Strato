@@ -41,6 +41,9 @@ namespace skyline::gpu::diagnostic {
         std::array<std::uint32_t, FrameCount> atlasCountByInterval{};
         std::array<std::uint32_t, FrameCount> uiDrawCountByInterval{};
         std::array<bool, FrameCount> preUiDrawClaimed{};
+        // One full-surface vertically flipped blit destination per approximate
+        // presentation interval. Discover at runtime; never key on a game ID.
+        std::array<std::pair<std::uintptr_t, std::size_t>, FrameCount> flippedDestinations{};
         std::vector<std::uintptr_t> capturedAtlasIdentities;
         // Guest backing ranges shared across Maxwell3D, Fermi2D and VI executors.
         // No texture pointers, shader hashes or game IDs are used as persistent keys.
@@ -55,6 +58,7 @@ namespace skyline::gpu::diagnostic {
             atlasCountByInterval.fill(0);
             uiDrawCountByInterval.fill(0);
             preUiDrawClaimed.fill(false);
+            flippedDestinations.fill({});
             capturedAtlasIdentities.clear();
             nextPassIndex = 0;
             passBytes = 0;
@@ -105,6 +109,27 @@ namespace skyline::gpu::diagnostic {
                     return true;
             }
             return false;
+        }
+
+        void MarkFlippedDestination(std::uint32_t interval, std::uintptr_t guestAddress, std::size_t bytes) {
+            if (!guestAddress || !bytes || interval >= FrameCount ||
+                !active.load(std::memory_order_acquire))
+                return;
+            std::scoped_lock lock(mutex);
+            if (active.load(std::memory_order_relaxed))
+                flippedDestinations[interval] = {guestAddress, bytes};
+        }
+
+        bool IsFlippedDestination(std::uint32_t interval, std::uintptr_t guestAddress, std::size_t bytes) {
+            if (!guestAddress || !bytes || interval >= FrameCount ||
+                !active.load(std::memory_order_acquire))
+                return false;
+            std::scoped_lock lock(mutex);
+            const auto [start, length]{flippedDestinations[interval]};
+            if (!start || !length)
+                return false;
+            return guestAddress >= start ? guestAddress - start < length
+                                         : start - guestAddress < bytes;
         }
 
         // First *matching* sprite draw in each approximate presentation interval.
