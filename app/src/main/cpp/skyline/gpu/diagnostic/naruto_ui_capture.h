@@ -37,6 +37,11 @@ namespace skyline::gpu::diagnostic {
         // full-resolution text consumer per completed composition cycle.
         static constexpr std::uint32_t MaxUiMidpointSnapshots{24};
         static constexpr std::size_t MaxUiMidpointBytes{72ULL * 1024 * 1024};
+        // Retain the existing budget for a post-second-text result rather
+        // than the already-understood pre-first-text image. Both snapshots
+        // would double diagnostic cost without improving localization.
+        static constexpr std::uint32_t MaxPostSecondTextSnapshots{MaxUiMidpointSnapshots};
+        static constexpr std::size_t MaxPostSecondTextBytes{MaxUiMidpointBytes};
         // Reserve budget for late UI composition and each of the four intervals.
         // Phase 6 only needs the first UI draw before/after images. Keep one
         // atlas per interval; the shader/CB/TSC evidence is tiny by comparison.
@@ -69,6 +74,15 @@ namespace skyline::gpu::diagnostic {
         std::vector<std::pair<std::uintptr_t, std::uint8_t>> uiTextConsumersByTarget;
         std::uint32_t uiMidpointSnapshotCount{};
         std::size_t uiMidpointBytes{};
+        struct TextDrawSubmission {
+            std::uintptr_t executor{};
+            std::size_t submission{};
+            std::uintptr_t target{};
+            std::uint8_t draws{};
+        };
+        std::vector<TextDrawSubmission> textDrawSubmissions;
+        std::uint32_t postSecondTextCount{};
+        std::size_t postSecondTextBytes{};
         std::uint32_t fermiSourceSnapshotCount{};
         std::size_t fermiSourceBytes{};
         // One full-surface vertically flipped blit destination per approximate
@@ -94,6 +108,9 @@ namespace skyline::gpu::diagnostic {
             uiTextConsumersByTarget.clear();
             uiMidpointSnapshotCount = 0;
             uiMidpointBytes = 0;
+            textDrawSubmissions.clear();
+            postSecondTextCount = 0;
+            postSecondTextBytes = 0;
             fermiSourceSnapshotCount = 0;
             fermiSourceBytes = 0;
             flippedDestinations.fill({});
@@ -238,6 +255,39 @@ namespace skyline::gpu::diagnostic {
                 return std::nullopt;
             uiMidpointBytes += bytes;
             return uiMidpointSnapshotCount++;
+        }
+
+        // Count the *actual* text consumers using the Maxwell3D executor,
+        // submission number and target identity. Fermi events and
+        // present_index_approx are asynchronous and MUST NOT reset this
+        // two-draw sequence. A new submission is an independent cycle.
+        std::optional<std::uint32_t> ClaimPostSecondText(
+            std::uintptr_t executor, std::size_t submission,
+            std::uintptr_t target, std::size_t bytes) {
+            if (!executor || !target || !active.load(std::memory_order_acquire))
+                return std::nullopt;
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_relaxed))
+                return std::nullopt;
+            auto it{std::find_if(textDrawSubmissions.begin(), textDrawSubmissions.end(),
+                [=](const TextDrawSubmission &entry) {
+                    return entry.executor == executor &&
+                           entry.submission == submission && entry.target == target;
+                })};
+            if (it == textDrawSubmissions.end()) {
+                if (textDrawSubmissions.size() < 64)
+                    textDrawSubmissions.push_back({executor, submission, target, 1});
+                return std::nullopt;
+            }
+            if (it->draws != 1)
+                return std::nullopt;
+            it->draws = 2;
+            if (!bytes || postSecondTextCount >= MaxPostSecondTextSnapshots ||
+                postSecondTextBytes > MaxPostSecondTextBytes ||
+                bytes > MaxPostSecondTextBytes - postSecondTextBytes)
+                return std::nullopt;
+            postSecondTextBytes += bytes;
+            return postSecondTextCount++;
         }
 
         // A pre-reverse Fermi probe ends this compositor cycle. Re-arm the
