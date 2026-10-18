@@ -222,6 +222,19 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
+        // Phase 2, PR #336: bounded readbacks *after* real render-pass endings.
+        struct DiagnosticPassImage {
+            std::shared_ptr<Texture> texture;
+            bool renderTarget{};
+            bool priority{};
+            bool atlas{};
+            bool beforeUiDraw{}; // Snapshot of destination before first matching sprite draw.
+        };
+        std::vector<DiagnosticPassImage> diagnosticPassImages;
+        std::vector<std::function<void()>> diagnosticReadbackCallbacks;
+        void TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color);
+        void QueueDiagnosticPassReadbacks();
+
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
         void RotateRecordSlot();
@@ -265,6 +278,14 @@ namespace skyline::gpu::interconnect {
         ContextTag executionTag{};
         bool captureNextExecution{};
         UsageTracker usageTracker;
+
+        // Diagnostic-only: force an ordered readback *before* the first matching
+        // blended BCn sprite draw. Only called while the capture is active.
+        bool ProbeDiagnosticUiPreDraw(span<TextureView *> sampled, span<TextureView *> color, bool blendingEnabled);
+
+        // Diagnostic only: annotate a full-screen blended/compressed-sprite pass.
+        // Called after adding the draw, while its active attachments are known.
+        void MarkDiagnosticUiOutput(span<TextureView *> sampled, span<TextureView *> color, bool blendingEnabled);
 
         CommandExecutor(const DeviceState &state);
 

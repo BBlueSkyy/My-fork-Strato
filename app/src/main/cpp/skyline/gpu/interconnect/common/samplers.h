@@ -54,6 +54,14 @@ namespace skyline::gpu::interconnect {
         // The three-argument overload retains programmable shader binding rules.
         vk::raii::Sampler *GetSampler(InterconnectContext &ctx, u32 samplerIndex);
 
+        // Read the exact sampler descriptor selected by the existing bindless
+        // rule. Does not create/bind a sampler or modify the cache.
+        bool ReadDiagnosticSampler(u32 samplerIndex, u32 textureIndex,
+                                   u32 &effectiveIndex, TextureSamplerControl &control);
+        bool GetDiagnosticHeaderBinding() {
+            return samplerPool.Get().didUseTexHeaderBinding;
+        }
+
         Shader::CompareFunction GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
     };
 }
