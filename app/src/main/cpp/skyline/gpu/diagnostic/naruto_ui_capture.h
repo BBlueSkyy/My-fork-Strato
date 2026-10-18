@@ -24,7 +24,11 @@ namespace skyline::gpu::diagnostic {
         std::atomic<std::uint32_t> sampledDrawEvents{0};
         std::atomic<std::uint64_t> nextFocusedDrawId{1};
         static constexpr std::uint32_t MaxEvents{6000};
-        static constexpr std::uint32_t FrameCount{4};
+        static constexpr std::uint32_t FrameCount{4}; // Full draw-pair probes only.
+        // Continue source frames for roughly one second, because sporadic UI
+        // flickers can be missed by a ~120 ms four-frame presentation window.
+        // Outside FrameCount the detailed per-draw quota remains inactive.
+        static constexpr std::uint32_t PresentFrameCount{24};
         // Reserve budget for late UI composition and each of the four intervals.
         // Phase 6 only needs the first UI draw before/after images. Keep one
         // atlas per interval; the shader/CB/TSC evidence is tiny by comparison.
