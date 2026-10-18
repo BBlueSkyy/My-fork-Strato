@@ -147,7 +147,7 @@ namespace skyline::gpu {
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,
             .layerCount = 1,
-        });
+        }, *state.settings->balancedFullscreenCurve);
 
         frameFence = nextImageTexture->cycle;
 

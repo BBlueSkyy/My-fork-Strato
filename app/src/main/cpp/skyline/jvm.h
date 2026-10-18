@@ -66,6 +66,13 @@ namespace skyline {
         }
 
         /**
+         * @param key A null terminated string containing the float setting name
+         */
+        float GetFloat(const std::string_view &key) {
+            return env->GetFloatField(settingsInstance, env->GetFieldID(settingsClass, key.data(), "F"));
+        }
+
+        /**
          * @param key A null terminated string containing the key of the setting to get
          */
         JniString GetString(const std::string_view &key) {

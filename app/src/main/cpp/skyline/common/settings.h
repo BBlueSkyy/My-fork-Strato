@@ -71,6 +71,7 @@ namespace skyline {
         // Display
         Setting<bool> forceTripleBuffering; //!< If the presentation engine should always triple buffer even if the swapchain supports double buffering
         Setting<bool> disableFrameThrottling; //!< Allow the guest to submit frames without any blocking calls
+        Setting<float> balancedFullscreenCurve; //!< Center-weighted horizontal presentation distortion coefficient, 0 disables it
         Setting<bool> disableShaderCache;  //!< Prevents cached shaders from being loaded and disables caching of new shaders
 
         // GPU
