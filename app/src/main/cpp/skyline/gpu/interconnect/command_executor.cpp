@@ -499,62 +499,10 @@ namespace skyline::gpu::interconnect {
         if (!match)
             return false;
 
-        // Only one qualifying text-strip consumer is emitted in each observed
-        // composition cycle. Capture the full-size target BEFORE that draw
-        // to separate earlier sprites from the final text overlay. This is
-        // selected by real draw bindings, not game or screen coordinates.
-        if (match->kind == diagnostic::UiFrameCapture::TextFocus::FullConsumer) {
-            const auto target{match->target->texture};
-            if (auto midpointId{capture.ClaimUiBeforeText(
-                    reinterpret_cast<uintptr_t>(target.get()), target->surfaceSize)}) {
-                BreakRenderPass(); // The earlier graphics writes precede this copy.
-                auto staging{gpu.memory.AllocateStagingBuffer(target->surfaceSize)};
-                slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
-                    [target, staging](vk::raii::CommandBuffer &commandBuffer,
-                                      const std::shared_ptr<FenceCycle> &cycle, GPU &) {
-                        cycle->AttachObjects(target, staging);
-                        target->CopyIntoStagingBuffer(commandBuffer, staging);
-                        RecordFullBarrier(commandBuffer);
-                    });
-
-                const auto directory{std::filesystem::path(capture.CaptureDirectory())};
-                const auto rawPath{directory / fmt::format("ui_pretext_{:02}_{}x{}_{}.raw",
-                    *midpointId, target->dimensions.width, target->dimensions.height,
-                    vk::to_string(target->format->vkFormat))};
-                const auto metaPath{directory / fmt::format("ui_pretext_{:02}.txt", *midpointId)};
-                const auto guestMap{target->guest && !target->guest->mappings.empty()
-                    ? reinterpret_cast<uintptr_t>(target->guest->mappings.front().data()) : 0};
-                const auto meta{fmt::format(
-                    "pretext_id={} approx_present={} executor=0x{:X} submission={} "
-                    "render_pass={} target=0x{:X} guest_map=0x{:X} cycle=0x{:X} "
-                    "note=pre_first_text_consumer_after_sprite_draws_not_exact_presentation_frame\n",
-                    *midpointId, capture.presentIndex.load(std::memory_order_acquire),
-                    reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
-                    reinterpret_cast<uintptr_t>(target.get()), guestMap,
-                    reinterpret_cast<uintptr_t>(target->cycle.get()))};
-                diagnosticReadbackCallbacks.emplace_back(
-                    [staging, rawPath, metaPath, meta, id = *midpointId] {
-                        std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
-                        if (!raw) {
-                            LOGE("MINIRD_CONNECTIONS UI pre-text {} could not open output", id);
-                            return;
-                        }
-                        raw.write(reinterpret_cast<const char *>(staging->data()),
-                                  static_cast<std::streamsize>(staging->size()));
-                        raw.close();
-                        std::ofstream info(metaPath, std::ios::trunc);
-                        if (info)
-                            info << meta;
-                        LOGI("MINIRD_CONNECTIONS wrote UI pre-text {}: {}", id, rawPath.string());
-                    });
-                capture.Record(fmt::format(
-                    "UI_COMPOSITOR_PRETEXT id={} executor=0x{:X} submission={} "
-                    "target=0x{:X} guest_map=0x{:X}",
-                    *midpointId, reinterpret_cast<uintptr_t>(this), submissionNumber,
-                    reinterpret_cast<uintptr_t>(target.get()), guestMap));
-            }
-        }
-
+        // The 24-frame trace proved that the P1 list is normally absent
+        // before this draw and appears in the later composer stages.
+        // Reallocate the same 72 MiB diagnostic budget to the result
+        // immediately after the SECOND text draw of this submission.
         const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
         const bool sprite{match->kind == diagnostic::UiFrameCapture::TextFocus::FullSprite};
         if (!(sprite ? capture.ClaimPreSpriteDraw(interval) : capture.ClaimPreUiDraw(interval)))
@@ -647,6 +595,64 @@ namespace skyline::gpu::interconnect {
             reinterpret_cast<uintptr_t>(match->source->texture->cycle.get()),
             match->source->range.levelCount, match->source->range.layerCount,
             bindings));
+
+        if (match->kind == diagnostic::UiFrameCapture::TextFocus::FullConsumer) {
+            const auto target{match->target->texture};
+            // Draw nodes have already been recorded. Key by the GPU executor,
+            // Maxwell submission and actual target, never by present interval.
+            // The source trace proves two distinct text-strip draws per normal
+            // submission, despite asynchronous Fermi/VI event interleaving.
+            if (auto secondId{capture.ClaimPostSecondText(
+                    reinterpret_cast<uintptr_t>(this), submissionNumber,
+                    reinterpret_cast<uintptr_t>(target.get()), target->surfaceSize)}) {
+                BreakRenderPass(); // Ensure the second text draw completes first.
+                auto staging{gpu.memory.AllocateStagingBuffer(target->surfaceSize)};
+                slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                    [target, staging](vk::raii::CommandBuffer &commandBuffer,
+                                      const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                        cycle->AttachObjects(target, staging);
+                        target->CopyIntoStagingBuffer(commandBuffer, staging);
+                        RecordFullBarrier(commandBuffer);
+                    });
+                const auto directory{std::filesystem::path(capture.CaptureDirectory())};
+                const auto rawPath{directory / fmt::format("ui_posttext2_{:02}_{}x{}_{}.raw",
+                    *secondId, target->dimensions.width, target->dimensions.height,
+                    vk::to_string(target->format->vkFormat))};
+                const auto metaPath{directory / fmt::format("ui_posttext2_{:02}.txt", *secondId)};
+                const auto guestMap{guestAddress(match->target)};
+                const auto meta{fmt::format(
+                    "posttext2_id={} approx_present={} executor=0x{:X} submission={} "
+                    "render_pass={} draw_id={} target=0x{:X} guest_map=0x{:X} "
+                    "source=0x{:X} source_guest=0x{:X} "
+                    "note=after_second_text_draw_before_later_sprites_not_exact_present_frame\n",
+                    *secondId, interval, reinterpret_cast<uintptr_t>(this), submissionNumber,
+                    renderPassIndex, drawId, reinterpret_cast<uintptr_t>(target.get()),
+                    guestMap, reinterpret_cast<uintptr_t>(match->source->texture.get()),
+                    guestAddress(match->source))};
+                diagnosticReadbackCallbacks.emplace_back(
+                    [staging, rawPath, metaPath, meta, id = *secondId] {
+                        std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                        if (!raw) {
+                            LOGE("MINIRD_CONNECTIONS UI post-text-2 {} could not open output", id);
+                            return;
+                        }
+                        raw.write(reinterpret_cast<const char *>(staging->data()),
+                                  static_cast<std::streamsize>(staging->size()));
+                        raw.close();
+                        std::ofstream info(metaPath, std::ios::trunc);
+                        if (info)
+                            info << meta;
+                        LOGI("MINIRD_CONNECTIONS wrote UI post-text-2 {}: {}",
+                             id, rawPath.string());
+                    });
+                capture.Record(fmt::format(
+                    "UI_COMPOSITOR_POSTTEXT2 id={} draw_id={} executor=0x{:X} "
+                    "submission={} target=0x{:X} guest_map=0x{:X} source=0x{:X}",
+                    *secondId, drawId, reinterpret_cast<uintptr_t>(this), submissionNumber,
+                    reinterpret_cast<uintptr_t>(target.get()), guestMap,
+                    reinterpret_cast<uintptr_t>(match->source->texture.get())));
+            }
+        }
 
         const auto ordinal{capture.ClaimTextFocus(interval, match->kind)};
         if (!ordinal)
