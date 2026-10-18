@@ -424,57 +424,10 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color) {
-        auto &capture{diagnostic::NarutoUiCapture()};
-        if (!capture.active.load(std::memory_order_acquire))
-            return;
-
-        // Follow an already identified output into subsequent postprocessing,
-        // including a different command executor. Keep the watch by guest backing
-        // because Texture* may change when a view/alias is recreated.
-        bool followsUi{};
-        for (auto *view : sampled) {
-            if (!view || !view->texture || !view->texture->guest)
-                continue;
-            for (const auto &mapping : view->texture->guest->mappings) {
-                if (capture.IsWatchedMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size())) {
-                    followsUi = true;
-                    break;
-                }
-            }
-            if (followsUi)
-                break;
-        }
-        // Color targets before sampled inputs. Only a candidate output or one
-        // of its downstream consumers receives the scarce image readback budget.
-        const auto track{[&](span<TextureView *> views, bool rt) {
-            for (auto *view : views) {
-                if (!view || !view->texture)
-                    continue;
-                std::shared_ptr<Texture> texture{view->texture};
-                if (!IsNarutoUiPassImage(*texture))
-                    continue;
-                auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
-                    [&](const DiagnosticPassImage &candidate) {
-                        return candidate.texture.get() == texture.get();
-                    })};
-                if (it != diagnosticPassImages.end()) {
-                    it->renderTarget |= rt;
-                    it->priority |= (rt && followsUi);
-                } else if (diagnosticPassImages.size() < 24) {
-                    diagnosticPassImages.push_back({std::move(texture), rt, rt && followsUi});
-                }
-            }
-        }};
-        track(color, true);
-        track(sampled, false);
-        if (followsUi) {
-            for (auto *view : color) {
-                if (!view || !view->texture || !IsNarutoUiPassImage(*view->texture) || !view->texture->guest)
-                    continue;
-                for (const auto &mapping : view->texture->guest->mappings)
-                    capture.WatchMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
-            }
-        }
+        // Stop queuing background RT snapshots at unrelated pass boundaries.
+        // Only the explicitly selected post-draw checkpoints arm readbacks.
+        (void)sampled;
+        (void)color;
     }
 
     bool CommandExecutor::ProbeDiagnosticUiPreDraw(span<TextureView *> sampled, span<TextureView *> color, bool blendingEnabled) {
@@ -501,7 +454,7 @@ namespace skyline::gpu::interconnect {
             return false;
 
         const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
-        if (!capture.ClaimPreUiDraw(interval))
+        if (!capture.ShouldProbeUiPreDraw(interval) || !capture.ClaimPreUiDraw(interval))
             return false;
 
         // Ordering is vital: close the prior render pass, then enqueue an
@@ -520,79 +473,56 @@ namespace skyline::gpu::interconnect {
         auto &capture{diagnostic::NarutoUiCapture()};
         if (!blendingEnabled || !capture.active.load(std::memory_order_acquire))
             return;
-        // General sprite/composite heuristic; neither shader hash nor Title ID.
-        bool compressedSample{};
-        for (auto *view : sampled) {
-            if (view && view->texture && IsNarutoAtlasImage(*view->texture)) {
-                compressedSample = true;
+
+        TextureView *primary{};
+        for (auto *view : color) {
+            if (view && view->texture && IsDiagnosticUiOutput(capture, *view->texture)) {
+                primary = view;
                 break;
             }
         }
-        if (!compressedSample)
-            return;
-        bool foundUiOutput{};
-        for (auto *view : color) {
-            if (!view || !view->texture || !IsDiagnosticUiOutput(capture, *view->texture))
-                continue;
-            foundUiOutput = true;
-            const auto &texture{view->texture};
-            const auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
-                [&](const DiagnosticPassImage &entry) { return entry.texture.get() == texture.get(); })};
-            if (it != diagnosticPassImages.end())
-                it->priority = true;
-            else if (diagnosticPassImages.size() < 24)
-                diagnosticPassImages.push_back({texture, true, true});
-
-            if (texture->guest) {
-                for (const auto &mapping : texture->guest->mappings)
-                    capture.WatchMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
-            }
-            capture.Record(fmt::format("UI_CANDIDATE executor=0x{:X} submission={} rp={} texture=0x{:X} dimensions={}x{}",
-                reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
-                reinterpret_cast<uintptr_t>(texture.get()), texture->dimensions.width, texture->dimensions.height));
-        }
-        if (!foundUiOutput)
+        if (!primary)
             return;
 
-        // Capture the actual BCn image backing behind sampled atlas views. Readback
-        // remains GPU-ordered in the existing executor stream; raw blocks can be
-        // decoded offline without changing the guest's shader or texture state.
+        TextureView *atlas{};
         for (auto *view : sampled) {
-            if (!view || !view->texture || !IsNarutoAtlasImage(*view->texture))
-                continue;
-            const auto &texture{view->texture};
-            const auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
-                [&](const DiagnosticPassImage &entry) { return entry.texture.get() == texture.get(); })};
-            if (it == diagnosticPassImages.end()) {
-                if (diagnosticPassImages.size() < 24)
-                    diagnosticPassImages.push_back({texture, false, true, true});
-            } else {
-                it->priority = true;
-                it->atlas = true;
+            if (view && view->texture && IsNarutoAtlasImage(*view->texture)) {
+                atlas = view;
+                break;
             }
-            uintptr_t guestMap{};
-            if (texture->guest && !texture->guest->mappings.empty())
-                guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
-            capture.Record(fmt::format(
-                "ATLAS_SAMPLE executor=0x{:X} submission={} rp={} texture=0x{:X} guest_map=0x{:X} "
-                "format={} {}x{} mips={} base_mip={} mip_count={} layers={} bytes={}",
-                reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
-                reinterpret_cast<uintptr_t>(texture.get()), guestMap,
-                vk::to_string(texture->format->vkFormat),
-                texture->dimensions.width, texture->dimensions.height, texture->levelCount,
-                view->range.baseMipLevel, view->range.levelCount, texture->layerCount,
-                texture->surfaceSize));
         }
+        if (!atlas)
+            return;
 
-        // The original 6+ sprite draws shared a single render pass. Capture a
-        // few intermediate results rather than just the already-corrupt final
-        // target. Pass splitting is strictly opt-in and bounded (draws 1,3,6).
         const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
-        if (const auto ordinal{capture.ProbeUiDraw(interval)}) {
-            capture.Record(fmt::format("UI_DRAW_PROBE ordinal={} executor=0x{:X} submission={} rp={}",
-                                       *ordinal, reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex));
-            BreakRenderPass();
-        }
+        const auto ordinal{capture.ProbeUiDraw(interval)};
+        if (!ordinal)
+            return;
+
+        // The draw has already been recorded. Preserve only its primary RT
+        // (not every MRT) and one atlas on the first checkpoint. 1 pre + 4
+        // post-draw + 1 atlas = at most 6 images per presentation interval.
+        diagnosticPassImages.clear();
+        diagnosticPassImages.push_back({primary->texture, true, true});
+        if (*ordinal == 96 && atlas->texture.get() != primary->texture.get())
+            diagnosticPassImages.push_back({atlas->texture, false, true, true});
+
+        uintptr_t targetMap{};
+        if (primary->texture->guest && !primary->texture->guest->mappings.empty())
+            targetMap = reinterpret_cast<uintptr_t>(primary->texture->guest->mappings.front().data());
+        uintptr_t atlasMap{};
+        if (atlas->texture->guest && !atlas->texture->guest->mappings.empty())
+            atlasMap = reinterpret_cast<uintptr_t>(atlas->texture->guest->mappings.front().data());
+        capture.Record(fmt::format(
+            "UI_DRAW_PROBE ordinal={} executor=0x{:X} submission={} rp={} "
+            "target=0x{:X} target_guest=0x{:X} atlas=0x{:X} atlas_guest=0x{:X} "
+            "atlas_format={} atlas_size={}x{}",
+            *ordinal, reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
+            reinterpret_cast<uintptr_t>(primary->texture.get()), targetMap,
+            reinterpret_cast<uintptr_t>(atlas->texture.get()), atlasMap,
+            vk::to_string(atlas->texture->format->vkFormat),
+            atlas->texture->dimensions.width, atlas->texture->dimensions.height));
+        BreakRenderPass();
     }
 
     void CommandExecutor::QueueDiagnosticPassReadbacks() {
@@ -647,7 +577,7 @@ namespace skyline::gpu::interconnect {
                 "capture_index={} approx_present={} render_pass={} submission={} "
                 "kind={} focus={} executor=0x{:X} texture=0x{:X} dimensions={}x{} "
                 "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} mips={} layers={} "
-                "note=recorded_after_render_pass_end_not_exact_frame_correlation\n",
+                "note=late_draw_boundary_approximate_presentation\n",
                 index, interval, renderPassIndex, submissionNumber,
                 atlas ? "sampled_atlas" : entry.beforeUiDraw ? "pre_ui_render_target" : entry.renderTarget ? "render_target" : "sampled_input",
                 atlas ? "compressed_sprite_source" : entry.beforeUiDraw ? "before_first_matching_sprite_draw" : "ui_candidate_or_downstream",

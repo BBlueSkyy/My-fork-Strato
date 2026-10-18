@@ -21,7 +21,8 @@ namespace skyline::gpu::diagnostic {
         std::atomic<bool> active{false};
         std::atomic<std::uint32_t> presentIndex{0};
         std::atomic<std::uint32_t> eventCount{0};
-        static constexpr std::uint32_t MaxEvents{2400};
+        std::atomic<std::uint32_t> sampledDrawEvents{0};
+        static constexpr std::uint32_t MaxEvents{6000};
         static constexpr std::uint32_t FrameCount{4};
         // Reserve budget for late UI composition and each of the four intervals.
         // Phase 6 only needs the first UI draw before/after images. Keep one
@@ -66,6 +67,7 @@ namespace skyline::gpu::diagnostic {
             passBytes = 0;
             watchedMappings.clear();
             eventCount.store(0, std::memory_order_relaxed);
+            sampledDrawEvents.store(0, std::memory_order_relaxed);
             presentIndex.store(0, std::memory_order_relaxed);
             active.store(true, std::memory_order_release);
         }
@@ -134,6 +136,16 @@ namespace skyline::gpu::diagnostic {
                                          : start - guestAddress < bytes;
         }
 
+        // The prior first-draw probe consumed snapshots on background passes.
+        // Wait until the draw immediately before the first late checkpoint.
+        bool ShouldProbeUiPreDraw(std::uint32_t interval) {
+            std::scoped_lock lock(mutex);
+            return active.load(std::memory_order_acquire) &&
+                   interval < FrameCount &&
+                   uiDrawCountByInterval[interval] >= 95 &&
+                   !preUiDrawClaimed[interval];
+        }
+
         // First *matching* sprite draw in each approximate presentation interval.
         // Claim before recording the draw, so a true pre-draw image can be queued.
         bool ClaimPreUiDraw(std::uint32_t interval) {
@@ -153,7 +165,7 @@ namespace skyline::gpu::diagnostic {
             if (!active.load(std::memory_order_acquire) || interval >= FrameCount)
                 return std::nullopt;
             const auto ordinal{++uiDrawCountByInterval[interval]};
-            if (ordinal == 1 || ordinal == 3 || ordinal == 6)
+            if (ordinal == 96 || ordinal == 192 || ordinal == 384 || ordinal == 768)
                 return ordinal;
             return std::nullopt;
         }
@@ -185,6 +197,11 @@ namespace skyline::gpu::diagnostic {
         }
 
         void Record(std::string event) {
+            // Routine draws generated most of the 2400 earlier messages. Sample
+            // them 1/16; never sample shader, sampler, Fermi2D or frame events.
+            if (event.rfind("DRAW ", 0) == 0 &&
+                (sampledDrawEvents.fetch_add(1, std::memory_order_relaxed) % 16) != 0)
+                return;
             if (!active.load(std::memory_order_acquire) ||
                 eventCount.load(std::memory_order_relaxed) >= MaxEvents)
                 return;
@@ -204,7 +221,7 @@ namespace skyline::gpu::diagnostic {
             if (out) {
                 out << "GPU events collected while 4 frames were being presented.\n"
                     << "present_index_approx is NOT exact GPU/present synchronization.\n"
-                    << "Events are capped at 2400 to bound memory and disk usage.\n\n";
+                    << "Events are capped at 6000; routine draws sampled 1/16.\n\n";
                 for (const auto &event : events)
                     out << event << '\n';
             }

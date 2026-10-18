@@ -39,12 +39,21 @@ int main() {
     assert(!capture.ClaimPreUiDraw(UiFrameCapture::FrameCount));
     assert(capture.ClaimPreUiDraw(1)); // separate approximate presentation interval
     assert(!capture.ClaimPreUiDraw(1));
-    assert(capture.ProbeUiDraw(0) == 1);
-    assert(!capture.ProbeUiDraw(0)); // #2
-    assert(capture.ProbeUiDraw(0) == 3);
-    assert(!capture.ProbeUiDraw(0)); // #4
-    assert(!capture.ProbeUiDraw(0)); // #5
-    assert(capture.ProbeUiDraw(0) == 6);
+    assert(!capture.ShouldProbeUiPreDraw(0));
+    for (std::uint32_t i{1}; i < 96; ++i)
+        assert(!capture.ProbeUiDraw(0));
+    assert(capture.ShouldProbeUiPreDraw(0));
+    assert(capture.ProbeUiDraw(0) == 96);
+    for (std::uint32_t i{97}; i < 192; ++i)
+        assert(!capture.ProbeUiDraw(0));
+    assert(capture.ProbeUiDraw(0) == 192);
+    for (std::uint32_t i{193}; i < 384; ++i)
+        assert(!capture.ProbeUiDraw(0));
+    assert(capture.ProbeUiDraw(0) == 384);
+    for (std::uint32_t i{385}; i < 768; ++i)
+        assert(!capture.ProbeUiDraw(0));
+    assert(capture.ProbeUiDraw(0) == 768);
+    assert(!capture.ProbeUiDraw(0));
     assert(!capture.ProbeUiDraw(UiFrameCapture::FrameCount));
 
     for (std::uint32_t i{}; i < UiFrameCapture::PassSnapshotsPerInterval; ++i)
@@ -62,7 +71,7 @@ int main() {
     assert(!capture.IsWatchedMapping(0x1000, 1)); // no cross-session leakage
     assert(!capture.IsFlippedDestination(0, 0x3000, 0x100)); // flip registry reset
     assert(capture.ClaimPreUiDraw(0)); // pre-draw ownership reset
-    assert(capture.ProbeUiDraw(0) == 1); // ordinals reset
+    assert(!capture.ProbeUiDraw(0)); // ordinals reset
     assert(capture.ReserveAtlasSnapshot(0, 0x1234, 8192));
     assert(!capture.ReserveAtlasSnapshot(0, 0x1234, 8192)); // deduplicated
     assert(!capture.ReserveAtlasSnapshot(0, 0, 8192));

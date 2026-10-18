@@ -42,3 +42,24 @@ cause. CBUF prefix dumps can be stale if host GPU writes were not read back.
 
 Only **reldebug** is built on this diagnostic PR; normal master build outputs
 remain unchanged. Do not merge this instrumentation. No game/driver hacks.
+
+## Focused late-draw revision
+
+Initial A/B dumps confirmed a Qualcomm P1 skill-list omission in one GPU
+presentation source frame (not exclusive to either reused guest backing),
+and a persistent Turnip Connections logo on both character nameplates.
+The original capture filled its event quota in 1-2 approximate frames and
+spent pass snapshots on the first draws of the earlier background.
+
+This revision queues *no implicit background snapshots*. It explicitly
+captures the primary full-size color target after qualifying UI draws
+**96, 192, 384 and 768**, plus a single immediately preceding RT snapshot
+and one sampled atlas at ordinal 96. Up to six snapshots per approximate
+presentation interval; all GPU render-pass splits remain opt-in, within
+160 MiB across at most 24 readbacks. Drawing is never skipped or changed.
+
+Routine DRAW records are sampled 1/16 while events such as shaders, sampled
+atlases at probes, Fermi2D, GMMU/TIC, descriptors, and presented sources
+are retained, capped at 6000 total. Draw ordinals and interval indices are
+not identical between asynchronous GPU drivers. These wide-spaced checkpoints
+improve late-pass coverage but do **not guarantee** the precise bad UI draw.
