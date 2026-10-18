@@ -158,6 +158,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 "DRAW kind=inline indexed=1 count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
                 count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
                 scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+            if (auto *pipeline{activeState.GetPipeline()})
+                ctx.executor.MarkDiagnosticUiOutput(
+                    activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
+                    static_cast<bool>(pipeline->sourcePackedState.GetAttachmentBlendState(0).blendEnable));
         }
           ctx.executor.AddCheckpoint("After inline index draw");
      }    
@@ -600,6 +604,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 "DRAW kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
                 indexed, count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
                 scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+            if (auto *pipeline{activeState.GetPipeline()})
+                ctx.executor.MarkDiagnosticUiOutput(
+                    activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
+                    static_cast<bool>(pipeline->sourcePackedState.GetAttachmentBlendState(0).blendEnable));
         }
         ctx.executor.AddCheckpoint("After draw");
     }
@@ -702,6 +710,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 "DRAW kind=indirect indexed={} count={} instances=0 scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
                 indexed, count, scissor.offset.x, scissor.offset.y, scissor.extent.width,
                 scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+            if (auto *pipeline{activeState.GetPipeline()})
+                ctx.executor.MarkDiagnosticUiOutput(
+                    activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
+                    static_cast<bool>(pipeline->sourcePackedState.GetAttachmentBlendState(0).blendEnable));
         }
         ctx.executor.AddCheckpoint("After indirect draw");
     }
