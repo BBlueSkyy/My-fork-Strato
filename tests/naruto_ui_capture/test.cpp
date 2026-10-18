@@ -9,6 +9,9 @@ int main() {
     using skyline::gpu::diagnostic::UiFrameCapture;
     const fs::path root{fs::temp_directory_path() / "strato_naruto_ui_capture_regression"};
     fs::create_directories(root);
+    static_assert(UiFrameCapture::PresentFrameCount == 24);
+    static_assert(UiFrameCapture::FrameCount == 4);
+    static_assert(UiFrameCapture::PresentFrameCount > UiFrameCapture::FrameCount);
     UiFrameCapture capture;
     capture.Start(root.string());
 
