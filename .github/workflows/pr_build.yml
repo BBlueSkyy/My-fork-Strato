@@ -37,8 +37,9 @@ jobs:
       - name: Install Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin' # Temurin should come pre-installed on GitHub-hosted runners
+          distribution: 'temurin'
           java-version: '17'
+          cache: gradle
 
       - name: Install Ninja Build
         run: |
@@ -67,15 +68,24 @@ jobs:
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand assembleDevRelease assembleDevReldebug
+        run: |
+          # Diagnostic capture requires the reldebug APK. Don't build the unused
+          # release variant for mini-RenderDoc PRs; regular PRs still build both.
+          if [[ "${{ startsWith(github.head_ref, 'debug/naruto-ui-') }}" == "true" ]]; then
+            ./gradlew --no-daemon --stacktrace --build-cache --parallel --configure-on-demand assembleDevReldebug
+          else
+            ./gradlew --no-daemon --stacktrace --build-cache --parallel --configure-on-demand assembleDevRelease assembleDevReldebug
+          fi
       - name: Rename APKs
         if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
         run: |
-          mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
+          if [[ "${{ startsWith(github.head_ref, 'debug/naruto-ui-') }}" != "true" ]]; then
+            mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
+          fi
           mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
 
       - name: Upload Release APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
+        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && !startsWith(github.head_ref, 'debug/naruto-ui-') }}
         uses: actions/upload-artifact@v4
         with:
           name: strato-pr${{ github.event.number }}-release.apk
