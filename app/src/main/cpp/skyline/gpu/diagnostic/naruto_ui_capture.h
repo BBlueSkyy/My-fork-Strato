@@ -33,6 +33,10 @@ namespace skyline::gpu::diagnostic {
         // per presentation-sized interval. This is distinct from draw probes.
         static constexpr std::uint32_t MaxFermiSourceSnapshots{24};
         static constexpr std::size_t MaxFermiSourceBytes{72ULL * 1024 * 1024};
+        // One diagnostic intermediate RT immediately before the second
+        // full-resolution text consumer per completed composition cycle.
+        static constexpr std::uint32_t MaxUiMidpointSnapshots{24};
+        static constexpr std::size_t MaxUiMidpointBytes{72ULL * 1024 * 1024};
         // Reserve budget for late UI composition and each of the four intervals.
         // Phase 6 only needs the first UI draw before/after images. Keep one
         // atlas per interval; the shader/CB/TSC evidence is tiny by comparison.
@@ -60,6 +64,11 @@ namespace skyline::gpu::diagnostic {
         // full-resolution UI consumer draw. The first Fermi blit receives
         // background only; its reverse direction reads this composed target.
         std::vector<std::uintptr_t> uiCompositorTargets;
+        // Kept behind the diagnostic mutex. Zero=awaiting first qualifying
+        // strip, one=awaiting second, two=midpoint already claimed.
+        std::vector<std::pair<std::uintptr_t, std::uint8_t>> uiTextConsumersByTarget;
+        std::uint32_t uiMidpointSnapshotCount{};
+        std::size_t uiMidpointBytes{};
         std::uint32_t fermiSourceSnapshotCount{};
         std::size_t fermiSourceBytes{};
         // One full-surface vertically flipped blit destination per approximate
@@ -82,6 +91,9 @@ namespace skyline::gpu::diagnostic {
             preSpriteDrawClaimed.fill(false);
             fermiSourceDirection.reset();
             uiCompositorTargets.clear();
+            uiTextConsumersByTarget.clear();
+            uiMidpointSnapshotCount = 0;
+            uiMidpointBytes = 0;
             fermiSourceSnapshotCount = 0;
             fermiSourceBytes = 0;
             flippedDestinations.fill({});
@@ -196,6 +208,53 @@ namespace skyline::gpu::diagnostic {
                 std::find(uiCompositorTargets.begin(), uiCompositorTargets.end(), identity) ==
                     uiCompositorTargets.end())
                 uiCompositorTargets.push_back(identity);
+        }
+
+        // Observe the first and second qualifying text-strip draw for the
+        // same full-sized compositor target. Capture BEFORE the second draw,
+        // so the image contains the work that precedes it. This is a generic
+        // diagnostic grouping, not a claim that the first group always belongs
+        // to one particular UI region.
+        std::optional<std::uint32_t> ClaimUiMidpointBeforeText(
+            std::uintptr_t targetIdentity, std::size_t bytes) {
+            if (!targetIdentity || !active.load(std::memory_order_acquire))
+                return std::nullopt;
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_relaxed))
+                return std::nullopt;
+            auto it{std::find_if(uiTextConsumersByTarget.begin(), uiTextConsumersByTarget.end(),
+                [targetIdentity](const auto &entry) { return entry.first == targetIdentity; })};
+            if (it == uiTextConsumersByTarget.end()) {
+                if (uiTextConsumersByTarget.size() < 16)
+                    uiTextConsumersByTarget.emplace_back(targetIdentity, 1);
+                return std::nullopt;
+            }
+            if (it->second == 0) {
+                it->second = 1;
+                return std::nullopt;
+            }
+            if (it->second != 1)
+                return std::nullopt;
+            it->second = 2; // Never repeat this cycle, even if the budget is full.
+            if (!bytes || uiMidpointSnapshotCount >= MaxUiMidpointSnapshots ||
+                uiMidpointBytes > MaxUiMidpointBytes ||
+                bytes > MaxUiMidpointBytes - uiMidpointBytes)
+                return std::nullopt;
+            uiMidpointBytes += bytes;
+            return uiMidpointSnapshotCount++;
+        }
+
+        // A pre-reverse Fermi probe consumes the composed surface. Arm the
+        // next draw grouping on that surface, without crossing render cycles.
+        void CompleteUiCompositorCycle(std::uintptr_t targetIdentity) {
+            if (!active.load(std::memory_order_acquire))
+                return;
+            std::scoped_lock lock(mutex);
+            for (auto &entry : uiTextConsumersByTarget)
+                if (entry.first == targetIdentity) {
+                    entry.second = 0;
+                    break;
+                }
         }
 
         // Only snapshot an image we saw receiving actual UI compositor draws,
