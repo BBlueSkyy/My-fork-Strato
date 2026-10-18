@@ -169,6 +169,27 @@ namespace skyline::gpu::interconnect {
                 dstGuestTexture.dimensions.width, dstGuestTexture.dimensions.height,
                 centredSrcRectX, centredSrcRectY, duDx * dstRectWidth, dvDy * dstRectHeight,
                 dstRectX, dstRectY, dstRectWidth, dstRectHeight, static_cast<u32>(filter)));
+
+            // The full-surface negative-height blit establishes a potential
+            // screen-space UI destination for this capture interval. Trace its
+            // *guest backing*, never a transient Vulkan texture pointer.
+            // A later Fermi2D flip may overwrite the candidate, but only after
+            // the current UI draws have been recorded.
+            if (dvDy < 0.0f && dstRectX == 0 && dstRectY == 0 &&
+                dstRectWidth == dstGuestTexture.dimensions.width &&
+                dstRectHeight == dstGuestTexture.dimensions.height &&
+                srcGuestTexture.dimensions.width == dstGuestTexture.dimensions.width &&
+                srcGuestTexture.dimensions.height == dstGuestTexture.dimensions.height &&
+                !dstGuestTexture.mappings.empty()) {
+                const auto &map{dstGuestTexture.mappings.front()};
+                if (map.valid()) {
+                    const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+                    capture.MarkFlippedDestination(interval, reinterpret_cast<uintptr_t>(map.data()), map.size());
+                    capture.Record(fmt::format("FLIPPED_UI_DESTINATION interval={} guest_map=0x{:X} bytes={} texture=0x{:X}",
+                                                interval, reinterpret_cast<uintptr_t>(map.data()), map.size(),
+                                                reinterpret_cast<uintptr_t>(dstTextureView->texture.get())));
+                }
+            }
         }
 
         executor.AddCheckpoint("Before blit");
