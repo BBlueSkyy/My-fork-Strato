@@ -2,10 +2,13 @@
 """Compile the actual predicate methods and GLSL comparison expression on a host GPU interface."""
 import os
 import pathlib
+import sys
 import subprocess
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'tests'))
+from gpu_capture_fixture import strip_capture_blocks
 GPU = ROOT / 'app/src/main/cpp/skyline/gpu'
 
 
@@ -22,7 +25,7 @@ def function(text, signature):
 with tempfile.TemporaryDirectory(prefix='strato-gpu-conditional-') as directory:
     directory = pathlib.Path(directory)
     header = (GPU / 'interconnect/maxwell_3d/maxwell_3d.h').read_text()
-    source = (GPU / 'interconnect/maxwell_3d/maxwell_3d.cpp').read_text()
+    source = strip_capture_blocks((GPU / 'interconnect/maxwell_3d/maxwell_3d.cpp').read_text())
     declarations = header[header.index('        struct RenderConditionKey'):header.index('        InterconnectContext ctx;')]
     declarations += header[header.index('        CachedMappedBufferView renderConditionLhsView'):header.index('        static constexpr size_t DescriptorBatchSize')]
     declarations = declarations.replace('        void RefreshRenderCondition();', '')

@@ -32,6 +32,14 @@ namespace skyline::gpu {
         std::unordered_map<u64, std::vector<u8>> hostShaderReplacements; //!< ^^ same as above but for host
 
         std::mutex poolMutex;
+
+        // Bounded SPIR-V cache for this opt-in diagnostic branch. Shader
+        // compilation commonly predates arming the capture; no filesystem I/O
+        // occurs until the exact first UI draw is selected.
+        std::unordered_map<u64, std::vector<u32>> diagnosticSpirvCache;
+        std::size_t diagnosticSpirvBytes{};
+        static constexpr std::size_t DiagnosticSpirvBudget{32 * 1024 * 1024};
+        static constexpr std::size_t DiagnosticSpirvCount{512};
         std::filesystem::path dumpPath;
         std::mutex dumpMutex;
 
@@ -73,6 +81,10 @@ namespace skyline::gpu {
         Shader::IR::Program ParseComputeShader(u64 hash, span<u8> binary, u32 baseOffset, u32 textureConstantBufferIndex, u32 localMemorySize, u32 sharedMemorySize, std::array<u32, 3> workgroupDimensions, const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc);
 
         vk::ShaderModule CompileShader(const Shader::RuntimeInfo &runtimeInfo, Shader::IR::Program &program, Shader::Backend::Bindings &bindings, u64 hash = 0);
+
+        // Export a previously compiled module. Returns false if this shader
+        // was not retained under the fixed memory cap.
+        bool ExportDiagnosticSpirv(u64 hash, const std::filesystem::path &filename);
 
         void ResetPools();
     };

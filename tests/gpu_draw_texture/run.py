@@ -5,10 +5,13 @@ GPU allocation/recording is replaced; rectangle math, resource selection and
 cycle attachment are compiled from the actual production body, unchanged.
 """
 import pathlib
+import sys
 import subprocess
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'tests'))
+from gpu_capture_fixture import strip_capture_blocks
 GPU = ROOT / "app/src/main/cpp/skyline/gpu"
 
 
@@ -25,7 +28,7 @@ def function(text, signature):
 
 with tempfile.TemporaryDirectory(prefix="strato-draw-texture-") as directory:
     directory = pathlib.Path(directory)
-    draw = function((GPU / "interconnect/maxwell_3d/maxwell_3d.cpp").read_text(),
+    draw = function(strip_capture_blocks((GPU / "interconnect/maxwell_3d/maxwell_3d.cpp").read_text()),
                     "void Maxwell3D::DrawTexture(")
     types = ROOT / "app/src/main/cpp/skyline/soc/gm20b/engines/maxwell/types.h"
     registers = function(types.read_text(), "struct DrawTexture") + ";"
