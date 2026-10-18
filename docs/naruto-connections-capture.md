@@ -247,3 +247,44 @@ by content, not ordinal alone.
 
 This is still *diagnostic only*, not a functional GPU fix. #359 remains
 intact; no title-ID/driver/guest-address selector was introduced.
+
+## P1 omission confirmed before reverse Fermi — intermediate diagnostic
+
+On Qualcomm 0.777.0, the corrected 24-frame capture contains **23** fully
+composed Fermi inputs and **24** VI sources. After flipping Fermi vertically,
+every source N most closely matches VI frame N+1 by full-image MAE. In both
+failed instances, Fermi inputs **14** and **19** already lack the P1 skill
+list, and VI frames **15** and **20** repeat the omission. Neighboring inputs
+retain the bars. The CPU list remains present. The P1 ROI near-black
+fraction decreases from ~0.75–0.77 in working sources to 0.292 (Fermi14)
+and 0.276 (Fermi19). Image coordinates were used only for offline analysis.
+
+The 134 qualifying texture consumer records per group are **identical in
+ordered signature** between working frame 13 and failed frame 14, including
+sampled source identities, shader hashes, and target identity. So there is
+no observed missing qualifying GPU command; a draw can still have been
+executed without contributing pixels, and routine DRAW sampling excludes
+some other command classes. No basis exists to modify Fermi2D or Vulkan
+presentation; those stages follow the already incomplete source.
+
+**New opt-in probe:** take one readback of the live full-size Maxwell
+compositor target just before its *second* qualifying text-strip draw.
+The first qualifying strip sets the counter; the second triggers the copy
+and ends that cycle's capture. A reverse Fermi input event resets the
+counter so the next UI composition cycle can be sampled. These are generic
+runtime observations, not hardcoded title identifiers, shader hashes,
+guest addresses or P1 screen coordinates.
+
+Files: ui_midpoint_XX_<width>x<height>_<format>.raw plus matching .txt;
+trace marker UI_COMPOSITOR_MIDPOINT. Maximum **24** midpoint images and
+**72 MiB**, independent of prior Fermi/VI/draw quotas. GPU copying and
+memory barrier are in the same command stream before the second strip;
+normal emulation remains unchanged outside the manually armed capture.
+
+**Next:** align each midpoint by content/temporal order (ordinal is not exact
+VI frame ID) with the already captured reverse Fermi source. If the P1
+list appears at the midpoint but is absent pre-Fermi, investigate later
+Maxwell passes/overwrites. If absent at midpoint too, investigate the
+earlier Maxwell drawing/texture/state/synchronization. This does not itself
+prove a particular synchronization/barrier bug. PR #359 preserved, #360
+Draft and unmerged; no Actions monitoring.
