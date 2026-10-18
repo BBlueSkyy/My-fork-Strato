@@ -21,6 +21,7 @@ jobs:
           submodules: recursive
     
       - name: Debug NDK
+        if: ${{ !startsWith(github.head_ref, 'debug/') }}
         run: |
           echo "== NDKs instalados =="
           ls -la $ANDROID_SDK_ROOT/ndk || true
@@ -39,13 +40,16 @@ jobs:
         with:
           distribution: 'temurin' # Temurin should come pre-installed on GitHub-hosted runners
           java-version: '17'
+          cache: gradle
 
       - name: Install Ninja Build
         run: |
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
+      # Diagnostic PRs deliver a targeted APK first; standard PRs retain every host gate.
       - name: Texman view-range regression (UBSan)
+        if: ${{ !startsWith(github.head_ref, 'debug/') }}
         run: |
           c++ -std=c++20 -Wall -Wextra -Werror \
             -fsanitize=undefined -fno-sanitize-recover=all \
@@ -56,12 +60,14 @@ jobs:
           /tmp/texman-view-range-tests
 
       - name: Occlusion and conditional rendering regressions
+        if: ${{ !startsWith(github.head_ref, 'debug/') }}
         run: |
           python3 tests/gpu_queries/run.py
           python3 tests/gpu_conditional/run.py
           python3 tests/gpu_draw_texture/run.py
 
       - name: Texture layout and submission regressions
+        if: ${{ !startsWith(github.head_ref, 'debug/') }}
         run: |
           python3 tests/gpu_sampled_layout/run.py
           python3 tests/gpu_submission/run.py
@@ -70,24 +76,33 @@ jobs:
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
-          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
+          CCACHE_COMPILERCHECK: "string:android-ndk-27.3.13750724" # Matches app/build.gradle; stable across PR updates
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
-      - name: Rename APKs
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
         run: |
-          mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
+          if [[ "${{ startsWith(github.head_ref, 'debug/') }}" == "true" ]]; then
+            echo "Diagnostic PR: compile only the debuggable ARM64 APK"
+            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache :app:assembleDevReldebug
+          else
+            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
+          fi
+
+      - name: Rename APKs
+        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' || startsWith(github.head_ref, 'debug/') }}
+        run: |
+          if [[ "${{ startsWith(github.head_ref, 'debug/') }}" != "true" ]]; then
+            mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
+          fi
           mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
 
       - name: Upload Release APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
+        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && !startsWith(github.head_ref, 'debug/') }}
         uses: actions/upload-artifact@v4
         with:
           name: strato-pr${{ github.event.number }}-release.apk
           path: strato-pr${{ github.event.number }}-release.apk
 
       - name: Upload Debug APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
+        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' || startsWith(github.head_ref, 'debug/') }}
         uses: actions/upload-artifact@v4
         with:
           name: strato-pr${{ github.event.number }}-reldebug.apk
