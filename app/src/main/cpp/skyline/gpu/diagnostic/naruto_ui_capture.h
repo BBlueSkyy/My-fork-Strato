@@ -84,13 +84,13 @@ namespace skyline::gpu::diagnostic {
         std::vector<std::pair<std::uintptr_t, std::uint8_t>> uiTextConsumersByTarget;
         std::uint32_t uiMidpointSnapshotCount{};
         std::size_t uiMidpointBytes{};
-        struct TextDrawSubmission {
-            std::uintptr_t executor{};
-            std::size_t submission{};
+        // Reset when Fermi2D consumes the completed full-resolution UI.
+        // Maxwell3D may split one composition cycle across submissions.
+        struct TextDrawCycle {
             std::uintptr_t target{};
             std::uint8_t draws{};
         };
-        std::vector<TextDrawSubmission> textDrawSubmissions;
+        std::vector<TextDrawCycle> textDrawCycles;
         std::uint32_t postSecondTextCount{};
         std::size_t postSecondTextBytes{};
         std::uint32_t fermiSourceSnapshotCount{};
@@ -118,7 +118,7 @@ namespace skyline::gpu::diagnostic {
             uiTextConsumersByTarget.clear();
             uiMidpointSnapshotCount = 0;
             uiMidpointBytes = 0;
-            textDrawSubmissions.clear();
+            textDrawCycles.clear();
             postSecondTextCount = 0;
             postSecondTextBytes = 0;
             fermiSourceSnapshotCount = 0;
@@ -267,31 +267,28 @@ namespace skyline::gpu::diagnostic {
             return uiMidpointSnapshotCount++;
         }
 
-        // Count the *actual* text consumers using the Maxwell3D executor,
-        // submission number and target identity. Fermi events and
-        // present_index_approx are asynchronous and MUST NOT reset this
-        // two-draw sequence. A new submission is an independent cycle.
+        // Count actual resolved text-strip draws to a *single* compositor
+        // target between successive full-screen reverse Fermi2D copies. Do
+        // not assume they share a Maxwell submission: trace interleaving may
+        // split one UI cycle into multiple submissions. The second draw
+        // triggers an ordered post-draw readback, once per cycle.
         std::optional<std::uint32_t> ClaimPostSecondText(
-            std::uintptr_t executor, std::size_t submission,
             std::uintptr_t target, std::size_t bytes) {
-            if (!executor || !target || !active.load(std::memory_order_acquire))
+            if (!target || !active.load(std::memory_order_acquire))
                 return std::nullopt;
             std::scoped_lock lock(mutex);
             if (!active.load(std::memory_order_relaxed))
                 return std::nullopt;
-            auto it{std::find_if(textDrawSubmissions.begin(), textDrawSubmissions.end(),
-                [=](const TextDrawSubmission &entry) {
-                    return entry.executor == executor &&
-                           entry.submission == submission && entry.target == target;
-                })};
-            if (it == textDrawSubmissions.end()) {
-                if (textDrawSubmissions.size() < 64)
-                    textDrawSubmissions.push_back({executor, submission, target, 1});
+            auto it{std::find_if(textDrawCycles.begin(), textDrawCycles.end(),
+                [target](const TextDrawCycle &entry) { return entry.target == target; })};
+            if (it == textDrawCycles.end()) {
+                if (textDrawCycles.size() < 16)
+                    textDrawCycles.push_back({target, 1});
                 return std::nullopt;
             }
             if (it->draws != 1)
                 return std::nullopt;
-            it->draws = 2;
+            it->draws = 2; // One probe per completed UI composition cycle.
             if (!bytes || postSecondTextCount >= MaxPostSecondTextSnapshots ||
                 postSecondTextBytes > MaxPostSecondTextBytes ||
                 bytes > MaxPostSecondTextBytes - postSecondTextBytes)
@@ -307,10 +304,11 @@ namespace skyline::gpu::diagnostic {
                 return;
             std::scoped_lock lock(mutex);
             for (auto &entry : uiTextConsumersByTarget)
-                if (entry.first == targetIdentity) {
+                if (entry.first == targetIdentity)
                     entry.second = 0;
-                    break;
-                }
+            for (auto &entry : textDrawCycles)
+                if (entry.target == targetIdentity)
+                    entry.draws = 0;
         }
 
         // Only snapshot an image we saw receiving actual UI compositor draws,
