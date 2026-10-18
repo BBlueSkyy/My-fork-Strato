@@ -39,7 +39,7 @@ namespace skyline {
             isInternetEnabled = ktSettings.GetBool("isInternetEnabled");
             forceTripleBuffering = ktSettings.GetBool("forceTripleBuffering");
             disableFrameThrottling = ktSettings.GetBool("disableFrameThrottling");
-            balancedFullscreen = ktSettings.GetBool("balancedFullscreen");
+            balancedFullscreenCurve = ktSettings.GetFloat("balancedFullscreenCurve");
             gpuDriver = ktSettings.GetString("gpuDriver");
             gpuDriverLibraryName = ktSettings.GetString("gpuDriverLibraryName");
             executorSlotCountScale = ktSettings.GetInt<u32>("executorSlotCountScale");

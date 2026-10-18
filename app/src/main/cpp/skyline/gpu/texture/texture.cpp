@@ -1587,7 +1587,7 @@ namespace skyline::gpu {
         return std::make_shared<TextureView>(shared_from_this(), type, range, pFormat, mapping);
     }
 
-    void Texture::CopyFrom(std::shared_ptr<Texture> source, vk::Semaphore waitSemaphore, vk::Semaphore signalSemaphore, texture::Format srcFormat, const vk::ImageSubresourceRange &subresource, bool balancedFullscreen) {
+    void Texture::CopyFrom(std::shared_ptr<Texture> source, vk::Semaphore waitSemaphore, vk::Semaphore signalSemaphore, texture::Format srcFormat, const vk::ImageSubresourceRange &subresource, float balancedFullscreenCurve) {
         if (cycle)
             cycle->WaitSubmit();
         if (source->cycle)
@@ -1606,7 +1606,7 @@ namespace skyline::gpu {
 
         // This is used only for the final presentation copy. Image blits
         // require format support, so unsupported drivers retain exact copies.
-        const bool warpedBlit = balancedFullscreen && dimensions.width >= 16 &&
+        const bool warpedBlit = balancedFullscreenCurve > 0.0f && dimensions.width >= 16 &&
             dimensions.depth == 1 && subresource.baseMipLevel == 0 &&
             subresource.levelCount == 1 && subresource.baseArrayLayer == 0 &&
             subresource.layerCount == 1 &&
@@ -1668,12 +1668,14 @@ namespace skyline::gpu {
                         // peripheral areas absorb the extra screen width.
                         // All segments are recorded in one Vulkan blit command.
                         constexpr int SegmentCount = 8;
-                        constexpr float Curve = 0.38f;
+                        // Calculated from the device ratio. On a 21:9 display
+                        // this is about 0.83, leaving the center close to 16:9.
+                        const float curve = std::clamp(balancedFullscreenCurve, 0.0f, 0.9f);
                         std::array<vk::ImageBlit, SegmentCount> regions{};
                         auto warpedX = [&](int i) -> i32 {
                             const float x = static_cast<float>(i) / SegmentCount;
                             const float t = x - 0.5f;
-                            const float mapped = x + Curve * (t * t * t - 0.25f * t);
+                            const float mapped = x + curve * (t * t * t - 0.25f * t);
                             return static_cast<i32>(std::lround(mapped * dimensions.width));
                         };
                         for (int i = 0; i < SegmentCount; i++) {
