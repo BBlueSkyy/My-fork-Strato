@@ -907,7 +907,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         auto directory{std::filesystem::path(capture.CaptureDirectory())};
                         if (directory.empty())
                             return;
-                        auto out{std::ofstream(directory / fmt::format("ui_draw_{}.bin", name),
+                        auto out{std::ofstream(directory / fmt::format("ui_draw_i{}_{}.bin", capture.presentIndex.load(std::memory_order_acquire), name),
                                                std::ios::binary | std::ios::trunc)};
                         if (!out)
                             return;
