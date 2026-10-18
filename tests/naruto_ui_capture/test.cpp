@@ -57,6 +57,16 @@ int main() {
     assert(!capture.ClaimPreSpriteDraw(0));
     assert(!capture.ClaimPreSpriteDraw(UiFrameCapture::FrameCount));
     assert(capture.ClaimPreSpriteDraw(1));
+    // Capture one full-sized Fermi2D input per blit pair. Reversed or different
+    // directions do not consume the quota.
+    assert(!capture.ReserveFermiSource(0, 0xF200, 2822400));
+    assert(!capture.ReserveFermiSource(0xF100, 0xF100, 2822400));
+    for (std::uint32_t i{}; i < UiFrameCapture::MaxFermiSourceSnapshots; ++i) {
+        assert(capture.ReserveFermiSource(0xF100, 0xF200, 2822400) == i);
+        assert(!capture.ReserveFermiSource(0xF200, 0xF100, 2822400));
+        assert(!capture.ReserveFermiSource(0xF100, 0xF300, 2822400));
+    }
+    assert(!capture.ReserveFermiSource(0xF100, 0xF200, 2822400));
     assert(capture.NextFocusedDrawId() == 1);
     assert(capture.NextFocusedDrawId() == 2);
 
@@ -75,6 +85,8 @@ int main() {
     assert(fs::exists(root / "gpu_events.txt"));
 
     capture.Start(root.string());
+    assert(capture.ReserveFermiSource(0xF200, 0xF100, 2822400) == 0); // reset direction/counter
+    assert(!capture.ReserveFermiSource(0xF100, 0xF200, 2822400));
     assert(!capture.IsWatchedMapping(0x1000, 1)); // no cross-session leakage
     assert(!capture.IsFlippedDestination(0, 0x3000, 0x100)); // flip registry reset
     assert(capture.ClaimPreUiDraw(0)); // one-shot ownership resets
