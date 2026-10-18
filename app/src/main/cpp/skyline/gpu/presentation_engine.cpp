@@ -175,12 +175,13 @@ namespace skyline::gpu {
                                 if (!fs::create_directories(candidate, ec) || ec)
                                     continue;
                                 captureDirectory = candidate;
-                                remainingFrames = diagnostic::UiFrameCapture::FrameCount;
+                                remainingFrames = diagnostic::UiFrameCapture::PresentFrameCount;
                                 session.Start(candidate.string());
                                 std::ofstream readme(candidate / "README.txt");
                                 if (readme) {
                                     readme << "Strato Naruto Connections mini-RenderDoc (diagnostic only)\n"
-                                           << "4 consecutive presented frames; the first may have been rendered before arming.\n"
+                                           << "24 consecutive presented source frames; the first may have been rendered before arming.\n"
+                                           << "Only the first 4 approximate frames have detailed draw readbacks.\n"
                                            << "present_source_XX.raw is a linear host GPU readback, not a PNG.\n"
                                            << "gpu_events.txt contains bounded draw, shader, sampler and TIC diagnostics.\n"
                                            << "present_index_approx is approximate due to asynchronous rendering.\n"
@@ -203,8 +204,12 @@ namespace skyline::gpu {
             }
 
             if (remainingFrames) {
-                const auto captureIndex{diagnostic::UiFrameCapture::FrameCount - remainingFrames};
-                session.presentIndex.store(captureIndex, std::memory_order_release);
+                const auto captureIndex{diagnostic::UiFrameCapture::PresentFrameCount - remainingFrames};
+                // Intervals 0..3 retain original detailed draw budget. Later
+                // presents collect source only; 4 means "not eligible for draw probes".
+                session.presentIndex.store(
+                    std::min(captureIndex, diagnostic::UiFrameCapture::FrameCount),
+                    std::memory_order_release);
                 uintptr_t guestMap{};
                 size_t guestSize{};
                 if (texture->guest) {
@@ -273,7 +278,9 @@ namespace skyline::gpu {
                     session.Finish();
                     std::ofstream complete(captureDirectory / "capture_complete.txt");
                     if (complete)
-                        complete << "capture_complete=true\nframes=4\n";
+                        complete << fmt::format("capture_complete=true\nframes={}\ndetailed_intervals={}\n",
+                                                diagnostic::UiFrameCapture::PresentFrameCount,
+                                                diagnostic::UiFrameCapture::FrameCount);
                     LOGI("MINIRD_CONNECTIONS capture complete");
                 }
             }
