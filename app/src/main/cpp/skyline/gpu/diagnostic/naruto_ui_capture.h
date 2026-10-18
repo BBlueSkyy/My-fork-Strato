@@ -24,9 +24,11 @@ namespace skyline::gpu::diagnostic {
         static constexpr std::uint32_t MaxEvents{2400};
         static constexpr std::uint32_t FrameCount{4};
         // Reserve budget for late UI composition and each of the four intervals.
-        static constexpr std::uint32_t PassSnapshotsPerInterval{8};
-        static constexpr std::uint32_t MaxPassSnapshots{32};
-        static constexpr std::uint32_t AtlasSnapshotsPerInterval{3};
+        // Phase 6 only needs the first UI draw before/after images. Keep one
+        // atlas per interval; the shader/CB/TSC evidence is tiny by comparison.
+        static constexpr std::uint32_t PassSnapshotsPerInterval{4};
+        static constexpr std::uint32_t MaxPassSnapshots{16};
+        static constexpr std::uint32_t AtlasSnapshotsPerInterval{1};
         static constexpr std::size_t MaxPassCaptureBytes{160ULL * 1024 * 1024};
 
       private:

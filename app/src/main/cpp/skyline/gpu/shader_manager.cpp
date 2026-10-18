@@ -470,12 +470,33 @@ namespace skyline::gpu {
         auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings)};
         auto spirv{ProcessShaderBinary(true, hash, span<u32>{spirvEmitted}.cast<u8>()).cast<u32>()};
 
+        if (hash && !diagnosticSpirvCache.contains(hash) &&
+            diagnosticSpirvCache.size() < DiagnosticSpirvCount &&
+            spirv.size_bytes() <= DiagnosticSpirvBudget - diagnosticSpirvBytes) {
+            diagnosticSpirvCache.emplace(hash, std::vector<u32>{spirv.begin(), spirv.end()});
+            diagnosticSpirvBytes += spirv.size_bytes();
+        }
+
         vk::ShaderModuleCreateInfo createInfo{
             .pCode = spirv.data(),
             .codeSize = spirv.size_bytes(),
         };
 
         return (*gpu.vkDevice).createShaderModule(createInfo, nullptr, *gpu.vkDevice.getDispatcher());
+    }
+
+    bool ShaderManager::ExportDiagnosticSpirv(u64 hash, const std::filesystem::path &filename) {
+        std::scoped_lock lock{poolMutex};
+        auto it{diagnosticSpirvCache.find(hash)};
+        if (it == diagnosticSpirvCache.end())
+            return false;
+        std::ofstream out{filename, std::ios::binary | std::ios::trunc};
+        if (!out)
+            return false;
+        const auto &words{it->second};
+        out.write(reinterpret_cast<const char *>(words.data()),
+                  static_cast<std::streamsize>(words.size() * sizeof(u32)));
+        return out.good();
     }
 
     void ShaderManager::ResetPools() {

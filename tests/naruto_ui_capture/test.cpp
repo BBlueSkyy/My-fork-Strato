@@ -67,9 +67,7 @@ int main() {
     assert(!capture.ReserveAtlasSnapshot(0, 0x1234, 8192)); // deduplicated
     assert(!capture.ReserveAtlasSnapshot(0, 0, 8192));
     assert(!capture.ReserveAtlasSnapshot(UiFrameCapture::FrameCount, 0x99, 8192));
-    assert(capture.ReserveAtlasSnapshot(0, 0x5678, 8192));
-    assert(capture.ReserveAtlasSnapshot(0, 0x9999, 8192));
-    assert(!capture.ReserveAtlasSnapshot(0, 0xAAAA, 8192)); // per-frame atlas cap
+    assert(!capture.ReserveAtlasSnapshot(0, 0x5678, 8192)); // per-frame atlas cap: 1
     assert(!capture.ReserveAtlasSnapshot(1, 0x1234, 8192)); // across intervals
     assert(capture.ReservePassSnapshot(0, 5760000)); // pass budget still shared
     capture.Finish();

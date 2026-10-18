@@ -16,6 +16,7 @@
 #include "maxwell_3d.h"
 #include "common.h"
 #include <gpu/diagnostic/naruto_ui_capture.h>
+#include <gpu/shader_manager.h>
 
 namespace skyline::gpu::interconnect::maxwell3d {
     Maxwell3D::RenderConditionResources::RenderConditionResources(GPU &gpu)
@@ -967,9 +968,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         dumpGuest("tsc_prefix", u64{captureSamplerPool.offset},
                                   std::min<std::size_t>(512, (static_cast<std::size_t>(captureSamplerPool.maximumIndex) + 1) * 32));
 
-                    for (auto hash : pipeline->sourcePackedState.shaderHashes)
-                        if (hash)
-                            capture.Record(fmt::format("UI_PRE_SHADER hash={:016X}", hash));
+                    const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+                    pipeline->CaptureDiagnosticFirstUiDraw(
+                        ctx, constantBuffers.boundConstantBuffers, samplers, interval);
+                    const auto dir{std::filesystem::path(capture.CaptureDirectory())};
+                    for (auto hash : pipeline->sourcePackedState.shaderHashes) {
+                        if (!hash)
+                            continue;
+                        const auto filename{fmt::format("ui_i{}_shader_{:016X}.spv", interval, hash)};
+                        const bool found{ctx.gpu.shader->ExportDiagnosticSpirv(hash, dir / filename)};
+                        capture.Record(fmt::format("UI_PRE_SHADER hash={:016X} spv_found={} filename={}",
+                                                   hash, found, filename));
+                    }
                 }
             }
         }

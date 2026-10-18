@@ -13,6 +13,42 @@ include BC3 atlas contents/layout/mips, texture alias freshness, blending,
 texture coordinates and per-instance vertex state. No shader-hash, game-ID or
 driver-specific functional workarounds have been added.
 
+## Phase 6: SPIR-V, actual bound TSC and shader constant buffers
+
+No additional broad render-pass capture is justified after reconstructing the
+first 30-index / two-instance UI mesh. The next diagnostic captures only the
+confirmed first sprite draw after the Fermi2D-selected destination.
+
+- The SPIR-V emitted by Strato's shader compiler is cached **in memory**
+  under an absolute 32 MiB / 512 module budget during this diagnostic build.
+  This is necessary because the relevant shaders usually compile before the
+  user arms the mini-RenderDoc. At capture time the selected pipeline's
+  module hashes are exported as `ui_iN_shader_HASH.spv`, if retained.
+  `UI_PRE_SHADER spv_found=false` explicitly reports a cache miss.
+  No background shader I/O occurs during ordinary compilation.
+- The pipeline's shader-stage metadata selects up to twelve bound CBUF
+  prefixes of 512 bytes each, written to `ui_iN_sSTAGE_cbINDEX.bin`.
+  Larger referenced fields are resolved separately for texture handles.
+  These are the bytes visible through Strato's **existing CPU-side CBUF
+  read path**, which can report stale GPU-dirty backing limitations.
+- `UI_ACTUAL_SAMPLER` reports the *actual bindless handle* used for each
+  combined texture/sampler descriptor, computed through the production
+  `ReadBindlessHandle` path, and the effective TSC index after applying
+  the existing header-binding rule. TSC decoding reports address U/V,
+  min/mag/mip filtering, LOD, anisotropy and coordinate normalization.
+- The usual `pre_XX` and `pass_XX` images plus the guest vertex/index
+  buffers remain available to correlate the draw visually. The pass budget
+  is now **four** per approximate interval and **16** for the session,
+  with **one** compressed atlas per interval, all still below 160 MiB.
+
+The CBUF and TSC snapshots are diagnostic, not proof the Vulkan driver
+used the expected data; no gameplay or shader semantics change. If the
+SPIR-V is missing due to the bounded cache, report the miss instead of
+assuming it represents the shader used.
+
+CI still builds only the reldebug APK for this diagnostic branch.
+Do not merge #357 or modify the independently validated #356 flicker fix.
+
 ## Phase 5.2: bounded first-draw geometry and sampler-pool evidence
 
 After the previous capture verified that the **first UI sprite draw itself**

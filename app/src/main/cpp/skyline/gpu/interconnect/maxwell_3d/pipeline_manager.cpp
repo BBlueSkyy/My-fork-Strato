@@ -9,6 +9,7 @@
 #include <gpu/interconnect/common/file_pipeline_state_accessor.h>
 #include <gpu/graphics_pipeline_assembler.h>
 #include <gpu/shader_manager.h>
+#include <gpu/diagnostic/naruto_ui_capture.h>
 #include <shader_compiler/backend/spirv/emit_spirv.h>
 #include <gpu.h>
 #include <jvm.h>
@@ -796,6 +797,84 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         return true;
         }
         return false;
+    }
+
+    void Pipeline::CaptureDiagnosticFirstUiDraw(InterconnectContext &ctx,
+                                                ConstantBufferSet &constantBuffers,
+                                                Samplers &samplers, u32 interval) {
+        auto &capture{diagnostic::NarutoUiCapture()};
+        if (!capture.active.load(std::memory_order_acquire) ||
+            interval >= diagnostic::UiFrameCapture::FrameCount)
+            return;
+        const auto directory{std::filesystem::path(capture.CaptureDirectory())};
+        if (directory.empty())
+            return;
+
+        // At most twelve 512-byte CB prefixes across all shader stages.
+        // Bindless handle values are captured separately at their actual CB
+        // offset even when beyond this prefix.
+        std::size_t dumpedBuffers{};
+        std::size_t dumpedHandles{};
+        for (u32 stage{}; stage < engine::ShaderStageCount; ++stage) {
+            if (!(stageMask & (1U << stage)))
+                continue;
+            const auto &info{descriptorInfo.stages[stage]};
+            for (u32 idx{}; idx < engine::ShaderStageConstantBufferCount; ++idx) {
+                if (dumpedBuffers >= 12)
+                    break;
+                auto &cb{constantBuffers[stage][idx]};
+                if (!cb.view || !info.constantBufferUsedSizes[idx])
+                    continue;
+                const std::size_t length{std::min<std::size_t>(
+                    {512, info.constantBufferUsedSizes[idx], cb.view.size})};
+                if (!length)
+                    continue;
+                std::vector<u8> bytes(length);
+                cb.Read(ctx.executor, span<u8>{bytes.data(), bytes.size()}, 0);
+                const auto name{fmt::format("ui_i{}_s{}_cb{}.bin", interval, stage, idx)};
+                std::ofstream output{directory / name, std::ios::binary | std::ios::trunc};
+                if (output) {
+                    output.write(reinterpret_cast<const char *>(bytes.data()),
+                                 static_cast<std::streamsize>(bytes.size()));
+                    capture.Record(fmt::format(
+                        "UI_ACTUAL_CBUF interval={} stage={} cb={} bytes={} used_bytes={} file={} success={}",
+                        interval, stage, idx, length, info.constantBufferUsedSizes[idx],
+                        name, output.good()));
+                    ++dumpedBuffers;
+                }
+            }
+
+            for (const auto &desc : info.combinedImageSamplerDescs) {
+                for (u32 element{}; element < desc.count && dumpedHandles < 12; ++element) {
+                    // Same ReadBindlessHandle logic that actually constructs the
+                    // live combined image/sampler descriptor for the draw.
+                    const auto handle{ReadBindlessHandle(ctx, constantBuffers[stage], desc, element)};
+                    u32 effective{};
+                    TextureSamplerControl tsc{};
+                    const bool found{samplers.ReadDiagnosticSampler(handle.samplerIndex,
+                                                                    handle.textureIndex,
+                                                                    effective, tsc)};
+                    capture.Record(fmt::format(
+                        "UI_ACTUAL_SAMPLER interval={} stage={} element={} cb={} cb_offset=0x{:X} "
+                        "handle=0x{:08X} texture_index={} sampler_index={} effective_tsc={} "
+                        "tsc_found={} header_binding={} addr_uv=({},{}) minmag=({},{}) mip={} "
+                        "lod=({},{}) anisotropy={} normalized={}",
+                        interval, stage, element, desc.cbuf_index, desc.cbuf_offset,
+                        handle.raw, handle.textureIndex, handle.samplerIndex, effective,
+                        found, static_cast<bool>(samplers.GetDiagnosticHeaderBinding()),
+                        found ? static_cast<u32>(tsc.addressModeU) : 0,
+                        found ? static_cast<u32>(tsc.addressModeV) : 0,
+                        found ? static_cast<u32>(tsc.minFilter) : 0,
+                        found ? static_cast<u32>(tsc.magFilter) : 0,
+                        found ? static_cast<u32>(tsc.mipFilter) : 0,
+                        found ? tsc.MinLodClamp() : 0.0f,
+                        found ? tsc.MaxLodClamp() : 0.0f,
+                        found ? tsc.MaxAnisotropy() : 0.0f,
+                        found ? static_cast<u32>(tsc.floatCoordNormalization) : 0));
+                    ++dumpedHandles;
+                }
+            }
+        }
     }
 
     u32 Pipeline::GetTotalSampledImageCount() const {
