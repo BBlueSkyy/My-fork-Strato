@@ -2,6 +2,7 @@
 #pragma once
 // One-shot diagnostic only. This is a small, bounded trace, not the RenderDoc API.
 // No guest data or guest GPU command is modified.
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -23,8 +24,9 @@ namespace skyline::gpu::diagnostic {
         static constexpr std::uint32_t MaxEvents{2400};
         static constexpr std::uint32_t FrameCount{4};
         // Reserve budget for late UI composition and each of the four intervals.
-        static constexpr std::uint32_t PassSnapshotsPerInterval{4};
-        static constexpr std::uint32_t MaxPassSnapshots{16};
+        static constexpr std::uint32_t PassSnapshotsPerInterval{8};
+        static constexpr std::uint32_t MaxPassSnapshots{32};
+        static constexpr std::uint32_t AtlasSnapshotsPerInterval{3};
         static constexpr std::size_t MaxPassCaptureBytes{160ULL * 1024 * 1024};
 
       private:
@@ -36,6 +38,9 @@ namespace skyline::gpu::diagnostic {
         std::array<std::uint32_t, FrameCount> passCountByInterval{};
         std::uint32_t nextPassIndex{};
         std::size_t passBytes{};
+        std::array<std::uint32_t, FrameCount> atlasCountByInterval{};
+        std::array<std::uint32_t, FrameCount> uiDrawCountByInterval{};
+        std::vector<std::uintptr_t> capturedAtlasIdentities;
         // Guest backing ranges shared across Maxwell3D, Fermi2D and VI executors.
         // No texture pointers, shader hashes or game IDs are used as persistent keys.
         std::vector<std::pair<std::uintptr_t, std::size_t>> watchedMappings;
@@ -46,6 +51,9 @@ namespace skyline::gpu::diagnostic {
             path = std::move(captureDirectory);
             events.clear();
             passCountByInterval.fill(0);
+            atlasCountByInterval.fill(0);
+            uiDrawCountByInterval.fill(0);
+            capturedAtlasIdentities.clear();
             nextPassIndex = 0;
             passBytes = 0;
             watchedMappings.clear();
@@ -95,6 +103,40 @@ namespace skyline::gpu::diagnostic {
                     return true;
             }
             return false;
+        }
+
+        // A tiny number of intermediate UI draw boundaries is sampled. This
+        // intentionally changes render-pass grouping only while capture is armed,
+        // never during regular gameplay.
+        std::optional<std::uint32_t> ProbeUiDraw(std::uint32_t interval) {
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_acquire) || interval >= FrameCount)
+                return std::nullopt;
+            const auto ordinal{++uiDrawCountByInterval[interval]};
+            if (ordinal == 1 || ordinal == 3 || ordinal == 6)
+                return ordinal;
+            return std::nullopt;
+        }
+
+        // Suppress redundant atlases across executors and presentation intervals.
+        std::optional<std::uint32_t> ReserveAtlasSnapshot(std::uint32_t interval,
+                                                            std::uintptr_t imageIdentity,
+                                                            std::size_t bytes) {
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_acquire) || !imageIdentity ||
+                interval >= FrameCount || bytes == 0 ||
+                atlasCountByInterval[interval] >= AtlasSnapshotsPerInterval ||
+                std::find(capturedAtlasIdentities.begin(), capturedAtlasIdentities.end(), imageIdentity) != capturedAtlasIdentities.end() ||
+                passCountByInterval[interval] >= PassSnapshotsPerInterval ||
+                nextPassIndex >= MaxPassSnapshots ||
+                passBytes > MaxPassCaptureBytes || bytes > MaxPassCaptureBytes - passBytes)
+                return std::nullopt;
+
+            ++atlasCountByInterval[interval];
+            ++passCountByInterval[interval];
+            passBytes += bytes;
+            capturedAtlasIdentities.push_back(imageIdentity);
+            return nextPassIndex++;
         }
 
         std::string CaptureDirectory() {
