@@ -172,3 +172,42 @@ proof that the Vulkan swapchain itself is defective.
 Keep Qualcomm proprietary as first priority. No gameplay rendering changes,
 title-ID hacks, new performance waits outside the opt-in probe, merge, or
 automated GitHub Actions monitoring.
+
+## P1 blinking reproduced — next Fermi2D boundary probe
+
+On Qualcomm 0.777.0, 24 pre-swapchain presentation source images recorded
+between log times 92.870 and 94.242 seconds (1.37 s) show complete P1 move
+list disappearances at frames **15** and **18**; the CPU list remains visible.
+The list returns at frames 16 and 19. An offline-only crop at x=100..509,
+y=475..561 shows near-black-pixel fraction dropping from ~0.756 to
+0.229/0.225 in these two failures, while CPU stays around ~0.77–0.78.
+
+Around these events, the trace consistently includes two full-screen flipped
+Fermi2D blits and approximately 134 texture-consumer draws per interval.
+However, presented frames and draw events are asynchronous; neither proves
+those draws produced the right pixels. The logo-over-nameplate artifact does
+not clearly occur in this 24-frame series.
+
+**New manually armed probe:** read back the actual source image immediately
+before a full-surface inverted Fermi2D blit in that same executor command
+stream. The first observed source/destination texture pair defines the
+direction for the capture, and the reverse blit is skipped. Independent
+budget: at most **24 snapshots** and **72 MiB**, in addition to the
+existing 24 detailed draw readbacks and 24 VI presentation sources.
+No fixed title, shader hash, guest IOVA, frame number or game-specific
+runtime screen coordinate is used.
+
+The files are fermi_input_XX_<width>x<height>_<format>.raw, with matching
+fermi_input_XX.txt metadata; FERMI_INPUT_SNAPSHOT events log executor,
+submission, source/destination identities and guest mappings. Copies are
+GPU ordered strictly *before* the blit, with no CPU wait or device idle
+outside the preexisting opt-in presentation capture. To compare the
+pre-blit image and the presented source, account for vertical inversion
+and align by content and temporal event order; the ordinal Fermi ID
+is **not** a synchronized presentation frame_id.
+
+If a Fermi input already lacks P1, focus on upstream Maxwell3D/texture
+reads. If it contains the P1 list but the corresponding presentation
+source lacks it, focus on Fermi2D, synchronization and presentation.
+Neither alone identifies the exact cause. No runtime functional fix.
+Keep PR #360 Draft and preserve #359, without monitoring Actions.
