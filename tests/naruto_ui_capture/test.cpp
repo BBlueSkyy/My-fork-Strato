@@ -79,23 +79,25 @@ int main() {
         capture.CompleteUiCompositorCycle(0xA100);
     }
     assert(!capture.ClaimUiBeforeText(0xA100, 2822400)); // budget exhausted
-    // Two actual text-strip consumers are emitted in one Maxwell
-    // submission. Count by executor+submission+target, never by VI interval.
-    assert(!capture.ClaimPostSecondText(0, 2365, 0xA100, 2822400));
-    assert(!capture.ClaimPostSecondText(0xE100, 2365, 0, 2822400));
-    assert(!capture.ClaimPostSecondText(0xE100, 2365, 0xA100, 2822400));
-    assert(capture.ClaimPostSecondText(0xE100, 2365, 0xA100, 2822400) == 0);
-    assert(!capture.ClaimPostSecondText(0xE100, 2365, 0xA100, 2822400));
-    assert(!capture.ClaimPostSecondText(0xE100, 2366, 0xA100, 2822400));
-    assert(capture.ClaimPostSecondText(0xE100, 2366, 0xA100, 2822400) == 1);
-    assert(!capture.ClaimPostSecondText(0xE200, 2365, 0xA100, 2822400));
-    assert(capture.ClaimPostSecondText(0xE200, 2365, 0xA100, 2822400) == 2);
+    // Capture after the second observed text consumer of each completed
+    // composition cycle, regardless of where Maxwell splits submissions.
+    assert(!capture.ClaimPostSecondText(0, 2822400));
+    assert(!capture.ClaimPostSecondText(0xA100, 2822400));
+    assert(capture.ClaimPostSecondText(0xA100, 2822400) == 0);
+    assert(!capture.ClaimPostSecondText(0xA100, 2822400)); // third draw ignored
+    capture.CompleteUiCompositorCycle(0xA100); // actual reverse Fermi boundary
+    assert(!capture.ClaimPostSecondText(0xA100, 2822400));
+    assert(capture.ClaimPostSecondText(0xA100, 2822400) == 1);
+    assert(!capture.ClaimPostSecondText(0xA200, 2822400));
+    assert(capture.ClaimPostSecondText(0xA200, 2822400) == 2);
     for (std::uint32_t n{3}; n < UiFrameCapture::MaxPostSecondTextSnapshots; ++n) {
-        assert(!capture.ClaimPostSecondText(0xE100, 2366 + n, 0xA100, 2822400));
-        assert(capture.ClaimPostSecondText(0xE100, 2366 + n, 0xA100, 2822400) == n);
+        capture.CompleteUiCompositorCycle(0xA100);
+        assert(!capture.ClaimPostSecondText(0xA100, 2822400));
+        assert(capture.ClaimPostSecondText(0xA100, 2822400) == n);
     }
-    assert(!capture.ClaimPostSecondText(0xE100, 2398, 0xA100, 2822400));
-    assert(!capture.ClaimPostSecondText(0xE100, 2398, 0xA100, 2822400)); // exhausted
+    capture.CompleteUiCompositorCycle(0xA100);
+    assert(!capture.ClaimPostSecondText(0xA100, 2822400));
+    assert(!capture.ClaimPostSecondText(0xA100, 2822400)); // exhausted
     // Background-only Fermi source is never eligible. Register the
     // compositor's actual target as observed from a GPU consumer draw.
     assert(!capture.ReserveFermiSource(0, 0xF200, 2822400));
@@ -128,8 +130,8 @@ int main() {
     assert(fs::exists(root / "gpu_events.txt"));
 
     capture.Start(root.string());
-    assert(!capture.ClaimPostSecondText(0xE100, 2365, 0xA100, 2822400));
-    assert(capture.ClaimPostSecondText(0xE100, 2365, 0xA100, 2822400) == 0);
+    assert(!capture.ClaimPostSecondText(0xA100, 2822400));
+    assert(capture.ClaimPostSecondText(0xA100, 2822400) == 0);
 
     assert(capture.ClaimUiBeforeText(0xA100, 2822400) == 0); // session reset
     assert(!capture.ClaimUiBeforeText(0xA100, 2822400));
