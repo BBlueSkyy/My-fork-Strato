@@ -161,7 +161,9 @@ this one hash **once per emulation**. No global shader dumps, forced handles,
 sampler substitutes, cache invalidation, or guest scheduling changes.
 
 Strato emits `MK11ShaderTrace` and `MK11ShaderDumpBegin/Chunk/End` messages
-for `maxwell`, `before_texture_pass`, and `after_texture_pass`. The
+for `maxwell` (original guest bytes), `before_texture_pass`, and
+`after_texture_pass`. When a shader replacement is present, the optional
+`maxwell_translation_input` phase captures the replacement separately. The
 `before_texture_pass` snapshot runs after constant propagation and global
 memory lowering but **before** bindless texture lowering; it preserves the IR
 expression analyzed by TexturePass. The `after_texture_pass` snapshot shows
