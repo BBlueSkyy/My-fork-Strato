@@ -504,6 +504,7 @@ namespace skyline::gpu {
                                                           u32 localMemorySize, u32 sharedMemorySize,
                                                           std::array<u32, 3> workgroupDimensions,
                                                           const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const GetTextureComponentType &getTextureComponentType, const GetTextureCompareFunc &getTextureCompareFunc) {
+        const auto guestMaxwellBinary{binary};
         binary = ProcessShaderBinary(false, hash, binary);
 
         std::scoped_lock lock{poolMutex};
@@ -515,9 +516,12 @@ namespace skyline::gpu {
         if (traceTarget) {
             targetComputeShaderCaptured = true;
             try {
-                LOGW("MK11ShaderTrace: hash=0x{:016X} baseOffset=0x{:X} binaryBytes={} textureCbuf={}",
-                     hash, baseOffset, binary.size(), textureConstantBufferIndex);
-                TraceMk11ShaderPayload("maxwell", binary.data(), binary.size());
+                const bool replaced{binary.data() != guestMaxwellBinary.data() || binary.size() != guestMaxwellBinary.size()};
+                LOGW("MK11ShaderTrace: hash=0x{:016X} baseOffset=0x{:X} guestBinaryBytes={} translationBinaryBytes={} replaced={} textureCbuf={}",
+                     hash, baseOffset, guestMaxwellBinary.size(), binary.size(), replaced, textureConstantBufferIndex);
+                TraceMk11ShaderPayload("maxwell", guestMaxwellBinary.data(), guestMaxwellBinary.size());
+                if (replaced)
+                    TraceMk11ShaderPayload("maxwell_translation_input", binary.data(), binary.size());
             } catch (...) {
                 // Failure to record the trace must not affect guest execution.
             }
