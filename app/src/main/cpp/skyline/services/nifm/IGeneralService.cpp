@@ -43,7 +43,7 @@ namespace skyline::service::nifm {
     }
 
     Result IGeneralService::GetCurrentNetworkProfile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // Horizon returns a zeroed profile when no network is configured/available.
+        // Match Eden's zero-initialized profile when no network is available.
         // Do not expose the Android host's DHCP data in the emulated offline state.
         if (!(*state.settings->isInternetEnabled)) {
             request.outputBuf.at(0).as<SfNetworkProfileData>() = {};
