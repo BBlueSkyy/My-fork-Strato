@@ -387,16 +387,16 @@ namespace skyline::gpu::interconnect {
     }
 
 
-    // Target full-resolution UI composition layers, not startup atlases or depth.
-    // Like the earlier mini-RenderDoc probes, all image copies remain on the
-    // existing command stream and only execute at a render-pass boundary.
-    static bool IsNarutoUiPassImage(const Texture &texture) {
-        return texture.dimensions.width >= 1000 && texture.dimensions.width <= 1920 &&
-               texture.dimensions.height >= 600 && texture.dimensions.height <= 1080 &&
+    // Ender Lilies probe: full-sized and intermediate 2D color outputs.
+    // Geometry/format based, not keyed to a title, shader or driver.
+    // Render-pass splits and readbacks remain confined to an armed capture.
+    static bool IsDiagnosticSceneTarget(const Texture &texture) {
+        return texture.dimensions.width >= 640 && texture.dimensions.width <= 2048 &&
+               texture.dimensions.height >= 360 && texture.dimensions.height <= 1440 &&
                texture.dimensions.depth == 1 && texture.levelCount == 1 &&
                texture.layerCount == 1 &&
                texture.sampleCount == vk::SampleCountFlagBits::e1 &&
-               texture.surfaceSize && texture.surfaceSize <= 8ULL * 1024 * 1024 &&
+               texture.surfaceSize && texture.surfaceSize <= 12ULL * 1024 * 1024 &&
                (texture.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
                !texture.format->IsCompressed() &&
                (texture.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
@@ -409,15 +409,15 @@ namespace skyline::gpu::interconnect {
         // color target as a candidate while the explicit capture is armed.
         // Fermi flip identity remains available in the GPU event history.
         (void)capture;
-        return IsNarutoUiPassImage(texture);
+        return IsDiagnosticSceneTarget(texture);
     }
 
-    static bool IsNarutoAtlasImage(const Texture &texture) {
-        return texture.dimensions.width > 0 && texture.dimensions.width <= 2048 &&
-               texture.dimensions.height > 0 && texture.dimensions.height <= 2048 &&
+    static bool IsDiagnosticSceneSource(const Texture &texture) {
+        return texture.dimensions.width > 0 && texture.dimensions.width <= 4096 &&
+               texture.dimensions.height > 0 && texture.dimensions.height <= 4096 &&
                texture.dimensions.depth == 1 && texture.layerCount == 1 &&
                texture.sampleCount == vk::SampleCountFlagBits::e1 &&
-               texture.surfaceSize > 0 && texture.surfaceSize <= 8ULL * 1024 * 1024 &&
+               texture.surfaceSize > 0 && texture.surfaceSize <= 16ULL * 1024 * 1024 &&
                (texture.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
                (texture.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
                texture.layout != vk::ImageLayout::eUndefined;
@@ -430,13 +430,13 @@ namespace skyline::gpu::interconnect {
         return diagnostic::IsWideTextStripGeometry(texture.dimensions.width,
                                                    texture.dimensions.height) &&
                texture.format->vkFormat == vk::Format::eR8G8B8A8Unorm &&
-               IsNarutoAtlasImage(texture);
+               IsDiagnosticSceneSource(texture);
     }
 
     static bool IsDiagnosticGlyphAtlas(const Texture &texture) {
         return texture.dimensions.width == 1024 && texture.dimensions.height == 1024 &&
                texture.format->vkFormat == vk::Format::eR8Unorm &&
-               IsNarutoAtlasImage(texture);
+               IsDiagnosticSceneSource(texture);
     }
 
     void CommandExecutor::TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color) {
@@ -457,36 +457,25 @@ namespace skyline::gpu::interconnect {
     static std::optional<FocusedFullDraw> FindFocusedFullDraw(span<TextureView *> sampled,
                                                              span<TextureView *> color,
                                                              bool blendingEnabled) {
-        if (!blendingEnabled)
-            return std::nullopt;
-
+        // Two independent first-draw probes: blended and opaque. Both can hide
+        // an incorrect scene, so never require text strips or a BC3 logo.
         TextureView *target{};
         for (auto *view : color)
-            if (view && view->texture && IsNarutoUiPassImage(*view->texture)) {
+            if (view && view->texture && IsDiagnosticSceneTarget(*view->texture)) {
                 target = view;
                 break;
             }
         if (!target)
             return std::nullopt;
 
-        TextureView *strip{};
-        TextureView *sprite{};
         for (auto *view : sampled) {
             if (!view || !view->texture || view->texture.get() == target->texture.get())
                 continue;
-            const auto &texture{*view->texture};
-            if (!strip && IsDiagnosticTextStrip(texture))
-                strip = view;
-            // This shape was observed in full-size UI sprite draws. Selection
-            // is diagnostic, not a functional texture/sampler policy.
-            if (!sprite && IsNarutoAtlasImage(texture) && texture.format->IsCompressed() &&
-                texture.dimensions.width == 1024 && texture.dimensions.height == 1024)
-                sprite = view;
+            if (IsDiagnosticSceneSource(*view->texture))
+                return FocusedFullDraw{target, view,
+                    blendingEnabled ? diagnostic::UiFrameCapture::TextFocus::FullConsumer
+                                    : diagnostic::UiFrameCapture::TextFocus::FullSprite};
         }
-        if (strip)
-            return FocusedFullDraw{target, strip, diagnostic::UiFrameCapture::TextFocus::FullConsumer};
-        if (sprite)
-            return FocusedFullDraw{target, sprite, diagnostic::UiFrameCapture::TextFocus::FullSprite};
         return std::nullopt;
     }
 
@@ -499,10 +488,9 @@ namespace skyline::gpu::interconnect {
         if (!match)
             return false;
 
-        // The 24-frame trace proved that the P1 list is normally absent
-        // before this draw and appears in the later composer stages.
-        // Reallocate the same 72 MiB diagnostic budget to the result
-        // immediately after the SECOND text draw of this submission.
+        // Snapshot a real descriptor-resolved source, target before the draw,
+        // and its output afterward. The two quotas cover opaque and blended
+        // full-scene draws in each of four approximate presentation intervals.
         const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
         const bool sprite{match->kind == diagnostic::UiFrameCapture::TextFocus::FullSprite};
         if (!(sprite ? capture.ClaimPreSpriteDraw(interval) : capture.ClaimPreUiDraw(interval)))
@@ -516,17 +504,17 @@ namespace skyline::gpu::interconnect {
         // the same GPU command stream. It is never enabled in normal rendering.
         BreakRenderPass();
         diagnosticPassImages.push_back({match->target->texture, true, true, false, true,
-                                        drawId, "before_consumer"});
+                                        drawId, "scene_target_before"});
         // Capture the descriptor-resolved source BEFORE it is sampled. Copying
         // it after the draw could falsely blame a producer when the output
         // aliases the source backing or a subsequent writer modifies it.
         diagnosticPassImages.push_back({match->source->texture, false, true, false, true,
-                                        drawId, "source_before_sampling"});
+                                        drawId, "scene_source_before"});
         capture.Record(fmt::format(
-            "TEXT_CONSUMER_PRE draw_id={} kind={} interval={} executor=0x{:X} "
+            "SCENE_CONSUMER_PRE draw_id={} kind={} interval={} executor=0x{:X} "
             "submission={} rp={} source=0x{:X} source_cycle=0x{:X} "
             "target=0x{:X} target_cycle=0x{:X}",
-            drawId, sprite ? "compressed_sprite" : "text_strip", interval,
+            drawId, sprite ? "opaque" : "blended", interval,
             reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
             reinterpret_cast<uintptr_t>(match->source->texture.get()),
             reinterpret_cast<uintptr_t>(sourceCycle),
@@ -579,12 +567,12 @@ namespace skyline::gpu::interconnect {
                 reinterpret_cast<uintptr_t>(texture.cycle.get()));
         }
         capture.Record(fmt::format(
-            "TEXT_CONSUMER_DRAW draw_id={} kind={} indexed={} draw_arg={} "
+            "SCENE_CONSUMER_DRAW draw_id={} kind={} indexed={} draw_arg={} "
             "shaders={} executor=0x{:X} submission={} rp={} "
             "target=0x{:X} guest=0x{:X} target_cycle=0x{:X} "
             "source=0x{:X} source_guest=0x{:X} source_cycle=0x{:X} "
             "source_mips={} source_layers={} bindings={}",
-            drawId, sprite ? "compressed_sprite" : "text_strip", indexed,
+            drawId, sprite ? "opaque" : "blended", indexed,
             drawArgument, shaderHashes, reinterpret_cast<uintptr_t>(this),
             submissionNumber, renderPassIndex,
             reinterpret_cast<uintptr_t>(match->target->texture.get()),
@@ -596,62 +584,9 @@ namespace skyline::gpu::interconnect {
             match->source->range.levelCount, match->source->range.layerCount,
             bindings));
 
-        if (match->kind == diagnostic::UiFrameCapture::TextFocus::FullConsumer) {
-            const auto target{match->target->texture};
-            // Draw nodes have already been recorded. Pair the four observed
-            // text consumers by the live compositor backing across Maxwell
-            // submissions, ending this group at the reverse Fermi blit.
-            // Neither present index nor shader/game ID determines grouping.
-            if (auto fourthId{capture.ClaimPostFourthText(
-                    reinterpret_cast<uintptr_t>(target.get()), target->surfaceSize)}) {
-                BreakRenderPass(); // Ensure the fourth text draw completes first.
-                auto staging{gpu.memory.AllocateStagingBuffer(target->surfaceSize)};
-                slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
-                    [target, staging](vk::raii::CommandBuffer &commandBuffer,
-                                      const std::shared_ptr<FenceCycle> &cycle, GPU &) {
-                        cycle->AttachObjects(target, staging);
-                        target->CopyIntoStagingBuffer(commandBuffer, staging);
-                        RecordFullBarrier(commandBuffer);
-                    });
-                const auto directory{std::filesystem::path(capture.CaptureDirectory())};
-                const auto rawPath{directory / fmt::format("ui_posttext4_{:02}_{}x{}_{}.raw",
-                    *fourthId, target->dimensions.width, target->dimensions.height,
-                    vk::to_string(target->format->vkFormat))};
-                const auto metaPath{directory / fmt::format("ui_posttext4_{:02}.txt", *fourthId)};
-                const auto guestMap{guestAddress(match->target)};
-                const auto meta{fmt::format(
-                    "posttext4_id={} approx_present={} executor=0x{:X} submission={} "
-                    "render_pass={} draw_id={} target=0x{:X} guest_map=0x{:X} "
-                    "source=0x{:X} source_guest=0x{:X} "
-                    "note=after_fourth_text_draw_before_later_sprites_not_exact_present_frame\n",
-                    *fourthId, interval, reinterpret_cast<uintptr_t>(this), submissionNumber,
-                    renderPassIndex, drawId, reinterpret_cast<uintptr_t>(target.get()),
-                    guestMap, reinterpret_cast<uintptr_t>(match->source->texture.get()),
-                    guestAddress(match->source))};
-                diagnosticReadbackCallbacks.emplace_back(
-                    [staging, rawPath, metaPath, meta, id = *fourthId] {
-                        std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
-                        if (!raw) {
-                            LOGE("MINIRD_CONNECTIONS UI post-text-4 {} could not open output", id);
-                            return;
-                        }
-                        raw.write(reinterpret_cast<const char *>(staging->data()),
-                                  static_cast<std::streamsize>(staging->size()));
-                        raw.close();
-                        std::ofstream info(metaPath, std::ios::trunc);
-                        if (info)
-                            info << meta;
-                        LOGI("MINIRD_CONNECTIONS wrote UI post-text-4 {}: {}",
-                             id, rawPath.string());
-                    });
-                capture.Record(fmt::format(
-                    "UI_COMPOSITOR_POSTTEXT4 id={} draw_id={} executor=0x{:X} "
-                    "submission={} target=0x{:X} guest_map=0x{:X} source=0x{:X}",
-                    *fourthId, drawId, reinterpret_cast<uintptr_t>(this), submissionNumber,
-                    reinterpret_cast<uintptr_t>(target.get()), guestMap,
-                    reinterpret_cast<uintptr_t>(match->source->texture.get())));
-            }
-        }
+        // The earlier Naruto-specific fourth-text compositor probe is
+        // deliberately disabled for scene diagnostics. Paired draws below
+        // provide the needed ordered evidence within the existing quota.
 
         const auto ordinal{capture.ClaimTextFocus(interval, match->kind)};
         if (!ordinal)
@@ -660,10 +595,10 @@ namespace skyline::gpu::interconnect {
         // this command stream. Only the destination needs a post-draw copy.
         diagnosticPassImages.clear();
         diagnosticPassImages.push_back({match->target->texture, true, true, false, false,
-                                        drawId, "after_consumer"});
-        capture.Record(fmt::format("TEXT_FOCUS stage={} ordinal={} draw_id={} "
+                                        drawId, "scene_target_after"});
+        capture.Record(fmt::format("SCENE_FOCUS stage={} ordinal={} draw_id={} "
                                    "executor=0x{:X} submission={} rp={}",
-                                   sprite ? "sprite_to_full" : "text_to_full",
+                                   sprite ? "opaque_to_full" : "blended_to_full",
                                    *ordinal, drawId, reinterpret_cast<uintptr_t>(this),
                                    submissionNumber, renderPassIndex));
         BreakRenderPass();
@@ -673,7 +608,7 @@ namespace skyline::gpu::interconnect {
         auto &capture{diagnostic::NarutoUiCapture()};
         if (!capture.active.load(std::memory_order_acquire) || !source || !destination ||
             !source->texture || !destination->texture ||
-            !IsNarutoUiPassImage(*source->texture) ||
+            !IsDiagnosticSceneTarget(*source->texture) ||
             source->texture.get() == destination->texture.get())
             return;
 
@@ -764,9 +699,9 @@ namespace skyline::gpu::interconnect {
             if (!entry.priority)
                 continue;
             const bool atlas{entry.atlas};
-            if (atlas ? !IsNarutoAtlasImage(*texture) :
-                      !(IsNarutoUiPassImage(*texture) || IsDiagnosticTextStrip(*texture) ||
-                        (!entry.renderTarget && IsNarutoAtlasImage(*texture))))
+            if (atlas ? !IsDiagnosticSceneSource(*texture) :
+                      !(IsDiagnosticSceneTarget(*texture) || IsDiagnosticTextStrip(*texture) ||
+                        (!entry.renderTarget && IsDiagnosticSceneSource(*texture))))
                 continue;
 
             const auto identity{reinterpret_cast<uintptr_t>(texture.get())};
