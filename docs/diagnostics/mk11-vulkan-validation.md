@@ -150,3 +150,43 @@ Gradle cache and CCache without clean. Normal PR variants remain unchanged.
 No merges or Actions monitoring are performed. Device validation should first
 reuse MK11 v1.0.0, the same driver/settings and Validation Layer to compare the
 first remaining violation and the last game initialization milestone.
+
+
+## Targeted MK11 compute-shader capture (unvalidated on Android)
+
+The device reports compute shader hash `0x55736CD732068324`, GPU address
+`0x0000000403F3A000`. Its failing handle uses compute CBUF 6 and CBUF 0.
+The shader-compiler #9 diagnostic callbacks and Strato #365 capture only
+this one hash **once per emulation**. No global shader dumps, forced handles,
+sampler substitutes, cache invalidation, or guest scheduling changes.
+
+Strato emits `MK11ShaderTrace` and `MK11ShaderDumpBegin/Chunk/End` messages
+for `maxwell`, `before_texture_pass`, and `after_texture_pass`. The
+`before_texture_pass` snapshot runs after constant propagation and global
+memory lowering but **before** bindless texture lowering; it preserves the IR
+expression analyzed by TexturePass. The `after_texture_pass` snapshot shows
+the lowering result. They are diagnostic snapshots, not an assertion that
+translation was correct. The preexisting `ComputeBindlessTrace`,
+`ComputeQmdTrace` and `ComputeQmdCbufTrace` remain in place.
+
+For log portability, each blob is hex encoded in 256-byte chunks with absolute
+byte offsets and begin/end markers. Each phase is capped at 256 KiB; the begin
+marker identifies any truncation. All trace-specific exceptions are swallowed
+so diagnostic logging does not affect normal guest code. With a completed
+Android diagnostic run, reconstruct the blobs from an ordinary emulator log:
+
+```bash
+python3 scripts/extract_mk11_shader_trace.py emulation.zip mk11_shader_dump
+```
+
+If the log lacks `MK11ShaderDumpBegin`, check that the APK contains the
+diagnostic commits and actually compiled this hash. The extractor rejects
+missing/overlapping chunks instead of writing corrupt output. If a phase is
+truncated, its partial blob is **not** enough to conclude that the compiler
+decoded the whole shader correctly.
+
+**Validation status:** reviewed source wiring and verified the gitlink points
+to the companion compiler commit. Neither a production Android compile nor
+device capture is asserted by this report. Keep #365/#9 Draft until the new
+log and the shader expression have been analyzed; do not merge based on
+diagnostic instrumentation alone.
