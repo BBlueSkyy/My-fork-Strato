@@ -39,9 +39,8 @@ namespace skyline::service::nifm {
             case RequestState::Free:
                 return hasConnection ? Result{} : result::NetworkCommunicationDisabled;
             case RequestState::OnHold:
-                // Horizon reports a completed request failure through state 1;
-                // Match Horizon/Eden: a completed offline request becomes Invalid.
-                // The state change signals event0 so waiters can inspect GetResult.
+                // Match Eden's offline request state: Failed/Invalid (0) after
+                // submission. The state change signals event0 for waiting guests.
                 UpdateState(hasConnection ? RequestState::Accepted : RequestState::Invalid);
                 return result::PendingConnection;
             case RequestState::Accepted:
