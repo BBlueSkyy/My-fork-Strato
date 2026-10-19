@@ -2,7 +2,7 @@
 
 ## Latest integration: GPU-selected SSBO texture handles
 
-The compute dynamic-descriptor integration now supersedes the rejection-only
+The compute and graphics dynamic-descriptor integration now supersedes the rejection-only
 result below. See [the implementation and validation report](dynamic-bindless.md)
 for the supported operations, real Vulkan execution tests, feature requirements,
 resource lifetime and remaining limitations. Prior evidence and fixes remain

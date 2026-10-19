@@ -54,6 +54,7 @@ namespace skyline::gpu {
         bool supportsDepthClamp{}; //!< If the device supports the 'depthClamp' Vulkan feature
         bool supportsExtendedDynamicState{}; //!< If the device supports the 'VK_EXT_extended_dynamic_state' Vulkan extension
         bool supportsAttachmentFeedbackLoop{}; //!< Both feedback layout and dynamic enable features were enabled
+        bool supportsShaderResourceMinLod{}; //!< Enabled optional MinLod image operand support
         bool supportsDynamicTextureHandles{}; //!< Required descriptor-indexing features were enabled for compute texture handles
         vk::PhysicalDeviceLimits dynamicDescriptorLimits{}; //!< Actual device limits used for dynamic descriptor layouts and TIC validation
         bool supportsNullDescriptor{}; //!< If the device supports the null descriptor feature in the 'VK_EXT_robustness2' Vulkan extension

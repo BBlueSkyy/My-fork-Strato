@@ -87,6 +87,7 @@ namespace skyline::gpu {
         FEAT_SET(vk::PhysicalDeviceFeatures2, features.shaderInt64, supportsInt64)
         FEAT_SET(vk::PhysicalDeviceFeatures2, features.shaderStorageImageReadWithoutFormat, supportsImageReadWithoutFormat)
         FEAT_SET(vk::PhysicalDeviceFeatures2, features.robustBufferAccess, std::ignore)
+        FEAT_SET(vk::PhysicalDeviceFeatures2, features.shaderResourceMinLod, supportsShaderResourceMinLod)
 
         // Core promotion only applies to the API version requested by this
         // application as well as the version supported by the physical device.

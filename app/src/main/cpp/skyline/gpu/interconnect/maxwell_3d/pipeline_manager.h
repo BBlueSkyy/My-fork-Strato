@@ -12,6 +12,7 @@
 #include <gpu/interconnect/common/textures.h>
 #include <gpu/interconnect/common/pipeline_state_accessor.h>
 #include "common.h"
+#include <gpu/interconnect/common/dynamic_descriptors.h>
 #include "packed_pipeline_state.h"
 #include "constant_buffers.h"
 
@@ -246,6 +247,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         u8 stageMask{}; //!< Bitmask of active shader stages
         bool usesRenderArea{}; //!< Whether any shader stage reads the render-area push constant
         u16 sampledImageCount{};
+        std::unique_ptr<DynamicDescriptors> dynamicDescriptors;
 
         std::array<Pipeline *, 6> transitionCache{};
 
@@ -256,12 +258,28 @@ namespace skyline::gpu::interconnect::maxwell3d {
       public:
         GraphicsPipelineAssembler::CompiledPipeline compiledPipeline;
 
-        Pipeline(GPU &gpu, PipelineStateAccessor &accessor, const PackedPipelineState &packedState);
+        Pipeline(GPU &gpu, PipelineStateAccessor &accessor, const PackedPipelineState &packedState,
+                 InterconnectContext *ctx = nullptr, Textures *textures = nullptr, Samplers *samplers = nullptr);
+
+        bool HasDynamicDescriptors() const { return static_cast<bool>(dynamicDescriptors); }
+        bool CanBindDynamicDescriptors(InterconnectContext &ctx, Textures &textures, Samplers &samplers) const {
+            return !dynamicDescriptors || dynamicDescriptors->CanRepresent(ctx, textures, samplers);
+        }
+        void PrepareDynamicDescriptors(InterconnectContext &ctx, Textures &textures, Samplers &samplers,
+                                       vk::PipelineStageFlags &src, vk::PipelineStageFlags &dst,
+                                       std::vector<TextureView *> &sampledImages) {
+            if (dynamicDescriptors) dynamicDescriptors->Prepare(ctx, textures, samplers, src, dst, sampledImages);
+        }
+        vk::DescriptorSet SyncDynamicDescriptors(InterconnectContext &ctx, Textures &textures, Samplers &samplers,
+                                                vk::PipelineStageFlags &src, vk::PipelineStageFlags &dst,
+                                                span<TextureView *const> feedbackImages) {
+            return dynamicDescriptors ? dynamicDescriptors->Sync(ctx, textures, samplers, src, dst, feedbackImages) : vk::DescriptorSet{};
+        }
 
         /**
          * @brief Returns the pipeline in the transition cache (if present) that matches the given state
          */
-        Pipeline *LookupNext(const PackedPipelineState &packedState, InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers);
+        Pipeline *LookupNext(const PackedPipelineState &packedState, InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers);
 
         bool MatchesTextureTypes(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers) const;
 

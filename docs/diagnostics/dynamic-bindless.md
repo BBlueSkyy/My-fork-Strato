@@ -1,4 +1,33 @@
-# GPU-selected compute texture handles
+# GPU-selected texture handles
+
+## Gold-logo regression: graphics integration
+
+The two October 19 device logs end with `Bindless texture handle provenance
+through Phi`. Descriptor indexing is reported enabled, but GraphicsEnvironment
+still inherited the disabled default and backend gates allowed only compute.
+Neither supplied log includes the failing shader hash or exact graphics stage;
+the earlier compute hash must not be attributed to this failure. Failure-only
+translation/emission diagnostics now include stage, hash and reason.
+
+Graphics now reuses the existing dynamic descriptor ABI, caches and lifetime
+management. Stage groups use shared binding allocation; dual-vertex merging
+retains and remaps both groups. Graphics pipelines size tables from live pools,
+reuse compatible capacities and defer dynamic offline-cache warmup until live
+state exists. Static pipelines retain their fast path. Dynamic candidates join
+attachment-feedback handling, with immutable layout-correct descriptor snapshots
+and graphics-to-host fault visibility queued before automatic submission.
+
+Fragment implicit-LOD derivatives are calculated before descriptor selection
+diverges. LOD clamps require the enabled shaderResourceMinLod feature; graphics
+fault writes require the participating vertex/fragment storage-atomic feature.
+Dynamic fragment gathers are explicitly rejected rather than using undefined
+implicit derivatives. The current host verification passes all 21 compiler
+CTests, including 168 dynamic SPIR-V modules and 15 compute Vulkan executions.
+An optional production vertex shader draw passes 3,084 checks with zero Vulkan
+Validation Layer errors. Existing Strato feature, descriptor, pipeline-variant,
+bindless, integration and feedback fixtures pass. These checks do not establish
+fragment execution or MK11 progress on the Moto G100. No new required workflow
+suite or extra APK variant was added.
 
 ## Demonstrated cause and implementation
 
@@ -7,7 +36,7 @@ LDG/`LoadStorage32`, ORs it with CBUF6[0], then samples with that register.
 An address dependency on CBUF0[0x260] is not the loaded handle. The earlier
 semantic-provenance fix prevented the false CPU descriptor but could not
 execute the true access. Both changes are preserved: representable CBUF handles
-still take the existing static path, while opted-in compute shaders keep the
+still take the existing static path, while opted-in shaders keep the
 complete GPU SSA expression (loads, bitwise transforms and Phi selection).
 
 The compiler emits per-operation helper functions before the main function,
@@ -75,11 +104,12 @@ pipelines. Update-after-bind and variable descriptor counts are unnecessary for
 these immutable, fixed-capacity layouts. Existing backend capabilities and
 static shader paths remain in place.
 
-This implementation supports non-depth, single-sample 2D **compute** sampling,
-explicit/implicit LOD, gradients, gather, samplerless fetch and dimension queries,
-with Float/Uint/Sint images. Dynamic depth, arrays/cubes/3D, texture buffers,
-storage-image writes/atomics, sparse access and graphics stages are explicitly
-unsupported. Static operations for those types retain their previous behavior.
+This implementation supports non-depth, single-sample 2D sampling in compute
+and graphics stages, explicit/implicit LOD, gradients, samplerless fetch and
+dimension queries with Float/Uint/Sint images. Dynamic fragment gather remains
+unsupported; gather in other stages retains the existing path. Dynamic depth,
+arrays/cubes/3D, texture buffers, storage-image writes/atomics and sparse access
+are explicitly unsupported. Static operations for those types retain their previous behavior.
 The shared floating-point sampler cache cannot express integer border colors:
 dynamic border samplers are therefore rejected, along with unsupported address,
 comparison, unnormalized-coordinate and feature/limit combinations. Invalid
@@ -119,10 +149,10 @@ removal. Exact reference revisions remain in the compiler provenance report.
 
 ## Validation and Android artifact
 
-The shared compiler host build passes six suites: subword writes, real
+The preceding compute integration passed six shared host suites: subword writes, real
 TexturePass provenance/static preservation, image fetch/query, numeric component
 types, storage-image capabilities and dynamic kernels. They generate/validate
-946 SPIR-V modules, including 18 new dynamic modules for SPIR-V 1.0/1.3/1.4.
+946 SPIR-V modules, including 18 initial dynamic modules for SPIR-V 1.0/1.3/1.4.
 
 Fifteen production-compiler kernels execute on Mesa lavapipe (LLVM 20.1.2,
 Vulkan 1.4.318) with Khronos Validation Layer and an error-counting callback:

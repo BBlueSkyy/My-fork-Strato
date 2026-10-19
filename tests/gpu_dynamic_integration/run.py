@@ -46,10 +46,19 @@ with tempfile.TemporaryDirectory(prefix='strato-dynamic-integration-') as direct
         native_layout = native_layout.replace('.pSetLayouts = layouts.data(),\n            .setLayoutCount = dynamicDescriptors ? 2U : 1U,', '.setLayoutCount = dynamicDescriptors ? 2U : 1U,\n            .pSetLayouts = layouts.data(),')
         native_layout = native_layout.replace('.pipeline = std::move(pipeline),\n            .pipelineLayout = std::move(pipelineLayout),\n            .descriptorSetLayout = std::move(descriptorSetLayout),', '.descriptorSetLayout = std::move(descriptorSetLayout),\n            .pipelineLayout = std::move(pipelineLayout),\n            .pipeline = std::move(pipeline),')
     (path / 'native_layout.inc').write_text(native_layout)
+    assembler = (ROOT / 'app/src/main/cpp/skyline/gpu/graphics_pipeline_assembler.cpp').read_text()
+    graphics_layout = assembler[assembler.index('        vk::raii::DescriptorSetLayout descriptorSetLayout', assembler.index('GraphicsPipelineAssembler::CompiledPipeline GraphicsPipelineAssembler::AssemblePipelineAsync')):]
+    graphics_layout = graphics_layout[:graphics_layout.index('        bool runtimeCompilation')]
+    if not clang:
+        graphics_layout = graphics_layout.replace('.pBindings = layoutBindings.data(),\n            .bindingCount = static_cast<u32>(layoutBindings.size()),', '.bindingCount = static_cast<u32>(layoutBindings.size()),\n            .pBindings = layoutBindings.data(),')
+        graphics_layout = graphics_layout.replace('.pSetLayouts = setLayouts.data(),\n            .setLayoutCount = extraSetLayout ? 2u : 1u,', '.setLayoutCount = extraSetLayout ? 2u : 1u,\n            .pSetLayouts = setLayouts.data(),')
+        graphics_layout = graphics_layout.replace('.pPushConstantRanges = pushConstantRanges.data(),\n            .pushConstantRangeCount = static_cast<u32>(pushConstantRanges.size()),', '.pushConstantRangeCount = static_cast<u32>(pushConstantRanges.size()),\n            .pPushConstantRanges = pushConstantRanges.data(),')
+    (path / 'graphics_layout.inc').write_text(graphics_layout)
+
     subprocess.run([clang or 'c++', '-std=c++20', '-fsyntax-only', '-Werror', '-Wno-unused-function', *(['-Wno-reorder-init-list'] if clang else []),
         '-DVULKAN_HPP_NO_SPACESHIP_OPERATOR', '-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS', '-DVULKAN_HPP_NO_SETTERS',
         '-DVULKAN_HPP_NO_SMART_HANDLE', '-DVULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1', '-DVULKAN_HPP_ENABLE_DYNAMIC_LOADER_TOOL=0',
         '-I' + str(path), '-I' + str(ROOT / 'app/libraries/vkhpp'),
         '-I' + str(ROOT / 'app/libraries/vkhpp/Vulkan-Headers/include'),
         str(HERE / 'native_compile.cpp')], check=True)
-    print('PASS cached-set recording and compute pipeline layout native Vulkan-Hpp compile')
+    print('PASS cached-set recording and compute/graphics pipeline layouts native Vulkan-Hpp compile')

@@ -36,3 +36,9 @@ void NativeDispatch(DrawParams *drawParams) {
 #include "dispatch_callback.inc"
     (void)callback;
 }
+
+void NativeGraphicsLayout(GPU &gpu, span<const vk::DescriptorSetLayoutBinding> layoutBindings,
+                          span<const vk::PushConstantRange> pushConstantRanges,
+                          bool noPushDescriptors, vk::DescriptorSetLayout extraSetLayout) {
+#include "graphics_layout.inc"
+}

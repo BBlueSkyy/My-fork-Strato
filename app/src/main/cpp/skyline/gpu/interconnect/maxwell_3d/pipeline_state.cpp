@@ -437,7 +437,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         globalShaderConfig.Update(packedState);
 
         if (pipeline) {
-            if (auto newPipeline{pipeline->LookupNext(packedState, ctx, textures, constantBuffers)}) {
+            if (auto newPipeline{pipeline->LookupNext(packedState, ctx, textures, samplers, constantBuffers)}) {
                 pipeline = newPipeline;
                 return;
             }

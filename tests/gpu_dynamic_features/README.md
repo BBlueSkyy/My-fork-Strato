@@ -1,4 +1,4 @@
-# Compute dynamic texture-handle feature gates
+# Dynamic texture-handle feature gates
 
 Run `python3 tests/gpu_dynamic_features/run.py`. When the shader compiler is
 checked out separately, set `SHADER_COMPILER_ROOT` to that checkout. The
@@ -7,8 +7,9 @@ checked out separately, set `SHADER_COMPILER_ROOT` to that checkout. The
 This test compiles the production TraitManager constructor, feature-chain
 alias, GPU feature query and ShaderManager profile initializer against the
 pinned Vulkan headers. Physical-device queries and driver quirks use the
-existing host fixture. It also compiles the actual compute environment gate
-and verifies that graphics environments retain the default disabled behavior.
+existing host fixture. It also compiles the actual compute and graphics gates,
+checking each graphics stage against its enabled storage/atomic feature.
+Optional shaderResourceMinLod enablement and profile propagation are checked.
 
 The 288 cases vary application/physical-device Vulkan versions, extension
 availability and every combination of the four required feature bits. They

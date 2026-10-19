@@ -51,6 +51,8 @@ void computeLayouts(){
  for(size_t i=0;i<3;i++)check(writes[i].descriptorType==descriptorInfo.descriptorSetLayoutBindings[i].descriptorType&&writes[i].descriptorType==(i==1?vk::DescriptorType::eSampledImage:vk::DescriptorType::eCombinedImageSampler),"compute write/layout sampler requirement");
 }
 struct CachedDraw {
+ struct DynamicPipeline {bool canRepresent{true};template<class... Args>bool CanBindDynamicDescriptors(Args&...){return canRepresent;}};
+ DynamicPipeline *oldPipeline{};
  int ctx{};
  struct {u32 generation{1};u32 GetBindingGeneration(){return generation;}} samplers;
  struct {u32 generation{1};u32 GetBindingGeneration(int){return generation;}} textures;
@@ -67,6 +69,7 @@ void generationCache(){
  ++draw.samplers.generation;draw.Refresh();check(!draw.activeDescriptorPipeline&&draw.activeState.invalidations==1,"sampler rebind/mode changes must rebuild descriptors");
  draw.activeDescriptorPipeline=&draw;++draw.textures.generation;draw.Refresh();check(!draw.activeDescriptorPipeline&&draw.activeState.invalidations==2,"TIC pool rebind must rebuild typed pipeline and descriptors");
  draw.activeDescriptorPipeline=&draw;draw.constantBuffers.quickBindEnabled=false;draw.Refresh();check(draw.activeState.invalidations==3,"CBUF changes must reconsider typed specialization");
+ draw.constantBuffers.quickBindEnabled=true;CachedDraw::DynamicPipeline dynamic{false};draw.oldPipeline=&dynamic;draw.Refresh();check(draw.activeState.invalidations==4,"dynamic capacity growth must invalidate clean pipeline state");
 }
 int main(){layouts();computeLayouts();generationCache();
  {InterconnectContext context;Textures typed;std::array<ConstantBuffer,2> buffers{};std::vector<Desc> descriptors(1);

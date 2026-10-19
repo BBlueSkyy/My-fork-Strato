@@ -7,6 +7,7 @@
 #include <limits>
 #include <stdexcept>
 #include <gpu.h>
+#include <gpu/attachment_feedback.h>
 #include <gpu/interconnect/command_executor.h>
 #include "dynamic_descriptors.h"
 #include "textures.h"
@@ -56,6 +57,7 @@ namespace skyline::gpu::interconnect {
             vk::ImageView view;
             u64 backingGeneration{};
             const Texture *texture{};
+            vk::ImageLayout imageLayout{vk::ImageLayout::eGeneral};
             bool operator==(const ImageEntry &) const = default;
             explicit operator bool() const { return static_cast<bool>(view); }
         };
@@ -88,9 +90,11 @@ namespace skyline::gpu::interconnect {
             }
         };
         std::vector<Shader::DynamicTextureDescriptor> groups;
+        vk::PipelineStageFlagBits readStage{vk::PipelineStageFlagBits::eComputeShader};
         std::vector<u32> capacities;
         vk::raii::DescriptorSetLayout layout{nullptr};
         std::shared_ptr<Snapshot> current;
+        std::unique_ptr<State> prepared;
 
         State Collect(InterconnectContext &ctx, Textures &textures, Samplers &samplers, bool prepare,
                       vk::PipelineStageFlags &src, vk::PipelineStageFlags &dst) const {
@@ -136,7 +140,7 @@ namespace skyline::gpu::interconnect {
                         // no-op. Never serialize unchanged descriptor candidates.
                         if (view->texture->layout != vk::ImageLayout::eGeneral)
                             view->texture->TransitionLayout(vk::ImageLayout::eGeneral);
-                        view->texture->PopulateReadBarrier(vk::PipelineStageFlagBits::eComputeShader, src, dst);
+                        view->texture->PopulateReadBarrier(readStage, src, dst);
                         const auto handle{view->GetView()};
                         images.push_back({handle, view->texture->GetBackingGeneration(), view->texture.get()});
                     } else images.emplace_back();
@@ -188,7 +192,7 @@ namespace skyline::gpu::interconnect {
                         if (!after[i]) continue;
                         vk::DescriptorImageInfo info{};
                         if constexpr (std::is_same_v<typename std::decay_t<decltype(after)>::value_type, vk::Sampler>) info.sampler = after[i];
-                        else { info.imageView = after[i].view; info.imageLayout = vk::ImageLayout::eGeneral; }
+                        else { info.imageView = after[i].view; info.imageLayout = after[i].imageLayout; }
                         ctx.gpu.vkDevice.updateDescriptorSets(vk::WriteDescriptorSet{
                             .dstSet = snapshot->set, .dstBinding = binding, .dstArrayElement = i,
                             .descriptorCount = 1, .descriptorType = type, .pImageInfo = &info}, {});
@@ -206,9 +210,11 @@ namespace skyline::gpu::interconnect {
     };
 
     DynamicDescriptors::DynamicDescriptors(InterconnectContext &ctx, Textures &textures, Samplers &samplers,
-                                           span<const Shader::DynamicTextureDescriptor> groups) : impl{std::make_unique<Impl>()} {
+                                           span<const Shader::DynamicTextureDescriptor> groups, vk::ShaderStageFlags stages) : impl{std::make_unique<Impl>()} {
         if (groups.empty()) throw exception("Dynamic descriptor table requires at least one texture group");
         impl->groups.assign(groups.begin(), groups.end());
+        if (stages != vk::ShaderStageFlagBits::eCompute)
+            impl->readStage = vk::PipelineStageFlagBits::eAllGraphics;
         for (const auto &group : groups)
             if (group.type != Shader::TextureType::Color2D || group.is_depth)
                 throw exception("Dynamic texture descriptors initially support non-depth 2D images only");
@@ -217,12 +223,12 @@ namespace skyline::gpu::interconnect {
         for (auto count : state.Counts()) impl->capacities.push_back(Capacity(count));
         ValidateLimits(ctx, 0, 0, 0);
         std::vector<vk::DescriptorSetLayoutBinding> bindings{
-            {.binding = 0, .descriptorType = vk::DescriptorType::eSampler, .descriptorCount = impl->capacities[0], .stageFlags = vk::ShaderStageFlagBits::eCompute},
-            {.binding = 1, .descriptorType = vk::DescriptorType::eStorageBuffer, .descriptorCount = 1, .stageFlags = vk::ShaderStageFlagBits::eCompute},
+            {.binding = 0, .descriptorType = vk::DescriptorType::eSampler, .descriptorCount = impl->capacities[0], .stageFlags = stages},
+            {.binding = 1, .descriptorType = vk::DescriptorType::eStorageBuffer, .descriptorCount = 1, .stageFlags = stages},
         };
         for (u32 i{1}; i < impl->capacities.size(); ++i)
             bindings.push_back({.binding = i + 1, .descriptorType = vk::DescriptorType::eSampledImage,
-                               .descriptorCount = impl->capacities[i], .stageFlags = vk::ShaderStageFlagBits::eCompute});
+                               .descriptorCount = impl->capacities[i], .stageFlags = stages});
         std::vector<vk::DescriptorBindingFlags> flags(bindings.size(), vk::DescriptorBindingFlagBits::ePartiallyBound);
         flags[1] = {};
         const vk::DescriptorSetLayoutBindingFlagsCreateInfo bindingFlags{.bindingCount = static_cast<u32>(flags.size()), .pBindingFlags = flags.data()};
@@ -247,9 +253,27 @@ namespace skyline::gpu::interconnect {
         vk::PipelineStageFlags src{}, dst{};
         return Fits(impl->Collect(ctx, textures, samplers, false, src, dst).Counts(), impl->capacities);
     }
+    void DynamicDescriptors::Prepare(InterconnectContext &ctx, Textures &textures, Samplers &samplers,
+                                     vk::PipelineStageFlags &src, vk::PipelineStageFlags &dst,
+                                     std::vector<TextureView *> &sampledImages) {
+        impl->prepared = std::make_unique<Impl::State>(impl->Collect(ctx, textures, samplers, true, src, dst));
+        for (const auto &group : impl->prepared->candidates)
+            for (const auto &candidate : group)
+                sampledImages.push_back(candidate.view.get());
+    }
     vk::DescriptorSet DynamicDescriptors::Sync(InterconnectContext &ctx, Textures &textures, Samplers &samplers,
-                                              vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        auto state{impl->Collect(ctx, textures, samplers, true, srcStageMask, dstStageMask)};
+                                              vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
+                                              span<TextureView *const> feedbackImages) {
+        auto prepared{std::move(impl->prepared)};
+        auto state{prepared ? std::move(*prepared) : impl->Collect(ctx, textures, samplers, true, srcStageMask, dstStageMask)};
+        // The executor transitions whole image backings during feedback. Every
+        // descriptor of that backing must capture its per-draw layout.
+        for (auto &images : state.images)
+            for (auto &image : images)
+                if (std::any_of(feedbackImages.begin(), feedbackImages.end(), [&](const auto *view) {
+                    return view->texture.get() == image.texture;
+                }))
+                    image.imageLayout = feedback::Layout;
         if (!Fits(state.Counts(), impl->capacities)) throw exception("Dynamic descriptor layout requires a larger pipeline variant");
         auto previous{impl->current};
         auto oldCycle{previous ? previous->cycle.lock() : nullptr};

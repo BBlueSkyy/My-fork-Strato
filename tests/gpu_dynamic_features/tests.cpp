@@ -2,6 +2,12 @@ struct ComputeEnvironmentGate {
     bool supportsDynamicTextureHandles;
 #include "environment.inc"
 };
+#include <shader_compiler/stage.h>
+#include "graphics_gate.inc"
+struct GraphicsEnvironmentGate {
+    bool supportsDynamicTextureHandles;
+#include "graphics_environment.inc"
+};
 int main() {
     try {
         const vk::raii::PhysicalDevice physicalDevice;
@@ -15,6 +21,7 @@ int main() {
                     auto &supportedCore = supported.get<vk::PhysicalDeviceFeatures2>().features;
                     auto &supportedIndexing = supported.get<vk::PhysicalDeviceDescriptorIndexingFeatures>();
                     supportedCore.shaderSampledImageArrayDynamicIndexing = bool(mask & 1);
+                    supportedCore.shaderResourceMinLod = bool(mask & 1);
                     supportedIndexing.runtimeDescriptorArray = bool(mask & 2);
                     supportedIndexing.shaderSampledImageArrayNonUniformIndexing = bool(mask & 4);
                     supportedIndexing.descriptorBindingPartiallyBound = bool(mask & 8);
@@ -45,9 +52,26 @@ int main() {
                     const bool available = bool(mask & 16) || std::min(appVersion, deviceVersion) >= VK_API_VERSION_1_2;
                     const bool expected = available && (mask & 15) == 15;
                     check(traits.supportsDynamicTextureHandles == expected, "dynamic feature gate differs from enabled Vulkan features");
+                    check(profileFor(traits).support_min_lod == bool(mask & 1) &&
+                          bool(enabled.get<vk::PhysicalDeviceFeatures2>().features.shaderResourceMinLod) == bool(mask & 1),
+                          "MinLod capability differs from enabled optional core feature");
                     check(profileFor(traits).support_dynamic_texture_handles == expected, "SPIR-V profile gate differs from enabled Vulkan features");
                     check(ComputeEnvironmentGate{traits.supportsDynamicTextureHandles}.SupportsDynamicTextureHandles() == expected,
                           "compute translation gate differs from enabled Vulkan features");
+                    for (unsigned writes{}; writes < 4; ++writes) {
+                        auto graphicsTraits{traits};
+                        graphicsTraits.supportsFragmentStoresAndAtomics = bool(writes & 1);
+                        graphicsTraits.supportsVertexPipelineStoresAndAtomics = bool(writes & 2);
+                        for (auto stage : {Shader::Stage::VertexA, Shader::Stage::VertexB,
+                                           Shader::Stage::TessellationControl, Shader::Stage::TessellationEval,
+                                           Shader::Stage::Geometry, Shader::Stage::Fragment}) {
+                            const bool stageWrites{stage == Shader::Stage::Fragment ? bool(writes & 1) : bool(writes & 2)};
+                            check(GraphicsEnvironmentGate{GraphicsDynamicTextureHandlesSupported(graphicsTraits, stage)}.SupportsDynamicTextureHandles() ==
+                                  (expected && stageWrites), "graphics dynamic handles require indexing and stage atomics");
+                        }
+                        check(!GraphicsDynamicTextureHandlesSupported(graphicsTraits, Shader::Stage::Compute),
+                              "compute used the graphics translation gate");
+                    }
                     check(enabled.isLinked<vk::PhysicalDeviceDescriptorIndexingFeatures>() == available,
                           "unsupported descriptor indexing feature struct remains linked");
                     const auto &enabledIndexing = enabled.get<vk::PhysicalDeviceDescriptorIndexingFeatures>();

@@ -27,7 +27,9 @@ with tempfile.TemporaryDirectory(prefix='strato-dynamic-features-') as tmp:
     (tmp / 'profile.inc').write_text(function(manager, 'profile = Shader::Profile{') + ';')
     compute = manager[manager.index('    class ComputeEnvironment :'):]
     graphics = manager[manager.index('    class GraphicsEnvironment :'):manager.index('    class ComputeEnvironment :')]
-    assert 'SupportsDynamicTextureHandles' not in graphics
+    (tmp / 'graphics_gate.inc').write_text(function(manager, '        bool GraphicsDynamicTextureHandlesSupported('))
+    graphics_method = function(graphics, '        [[nodiscard]] bool SupportsDynamicTextureHandles()').replace(' final', '')
+    (tmp / 'graphics_environment.inc').write_text(graphics_method)
     assert 'getTextureCompareFunc, traceTarget, gpu.traits.supportsDynamicTextureHandles};' in manager
     method = function(compute, '        [[nodiscard]] bool SupportsDynamicTextureHandles()')
     method = method.replace(' final', '')

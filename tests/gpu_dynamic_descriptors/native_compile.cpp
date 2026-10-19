@@ -12,6 +12,7 @@
 #include <vector>
 #include <utility>
 #include <vulkan/vulkan_raii.hpp>
+#include "../../app/src/main/cpp/skyline/gpu/attachment_feedback.h"
 using u8 = uint8_t;
 using u32 = uint32_t;
 using u64 = uint64_t;

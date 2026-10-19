@@ -13,6 +13,15 @@
 #include "common.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
+    static void QueueDynamicDescriptorHostVisibility(InterconnectContext &ctx, Pipeline *pipeline) {
+        if (!pipeline->HasDynamicDescriptors()) return;
+        ctx.executor.AddPostRpCommand([](vk::raii::CommandBuffer &commands, const std::shared_ptr<FenceCycle> &, GPU &) {
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllGraphics, vk::PipelineStageFlagBits::eHost, {},
+                {vk::MemoryBarrier{.srcAccessMask = vk::AccessFlagBits::eShaderWrite,
+                                   .dstAccessMask = vk::AccessFlagBits::eHostRead}}, {}, {});
+        });
+    }
+
     Maxwell3D::RenderConditionResources::RenderConditionResources(GPU &gpu)
         : scratch{gpu.memory.AllocateBuffer(sizeof(u32) * 5)},
           descriptorSet{gpu.helperShaders.conditionalCompareHelperShader.CreateDescriptorSet(gpu, scratch.vkBuffer)} {}
@@ -152,7 +161,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
          [this](u32 renderPassIndex) {
-             return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
+             auto hooks{queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex)};
+             QueueDynamicDescriptorHostVisibility(ctx, activeState.GetPipeline());
+             return hooks;
          }, true);
           InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
           ctx.executor.AddCheckpoint("After inline index draw");
@@ -244,17 +255,25 @@ namespace skyline::gpu::interconnect::maxwell3d {
          } else if (!constantBuffers.quickBindEnabled) {
              activeState.InvalidatePipeline();
          }
+         if (oldPipeline && !oldPipeline->CanBindDynamicDescriptors(ctx, textures, samplers))
+             activeState.InvalidatePipeline();
          activeState.Update(ctx, textures, samplers, constantBuffers.boundConstantBuffers,
                             builder,
                             indexed, topology, estimateIndexBufferSize, firstIndex, count,
                             srcStageMask, dstStageMask);
          Pipeline *pipeline{activeState.GetPipeline()};
-         activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
+         const auto staticSampledCount{pipeline->GetTotalSampledImageCount()};
+         activeDescriptorSetSampledImages.resize(staticSampledCount);
+         // Dynamic candidates must prepare their backing before static bindings
+         // capture layouts, and remain visible to executor hazard tracking.
+         pipeline->PrepareDynamicDescriptors(ctx, textures, samplers, srcStageMask, dstStageMask,
+                                             activeDescriptorSetSampledImages);
+         const auto staticSampledImages{span<TextureView *>{activeDescriptorSetSampledImages}.first(staticSampledCount)};
 
 
          bool completeDescriptorUpdate{};
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
-             if (activeDescriptorPipeline &&
+             if (activeDescriptorPipeline && !pipeline->HasDynamicDescriptors() &&
                  ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline)) &&
                  constantBuffers.quickBindEnabled) {
                  if (activeDescriptorPipeline != pipeline)
@@ -263,7 +282,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                  if (constantBuffers.quickBind)
                      // If only a single constant buffer has been rebound between draws we can perform a partial descriptor update
                      return pipeline->SyncDescriptorsQuickBind(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
-                                                               *constantBuffers.quickBind, activeDescriptorSetSampledImages,
+                                                               *constantBuffers.quickBind, staticSampledImages,
                                                                srcStageMask, dstStageMask);
                  else
                      return nullptr;
@@ -271,7 +290,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                  // If bindings have changed or quick bind is disabled, perform a full descriptor update
                  completeDescriptorUpdate = true;
                  return pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
-                                                  activeDescriptorSetSampledImages,
+                                                  staticSampledImages,
                                                   srcStageMask, dstStageMask);
              }
          }()};
@@ -286,11 +305,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
              // every sampled binding before substituting the per-draw layout.
              if (!completeDescriptorUpdate)
                  descUpdateInfo = pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
-                     activeDescriptorSetSampledImages, srcStageMask, dstStageMask);
+                     staticSampledImages, srcStageMask, dstStageMask);
              for (const auto *view : feedbackImages)
                  feedbackAspects |= view->texture->format->vkAspect;
-             feedback::PatchDescriptorLayouts(descUpdateInfo->writes, activeDescriptorSetSampledImages, feedbackImages);
+             if (descUpdateInfo)
+                 feedback::PatchDescriptorLayouts(descUpdateInfo->writes, staticSampledImages, feedbackImages);
          }
+         const auto dynamicSet{pipeline->SyncDynamicDescriptors(ctx, textures, samplers, srcStageMask, dstStageMask, feedbackImages)};
+         if (dynamicSet)
+             builder.BindCachedGraphicsDescriptors(*pipeline->compiledPipeline.pipelineLayout, 1, dynamicSet);
          // The following draw must restore GENERAL descriptors even if its
          // constant buffers and textures are unchanged.
          activeDescriptorPipeline = feedbackImages.empty() ? pipeline : nullptr;
@@ -849,7 +872,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 commandBuffer.endConditionalRenderingEXT();
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
            [this](u32 renderPassIndex) {
-               return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
+               auto hooks{queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex)};
+               QueueDynamicDescriptorHostVisibility(ctx, activeState.GetPipeline());
+               return hooks;
            }, true);
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
@@ -933,7 +958,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 commandBuffer.endConditionalRenderingEXT();
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
            [this](u32 renderPassIndex) {
-               return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
+               auto hooks{queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex)};
+               QueueDynamicDescriptorHostVisibility(ctx, activeState.GetPipeline());
+               return hooks;
            }, true);
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After indirect draw");

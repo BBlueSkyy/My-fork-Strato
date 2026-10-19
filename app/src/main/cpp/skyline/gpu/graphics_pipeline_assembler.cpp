@@ -2,6 +2,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <boost/functional/hash.hpp>
+#include <array>
 #include <fstream>
 #include <filesystem>
 #include <gpu.h>
@@ -231,16 +232,17 @@ namespace skyline::gpu {
     }
 
 
-    GraphicsPipelineAssembler::CompiledPipeline GraphicsPipelineAssembler::AssemblePipelineAsync(const PipelineState &state, span<const vk::DescriptorSetLayoutBinding> layoutBindings, span<const vk::PushConstantRange> pushConstantRanges, bool noPushDescriptors) {
+    GraphicsPipelineAssembler::CompiledPipeline GraphicsPipelineAssembler::AssemblePipelineAsync(const PipelineState &state, span<const vk::DescriptorSetLayoutBinding> layoutBindings, span<const vk::PushConstantRange> pushConstantRanges, bool noPushDescriptors, vk::DescriptorSetLayout extraSetLayout) {
         vk::raii::DescriptorSetLayout descriptorSetLayout{gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
             .flags = vk::DescriptorSetLayoutCreateFlags{(!noPushDescriptors && gpu.traits.supportsPushDescriptors) ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR : vk::DescriptorSetLayoutCreateFlags{}},
             .pBindings = layoutBindings.data(),
             .bindingCount = static_cast<u32>(layoutBindings.size()),
         }};
 
+        const std::array setLayouts{*descriptorSetLayout, extraSetLayout};
         vk::raii::PipelineLayout pipelineLayout{gpu.vkDevice, vk::PipelineLayoutCreateInfo{
-            .pSetLayouts = &*descriptorSetLayout,
-            .setLayoutCount = 1,
+            .pSetLayouts = setLayouts.data(),
+            .setLayoutCount = extraSetLayout ? 2u : 1u,
             .pPushConstantRanges = pushConstantRanges.data(),
             .pushConstantRangeCount = static_cast<u32>(pushConstantRanges.size()),
         }};
