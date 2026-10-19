@@ -12,6 +12,7 @@
 #include <gpu/interconnect/common/textures.h>
 #include <gpu/interconnect/common/pipeline_state_accessor.h>
 #include "common.h"
+#include <gpu/interconnect/common/dynamic_descriptors.h>
 #include "packed_pipeline_state.h"
 #include "constant_buffers.h"
 
@@ -71,8 +72,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 boost::container::small_vector<StorageBufferDesc, 8> storageBufferDescs;
 
                 struct UniformTexelBufferDesc {
+                    Shader::TextureComponentType component_type;
                     u32 cbuf_offset;
                     u32 secondary_cbuf_offset;
+                    u32 mask{~0U};
+                    u32 secondary_mask{~0U};
                     bool has_secondary;
                     u8 cbuf_index;
                     u8 shift_left;
@@ -82,8 +86,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     u8 size_shift;
 
                     UniformTexelBufferDesc(const Shader::TextureBufferDescriptor &desc)
-                        : cbuf_offset{desc.cbuf_offset},
+                        : component_type{desc.component_type},
+                          cbuf_offset{desc.cbuf_offset},
                           secondary_cbuf_offset{desc.secondary_cbuf_offset},
+                          mask{desc.mask},
+                          secondary_mask{desc.secondary_mask},
                           has_secondary{desc.has_secondary},
                           cbuf_index{static_cast<u8>(desc.cbuf_index)},
                           shift_left{static_cast<u8>(desc.shift_left)},
@@ -101,6 +108,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     u32 cbuf_offset;
                     bool is_read;
                     bool is_written;
+                    bool is_integer;
                     u8 cbuf_index;
                     u8 count;
                     u8 size_shift;
@@ -110,6 +118,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                           cbuf_offset{desc.cbuf_offset},
                           is_read{desc.is_read},
                           is_written{desc.is_written},
+                          is_integer{desc.is_integer},
                           cbuf_index{static_cast<u8>(desc.cbuf_index)},
                           count{static_cast<u8>(desc.count)},
                           size_shift{static_cast<u8>(desc.size_shift)} {}
@@ -120,9 +129,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
                 struct CombinedImageSamplerDesc {
                     Shader::TextureType type;
+                    Shader::TextureComponentType component_type;
                     u32 cbuf_offset;
                     u32 secondary_cbuf_offset;
+                    u32 mask{~0U};
+                    u32 secondary_mask{~0U};
                     bool has_secondary;
+                    bool is_samplerless;
                     u8 cbuf_index;
                     u8 shift_left;
                     u8 secondary_cbuf_index;
@@ -132,9 +145,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
                     CombinedImageSamplerDesc(const Shader::TextureDescriptor &desc)
                         : type{desc.type},
+                          component_type{desc.component_type},
                           cbuf_offset{desc.cbuf_offset},
                           secondary_cbuf_offset{desc.secondary_cbuf_offset},
+                          mask{desc.mask},
+                          secondary_mask{desc.secondary_mask},
                           has_secondary{desc.has_secondary},
+                          is_samplerless{desc.is_samplerless},
                           cbuf_index{static_cast<u8>(desc.cbuf_index)},
                           shift_left{static_cast<u8>(desc.shift_left)},
                           secondary_cbuf_index{static_cast<u8>(desc.secondary_cbuf_index)},
@@ -152,6 +169,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     u32 cbuf_offset;
                     bool isRead;
                     bool is_written;
+                    bool is_integer;
                     u8 cbuf_index;
                     u8 count;
                     u8 size_shift;
@@ -162,6 +180,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                           cbuf_offset{desc.cbuf_offset},
                           isRead{desc.is_read},
                           is_written{desc.is_written},
+                          is_integer{desc.is_integer},
                           cbuf_index{static_cast<u8>(desc.cbuf_index)},
                           count{static_cast<u8>(desc.count)},
                           size_shift{static_cast<u8>(desc.size_shift)} {}
@@ -228,6 +247,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         u8 stageMask{}; //!< Bitmask of active shader stages
         bool usesRenderArea{}; //!< Whether any shader stage reads the render-area push constant
         u16 sampledImageCount{};
+        std::unique_ptr<DynamicDescriptors> dynamicDescriptors;
 
         std::array<Pipeline *, 6> transitionCache{};
 
@@ -238,12 +258,30 @@ namespace skyline::gpu::interconnect::maxwell3d {
       public:
         GraphicsPipelineAssembler::CompiledPipeline compiledPipeline;
 
-        Pipeline(GPU &gpu, PipelineStateAccessor &accessor, const PackedPipelineState &packedState);
+        Pipeline(GPU &gpu, PipelineStateAccessor &accessor, const PackedPipelineState &packedState,
+                 InterconnectContext *ctx = nullptr, Textures *textures = nullptr, Samplers *samplers = nullptr);
+
+        bool HasDynamicDescriptors() const { return static_cast<bool>(dynamicDescriptors); }
+        bool CanBindDynamicDescriptors(InterconnectContext &ctx, Textures &textures, Samplers &samplers) const {
+            return !dynamicDescriptors || dynamicDescriptors->CanRepresent(ctx, textures, samplers);
+        }
+        void PrepareDynamicDescriptors(InterconnectContext &ctx, Textures &textures, Samplers &samplers,
+                                       vk::PipelineStageFlags &src, vk::PipelineStageFlags &dst,
+                                       std::vector<TextureView *> &sampledImages) {
+            if (dynamicDescriptors) dynamicDescriptors->Prepare(ctx, textures, samplers, src, dst, sampledImages);
+        }
+        vk::DescriptorSet SyncDynamicDescriptors(InterconnectContext &ctx, Textures &textures, Samplers &samplers,
+                                                vk::PipelineStageFlags &src, vk::PipelineStageFlags &dst,
+                                                span<TextureView *const> feedbackImages) {
+            return dynamicDescriptors ? dynamicDescriptors->Sync(ctx, textures, samplers, src, dst, feedbackImages) : vk::DescriptorSet{};
+        }
 
         /**
          * @brief Returns the pipeline in the transition cache (if present) that matches the given state
          */
-        Pipeline *LookupNext(const PackedPipelineState &packedState);
+        Pipeline *LookupNext(const PackedPipelineState &packedState, InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers);
+
+        bool MatchesTextureTypes(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers) const;
 
         /**
          * @brief Record a transition from this pipeline to the next pipeline in the transition cache
@@ -280,7 +318,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
      */
     class PipelineManager {
       private:
-        tsl::robin_map<PackedPipelineState, std::unique_ptr<Pipeline>, PackedPipelineStateHash> map;
+        tsl::robin_map<PackedPipelineState, std::vector<std::unique_ptr<Pipeline>>, PackedPipelineStateHash> map;
 
         #ifdef PIPELINE_STATS
         std::unordered_map<std::array<u64, engine::PipelineCount>, std::list<Pipeline*>, util::ObjectHash<std::array<u64, engine::PipelineCount>>> sharedPipelines; //!< Maps a shader set to all pipelines sharing that same set

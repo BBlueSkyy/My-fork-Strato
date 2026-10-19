@@ -24,10 +24,13 @@ namespace skyline::gpu::interconnect {
       public:
         span<TextureSamplerControl> texSamplers;
         bool didUseTexHeaderBinding;
+        u64 bindingGeneration{};
+        std::vector<TextureSamplerControl> dynamicHeaders;
 
         SamplerPoolState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine);
 
         void Flush(InterconnectContext &ctx, bool useTexHeaderBinding);
+        span<const TextureSamplerControl> ReadDynamicHeaders(InterconnectContext &ctx);
 
         bool Refresh(InterconnectContext &ctx, bool useTexHeaderBinding);
 
@@ -38,7 +41,7 @@ namespace skyline::gpu::interconnect {
       private:
         dirty::ManualDirtyState<SamplerPoolState> samplerPool;
 
-        tsl::robin_map<TextureSamplerControl, std::unique_ptr<vk::raii::Sampler>, util::ObjectHash<TextureSamplerControl>> texSamplerStore;
+        tsl::robin_map<TextureSamplerControl, std::shared_ptr<vk::raii::Sampler>, util::ObjectHash<TextureSamplerControl>> texSamplerStore;
         std::vector<vk::raii::Sampler *> texSamplerCache;
         const TextureSamplerControl *texSamplerCachePool{};
 
@@ -47,7 +50,14 @@ namespace skyline::gpu::interconnect {
 
         void Update(InterconnectContext &ctx, bool useTexHeaderBinding);
 
+        u64 GetBindingGeneration() { return samplerPool.Get().bindingGeneration; }
+
         void MarkAllDirty();
+
+        span<const TextureSamplerControl> GetPoolHeaders(InterconnectContext &ctx);
+        bool IsViaHeaderBinding() { return samplerPool.Get().didUseTexHeaderBinding; }
+        std::shared_ptr<vk::raii::Sampler> GetDynamicSampler(InterconnectContext &ctx, u32 index);
+        bool DynamicSamplerUsesLinear(u32 index);
 
         vk::raii::Sampler *GetSampler(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
 

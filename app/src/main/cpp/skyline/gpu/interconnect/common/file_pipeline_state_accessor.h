@@ -19,7 +19,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         Shader::TextureType GetTextureType(u32 index) const override;
 
-        bool IsTexturePixelFormatInteger(u32 index) const override;
+        Shader::TextureComponentType GetTextureComponentType(u32 index) const override;
 
         Shader::CompareFunction GetTextureCompareFunc(u32 index) const override;
 

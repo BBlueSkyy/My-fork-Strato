@@ -22,7 +22,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             }, [&](u32 index) {
                 return textures.GetTextureType(ctx, BindlessHandle{ .raw = index }.textureIndex);
             }, [&](u32 index) {
-                return textures.IsTexturePixelFormatInteger(ctx, BindlessHandle{ .raw = index }.textureIndex);
+                return textures.GetTextureComponentType(ctx, BindlessHandle{ .raw = index }.textureIndex);
             }, [&](u32 index) {
                 BindlessHandle handle{ .raw = index };
                 return samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex);
@@ -46,7 +46,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
                 descriptorInfo.descriptorSetLayoutBindings.push_back(vk::DescriptorSetLayoutBinding{
                     .binding = bindingIndex++,
-                    .descriptorType = type,
+                    .descriptorType = ResolveDescriptorType(type, desc),
                     .descriptorCount = desc.count,
                     .stageFlags = vk::ShaderStageFlagBits::eCompute,
                 });
@@ -68,16 +68,31 @@ namespace skyline::gpu::interconnect::kepler_compute {
     static Pipeline::CompiledPipeline MakeCompiledPipeline(InterconnectContext &ctx,
                                                                                const PackedPipelineState &packedState,
                                                                                const Pipeline::ShaderStage &shaderStage,
-                                                                               span<vk::DescriptorSetLayoutBinding> layoutBindings) {
+                                                                               span<vk::DescriptorSetLayoutBinding> layoutBindings,
+                                                                               DynamicDescriptors *dynamicDescriptors) {
+        if (dynamicDescriptors) {
+            u32 sampled{}, samplers{}, resources{}, storage{};
+            for (const auto &binding : layoutBindings) {
+                resources += binding.descriptorCount;
+                if (binding.descriptorType == vk::DescriptorType::eCombinedImageSampler || binding.descriptorType == vk::DescriptorType::eSampledImage || binding.descriptorType == vk::DescriptorType::eUniformTexelBuffer)
+                    sampled += binding.descriptorCount;
+                if (binding.descriptorType == vk::DescriptorType::eCombinedImageSampler || binding.descriptorType == vk::DescriptorType::eSampler)
+                    samplers += binding.descriptorCount;
+                if (binding.descriptorType == vk::DescriptorType::eStorageBuffer)
+                    storage += binding.descriptorCount;
+            }
+            dynamicDescriptors->ValidateLimits(ctx, sampled, samplers, resources, storage);
+        }
         vk::raii::DescriptorSetLayout descriptorSetLayout{ctx.gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
             .flags = vk::DescriptorSetLayoutCreateFlags{ctx.gpu.traits.supportsPushDescriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR : vk::DescriptorSetLayoutCreateFlags{}},
             .pBindings = layoutBindings.data(),
             .bindingCount = static_cast<u32>(layoutBindings.size()),
         }};
 
+        const std::array layouts{*descriptorSetLayout, dynamicDescriptors ? dynamicDescriptors->Layout() : vk::DescriptorSetLayout{}};
         vk::raii::PipelineLayout pipelineLayout{ctx.gpu.vkDevice, vk::PipelineLayoutCreateInfo{
-            .pSetLayouts = &*descriptorSetLayout,
-            .setLayoutCount = 1,
+            .pSetLayouts = layouts.data(),
+            .setLayoutCount = dynamicDescriptors ? 2U : 1U,
         }};
 
         vk::PipelineShaderStageCreateInfo shaderStageInfo{
@@ -107,7 +122,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
     Pipeline::Pipeline(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary)
         : shaderStage{MakePipelineShader(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)},
           descriptorInfo{MakePipelineDescriptorInfo(shaderStage)},
-          compiledPipeline{MakeCompiledPipeline(ctx, packedState, shaderStage, descriptorInfo.descriptorSetLayoutBindings)},
+          dynamicDescriptors{shaderStage.info.dynamic_textures.empty() ? nullptr : std::make_unique<DynamicDescriptors>(ctx, textures, samplers, shaderStage.info.dynamic_textures)},
+          compiledPipeline{MakeCompiledPipeline(ctx, packedState, shaderStage, descriptorInfo.descriptorSetLayoutBindings, dynamicDescriptors.get())},
           sourcePackedState{packedState} {
         size_t storageBufferCount{};
         for (const auto &desc : shaderStage.info.storage_buffers_descriptors)
@@ -115,6 +131,13 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         storageBufferViews.resize(storageBufferCount);
         texelBufferViews.resize(descriptorInfo.totalTexelBufferDescCount);
+    }
+
+    bool Pipeline::MatchesTextureTypes(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers) const {
+        return TextureComponentsMatch(ctx, textures, constantBuffers, shaderStage.info.texture_descriptors) &&
+               TextureComponentsMatch(ctx, textures, constantBuffers, shaderStage.info.texture_buffer_descriptors) &&
+               TextureComponentsMatch(ctx, textures, constantBuffers, shaderStage.info.image_descriptors) &&
+               TextureComponentsMatch(ctx, textures, constantBuffers, shaderStage.info.image_buffer_descriptors);
     }
 
     void Pipeline::SyncCachedStorageBufferViews(ContextTag executionTag) {
@@ -173,7 +196,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
                     writes[writeIdx++] = {
                         .dstBinding = bindingIdx++,
                         .descriptorCount = desc.count,
-                        .descriptorType = type,
+                        .descriptorType = ResolveDescriptorType(type, desc),
                         .pImageInfo = &imageDescs[imageIdx],
                     };
 
@@ -239,11 +262,37 @@ namespace skyline::gpu::interconnect::kepler_compute {
         writeImageDescs(vk::DescriptorType::eCombinedImageSampler, shaderStage.info.texture_descriptors,
                         [&](const Shader::TextureDescriptor &desc, size_t arrayIdx) {
                             BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
-                            auto binding{GetTextureBinding(ctx, desc,
-                                                           samplers, textures, handle,
-                                                           vk::PipelineStageFlagBits::eComputeShader,
-                                                           srcStageMask, dstStageMask)};
-                            return binding.first;
+                            // Capture the guest descriptor provenance on failure rather than
+                            // guessing a fixed TIC/TSC pool limit. No extra reads on the
+                            // successful binding path; preserve the original exception.
+                            try {
+                                auto binding{GetTextureBinding(ctx, desc,
+                                                               samplers, textures, handle,
+                                                               vk::PipelineStageFlagBits::eComputeShader,
+                                                               srcStageMask, dstStageMask)};
+                                return binding.first;
+                            } catch (...) {
+                                const auto elemOffset{arrayIdx << desc.size_shift};
+                                const auto primaryOffset{desc.cbuf_offset + elemOffset};
+                                const auto secondaryOffset{desc.secondary_cbuf_offset + elemOffset};
+                                u32 primary{};
+                                u32 secondary{};
+                                bool sourcesReadable{true};
+                                try {
+                                    if (constantBuffers[desc.cbuf_index].view)
+                                        primary = constantBuffers[desc.cbuf_index].Read<u32>(ctx.executor, primaryOffset);
+                                    if (desc.has_secondary && constantBuffers[desc.secondary_cbuf_index].view)
+                                        secondary = constantBuffers[desc.secondary_cbuf_index].Read<u32>(ctx.executor, secondaryOffset);
+                                } catch (...) {
+                                    sourcesReadable = false;
+                                }
+                                LOGW("ComputeBindlessTrace: handle=0x{:08X} TIC={} TSC={} primary=0x{:08X} secondary=0x{:08X} readable={} cbuf={} offset=0x{:X} secondaryCbuf={} secondaryOffset=0x{:X} hasSecondary={} samplerless={} shift={} secondaryShift={} mask=0x{:08X} secondaryMask=0x{:08X} arrayIdx={}",
+                                     handle.raw, static_cast<u32>(handle.textureIndex), static_cast<u32>(handle.samplerIndex),
+                                     primary, secondary, sourcesReadable, desc.cbuf_index, primaryOffset,
+                                     desc.secondary_cbuf_index, secondaryOffset, desc.has_secondary, desc.is_samplerless,
+                                     desc.shift_left, desc.secondary_shift_left, desc.mask, desc.secondary_mask, arrayIdx);
+                                throw;
+                            }
                         });
          
         writeImageDescs(vk::DescriptorType::eStorageImage, shaderStage.info.image_descriptors,

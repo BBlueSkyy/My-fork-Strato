@@ -36,8 +36,8 @@ namespace skyline::gpu::interconnect {
         textureTypes.push_back({index, type});
     }
 
-    void PipelineStateBundle::AddTexturePixelFormatInteger(u32 index, bool isInteger) {
-        texturePixelFormats.push_back({index, static_cast<u32>(isInteger)});
+    void PipelineStateBundle::AddTextureComponentType(u32 index, Shader::TextureComponentType componentType) {
+        texturePixelFormats.push_back({index, static_cast<u32>(componentType)});
     }
 
     void PipelineStateBundle::AddTextureCompareFunction(u32 index, Shader::CompareFunction function) {
@@ -65,12 +65,12 @@ namespace skyline::gpu::interconnect {
         return it->type;
     }
 
-    bool PipelineStateBundle::LookupTexturePixelFormatInteger(u32 index) {
+    Shader::TextureComponentType PipelineStateBundle::LookupTextureComponentType(u32 index) {
         auto it{ranges::find_if(texturePixelFormats, [index](const auto &entry) { return entry.index == index; })};
         if (it == texturePixelFormats.end())
             throw exception("Failed to find texture pixel format for index: 0x{:X}", index);
 
-        return it->isInteger != 0;
+        return static_cast<Shader::TextureComponentType>(it->componentType);
     }
 
     Shader::CompareFunction PipelineStateBundle::LookupTextureCompareFunction(u32 index) {
@@ -116,7 +116,7 @@ namespace skyline::gpu::interconnect {
 
         struct TexturePixelFormat {
             u32 index;
-            u32 isInteger;
+            u32 componentType;
         } texturePixelFormats[texturePixelFormatCount];
 
         struct TextureCompareFunction {

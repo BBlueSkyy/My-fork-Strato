@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <fstream>
+#include <string_view>
 #include <range/v3/algorithm.hpp>
 #include <boost/functional/hash.hpp>
 #include <gpu.h>
@@ -30,6 +32,67 @@ namespace Shader::Log {
 }
 
 namespace skyline::gpu {
+    namespace {
+        bool GraphicsDynamicTextureHandlesSupported(const TraitManager &traits, Shader::Stage stage) {
+            if (!traits.supportsDynamicTextureHandles) return false;
+            switch (stage) {
+                case Shader::Stage::Fragment:
+                    return traits.supportsFragmentStoresAndAtomics;
+                case Shader::Stage::VertexA:
+                case Shader::Stage::VertexB:
+                case Shader::Stage::TessellationControl:
+                case Shader::Stage::TessellationEval:
+                case Shader::Stage::Geometry:
+                    return traits.supportsVertexPipelineStoresAndAtomics;
+                default:
+                    return false;
+            }
+        }
+
+        const char *ShaderStageName(Shader::Stage stage) {
+            switch (stage) {
+                case Shader::Stage::VertexA: return "VertexA";
+                case Shader::Stage::VertexB: return "VertexB";
+                case Shader::Stage::TessellationControl: return "TessellationControl";
+                case Shader::Stage::TessellationEval: return "TessellationEval";
+                case Shader::Stage::Geometry: return "Geometry";
+                case Shader::Stage::Fragment: return "Fragment";
+                case Shader::Stage::Compute: return "Compute";
+                default: return "Unknown";
+            }
+        }
+
+        // Targeted MK11 menu compute shader. Never enable DumpShaders globally.
+        constexpr u64 Mk11TargetComputeHash{0x55736CD732068324ULL};
+        constexpr size_t Mk11TraceMaxBytes{256 * 1024};
+        constexpr size_t Mk11TraceChunkBytes{256};
+
+        // Hex chunks are independently recoverable from emulation.log (including
+        // on Android, where app-private shader dump directories are hard to reach).
+        void TraceShaderPayload(std::string_view label, u64 hash, std::string_view phase, const u8 *data, size_t size) {
+            constexpr char HexDigits[]{"0123456789ABCDEF"};
+            const size_t captured{std::min(size, Mk11TraceMaxBytes)};
+            LOGW("{}DumpBegin: hash=0x{:016X} phase={} totalBytes={} capturedBytes={} truncated={}",
+                 label, hash, phase, size, captured, size > captured);
+            for (size_t offset{}; offset < captured; offset += Mk11TraceChunkBytes) {
+                const size_t count{std::min(Mk11TraceChunkBytes, captured - offset)};
+                std::string hex(count * 2, '0');
+                for (size_t i{}; i < count; ++i) {
+                    const u8 byte{data[offset + i]};
+                    hex[2 * i] = HexDigits[byte >> 4];
+                    hex[2 * i + 1] = HexDigits[byte & 0xF];
+                }
+                LOGW("{}DumpChunk: phase={} offset={} hex={}", label, phase, offset, hex);
+            }
+            LOGW("{}DumpEnd: hash=0x{:016X} phase={} capturedBytes={}",
+                 label, hash, phase, captured);
+        }
+
+        void TraceMk11ShaderPayload(std::string_view phase, const u8 *data, size_t size) {
+            TraceShaderPayload("MK11Shader", Mk11TargetComputeHash, phase, data, size);
+        }
+    }
+
     void ShaderManager::LoadShaderReplacements(std::string_view replacementDir) {
         std::filesystem::path replacementDirPath{replacementDir};
         if (std::filesystem::exists(replacementDirPath)) {
@@ -97,6 +160,8 @@ namespace skyline::gpu {
             .supported_spirv = traits.supportsSpirv14 ? 0x00010400U : 0x00010000U,
             .unified_descriptor_binding = true,
             .support_descriptor_aliasing = true,
+            .support_dynamic_texture_handles = traits.supportsDynamicTextureHandles,
+            .support_min_lod = traits.supportsShaderResourceMinLod,
             .support_int8 = traits.supportsInt8,
             .support_int16 = traits.supportsInt16,
             .support_storage8 = traits.supportsStorage8,
@@ -160,9 +225,10 @@ namespace skyline::gpu {
         u32 baseOffset;
         u32 textureBufferIndex;
         bool viewportTransformEnabled;
+        bool supportsDynamicTextureHandles;
         ShaderManager::ConstantBufferRead constantBufferRead;
         ShaderManager::GetTextureType getTextureType;
-        ShaderManager::IsTexturePixelFormatInteger isTexturePixelFormatInteger;
+        ShaderManager::GetTextureComponentType getTextureComponentType;
         ShaderManager::GetTextureCompareFunc getTextureCompareFunc;
       
       public:
@@ -172,19 +238,24 @@ namespace skyline::gpu {
                             u32 textureBufferIndex,
                             bool viewportTransformEnabled,
                             ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType,
-                            ShaderManager::IsTexturePixelFormatInteger isTexturePixelFormatInteger,
-                            ShaderManager::GetTextureCompareFunc getTextureCompareFunc)
+                            ShaderManager::GetTextureComponentType getTextureComponentType,
+                            ShaderManager::GetTextureCompareFunc getTextureCompareFunc, bool dynamicTextureHandles)
             : binary{pBinary}, baseOffset{baseOffset},
               textureBufferIndex{textureBufferIndex},
               viewportTransformEnabled{viewportTransformEnabled},
+              supportsDynamicTextureHandles{dynamicTextureHandles},
               constantBufferRead{std::move(constantBufferRead)}, getTextureType{std::move(getTextureType)},
-              isTexturePixelFormatInteger{std::move(isTexturePixelFormatInteger)},
+              getTextureComponentType{std::move(getTextureComponentType)},
               getTextureCompareFunc{std::move(getTextureCompareFunc)} {
             gp_passthrough_mask = postVtgShaderAttributeSkipMask;
             stage = pStage;
             sph = *reinterpret_cast<Shader::ProgramHeader *>(binary.data());
             start_address = baseOffset;
             is_propietary_driver = textureBufferIndex == 2;
+        }
+
+        [[nodiscard]] bool SupportsDynamicTextureHandles() const final {
+            return supportsDynamicTextureHandles;
         }
 
         [[nodiscard]] u64 ReadInstruction(u32 address) final {
@@ -203,7 +274,11 @@ namespace skyline::gpu {
         }
 
         [[nodiscard]] bool IsTexturePixelFormatInteger(u32 handle) final {
-            return isTexturePixelFormatInteger(handle);
+            return getTextureComponentType(handle) != Shader::TextureComponentType::Float;
+        }
+
+        [[nodiscard]] Shader::TextureComponentType ReadTextureComponentType(u32 handle) final {
+            return getTextureComponentType(handle);
         }
 
         [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) final {
@@ -271,8 +346,10 @@ namespace skyline::gpu {
         std::array<u32, 3> workgroupDimensions;
         ShaderManager::ConstantBufferRead constantBufferRead;
         ShaderManager::GetTextureType getTextureType;
-        ShaderManager::IsTexturePixelFormatInteger isTexturePixelFormatInteger;
+        ShaderManager::GetTextureComponentType getTextureComponentType;
         ShaderManager::GetTextureCompareFunc getTextureCompareFunc;
+        bool diagnosticTexturePass{};
+        bool supportsDynamicTextureHandles{};
     
       public:
         ComputeEnvironment(span<u8> pBinary,
@@ -281,8 +358,9 @@ namespace skyline::gpu {
                            u32 localMemorySize, u32 sharedMemorySize,
                            std::array<u32, 3> workgroupDimensions,
                            ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType,
-                           ShaderManager::IsTexturePixelFormatInteger isTexturePixelFormatInteger,
-                           ShaderManager::GetTextureCompareFunc getTextureCompareFunc)
+                           ShaderManager::GetTextureComponentType getTextureComponentType,
+                           ShaderManager::GetTextureCompareFunc getTextureCompareFunc,
+                           bool traceTexturePass, bool dynamicTextureHandles)
             : binary{pBinary},
               baseOffset{baseOffset},
               textureBufferIndex{textureBufferIndex},
@@ -291,11 +369,25 @@ namespace skyline::gpu {
               workgroupDimensions{workgroupDimensions},
               constantBufferRead{std::move(constantBufferRead)},
               getTextureType{std::move(getTextureType)},
-              isTexturePixelFormatInteger{std::move(isTexturePixelFormatInteger)},
-              getTextureCompareFunc{std::move(getTextureCompareFunc)} {
+              getTextureComponentType{std::move(getTextureComponentType)},
+              getTextureCompareFunc{std::move(getTextureCompareFunc)},
+              diagnosticTexturePass{traceTexturePass},
+              supportsDynamicTextureHandles{dynamicTextureHandles} {
             stage = Shader::Stage::Compute;
             start_address = baseOffset;
             is_propietary_driver = textureBufferIndex == 2;
+        }
+
+        [[nodiscard]] bool SupportsDynamicTextureHandles() const final {
+            return supportsDynamicTextureHandles;
+        }
+
+        [[nodiscard]] bool WantsTexturePassDiagnostic() const final {
+            return diagnosticTexturePass;
+        }
+
+        void TraceTexturePassDiagnostic(std::string_view phase, std::string_view ir) final {
+            TraceMk11ShaderPayload(phase, reinterpret_cast<const u8 *>(ir.data()), ir.size());
         }
 
         [[nodiscard]] u64 ReadInstruction(u32 address) final {
@@ -314,7 +406,11 @@ namespace skyline::gpu {
         }
 
         [[nodiscard]] bool IsTexturePixelFormatInteger(u32 handle) final {
-            return isTexturePixelFormatInteger(handle);
+            return getTextureComponentType(handle) != Shader::TextureComponentType::Float;
+        }
+
+        [[nodiscard]] Shader::TextureComponentType ReadTextureComponentType(u32 handle) final {
+            return getTextureComponentType(handle);
         }
 
         [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) final {
@@ -427,14 +523,27 @@ namespace skyline::gpu {
                                                            u64 hash, span<u8> binary, u32 baseOffset,
                                                            u32 textureConstantBufferIndex,
                                                            bool viewportTransformEnabled,
-                                                           const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc) {
+                                                           const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const GetTextureComponentType &getTextureComponentType, const GetTextureCompareFunc &getTextureCompareFunc) {
         binary = ProcessShaderBinary(false, hash, binary);
 
         std::scoped_lock lock{poolMutex};
 
-        GraphicsEnvironment environment{postVtgShaderAttributeSkipMask, stage, binary, baseOffset, textureConstantBufferIndex, viewportTransformEnabled, constantBufferRead, getTextureType, isTexturePixelFormatInteger, getTextureCompareFunc};
-        Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset + sizeof(Shader::ProgramHeader))}};
-        return  Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
+        GraphicsEnvironment environment{postVtgShaderAttributeSkipMask, stage, binary, baseOffset, textureConstantBufferIndex, viewportTransformEnabled, constantBufferRead, getTextureType, getTextureComponentType, getTextureCompareFunc,
+            GraphicsDynamicTextureHandlesSupported(gpu.traits, stage)};
+        try {
+            Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset + sizeof(Shader::ProgramHeader))}};
+            return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
+        } catch (const std::exception &error) {
+            LOGE("ShaderTranslationFailure: stage={} hash=0x{:016X} baseOffset=0x{:X} dynamicHandles={} reason={}",
+                 ShaderStageName(stage), hash, baseOffset, environment.SupportsDynamicTextureHandles(), error.what());
+            try {
+                // Failure-only capture: successful shaders incur no copy or log.
+                TraceShaderPayload("ShaderFailure", hash, "maxwell_translation_input", binary.data(), binary.size());
+            } catch (...) {
+                // Preserve the original exception if diagnostic allocation fails.
+            }
+            throw;
+        }
     }
 
     Shader::IR::Program ShaderManager::CombineVertexShaders(Shader::IR::Program &vertexA, Shader::IR::Program &vertexB, span<u8> vertexBBinary) {
@@ -454,14 +563,39 @@ namespace skyline::gpu {
                                                           u32 textureConstantBufferIndex,
                                                           u32 localMemorySize, u32 sharedMemorySize,
                                                           std::array<u32, 3> workgroupDimensions,
-                                                          const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc) {
+                                                          const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const GetTextureComponentType &getTextureComponentType, const GetTextureCompareFunc &getTextureCompareFunc) {
+        const auto guestMaxwellBinary{binary};
         binary = ProcessShaderBinary(false, hash, binary);
 
         std::scoped_lock lock{poolMutex};
 
-        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, isTexturePixelFormatInteger, getTextureCompareFunc};
-        Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset)}};
-        return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
+        // One targeted capture, including the *original* Maxwell binary and
+        // compiler IR before and after texture handle lowering. No guest data
+        // or pipeline behavior is modified by diagnostic output.
+        const bool traceTarget{hash == Mk11TargetComputeHash && !targetComputeShaderCaptured};
+        if (traceTarget) {
+            targetComputeShaderCaptured = true;
+            try {
+                const bool replaced{binary.data() != guestMaxwellBinary.data() || binary.size() != guestMaxwellBinary.size()};
+                LOGW("MK11ShaderTrace: hash=0x{:016X} baseOffset=0x{:X} guestBinaryBytes={} translationBinaryBytes={} replaced={} textureCbuf={}",
+                     hash, baseOffset, guestMaxwellBinary.size(), binary.size(), replaced, textureConstantBufferIndex);
+                TraceMk11ShaderPayload("maxwell", guestMaxwellBinary.data(), guestMaxwellBinary.size());
+                if (replaced)
+                    TraceMk11ShaderPayload("maxwell_translation_input", binary.data(), binary.size());
+            } catch (...) {
+                // Failure to record the trace must not affect guest execution.
+            }
+        }
+
+        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, getTextureComponentType, getTextureCompareFunc, traceTarget, gpu.traits.supportsDynamicTextureHandles};
+        try {
+            Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset)}};
+            return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
+        } catch (const std::exception &error) {
+            LOGE("ShaderTranslationFailure: stage=Compute hash=0x{:016X} baseOffset=0x{:X} dynamicHandles={} reason={}",
+                 hash, baseOffset, environment.SupportsDynamicTextureHandles(), error.what());
+            throw;
+        }
     }
 
     vk::ShaderModule ShaderManager::CompileShader(const Shader::RuntimeInfo &runtimeInfo, Shader::IR::Program &program, Shader::Backend::Bindings &bindings, u64 hash) {
@@ -470,7 +604,14 @@ namespace skyline::gpu {
         if (program.info.loads.Legacy() || program.info.stores.Legacy())
             Shader::Maxwell::ConvertLegacyToGeneric(program, runtimeInfo);
 
-        auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings)};
+        auto spirvEmitted{[&] {
+            try {
+                return Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings);
+            } catch (const std::exception &error) {
+                LOGE("ShaderEmissionFailure: stage={} hash=0x{:016X} reason={}", ShaderStageName(program.stage), hash, error.what());
+                throw;
+            }
+        }()};
         auto spirv{ProcessShaderBinary(true, hash, span<u32>{spirvEmitted}.cast<u8>()).cast<u32>()};
 
         vk::ShaderModuleCreateInfo createInfo{

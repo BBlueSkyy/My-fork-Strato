@@ -149,7 +149,7 @@ namespace skyline::gpu {
          * @note Shader specializiation constants are **not** supported and will result in UB
          * @note Input/Resolve attachments are **not** supported and using them with the supplied pipeline will result in UB
          */
-        CompiledPipeline AssemblePipelineAsync(const PipelineState &state, span<const vk::DescriptorSetLayoutBinding> layoutBindings, span<const vk::PushConstantRange> pushConstantRanges = {}, bool noPushDescriptors = false);
+        CompiledPipeline AssemblePipelineAsync(const PipelineState &state, span<const vk::DescriptorSetLayoutBinding> layoutBindings, span<const vk::PushConstantRange> pushConstantRanges = {}, bool noPushDescriptors = false, vk::DescriptorSetLayout extraSetLayout = nullptr);
 
         /**
          * @brief Waits until the pipeline compilation thread pool is idle and all pipelines have been compiled

@@ -4,10 +4,17 @@
 #pragma once
 
 #include <future>
+#include <gpu/attachment_feedback.h>
 #include <gpu/interconnect/command_executor.h>
 #include "common.h"
 
 namespace skyline::gpu::interconnect {
+    struct SetAttachmentFeedbackCmdImpl {
+        vk::ImageAspectFlags aspects;
+        void Record(GPU &gpu, vk::raii::CommandBuffer &commands) {
+            feedback::SetDynamicState(gpu.vkDevice, commands, aspects);
+        }
+    };
     /**
      * @brief Header for a singly-linked state update command
      */
@@ -35,6 +42,8 @@ namespace skyline::gpu::interconnect {
             reinterpret_cast<CmdHolder *>(header)->cmd.Record(gpu, commandBuffer);
         }
     };
+
+    using SetAttachmentFeedbackCmd = CmdHolder<SetAttachmentFeedbackCmdImpl>;
 
     static constexpr size_t MaxVertexBufferCount{16};
 
@@ -255,6 +264,17 @@ namespace skyline::gpu::interconnect {
     };
     using SetDescriptorSetWithUpdateCmd = CmdHolder<SetDescriptorSetCmdImpl<false>>;
     using SetDescriptorSetWithPushCmd = CmdHolder<SetDescriptorSetCmdImpl<true>>;
+
+    struct BindCachedDescriptorSetCmdImpl {
+        vk::PipelineLayout layout;
+        vk::DescriptorSet set;
+        u32 index;
+        vk::PipelineBindPoint bindPoint{vk::PipelineBindPoint::eCompute};
+        void Record(GPU &, vk::raii::CommandBuffer &commandBuffer) {
+            commandBuffer.bindDescriptorSets(bindPoint, layout, index, set, {});
+        }
+    };
+    using BindCachedDescriptorSetCmd = CmdHolder<BindCachedDescriptorSetCmdImpl>;
 
     struct SetPipelineCmdImpl {
         void Record(GPU &gpu, vk::raii::CommandBuffer &commandBuffer) {
@@ -492,6 +512,10 @@ namespace skyline::gpu::interconnect {
                 });
         }
 
+        void SetAttachmentFeedback(vk::ImageAspectFlags aspects) {
+            AppendCmd<SetAttachmentFeedbackCmd>({.aspects = aspects});
+        }
+
         void SetPipeline(vk::Pipeline pipeline, vk::PipelineBindPoint bindPoint) {
             AppendCmd<SetPipelineCmd>(
                 {
@@ -513,6 +537,14 @@ namespace skyline::gpu::interconnect {
                 {
                     .updateInfo = updateInfo,
                 });
+        }
+
+        void BindCachedComputeDescriptors(vk::PipelineLayout layout, u32 index, vk::DescriptorSet set) {
+            AppendCmd<BindCachedDescriptorSetCmd>({.layout = layout, .set = set, .index = index});
+        }
+
+        void BindCachedGraphicsDescriptors(vk::PipelineLayout layout, u32 index, vk::DescriptorSet set) {
+            AppendCmd<BindCachedDescriptorSetCmd>({.layout = layout, .set = set, .index = index, .bindPoint = vk::PipelineBindPoint::eGraphics});
         }
 
         void SetRenderArea(vk::PipelineLayout pipelineLayout, const std::array<f32, 4> &renderArea) {

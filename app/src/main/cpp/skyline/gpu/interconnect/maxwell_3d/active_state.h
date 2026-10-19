@@ -270,6 +270,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         Pipeline *GetPipeline();
 
+        void InvalidatePipeline() { pipeline.MarkDirty(false); }
+
         bool MayWriteTransformFeedbackBuffer(Buffer *buffer);
 
         span<TextureView *> GetColorAttachments();

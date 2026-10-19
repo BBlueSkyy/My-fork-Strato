@@ -7,6 +7,7 @@
 #include <shader_compiler/frontend/ir/program.h>
 #include <gpu/interconnect/common/samplers.h>
 #include <gpu/interconnect/common/textures.h>
+#include <gpu/interconnect/common/dynamic_descriptors.h>
 #include "packed_pipeline_state.h"
 #include "constant_buffers.h"
 
@@ -40,6 +41,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
       private:
         ShaderStage shaderStage;
         DescriptorInfo descriptorInfo;
+        std::unique_ptr<DynamicDescriptors> dynamicDescriptors;
         std::vector<CachedMappedBufferView> storageBufferViews;
         std::vector<CachedMappedBufferView> texelBufferViews;
         ContextTag lastExecutionTag{}; //!< The last execution tag this pipeline was used at
@@ -51,6 +53,17 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         PackedPipelineState sourcePackedState;
 
+        bool MatchesTextureTypes(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers) const;
+
+        bool CanBindDynamicDescriptors(InterconnectContext &ctx, Textures &textures, Samplers &samplers) const {
+            return !dynamicDescriptors || dynamicDescriptors->CanRepresent(ctx, textures, samplers);
+        }
+        bool HasDynamicDescriptors() const { return static_cast<bool>(dynamicDescriptors); }
+        vk::DescriptorSet SyncDynamicDescriptors(InterconnectContext &ctx, Textures &textures, Samplers &samplers,
+                                                vk::PipelineStageFlags &src, vk::PipelineStageFlags &dst) {
+            return dynamicDescriptors ? dynamicDescriptors->Sync(ctx, textures, samplers, src, dst) : vk::DescriptorSet{};
+        }
+
         Pipeline(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary);
 
         /**
@@ -61,15 +74,18 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
     class PipelineManager {
       private:
-        tsl::robin_map<PackedPipelineState, std::unique_ptr<Pipeline>, util::ObjectHash<PackedPipelineState>> map;
+        tsl::robin_map<PackedPipelineState, std::vector<std::unique_ptr<Pipeline>>, util::ObjectHash<PackedPipelineState>> map;
 
       public:
         Pipeline *FindOrCreate(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary) {
             auto it{map.find(packedState)};
             if (it != map.end())
-                return it->second.get();
+                for (const auto &variant : it->second)
+                    if (variant->MatchesTextureTypes(ctx, textures, constantBuffers) &&
+                        variant->CanBindDynamicDescriptors(ctx, textures, samplers))
+                        return variant.get();
 
-            return map.emplace(packedState, std::make_unique<Pipeline>(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)).first->second.get();
+            return map[packedState].emplace_back(std::make_unique<Pipeline>(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)).get();
         }
     };
 }

@@ -15,6 +15,7 @@
 #include "image_format_policy.h"
 #include "backing_promotion.h"
 #include "view_range.h"
+#include <gpu/attachment_feedback.h>
 #include <bit>
 #include <numeric>
 
@@ -93,31 +94,44 @@ namespace skyline::gpu {
 
     Texture::TextureViewStorage::TextureViewStorage(vk::ImageViewType type, texture::Format format, vk::ComponentMapping mapping, vk::ImageSubresourceRange range, vk::raii::ImageView &&vkView) : type(type), format(format), mapping(mapping), range(range), vkView(std::move(vkView)) {}
 
+    bool Texture::OwnsView(vk::ImageView view) const {
+        return view && std::any_of(views.begin(), views.end(),
+            [view](const TextureViewStorage &stored) { return *stored.vkView == view; });
+    }
+
     vk::ImageUsageFlags TextureView::GetUsage() const {
         auto usage{texture->usage};
         if (!format || format->vkFormat == texture->format->vkFormat) return usage;
         const auto properties{texture->gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat)};
         const auto features{texture->tiling == vk::ImageTiling::eOptimal ? properties.optimalTilingFeatures : properties.linearTilingFeatures};
-        if (!(features & vk::FormatFeatureFlagBits::eSampledImage)) usage &= ~vk::ImageUsageFlagBits::eSampled;
-        if (!(features & vk::FormatFeatureFlagBits::eStorageImage)) usage &= ~vk::ImageUsageFlagBits::eStorage;
-        if (!(features & vk::FormatFeatureFlagBits::eColorAttachment)) usage &= ~vk::ImageUsageFlagBits::eColorAttachment;
-        if (!(features & vk::FormatFeatureFlagBits::eDepthStencilAttachment)) usage &= ~vk::ImageUsageFlagBits::eDepthStencilAttachment;
+        // Vulkan-Hpp's complement only includes bits known to its pinned
+        // headers. Clear individual bits without dropping newer extension
+        // usages such as attachment feedback loops.
+        if (!(features & vk::FormatFeatureFlagBits::eSampledImage)) usage ^= usage & vk::ImageUsageFlagBits::eSampled;
+        if (!(features & vk::FormatFeatureFlagBits::eStorageImage)) usage ^= usage & vk::ImageUsageFlagBits::eStorage;
+        if (!(features & vk::FormatFeatureFlagBits::eColorAttachment)) usage ^= usage & vk::ImageUsageFlagBits::eColorAttachment;
+        if (!(features & vk::FormatFeatureFlagBits::eDepthStencilAttachment)) usage ^= usage & vk::ImageUsageFlagBits::eDepthStencilAttachment;
         if (!(features & (vk::FormatFeatureFlagBits::eColorAttachment | vk::FormatFeatureFlagBits::eDepthStencilAttachment)))
-            usage &= ~vk::ImageUsageFlagBits::eInputAttachment;
+            usage ^= usage & vk::ImageUsageFlagBits::eInputAttachment;
         return usage;
     }
 
-    vk::ImageView TextureView::GetView() {
+    vk::ImageView TextureView::GetView(bool identityMapping) {
         if (!texture->ViewRangeFits(type, range) || !range.aspectMask || (range.aspectMask & ~texture->format->vkAspect))
             throw exception("Texture view exceeds backing mip/layer bounds or has an incompatible view type");
         const auto requested{format ? format->vkFormat : texture->format->vkFormat};
         if (!texture->ViewFormatAdmitted(requested))
             throw exception("Texture view format {} is not admitted by backing {}", vk::to_string(requested), vk::to_string(texture->format->vkFormat));
-        if (vkView && vkViewGeneration == texture->backingGeneration)
-            return vkView;
+        // Storage operations address surface channels directly. Vulkan requires
+        // identity components here; sampled views continue to apply TIC swizzles.
+        const auto components{identityMapping ? vk::ComponentMapping{} : mapping};
+        auto &cachedView{identityMapping ? vkStorageView : vkView};
+        auto &cachedGeneration{identityMapping ? vkStorageViewGeneration : vkViewGeneration};
+        if (cachedView && cachedGeneration == texture->backingGeneration)
+            return cachedView;
 
-        auto it{std::find_if(texture->views.begin(), texture->views.end(), [this](const Texture::TextureViewStorage &view) {
-            return view.type == type && view.format == format && view.mapping == mapping && view.range == range;
+        auto it{std::find_if(texture->views.begin(), texture->views.end(), [this, components](const Texture::TextureViewStorage &view) {
+            return view.type == type && view.format == format && view.mapping == components && view.range == range;
         })};
         if (it == texture->views.end()) {
             // Foreign formats need not support every usage of the native image (e.g.
@@ -128,15 +142,15 @@ namespace skyline::gpu {
                 .image = texture->GetBacking(),
                 .viewType = type,
                 .format = format ? *format : *texture->format,
-                .components = mapping,
+                .components = components,
                 .subresourceRange = range,
             };
 
-            it = texture->views.emplace(texture->views.end(), type, format, mapping, range, vk::raii::ImageView{texture->gpu.vkDevice, createInfo});
+            it = texture->views.emplace(texture->views.end(), type, format, components, range, vk::raii::ImageView{texture->gpu.vkDevice, createInfo});
         }
 
-        vkViewGeneration = texture->backingGeneration;
-        return vkView = *it->vkView;
+        cachedGeneration = texture->backingGeneration;
+        return cachedView = *it->vkView;
     }
 
     void TextureView::lock() {
@@ -699,6 +713,8 @@ namespace skyline::gpu {
             usage |= vk::ImageUsageFlagBits::eColorAttachment;
         if (format->vkAspect & (vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil))
             usage |= vk::ImageUsageFlagBits::eDepthStencilAttachment;
+
+        usage = feedback::ImageUsage(usage, gpu.traits.supportsAttachmentFeedbackLoop);
 
         const auto formatFeatures{gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat).optimalTilingFeatures};
         if (formatFeatures & vk::FormatFeatureFlagBits::eStorageImage)

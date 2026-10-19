@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <cmath>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include "samplers.h"
+#include "dynamic_pool.h"
 
 namespace skyline::gpu::interconnect {
     void SamplerPoolState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
@@ -19,6 +21,7 @@ namespace skyline::gpu::interconnect {
         texSamplers = mapping.first.subspan(mapping.second).cast<TextureSamplerControl>().first(maximumIndex + 1);
 
         didUseTexHeaderBinding = useTexHeaderBinding;
+        ++bindingGeneration;
     }
 
     bool SamplerPoolState::Refresh(InterconnectContext &ctx, bool useTexHeaderBinding) {
@@ -27,6 +30,13 @@ namespace skyline::gpu::interconnect {
 
     void SamplerPoolState::PurgeCaches() {
         texSamplers = span<TextureSamplerControl>{};
+    }
+
+    span<const TextureSamplerControl> SamplerPoolState::ReadDynamicHeaders(InterconnectContext &ctx) {
+        const size_t count{size_t{didUseTexHeaderBinding ? engine->texHeaderPool.maximumIndex
+                                                       : engine->texSamplerPool.maximumIndex} + 1};
+        ReadDynamicPool(ctx, static_cast<u64>(engine->texSamplerPool.offset), count, dynamicHeaders);
+        return dynamicHeaders;
     }
 
     Samplers::Samplers(DirtyManager &manager, const SamplerPoolState::EngineRegisters &engine) : samplerPool{manager, engine} {}
@@ -45,6 +55,68 @@ namespace skyline::gpu::interconnect {
     void Samplers::MarkAllDirty() {
         samplerPool.MarkDirty(true);
         std::fill(texSamplerCache.begin(), texSamplerCache.end(), nullptr);
+    }
+
+    span<const TextureSamplerControl> Samplers::GetPoolHeaders(InterconnectContext &ctx) {
+        auto &pool{samplerPool.Get()};
+        const auto headers{pool.ReadDynamicHeaders(ctx)};
+        std::fill(texSamplerCache.begin(), texSamplerCache.end(), nullptr);
+        return headers;
+    }
+
+    std::shared_ptr<vk::raii::Sampler> Samplers::GetDynamicSampler(InterconnectContext &ctx, u32 index) {
+        const auto &headers{samplerPool.Get().dynamicHeaders};
+        if (index >= headers.size()) return nullptr;
+        const auto &tsc{headers[index]};
+        using TSC = TextureSamplerControl;
+        const auto filterValid{[](TSC::Filter filter) {
+            return filter == TSC::Filter::Nearest || filter == TSC::Filter::Linear;
+        }};
+        const auto addressValid{[&ctx](TSC::AddressMode mode) {
+            return mode == TSC::AddressMode::Repeat || mode == TSC::AddressMode::MirroredRepeat ||
+                   mode == TSC::AddressMode::ClampToEdge ||
+                   (mode == TSC::AddressMode::MirrorClampToEdge && ctx.gpu.traits.supportsSamplerMirrorClampToEdge);
+        }};
+        if (!filterValid(tsc.magFilter) || !filterValid(tsc.minFilter) ||
+            (tsc.mipFilter != TSC::MipFilter::None && tsc.mipFilter != TSC::MipFilter::Nearest && tsc.mipFilter != TSC::MipFilter::Linear) ||
+            !addressValid(tsc.addressModeU) || !addressValid(tsc.addressModeV) || !addressValid(tsc.addressModeP) ||
+            !tsc.floatCoordNormalization || tsc.depthCompareEnable ||
+            (tsc.mipFilter != TSC::MipFilter::None && tsc.minLodClamp > tsc.maxLodClamp) ||
+            (tsc.maxAnisotropy && !ctx.gpu.traits.supportsAnisotropicFiltering) ||
+            static_cast<u32>(tsc.reductionFilter) > static_cast<u32>(TSC::SamplerReduction::Max) ||
+            (tsc.reductionFilter != TSC::SamplerReduction::WeightedAverage && !ctx.gpu.traits.supportsSamplerReductionMode))
+            return nullptr;
+        // The current shared sampler cache creates floating-point border colors.
+        // Border samplers need numeric-class variants before they can be shared
+        // with integer runtime images; reject them above instead of approximating.
+        auto control{tsc};
+        const auto &limits{ctx.gpu.traits.dynamicDescriptorLimits};
+        if (control.MaxAnisotropy() > limits.maxSamplerAnisotropy ||
+            std::abs(control.MipLodBias()) > limits.maxSamplerLodBias ||
+            (tsc.reductionFilter != TSC::SamplerReduction::WeightedAverage && tsc.maxAnisotropy))
+            return nullptr;
+        if (index < texSamplerCache.size()) texSamplerCache[index] = nullptr;
+        auto &pool{samplerPool.Get()};
+        struct RestoreHeaders {
+            SamplerPoolState &pool;
+            span<TextureSamplerControl> previous;
+            std::vector<vk::raii::Sampler *> &cache;
+            u32 index;
+            ~RestoreHeaders() {
+                pool.texSamplers = previous;
+                if (index < cache.size()) cache[index] = nullptr;
+            }
+        } restore{pool, pool.texSamplers, texSamplerCache, index};
+        pool.texSamplers = pool.dynamicHeaders;
+        GetSampler(ctx, index);
+        return texSamplerStore.at(tsc);
+    }
+
+    bool Samplers::DynamicSamplerUsesLinear(u32 index) {
+        const auto &tsc{samplerPool.Get().dynamicHeaders.at(index)};
+        return tsc.magFilter == TextureSamplerControl::Filter::Linear ||
+               tsc.minFilter == TextureSamplerControl::Filter::Linear ||
+               tsc.mipFilter == TextureSamplerControl::MipFilter::Linear || tsc.maxAnisotropy;
     }
 
     static vk::Filter ConvertSamplerFilter(TextureSamplerControl::Filter filter) {
@@ -252,7 +324,7 @@ namespace skyline::gpu::interconnect {
                 samplerInfo.unlink<vk::SamplerCustomBorderColorCreateInfoEXT>();
             }
 
-            sampler = std::make_unique<vk::raii::Sampler>(ctx.gpu.vkDevice, samplerInfo.get<vk::SamplerCreateInfo>());
+            sampler = std::make_shared<vk::raii::Sampler>(ctx.gpu.vkDevice, samplerInfo.get<vk::SamplerCreateInfo>());
         }
 
         texSamplerCache[index] = sampler.get();

@@ -65,6 +65,7 @@ int main() {
         for (unsigned mask = 0; mask < 64; ++mask) {
             TraitManager::DeviceFeatures2 supported, enabled;
             supported.get<vk::PhysicalDeviceFeatures2>().features.shaderInt16 = bool(mask & 1);
+            supported.get<vk::PhysicalDeviceFeatures2>().features.imageCubeArray = bool(mask & 1);
             supported.get<vk::PhysicalDeviceShaderFloat16Int8Features>().shaderInt8 = bool(mask & 2);
             supported.get<vk::PhysicalDevice8BitStorageFeatures>().storageBuffer8BitAccess = bool(mask & 4);
             supported.get<vk::PhysicalDevice16BitStorageFeatures>().storageBuffer16BitAccess = bool(mask & 8);
@@ -87,6 +88,8 @@ int main() {
             vk::raii::PhysicalDevice device;
             TraitManager traits(supported, enabled, extensions, requested, properties, device);
             const auto profile = profileFor(traits);
+            check(enabled.get<vk::PhysicalDeviceFeatures2>().features.imageCubeArray == bool(mask & 1),
+                  "supported cube image arrays were not enabled");
             check(traits.minimumStorageBufferAlignment == std::max(4U, hostAlignment),
                   "effective SSBO alignment must cover the enclosing CAS word");
             check(traits.maximumStorageBufferRange == (hostMaximum & ~3U), "maximum SSBO range leaves an incomplete CAS word");

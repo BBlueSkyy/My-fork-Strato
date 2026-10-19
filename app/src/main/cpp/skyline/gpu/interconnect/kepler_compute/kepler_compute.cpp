@@ -16,6 +16,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
                                  DirtyManager &manager,
                                  const EngineRegisterBundle &registerBundle)
         : ctx{channelCtx, channelCtx.executor, gpu, trap, memoryManager},
+          diagnosticRegisters{registerBundle},
           pipelineState{manager, registerBundle.pipelineStateRegisters},
           samplers{manager, registerBundle.samplerPoolRegisters},
           textures{manager, registerBundle.texturePoolRegisters} {
@@ -37,17 +38,53 @@ namespace skyline::gpu::interconnect::kepler_compute {
         StateUpdateBuilder builder{*ctx.executor.allocator};
 
         constantBuffers.Update(ctx, qmd);
+        if (qmd.invalidateTextureHeaderCache) textures.MarkAllDirty();
+        if (qmd.invalidateTextureSamplerCache) samplers.MarkAllDirty();
         samplers.Update(ctx, qmd.samplerIndex == soc::gm20b::engine::kepler_compute::QMD::SamplerIndex::ViaHeaderIndex);
         auto *pipeline{pipelineState.Update(ctx, builder, textures, samplers, constantBuffers.boundConstantBuffers, qmd)};
 
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
-        auto *descUpdateInfo{pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures, srcStageMask, dstStageMask,
-            {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth})};
+        DescriptorUpdateInfo *descUpdateInfo{};
+        vk::DescriptorSet dynamicSet{};
+        try {
+            // Prepare dynamic candidates first: static sampled bindings must
+            // capture the final GENERAL layout when they share an image.
+            dynamicSet = pipeline->SyncDynamicDescriptors(ctx, textures, samplers, srcStageMask, dstStageMask);
+            descUpdateInfo = pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures, srcStageMask, dstStageMask,
+                {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth});
+        } catch (...) {
+            // Failure-only QMD snapshot. Capture actual guest addresses and pool
+            // limits, including inactive CBUF slots with retained views.
+            // Never replace a guest handle or change the original exception.
+            const auto &registers{diagnosticRegisters};
+            const auto programBase{static_cast<u64>(registers.pipelineStateRegisters.pipelineStageRegisters.programRegion)};
+            const auto &header{registers.texturePoolRegisters.texHeaderPool};
+            const auto &sampler{registers.samplerPoolRegisters.texSamplerPool};
+            const bool viaHeader{qmd.samplerIndex == QMD::SamplerIndex::ViaHeaderIndex};
+            LOGW("ComputeQmdTrace: shaderHash=0x{:016X} shaderBase=0x{:016X} programOffset=0x{:X} shaderAddress=0x{:016X} bindlessSlot={} samplerViaHeader={} TICpool=0x{:016X} TICmax={} TSCpool=0x{:016X} TSCmax={} effectiveTSCmax={} CBUFvalidMask=0x{:02X}",
+                 pipeline->sourcePackedState.shaderHash, programBase, qmd.programOffset,
+                 programBase + qmd.programOffset, pipeline->sourcePackedState.bindlessTextureConstantBufferSlotSelect,
+                 viaHeader, static_cast<u64>(header.offset), header.maximumIndex,
+                 static_cast<u64>(sampler.offset), sampler.maximumIndex,
+                 viaHeader ? header.maximumIndex : sampler.maximumIndex,
+                 static_cast<u32>(qmd.constantBufferValid));
+            for (u32 index{}; index < QMD::ConstantBufferCount; ++index) {
+                const bool qmdValid{(qmd.constantBufferValid & (1U << index)) != 0};
+                auto &bound{constantBuffers.boundConstantBuffers[index].view};
+                LOGW("ComputeQmdCbufTrace: slot={} QMDvalid={} GPUaddress=0x{:016X} QMDsize=0x{:X} boundView={} viewSize=0x{:X}",
+                     index, qmdValid, qmd.constantBuffer[index].Address(),
+                     qmd.constantBuffer[index].size, static_cast<bool>(bound),
+                     bound ? bound.size : 0);
+            }
+            throw;
+        }
         builder.SetPipeline(*pipeline->compiledPipeline.pipeline, vk::PipelineBindPoint::eCompute);
+        if (dynamicSet)
+            builder.BindCachedComputeDescriptors(*pipeline->compiledPipeline.pipelineLayout, 1, dynamicSet);
 
-        if (ctx.gpu.traits.supportsPushDescriptors) {
+        if (descUpdateInfo && ctx.gpu.traits.supportsPushDescriptors) {
             builder.SetDescriptorSetWithPush(descUpdateInfo);
-        } else {
+        } else if (descUpdateInfo) {
             auto set{std::make_shared<DescriptorAllocator::ActiveDescriptorSet>(ctx.gpu.descriptor.AllocateSet(descUpdateInfo->descriptorSetLayout))};
 
             builder.SetDescriptorSetWithUpdate(descUpdateInfo, set.get(), nullptr);
@@ -63,8 +100,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
             StateUpdater stateUpdater;
             std::array<u32, 3> dimensions;
             vk::PipelineStageFlags srcStageMask, dstStageMask;
+            bool dynamicDescriptors;
         };
-        auto *drawParams{ctx.executor.allocator->EmplaceUntracked<DrawParams>(DrawParams{stateUpdater, {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth}, srcStageMask, dstStageMask})};
+        auto *drawParams{ctx.executor.allocator->EmplaceUntracked<DrawParams>(DrawParams{stateUpdater, {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth}, srcStageMask, dstStageMask, pipeline->HasDynamicDescriptors()})};
 
 
         ctx.executor.AddCheckpoint("Before dispatch");
@@ -78,6 +116,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
                 }}, {}, {});
 
             commandBuffer.dispatch(drawParams->dimensions[0], drawParams->dimensions[1], drawParams->dimensions[2]);
+            if (drawParams->dynamicDescriptors)
+                commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {},
+                    {vk::MemoryBarrier{.srcAccessMask = vk::AccessFlagBits::eShaderWrite, .dstAccessMask = vk::AccessFlagBits::eHostRead}}, {}, {});
         });
         ctx.executor.AddCheckpoint("After dispatch");
 

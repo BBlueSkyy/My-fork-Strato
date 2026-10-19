@@ -17,6 +17,21 @@ namespace skyline::gpu::interconnect {
         };
     };
 
+    static vk::DescriptorType ResolveDescriptorType(vk::DescriptorType type, const auto &desc) {
+        if constexpr (requires { desc.is_samplerless; })
+            if (type == vk::DescriptorType::eCombinedImageSampler && desc.is_samplerless)
+                return vk::DescriptorType::eSampledImage;
+        return type;
+    }
+
+    static bool HasSamplerlessDescriptors(const auto &descs) {
+        for (const auto &desc : descs)
+            if constexpr (requires { desc.is_samplerless; })
+                if (desc.is_samplerless)
+                    return true;
+        return false;
+    }
+
     static DynamicBufferBinding GetConstantBufferBinding(InterconnectContext &ctx,
                                                          span<const u32, Shader::Info::MAX_CBUFS> cbufSizes,
                                                          BufferView view, size_t idx,
@@ -144,15 +159,41 @@ namespace skyline::gpu::interconnect {
         u32 primaryVal{primaryCbuf.Read<u32>(ctx.executor, primaryCbufOffset)};
 
         if constexpr (requires { desc.has_secondary; }) {
+            u32 secondaryVal{};
             if (desc.has_secondary) {
                 ConstantBuffer &secondaryCbuf{constantBuffers[desc.secondary_cbuf_index]};
-                size_t secondaryCbufOffset{desc.secondary_cbuf_offset + elemOffset};
-                u32 secondaryVal{secondaryCbuf.Read<u32>(ctx.executor, secondaryCbufOffset)};
-                return {.raw = (primaryVal << desc.shift_left) | (secondaryVal << desc.secondary_shift_left)};
+                if (secondaryCbuf.view) {
+                    size_t secondaryCbufOffset{desc.secondary_cbuf_offset + elemOffset};
+                    secondaryVal = secondaryCbuf.Read<u32>(ctx.executor, secondaryCbufOffset);
+                }
             }
+            return {.raw = Shader::EvaluateTextureHandle(desc, primaryVal, secondaryVal)};
         }
 
+        // Storage descriptors carry an untransformed handle.
         return {.raw = primaryVal};
+    }
+
+    // Validate only when binding inputs change; the normal unchanged-draw path
+    // retains its pipeline and descriptor caches.
+    static bool TextureComponentsMatch(InterconnectContext &ctx, Textures &textures,
+                                       auto &constantBuffers, const auto &descs) {
+        for (const auto &desc : descs) {
+            if (!constantBuffers[desc.cbuf_index].view)
+                continue;
+            for (u32 element{}; element < desc.count; ++element) {
+                const auto handle{ReadBindlessHandle(ctx, constantBuffers, desc, element)};
+                const auto type{textures.GetTextureComponentType(ctx, handle.textureIndex)};
+                if constexpr (requires { desc.component_type; }) {
+                    if (type != desc.component_type)
+                        return false;
+                } else if constexpr (requires { desc.is_integer; }) {
+                    if ((type != Shader::TextureComponentType::Float) != desc.is_integer)
+                        return false;
+                }
+            }
+        }
+        return true;
     }
 
     static std::pair<vk::DescriptorImageInfo, TextureView *> GetTextureBinding(InterconnectContext &ctx, const auto &desc,
@@ -160,12 +201,16 @@ namespace skyline::gpu::interconnect {
                                                                                BindlessHandle handle,
                                                                                vk::PipelineStageFlagBits dstStage,
                                                                                vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        auto sampler{samplers.GetSampler(ctx, handle.samplerIndex, handle.textureIndex)};
+        auto sampler{desc.is_samplerless ? nullptr : samplers.GetSampler(ctx, handle.samplerIndex, handle.textureIndex)};
+        if (!desc.is_samplerless && !sampler)
+            throw exception("Invalid required sampler for texture handle 0x{:08X} (TIC {}, TSC {}, cbuf {} offset 0x{:X})",
+                            handle.raw, static_cast<u32>(handle.textureIndex), static_cast<u32>(handle.samplerIndex),
+                            desc.cbuf_index, desc.cbuf_offset);
         auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type)};
 
         if (!texture) {
             return {
-                vk::DescriptorImageInfo{},
+                vk::DescriptorImageInfo{.sampler = sampler ? **sampler : vk::Sampler{}},
                 nullptr
             };
         }
@@ -207,7 +252,7 @@ namespace skyline::gpu::interconnect {
         ctx.executor.AttachTexture(texture);
         if (!(texture->GetUsage() & vk::ImageUsageFlagBits::eStorage))
             throw exception("Texture view format does not support storage image binding");
-        auto view{texture->GetView()};
+        auto view{texture->GetView(true)};
 
         if (texture->texture) {
             texture->texture->TransitionLayout(vk::ImageLayout::eGeneral);

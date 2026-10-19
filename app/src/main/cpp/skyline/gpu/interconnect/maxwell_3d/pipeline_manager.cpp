@@ -4,6 +4,7 @@
 
 #include <fstream>
 #include <gpu/texture/texture.h>
+#include <gpu/attachment_feedback.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/common/pipeline.inc>
 #include <gpu/interconnect/common/file_pipeline_state_accessor.h>
@@ -18,6 +19,8 @@
 #include "soc/gm20b/engines/maxwell/types.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
+    struct DeferredDynamicPipeline {};
+
     struct ShaderStage {
         vk::ShaderStageFlagBits stage;
         vk::ShaderModule module;
@@ -197,7 +200,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return info;
     }
 
-    static std::array<ShaderStage, engine::ShaderStageCount> MakePipelineShaders(GPU &gpu, const PipelineStateAccessor &accessor, const PackedPipelineState &packedState) {
+    static std::array<ShaderStage, engine::ShaderStageCount> MakePipelineShaders(GPU &gpu, const PipelineStateAccessor &accessor, const PackedPipelineState &packedState, bool liveDynamicPools) {
         gpu.shader->ResetPools();
 
         using PipelineStage = engine::Pipeline::Shader::Type;
@@ -229,7 +232,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 }, [&](u32 index) {
                     return accessor.GetTextureType(BindlessHandle{ .raw = index }.textureIndex);
                 }, [&](u32 index) {
-                    return accessor.IsTexturePixelFormatInteger(BindlessHandle{ .raw = index }.textureIndex);
+                    return accessor.GetTextureComponentType(BindlessHandle{ .raw = index }.textureIndex);
                 }, [&](u32 index) {
                     return accessor.GetTextureCompareFunc(index);
                 })};
@@ -243,6 +246,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (programs[i].info.requires_layer_emulation)
                 layerConversionSourceProgram = &programs[i];
         }
+
+        if (!liveDynamicPools && std::any_of(programs.begin(), programs.end(), [](const auto &program) {
+            return !program.info.dynamic_textures.empty();
+        }))
+            throw DeferredDynamicPipeline{};
 
         bool hasGeometry{packedState.shaderHashes[stageIdx(PipelineStage::Geometry)] && !programs[stageIdx(PipelineStage::Geometry)].is_geometry_passthrough};
         Shader::Backend::Bindings bindings{};
@@ -294,6 +302,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             stageDescInfo.stage = ConvertShaderToPipelineStage(stage.stage);
 
             auto pushBindings{[&](vk::DescriptorType type, const auto &descs, u16 &count, auto &outputDescs, auto &&descCb, bool individualDescWrites = false) {
+                individualDescWrites |= HasSamplerlessDescriptors(descs);
                 descriptorInfo.totalWriteDescCount += individualDescWrites ? descs.size() : ((descs.size() > 0) ? 1 : 0);
 
                 for (u16 descIdx{}; descIdx < descs.size(); descIdx++) {
@@ -313,7 +322,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
                     descriptorInfo.descriptorSetLayoutBindings.push_back(vk::DescriptorSetLayoutBinding{
                         .binding = bindingIndex++,
-                        .descriptorType = type,
+                        .descriptorType = ResolveDescriptorType(type, desc),
                         .descriptorCount = desc.count,
                         .stageFlags = stage.stage,
                     });
@@ -513,7 +522,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                                  const PackedPipelineState &packedState,
                                                                                  const std::array<ShaderStage, engine::ShaderStageCount> &shaderStages,
                                                                                  span<vk::DescriptorSetLayoutBinding> layoutBindings,
-                                                                                 bool usesRenderArea) {
+                                                                                 bool usesRenderArea, vk::DescriptorSetLayout dynamicLayout = nullptr) {
         boost::container::static_vector<vk::PipelineShaderStageCreateInfo, engine::ShaderStageCount> shaderStageInfos;
         for (const auto &stage : shaderStages)
             if (stage.module)
@@ -634,10 +643,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         };
 
 
-        static constexpr u32 BaseDynamicStateCount{9};
-        static constexpr u32 ExtendedDynamicStateCount{BaseDynamicStateCount + 1};
-
-        constexpr std::array<vk::DynamicState, ExtendedDynamicStateCount> dynamicStates{
+        std::vector<vk::DynamicState> dynamicStates{
             vk::DynamicState::eViewport,
             vk::DynamicState::eScissor,
             vk::DynamicState::eLineWidth,
@@ -647,12 +653,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
             vk::DynamicState::eStencilCompareMask,
             vk::DynamicState::eStencilWriteMask,
             vk::DynamicState::eStencilReference,
-            // VK_EXT_dynamic_state starts here
-            vk::DynamicState::eVertexInputBindingStrideEXT
         };
+        if (gpu.traits.supportsExtendedDynamicState)
+            dynamicStates.push_back(vk::DynamicState::eVertexInputBindingStrideEXT);
+        if (gpu.traits.supportsAttachmentFeedbackLoop)
+            dynamicStates.push_back(feedback::DynamicState);
 
         vk::PipelineDynamicStateCreateInfo dynamicState{
-            .dynamicStateCount = gpu.traits.supportsExtendedDynamicState ? ExtendedDynamicStateCount : BaseDynamicStateCount,
+            .dynamicStateCount = static_cast<u32>(dynamicStates.size()),
             .pDynamicStates = dynamicStates.data()
         };
 
@@ -693,20 +701,50 @@ namespace skyline::gpu::interconnect::maxwell3d {
             .depthStencilFormat = depthStencilFormat ? depthStencilFormat->vkFormat : vk::Format::eUndefined,
             .sampleCount = vk::SampleCountFlagBits::e1, //TODO: fix after MSAA support
             .destroyShaderModules = true
-        }, layoutBindings, pushConstantRanges);
+        }, layoutBindings, pushConstantRanges, false, dynamicLayout);
     }
 
-    Pipeline::Pipeline(GPU &gpu, PipelineStateAccessor &accessor, const PackedPipelineState &packedState)
+    Pipeline::Pipeline(GPU &gpu, PipelineStateAccessor &accessor, const PackedPipelineState &packedState,
+                       InterconnectContext *ctx, Textures *textures, Samplers *samplers)
         : sourcePackedState{packedState} {
-        auto shaderStages{MakePipelineShaders(gpu, accessor, sourcePackedState)};
+        auto shaderStages{MakePipelineShaders(gpu, accessor, sourcePackedState, ctx && textures && samplers)};
         descriptorInfo = MakePipelineDescriptorInfo(shaderStages, gpu.traits.quirks.needsIndividualTextureBindingWrites);
 
         for (const auto &stage : shaderStages)
             usesRenderArea |= stage.module && stage.info.uses_render_area;
 
+        std::vector<Shader::DynamicTextureDescriptor> dynamicGroups;
+        vk::ShaderStageFlags dynamicStages{};
+        for (const auto &stage : shaderStages) {
+            if (stage.info.dynamic_textures.empty()) continue;
+            dynamicGroups.insert(dynamicGroups.end(), stage.info.dynamic_textures.begin(), stage.info.dynamic_textures.end());
+            dynamicStages |= stage.stage;
+        }
+        if (!dynamicGroups.empty()) {
+            if (!ctx || !textures || !samplers) {
+                // Offline cache entries have no live guest pools with which to
+                // size the set-1 layout. Compile them on their first real draw.
+                for (const auto &stage : shaderStages)
+                    if (stage.module) (*gpu.vkDevice).destroyShaderModule(stage.module, nullptr, *gpu.vkDevice.getDispatcher());
+                throw DeferredDynamicPipeline{};
+            }
+            dynamicDescriptors = std::make_unique<DynamicDescriptors>(*ctx, *textures, *samplers, dynamicGroups, dynamicStages);
+            u32 sampled{}, samplersCount{}, resources{}, storage{};
+            for (const auto &binding : descriptorInfo.descriptorSetLayoutBindings) {
+                resources += binding.descriptorCount;
+                if (binding.descriptorType == vk::DescriptorType::eCombinedImageSampler || binding.descriptorType == vk::DescriptorType::eSampledImage || binding.descriptorType == vk::DescriptorType::eUniformTexelBuffer)
+                    sampled += binding.descriptorCount;
+                if (binding.descriptorType == vk::DescriptorType::eCombinedImageSampler || binding.descriptorType == vk::DescriptorType::eSampler)
+                    samplersCount += binding.descriptorCount;
+                if (binding.descriptorType == vk::DescriptorType::eStorageBuffer)
+                    storage += binding.descriptorCount;
+            }
+            dynamicDescriptors->ValidateLimits(*ctx, sampled, samplersCount, resources, storage);
+        }
+
         compiledPipeline = MakeCompiledPipeline(gpu, sourcePackedState, shaderStages,
                                                 descriptorInfo.descriptorSetLayoutBindings,
-                                                usesRenderArea);
+                                                usesRenderArea, dynamicDescriptors ? dynamicDescriptors->Layout() : vk::DescriptorSetLayout{});
 
         for (u32 i{}; i < engine::ShaderStageCount; i++)
             if (shaderStages[i].stage != vk::ShaderStageFlagBits{})
@@ -727,12 +765,24 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
     }
 
-    Pipeline *Pipeline::LookupNext(const PackedPipelineState &packedState) {
-        if (packedState == sourcePackedState)
+    bool Pipeline::MatchesTextureTypes(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers) const {
+        for (size_t i{}; i < descriptorInfo.stages.size(); ++i) {
+            const auto &stage{descriptorInfo.stages[i]};
+            if (!TextureComponentsMatch(ctx, textures, constantBuffers[i], stage.combinedImageSamplerDescs) ||
+                !TextureComponentsMatch(ctx, textures, constantBuffers[i], stage.uniformTexelBufferDescs) ||
+                !TextureComponentsMatch(ctx, textures, constantBuffers[i], stage.storageImageDescs) ||
+                !TextureComponentsMatch(ctx, textures, constantBuffers[i], stage.storageTexelBufferDescs))
+                return false;
+        }
+        return true;
+    }
+
+    Pipeline *Pipeline::LookupNext(const PackedPipelineState &packedState, InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers) {
+        if (packedState == sourcePackedState && MatchesTextureTypes(ctx, textures, constantBuffers) && CanBindDynamicDescriptors(ctx, textures, samplers))
             return this;
 
-        auto it{std::find_if(transitionCache.begin(), transitionCache.end(), [&packedState](auto pipeline) {
-            if (pipeline && pipeline->sourcePackedState == packedState)
+        auto it{std::find_if(transitionCache.begin(), transitionCache.end(), [&](auto pipeline) {
+            if (pipeline && pipeline->sourcePackedState == packedState && pipeline->MatchesTextureTypes(ctx, textures, constantBuffers) && pipeline->CanBindDynamicDescriptors(ctx, textures, samplers))
                 return true;
             else
                 return false;
@@ -752,6 +802,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     bool Pipeline::CheckBindingMatch(Pipeline *other) {
+        // Set-1 layouts are pool-capacity dependent. Never inherit bindings
+        // across distinct dynamic pipeline variants.
+        if (dynamicDescriptors || other->dynamicDescriptors)
+            return this == other;
         if (auto it{bindingMatchCache.find(other)}; it != bindingMatchCache.end())
             return it->second;
 
@@ -844,6 +898,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }};
 
         auto writeImageDescs{[&](vk::DescriptorType type, const auto &descs, u32 count, auto getTextureCb, bool needsIndividualTextureBindingWrites) {
+            needsIndividualTextureBindingWrites |= HasSamplerlessDescriptors(descs);
             if (!descs.empty()) {
                 if (!needsIndividualTextureBindingWrites) {
                     writes[writeIdx++] = {
@@ -861,7 +916,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         writes[writeIdx++] = {
                             .dstBinding = bindingIdx++,
                             .descriptorCount = desc.count,
-                            .descriptorType = type,
+                            .descriptorType = ResolveDescriptorType(type, desc),
                             .pImageInfo = &imageDescs[imageIdx],
                         };
                     }
@@ -992,7 +1047,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 writes[writeIdx] = {
                     .dstBinding = usage.binding,
                     .descriptorCount = shaderDesc.count,
-                    .descriptorType = type,
+                    .descriptorType = ResolveDescriptorType(type, shaderDesc),
                 };
 
                 if constexpr (ImageDesc)
@@ -1104,7 +1159,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
             while (bundle.Deserialise(stream)) {
                 lastKnownGoodOffset = stream.tellg();
                 auto accessor{FilePipelineStateAccessor{bundle}};
-                auto *pipeline{map.emplace(bundle.GetKey<PackedPipelineState>(), std::make_unique<Pipeline>(gpu, accessor, bundle.GetKey<PackedPipelineState>())).first.value().get()};
+                auto &variants{map[bundle.GetKey<PackedPipelineState>()]};
+                Pipeline *pipeline{};
+                try {
+                    pipeline = variants.emplace_back(std::make_unique<Pipeline>(gpu, accessor, bundle.GetKey<PackedPipelineState>())).get();
+                } catch (const DeferredDynamicPipeline &) {
+                    jvm.UpdatePipelineLoadingProgress(++compiledCount);
+                    continue;
+                }
                 #ifdef PIPELINE_STATS
                 auto sharedIt{sharedPipelines.find(pipeline->sourcePackedState.shaderHashes)};
                 if (sharedIt == sharedPipelines.end())
@@ -1144,12 +1206,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
     Pipeline *PipelineManager::FindOrCreate(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const std::array<ShaderBinary, engine::PipelineCount> &shaderBinaries) {
         auto it{map.find(packedState)};
         if (it != map.end())
-            return it->second.get();
+            for (const auto &variant : it->second)
+                if (variant->MatchesTextureTypes(ctx, textures, constantBuffers) && variant->CanBindDynamicDescriptors(ctx, textures, samplers))
+                    return variant.get();
 
         auto bundle{std::make_unique<PipelineStateBundle>()};
         bundle->Reset(packedState);
         auto accessor{RuntimeGraphicsPipelineStateAccessor{std::move(bundle), ctx, textures, samplers, constantBuffers, shaderBinaries}};
-        auto *pipeline{map.emplace(packedState, std::make_unique<Pipeline>(ctx.gpu, accessor, packedState)).first->second.get()};
+        auto *pipeline{map[packedState].emplace_back(std::make_unique<Pipeline>(ctx.gpu, accessor, packedState, &ctx, &textures, &samplers)).get()};
 
         #ifdef PIPELINE_STATS
         auto sharedIt{sharedPipelines.find(pipeline->sourcePackedState.shaderHashes)};

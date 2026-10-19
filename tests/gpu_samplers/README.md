@@ -14,6 +14,11 @@ filter, through the real register dirty manager. Before the fix it fails with
 reuse, the old object's retained lifetime, linked versus explicit index selection,
 and that an invalid index remains absent rather than receiving a replacement.
 
+The full dynamic sampler helpers and pool reader exercise strict filter/address
+validation, normalized coordinates, comparison, LOD and anisotropy limits,
+reduction/extension gates, linear capability, shared sampler ownership, and
+restoration of live static TSC reads after a dynamic snapshot lookup.
+
 This does not validate Android driver behavior, prove the source of MK11's
 out-of-range handles, or make null Vulkan sampler descriptors valid. No game
 files are required.

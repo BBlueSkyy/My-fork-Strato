@@ -27,6 +27,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
       private:
         InterconnectContext ctx;
+        // Copies register references (not register values) to inspect the
+        // failing QMD without changing GPU state or descriptor resolution.
+        EngineRegisterBundle diagnosticRegisters;
         PipelineState pipelineState;
         ConstantBuffers constantBuffers;
         Samplers samplers;
