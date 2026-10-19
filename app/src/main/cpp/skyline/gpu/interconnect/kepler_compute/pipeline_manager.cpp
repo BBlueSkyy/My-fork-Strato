@@ -246,27 +246,37 @@ namespace skyline::gpu::interconnect::kepler_compute {
         writeImageDescs(vk::DescriptorType::eCombinedImageSampler, shaderStage.info.texture_descriptors,
                         [&](const Shader::TextureDescriptor &desc, size_t arrayIdx) {
                             BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
-                            // Capture the guest inputs only when a compute handle is out of range.
-                            // This is diagnostic-only: do not substitute or modify the handle.
-                            if (handle.textureIndex > 0xFFFF || handle.samplerIndex > 0x7FF) {
-                                const auto primaryOffset{desc.cbuf_offset + (arrayIdx << desc.size_shift)};
-                                const auto primary{constantBuffers[desc.cbuf_index].view
-                                    ? constantBuffers[desc.cbuf_index].Read<u32>(ctx.executor, primaryOffset) : 0U};
+                            // Capture the guest descriptor provenance on failure rather than
+                            // guessing a fixed TIC/TSC pool limit. No extra reads on the
+                            // successful binding path; preserve the original exception.
+                            try {
+                                auto binding{GetTextureBinding(ctx, desc,
+                                                               samplers, textures, handle,
+                                                               vk::PipelineStageFlagBits::eComputeShader,
+                                                               srcStageMask, dstStageMask)};
+                                return binding.first;
+                            } catch (...) {
+                                const auto elemOffset{arrayIdx << desc.size_shift};
+                                const auto primaryOffset{desc.cbuf_offset + elemOffset};
+                                const auto secondaryOffset{desc.secondary_cbuf_offset + elemOffset};
+                                u32 primary{};
                                 u32 secondary{};
-                                if (desc.has_secondary && constantBuffers[desc.secondary_cbuf_index].view)
-                                    secondary = constantBuffers[desc.secondary_cbuf_index].Read<u32>(
-                                        ctx.executor, desc.secondary_cbuf_offset + (arrayIdx << desc.size_shift));
-                                LOGW("ComputeBindlessTrace: handle=0x{:08X} TIC={} TSC={} primary=0x{:08X} secondary=0x{:08X} cbuf={} offset=0x{:X} secondaryCbuf={} secondaryOffset=0x{:X} hasSecondary={} shift={} secondaryShift={} mask=0x{:08X} secondaryMask=0x{:08X} arrayIdx={}",
+                                bool sourcesReadable{true};
+                                try {
+                                    if (constantBuffers[desc.cbuf_index].view)
+                                        primary = constantBuffers[desc.cbuf_index].Read<u32>(ctx.executor, primaryOffset);
+                                    if (desc.has_secondary && constantBuffers[desc.secondary_cbuf_index].view)
+                                        secondary = constantBuffers[desc.secondary_cbuf_index].Read<u32>(ctx.executor, secondaryOffset);
+                                } catch (...) {
+                                    sourcesReadable = false;
+                                }
+                                LOGW("ComputeBindlessTrace: handle=0x{:08X} TIC={} TSC={} primary=0x{:08X} secondary=0x{:08X} readable={} cbuf={} offset=0x{:X} secondaryCbuf={} secondaryOffset=0x{:X} hasSecondary={} samplerless={} shift={} secondaryShift={} mask=0x{:08X} secondaryMask=0x{:08X} arrayIdx={}",
                                      handle.raw, static_cast<u32>(handle.textureIndex), static_cast<u32>(handle.samplerIndex),
-                                     primary, secondary, desc.cbuf_index, primaryOffset, desc.secondary_cbuf_index,
-                                     desc.secondary_cbuf_offset, desc.has_secondary, desc.shift_left,
-                                     desc.secondary_shift_left, desc.mask, desc.secondary_mask, arrayIdx);
+                                     primary, secondary, sourcesReadable, desc.cbuf_index, primaryOffset,
+                                     desc.secondary_cbuf_index, secondaryOffset, desc.has_secondary, desc.is_samplerless,
+                                     desc.shift_left, desc.secondary_shift_left, desc.mask, desc.secondary_mask, arrayIdx);
+                                throw;
                             }
-                            auto binding{GetTextureBinding(ctx, desc,
-                                                           samplers, textures, handle,
-                                                           vk::PipelineStageFlagBits::eComputeShader,
-                                                           srcStageMask, dstStageMask)};
-                            return binding.first;
                         });
          
         writeImageDescs(vk::DescriptorType::eStorageImage, shaderStage.info.image_descriptors,
