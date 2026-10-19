@@ -64,7 +64,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
                  static_cast<u32>(qmd.constantBufferValid));
             for (u32 index{}; index < QMD::ConstantBufferCount; ++index) {
                 const bool qmdValid{(qmd.constantBufferValid & (1U << index)) != 0};
-                const auto &bound{constantBuffers.boundConstantBuffers[index].view};
+                auto &bound{constantBuffers.boundConstantBuffers[index].view};
                 LOGW("ComputeQmdCbufTrace: slot={} QMDvalid={} GPUaddress=0x{:016X} QMDsize=0x{:X} boundView={} viewSize=0x{:X}",
                      index, qmdValid, qmd.constantBuffer[index].Address(),
                      qmd.constantBuffer[index].size, static_cast<bool>(bound),
