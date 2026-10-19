@@ -32,6 +32,7 @@ namespace skyline::gpu {
         std::unordered_map<u64, std::vector<u8>> hostShaderReplacements; //!< ^^ same as above but for host
 
         std::mutex poolMutex;
+        bool targetComputeShaderCaptured{}; //!< One-shot MK11 shader diagnostic, protected by poolMutex
         std::filesystem::path dumpPath;
         std::mutex dumpMutex;
 
