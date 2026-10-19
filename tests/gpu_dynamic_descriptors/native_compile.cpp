@@ -33,6 +33,7 @@ struct MemoryManager { Buffer AllocateBuffer(size_t); };
 struct GPU { vk::raii::Device vkDevice{nullptr}; memory::MemoryManager memory; struct { u32 maximumStorageBufferRange; vk::PhysicalDeviceLimits dynamicDescriptorLimits; } traits; };
 struct Texture {
  u64 backingGeneration{1};
+ u64 GetBackingGeneration() const { return backingGeneration; }
  vk::ImageLayout layout=vk::ImageLayout::eUndefined;
  void TransitionLayout(vk::ImageLayout);
  void PopulateReadBarrier(vk::PipelineStageFlagBits, vk::PipelineStageFlags &, vk::PipelineStageFlags &);
