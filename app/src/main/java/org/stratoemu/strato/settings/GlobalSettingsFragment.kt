@@ -39,6 +39,7 @@ class GlobalSettingsFragment : PreferenceFragmentCompat() {
      * This constructs the preferences from XML preference resources
      */
     override fun onCreatePreferences(savedInstanceState : Bundle?, rootKey : String?) {
+        AirplaneModeSettings.migrate(requireContext())
         addPreferencesFromResource(R.xml.app_preferences)
         addPreferencesFromResource(R.xml.emulation_preferences)
         addPreferencesFromResource(R.xml.input_preferences)

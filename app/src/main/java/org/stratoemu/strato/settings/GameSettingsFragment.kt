@@ -37,7 +37,9 @@ class GameSettingsFragment : PreferenceFragmentCompat() {
      * This constructs the preferences from XML preference resources
      */
     override fun onCreatePreferences(savedInstanceState : Bundle?, rootKey : String?) {
-        preferenceManager.sharedPreferencesName = EmulationSettings.prefNameForTitle(item.titleId ?: item.key())
+        val prefName = EmulationSettings.prefNameForTitle(item.titleId ?: item.key())
+        preferenceManager.sharedPreferencesName = prefName
+        AirplaneModeSettings.migrate(requireContext(), prefName)
         addPreferencesFromResource(R.xml.custom_game_preferences)
         addPreferencesFromResource(R.xml.emulation_preferences)
 

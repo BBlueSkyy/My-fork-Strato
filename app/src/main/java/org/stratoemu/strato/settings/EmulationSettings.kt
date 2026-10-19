@@ -17,6 +17,11 @@ import kotlin.reflect.full.memberProperties
  * Settings used during emulation. Use [forTitleId] to retrieve settings for a given `titleId`.
  */
 class EmulationSettings private constructor(context : Context, prefName : String?) {
+    init {
+        // Also runs when emulation starts without opening the settings screen.
+        AirplaneModeSettings.migrate(context, prefName)
+    }
+
     // Whether this is the global settings
     val isGlobal = prefName == null
 
@@ -29,7 +34,7 @@ class EmulationSettings private constructor(context : Context, prefName : String
     var profilePictureValue by sharedPreferences(context, "", prefName = prefName)
     var systemLanguage by sharedPreferences(context, 1, prefName = prefName)
     var systemRegion by sharedPreferences(context, -1, prefName = prefName)
-    var isInternetEnabled by sharedPreferences(context, false, prefName = prefName)
+    var isAirplaneMode by sharedPreferences(context, true, prefName = prefName)
 
     // Audio
     var isAudioOutputDisabled by sharedPreferences(context, false, prefName = prefName)
