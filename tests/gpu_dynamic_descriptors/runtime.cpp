@@ -79,7 +79,7 @@ struct Buffer {vk::Buffer vkBuffer;std::unique_ptr<u8[]> bytes;size_t length;Buf
 struct MemoryManager {Buffer AllocateBuffer(size_t n){return Buffer(n);}};
 }
 struct GPU {vk::raii::Device vkDevice;memory::MemoryManager memory;struct{u32 maximumStorageBufferRange{1<<20};vk::PhysicalDeviceLimits dynamicDescriptorLimits;}traits;};
-struct Texture {u64 backingGeneration{1};vk::ImageLayout layout{};unsigned transitions{};void TransitionLayout(vk::ImageLayout target){layout=target;++transitions;}void PopulateReadBarrier(vk::PipelineStageFlagBits,vk::PipelineStageFlags&s,vk::PipelineStageFlags&d){s|=1;d|=1;}};
+struct Texture {u64 backingGeneration{1};u64 GetBackingGeneration() const { return backingGeneration; }vk::ImageLayout layout{};unsigned transitions{};void TransitionLayout(vk::ImageLayout target){layout=target;++transitions;}void PopulateReadBarrier(vk::PipelineStageFlagBits,vk::PipelineStageFlags&s,vk::PipelineStageFlags&d){s|=1;d|=1;}};
 struct TextureView:std::enable_shared_from_this<TextureView>{std::shared_ptr<Texture> texture=std::make_shared<Texture>();vk::ImageView image;explicit TextureView(u64 v):image(v){}vk::ImageUsageFlags GetUsage(){return vk::ImageUsageFlagBits::eSampled;}vk::ImageView GetView(){return image;}};
 namespace interconnect {
 struct CommandExecutor {std::shared_ptr<FenceCycle>cycle=std::make_shared<FenceCycle>();void AttachTexture(TextureView*){++fixture::preparations;}void AttachDependency(const std::shared_ptr<void>&p){cycle->dependencies.push_back(p);}};
