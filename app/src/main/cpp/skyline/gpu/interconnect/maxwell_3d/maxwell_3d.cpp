@@ -187,6 +187,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 blend = fmt::format("mask=0x{:X},enabled={}",
                     static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
             }
+            // Depth/stencil attachment identity is vital when an otherwise
+            // valid 2D scene is masked by an incorrect depth/stencil pass.
+            std::string depthInfo{"none"};
+            if (auto *depth{activeState.GetDepthAttachment()}; depth && depth->texture)
+                depthInfo = fmt::format("0x{:X}:{}x{}:{}",
+                    reinterpret_cast<uintptr_t>(depth->texture.get()),
+                    depth->texture->dimensions.width,
+                    depth->texture->dimensions.height,
+                    vk::to_string(depth->texture->format->vkFormat));
             std::string sampledViews;
             for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
                 auto *view{activeDescriptorSetSampledImages[i]};
@@ -197,9 +206,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         vk::to_string(view->texture->format->vkFormat));
             }
             diagnostic::NarutoUiCapture().Record(fmt::format(
-                "DRAW kind=inline indexed=1 count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                "DRAW kind=inline indexed=1 count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} depth={} sampled={}",
                 count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
-                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+                scissor.extent.height, shaderHashes, targets, blend, depthInfo, sampledViews));
             if (auto *pipeline{activeState.GetPipeline()})
                 ctx.executor.MarkDiagnosticUiOutput(
                     activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
@@ -852,6 +861,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         static_cast<bool>(blend.blendEnable))) {
                     auto &capture{diagnostic::NarutoUiCapture()};
                     const auto focusDrawId{ctx.executor.GetDiagnosticPreDrawId()};
+                    const auto *depthView{activeState.GetDepthAttachment()};
+                    capture.Record(fmt::format(
+                        "SCENE_SELECTED_DEPTH draw_id={} image=0x{:X} format={} dimensions={}x{}",
+                        focusDrawId,
+                        depthView && depthView->texture ?
+                            reinterpret_cast<uintptr_t>(depthView->texture.get()) : 0,
+                        depthView && depthView->texture ?
+                            vk::to_string(depthView->texture->format->vkFormat) : "none",
+                        depthView && depthView->texture ? depthView->texture->dimensions.width : 0,
+                        depthView && depthView->texture ? depthView->texture->dimensions.height : 0));
                     capture.Record(fmt::format(
                         "UI_PRE_DRAW_STATE draw_id={} indexed={} count={} instances={} first={} vertex_offset={} first_instance={} topology={} "
                         "scissor={},{},{}x{} conditional={} divisor_supported={} zero_divisor_supported={}",
@@ -1039,6 +1058,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 blend = fmt::format("mask=0x{:X},enabled={}",
                     static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
             }
+            // Depth/stencil attachment identity is vital when an otherwise
+            // valid 2D scene is masked by an incorrect depth/stencil pass.
+            std::string depthInfo{"none"};
+            if (auto *depth{activeState.GetDepthAttachment()}; depth && depth->texture)
+                depthInfo = fmt::format("0x{:X}:{}x{}:{}",
+                    reinterpret_cast<uintptr_t>(depth->texture.get()),
+                    depth->texture->dimensions.width,
+                    depth->texture->dimensions.height,
+                    vk::to_string(depth->texture->format->vkFormat));
             std::string sampledViews;
             for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
                 auto *view{activeDescriptorSetSampledImages[i]};
@@ -1049,9 +1077,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         vk::to_string(view->texture->format->vkFormat));
             }
             diagnostic::NarutoUiCapture().Record(fmt::format(
-                "DRAW kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                "DRAW kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} depth={} sampled={}",
                 indexed, count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
-                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+                scissor.extent.height, shaderHashes, targets, blend, depthInfo, sampledViews));
             if (auto *pipeline{activeState.GetPipeline()})
                 ctx.executor.MarkDiagnosticUiOutput(
                     activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
@@ -1167,6 +1195,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 blend = fmt::format("mask=0x{:X},enabled={}",
                     static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
             }
+            // Depth/stencil attachment identity is vital when an otherwise
+            // valid 2D scene is masked by an incorrect depth/stencil pass.
+            std::string depthInfo{"none"};
+            if (auto *depth{activeState.GetDepthAttachment()}; depth && depth->texture)
+                depthInfo = fmt::format("0x{:X}:{}x{}:{}",
+                    reinterpret_cast<uintptr_t>(depth->texture.get()),
+                    depth->texture->dimensions.width,
+                    depth->texture->dimensions.height,
+                    vk::to_string(depth->texture->format->vkFormat));
             std::string sampledViews;
             for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
                 auto *view{activeDescriptorSetSampledImages[i]};
@@ -1177,9 +1214,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         vk::to_string(view->texture->format->vkFormat));
             }
             diagnostic::NarutoUiCapture().Record(fmt::format(
-                "DRAW kind=indirect indexed={} count={} instances=0 scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                "DRAW kind=indirect indexed={} count={} instances=0 scissor={},{},{}x{} shaders={} targets={} blend={} depth={} sampled={}",
                 indexed, count, scissor.offset.x, scissor.offset.y, scissor.extent.width,
-                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+                scissor.extent.height, shaderHashes, targets, blend, depthInfo, sampledViews));
             if (auto *pipeline{activeState.GetPipeline()})
                 ctx.executor.MarkDiagnosticUiOutput(
                     activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
