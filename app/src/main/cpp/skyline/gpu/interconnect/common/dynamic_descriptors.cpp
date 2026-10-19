@@ -138,7 +138,7 @@ namespace skyline::gpu::interconnect {
                             view->texture->TransitionLayout(vk::ImageLayout::eGeneral);
                         view->texture->PopulateReadBarrier(vk::PipelineStageFlagBits::eComputeShader, src, dst);
                         const auto handle{view->GetView()};
-                        images.push_back({handle, view->texture->backingGeneration, view->texture.get()});
+                        images.push_back({handle, view->texture->GetBackingGeneration(), view->texture.get()});
                     } else images.emplace_back();
                 }
             }

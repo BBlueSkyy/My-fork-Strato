@@ -605,6 +605,10 @@ namespace skyline::gpu {
         // means no explicit list, rather than a list containing the native format.
         span<const vk::Format> GetBackingViewFormats() const { return backingViewFormats; }
 
+        // Backing replacement epoch for immutable Vulkan descriptor snapshots.
+        // Read while the texture is locked by the GPU executor.
+        u64 GetBackingGeneration() const { return backingGeneration; }
+
         /**
          * @brief Transitions the backing to the supplied layout, if the backing already is in this layout then this does nothing
          * @note The texture **must** be locked prior to calling this

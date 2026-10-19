@@ -414,7 +414,7 @@ namespace skyline::gpu::interconnect {
                 return nullTextureView.get();
             }
             if (auto tracked{dynamicTextureMappings.find(textureHeader)}; tracked != dynamicTextureMappings.end())
-                tracked->second = {guest.GetSize(), guest.mappings};
+                tracked.value() = {guest.GetSize(), guest.mappings};
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
         }
 
@@ -458,7 +458,7 @@ namespace skyline::gpu::interconnect {
             return nullptr;
         auto [features, inserted]{dynamicFormatFeatures.try_emplace(format->vkFormat)};
         if (inserted)
-            features->second = ctx.gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat).optimalTilingFeatures;
+            features.value() = ctx.gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat).optimalTilingFeatures;
         if (!(features->second & vk::FormatFeatureFlagBits::eSampledImage))
             return nullptr;
         // An unchanged TIC can point at new physical pages. Compare the entire
@@ -518,7 +518,7 @@ namespace skyline::gpu::interconnect {
         if (!format) return false;
         auto [features, inserted]{dynamicFormatFeatures.try_emplace(format->vkFormat)};
         if (inserted)
-            features->second = ctx.gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat).optimalTilingFeatures;
+            features.value() = ctx.gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat).optimalTilingFeatures;
         return static_cast<bool>(features->second & vk::FormatFeatureFlagBits::eSampledImageFilterLinear);
     }
 
