@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import org.stratoemu.strato.settings.AirplaneModePolicy
 
-fun main() {
+fun verifyAirplaneModeMapping() {
     // Offline must remain offline during upgrades; online must remain online.
     for (legacyInternetEnabled in listOf(false, true)) {
         val migrated = AirplaneModePolicy.fromLegacyInternetEnabled(legacyInternetEnabled)

@@ -5,6 +5,7 @@ import org.stratoemu.strato.settings.AirplaneModeSettings
 import org.stratoemu.strato.settings.AirplaneModePolicy
 
 fun main() {
+    verifyAirplaneModeMapping()
     val context = Context()
     val global = PreferenceManager.getDefaultSharedPreferences(context)
     val game = context.getSharedPreferences("game-1", Context.MODE_PRIVATE)
