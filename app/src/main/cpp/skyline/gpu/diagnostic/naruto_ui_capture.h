@@ -203,7 +203,7 @@ namespace skyline::gpu::diagnostic {
                                          : start - guestAddress < bytes;
         }
 
-        enum class TextFocus : std::uint8_t { GlyphOutput, StripComposite, FullConsumer, FullSprite };
+        // Reused diagnostic quotas: FullConsumer=blended scene draw, FullSprite=opaque scene draw.\n        enum class TextFocus : std::uint8_t { GlyphOutput, StripComposite, FullConsumer, FullSprite };
 
         // These scopes are selected only after a render target/source has been
         // identified by its format/geometry while capture is armed. They are not
@@ -415,7 +415,7 @@ namespace skyline::gpu::diagnostic {
             std::scoped_lock lock(mutex);
             std::ofstream out(std::filesystem::path(path) / "gpu_events.txt", std::ios::trunc);
             if (out) {
-                out << "GPU events collected while 4 frames were being presented.\n"
+                out << "GPU events collected while 24 frames were being presented.\n"
                     << "present_index_approx is NOT exact GPU/present synchronization.\n"
                     << "Events are capped at 6000; routine draws sampled 1/16.\n\n";
                 for (const auto &event : events)
