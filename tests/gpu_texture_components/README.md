@@ -1,5 +1,11 @@
 # TIC numeric component queries
 
+The dynamic texture caches use the actual pinned `tsl::robin_map` headers from
+`app/libraries/robin-map/include`. Initialize that submodule before running.
+Using `std::unordered_map` as a substitute hid the production iterator's
+read-only pair access and then rejected the corrected mutable `value()` API.
+The extracted production cache bodies now compile without rewriting that API.
+
 Run `python3 tests/gpu_texture_components/run.py`. Set `SHADER_COMPILER_ROOT`
 to the shader compiler checkout and `BOOST_INCLUDE_DIR` to the Boost headers
 when they are not available at the runner's default paths.

@@ -10,7 +10,7 @@
 #include <iostream>
 #include <numeric>
 #include <memory>
-#include <unordered_map>
+#include <tsl/robin_map.h>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -84,9 +84,9 @@ struct Textures {
     std::vector<CacheEntry> textureHeaderCache;
     struct RawHash { size_t operator()(const TextureImageControl &tic)const{const auto*p=reinterpret_cast<const u8*>(&tic);size_t hash{};for(size_t i{};i<sizeof(tic);++i)hash=hash*31+p[i];return hash;} };
     struct DynamicMapping { size_t size{}; std::vector<AddressSpace::Gmmu::Mapping> mappings; };
-    std::unordered_map<TextureImageControl,DynamicMapping,RawHash> dynamicTextureMappings;
-    std::unordered_map<TextureImageControl,std::shared_ptr<TextureView>,RawHash> textureHeaderStore;
-    std::unordered_map<vk::Format,vk::FormatFeatureFlags> dynamicFormatFeatures;
+    tsl::robin_map<TextureImageControl,DynamicMapping,RawHash> dynamicTextureMappings;
+    tsl::robin_map<TextureImageControl,std::shared_ptr<TextureView>,RawHash> textureHeaderStore;
+    tsl::robin_map<vk::Format,vk::FormatFeatureFlags> dynamicFormatFeatures;
     std::shared_ptr<TextureView> nullTextureView;
     TextureView *resolvedView{};
     unsigned dynamicLookups{};
