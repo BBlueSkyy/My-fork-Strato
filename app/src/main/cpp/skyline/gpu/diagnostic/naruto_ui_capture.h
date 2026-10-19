@@ -47,15 +47,15 @@ namespace skyline::gpu::diagnostic {
         // full-resolution text consumer per completed composition cycle.
         static constexpr std::uint32_t MaxUiMidpointSnapshots{24};
         static constexpr std::size_t MaxUiMidpointBytes{72ULL * 1024 * 1024};
-        // Retain the existing budget for a post-second-text result rather
+        // Retain the existing budget for a post-fourth-text result rather
         // than the already-understood pre-first-text image. Both snapshots
         // would double diagnostic cost without improving localization.
-        static constexpr std::uint32_t MaxPostSecondTextSnapshots{MaxUiMidpointSnapshots};
+        static constexpr std::uint32_t MaxPostFourthTextSnapshots{MaxUiMidpointSnapshots};
         // 24 x 1600x900 RGBA8 = 138,240,000 bytes. Previous 72 MiB
         // stopped after 13 frames and missed faults occurring later in the
         // 24-frame presentation window. This larger quota is only for the
         // manually armed post-text probe, not production rendering.
-        static constexpr std::size_t MaxPostSecondTextBytes{144ULL * 1024 * 1024};
+        static constexpr std::size_t MaxPostFourthTextBytes{144ULL * 1024 * 1024};
         // Reserve budget for late UI composition and each of the four intervals.
         // Phase 6 only needs the first UI draw before/after images. Keep one
         // atlas per interval; the shader/CB/TSC evidence is tiny by comparison.
@@ -95,8 +95,8 @@ namespace skyline::gpu::diagnostic {
             std::uint8_t draws{};
         };
         std::vector<TextDrawCycle> textDrawCycles;
-        std::uint32_t postSecondTextCount{};
-        std::size_t postSecondTextBytes{};
+        std::uint32_t postFourthTextCount{};
+        std::size_t postFourthTextBytes{};
         std::uint32_t fermiSourceSnapshotCount{};
         std::size_t fermiSourceBytes{};
         // One full-surface vertically flipped blit destination per approximate
@@ -123,8 +123,8 @@ namespace skyline::gpu::diagnostic {
             uiMidpointSnapshotCount = 0;
             uiMidpointBytes = 0;
             textDrawCycles.clear();
-            postSecondTextCount = 0;
-            postSecondTextBytes = 0;
+            postFourthTextCount = 0;
+            postFourthTextBytes = 0;
             fermiSourceSnapshotCount = 0;
             fermiSourceBytes = 0;
             flippedDestinations.fill({});
@@ -272,11 +272,12 @@ namespace skyline::gpu::diagnostic {
         }
 
         // Count actual resolved text-strip draws to a *single* compositor
-        // target between successive full-screen reverse Fermi2D copies. Do
-        // not assume they share a Maxwell submission: trace interleaving may
-        // split one UI cycle into multiple submissions. The second draw
-        // triggers an ordered post-draw readback, once per cycle.
-        std::optional<std::uint32_t> ClaimPostSecondText(
+        // target between successive full-screen reverse Fermi2D copies.
+        // Trace shows six or seven consumers per full composition cycle.
+        // The fourth draw follows the first large sprite block and helps
+        // isolate where the later P1 list is composed. Never group these
+        // by approximate VI frame or Maxwell submission.
+        std::optional<std::uint32_t> ClaimPostFourthText(
             std::uintptr_t target, std::size_t bytes) {
             if (!target || !active.load(std::memory_order_acquire))
                 return std::nullopt;
@@ -290,23 +291,21 @@ namespace skyline::gpu::diagnostic {
                     textDrawCycles.push_back({target, 1});
                 return std::nullopt;
             }
-            // CompleteUiCompositorCycle() resets this existing target to 0.
-            // The next qualifying text draw must re-arm the target before the
-            // second draw can request a new snapshot. Without this transition,
-            // all subsequent cycles silently stop generating ui_posttext2.
-            if (it->draws == 0) {
-                it->draws = 1;
+            // 0 (new cycle) -> 1 -> 2 -> 3 -> 4 (checkpoint);
+            // ignore subsequent text draws until reverse Fermi.
+            if (it->draws < 3) {
+                ++it->draws;
                 return std::nullopt;
             }
-            if (it->draws != 1)
+            if (it->draws != 3)
                 return std::nullopt;
-            it->draws = 2; // One probe per completed UI composition cycle.
-            if (!bytes || postSecondTextCount >= MaxPostSecondTextSnapshots ||
-                postSecondTextBytes > MaxPostSecondTextBytes ||
-                bytes > MaxPostSecondTextBytes - postSecondTextBytes)
+            it->draws = 4; // Exactly one probe per cycle.
+            if (!bytes || postFourthTextCount >= MaxPostFourthTextSnapshots ||
+                postFourthTextBytes > MaxPostFourthTextBytes ||
+                bytes > MaxPostFourthTextBytes - postFourthTextBytes)
                 return std::nullopt;
-            postSecondTextBytes += bytes;
-            return postSecondTextCount++;
+            postFourthTextBytes += bytes;
+            return postFourthTextCount++;
         }
 
         // A pre-reverse Fermi probe ends this compositor cycle. Re-arm the
