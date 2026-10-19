@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.DialogInterface
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
+import android.util.Log
 import android.os.Bundle
 import android.text.InputType
 import android.view.KeyEvent
@@ -20,6 +21,9 @@ import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.doOnTextChanged
 import androidx.fragment.app.DialogFragment
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -167,6 +171,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
     override fun onStart() {
         super.onStart()
         if (::binding.isInitialized) {
+            Log.i("SWKBDTrace", "dialog onStart: session=$sessionId, inline=$inline, windowFocus=${dialog?.window?.decorView?.hasWindowFocus()}")
             dialog?.window?.apply {
                 if (inline) {
                     clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
@@ -207,9 +212,18 @@ class SoftwareKeyboardDialog : DialogFragment() {
 
                 val editor = binding.textInput
                 editor.requestFocus()
-                val inputMethodManager = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                inputMethodManager.restartInput(editor)
-                inputMethodManager.showSoftInput(editor, InputMethodManager.SHOW_IMPLICIT)
+                val imm = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.restartInput(editor)
+                // Request the IME via window insets after focus, as recommended by Android.
+                val targetWindow = dialog?.window ?: return@post
+                WindowCompat.getInsetsController(targetWindow, editor).show(WindowInsetsCompat.Type.ime())
+                Log.i("SWKBDTrace", "inline request IME: session=$sessionId, windowFocus=${decorView.hasWindowFocus()}, editorFocus=${editor.hasFocus()}")
+                editor.post {
+                    if (isAdded && !closedByFrontend) {
+                        val visible = ViewCompat.getRootWindowInsets(editor)?.isVisible(WindowInsetsCompat.Type.ime())
+                        Log.i("SWKBDTrace", "inline IME snapshot: session=$sessionId, visible=$visible")
+                    }
+                }
             }
         }
 
