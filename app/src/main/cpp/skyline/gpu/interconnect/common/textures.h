@@ -24,6 +24,7 @@ namespace skyline::gpu::interconnect {
 
       public:
         span<TextureImageControl> textureHeaders;
+        u64 bindingGeneration{}; //!< Changes whenever the TIC pool binding is refreshed
 
         TexturePoolState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine);
 
@@ -65,6 +66,7 @@ namespace skyline::gpu::interconnect {
             TextureImageControl tic;
             TextureView *view;
             u64 sequenceNumber;
+            u64 bindingGeneration;
         };
         std::vector<CacheEntry> textureHeaderCache;
 
@@ -73,11 +75,13 @@ namespace skyline::gpu::interconnect {
 
         void MarkAllDirty();
 
+        u64 GetBindingGeneration(InterconnectContext &ctx);
+
         TextureView *GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType);
 
         Shader::TextureType GetTextureType(InterconnectContext &ctx, u32 index);
 
-        bool IsTexturePixelFormatInteger(InterconnectContext &ctx, u32 index);
+        Shader::TextureComponentType GetTextureComponentType(InterconnectContext &ctx, u32 index);
 
         vk::raii::BufferView *GetTextureBufferView(InterconnectContext &ctx, u32 index, CachedMappedBufferView &cachedView);
 

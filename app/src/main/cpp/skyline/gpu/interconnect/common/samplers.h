@@ -24,6 +24,7 @@ namespace skyline::gpu::interconnect {
       public:
         span<TextureSamplerControl> texSamplers;
         bool didUseTexHeaderBinding;
+        u64 bindingGeneration{};
 
         SamplerPoolState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine);
 
@@ -46,6 +47,8 @@ namespace skyline::gpu::interconnect {
         Samplers(DirtyManager &manager, const SamplerPoolState::EngineRegisters &engine);
 
         void Update(InterconnectContext &ctx, bool useTexHeaderBinding);
+
+        u64 GetBindingGeneration() { return samplerPool.Get().bindingGeneration; }
 
         void MarkAllDirty();
 

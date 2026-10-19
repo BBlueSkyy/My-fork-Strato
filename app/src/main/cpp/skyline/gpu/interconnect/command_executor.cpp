@@ -9,6 +9,7 @@
 #include <common/settings.h>
 #include <loader/loader.h>
 #include <gpu.h>
+#include <gpu/attachment_feedback.h>
 #include <dlfcn.h>
 #include "command_executor.h"
 #include <nce.h>
@@ -406,7 +407,7 @@ namespace skyline::gpu::interconnect {
 
         bool splitRenderPass{renderPass == nullptr || renderPass->renderArea != renderArea || !attachmentsMatch ||
             !ranges::all_of(outputAttachmentViews, [this] (auto view) { return !view || view->texture->ValidateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget); }) ||
-            !ranges::all_of(sampledImages, [this] (auto view) { return view->texture->ValidateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled); })};
+            !ranges::all_of(sampledImages, [this] (auto view) { return !view || view->texture->ValidateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled); })};
 
         bool gotoNext{};
         if (splitRenderPass) {
@@ -440,7 +441,8 @@ namespace skyline::gpu::interconnect {
                 view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget);
 
         for (auto view : sampledImages)
-            view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
+            if (view)
+                view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
         return gotoNext;
     }
@@ -543,8 +545,44 @@ namespace skyline::gpu::interconnect {
         cycle->AttachObject(dependency);
     }
 
-    void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory) {
-        bool gotoNext{CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask)};
+    void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory, bool attachmentFeedbackAllowed) {
+        auto feedbackImages{feedback::FindImages(sampledImages, colorAttachments, depthStencilAttachment)};
+        if (!feedbackImages.empty() && (!attachmentFeedbackAllowed || !gpu.traits.supportsAttachmentFeedbackLoop))
+            throw exception("Sampled attachment feedback requires enabled native feedback loop pipeline support");
+
+        // One draw per feedback render pass. Explicit image transitions provide
+        // availability/visibility between draws without a global memory barrier.
+        struct FeedbackImage {
+            Texture *texture;
+            vk::Image image;
+            vk::ImageSubresourceRange range;
+            vk::ImageLayout layout;
+        };
+        std::vector<FeedbackImage> feedbackTransitions;
+        for (auto view : feedbackImages) {
+            auto *texture{view->texture.get()};
+            if (!(texture->usage & feedback::ImageUsageBit) || texture->layout == vk::ImageLayout::eUndefined)
+                throw exception("Sampled attachment backing is not initialized with feedback loop usage");
+            feedbackTransitions.push_back({texture, texture->GetBacking(),
+                {texture->format->vkAspect, 0, texture->levelCount, 0, texture->layerCount}, texture->layout});
+        }
+        if (!feedbackTransitions.empty())
+            FinishRenderPass();
+
+        // Attachment descriptions capture this layout. Restore CPU metadata
+        // immediately, since deferred uploads and other queued users use it.
+        for (const auto &transition : feedbackTransitions)
+            transition.texture->layout = feedback::Layout;
+        bool gotoNext{};
+        try {
+            gotoNext = CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask);
+        } catch (...) {
+            for (const auto &transition : feedbackTransitions)
+                transition.texture->layout = transition.layout;
+            throw;
+        }
+        for (const auto &transition : feedbackTransitions)
+            transition.texture->layout = transition.layout;
 
         SubpassHooks hooks{};
         if (hookFactory)
@@ -562,6 +600,19 @@ namespace skyline::gpu::interconnect {
                 slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::move(hooks.before));
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
         }
+
+        // Publish transitions only after attachment and draw preparation
+        // succeed. Inserting before the new pass preserves execution order
+        // without leaving an unpaired transition if preparation throws.
+        for (const auto &transition : feedbackTransitions)
+            InsertPreRpCommand([transition](vk::raii::CommandBuffer &commands, const std::shared_ptr<FenceCycle> &, GPU &) {
+                feedback::RecordLayoutTransition(commands, transition.image, transition.range, transition.layout, feedback::Layout);
+            });
+
+        for (const auto &transition : feedbackTransitions)
+            AddOutsideRpCommand([transition](vk::raii::CommandBuffer &commands, const std::shared_ptr<FenceCycle> &, GPU &) {
+                feedback::RecordLayoutTransition(commands, transition.image, transition.range, feedback::Layout, transition.layout);
+            });
 
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
             Submit();

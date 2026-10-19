@@ -4,10 +4,17 @@
 #pragma once
 
 #include <future>
+#include <gpu/attachment_feedback.h>
 #include <gpu/interconnect/command_executor.h>
 #include "common.h"
 
 namespace skyline::gpu::interconnect {
+    struct SetAttachmentFeedbackCmdImpl {
+        vk::ImageAspectFlags aspects;
+        void Record(GPU &gpu, vk::raii::CommandBuffer &commands) {
+            feedback::SetDynamicState(gpu.vkDevice, commands, aspects);
+        }
+    };
     /**
      * @brief Header for a singly-linked state update command
      */
@@ -35,6 +42,8 @@ namespace skyline::gpu::interconnect {
             reinterpret_cast<CmdHolder *>(header)->cmd.Record(gpu, commandBuffer);
         }
     };
+
+    using SetAttachmentFeedbackCmd = CmdHolder<SetAttachmentFeedbackCmdImpl>;
 
     static constexpr size_t MaxVertexBufferCount{16};
 
@@ -490,6 +499,10 @@ namespace skyline::gpu::interconnect {
                     .srcSet = srcSet,
                     .dstSet = dstSet,
                 });
+        }
+
+        void SetAttachmentFeedback(vk::ImageAspectFlags aspects) {
+            AppendCmd<SetAttachmentFeedbackCmd>({.aspects = aspects});
         }
 
         void SetPipeline(vk::Pipeline pipeline, vk::PipelineBindPoint bindPoint) {

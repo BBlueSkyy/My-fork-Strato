@@ -3,6 +3,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <cmath>
+#include <gpu/attachment_feedback.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -40,6 +41,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
 
             activeDescriptorPipeline = nullptr;
+            activeAttachmentFeedbackAspects.reset();
             activeState.MarkAllDirty();
             constantBuffers.MarkAllDirty();
             samplers.MarkAllDirty();
@@ -55,6 +57,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ctx.executor.AddPipelineChangeCallback([this] {
             queries.Pause(ctx);
             activeDescriptorPipeline = nullptr;
+            activeAttachmentFeedbackAspects.reset();
             activeState.MarkAllDirty();
             activeDescriptorSet = nullptr;
         });
@@ -150,7 +153,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
          [this](u32 renderPassIndex) {
              return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-         });
+         }, true);
           InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
           ctx.executor.AddCheckpoint("After inline index draw");
      
@@ -228,6 +231,19 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                  vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
          Pipeline *oldPipeline{activeState.GetPipeline()};
          samplers.Update(ctx, samplerBinding.value == engine::SamplerBinding::Value::ViaHeaderBinding);
+         const auto samplerGeneration{samplers.GetBindingGeneration()};
+         if (samplerGeneration != activeSamplerBindingGeneration) {
+             activeSamplerBindingGeneration = samplerGeneration;
+             activeDescriptorPipeline = nullptr;
+         }
+         const auto textureGeneration{textures.GetBindingGeneration(ctx)};
+         if (textureGeneration != activeTextureBindingGeneration) {
+             activeTextureBindingGeneration = textureGeneration;
+             activeDescriptorPipeline = nullptr;
+             activeState.InvalidatePipeline();
+         } else if (!constantBuffers.quickBindEnabled) {
+             activeState.InvalidatePipeline();
+         }
          activeState.Update(ctx, textures, samplers, constantBuffers.boundConstantBuffers,
                             builder,
                             indexed, topology, estimateIndexBufferSize, firstIndex, count,
@@ -236,6 +252,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
 
 
+         bool completeDescriptorUpdate{};
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
              if (activeDescriptorPipeline &&
                  ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline)) &&
@@ -252,13 +269,36 @@ namespace skyline::gpu::interconnect::maxwell3d {
                      return nullptr;
              } else {
                  // If bindings have changed or quick bind is disabled, perform a full descriptor update
+                 completeDescriptorUpdate = true;
                  return pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
                                                   activeDescriptorSetSampledImages,
                                                   srcStageMask, dstStageMask);
              }
          }()};
 
-         activeDescriptorPipeline = pipeline;
+         auto feedbackImages{feedback::FindImages(activeDescriptorSetSampledImages,
+             activeState.GetColorAttachments(), activeState.GetDepthAttachment())};
+         vk::ImageAspectFlags feedbackAspects{};
+         if (!feedbackImages.empty()) {
+             if (!ctx.gpu.traits.supportsAttachmentFeedbackLoop)
+                 throw exception("Sampled attachment feedback requires VK_EXT_attachment_feedback_loop_layout and dynamic state");
+             // Quick-bind writes/copies can retain GENERAL descriptors. Rebuild
+             // every sampled binding before substituting the per-draw layout.
+             if (!completeDescriptorUpdate)
+                 descUpdateInfo = pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
+                     activeDescriptorSetSampledImages, srcStageMask, dstStageMask);
+             for (const auto *view : feedbackImages)
+                 feedbackAspects |= view->texture->format->vkAspect;
+             feedback::PatchDescriptorLayouts(descUpdateInfo->writes, activeDescriptorSetSampledImages, feedbackImages);
+         }
+         // The following draw must restore GENERAL descriptors even if its
+         // constant buffers and textures are unchanged.
+         activeDescriptorPipeline = feedbackImages.empty() ? pipeline : nullptr;
+         if (ctx.gpu.traits.supportsAttachmentFeedbackLoop &&
+             (!activeAttachmentFeedbackAspects || *activeAttachmentFeedbackAspects != feedbackAspects)) {
+             builder.SetAttachmentFeedback(feedbackAspects);
+             activeAttachmentFeedbackAspects = feedbackAspects;
+         }
 
          if (oldPipeline != pipeline)
              // If the pipeline has changed, we need to update the pipeline state
@@ -810,7 +850,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-           });
+           }, true);
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
     
@@ -894,7 +934,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-           });
+           }, true);
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After indirect draw");
     

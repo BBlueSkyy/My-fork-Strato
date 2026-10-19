@@ -22,7 +22,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             }, [&](u32 index) {
                 return textures.GetTextureType(ctx, BindlessHandle{ .raw = index }.textureIndex);
             }, [&](u32 index) {
-                return textures.IsTexturePixelFormatInteger(ctx, BindlessHandle{ .raw = index }.textureIndex);
+                return textures.GetTextureComponentType(ctx, BindlessHandle{ .raw = index }.textureIndex);
             }, [&](u32 index) {
                 BindlessHandle handle{ .raw = index };
                 return samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex);
@@ -46,7 +46,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
                 descriptorInfo.descriptorSetLayoutBindings.push_back(vk::DescriptorSetLayoutBinding{
                     .binding = bindingIndex++,
-                    .descriptorType = type,
+                    .descriptorType = ResolveDescriptorType(type, desc),
                     .descriptorCount = desc.count,
                     .stageFlags = vk::ShaderStageFlagBits::eCompute,
                 });
@@ -117,6 +117,13 @@ namespace skyline::gpu::interconnect::kepler_compute {
         texelBufferViews.resize(descriptorInfo.totalTexelBufferDescCount);
     }
 
+    bool Pipeline::MatchesTextureTypes(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers) const {
+        return TextureComponentsMatch(ctx, textures, constantBuffers, shaderStage.info.texture_descriptors) &&
+               TextureComponentsMatch(ctx, textures, constantBuffers, shaderStage.info.texture_buffer_descriptors) &&
+               TextureComponentsMatch(ctx, textures, constantBuffers, shaderStage.info.image_descriptors) &&
+               TextureComponentsMatch(ctx, textures, constantBuffers, shaderStage.info.image_buffer_descriptors);
+    }
+
     void Pipeline::SyncCachedStorageBufferViews(ContextTag executionTag) {
         if (lastExecutionTag != executionTag) {
             for (auto &view : storageBufferViews)
@@ -173,7 +180,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
                     writes[writeIdx++] = {
                         .dstBinding = bindingIdx++,
                         .descriptorCount = desc.count,
-                        .descriptorType = type,
+                        .descriptorType = ResolveDescriptorType(type, desc),
                         .pImageInfo = &imageDescs[imageIdx],
                     };
 

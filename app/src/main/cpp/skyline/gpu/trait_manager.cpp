@@ -77,6 +77,7 @@ namespace skyline::gpu {
             }                                                      \
         } while(false);
 
+        FEAT_SET(vk::PhysicalDeviceFeatures2, features.imageCubeArray, std::ignore)
         FEAT_SET(vk::PhysicalDeviceFeatures2, features.samplerAnisotropy, supportsAnisotropicFiltering)
         FEAT_SET(vk::PhysicalDeviceFeatures2, features.occlusionQueryPrecise, supportsOcclusionQueryPrecise)
         FEAT_SET(vk::PhysicalDeviceFeatures2, features.logicOp, supportsLogicOp)

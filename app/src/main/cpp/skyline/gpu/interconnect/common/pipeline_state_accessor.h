@@ -22,7 +22,7 @@ namespace skyline::gpu::interconnect {
         /**
          * @return Whether the TIC entry at the given index has an integer pixel format
          */
-        virtual bool IsTexturePixelFormatInteger(u32 index) const = 0;
+        virtual Shader::TextureComponentType GetTextureComponentType(u32 index) const = 0;
 
         /**
          * @return The shadow compare function for the TSC entry associated with the given bindless handle

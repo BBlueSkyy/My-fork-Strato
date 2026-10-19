@@ -124,6 +124,9 @@ int main() {
     for (auto &control : addressSpace.gmmu.pools[0]) control = makeSampler(TextureSamplerControl::Filter::Nearest);
     for (auto &control : addressSpace.gmmu.pools[1]) control = makeSampler(TextureSamplerControl::Filter::Linear);
     samplers.Update(ctx, false);
+    const auto firstGeneration{samplers.GetBindingGeneration()};
+    samplers.Update(ctx, false);
+    Check(samplers.GetBindingGeneration() == firstGeneration, "unchanged sampler pool generation advanced");
     auto *first{samplers.GetSampler(ctx, 1)};
     Check(first->info.minFilter == vk::Filter::eNearest, "initial sampler differs from first pool");
     Check(samplers.GetSampler(ctx, 1) == first, "unchanged pool lost sampler reuse");
@@ -132,6 +135,7 @@ int main() {
     registers.sampler.offset = 1;
     manager.MarkDirty(offsetof(Registers, sampler) / sizeof(u32));
     samplers.Update(ctx, false);
+    Check(samplers.GetBindingGeneration() != firstGeneration, "sampler pool rebind did not invalidate descriptor generation");
     auto *second{samplers.GetSampler(ctx, 1)};
     Check(second->info.minFilter == vk::Filter::eLinear, "same-size sampler pool rebind reused stale index cache");
     Check(first->info.minFilter == vk::Filter::eNearest, "pool rebind destroyed a sampler retained by recorded commands");
@@ -151,7 +155,9 @@ int main() {
     manager.MarkDirty((offsetof(Registers, sampler) + offsetof(engine_common::TexSamplerPool, maximumIndex)) / sizeof(u32));
     samplers.Update(ctx, true);
     Check(samplers.GetSampler(ctx, 0, 3) != nullptr, "linked pool bounds ignored texture maximum index");
+    const auto linkedGeneration{samplers.GetBindingGeneration()};
     samplers.Update(ctx, false);
+    Check(samplers.GetBindingGeneration() != linkedGeneration, "ViaHeaderBinding mode did not invalidate descriptor generation");
     Check(samplers.GetSampler(ctx, 3, 0) == nullptr, "independent pool bounds ignored sampler maximum index");
     std::cout << "PASS sampler pool rebinding, cache reuse, retained lifetime, linked/explicit indices and range checks\n";
 }

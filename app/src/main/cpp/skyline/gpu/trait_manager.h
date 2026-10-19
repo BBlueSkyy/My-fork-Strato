@@ -53,6 +53,7 @@ namespace skyline::gpu {
         bool supportsWideLines{}; //!< If the device supports the 'wideLines' Vulkan feature
         bool supportsDepthClamp{}; //!< If the device supports the 'depthClamp' Vulkan feature
         bool supportsExtendedDynamicState{}; //!< If the device supports the 'VK_EXT_extended_dynamic_state' Vulkan extension
+        bool supportsAttachmentFeedbackLoop{}; //!< Both feedback layout and dynamic enable features were enabled
         bool supportsNullDescriptor{}; //!< If the device supports the null descriptor feature in the 'VK_EXT_robustness2' Vulkan extension
         u32 subgroupSize{}; //!< Size of a subgroup on the host GPU
         u32 hostVisibleCoherentCachedMemoryType{std::numeric_limits<u32>::max()};

@@ -18,6 +18,7 @@ namespace skyline::gpu::interconnect {
         auto mapping{ctx.channelCtx.asCtx->gmmu.LookupBlock(engine->texHeaderPool.offset)};
 
         textureHeaders = mapping.first.subspan(mapping.second).cast<TextureImageControl>().first(engine->texHeaderPool.maximumIndex + 1);
+        ++bindingGeneration;
     }
 
     void TexturePoolState::PurgeCaches() {
@@ -28,6 +29,10 @@ namespace skyline::gpu::interconnect {
 
     void Textures::MarkAllDirty() {
         texturePool.MarkDirty(true);
+    }
+
+    u64 Textures::GetBindingGeneration(InterconnectContext &ctx) {
+        return texturePool.UpdateGet(ctx).bindingGeneration;
     }
 
     static texture::Format ConvertTicFormat(TextureImageControl::FormatWord format, bool srgb) {
@@ -172,27 +177,37 @@ namespace skyline::gpu::interconnect {
         #undef TIC_FORMAT_CASE_NORM_INT_FLOAT
     }
 
-    static bool IsIntegerTicFormat(texture::Format format) {
-        return format == format::R8Uint ||
-               format == format::R8Sint ||
-               format == format::R16Uint ||
-               format == format::R16Sint ||
-               format == format::R8G8Uint ||
-               format == format::R8G8Sint ||
-               format == format::R32Uint ||
-               format == format::R32Sint ||
-               format == format::R16G16Uint ||
-               format == format::R16G16Sint ||
-               format == format::R8G8B8A8Uint ||
-               format == format::R8G8B8A8Sint ||
-               format == format::A2B10G10R10Uint ||
-               format == format::A2B10G10R10Sint ||
-               format == format::R32G32Uint ||
-               format == format::R32G32Sint ||
-               format == format::R16G16B16A16Uint ||
-               format == format::R16G16B16A16Sint ||
-               format == format::R32G32B32A32Uint ||
-               format == format::R32G32B32A32Sint;
+    static Shader::TextureComponentType GetTicComponentType(texture::Format format, bool firstComponent) {
+        if (!format)
+            return Shader::TextureComponentType::Float;
+        if (format->Aspect(firstComponent) == vk::ImageAspectFlagBits::eStencil)
+            return Shader::TextureComponentType::Uint;
+        switch (format->vkFormat) {
+            case vk::Format::eR8Uint:
+            case vk::Format::eR16Uint:
+            case vk::Format::eR8G8Uint:
+            case vk::Format::eR32Uint:
+            case vk::Format::eR16G16Uint:
+            case vk::Format::eR8G8B8A8Uint:
+            case vk::Format::eA2B10G10R10UintPack32:
+            case vk::Format::eR32G32Uint:
+            case vk::Format::eR16G16B16A16Uint:
+            case vk::Format::eR32G32B32A32Uint:
+                return Shader::TextureComponentType::Uint;
+            case vk::Format::eR8Sint:
+            case vk::Format::eR16Sint:
+            case vk::Format::eR8G8Sint:
+            case vk::Format::eR32Sint:
+            case vk::Format::eR16G16Sint:
+            case vk::Format::eR8G8B8A8Sint:
+            case vk::Format::eA2B10G10R10SintPack32:
+            case vk::Format::eR32G32Sint:
+            case vk::Format::eR16G16B16A16Sint:
+            case vk::Format::eR32G32B32A32Sint:
+                return Shader::TextureComponentType::Sint;
+            default:
+                return Shader::TextureComponentType::Float;
+        }
     }
 
     static vk::ComponentMapping ConvertTicSwizzleMapping(TextureImageControl::FormatWord format, vk::ComponentMapping swizzleMapping) {
@@ -260,17 +275,19 @@ namespace skyline::gpu::interconnect {
     }
 
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        auto &pool{texturePool.UpdateGet(ctx)};
+        auto textureHeaders{pool.textureHeaders};
         if (textureHeaderCache.size() != textureHeaders.size()) {
             textureHeaderCache.resize(textureHeaders.size());
             std::fill(textureHeaderCache.begin(), textureHeaderCache.end(), CacheEntry{});
         } else if (textureHeaders.size() > index && textureHeaderCache[index].view) {
             auto &cached{textureHeaderCache[index]};
-            if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber)
+            if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber && cached.bindingGeneration == pool.bindingGeneration)
                 return cached.view;
 
             if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
                 cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
+                cached.bindingGeneration = pool.bindingGeneration;
                 return cached.view;
             }
         }
@@ -392,7 +409,7 @@ namespace skyline::gpu::interconnect {
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
         }
 
-        textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber};
+        textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber, pool.bindingGeneration};
         return texture.get();
     }
 
@@ -426,21 +443,21 @@ namespace skyline::gpu::interconnect {
         throw exception("Invalid TIC texture type: {}", static_cast<u32>(textureHeaders[index].textureType));
     }
 
-    bool Textures::IsTexturePixelFormatInteger(InterconnectContext &ctx, u32 index) {
+    Shader::TextureComponentType Textures::GetTextureComponentType(InterconnectContext &ctx, u32 index) {
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
         if (index >= textureHeaders.size()) {
             LOGW("Texture pixel format requested for out-of-range TIC index {}", index);
-            return false;
+            return Shader::TextureComponentType::Float;
         }
 
         const auto &textureHeader{textureHeaders[index]};
         const auto format{ConvertTicFormat(textureHeader.formatWord, textureHeader.isSrgb)};
         if (!format) {
             LOGW("Texture pixel format requested for unsupported TIC index {}", index);
-            return false;
+            return Shader::TextureComponentType::Float;
         }
 
-        return IsIntegerTicFormat(format);
+        return GetTicComponentType(format, textureHeader.formatWord.swizzleX == TextureImageControl::ImageSwizzle::R);
     }
 
     vk::raii::BufferView *Textures::GetOrCreateTexelBufferView(

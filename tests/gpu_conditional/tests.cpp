@@ -119,7 +119,7 @@ struct Executor {
     int usageTracker{};
     template<class F> void RunWithTextureBackingRetry(F function) { function(); }
     void AddCheckpoint(const char *) {}
-    template<class F, class T, class C, class H> void AddSubpass(F function, vk::Rect2D, T, std::initializer_list<int>, C, TextureView *, bool, u32, u32, H hook) { hook(0); AddOutsideRpCommand([function](auto &cb, const auto &cycle, auto &gpu) { function(cb, cycle, gpu, 0, 0); }); }
+    template<class F, class T, class C, class H> void AddSubpass(F function, vk::Rect2D, T, std::initializer_list<int>, C, TextureView *, bool, u32, u32, H hook, bool attachmentFeedbackAllowed = false) { (void)attachmentFeedbackAllowed; hook(0); AddOutsideRpCommand([function](auto &cb, const auto &cycle, auto &gpu) { function(cb, cycle, gpu, 0, 0); }); }
     GPU *gpu{};
     std::vector<std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)>> commands;
     std::vector<std::shared_ptr<void>> dependencies;

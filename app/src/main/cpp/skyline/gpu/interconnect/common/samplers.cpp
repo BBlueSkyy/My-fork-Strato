@@ -19,6 +19,7 @@ namespace skyline::gpu::interconnect {
         texSamplers = mapping.first.subspan(mapping.second).cast<TextureSamplerControl>().first(maximumIndex + 1);
 
         didUseTexHeaderBinding = useTexHeaderBinding;
+        ++bindingGeneration;
     }
 
     bool SamplerPoolState::Refresh(InterconnectContext &ctx, bool useTexHeaderBinding) {

@@ -51,6 +51,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         PackedPipelineState sourcePackedState;
 
+        bool MatchesTextureTypes(InterconnectContext &ctx, Textures &textures, ConstantBufferSet &constantBuffers) const;
+
         Pipeline(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary);
 
         /**
@@ -61,15 +63,17 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
     class PipelineManager {
       private:
-        tsl::robin_map<PackedPipelineState, std::unique_ptr<Pipeline>, util::ObjectHash<PackedPipelineState>> map;
+        tsl::robin_map<PackedPipelineState, std::vector<std::unique_ptr<Pipeline>>, util::ObjectHash<PackedPipelineState>> map;
 
       public:
         Pipeline *FindOrCreate(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary) {
             auto it{map.find(packedState)};
             if (it != map.end())
-                return it->second.get();
+                for (const auto &variant : it->second)
+                    if (variant->MatchesTextureTypes(ctx, textures, constantBuffers))
+                        return variant.get();
 
-            return map.emplace(packedState, std::make_unique<Pipeline>(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)).first->second.get();
+            return map[packedState].emplace_back(std::make_unique<Pipeline>(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)).get();
         }
     };
 }

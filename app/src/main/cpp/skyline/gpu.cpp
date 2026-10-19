@@ -6,6 +6,7 @@
 #include <os.h>
 #include <jvm.h>
 #include <common/settings.h>
+#include <gpu/attachment_feedback.h>
 #include "gpu.h"
 
 namespace skyline::gpu {
@@ -283,6 +284,26 @@ namespace skyline::gpu {
             vk::PhysicalDeviceSubgroupProperties>()};
 
         traits = TraitManager{deviceFeatures2, enabledFeatures2, deviceExtensions, enabledExtensions, deviceProperties2, physicalDevice};
+        // Keep the extension ABI structs alive until vkCreateDevice consumes
+        // their chain. The pinned Vulkan-Hpp predates these two extensions.
+        feedback::LayoutFeatures feedbackLayout;
+        feedback::DynamicStateFeatures feedbackDynamic;
+        const auto hasExtension{[&](std::string_view name) {
+            return std::any_of(deviceExtensions.begin(), deviceExtensions.end(),
+                [&](const auto &extension) { return std::string_view(extension.extensionName) == name; });
+        }};
+        if (hasExtension(feedback::LayoutExtension) && hasExtension(feedback::DynamicStateExtension)) {
+            feedbackLayout.pNext = &feedbackDynamic;
+            VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &feedbackLayout, {}};
+            physicalDevice.getDispatcher()->vkGetPhysicalDeviceFeatures2(static_cast<VkPhysicalDevice>(*physicalDevice), &query);
+            if (feedbackLayout.attachmentFeedbackLoopLayout && feedbackDynamic.attachmentFeedbackLoopDynamicState) {
+                traits.supportsAttachmentFeedbackLoop = true;
+                enabledExtensions.push_back(std::array<char, VK_MAX_EXTENSION_NAME_SIZE>{"VK_EXT_attachment_feedback_loop_layout"});
+                enabledExtensions.push_back(std::array<char, VK_MAX_EXTENSION_NAME_SIZE>{"VK_EXT_attachment_feedback_loop_dynamic_state"});
+                feedbackDynamic.pNext = enabledFeatures2.get<vk::PhysicalDeviceFeatures2>().pNext;
+                enabledFeatures2.get<vk::PhysicalDeviceFeatures2>().pNext = &feedbackLayout;
+            }
+        }
         traits.ApplyDriverPatches(context, mapping);
 
         std::vector<const char *> pEnabledExtensions;

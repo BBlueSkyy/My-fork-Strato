@@ -325,6 +325,8 @@ namespace skyline::gpu {
       private:
         vk::ImageView vkView{};
         u64 vkViewGeneration{};
+        vk::ImageView vkStorageView{};
+        u64 vkStorageViewGeneration{};
 
       public:
         LockableSharedPtr<Texture> texture;
@@ -368,10 +370,11 @@ namespace skyline::gpu {
         vk::ImageUsageFlags GetUsage() const;
 
         /**
+         * @param identityMapping Ignore TIC component swizzles for storage-image descriptors
          * @return A VkImageView that corresponds to the properties of this view
          * @note The texture **must** be locked prior to calling this
          */
-        vk::ImageView GetView();
+        vk::ImageView GetView(bool identityMapping = false);
 
         bool operator==(const TextureView &rhs) {
             return texture == rhs.texture && type == rhs.type && format == rhs.format && mapping == rhs.mapping && range == rhs.range;
@@ -642,6 +645,9 @@ namespace skyline::gpu {
          * @return A cached or newly created view into this texture with the supplied attributes
          */
         std::shared_ptr<TextureView> GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format = {}, vk::ComponentMapping mapping = {}, ContextTag context = {});
+
+        // Requires the texture lock; cached views belong to the current backing.
+        bool OwnsView(vk::ImageView view) const;
 
         /**
          * @brief Copies the contents of the supplied source texture into the current texture
