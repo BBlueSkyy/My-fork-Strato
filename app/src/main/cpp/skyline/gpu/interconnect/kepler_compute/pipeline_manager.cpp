@@ -260,7 +260,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
                                      handle.raw, static_cast<u32>(handle.textureIndex), static_cast<u32>(handle.samplerIndex),
                                      primary, secondary, desc.cbuf_index, primaryOffset, desc.secondary_cbuf_index,
                                      desc.secondary_cbuf_offset, desc.has_secondary, desc.shift_left,
-                                     desc.secondary_shift_left, desc.primary_mask, desc.secondary_mask, arrayIdx);
+                                     desc.secondary_shift_left, desc.mask, desc.secondary_mask, arrayIdx);
                             }
                             auto binding{GetTextureBinding(ctx, desc,
                                                            samplers, textures, handle,
