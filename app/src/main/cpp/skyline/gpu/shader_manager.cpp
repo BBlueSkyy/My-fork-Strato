@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <fstream>
+#include <string_view>
 #include <range/v3/algorithm.hpp>
 #include <boost/functional/hash.hpp>
 #include <gpu.h>
@@ -30,6 +32,34 @@ namespace Shader::Log {
 }
 
 namespace skyline::gpu {
+    namespace {
+        // Targeted MK11 menu compute shader. Never enable DumpShaders globally.
+        constexpr u64 Mk11TargetComputeHash{0x55736CD732068324ULL};
+        constexpr size_t Mk11TraceMaxBytes{256 * 1024};
+        constexpr size_t Mk11TraceChunkBytes{256};
+
+        // Hex chunks are independently recoverable from emulation.log (including
+        // on Android, where app-private shader dump directories are hard to reach).
+        void TraceMk11ShaderPayload(std::string_view phase, const u8 *data, size_t size) {
+            constexpr char HexDigits[]{"0123456789ABCDEF"};
+            const size_t captured{std::min(size, Mk11TraceMaxBytes)};
+            LOGW("MK11ShaderDumpBegin: hash=0x{:016X} phase={} totalBytes={} capturedBytes={} truncated={}",
+                 Mk11TargetComputeHash, phase, size, captured, size > captured);
+            for (size_t offset{}; offset < captured; offset += Mk11TraceChunkBytes) {
+                const size_t count{std::min(Mk11TraceChunkBytes, captured - offset)};
+                std::string hex(count * 2, '0');
+                for (size_t i{}; i < count; ++i) {
+                    const u8 byte{data[offset + i]};
+                    hex[2 * i] = HexDigits[byte >> 4];
+                    hex[2 * i + 1] = HexDigits[byte & 0xF];
+                }
+                LOGW("MK11ShaderDumpChunk: phase={} offset={} hex={}", phase, offset, hex);
+            }
+            LOGW("MK11ShaderDumpEnd: hash=0x{:016X} phase={} capturedBytes={}",
+                 Mk11TargetComputeHash, phase, captured);
+        }
+    }
+
     void ShaderManager::LoadShaderReplacements(std::string_view replacementDir) {
         std::filesystem::path replacementDirPath{replacementDir};
         if (std::filesystem::exists(replacementDirPath)) {
@@ -277,6 +307,7 @@ namespace skyline::gpu {
         ShaderManager::GetTextureType getTextureType;
         ShaderManager::GetTextureComponentType getTextureComponentType;
         ShaderManager::GetTextureCompareFunc getTextureCompareFunc;
+        bool diagnosticTexturePass{};
     
       public:
         ComputeEnvironment(span<u8> pBinary,
@@ -286,7 +317,8 @@ namespace skyline::gpu {
                            std::array<u32, 3> workgroupDimensions,
                            ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType,
                            ShaderManager::GetTextureComponentType getTextureComponentType,
-                           ShaderManager::GetTextureCompareFunc getTextureCompareFunc)
+                           ShaderManager::GetTextureCompareFunc getTextureCompareFunc,
+                           bool traceTexturePass)
             : binary{pBinary},
               baseOffset{baseOffset},
               textureBufferIndex{textureBufferIndex},
@@ -296,10 +328,19 @@ namespace skyline::gpu {
               constantBufferRead{std::move(constantBufferRead)},
               getTextureType{std::move(getTextureType)},
               getTextureComponentType{std::move(getTextureComponentType)},
-              getTextureCompareFunc{std::move(getTextureCompareFunc)} {
+              getTextureCompareFunc{std::move(getTextureCompareFunc)},
+              diagnosticTexturePass{traceTexturePass} {
             stage = Shader::Stage::Compute;
             start_address = baseOffset;
             is_propietary_driver = textureBufferIndex == 2;
+        }
+
+        [[nodiscard]] bool WantsTexturePassDiagnostic() const final {
+            return diagnosticTexturePass;
+        }
+
+        void TraceTexturePassDiagnostic(std::string_view phase, std::string_view ir) final {
+            TraceMk11ShaderPayload(phase, reinterpret_cast<const u8 *>(ir.data()), ir.size());
         }
 
         [[nodiscard]] u64 ReadInstruction(u32 address) final {
@@ -467,7 +508,22 @@ namespace skyline::gpu {
 
         std::scoped_lock lock{poolMutex};
 
-        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, getTextureComponentType, getTextureCompareFunc};
+        // One targeted capture, including the *original* Maxwell binary and
+        // compiler IR before and after texture handle lowering. No guest data
+        // or pipeline behavior is modified by diagnostic output.
+        const bool traceTarget{hash == Mk11TargetComputeHash && !targetComputeShaderCaptured};
+        if (traceTarget) {
+            targetComputeShaderCaptured = true;
+            try {
+                LOGW("MK11ShaderTrace: hash=0x{:016X} baseOffset=0x{:X} binaryBytes={} textureCbuf={}",
+                     hash, baseOffset, binary.size(), textureConstantBufferIndex);
+                TraceMk11ShaderPayload("maxwell", binary.data(), binary.size());
+            } catch (...) {
+                // Failure to record the trace must not affect guest execution.
+            }
+        }
+
+        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, getTextureComponentType, getTextureCompareFunc, traceTarget};
         Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset)}};
         return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
     }
