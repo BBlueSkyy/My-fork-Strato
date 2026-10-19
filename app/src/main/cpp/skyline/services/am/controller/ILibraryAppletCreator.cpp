@@ -20,6 +20,8 @@ namespace skyline::service::am {
     Result ILibraryAppletCreator::CreateLibraryApplet(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto appletId{request.Pop<skyline::applet::AppletId>()};
         const auto appletMode{request.Pop<applet::LibraryAppletMode>()};
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("SWKBDTrace CreateLibraryApplet: mode={}", static_cast<u32>(appletMode));
         auto accessor{SRVREG(ILibraryAppletAccessor, appletId, appletMode, appletState->appletResourceUserId)};
         manager.RegisterService(accessor, session, response);
         appletState->libraryAppletLaunchableEvent->Signal();
@@ -30,6 +32,8 @@ namespace skyline::service::am {
         const auto appletId{request.Pop<skyline::applet::AppletId>()};
         const auto appletMode{request.Pop<applet::LibraryAppletMode>()};
         [[maybe_unused]] const u64 threadId{request.Pop<u64>()};
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd)
+            LOGI("SWKBDTrace CreateLibraryAppletEx: mode={}", static_cast<u32>(appletMode));
         auto accessor{SRVREG(ILibraryAppletAccessor, appletId, appletMode, appletState->appletResourceUserId)};
         manager.RegisterService(accessor, session, response);
         appletState->libraryAppletLaunchableEvent->Signal();
