@@ -86,7 +86,10 @@ namespace skyline::gpu {
     }
 
     bool GuestTexture::MappingsValid() const {
-        return ranges::all_of(mappings, [](const auto &mapping) { return mapping.valid(); });
+        if (mappings.empty() || (!sparseMappings.empty() && sparseMappings.size() != mappings.size())) return false;
+        for (size_t i{}; i < mappings.size(); ++i)
+            if (!mappings[i].size() || (!mappings[i].valid() && (sparseMappings.empty() || !sparseMappings[i]))) return false;
+        return true;
     }
 
     TextureView::TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format, vk::ComponentMapping mapping) : texture(std::move(texture)), type(type), format(format), mapping(mapping), range(range) {}
@@ -161,7 +164,24 @@ namespace skyline::gpu {
 
     void Texture::SetupGuestMappings() {
         auto &mappings{guest->mappings};
-        if (mappings.size() == 1) {
+        std::vector<span<u8>> residentMappings;
+        if (guest->HasSparseMappings()) {
+            std::vector<span<u8>> aligned;
+            size_t total{};
+            for (size_t i{}; i < mappings.size(); ++i) {
+                const auto mapping{mappings[i]};
+                if (mapping.valid()) residentMappings.push_back(mapping);
+                const size_t leading{i ? 0 : guest->mappingOffset};
+                size_t length{leading + mapping.size()};
+                if (i + 1 == mappings.size()) length = util::AlignUp(length, constant::PageSize);
+                auto pointer{mapping.valid() ? mapping.data() - leading : nullptr};
+                aligned.emplace_back(pointer, length);
+                total += mapping.size();
+            }
+            alignedMirror = gpu.state.process->memory.CreateMirrorsWithSparse(aligned);
+            mirror = alignedMirror.subspan(guest->mappingOffset, total);
+            aliasReadOnly = true; // Dense host images cannot discard missing-page shader writes.
+        } else if (mappings.size() == 1) {
             auto mapping{mappings.front()};
             u8 *alignedData{util::AlignDown(mapping.data(), constant::PageSize)};
             size_t alignedSize{static_cast<size_t>(util::AlignUp(mapping.data() + mapping.size(), constant::PageSize) - alignedData)};
@@ -192,7 +212,8 @@ namespace skyline::gpu {
 
         // We can't just capture `this` in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Texture> weakThis{weak_from_this()};
-        trapHandle = gpu.state.process->trap.CreateTrap(mappings, [weakThis] {
+        if (!guest->HasSparseMappings()) residentMappings.assign(mappings.begin(), mappings.end());
+        if (!residentMappings.empty()) trapHandle = gpu.state.process->trap.CreateTrap(residentMappings, [weakThis] {
             auto texture{weakThis.lock()};
             if (!texture || texture->aliasStale.load())
                 return;
@@ -586,7 +607,8 @@ namespace skyline::gpu {
         // A read-only alias may need the guest representation again after another
         // alias becomes the writer. Preserve those bytes without changing the
         // global Free Guest Texture Memory policy for ordinary textures.
-        if (aliasReadOnly.load())
+        const auto group{aliasGroup.load()};
+        if (aliasReadOnly.load() || (group && group->mappingAliases))
             return;
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
         if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
@@ -732,8 +754,7 @@ namespace skyline::gpu {
 
     Texture::~Texture() {
         SynchronizeGuest(true);
-        if (trapHandle)
-            gpu.state.process->trap.DeleteTrap(*trapHandle);
+        if (trapHandle) gpu.state.process->trap.DeleteTrap(*trapHandle);
         if (alignedMirror.valid())
             munmap(alignedMirror.data(), alignedMirror.size());
     }
@@ -883,9 +904,10 @@ namespace skyline::gpu {
         }
 
         const size_t stride{value.layerStride ? value.layerStride : value.CalculateLayerSize()};
+        if (!value.MappingsValid()) return false;
         size_t mapped{};
         for (const auto &mapping : value.mappings) {
-            if (!mapping.valid() || mapping.size() > SIZE_MAX - mapped) return false;
+            if (mapping.size() > SIZE_MAX - mapped) return false;
             mapped += mapping.size();
         }
         return stride && layerBytes && layerBytes <= stride && layerBytes <= mapped &&
@@ -1056,6 +1078,68 @@ namespace skyline::gpu {
         return group;
     }
 
+    bool Texture::GuestMappingsOverlap(const GuestTexture &first, const GuestTexture &second) {
+        for (const auto a : first.mappings) {
+            if (!a.valid()) continue;
+            const auto start{reinterpret_cast<uintptr_t>(a.data())};
+            for (const auto b : second.mappings) {
+                if (!b.valid()) continue;
+                const auto other{reinterpret_cast<uintptr_t>(b.data())};
+                if (start <= other ? other - start < a.size() : start - other < b.size()) return true;
+            }
+        }
+        return false;
+    }
+
+    std::shared_ptr<texture::AliasGroup> Texture::RegisterMappingAliases(std::vector<std::shared_ptr<Texture>> textures) {
+        for (size_t i{}; i < textures.size(); ++i) {
+            if (auto group{textures[i]->aliasGroup.load()}) {
+                std::scoped_lock metadata{group->mutex};
+                for (const auto &weak : group->members)
+                    if (auto member{weak.lock()}; member && std::find(textures.begin(), textures.end(), member) == textures.end())
+                        textures.push_back(std::move(member));
+            }
+        }
+        std::sort(textures.begin(), textures.end(), [](const auto &a, const auto &b) { return std::less<Texture *>{}(a.get(), b.get()); });
+        textures.erase(std::unique(textures.begin(), textures.end()), textures.end());
+        std::vector<std::unique_lock<Texture>> locks;
+        for (auto &texture : textures) locks.emplace_back(*texture);
+        for (const auto &texture : textures) {
+            if (texture->aliasRetired.load()) throw exception("Cannot join a retired sparse mapping alias");
+            std::scoped_lock state{texture->stateMutex};
+            if (texture->memoryFreed) throw exception("Sparse mapping overlap has discarded guest padding");
+            if (auto previous{texture->aliasGroup.load()}) {
+                std::scoped_lock metadata{previous->mutex};
+                if (previous->guestGeneration != previous->generation && previous->writer.expired())
+                    throw exception("Sparse mapping writer disappeared before readback");
+            }
+            if (!texture->aliasStale.load() && texture->gpuWriteSerial > texture->gpuReadbackSerial &&
+                (!texture->guest || texture->format != texture->guest->format || !IsGuestLayoutReversible(*texture->guest)))
+                throw exception("Cannot preserve a non-reversible sparse texture overlap writer");
+        }
+        // Preserve every independent writer, not just the newest serial: their
+        // resident subsets may be disjoint before these groups are joined.
+        for (const auto &texture : textures)
+            if (!texture->aliasStale.load()) {
+                texture->SynchronizeGuest(false, true);
+                std::scoped_lock state{texture->stateMutex};
+                if (texture->gpuWriteSerial > texture->gpuReadbackSerial)
+                    throw exception("Sparse mapping writer has no completed guest encoding");
+            }
+        auto group{std::make_shared<texture::AliasGroup>()};
+        group->mappingAliases = true;
+        group->members.reserve(textures.size());
+        for (const auto &texture : textures) {
+            std::scoped_lock state{texture->stateMutex};
+            texture->dirtyState = DirtyState::CpuDirty;
+            texture->memoryFreed = false;
+            texture->aliasStale = false;
+            group->members.emplace_back(texture);
+            texture->aliasGroup.store(group);
+        }
+        return group;
+    }
+
     void Texture::RequireAliasCoherence(ContextTag context) {
         if (aliasRetired.load())
             throw exception("Retired texture alias must be resolved through the texture manager");
@@ -1071,6 +1155,38 @@ namespace skyline::gpu {
             throw exception("Cannot reconcile a retired non-reversible texture alias");
         auto group{aliasGroup.load()};
         if (!group || !aliasStale.load()) return;
+        if (group->mappingAliases) {
+            std::vector<std::shared_ptr<Texture>> sources;
+            u64 generation{};
+            {
+                std::scoped_lock operation{group->operationMutex};
+                std::scoped_lock metadata{group->mutex};
+                generation = group->generation;
+                for (const auto &weak : group->members)
+                    if (auto source{weak.lock()}; source && source.get() != this && !source->aliasStale.load() &&
+                        source->guest && GuestMappingsOverlap(*guest, *source->guest))
+                        sources.push_back(std::move(source));
+            }
+            // A sparse layout may bridge several physically disjoint writers.
+            // Preserve each resident intersection; a single latest-writer serial
+            // cannot represent independently written pages.
+            for (const auto &source : sources) {
+                std::scoped_lock sourceLock{*source};
+                source->SynchronizeGuest(false, true);
+                std::scoped_lock state{source->stateMutex};
+                if (!source->aliasStale.load() && source->gpuWriteSerial > source->gpuReadbackSerial)
+                    throw exception("Sparse alias source has no completed guest encoding");
+            }
+            std::scoped_lock targetLock{*this};
+            std::scoped_lock state{stateMutex};
+            std::scoped_lock metadata{group->mutex};
+            if (group->generation != generation)
+                throw exception("Sparse alias generation changed during reconciliation");
+            dirtyState = DirtyState::CpuDirty;
+            memoryFreed = false;
+            aliasStale = false;
+            return;
+        }
         std::shared_ptr<Texture> writer;
         u64 generation{};
         bool download{};
@@ -1109,7 +1225,9 @@ namespace skyline::gpu {
             auto group{owner->aliasGroup.load()};
             if (!group) continue;
             for (size_t j{}; j < i; ++j)
-                if (writers[j] && writers[j]->texture.get() != owner && writers[j]->texture->aliasGroup.load() == group)
+                if (writers[j] && writers[j]->texture.get() != owner && writers[j]->texture->aliasGroup.load() == group &&
+                    (!group->mappingAliases || !owner->guest || !writers[j]->texture->guest ||
+                     GuestMappingsOverlap(*owner->guest, *writers[j]->texture->guest)))
                     throw exception("Concurrent writes through distinct texture alias layouts cannot be losslessly ordered");
         }
     }
@@ -1129,6 +1247,7 @@ namespace skyline::gpu {
     }
 
     void Texture::RecordGpuWrite() {
+        RequireAliasCoherence(ContextTag{});
         if (aliasReadOnly.load())
             throw exception("Cannot write through a materialized read-only texture alias");
         if (aliasRetired.load())
@@ -1146,17 +1265,22 @@ namespace skyline::gpu {
                 group->writer = shared_from_this();
                 group->writerIdentity = this;
                 for (const auto &weak : group->members)
-                    if (auto member{weak.lock()}) member->aliasStale = member.get() != this;
+                    if (auto member{weak.lock()}) {
+                        if (member.get() == this) member->aliasStale = false;
+                        else if (!group->mappingAliases || !member->guest || GuestMappingsOverlap(*guest, *member->guest))
+                            member->aliasStale = true;
+                    }
             }
             std::scoped_lock stateLock{stateMutex};
             // Grouped images are uploaded on attachment before their first write.
             dirtyState = DirtyState::GpuDirty;
-            gpu.state.process->trap.TrapRegions(*trapHandle, false);
+            if (trapHandle) gpu.state.process->trap.TrapRegions(*trapHandle, false);
         }
     }
 
     void Texture::MarkGpuDirty(UsageTracker &usageTracker) {
         RecordGpuWrite();
+        if (!guest) return;
         for (auto mapping : guest->mappings)
             if (mapping.valid())
                 usageTracker.dirtyIntervals.Insert(mapping);
@@ -1183,7 +1307,7 @@ namespace skyline::gpu {
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 // If a texture is Clean then we can just transition it to being GPU dirty and retrap it
                 dirtyState = DirtyState::GpuDirty;
-                gpu.state.process->trap.TrapRegions(*trapHandle, false);
+                if (trapHandle) gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
             } else if (dirtyState != DirtyState::CpuDirty) {
@@ -1191,7 +1315,7 @@ namespace skyline::gpu {
             }
 
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
-            gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
+            if (trapHandle) gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
         // From this point on Clean -> CPU dirty state transitions can occur, GPU dirty -> * transitions will always require the full lock to be held and thus won't occur
@@ -1254,7 +1378,7 @@ namespace skyline::gpu {
         // including sampled/read-only resources. Alias writer ownership is
         // established by RecordGpuWrite at the actual RT/storage write sites;
         // attachment synchronization itself is not evidence of a GPU write.
-        if (HasAliases()) gpuDirty = false;
+        if (HasAliases() || (guest && guest->HasSparseMappings())) gpuDirty = false;
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
 
@@ -1268,7 +1392,7 @@ namespace skyline::gpu {
             std::scoped_lock lock{stateMutex};
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 dirtyState = DirtyState::GpuDirty;
-                gpu.state.process->trap.TrapRegions(*trapHandle, false);
+                if (trapHandle) gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
             } else if (dirtyState != DirtyState::CpuDirty) {
@@ -1276,7 +1400,7 @@ namespace skyline::gpu {
             }
 
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
-            gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
+            if (trapHandle) gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
         auto stagingBuffer{SynchronizeHostImpl()};
@@ -1314,7 +1438,7 @@ namespace skyline::gpu {
             if (cpuDirty && dirtyState == DirtyState::Clean) {
                 dirtyState = DirtyState::CpuDirty;
                 if (!skipTrap)
-                    gpu.state.process->trap.DeleteTrap(*trapHandle);
+                    if (trapHandle) gpu.state.process->trap.DeleteTrap(*trapHandle);
                 return;
             } else if (dirtyState != DirtyState::GpuDirty) {
                 return;
@@ -1366,10 +1490,10 @@ namespace skyline::gpu {
                 group->guestGeneration = group->generation;
         }
         if (!skipTrap) {
-            if (cpuDirty)
-                gpu.state.process->trap.DeleteTrap(*trapHandle);
-            else
-                gpu.state.process->trap.TrapRegions(*trapHandle, true); // Trap any future CPU writes to this texture
+            if (trapHandle) {
+                if (cpuDirty) gpu.state.process->trap.DeleteTrap(*trapHandle);
+                else gpu.state.process->trap.TrapRegions(*trapHandle, true);
+            } // Trap any future CPU writes to this texture
         }
     }
 

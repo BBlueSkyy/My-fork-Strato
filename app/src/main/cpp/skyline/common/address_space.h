@@ -5,6 +5,7 @@
 
 #include <boost/container/small_vector.hpp>
 #include <concepts>
+#include <atomic>
 #include <common.h>
 #include "segment_table.h"
 #include "spin_lock.h"
@@ -14,6 +15,14 @@ namespace skyline {
     concept AddressSpaceValid = std::is_unsigned_v<VaType> && sizeof(VaType) * 8 >= AddressSpaceBits;
 
     using TranslatedAddressRange = boost::container::small_vector<span<u8>, 1>;
+
+    enum class MemoryMappingKind { Resident, Sparse, Unmapped };
+
+    struct MemoryMapping {
+        span<u8> memory; // Nonresident ranges carry a size, never a physical pointer.
+        MemoryMappingKind kind;
+    };
+    using TranslatedMemoryMappings = boost::container::small_vector<MemoryMapping, 1>;
 
     struct EmptyStruct {};
 
@@ -93,8 +102,7 @@ namespace skyline {
     template<typename VaType, VaType UnmappedVa, size_t AddressSpaceBits, size_t VaGranularityBits, size_t VaL2GranularityBits> requires AddressSpaceValid<VaType, AddressSpaceBits>
     class FlatMemoryManager : public FlatAddressSpaceMap<VaType, UnmappedVa, u8 *, nullptr, true, AddressSpaceBits, MemoryManagerBlockInfo> {
       private:
-        static constexpr u64 SparseMapSize{0x400000000}; //!< 16GiB pool size for sparse mappings returned by TranslateRange, this number is arbritary and should be large enough to fit the largest sparse mapping in the AS
-        u8 *sparseMap; //!< Pointer to a zero filled memory region that is returned by TranslateRange for sparse mappings
+        std::atomic<u64> mappingGeneration{1};
 
         /**
          * @brief Version of `Block` that is trivial so it can be stored in a segment table for rapid lookups, also holds an additional extent member
@@ -102,27 +110,50 @@ namespace skyline {
         struct SegmentTableEntry {
             VaType virt;
             u8 *phys;
-            VaType extent;
+            size_t extent;
             MemoryManagerBlockInfo extraInfo;
         };
 
         static constexpr size_t AddressSpaceSize{1ULL << AddressSpaceBits};
         SegmentTable<SegmentTableEntry, AddressSpaceSize, VaGranularityBits, VaL2GranularityBits> blockSegmentTable; //!< A page table of all buffer mappings for O(1) lookups on full matches
 
+        void ValidateRange(VaType virt, VaType size) const {
+            if (virt > this->vaLimit || (size && size - 1 > this->vaLimit - virt))
+                throw exception("GPU virtual range exceeds address space");
+        }
+
+        SegmentTableEntry LookupEntryLocked(VaType virt) const {
+            const auto &cached{blockSegmentTable[virt]};
+            if (cached.extent)
+                return cached;
+            auto next{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt,
+                [](auto address, const auto &block) { return address < block.virt; })};
+            const auto &block{*std::prev(next)};
+            const size_t end{next == this->blocks.end() ? size_t{this->vaLimit} + 1 : next->virt};
+            return {block.virt, block.phys, end - block.virt, block.extraInfo};
+        }
+
+        static MemoryMappingKind MappingKind(const SegmentTableEntry &entry) {
+            return entry.extraInfo.sparseMapped ? MemoryMappingKind::Sparse :
+                entry.phys ? MemoryMappingKind::Resident : MemoryMappingKind::Unmapped;
+        }
+
+        MemoryMapping LookupMappingLocked(VaType virt, size_t size) const {
+            const auto entry{LookupEntryLocked(virt)};
+            const auto length{std::min<size_t>(size, entry.extent - (virt - entry.virt))};
+            const auto kind{MappingKind(entry)};
+            return {{kind == MemoryMappingKind::Resident ? entry.phys + (virt - entry.virt) : nullptr, length}, kind};
+        }
+
+        void ReplaceMappingLocked(VaType virt, u8 *phys, VaType size, MemoryManagerBlockInfo info);
         TranslatedAddressRange TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {});
 
         std::pair<span<u8>, size_t> LookupBlockLocked(VaType virt, std::function<void(span<u8>)> cpuAccessCallback = {}) {
-            const auto &blockEntry{this->blockSegmentTable[virt]};
-            VaType segmentOffset{virt - blockEntry.virt};
-
-            if (blockEntry.extraInfo.sparseMapped || blockEntry.phys == nullptr)
-                return {span<u8>{static_cast<u8*>(nullptr), blockEntry.extent}, segmentOffset};
-
-            span<u8> blockSpan{blockEntry.phys, blockEntry.extent};
-            if (cpuAccessCallback)
-                cpuAccessCallback(blockSpan);
-
-            return {blockSpan, segmentOffset};
+            const auto entry{LookupEntryLocked(virt)};
+            span<u8> block{MappingKind(entry) == MemoryMappingKind::Resident ? entry.phys : nullptr, entry.extent};
+            if (block.valid() && cpuAccessCallback)
+                cpuAccessCallback(block);
+            return {block, virt - entry.virt};
         }
 
       public:
@@ -131,18 +162,12 @@ namespace skyline {
         ~FlatMemoryManager();
 
         /**
-         * @return A placeholder address for sparse mapped regions, this means nothing
-         */
-        static u8 *SparsePlaceholderAddress() {
-            return reinterpret_cast<u8 *>(0xCAFEBABE);
-        }
-
-        /**
          * @brief Looks up the mapped region that contains the given VA
          * @return A span of the mapped region and the offset of the input VA in the region
          */
         __attribute__((always_inline)) std::pair<span<u8>, VaType> LookupBlock(VaType virt, std::function<void(span<u8>)> cpuAccessCallback = {}) {
             std::shared_lock lock{this->blockMutex};
+            ValidateRange(virt, 1);
             return LookupBlockLocked(virt, cpuAccessCallback);
         }
 
@@ -152,11 +177,15 @@ namespace skyline {
         TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}) {
             std::shared_lock lock{this->blockMutex};
 
-            // Fast path for when the range is mapped in a single block
-            auto [blockSpan, rangeOffset]{LookupBlockLocked(virt, cpuAccessCallback)};
+            ValidateRange(virt, size);
+            if (!size) return {};
+            // Fast path for when the range is mapped in a single block.
+            auto [blockSpan, rangeOffset]{LookupBlockLocked(virt)};
             if (blockSpan.size() - rangeOffset >= size) {
                 TranslatedAddressRange ranges;
-                ranges.push_back(blockSpan.subspan(blockSpan.valid() ? rangeOffset : 0, size));
+                span<u8> mapping{blockSpan.valid() ? blockSpan.data() + rangeOffset : nullptr, size};
+                if (mapping.valid() && cpuAccessCallback) cpuAccessCallback(mapping);
+                ranges.push_back(mapping);
                 return ranges;
             }
 
@@ -187,58 +216,37 @@ namespace skyline {
          */
         template<typename Function, typename Container>
         span<u8> ReadTill(Container& destination, VaType virt, Function function, std::function<void(span<u8>)> cpuAccessCallback = {}) {
-            //TRACE_EVENT("containers", "FlatMemoryManager::ReadTill");
-
-            std::shared_lock lock(this->blockMutex);
-
-            auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [](auto virt, const auto &block) {
-                return virt < block.virt;
-            })};
-
-            auto predecessor{std::prev(successor)};
-
-            auto pointer{destination.data()};
-            auto remainingSize{destination.size()};
-
-            u8 *blockPhys{predecessor->phys + (virt - predecessor->virt)};
-            VaType blockReadSize{std::min(successor->virt - virt, remainingSize)};
-
-            while (remainingSize) {
-                if (predecessor->phys == nullptr) {
-                    return {destination.data(), destination.size() - remainingSize};
+            std::shared_lock lock{this->blockMutex};
+            ValidateRange(virt, 0);
+            size_t copied{};
+            const size_t available{size_t{this->vaLimit} - virt + 1};
+            const size_t capacity{std::min<size_t>(destination.size(), available)};
+            while (copied < capacity) {
+                const auto mapping{LookupMappingLocked(virt, capacity - copied)};
+                const auto length{mapping.memory.size()};
+                if (mapping.kind == MemoryMappingKind::Unmapped) break;
+                if (mapping.kind == MemoryMappingKind::Sparse) {
+                    std::memset(destination.data() + copied, 0, length);
                 } else {
-                    if (predecessor->extraInfo.sparseMapped) {
-                        std::memset(pointer, 0, blockReadSize);
-                    } else {
-                        span<u8> cpuBlock{blockPhys, blockReadSize};
-                        if (cpuAccessCallback)
-                            cpuAccessCallback(cpuBlock);
-
-                        auto end{function(cpuBlock)};
-                        std::memcpy(pointer, blockPhys, end ? *end : blockReadSize);
-                        if (end)
-                            return {destination.data(), (destination.size() - remainingSize) + *end};
-                    }
+                    if (cpuAccessCallback) cpuAccessCallback(mapping.memory);
+                    const auto end{function(mapping.memory)};
+                    if (end && *end > length)
+                        throw exception("ReadTill callback exceeds mapped range");
+                    const auto count{end ? *end : length};
+                    std::memcpy(destination.data() + copied, mapping.memory.data(), count);
+                    if (end) return {destination.data(), copied + count};
                 }
-
-                pointer += blockReadSize;
-                remainingSize -= blockReadSize;
-
-                if (remainingSize) {
-                    predecessor = successor++;
-                    blockPhys = predecessor->phys;
-                    blockReadSize = std::min(successor->virt - predecessor->virt, remainingSize);
-                }
+                copied += length;
+                virt += length;
             }
-
-            return {destination.data(), destination.size()};
+            return {destination.data(), copied};
         }
 
         void Write(VaType virt, u8 *source, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {});
 
         template<typename T>
         void Write(VaType virt, span<T> source, std::function<void(span<u8>)> cpuAccessCallback = {}) {
-            Write(virt, reinterpret_cast<u8 *>(source.data()), source.size_bytes());
+            Write(virt, reinterpret_cast<u8 *>(source.data()), source.size_bytes(), cpuAccessCallback);
         }
 
         void Write(VaType virt, util::TrivialObject auto source, std::function<void(span<u8>)> cpuAccessCallback = {}) {
@@ -247,17 +255,33 @@ namespace skyline {
 
         void Copy(VaType dst, VaType src, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {});
 
+        TranslatedMemoryMappings TranslateMappings(VaType virt, VaType size) {
+            std::shared_lock lock{this->blockMutex};
+            ValidateRange(virt, size);
+            TranslatedMemoryMappings result;
+            while (size) {
+                const auto mapping{LookupMappingLocked(virt, size)};
+                result.push_back(mapping);
+                virt += mapping.memory.size();
+                size -= mapping.memory.size();
+            }
+            return result;
+        }
+
+        u64 GetMappingGeneration() const { return mappingGeneration.load(std::memory_order_acquire); }
+
         void Map(VaType virt, u8 *phys, VaType size, MemoryManagerBlockInfo extraInfo = {}) {
             std::scoped_lock lock(this->blockMutex);
-            this->MapLocked(virt, phys, size, extraInfo);
-            blockSegmentTable.Set(virt, virt + size, {virt, phys, size, extraInfo});
+            ReplaceMappingLocked(virt, extraInfo.sparseMapped ? nullptr : phys, size, extraInfo);
         }
+
+        void MapSparse(VaType virt, VaType size) { Map(virt, nullptr, size, {true}); }
 
         void Unmap(VaType virt, VaType size) {
             std::scoped_lock lock(this->blockMutex);
-            this->UnmapLocked(virt, size);
-            blockSegmentTable.Set(virt, virt + size, {});
+            ReplaceMappingLocked(virt, nullptr, size, {});
         }
+
     };
 
     /**

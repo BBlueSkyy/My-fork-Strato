@@ -224,203 +224,144 @@ namespace skyline {
     }
 
 
-    MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
-        TRACE_EVENT("containers", "FlatMemoryManager::TranslateRange");
+    MM_MEMBER(void)::ReplaceMappingLocked(VaType virt, u8 *phys, VaType size, MemoryManagerBlockInfo info) {
+        ValidateRange(virt, size);
+        if (!size) return;
+        constexpr VaType pageMask{(VaType{1} << VaGranularityBits) - 1};
+        if ((virt | size) & pageMask)
+            throw exception("GPU mapping is not page aligned");
+        auto &blocks{this->blocks};
+        // Allocate before mutating either representation. Erase/insert below
+        // cannot allocate, and block/table publication remains under one lock.
+        if (blocks.capacity() - blocks.size() < 2)
+            blocks.reserve(std::max(blocks.size() + 2, blocks.capacity() * 2));
+        const size_t end{size_t{virt} + size};
+        auto first{std::lower_bound(blocks.begin(), blocks.end(), virt)};
+        auto after{std::upper_bound(blocks.begin(), blocks.end(), end,
+            [](auto address, const auto &block) { return address < block.virt; })};
+        auto tail{*std::prev(after)};
+        if (tail.phys && !tail.extraInfo.sparseMapped) tail.phys += end - tail.virt;
+        const bool hasTail{end <= this->vaLimit};
+        if (hasTail) tail.virt = static_cast<VaType>(end);
+        const auto index{first - blocks.begin()};
+        blocks.erase(first, after);
+        blocks.insert(blocks.begin() + index, {virt, phys, info});
+        if (hasTail) blocks.insert(blocks.begin() + index + 1, tail);
 
-        TranslatedAddressRange ranges;
-
-        auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [] (auto virt, const auto &block) {
-            return virt < block.virt;
-        })};
-
-        auto predecessor{std::prev(successor)};
-
-        u8 *blockPhys{predecessor->phys + (virt - predecessor->virt)};
-        VaType blockSize{std::min(successor->virt - virt, size)};
-
-        while (size) {
-            if (predecessor->phys) {
-                span cpuBlock{blockPhys, blockSize};
-                if (cpuAccessCallback)
-                    cpuAccessCallback(cpuBlock);
-
-                // Batch contiguous ranges into one
-                if (!ranges.empty() && ranges.back().data() + ranges.back().size() == cpuBlock.data())
-                    ranges.back() = {ranges.back().data(), ranges.back().size() + cpuBlock.size()};
-                else
-                    ranges.push_back(cpuBlock);
-            } else {
-                ranges.push_back(span<u8>{static_cast<u8*>(nullptr), blockSize});
-            }
-
-            size -= blockSize;
-
-            if (size) {
-                predecessor = successor++;
-                blockPhys = predecessor->phys;
-                blockSize = std::min(successor->virt - predecessor->virt, size);
-            }
+        // Merge equivalent neighbours without discarding sparse/resident state.
+        for (size_t i{index ? static_cast<size_t>(index - 1) : 0}; i + 1 < blocks.size() && blocks[i].virt <= end;) {
+            const auto &left{blocks[i]};
+            const auto &right{blocks[i + 1]};
+            const bool sameKind{left.extraInfo.sparseMapped == right.extraInfo.sparseMapped};
+            const bool contiguous{sameKind && (left.extraInfo.sparseMapped ||
+                (!left.phys && !right.phys) || (left.phys && right.phys &&
+                reinterpret_cast<uintptr_t>(left.phys) + (right.virt - left.virt) == reinterpret_cast<uintptr_t>(right.phys)))};
+            if (contiguous) blocks.erase(blocks.begin() + i + 1);
+            else ++i;
         }
 
+        // Clear only the changed pages. Refresh surviving head/tail blocks too:
+        // their cached extents must no longer cross the replacement interval.
+        blockSegmentTable.Set(virt, end, {});
+        auto current{std::upper_bound(blocks.begin(), blocks.end(), virt,
+            [](auto address, const auto &block) { return address < block.virt; })};
+        if (current - blocks.begin() > 1) --current;
+        --current;
+        for (; current != blocks.end() && current->virt <= end; ++current) {
+            auto next{std::next(current)};
+            const size_t blockEnd{next == blocks.end() ? size_t{this->vaLimit} + 1 : next->virt};
+            // Sparse/unmapped entries stay empty in the fast table. Their
+            // authoritative interval lookup avoids rewriting an entire sparse
+            // reservation whenever one small resident tile is replaced.
+            if (current->phys && !current->extraInfo.sparseMapped)
+                blockSegmentTable.Set(current->virt, blockEnd,
+                    {current->virt, current->phys, blockEnd - current->virt, current->extraInfo});
+        }
+        mappingGeneration.fetch_add(1, std::memory_order_release);
+    }
+
+    MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
+        TranslatedAddressRange ranges;
+        while (size) {
+            const auto entry{LookupEntryLocked(virt)};
+            const auto length{std::min<size_t>(size, entry.extent - (virt - entry.virt))};
+            span<u8> memory{MappingKind(entry) == MemoryMappingKind::Resident ? entry.phys + (virt - entry.virt) : nullptr, length};
+            if (memory.valid() && cpuAccessCallback) cpuAccessCallback(memory);
+            if (memory.valid() && !ranges.empty() && ranges.back().valid() &&
+                reinterpret_cast<uintptr_t>(ranges.back().data()) + ranges.back().size() == reinterpret_cast<uintptr_t>(memory.data()))
+                ranges.back() = {ranges.back().data(), ranges.back().size() + length};
+            else
+                ranges.push_back(memory);
+            virt += length;
+            size -= length;
+        }
         return ranges;
     }
 
-    MM_MEMBER()::FlatMemoryManager() {
-        sparseMap = static_cast<u8 *>(mmap(0, SparseMapSize, PROT_READ, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0));
-        if (!sparseMap)
-            throw exception("Failed to mmap sparse map!");
-    }
-
-    MM_MEMBER()::~FlatMemoryManager() {
-        munmap(sparseMap, SparseMapSize);
-    }
+    MM_MEMBER()::FlatMemoryManager() = default;
+    MM_MEMBER()::~FlatMemoryManager() = default;
 
     MM_MEMBER(void)::Read(u8 *destination, VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
-        TRACE_EVENT("containers", "FlatMemoryManager::Read");
-
-        std::shared_lock lock(this->blockMutex);
-
-        auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [] (auto virt, const auto &block) {
-            return virt < block.virt;
-        })};
-
-        auto predecessor{std::prev(successor)};
-
-        u8 *blockPhys{predecessor->phys + (virt - predecessor->virt)};
-        VaType blockReadSize{std::min(successor->virt - virt, size)};
-
-        // Reads may span across multiple individual blocks
+        std::shared_lock lock{this->blockMutex};
+        ValidateRange(virt, size);
         while (size) {
-            if (predecessor->phys == nullptr) {
-                throw exception("Page fault at 0x{:X}", predecessor->virt);
+            const auto mapping{LookupMappingLocked(virt, size)};
+            const auto length{mapping.memory.size()};
+            if (mapping.kind == MemoryMappingKind::Unmapped)
+                throw exception("Page fault at 0x{:X}", virt);
+            if (mapping.kind == MemoryMappingKind::Sparse) {
+                std::memset(destination, 0, length);
             } else {
-                if (predecessor->extraInfo.sparseMapped) { // Sparse mappings read all zeroes
-                    std::memset(destination, 0, blockReadSize);
-                } else {
-                    if (cpuAccessCallback)
-                        cpuAccessCallback(span{blockPhys, blockReadSize});
-
-                    std::memcpy(destination, blockPhys, blockReadSize);
-                }
+                if (cpuAccessCallback) cpuAccessCallback(mapping.memory);
+                std::memcpy(destination, mapping.memory.data(), length);
             }
-
-            destination += blockReadSize;
-            size -= blockReadSize;
-
-            if (size) {
-                predecessor = successor++;
-                blockPhys = predecessor->phys;
-                blockReadSize = std::min(successor->virt - predecessor->virt, size);
-            }
+            destination += length;
+            virt += length;
+            size -= length;
         }
     }
 
     MM_MEMBER(void)::Write(VaType virt, u8 *source, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
-        TRACE_EVENT("containers", "FlatMemoryManager::Write");
-
-        std::shared_lock lock(this->blockMutex);
-
-        VaType virtEnd{virt + size};
-
-        auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [] (auto virt, const auto &block) {
-            return virt < block.virt;
-        })};
-
-        auto predecessor{std::prev(successor)};
-
-        u8 *blockPhys{predecessor->phys + (virt - predecessor->virt)};
-        VaType blockWriteSize{std::min(successor->virt - virt, size)};
-
-        // Writes may span across multiple individual blocks
+        std::shared_lock lock{this->blockMutex};
+        ValidateRange(virt, size);
         while (size) {
-            if (predecessor->phys == nullptr) {
-                throw exception("Page fault at 0x{:X}", predecessor->virt);
-            } else {
-                if (!predecessor->extraInfo.sparseMapped) { // Sparse mappings ignore writes
-                    if (cpuAccessCallback)
-                        cpuAccessCallback(span{blockPhys, blockWriteSize});
-
-                    std::memcpy(blockPhys, source, blockWriteSize);
-                }
+            const auto mapping{LookupMappingLocked(virt, size)};
+            const auto length{mapping.memory.size()};
+            if (mapping.kind == MemoryMappingKind::Unmapped)
+                throw exception("Page fault at 0x{:X}", virt);
+            if (mapping.kind == MemoryMappingKind::Resident) {
+                if (cpuAccessCallback) cpuAccessCallback(mapping.memory);
+                std::memcpy(mapping.memory.data(), source, length);
             }
-
-            source += blockWriteSize;
-            size -= blockWriteSize;
-
-            if (size) {
-                predecessor = successor++;
-                blockPhys = predecessor->phys;
-                blockWriteSize = std::min(successor->virt - predecessor->virt, size);
-            }
+            source += length;
+            virt += length;
+            size -= length;
         }
     }
 
     MM_MEMBER(void)::Copy(VaType dst, VaType src, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
-        TRACE_EVENT("containers", "FlatMemoryManager::Copy");
-
-        std::shared_lock lock(this->blockMutex);
-
-        VaType srcEnd{src + size};
-        VaType dstEnd{dst + size};
-
-        auto srcSuccessor{std::upper_bound(this->blocks.begin(), this->blocks.end(), src, [] (auto virt, const auto &block) {
-            return virt < block.virt;
-        })};
-
-        auto dstSuccessor{std::upper_bound(this->blocks.begin(), this->blocks.end(), dst, [] (auto virt, const auto &block) {
-            return virt < block.virt;
-        })};
-
-        auto srcPredecessor{std::prev(srcSuccessor)};
-        auto dstPredecessor{std::prev(dstSuccessor)};
-
-        u8 *srcBlockPhys{srcPredecessor->phys + (src - srcPredecessor->virt)};
-        u8 *dstBlockPhys{dstPredecessor->phys + (dst - dstPredecessor->virt)};
-
-        VaType srcBlockRemainingSize{srcSuccessor->virt - src};
-        VaType dstBlockRemainingSize{dstSuccessor->virt - dst};
-
-        VaType blockCopySize{std::min({srcBlockRemainingSize, dstBlockRemainingSize, size})};
-
-        // Writes may span across multiple individual blocks
+        std::shared_lock lock{this->blockMutex};
+        ValidateRange(src, size);
+        ValidateRange(dst, size);
         while (size) {
-            if (srcPredecessor->phys == nullptr) {
-                throw exception("Page fault at 0x{:X}", srcPredecessor->virt);
-            } else if (dstPredecessor->phys == nullptr) {
-                throw exception("Page fault at 0x{:X}", dstPredecessor->virt);
-            } else { [[likely]]
-                    if (srcPredecessor->extraInfo.sparseMapped) {
-                        std::memset(dstBlockPhys, 0, blockCopySize);
-                    } else [[likely]] {
-                        if (cpuAccessCallback) {
-                            cpuAccessCallback(span{dstBlockPhys, blockCopySize});
-                            cpuAccessCallback(span{srcBlockPhys, blockCopySize});
-                        }
-
-                        std::memcpy(dstBlockPhys, srcBlockPhys, blockCopySize);
-                    }
-            }
-
-            dstBlockPhys += blockCopySize;
-            srcBlockPhys += blockCopySize;
-            size -= blockCopySize;
-            srcBlockRemainingSize -= blockCopySize;
-            dstBlockRemainingSize -= blockCopySize;
-
-            if (size) {
-                if (!srcBlockRemainingSize) {
-                    srcPredecessor = srcSuccessor++;
-                    srcBlockPhys = srcPredecessor->phys;
-                    srcBlockRemainingSize = srcSuccessor->virt - srcPredecessor->virt;
-                    blockCopySize = std::min({srcBlockRemainingSize, dstBlockRemainingSize, size});
-                }
-                if (!dstBlockRemainingSize) {
-                    dstPredecessor = dstSuccessor++;
-                    dstBlockPhys = dstPredecessor->phys;
-                    dstBlockRemainingSize = dstSuccessor->virt - dstPredecessor->virt;
-                    blockCopySize = std::min({srcBlockRemainingSize, dstBlockRemainingSize, size});
+            const auto source{LookupMappingLocked(src, size)};
+            const auto destination{LookupMappingLocked(dst, source.memory.size())};
+            const auto length{destination.memory.size()};
+            if (source.kind == MemoryMappingKind::Unmapped || destination.kind == MemoryMappingKind::Unmapped)
+                throw exception("Page fault during GPU copy: 0x{:X} -> 0x{:X}", src, dst);
+            if (destination.kind == MemoryMappingKind::Resident) {
+                if (cpuAccessCallback) cpuAccessCallback(destination.memory);
+                if (source.kind == MemoryMappingKind::Sparse) {
+                    std::memset(destination.memory.data(), 0, length);
+                } else {
+                    span<u8> input{source.memory.data(), length};
+                    if (cpuAccessCallback) cpuAccessCallback(input);
+                    std::memcpy(destination.memory.data(), input.data(), length);
                 }
             }
+            src += length;
+            dst += length;
+            size -= length;
         }
     }
 

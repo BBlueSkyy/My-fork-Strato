@@ -517,6 +517,7 @@ namespace skyline::gpu::interconnect {
     }
 
     bool CommandExecutor::AttachBuffer(BufferView &view) {
+        gpu.buffer.PrepareBufferAccess(*view.GetBuffer(), false, view.GetOffset(), view.size);
         bool didLock{view.LockWithTag(tag)};
         if (didLock)
             AttachBufferBase(view.GetBuffer()->shared_from_this());
@@ -525,6 +526,7 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::AttachLockedBufferView(BufferView &view, ContextLock<BufferView> &&lock) {
+        gpu.buffer.PrepareBufferAccess(*view.GetBuffer(), false, view.GetOffset(), view.size);
         if (lock.OwnsLock()) {
             // Transfer ownership to executor so that the resource will stay locked for the period it is used on the GPU
             AttachBufferBase(view.GetBuffer()->shared_from_this());
@@ -533,6 +535,7 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::AttachLockedBuffer(std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
+        gpu.buffer.PrepareBufferAccess(*buffer);
         if (lock.OwnsLock()) {
             AttachBufferBase(std::move(buffer));
             lock.Release(); // See AttachLockedBufferView(...)
@@ -760,6 +763,12 @@ namespace skyline::gpu::interconnect {
         }
     }
 
+    void CommandExecutor::NotifyMemoryMappingChange(u64 generation) {
+        if (mappingGeneration == generation) return;
+        for (const auto &callback : flushCallbacks) callback();
+        mappingGeneration = generation;
+    }
+
     void CommandExecutor::Submit(std::function<void()> &&callback, bool wait) {
         for (const auto &flushCallback : flushCallbacks)
             flushCallback();
@@ -818,6 +827,11 @@ namespace skyline::gpu::interconnect {
         }
     }
 
+    void CommandExecutor::HandleTextureBackingPromotion(const BufferMappingReconciliationRequest &request) {
+        Submit();
+        request.Complete();
+    }
+
     void CommandExecutor::HandleTextureBackingPromotion(const TextureBackingPromotionRequest &request) {
         // Restart preparation after submitting old nodes. In particular, allocator
         // pointers and descriptors from the interrupted operation must not be reused.
@@ -828,8 +842,10 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {
         Submit();
-        if (!request.registration.empty())
-            Texture::RegisterAliases(request.registration, request.registrationLayout.get());
+        if (!request.registration.empty()) {
+            if (request.mappingRegistration) Texture::RegisterMappingAliases(request.registration);
+            else Texture::RegisterAliases(request.registration, request.registrationLayout.get());
+        }
         if (request.target)
             request.target->ReconcileAliases();
     }

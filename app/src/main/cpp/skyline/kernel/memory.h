@@ -311,6 +311,10 @@ namespace skyline {
              */
             span<u8> CreateMirrors(const std::vector<span<u8>> &regions);
 
+            // Page-aligned resident ranges alias the process VMM; null ranges
+            // reserve private zero pages and have no physical write destination.
+            span<u8> CreateMirrorsWithSparse(const std::vector<span<u8>> &regions);
+
             /**
              * @brief Sets the isBorrowed attribute for chunks within a certain range
              */

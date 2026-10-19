@@ -11,7 +11,7 @@
 #include "tic.h"
 
 namespace skyline::gpu::interconnect {
-    class TexturePoolState : dirty::CachedManualDirty {
+    class TexturePoolState : dirty::CachedManualDirty, dirty::RefreshableManualDirty {
       public:
         struct EngineRegisters {
             const engine_common::TexHeaderPool &texHeaderPool;
@@ -21,13 +21,19 @@ namespace skyline::gpu::interconnect {
 
       private:
         dirty::BoundSubresource<EngineRegisters> engine;
+        TextureImageControl splitHeader{};
+        const void *mappingAddressSpace{};
+        u64 mappingGeneration{};
 
       public:
         span<TextureImageControl> textureHeaders;
+        size_t headerCount{};
 
         TexturePoolState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine);
 
         void Flush(InterconnectContext &ctx);
+        bool Refresh(InterconnectContext &ctx);
+        TextureImageControl *GetHeader(InterconnectContext &ctx, u32 index);
 
         void PurgeCaches();
     };
@@ -55,6 +61,8 @@ namespace skyline::gpu::interconnect {
 
         std::shared_ptr<TextureView> nullTextureView{};
         dirty::ManualDirtyState<TexturePoolState> texturePool;
+        const void *mappingAddressSpace{};
+        u64 mappingGeneration{};
 
         tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
         tsl::robin_map<TexelBufferViewKey, std::unique_ptr<vk::raii::BufferView>, TexelBufferViewKeyHash> texelBufferViewStore;

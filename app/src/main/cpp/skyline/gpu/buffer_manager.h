@@ -8,6 +8,7 @@
 #include <common/segment_table.h>
 #include <common/spin_lock.h>
 #include "buffer.h"
+#include "buffer_mapping_retry.h"
 
 namespace skyline::gpu {
     /**
@@ -18,6 +19,11 @@ namespace skyline::gpu {
         GPU &gpu;
         std::vector<std::shared_ptr<Buffer>> bufferMappings; //!< A sorted vector of all buffer mappings
         LinearAllocatorState<> delegateAllocatorState; //!< Linear allocator used to allocate buffer delegates
+        std::vector<std::shared_ptr<Buffer>> aggregateBuffers; //!< Aggregate backings never enter the physical interval table.
+        std::vector<std::weak_ptr<Buffer>> aliasBuffers; //!< Includes canonical buffers and aggregate backings.
+        std::atomic<bool> hasAggregates{};
+        std::mutex aliasMutex;
+        std::vector<std::shared_ptr<Buffer>> SnapshotAliases();
         size_t nextBufferId{}; //!< The next unique buffer id to be assigned
 
         static constexpr size_t L2EntryGranularity{19}; //!< The amount of AS (in bytes) a single L2 PTE covers (512 KiB == 1 << 19)
@@ -72,6 +78,12 @@ namespace skyline::gpu {
       public:
         SpinLock recreationMutex;
 
+        void PrepareBufferAccess(Buffer &target, bool write = false, vk::DeviceSize offset = 0, vk::DeviceSize size = VK_WHOLE_SIZE,
+                                 bool allowRepeatedCpuWrite = false);
+        void NotifyBufferWrite(Buffer &source, vk::DeviceSize offset, vk::DeviceSize size);
+        BufferView FindOrCreateDisjoint(const std::vector<GuestBuffer> &mappings, vk::DeviceSize offset, vk::DeviceSize size,
+                                       ContextTag tag, const std::function<void(std::shared_ptr<Buffer>, ContextLock<Buffer> &&)> &attachBuffer);
+
         BufferManager(GPU &gpu);
 
         /**
@@ -103,8 +115,10 @@ namespace skyline::gpu {
             TRACE_EVENT("gpu", "BufferManager::FindOrCreate");
             auto lookupBuffer{bufferTable[guestMapping.begin().base()]};
             if (lookupBuffer != nullptr)
-                if (auto view{lookupBuffer->TryGetView(guestMapping)}; view)
+                if (auto view{lookupBuffer->TryGetView(guestMapping)}; view) {
+                    PrepareBufferAccess(*lookupBuffer, false, view.GetOffset(), view.size);
                     return view;
+                }
 
             return FindOrCreateImpl(guestMapping, tag, attachBuffer);
         }

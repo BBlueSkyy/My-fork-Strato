@@ -4,6 +4,7 @@
 #pragma once
 
 #include "alias_group.h"
+#include <common/address_space.h>
 
 #include <range/v3/view.hpp>
 #include <range/v3/algorithm.hpp>
@@ -244,6 +245,8 @@ namespace skyline::gpu {
     struct GuestTexture {
         using Mappings = boost::container::small_vector<span<u8>, 3>;
 
+        std::vector<bool> sparseMappings;
+        size_t mappingOffset{}; //!< Byte offset in the first GPU page, including a sparse first page
         Mappings mappings; //!< Spans to CPU memory for the underlying data backing this texture
         texture::Dimensions dimensions{};
         texture::Format format{};
@@ -310,6 +313,21 @@ namespace skyline::gpu {
         u32 GetViewDepth() const;
 
         size_t GetSize();
+
+        bool HasSparseMappings() const {
+            return std::any_of(sparseMappings.begin(), sparseMappings.end(), [](bool sparse) { return sparse; });
+        }
+
+        template<typename MemoryManager>
+        void SetMappings(MemoryManager &memory, u64 address) {
+            const auto translated{memory.TranslateMappings(address, GetSize())};
+            mappings.clear(); sparseMappings.clear();
+            mappingOffset = address % constant::PageSize;
+            for (const auto &mapping : translated) {
+                mappings.push_back(mapping.memory);
+                sparseMappings.push_back(mapping.kind == MemoryMappingKind::Sparse);
+            }
+        }
 
         bool MappingsValid() const;
     };
@@ -416,6 +434,8 @@ namespace skyline::gpu {
         bool CanReconcileGuestLayout(const GuestTexture &requested) const;
         static bool CanMaterializeGuestLayout(const GuestTexture &value);
         static bool IsGuestLayoutReversible(const GuestTexture &value);
+        static bool GuestMappingsOverlap(const GuestTexture &first, const GuestTexture &second);
+        static std::shared_ptr<texture::AliasGroup> RegisterMappingAliases(std::vector<std::shared_ptr<Texture>> textures);
         static std::shared_ptr<texture::AliasGroup> RegisterAliases(std::vector<std::shared_ptr<Texture>> textures, const GuestTexture *requested = nullptr);
         void RequireAliasCoherence(ContextTag context);
         void ReconcileAliases(); // Called outside executor/resource locks.

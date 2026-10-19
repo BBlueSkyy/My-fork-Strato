@@ -12,6 +12,66 @@ namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
+    std::shared_ptr<texture::AliasGroup> TextureManager::PrepareMappingAliases(const GuestTexture &guest, ContextTag tag) {
+        if (sparseTextures.empty() && !guest.HasSparseMappings()) return {};
+        auto overlaps{[&](const std::shared_ptr<Texture> &texture) {
+            return texture && !texture->replaced && !texture->aliasRetired.load() && texture->guest &&
+                Texture::GuestMappingsOverlap(guest, *texture->guest);
+        }};
+        std::vector<std::shared_ptr<Texture>> members;
+        for (const auto &texture : sparseTextures) if (overlaps(texture)) members.push_back(texture);
+        if (members.empty() && !guest.HasSparseMappings()) return {};
+        for (const auto &mapping : textures)
+            if (overlaps(mapping.texture) && std::find(members.begin(), members.end(), mapping.texture) == members.end()) members.push_back(mapping.texture);
+        if (members.empty()) {
+            auto group{std::make_shared<texture::AliasGroup>()}; group->mappingAliases = true; return group;
+        }
+        const auto group{members.front()->aliasGroup.load()};
+        if (group && group->mappingAliases && std::all_of(members.begin(), members.end(), [&](const auto &member) { return member->aliasGroup.load() == group; })) return group;
+        if (tag) {
+            TextureAliasReconciliationRequest request{{}, members};
+            request.mappingRegistration = true;
+            for (const auto &member : members) {
+                std::scoped_lock state{member->stateMutex};
+                if (!member->memoryFreed) request.guestMemoryLeases.push_back(member->PinGuestMemory());
+            }
+            throw request;
+        }
+        return Texture::RegisterMappingAliases(std::move(members));
+    }
+
+    std::shared_ptr<TextureView> TextureManager::FindOrCreateSparse(const GuestTexture &guest, ContextTag tag) {
+        const vk::ImageSubresourceRange range{guest.aspect, guest.viewMipBase,
+            guest.viewMipCount == VK_REMAINING_MIP_LEVELS ? guest.mipLevelCount - guest.viewMipBase : guest.viewMipCount,
+            guest.baseArrayLayer, guest.GetViewLayerCount()};
+        for (const auto &texture : sparseTextures) {
+            const auto &cached{*texture->guest};
+            if (texture->replaced || cached.mappings != guest.mappings || cached.sparseMappings != guest.sparseMappings ||
+                cached.mappingOffset != guest.mappingOffset || cached.dimensions != guest.dimensions || cached.format != guest.format ||
+                !(cached.tileConfig == guest.tileConfig) || cached.layerCount != guest.layerCount || cached.mipLevelCount != guest.mipLevelCount ||
+                cached.GetImageType() != guest.GetImageType() || (cached.layerStride ? cached.layerStride : cached.CalculateLayerSize()) != (guest.layerStride ? guest.layerStride : guest.CalculateLayerSize())) continue;
+            if (!tag) texture->ReconcileAliases();
+            ContextLock lock{tag, *texture};
+            return texture->GetView(guest.viewType, range, guest.format, guest.swizzle, tag);
+        }
+        if (!Texture::CanMaterializeGuestLayout(guest)) throw exception("Cannot materialize sparse texture layout");
+        auto group{PrepareMappingAliases(guest, tag)};
+        auto texture{std::make_shared<Texture>(gpu, guest)};
+        texture->SetupGuestMappings();
+        texture->aliasReadOnly = true;
+        {
+            std::scoped_lock metadata{group->mutex};
+            group->members.emplace_back(texture);
+            texture->aliasGroup.store(group);
+            texture->aliasStale = group->guestGeneration != group->generation;
+        }
+        texture->TransitionLayout(vk::ImageLayout::eGeneral);
+        sparseTextures.push_back(texture);
+        if (!tag) texture->ReconcileAliases();
+        ContextLock lock{tag, *texture};
+        return texture->GetView(guest.viewType, range, guest.format, guest.swizzle, tag);
+    }
+
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
@@ -23,6 +83,7 @@ namespace skyline::gpu {
         if (!texture::SubresourceRangeFits(guestTexture.mipLevelCount, guestTexture.viewMipBase, guestTexture.viewMipCount)) {
             throw exception("Guest texture view exceeds its declared mip chain");
         }
+        if (guestTexture.HasSparseMappings()) return FindOrCreateSparse(guestTexture, tag);
         const vk::ImageSubresourceRange requestedRange{
             guestTexture.aspect, guestTexture.viewMipBase,
             guestTexture.viewMipCount == VK_REMAINING_MIP_LEVELS && guestTexture.viewMipBase < guestTexture.mipLevelCount ?
@@ -281,7 +342,7 @@ namespace skyline::gpu {
         bool requestedReadOnlyAlias{};
         for (const auto &alias : exactAliases)
             if (auto group{alias->aliasGroup.load()}) { separateGroup = std::move(group); break; }
-        if (unrepresentableMatch || separateGroup) {
+        if ((unrepresentableMatch || separateGroup) && !(separateGroup && separateGroup->mappingAliases)) {
             const bool requestedMaterializable{Texture::CanMaterializeGuestLayout(guestTexture)};
             const bool requestedLossless{Texture::IsGuestLayoutReversible(guestTexture) &&
                 ConvertHostCompatibleFormat(guestTexture.format, gpu.traits) == guestTexture.format};
@@ -483,6 +544,13 @@ namespace skyline::gpu {
             }
         }
 
+        if (auto mappingGroup{PrepareMappingAliases(guestTexture, tag)}) {
+            if (!Texture::CanMaterializeGuestLayout(guestTexture))
+                throw exception("Cannot materialize a sparse mapping overlap");
+            requestedReadOnlyAlias |= !Texture::IsGuestLayoutReversible(guestTexture) ||
+                ConvertHostCompatibleFormat(guestTexture.format, gpu.traits) != guestTexture.format;
+            separateGroup = std::move(mappingGroup);
+        }
         for (auto &texture : matches)
             if (!separateGroup || texture->aliasGroup.load() != separateGroup)
                 texture->SynchronizeGuest(false, true);

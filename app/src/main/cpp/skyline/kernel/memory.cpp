@@ -494,6 +494,39 @@ namespace skyline::kernel {
         return span<u8>{reinterpret_cast<u8 *>(mirror), mapping.size()};
     }
 
+    span<u8> MemoryManager::CreateMirrorsWithSparse(const std::vector<span<u8>> &regions) {
+        size_t totalSize{};
+        for (const auto &region : regions) {
+            if (!region.size() || !util::IsPageAligned(region.size()) ||
+                !util::IsPageAligned(reinterpret_cast<size_t>(region.data())) ||
+                region.size() > SIZE_MAX - totalSize)
+                throw exception("Invalid sparse mirror range");
+            if (region.data() && !base.contains(region))
+                throw exception("Sparse mirror resident range is outside the VMM");
+            totalSize += region.size();
+        }
+        if (!totalSize) throw exception("Cannot create an empty sparse mirror");
+        auto pointer{mmap(nullptr, totalSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)};
+        if (pointer == MAP_FAILED) throw exception("Failed to reserve sparse mirror");
+        try {
+            size_t offset{};
+            for (const auto &region : regions) {
+                if (region.data()) {
+                    auto target{static_cast<u8 *>(pointer) + offset};
+                    if (mremap(region.data(), 0, region.size(), MREMAP_FIXED | MREMAP_MAYMOVE, target) == MAP_FAILED)
+                        throw exception("Failed to alias sparse mirror resident range");
+                    if (mprotect(target, region.size(), PROT_READ | PROT_WRITE))
+                        throw exception("Failed to protect sparse mirror resident range");
+                }
+                offset += region.size();
+            }
+        } catch (...) {
+            munmap(pointer, totalSize);
+            throw;
+        }
+        return {static_cast<u8 *>(pointer), totalSize};
+    }
+
     span<u8> MemoryManager::CreateMirrors(const std::vector<span<u8>> &regions) {
         size_t totalSize{};
         for (const auto &region : regions)

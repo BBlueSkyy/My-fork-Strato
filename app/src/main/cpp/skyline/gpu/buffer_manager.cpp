@@ -2,11 +2,160 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/settings.h>
+#include <limits>
 #include <gpu.h>
 #include "buffer_manager.h"
 
 namespace skyline::gpu {
     BufferManager::BufferManager(GPU &gpu) : gpu{gpu} {}
+
+    void BufferMappingReconciliationRequest::Complete() const {
+        manager->PrepareBufferAccess(*target, write, offset, size, allowRepeatedCpuWrite);
+    }
+
+    std::vector<std::shared_ptr<Buffer>> BufferManager::SnapshotAliases() {
+        std::scoped_lock lock{aliasMutex};
+        std::vector<std::shared_ptr<Buffer>> buffers;
+        for (auto it{aliasBuffers.begin()}; it != aliasBuffers.end();) {
+            if (auto buffer{it->lock()}) {
+                buffers.push_back(std::move(buffer));
+                ++it;
+            } else {
+                it = aliasBuffers.erase(it);
+            }
+        }
+        return buffers;
+    }
+
+    static bool PhysicalRangesOverlap(GuestBuffer first, GuestBuffer second) {
+        const auto a{reinterpret_cast<uintptr_t>(first.data())}, b{reinterpret_cast<uintptr_t>(second.data())};
+        return first.valid() && second.valid() && (a <= b ? b - a < first.size() : a - b < second.size());
+    }
+
+    void BufferManager::PrepareBufferAccess(Buffer &target, bool write, vk::DeviceSize offset, vk::DeviceSize size, bool allowRepeatedCpuWrite) {
+        if (!hasAggregates || !target.aliasValid)
+            return;
+        if (size == VK_WHOLE_SIZE)
+            size = target.mirror.size() - offset;
+        std::vector<GuestBuffer> targetMappings;
+        target.VisitPhysicalRanges(offset, size, [&](GuestBuffer mapping) { targetMappings.push_back(mapping); });
+        if (write && target.HasRepeatedPhysicalMappings()) {
+            std::scoped_lock stateLock{target.stateMutex};
+            if (!allowRepeatedCpuWrite || target.dirtyState == Buffer::DirtyState::GpuDirty ||
+                target.SequencedCpuBackingWritesBlocked() || !target.PollFence())
+                throw exception("Repeated physical buffer writes require an immediately writable ordered CPU transport");
+        }
+
+        // Read-only aliases may coexist. A write changes authority only for actual
+        // resident intersections, and only queued conflicts require a submission.
+        for (const auto &source : SnapshotAliases()) {
+            if (source.get() == &target || !source->aliasValid)
+                continue;
+            bool overlaps{};
+            for (const auto mapping : targetMappings)
+                for (const auto other : source->guestMappings)
+                    overlaps |= PhysicalRangesOverlap(mapping, other);
+            if (!overlaps)
+                continue;
+            std::unique_lock stateLock{source->stateMutex};
+            bool pendingOverlap{};
+            for (const auto mapping : targetMappings)
+                pendingOverlap |= source->aliasPendingWrites.Intersect(mapping);
+            const bool sourceWrites{pendingOverlap || source->dirtyState == Buffer::DirtyState::GpuDirty || source->directGpuWritesActive};
+            if (source->SequencedCpuBackingWritesBlocked() && (sourceWrites || write))
+                throw BufferMappingReconciliationRequest{this, target.shared_from_this(), write, offset, size, allowRepeatedCpuWrite};
+            if (!sourceWrites && !(write && source->isDirect && source->cycle))
+                continue;
+            // Use the raw recursive mutex: a temporary ContextLock with another
+            // tag would reset a buffer still attached to the executor on unwind.
+            stateLock.unlock();
+            std::scoped_lock sourceLock{source->mutex};
+            stateLock.lock();
+            if (!source->aliasValid)
+                continue;
+            if (source->SequencedCpuBackingWritesBlocked())
+                throw BufferMappingReconciliationRequest{this, target.shared_from_this(), write, offset, size, allowRepeatedCpuWrite};
+            source->WaitOnFence();
+            if (!sourceWrites)
+                continue;
+            if (source->isDirect)
+                source->RefreshGpuWritesActiveDirect(true);
+            else
+                source->SynchronizeGuest();
+            source->aliasPendingWrites.Clear();
+            std::scoped_lock targetStateLock{target.stateMutex};
+            if (!target.isDirect) {
+                if (target.dirtyState == Buffer::DirtyState::GpuDirty)
+                    throw exception("Conflicting GPU-dirty aliases cannot both own the same physical bytes");
+                if (target.AllCpuBackingWritesBlocked())
+                    throw BufferMappingReconciliationRequest{this, target.shared_from_this(), write, offset, size, allowRepeatedCpuWrite};
+                target.dirtyState = Buffer::DirtyState::CpuDirty;
+                target.AdvanceSequence();
+            }
+        }
+    }
+
+    void BufferManager::NotifyBufferWrite(Buffer &source, vk::DeviceSize offset, vk::DeviceSize size) {
+        if (!source.aliasValid)
+            return;
+        source.TrackGuestUsage(source.aliasPendingWrites, offset, size);
+        if (!hasAggregates)
+            return;
+        std::vector<GuestBuffer> written;
+        source.VisitPhysicalRanges(offset, size, [&](GuestBuffer mapping) { written.push_back(mapping); });
+        for (const auto &alias : SnapshotAliases()) {
+            if (alias.get() == &source || !alias->aliasValid || alias->isDirect)
+                continue;
+            bool overlaps{};
+            for (const auto mapping : written)
+                for (const auto other : alias->guestMappings)
+                    overlaps |= PhysicalRangesOverlap(mapping, other);
+            if (!overlaps)
+                continue;
+            std::scoped_lock stateLock{alias->stateMutex};
+            // PrepareBufferAccess established exclusive write authority first.
+            if (alias->dirtyState != Buffer::DirtyState::GpuDirty) {
+                alias->dirtyState = Buffer::DirtyState::CpuDirty;
+                alias->AdvanceSequence();
+            }
+        }
+    }
+
+    BufferView BufferManager::FindOrCreateDisjoint(const std::vector<GuestBuffer> &mappings, vk::DeviceSize offset, vk::DeviceSize size,
+                                                  ContextTag tag, const std::function<void(std::shared_ptr<Buffer>, ContextLock<Buffer> &&)> &/*attachBuffer*/) {
+        if (mappings.empty())
+            return {};
+        size_t total{};
+        for (const auto mapping : mappings) {
+            if (!mapping.size() || mapping.size() % constant::PageSize ||
+                (mapping.valid() && reinterpret_cast<uintptr_t>(mapping.data()) % constant::PageSize) ||
+                mapping.size() > std::numeric_limits<size_t>::max() - total)
+                throw exception("Invalid page-aligned aggregate buffer mapping");
+            total += mapping.size();
+        }
+        if (offset > total || size > total - offset)
+            throw exception("Aggregate buffer view exceeds its logical extent");
+        for (const auto &buffer : aggregateBuffers) {
+            const auto &existing{buffer->guestMappings};
+            if (existing.size() == mappings.size() && std::equal(existing.begin(), existing.end(), mappings.begin(), [](GuestBuffer a, GuestBuffer b) {
+                return a.data() == b.data() && a.size() == b.size();
+            })) {
+                ContextLock lock{tag, *buffer};
+                PrepareBufferAccess(*buffer, false, offset, size);
+                return buffer->GetView(offset, size);
+            }
+        }
+        LockedBuffer buffer{std::make_shared<Buffer>(delegateAllocatorState, gpu, mappings, nextBufferId++), tag};
+        buffer->SetupStagedTraps();
+        aggregateBuffers.push_back(*buffer);
+        {
+            std::scoped_lock lock{aliasMutex};
+            aliasBuffers.push_back(*buffer);
+        }
+        hasAggregates = true;
+        PrepareBufferAccess(**buffer, false, offset, size);
+        return buffer->GetView(offset, size);
+    }
 
     bool BufferManager::BufferLessThan(const std::shared_ptr<Buffer> &it, u8 *pointer) {
         return it->guest->begin().base() < pointer;
@@ -42,6 +191,10 @@ namespace skyline::gpu {
     }
 
     void BufferManager::InsertBuffer(std::shared_ptr<Buffer> buffer) {
+        {
+            std::scoped_lock lock{aliasMutex};
+            aliasBuffers.push_back(buffer);
+        }
         auto bufferStart{buffer->guest->begin().base()}, bufferEnd{buffer->guest->end().base()};
         bufferTable.Set(bufferStart, bufferEnd, buffer.get());
         bufferMappings.insert(std::lower_bound(bufferMappings.begin(), bufferMappings.end(), bufferEnd, BufferLessThan), std::move(buffer));
@@ -68,7 +221,6 @@ namespace skyline::gpu {
                 newBufferCycle = srcBuffer->cycle;
         }
 
-        std::scoped_lock lock{recreationMutex};
         if (!range.valid())
             range = span<u8>{srcBuffers.front().buffer->guest->begin(), srcBuffers.back().buffer->guest->end()};
 
@@ -84,6 +236,11 @@ namespace skyline::gpu {
 
         LockedBuffer newBuffer{std::make_shared<Buffer>(delegateAllocatorState, gpu, span<u8>{lowestAddress, highestAddress}, nextBufferId++, *gpu.state.settings->useDirectMemoryImport), tag}; // If we don't lock the buffer prior to trapping it during synchronization, a race could occur with a guest trap acquiring the lock before we do and mutating the buffer prior to it being ready
 
+        // Coherence can request an executor retry. Complete that preflight before
+        // relinking stable delegates, and before holding the mutex needed by
+        // recording workers while waiting on an alias's previous submission.
+        PrepareBufferAccess(**newBuffer);
+        std::scoped_lock lock{recreationMutex};
         newBuffer->SetupStagedTraps();
         newBuffer->SynchronizeHost(false); // Overlaps don't necessarily fully cover the buffer so we have to perform a sync here to prevent any gaps
         newBuffer->cycle = newBufferCycle;
@@ -108,6 +265,7 @@ namespace skyline::gpu {
                 newBuffer->backingImmutability = Buffer::BackingImmutability::AllWrites;
 
             newBuffer->everHadInlineUpdate |= srcBuffer->everHadInlineUpdate;
+            newBuffer->aliasPendingWrites.Merge(srcBuffer->aliasPendingWrites);
 
             if (!*gpu.state.settings->useDirectMemoryImport) {
                 if (srcBuffer->dirtyState == Buffer::DirtyState::GpuDirty) {
@@ -156,8 +314,11 @@ namespace skyline::gpu {
         if (overlaps.size() == 1) [[likely]] {
             // If we find a buffer which can entirely fit the guest mapping, we can just return a view into it
             auto &firstOverlap{overlaps.front()};
-            if (firstOverlap->guest->begin() <= alignedGuestMapping.begin() && firstOverlap->guest->end() >= alignedGuestMapping.end())
-                return firstOverlap->GetView(static_cast<vk::DeviceSize>(guestMapping.begin() - firstOverlap->guest->begin()), guestMapping.size());
+            if (firstOverlap->guest->begin() <= alignedGuestMapping.begin() && firstOverlap->guest->end() >= alignedGuestMapping.end()) {
+                const auto offset{static_cast<vk::DeviceSize>(guestMapping.begin() - firstOverlap->guest->begin())};
+                PrepareBufferAccess(**firstOverlap, false, offset, guestMapping.size());
+                return firstOverlap->GetView(offset, guestMapping.size());
+            }
         }
 
         if (overlaps.empty()) {
@@ -165,7 +326,9 @@ namespace skyline::gpu {
             LockedBuffer buffer{std::make_shared<Buffer>(delegateAllocatorState, gpu, alignedGuestMapping, nextBufferId++, *gpu.state.settings->useDirectMemoryImport), tag};
             buffer->SetupStagedTraps();
             InsertBuffer(*buffer);
-            return buffer->GetView(static_cast<vk::DeviceSize>(guestMapping.begin() - buffer->guest->begin()), guestMapping.size());
+            const auto offset{static_cast<vk::DeviceSize>(guestMapping.begin() - buffer->guest->begin())};
+            PrepareBufferAccess(**buffer, false, offset, guestMapping.size());
+            return buffer->GetView(offset, guestMapping.size());
         } else {
             // If the new buffer overlaps other buffers, we need to create a new buffer and coalesce all overlapping buffers into one
             auto buffer{CoalesceBuffers(alignedGuestMapping, overlaps, tag)};
@@ -185,7 +348,9 @@ namespace skyline::gpu {
             }
             InsertBuffer(*buffer);
 
-            return buffer->GetView(static_cast<vk::DeviceSize>(guestMapping.begin() - buffer->guest->begin()), guestMapping.size());
+            const auto offset{static_cast<vk::DeviceSize>(guestMapping.begin() - buffer->guest->begin())};
+            PrepareBufferAccess(**buffer, false, offset, guestMapping.size());
+            return buffer->GetView(offset, guestMapping.size());
         }
     }
 }

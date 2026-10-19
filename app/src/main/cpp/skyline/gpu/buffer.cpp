@@ -8,6 +8,7 @@
 #include <common/trace.h>
 #include <common/settings.h>
 #include "buffer.h"
+#include "buffer_manager.h"
 
 namespace skyline::gpu {
     void Buffer::ResetMegabufferState() {
@@ -23,9 +24,16 @@ namespace skyline::gpu {
         if (isDirect)
             return;
 
+        std::vector<GuestBuffer> residentMappings;
+        for (const auto mapping : guestMappings)
+            if (mapping.valid())
+                residentMappings.push_back(mapping);
+        if (residentMappings.empty())
+            return;
+
         // We can't just capture this in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Buffer> weakThis{shared_from_this()};
-        trapHandle = gpu.state.process->trap.CreateTrap(*guest, [weakThis] {
+        trapHandle = gpu.state.process->trap.CreateTrap(span<GuestBuffer>{residentMappings}, [weakThis] {
             auto buffer{weakThis.lock()};
             if (!buffer)
                 return;
@@ -321,6 +329,71 @@ namespace skyline::gpu {
         return false;
     }
 
+    void Buffer::WriteImmediateRepeated(span<u8> data, vk::DeviceSize offset) {
+        std::scoped_lock lock{stateMutex};
+        std::vector<GuestBuffer> written;
+        size_t logicalOffset{}, consumed{};
+        for (const auto mapping : guestMappings) {
+            if (offset >= mapping.size()) {
+                offset -= mapping.size();
+                logicalOffset += mapping.size();
+                continue;
+            }
+            const auto amount{std::min<vk::DeviceSize>(data.size() - consumed, mapping.size() - offset)};
+            if (mapping.valid() && amount) {
+                // Each mapping is linear, but separate mappings can share PA.
+                // Process them in logical order so the last write to PA wins.
+                std::memcpy(mirror.data() + logicalOffset + offset, data.data() + consumed, amount);
+                if (dirtyState == DirtyState::Clean)
+                    written.push_back(mapping.subspan(offset, amount));
+            }
+            consumed += amount;
+            if (consumed == data.size())
+                break;
+            logicalOffset += mapping.size();
+            offset = 0;
+        }
+        // CpuDirty already schedules a complete mirror upload. Sparse holes were
+        // skipped above and retain their initialized zero contents.
+        if (written.empty())
+            return;
+
+        // Merge changed physical ranges before projecting them back to every
+        // logical backing copy. Read final mirror values, including later writes
+        // through aliases, and copy each changed backing byte only once.
+        std::sort(written.begin(), written.end(), [](GuestBuffer a, GuestBuffer b) {
+            return reinterpret_cast<uintptr_t>(a.data()) < reinterpret_cast<uintptr_t>(b.data());
+        });
+        size_t count{};
+        for (const auto range : written) {
+            const auto address{reinterpret_cast<uintptr_t>(range.data())};
+            if (count && address - reinterpret_cast<uintptr_t>(written[count - 1].data()) <= written[count - 1].size()) {
+                auto &previous{written[count - 1]};
+                const auto extent{address - reinterpret_cast<uintptr_t>(previous.data()) + range.size()};
+                previous = {previous.data(), std::max(previous.size(), extent)};
+            } else {
+                written[count++] = range;
+            }
+        }
+        written.resize(count);
+        logicalOffset = 0;
+        for (const auto mapping : guestMappings) {
+            if (mapping.valid()) {
+                const auto address{reinterpret_cast<uintptr_t>(mapping.data())};
+                for (const auto range : written) {
+                    const auto rangeAddress{reinterpret_cast<uintptr_t>(range.data())};
+                    const auto begin{std::max(address, rangeAddress)};
+                    const auto mappingOffset{begin - address}, rangeOffset{begin - rangeAddress};
+                    if (mappingOffset < mapping.size() && rangeOffset < range.size()) {
+                        const auto amount{std::min(mapping.size() - mappingOffset, range.size() - rangeOffset)};
+                        std::memcpy(backing->data() + logicalOffset + mappingOffset, mirror.data() + logicalOffset + mappingOffset, amount);
+                    }
+                }
+            }
+            logicalOffset += mapping.size();
+        }
+    }
+
     void Buffer::ReadImplDirect(const std::function<void()> &flushHostCallback, span<u8> data, vk::DeviceSize offset) {
         // If GPU writes are active then wait until that's no longer the case
         RefreshGpuWritesActiveDirect(true, flushHostCallback);
@@ -360,7 +433,8 @@ namespace skyline::gpu {
         if (dirtyState == DirtyState::GpuDirty)
             return;
 
-        gpu.state.process->trap.TrapRegions(*trapHandle, false); // This has to occur prior to any synchronization as it'll skip trapping
+        if (trapHandle)
+            gpu.state.process->trap.TrapRegions(*trapHandle, false); // This has to occur prior to any synchronization as it'll skip trapping
 
         if (dirtyState == DirtyState::CpuDirty)
             SynchronizeHost(true); // Will transition the Buffer to Clean
@@ -383,7 +457,9 @@ namespace skyline::gpu {
     Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, GuestBuffer guest, size_t id, bool direct)
         : gpu{gpu},
           guest{guest},
-      mirror{gpu.state.process->memory.CreateMirror(guest)},
+          guestMappings{guest},
+          aliasValid{true},
+          mirror{gpu.state.process->memory.CreateMirror(guest)},
           delegate{delegateAllocator.EmplaceUntracked<BufferDelegate>(this)},
           isDirect{direct},
           id{id},
@@ -394,6 +470,89 @@ namespace skyline::gpu {
             backing = gpu.memory.AllocateBuffer(mirror.size());
 
         megaBufferTable.resize(guest.size() / (1 << megaBufferTableShift));
+    }
+
+    Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, const std::vector<GuestBuffer> &mappings, size_t id)
+        : gpu{gpu}, guestMappings{mappings}, isAggregate{true}, aliasValid{true}, id{id},
+          mirror{gpu.state.process->memory.CreateMirrorsWithSparse(mappings)},
+          backing{gpu.memory.AllocateBuffer(mirror.size())},
+          megaBufferTableShift{std::max(std::bit_width(mirror.size() / MegaBufferTableMaxEntries - 1), MegaBufferTableShiftMin)},
+          delegate{delegateAllocator.EmplaceUntracked<BufferDelegate>(this)} {
+        guest = mirror;
+        megaBufferTable.resize(mirror.size() / (1 << megaBufferTableShift));
+    }
+
+    void Buffer::VisitPhysicalRanges(vk::DeviceSize offset, vk::DeviceSize size, const std::function<void(GuestBuffer)> &visitor) const {
+        if (!aliasValid)
+            return;
+        if (offset > mirror.size() || size > mirror.size() - offset)
+            throw exception("Buffer physical range exceeds its logical extent");
+        for (const auto mapping : guestMappings) {
+            if (offset >= mapping.size()) {
+                offset -= mapping.size();
+                continue;
+            }
+            const auto amount{std::min<vk::DeviceSize>(size, mapping.size() - offset)};
+            if (mapping.valid() && amount)
+                visitor(mapping.subspan(offset, amount));
+            size -= amount;
+            if (!size)
+                break;
+            offset = 0;
+        }
+    }
+
+    void Buffer::TrackGuestUsage(IntervalList<u8 *> &intervals, vk::DeviceSize offset, vk::DeviceSize size) {
+        VisitPhysicalRanges(offset, size, [&](GuestBuffer mapping) { intervals.Insert(mapping); });
+    }
+
+    bool Buffer::HasSparseHoles(vk::DeviceSize offset, vk::DeviceSize size) const {
+        for (const auto mapping : guestMappings) {
+            if (offset >= mapping.size()) {
+                offset -= mapping.size();
+                continue;
+            }
+            const auto amount{std::min<vk::DeviceSize>(size, mapping.size() - offset)};
+            if (amount && !mapping.valid())
+                return true;
+            size -= amount;
+            if (!size)
+                break;
+            offset = 0;
+        }
+        return false;
+    }
+
+    bool Buffer::HasRepeatedPhysicalMappings() const {
+        if (!isAggregate)
+            return false;
+        for (size_t a{}; a < guestMappings.size(); ++a) {
+            if (!guestMappings[a].valid())
+                continue;
+            const auto first{reinterpret_cast<uintptr_t>(guestMappings[a].data())};
+            for (size_t b{a + 1}; b < guestMappings.size(); ++b) {
+                if (!guestMappings[b].valid())
+                    continue;
+                const auto second{reinterpret_cast<uintptr_t>(guestMappings[b].data())};
+                if (first <= second ? second - first < guestMappings[a].size() : first - second < guestMappings[b].size())
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    void Buffer::ClearSparseHoles(bool clearBacking) {
+        if (!isAggregate)
+            return;
+        size_t offset{};
+        for (const auto mapping : guestMappings) {
+            if (!mapping.valid()) {
+                std::memset(mirror.data() + offset, 0, mapping.size());
+                if (clearBacking)
+                    std::memset(backing->data() + offset, 0, mapping.size());
+            }
+            offset += mapping.size();
+        }
     }
 
     Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, vk::DeviceSize size, size_t id)
@@ -414,11 +573,15 @@ namespace skyline::gpu {
     }
 
     void Buffer::MarkGpuDirty(UsageTracker &usageTracker) {
+        if (isAggregate && HasSparseHoles(0, mirror.size()))
+            throw exception("GPU writes to sparse buffer holes require native sparse binding");
+        gpu.buffer.PrepareBufferAccess(*this, true);
         ++writeGeneration;
         if (!guest)
             return;
 
-        usageTracker.dirtyIntervals.Insert(*guest);
+        TrackGuestUsage(usageTracker.dirtyIntervals, 0, mirror.size());
+        gpu.buffer.NotifyBufferWrite(*this, 0, mirror.size());
         MarkGpuDirtyImpl();
     }
 
@@ -451,6 +614,7 @@ namespace skyline::gpu {
 
         // Will prevent any sync operations so even if the trap handler is partway through running and hasn't yet acquired the lock it won't do anything
         guest = {};
+        aliasValid = false;
     }
 
     void Buffer::SynchronizeHost(bool skipTrap) {
@@ -469,10 +633,11 @@ namespace skyline::gpu {
 
             AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
 
-            if (!skipTrap)
+            if (!skipTrap && trapHandle)
                 gpu.state.process->trap.TrapRegions(*trapHandle, true); // Trap any future CPU writes to this buffer, must be done before the memcpy so that any modifications during the copy are tracked
         }
 
+        ClearSparseHoles();
         std::memcpy(backing->data(), mirror.data(), mirror.size());
     }
 
@@ -493,11 +658,12 @@ namespace skyline::gpu {
 
             WaitOnFence();
             std::memcpy(mirror.data(), backing->data(), mirror.size());
+            ClearSparseHoles(true);
 
             dirtyState = DirtyState::Clean;
         }
 
-        if (!skipTrap)
+        if (!skipTrap && trapHandle)
             gpu.state.process->trap.TrapRegions(*trapHandle, true);
 
         return true;
@@ -515,6 +681,8 @@ namespace skyline::gpu {
     }
 
     void Buffer::Read(bool isFirstUsage, const std::function<void()> &flushHostCallback, span<u8> data, vk::DeviceSize offset) {
+        gpu.buffer.PrepareBufferAccess(*this, false, offset, data.size());
+        ClearSparseHoles();
         if (isDirect)
             ReadImplDirect(flushHostCallback, data, offset);
         else
@@ -522,31 +690,62 @@ namespace skyline::gpu {
     }
 
     bool Buffer::Write(span<u8> data, vk::DeviceSize offset, UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
+        const bool repeatedWrite{HasRepeatedPhysicalMappings()};
+        gpu.buffer.PrepareBufferAccess(*this, true, offset, data.size(), repeatedWrite);
+        if (isAggregate && HasSparseHoles(offset, data.size()) &&
+            (SequencedCpuBackingWritesBlocked() || !PollFence() || dirtyState == DirtyState::GpuDirty))
+            throw exception("Sequenced writes crossing sparse buffer holes require native sparse binding");
         ++writeGeneration;
         AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
         everHadInlineUpdate = true;
 
-        usageTracker.sequencedIntervals.Insert(*guest);
+        TrackGuestUsage(usageTracker.sequencedIntervals, offset, data.size());
+        gpu.buffer.NotifyBufferWrite(*this, offset, data.size());
 
+        if (repeatedWrite) {
+            WriteImmediateRepeated(data, offset);
+            return false;
+        }
         if (isDirect)
             return WriteImplDirect(data, offset, usageTracker, gpuCopyCallback);
-        else
-            return WriteImplStaged(data, offset, gpuCopyCallback);
+        else {
+            const auto retry{WriteImplStaged(data, offset, gpuCopyCallback)};
+            ClearSparseHoles(!SequencedCpuBackingWritesBlocked() && PollFence());
+            return retry;
+        }
     }
 
     void Buffer::CopyFrom(vk::DeviceSize dstOffset,
                           Buffer *src, vk::DeviceSize srcOffset, vk::DeviceSize size,
                           UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
+        gpu.buffer.PrepareBufferAccess(*src, false, srcOffset, size);
+        gpu.buffer.PrepareBufferAccess(*this, true, dstOffset, size);
+        if (isAggregate && HasSparseHoles(dstOffset, size) &&
+            (SequencedCpuBackingWritesBlocked() || !PollFence() || dirtyState == DirtyState::GpuDirty || src->dirtyState == DirtyState::GpuDirty))
+            throw exception("Sequenced copies crossing sparse buffer holes require native sparse binding");
         ++writeGeneration;
         AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
         everHadInlineUpdate = true;
 
-        usageTracker.sequencedIntervals.Insert(*guest);
+        TrackGuestUsage(usageTracker.sequencedIntervals, dstOffset, size);
+        gpu.buffer.NotifyBufferWrite(*this, dstOffset, size);
 
-        if (isDirect)
+        if (isDirect != src->isDirect) {
+            // Aggregates are staged even when physical canonical buffers use
+            // direct import. Their tracking modes cannot be mixed by either
+            // specialized CPU copy path; preserve sequencing on the GPU.
+            if (!gpuCopyCallback)
+                throw exception("Mixed direct/staged buffer copies require a GPU copy callback");
+            src->SynchronizeHost();
+            SynchronizeHost();
+            MarkGpuDirty(usageTracker);
+            gpuCopyCallback();
+        } else if (isDirect)
             CopyFromImplDirect(dstOffset, src, srcOffset, size, usageTracker, gpuCopyCallback);
-        else
+        else {
             CopyFromImplStaged(dstOffset, src, srcOffset, size, usageTracker, gpuCopyCallback);
+            ClearSparseHoles(!SequencedCpuBackingWritesBlocked() && PollFence());
+        }
     }
 
     BufferView Buffer::GetView(vk::DeviceSize offset, vk::DeviceSize size) {
@@ -554,7 +753,7 @@ namespace skyline::gpu {
     }
 
     BufferView Buffer::TryGetView(span<u8> mapping) {
-        if (guest->contains(mapping))
+        if (guest && !isAggregate && guest->contains(mapping))
             return GetView(static_cast<vk::DeviceSize>(std::distance(guest->begin(), mapping.begin())), mapping.size());
         else
             return {};
@@ -562,6 +761,7 @@ namespace skyline::gpu {
 
     BufferBinding Buffer::TryMegaBufferView(const std::shared_ptr<FenceCycle> &pCycle, MegaBufferAllocator &allocator, ContextTag executionTag,
                                             vk::DeviceSize offset, vk::DeviceSize size) {
+        gpu.buffer.PrepareBufferAccess(*this, false, offset, size);
         if (!ValidateMegaBufferView(size))
             return {};
 
@@ -614,6 +814,8 @@ namespace skyline::gpu {
     }
 
     span<u8> Buffer::GetReadOnlyBackingSpan(bool isFirstUsage, const std::function<void()> &flushHostCallback) {
+        gpu.buffer.PrepareBufferAccess(*this);
+        ClearSparseHoles();
         if (!isDirect) {
             std::unique_lock lock{stateMutex};
             if (dirtyState == DirtyState::GpuDirty)
@@ -650,6 +852,8 @@ namespace skyline::gpu {
         tag = ContextTag{};
         AllowAllBackingWrites();
         currentExecutionGpuDirty = false;
+        // Retain pending physical writes until their cycle is reconciled with an
+        // alias. A direct imported buffer may still be updating its guest pages.
         mutex.unlock();
     }
 
@@ -700,6 +904,8 @@ namespace skyline::gpu {
     }
 
     BufferBinding BufferView::GetBinding(GPU &gpu) const {
+        // Alias authority is established when the executor attaches this view.
+        // Binding runs on recording workers and must not submit/wait/retry work.
         std::scoped_lock lock{gpu.buffer.recreationMutex};
         return {delegate->GetBuffer()->GetBacking(), offset + delegate->GetOffset(), size};
     }

@@ -29,7 +29,13 @@ namespace skyline::gpu::interconnect {
             MirrorEntry(span<u8> alignedMirror) : mirror{alignedMirror} {}
         };
 
-        tsl::robin_map<u8 *, std::unique_ptr<MirrorEntry>> mirrorMap;
+        using MirrorKey = std::pair<u8 *, size_t>;
+        struct MirrorKeyHash {
+            size_t operator()(const MirrorKey &key) const {
+                return std::hash<u8 *>{}(key.first) ^ std::hash<size_t>{}(key.second);
+            }
+        };
+        tsl::robin_map<MirrorKey, std::unique_ptr<MirrorEntry>, MirrorKeyHash> mirrorMap;
         std::recursive_mutex trapMutex; //!< Protects accesses from trap handlers to the mirror map
         std::optional<std::scoped_lock<std::recursive_mutex>> trapExecutionLock; //!< Persistently held lock over an execution to avoid frequent relocking
         MirrorEntry *entry{};

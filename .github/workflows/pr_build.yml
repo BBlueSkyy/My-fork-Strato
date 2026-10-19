@@ -55,6 +55,29 @@ jobs:
             tests/gpu/texture_view_range_tests.cpp -o /tmp/texman-view-range-tests
           /tmp/texman-view-range-tests
 
+      - name: GMMU translation regressions (ASan/UBSan)
+        env:
+          CXX: clang++
+        run: |
+          sudo apt-get install -y libboost-dev
+          python3 tests/gmmu/run.py
+          python3 tests/gpu_sparse_mappings/run.py
+          python3 tests/gpu_disjoint_buffers/run.py
+          python3 tests/gpu_texture_mappings/run.py
+          python3 tests/gpu_constant_buffers/run.py
+
+      - name: ARM64 translation and buffer regressions (QEMU/UBSan)
+        run: |
+          sudo apt-get install -y g++-aarch64-linux-gnu qemu-user
+          python3 tests/run_arm64.py
+
+      - name: Sparse texture and alias Vulkan regressions
+        env:
+          CXX: clang++
+        run: |
+          sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
+          python3 tests/gpu_backing_promotion/run.py
+
       - name: Occlusion and conditional rendering regressions
         run: |
           python3 tests/gpu_queries/run.py

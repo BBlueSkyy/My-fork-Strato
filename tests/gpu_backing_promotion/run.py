@@ -26,19 +26,26 @@ def function(text, signature):
 with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as directory:
     directory = pathlib.Path(directory)
     source = (GPU / "texture/texture.cpp").read_text()
+    writer_baseline = os.environ.get("TEXMAN_BASELINE_ALIAS_WRITES_REF")
+    writer_source = subprocess.check_output(["git", "show", writer_baseline + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"], cwd=ROOT, text=True) if writer_baseline else source
     baseline = os.environ.get("TEXMAN_BASELINE_VIEWS_REF")
     view_source = subprocess.check_output(["git", "show", baseline + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"],
         cwd=ROOT, text=True) if baseline else source
     # Optional negative control: replace only the two view APIs with their
     # actual baseline bodies. The current bounds test must then fail.
+    kernel=(ROOT/"app/src/main/cpp/skyline/kernel/memory.cpp").read_text()
+    (directory / "sparse_mirror.inc").write_text(function(kernel,"span<u8> MemoryManager::CreateMirrorsWithSparse(").replace("MemoryManager::CreateMirrorsWithSparse", "GPU::Process::Memory::CreateMirrorsWithSparse"))
+    (directory / "guest_valid.inc").write_text(function(source,"bool GuestTexture::MappingsValid("))
     (directory / "production.inc").write_text("\n".join(function(
-        view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
+        writer_source if signature == "void Texture::ValidateAliasWrites(" else view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
         signature) for signature in (
         "void Texture::SetupGuestMappings(",
         "bool Texture::CanMaterializeGuestLayout(",
         "bool Texture::IsGuestLayoutReversible(",
         "bool Texture::CanReconcileGuestLayout(",
         "std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(",
+        "bool Texture::GuestMappingsOverlap(",
+        "std::shared_ptr<texture::AliasGroup> Texture::RegisterMappingAliases(",
         "void Texture::RequireAliasCoherence(",
         "void Texture::ReconcileAliases(",
         "void Texture::RecordGpuWrite(",
@@ -93,7 +100,9 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "manager_class.inc").write_text(function((GPU / "texture_manager.h").read_text(), "class TextureManager") + ";\n")
     manager_baseline = os.environ.get("TEXMAN_BASELINE_MANAGER_REF")
     manager_runtime = subprocess.check_output(["git","show",manager_baseline+":app/src/main/cpp/skyline/gpu/texture_manager.cpp"],cwd=ROOT,text=True) if manager_baseline else manager
-    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate("))
+    (directory / "manager.inc").write_text("\n".join(function(manager_runtime, signature) for signature in (
+        "TextureManager::TextureManager(", "std::shared_ptr<texture::AliasGroup> TextureManager::PrepareMappingAliases(",
+        "std::shared_ptr<TextureView> TextureManager::FindOrCreateSparse(", "std::shared_ptr<TextureView> TextureManager::FindOrCreate(")))
     (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset("))
     (directory / "extent.inc").write_text("return " + manager[start:end].strip() + ";")
     start = manager.index("if (matchGuestTexture.format->IsCompatible")
@@ -102,18 +111,18 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "selection.inc").write_text(function(manager, "else if (fullMatch)"))
     (directory / "request_range.inc").write_text(function(manager, "const vk::ImageSubresourceRange requestedRange") + ";")
     (directory / "request_validation.inc").write_text(function(manager, "if (!texture::SubresourceRangeFits("))
-    (directory / "unrepresentable.inc").write_text(function(manager, "if (unrepresentableMatch || separateGroup)"))
+    (directory / "unrepresentable.inc").write_text(function(manager, "if ((unrepresentableMatch || separateGroup)"))
     executor = (GPU / "interconnect/command_executor.cpp").read_text()
     (directory / "alias_retry.inc").write_text(function(executor,"void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &"))
     (directory / "attach.inc").write_text(function(executor,"bool CommandExecutor::AttachTexture("))
     (directory / "retry.inc").write_text(function(executor,
-        "void CommandExecutor::HandleTextureBackingPromotion("))
+        "void CommandExecutor::HandleTextureBackingPromotion(const TextureBackingPromotionRequest &"))
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror",
-                    "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS", "-Wno-unknown-pragmas", "-Wno-unused-parameter", "-fsanitize=undefined",
+                    "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS", "-Wno-reorder-init-list", "-Wno-unknown-pragmas", "-Wno-unused-parameter", "-fsanitize=undefined",
                     "-fno-sanitize-recover=all", "-pthread", "-I" + str(directory),
                     "-I" + str(ROOT / "app/src/main/cpp/skyline"),
-                    "-I" + os.environ.get("VULKAN_HPP_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp")),
-                    "-I" + os.environ.get("VULKAN_HEADERS_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp/Vulkan-Headers/include")),
+                    "-isystem" + os.environ.get("VULKAN_HPP_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp")),
+                    "-isystem" + os.environ.get("VULKAN_HEADERS_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp/Vulkan-Headers/include")),
                     "-I" + os.environ.get("BOOST_INCLUDE_DIR", "/usr/include"),
                     str(ROOT / "tests/gpu_backing_promotion/tests.cpp"),
                     os.environ.get("VULKAN_LOADER_LIBRARY", "-lvulkan"),

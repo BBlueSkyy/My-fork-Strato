@@ -76,7 +76,7 @@ namespace skyline::service::nvdrv::device::nvhost {
         u64 size{static_cast<u64>(pages) * pageSize};
 
         if (flags.sparse)
-            asCtx->gmmu.Map(offset, GMMU::SparsePlaceholderAddress(), size, {true});
+            asCtx->gmmu.MapSparse(offset, size);
 
         allocationMap[offset] = {
             .size = size,
@@ -101,7 +101,7 @@ namespace skyline::service::nvdrv::device::nvhost {
         // Sparse mappings shouldn't be fully unmapped, just returned to their sparse state
         // Only FreeSpace can unmap them fully
         if (mapping->sparseAlloc)
-            asCtx->gmmu.Map(offset, GMMU::SparsePlaceholderAddress(), mapping->size, {true});
+            asCtx->gmmu.MapSparse(offset, mapping->size);
         else
             asCtx->gmmu.Unmap(offset, mapping->size);
 
@@ -343,7 +343,7 @@ namespace skyline::service::nvdrv::device::nvhost {
             }
 
             if (!entry.handle) {
-                asCtx->gmmu.Map(virtAddr, GMMU::SparsePlaceholderAddress(), size, {true});
+                asCtx->gmmu.MapSparse(virtAddr, size);
             } else {
                 auto h{core.nvMap.GetHandle(entry.handle)};
                 if (!h)

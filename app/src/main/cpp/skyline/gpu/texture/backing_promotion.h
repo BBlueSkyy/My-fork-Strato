@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "alias_group.h"
+#include <gpu/buffer_mapping_retry.h>
+#include <stdexcept>
 #include <algorithm>
 #include <array>
 #include <memory>
@@ -20,12 +22,20 @@ namespace skyline::gpu {
     namespace texture {
         template<typename Operation, typename Resolve>
         void RetryBackingPromotion(Operation &&operation, Resolve &&resolve) {
+            std::vector<Buffer *> reconciledBuffers;
             for (;;) {
                 try {
                     operation();
                     return;
                 } catch (const TextureBackingPromotionRequest &request) {
                     resolve(request);
+                } catch (const BufferMappingReconciliationRequest &request) {
+                    if constexpr (requires { resolve(request); }) {
+                        if (std::find(reconciledBuffers.begin(), reconciledBuffers.end(), request.target.get()) != reconciledBuffers.end())
+                            throw std::runtime_error("Conflicting physical buffer aliases in one GPU operation");
+                        reconciledBuffers.push_back(request.target.get());
+                        resolve(request);
+                    } else throw;
                 } catch (const TextureAliasReconciliationRequest &request) {
                     if constexpr (requires { resolve(request); })
                         resolve(request);

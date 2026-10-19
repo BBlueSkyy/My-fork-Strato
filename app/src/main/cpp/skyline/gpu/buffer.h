@@ -13,7 +13,7 @@
 #include "memory_manager.h"
 
 namespace skyline::gpu {
-    using GuestBuffer = span<u8>; //!< The CPU mapping for the guest buffer, multiple mappings for buffers aren't supported since overlaps cannot be reconciled
+    using GuestBuffer = span<u8>; //!< A physical CPU mapping; null data represents a sparse zero hole.
 
     class BufferView;
     class BufferManager;
@@ -48,6 +48,14 @@ namespace skyline::gpu {
         RecursiveSpinLock mutex; //!< Synchronizes any mutations to the buffer or its backing
         std::atomic<ContextTag> tag{}; //!< The tag associated with the last lock call
         std::optional<GuestBuffer> guest;
+        std::vector<GuestBuffer> guestMappings; //!< Ordered physical mappings; aggregates use `guest` only as their logical extent.
+        bool isAggregate{};
+        std::atomic<bool> aliasValid{}; //!< Physical mapping metadata is immutable; invalidation retires it atomically.
+        IntervalList<u8 *> aliasPendingWrites; //!< Resident writes awaiting alias reconciliation, including submitted cycles.
+        void ClearSparseHoles(bool clearBacking = false);
+        bool HasSparseHoles(vk::DeviceSize offset, vk::DeviceSize size) const;
+        bool HasRepeatedPhysicalMappings() const;
+        void TrackGuestUsage(IntervalList<u8 *> &intervals, vk::DeviceSize offset, vk::DeviceSize size);
         std::shared_ptr<FenceCycle> cycle{}; //!< A fence cycle for when any host operation mutating the buffer has completed, it must be waited on prior to any mutations to the backing
         size_t id;
         bool isDirect{}; //!< Indicates if a buffer is directly mapped from the guest
@@ -162,6 +170,7 @@ namespace skyline::gpu {
                              UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback = {});
 
         bool WriteImplStaged(span<u8> data, vk::DeviceSize offset, const std::function<void()> &gpuCopyCallback = {});
+        void WriteImmediateRepeated(span<u8> data, vk::DeviceSize offset);
 
         void ReadImplDirect(const std::function<void()> &flushHostCallback, span<u8> data, vk::DeviceSize offset);
 
@@ -202,6 +211,12 @@ namespace skyline::gpu {
          * @note The guest mappings will not be setup until SetupGuestMappings() is called
          */
         Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, GuestBuffer guest, size_t id, bool direct);
+
+        /** Staged fallback for a logical buffer whose physical mappings are disjoint. */
+        Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, const std::vector<GuestBuffer> &mappings, size_t id);
+
+        /** Visit only resident physical bytes intersecting a logical range. */
+        void VisitPhysicalRanges(vk::DeviceSize offset, vk::DeviceSize size, const std::function<void(GuestBuffer)> &visitor) const;
 
         /**
          * @brief Creates a host-only Buffer which isn't backed by any guest buffer

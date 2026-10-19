@@ -2,44 +2,68 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu/buffer_manager.h>
+#include <limits>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include "common.h"
 
 namespace skyline::gpu::interconnect {
-    void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn) {
-        // Ignore size for the mapping end check here as we don't support buffers split across multiple mappings so only the first one would be used anyway. It's also impossible for the mapping to have been remapped with a larger one since the original lookup because the we force the mapping to be reset after semaphores
-        if (address < blockMappingStartAddr || address >= blockMappingEndAddr) {
-            u64 blockOffset{};
-            std::tie(blockMapping, blockOffset) = ctx.channelCtx.asCtx->gmmu.LookupBlock(address);
-            if (!blockMapping.valid()) {
-                view = {};
-                blockMappingEndAddr = 0;
-                return;
-            }
-
-            blockMappingStartAddr = address - blockOffset;
-            blockMappingEndAddr = blockMappingStartAddr + blockMapping.size();
+    void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool /*splitMappingWarn*/) {
+        if (!size) {
+            PurgeCaches();
+            return;
         }
 
-        // Mapping from the start of the buffer view to the end of the block
-        auto fullMapping{blockMapping.subspan(address - blockMappingStartAddr)};
+        auto &gmmu{ctx.channelCtx.asCtx->gmmu};
+        const auto generation{gmmu.GetMappingGeneration()};
+        if (mappingAddressSpace != &gmmu || mappingGeneration != generation ||
+            address < blockMappingStartAddr || address >= blockMappingEndAddr) {
+            mappingAddressSpace = &gmmu;
+            mappingGeneration = generation;
+            u64 blockOffset{};
+            std::tie(blockMapping, blockOffset) = gmmu.LookupBlock(address);
+            blockMappingStartAddr = address - blockOffset;
+            blockMappingEndAddr = blockMappingStartAddr + blockMapping.size();
+            view = {};
+        }
 
-        if (splitMappingWarn && fullMapping.size() < size)
-            LOGW("Split buffer mappings are not supported");
-
-        // Mapping covering just the requested input view (or less in the case of split mappings)
-        auto viewMapping{fullMapping.first(std::min(fullMapping.size(), size))};
-
-        // First attempt to skip lookup by trying to reuse the previous view's underlying buffer
-        if (view)
-            if (view = view.GetBuffer()->TryGetView(viewMapping); view)
-                return;
-
-        // Otherwise perform a full lookup
-        view = ctx.gpu.buffer.FindOrCreate(viewMapping, ctx.executor.tag, [&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
+        const auto attachBuffer{[&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
             ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
-        });
+        }};
+        if (blockMapping.valid() && size <= blockMappingEndAddr - address) {
+            auto viewMapping{blockMapping.subspan(address - blockMappingStartAddr, size)};
+            if (view) {
+                auto previous{view.GetBuffer()->TryGetView(viewMapping)};
+                if (previous) {
+                    ctx.gpu.buffer.PrepareBufferAccess(*previous.GetBuffer(), false, previous.GetOffset(), size);
+                    view = previous;
+                    return;
+                }
+            }
+            view = ctx.gpu.buffer.FindOrCreate(viewMapping, ctx.executor.tag, attachBuffer);
+            return;
+        }
+
+        // Vulkan sparse binding is not universally available. Use a staged logical
+        // buffer with a zero-copy CPU mirror of each physical span instead. Include
+        // page padding so offsets retain the guest's Vulkan alignment guarantees.
+        const auto alignedAddress{util::AlignDown(address, static_cast<u64>(constant::PageSize))};
+        if (size > std::numeric_limits<u64>::max() - address ||
+            address + size > std::numeric_limits<u64>::max() - (constant::PageSize - 1))
+            throw exception("GPU buffer range overflows its address space");
+        const auto alignedEnd{util::AlignUp(address + size, static_cast<u64>(constant::PageSize))};
+        const auto translations{gmmu.TranslateMappings(alignedAddress, alignedEnd - alignedAddress)};
+        std::vector<span<u8>> mappings;
+        mappings.reserve(translations.size());
+        for (const auto &translation : translations) {
+            if (translation.kind == MemoryMappingKind::Unmapped) {
+                view = {};
+                return;
+            }
+            mappings.push_back(translation.memory);
+        }
+        view = ctx.gpu.buffer.FindOrCreateDisjoint(mappings, address - alignedAddress, size,
+                                                  ctx.executor.tag, attachBuffer);
     }
 
     void CachedMappedBufferView::PurgeCaches() {
@@ -48,6 +72,8 @@ namespace skyline::gpu::interconnect {
     }
 
     void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset, std::source_location location) {
+        if (!view || srcOffset > view.size || dstBuffer.size() > view.size - srcOffset)
+            throw exception("Constant buffer read exceeds its mapped view");
         ContextLock lock{executor.tag, view};
         view.Read(lock.IsFirstUsage(), [location, srcOffset, size = dstBuffer.size()] {
             // TODO: here we should trigger `Execute()`, however that doesn't currently work due to Read being called mid-draw and attached objects not handling this case

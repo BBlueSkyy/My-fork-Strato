@@ -17,6 +17,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
       private:
         dirty::BoundSubresource <EngineRegisters> engine;
 
+        const void *mappingAddressSpace{};
+        u64 mappingGeneration{};
+        u64 selectorAddress{};
+        size_t selectorCapacity{};
+        size_t mappedPrefixSize{};
+
       public:
         ConstantBufferSelectorState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine);
 

@@ -15,13 +15,55 @@ namespace skyline::gpu::interconnect {
     TexturePoolState::TexturePoolState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine) : engine{manager, dirtyHandle, engine} {}
 
     void TexturePoolState::Flush(InterconnectContext &ctx) {
-        auto mapping{ctx.channelCtx.asCtx->gmmu.LookupBlock(engine->texHeaderPool.offset)};
+        PurgeCaches();
+        auto &gmmu{ctx.channelCtx.asCtx->gmmu};
+        mappingAddressSpace = &gmmu;
+        mappingGeneration = gmmu.GetMappingGeneration();
+        const u64 address{engine->texHeaderPool.offset};
+        headerCount = static_cast<size_t>(engine->texHeaderPool.maximumIndex) + 1;
+        const size_t size{headerCount * sizeof(TextureImageControl)};
+        auto [mapping, offset]{gmmu.LookupBlock(address)};
+        if (mapping.valid() && size <= mapping.size() - offset) {
+            textureHeaders = mapping.subspan(offset, size).cast<TextureImageControl>();
+        }
+    }
 
-        textureHeaders = mapping.first.subspan(mapping.second).cast<TextureImageControl>().first(engine->texHeaderPool.maximumIndex + 1);
+    bool TexturePoolState::Refresh(InterconnectContext &ctx) {
+        auto &gmmu{ctx.channelCtx.asCtx->gmmu};
+        return mappingAddressSpace != &gmmu || mappingGeneration != gmmu.GetMappingGeneration();
+    }
+
+    TextureImageControl *TexturePoolState::GetHeader(InterconnectContext &ctx, u32 index) {
+        if (index >= headerCount)
+            return nullptr;
+        if (!textureHeaders.empty())
+            return &textureHeaders[index];
+
+        // A declared pool can have an unused unmapped tail or disjoint backing.
+        // Resolve only this descriptor; never read through a physical segment.
+        auto &gmmu{ctx.channelCtx.asCtx->gmmu};
+        const u64 address{u64{engine->texHeaderPool.offset} + static_cast<u64>(index) * sizeof(TextureImageControl)};
+        const auto translated{gmmu.TranslateMappings(address, sizeof(TextureImageControl))};
+        if (std::any_of(translated.begin(), translated.end(), [](const auto &mapping) {
+                return mapping.kind == MemoryMappingKind::Unmapped;
+            })) {
+            LOGW("Unmapped texture header in pool: 0x{:X}", address);
+            return nullptr;
+        }
+        if (translated.size() == 1 && translated.front().kind == MemoryMappingKind::Resident)
+            return reinterpret_cast<TextureImageControl *>(translated.front().memory.data());
+
+        // The bounded gather also implements zero reads for genuinely sparse
+        // descriptor bytes; it is needed only when no direct alias is possible.
+        splitHeader = gmmu.Read<TextureImageControl>(address);
+        return &splitHeader;
     }
 
     void TexturePoolState::PurgeCaches() {
         textureHeaders = span<TextureImageControl>{};
+        headerCount = 0;
+        mappingAddressSpace = nullptr;
+        mappingGeneration = 0;
     }
 
     Textures::Textures(DirtyManager &manager, const TexturePoolState::EngineRegisters &engine) : texturePool{manager, engine} {}
@@ -230,7 +272,7 @@ namespace skyline::gpu::interconnect {
         constexpr vk::ImageLayout NullImageInitialLayout{vk::ImageLayout::eUndefined};
         constexpr vk::ImageTiling NullImageTiling{vk::ImageTiling::eOptimal};
         constexpr vk::ImageCreateFlags NullImageFlags{};
-        constexpr vk::ImageUsageFlags NullImageUsage{vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled};
+        constexpr vk::ImageUsageFlags NullImageUsage{vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage};
 
         auto vkImage{ctx.gpu.memory.AllocateImage(
             {
@@ -260,29 +302,41 @@ namespace skyline::gpu::interconnect {
     }
 
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
-        if (textureHeaderCache.size() != textureHeaders.size()) {
-            textureHeaderCache.resize(textureHeaders.size());
+        auto &gmmu{ctx.channelCtx.asCtx->gmmu};
+        const auto generation{gmmu.GetMappingGeneration()};
+        if (mappingAddressSpace != &gmmu || mappingGeneration != generation) {
+            // A TIC describes GPU virtual addresses. Identical TIC bytes do not
+            // imply identical physical or sparse backing after a GMMU remap.
+            textureHeaderCache.clear();
+            textureHeaderStore.clear();
+            texturePool.MarkDirty(true);
+            mappingAddressSpace = &gmmu;
+            mappingGeneration = generation;
+        }
+        auto &pool{texturePool.UpdateGet(ctx)};
+        if (textureHeaderCache.size() != pool.headerCount) {
+            textureHeaderCache.resize(pool.headerCount);
             std::fill(textureHeaderCache.begin(), textureHeaderCache.end(), CacheEntry{});
-        } else if (textureHeaders.size() > index && textureHeaderCache[index].view) {
+        } else if (pool.headerCount > index && textureHeaderCache[index].view) {
             auto &cached{textureHeaderCache[index]};
             if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber)
                 return cached.view;
-
-            if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
-                cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
-                return cached.view;
-            }
         }
 
-        if (index >= textureHeaders.size()) {
+        auto header{pool.GetHeader(ctx, index)};
+        if (!header) {
             if (!nullTextureView)
                 nullTextureView = CreateNullTexture(ctx);
 
             return nullTextureView.get();
         }
 
-        TextureImageControl &textureHeader{textureHeaders[index]};
+        TextureImageControl &textureHeader{*header};
+        auto &cached{textureHeaderCache[index]};
+        if (cached.view && cached.tic == textureHeader && !cached.view->texture->replaced) {
+            cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
+            return cached.view;
+        }
         auto &texture{textureHeaderStore[textureHeader]};
 
         if (!texture || texture->texture->replaced) {
@@ -380,9 +434,8 @@ namespace skyline::gpu::interconnect {
                     guest.tileConfig.blockHeight >>= 1;
             }
 
-            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
-            guest.mappings.assign(mappings.begin(), mappings.end());
-            if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
+            guest.SetMappings(ctx.channelCtx.asCtx->gmmu, textureHeader.Iova());
+            if (!guest.MappingsValid()) {
                 LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
@@ -397,13 +450,15 @@ namespace skyline::gpu::interconnect {
     }
 
     Shader::TextureType Textures::GetTextureType(InterconnectContext &ctx, u32 index) {
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
-        if (index >= textureHeaders.size()) {
-            LOGW("Texture type requested for out-of-range TIC index {}", index);
+        auto &pool{texturePool.UpdateGet(ctx)};
+        auto header{pool.GetHeader(ctx, index)};
+        if (!header) {
+            if (index >= pool.headerCount)
+                LOGW("Texture type requested for out-of-range TIC index {}", index);
             return Shader::TextureType::Color2D;
         }
 
-        switch (textureHeaders[index].textureType) {
+        switch (header->textureType) {
             case TextureImageControl::TextureType::e1D:
                 return Shader::TextureType::Color1D;
             case TextureImageControl::TextureType::e1DArray:
@@ -423,17 +478,19 @@ namespace skyline::gpu::interconnect {
                 return Shader::TextureType::ColorArrayCube;
             }
 
-        throw exception("Invalid TIC texture type: {}", static_cast<u32>(textureHeaders[index].textureType));
+        throw exception("Invalid TIC texture type: {}", static_cast<u32>(header->textureType));
     }
 
     bool Textures::IsTexturePixelFormatInteger(InterconnectContext &ctx, u32 index) {
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
-        if (index >= textureHeaders.size()) {
-            LOGW("Texture pixel format requested for out-of-range TIC index {}", index);
+        auto &pool{texturePool.UpdateGet(ctx)};
+        auto header{pool.GetHeader(ctx, index)};
+        if (!header) {
+            if (index >= pool.headerCount)
+                LOGW("Texture pixel format requested for out-of-range TIC index {}", index);
             return false;
         }
 
-        const auto &textureHeader{textureHeaders[index]};
+        const auto &textureHeader{*header};
         const auto format{ConvertTicFormat(textureHeader.formatWord, textureHeader.isSrgb)};
         if (!format) {
             LOGW("Texture pixel format requested for unsupported TIC index {}", index);
@@ -466,11 +523,11 @@ namespace skyline::gpu::interconnect {
     }
 
     vk::raii::BufferView *Textures::GetTextureBufferView(InterconnectContext &ctx, u32 index, CachedMappedBufferView &cachedView) {
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
-        if (index >= textureHeaders.size())
+        auto header{texturePool.UpdateGet(ctx).GetHeader(ctx, index)};
+        if (!header)
             return nullptr;
 
-        TextureImageControl &textureHeader{textureHeaders[index]};
+        TextureImageControl &textureHeader{*header};
 
         auto format{ConvertTicFormat(textureHeader.formatWord, textureHeader.isSrgb)};
         if (!format) {
@@ -518,11 +575,11 @@ namespace skyline::gpu::interconnect {
     }
 
     vk::raii::BufferView *Textures::GetImageBufferView(InterconnectContext &ctx, u32 index, Shader::ImageFormat shaderFormat, CachedMappedBufferView &cachedView) {
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
-        if (index >= textureHeaders.size())
+        auto header{texturePool.UpdateGet(ctx).GetHeader(ctx, index)};
+        if (!header)
             return nullptr;
 
-        TextureImageControl &textureHeader{textureHeaders[index]};
+        TextureImageControl &textureHeader{*header};
 
         auto format{ConvertShaderImageFormat(shaderFormat)};
         if (!format) {

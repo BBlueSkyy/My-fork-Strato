@@ -216,6 +216,7 @@ namespace skyline::gpu::interconnect {
         std::vector<vk::ImageView> lastSubpassColorAttachments; //!< The set of color attachments used in the last subpass
         vk::ImageView lastSubpassDepthStencilAttachment{}; //!< The depth stencil attachment used in the last subpass
 
+        u64 mappingGeneration{}; //!< GMMU generation last seen at a pushbuffer boundary
         std::vector<std::function<void()>> flushCallbacks; //!< Set of persistent callbacks that will be called at the start of Execute in order to flush data required for recording
         std::vector<std::function<void()>> pipelineChangeCallbacks; //!< Set of persistent callbacks that will be called after any non-Maxwell 3D engine changes the active pipeline
         std::vector<std::function<void()>> subpassBoundaryCallbacks; //!< Called immediately before leaving the current subpass
@@ -415,6 +416,11 @@ namespace skyline::gpu::interconnect {
          */
         void Submit(std::function<void()> &&callback = {}, bool wait = false);
 
+        // Invalidate CPU-side translation/binding caches without resetting the
+        // allocator, hazard tracking, nodes or submission cycle.
+        void NotifyMemoryMappingChange(u64 generation);
+
+        void HandleTextureBackingPromotion(const BufferMappingReconciliationRequest &request);
         void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &request);
         void HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request);
 
