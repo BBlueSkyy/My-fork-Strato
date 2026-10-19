@@ -6,6 +6,7 @@
 package org.stratoemu.strato.applet.swkbd
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.DialogInterface
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
@@ -15,8 +16,10 @@ import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import androidx.core.widget.doOnTextChanged
 import androidx.fragment.app.DialogFragment
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -37,6 +40,8 @@ class SoftwareKeyboardDialog : DialogFragment() {
     private var terminalEventSent = false
     private var waitingForTextCheck = false
     private var suppressTextEvent = false
+    private var inlineImeFocusObserver : ViewTreeObserver? = null
+    private var inlineImeFocusListener : ViewTreeObserver.OnWindowFocusChangeListener? = null
 
     companion object {
         private const val argumentSessionId = "sessionId"
@@ -175,7 +180,64 @@ class SoftwareKeyboardDialog : DialogFragment() {
                 setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
             }
             binding.textInput.requestFocus()
+            if (inline)
+                requestInlineImeWhenFocused()
         }
+    }
+
+    private fun clearInlineImeFocusListener() {
+        val listener = inlineImeFocusListener
+        if (listener != null)
+            inlineImeFocusObserver?.takeIf { it.isAlive }?.removeOnWindowFocusChangeListener(listener)
+        inlineImeFocusListener = null
+        inlineImeFocusObserver = null
+    }
+
+    private fun requestInlineImeWhenFocused() {
+        val decorView = dialog?.window?.decorView ?: return
+        clearInlineImeFocusListener()
+
+        // SOFT_INPUT_STATE_ALWAYS_VISIBLE alone does not reliably open the IME
+        // when the dialog window is still waiting to receive focus.
+        fun showIme() {
+            decorView.post {
+                if (!isAdded || closedByFrontend || !::binding.isInitialized ||
+                    !decorView.hasWindowFocus() || !binding.textInput.isAttachedToWindow)
+                    return@post
+
+                val editor = binding.textInput
+                editor.requestFocus()
+                val inputMethodManager = requireContext().getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                inputMethodManager.restartInput(editor)
+                inputMethodManager.showSoftInput(editor, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }
+
+        if (decorView.hasWindowFocus()) {
+            showIme()
+            return
+        }
+
+        // One-shot listener: do not reopen the IME if the user dismisses it.
+        val observer = decorView.viewTreeObserver
+        val listener = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
+            if (hasFocus) {
+                clearInlineImeFocusListener()
+                showIme()
+            }
+        }
+        inlineImeFocusObserver = observer
+        inlineImeFocusListener = listener
+        observer.addOnWindowFocusChangeListener(listener)
+        if (decorView.hasWindowFocus()) {
+            clearInlineImeFocusListener()
+            showIme()
+        }
+    }
+
+    override fun onStop() {
+        clearInlineImeFocusListener()
+        super.onStop()
     }
 
     private fun submit() {
