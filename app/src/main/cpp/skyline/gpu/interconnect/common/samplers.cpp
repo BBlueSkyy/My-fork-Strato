@@ -33,6 +33,13 @@ namespace skyline::gpu::interconnect {
 
     void Samplers::Update(InterconnectContext &ctx, bool useTexHeaderBinding) {
         samplerPool.Update(ctx, useTexHeaderBinding);
+        const auto *currentPool{samplerPool.Get().texSamplers.data()};
+        // Index cache entries belong to the mapped pool, even when its size is
+        // unchanged. Keep the content-keyed store alive for recorded commands.
+        if (texSamplerCachePool != currentPool) {
+            std::fill(texSamplerCache.begin(), texSamplerCache.end(), nullptr);
+            texSamplerCachePool = currentPool;
+        }
     }
 
     void Samplers::MarkAllDirty() {
