@@ -42,6 +42,10 @@ with tempfile.TemporaryDirectory(prefix='strato-texture-components-') as tmp:
     elif baseline == 'ignore-stencil':
         textures = textures.replace('if (format->Aspect(firstComponent) == vk::ImageAspectFlagBits::eStencil)', 'if (false)')
     (tmp / 'components.inc').write_text('\n'.join(function(textures, sig) for sig in ('static texture::Format ConvertTicFormat(', 'static Shader::TextureComponentType GetTicComponentType(', 'Shader::TextureComponentType Textures::GetTextureComponentType(')))
+    (tmp / 'dynamic.inc').write_text('\n'.join(function(textures, sig) for sig in ('TextureView *Textures::GetDynamicTexture(', 'bool Textures::DynamicTextureSupportsLinear(', 'Shader::TextureComponentType Textures::GetDynamicTextureComponentType(')))
+    mapping_start = textures.index('            if (auto tracked{dynamicTextureMappings.find(textureHeader)};')
+    mapping_end = textures.index('            texture = ctx.gpu.texture.FindOrCreate', mapping_start)
+    (tmp / 'mapping.inc').write_text(textures[mapping_start:mapping_end])
     bundle_header = namespace((GPU / 'interconnect/common/pipeline_state_bundle.h').read_text())
     bundle_source = namespace((GPU / 'interconnect/common/pipeline_state_bundle.cpp').read_text())
     if baseline == 'collapse-bundle':

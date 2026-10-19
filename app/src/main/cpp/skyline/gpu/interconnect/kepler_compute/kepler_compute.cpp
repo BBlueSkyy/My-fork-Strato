@@ -38,12 +38,18 @@ namespace skyline::gpu::interconnect::kepler_compute {
         StateUpdateBuilder builder{*ctx.executor.allocator};
 
         constantBuffers.Update(ctx, qmd);
+        if (qmd.invalidateTextureHeaderCache) textures.MarkAllDirty();
+        if (qmd.invalidateTextureSamplerCache) samplers.MarkAllDirty();
         samplers.Update(ctx, qmd.samplerIndex == soc::gm20b::engine::kepler_compute::QMD::SamplerIndex::ViaHeaderIndex);
         auto *pipeline{pipelineState.Update(ctx, builder, textures, samplers, constantBuffers.boundConstantBuffers, qmd)};
 
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
         DescriptorUpdateInfo *descUpdateInfo{};
+        vk::DescriptorSet dynamicSet{};
         try {
+            // Prepare dynamic candidates first: static sampled bindings must
+            // capture the final GENERAL layout when they share an image.
+            dynamicSet = pipeline->SyncDynamicDescriptors(ctx, textures, samplers, srcStageMask, dstStageMask);
             descUpdateInfo = pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures, srcStageMask, dstStageMask,
                 {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth});
         } catch (...) {
@@ -73,10 +79,12 @@ namespace skyline::gpu::interconnect::kepler_compute {
             throw;
         }
         builder.SetPipeline(*pipeline->compiledPipeline.pipeline, vk::PipelineBindPoint::eCompute);
+        if (dynamicSet)
+            builder.BindCachedComputeDescriptors(*pipeline->compiledPipeline.pipelineLayout, 1, dynamicSet);
 
-        if (ctx.gpu.traits.supportsPushDescriptors) {
+        if (descUpdateInfo && ctx.gpu.traits.supportsPushDescriptors) {
             builder.SetDescriptorSetWithPush(descUpdateInfo);
-        } else {
+        } else if (descUpdateInfo) {
             auto set{std::make_shared<DescriptorAllocator::ActiveDescriptorSet>(ctx.gpu.descriptor.AllocateSet(descUpdateInfo->descriptorSetLayout))};
 
             builder.SetDescriptorSetWithUpdate(descUpdateInfo, set.get(), nullptr);
@@ -92,8 +100,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
             StateUpdater stateUpdater;
             std::array<u32, 3> dimensions;
             vk::PipelineStageFlags srcStageMask, dstStageMask;
+            bool dynamicDescriptors;
         };
-        auto *drawParams{ctx.executor.allocator->EmplaceUntracked<DrawParams>(DrawParams{stateUpdater, {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth}, srcStageMask, dstStageMask})};
+        auto *drawParams{ctx.executor.allocator->EmplaceUntracked<DrawParams>(DrawParams{stateUpdater, {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth}, srcStageMask, dstStageMask, pipeline->HasDynamicDescriptors()})};
 
 
         ctx.executor.AddCheckpoint("Before dispatch");
@@ -107,6 +116,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
                 }}, {}, {});
 
             commandBuffer.dispatch(drawParams->dimensions[0], drawParams->dimensions[1], drawParams->dimensions[2]);
+            if (drawParams->dynamicDescriptors)
+                commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {},
+                    {vk::MemoryBarrier{.srcAccessMask = vk::AccessFlagBits::eShaderWrite, .dstAccessMask = vk::AccessFlagBits::eHostRead}}, {}, {});
         });
         ctx.executor.AddCheckpoint("After dispatch");
 

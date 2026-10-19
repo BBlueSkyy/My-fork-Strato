@@ -45,6 +45,7 @@ struct Pipeline{
  int sourcePackedState,component;
  Pipeline(InterconnectContext&,Textures&t,Samplers&,ConstantBufferSet&,int p,const ShaderBinary&):sourcePackedState(p),component(t.component){}
  bool MatchesTextureTypes(InterconnectContext&,Textures&t,ConstantBufferSet&)const{return component==t.component;}
+ bool CanBindDynamicDescriptors(InterconnectContext&,Textures&,Samplers&)const{return true;}
 };
 struct PipelineManager{
  std::map<int,Variants<Pipeline>>map;

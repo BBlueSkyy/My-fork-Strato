@@ -10,6 +10,12 @@ initial view-cache lookup block. The TIC descriptor, format metadata, aspect
 selector and shader numeric enums also come from production. Only initializer
 spelling/order in the metadata table is adapted for GCC; values are preserved.
 
+The strict dynamic texture helpers and requested-mapping recording block also
+compile and execute against the actual TIC and native Vulkan types. Cases cover
+unsupported modes, mip ranges, device limits, format features, image usage,
+tail-page remaps, same-TIC aliases, retained queued views, snapshot numeric types,
+and restoration of the live pool span on success and exception.
+
 Coverage includes every supported UINT/SINT TIC family, float and sRGB,
 depth/stencil aspect selection, invalid/out-of-range entries, same-size pool
 rebinding within one channel sequence, and monotonic pool flush generations.

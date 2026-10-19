@@ -265,6 +265,16 @@ namespace skyline::gpu::interconnect {
     using SetDescriptorSetWithUpdateCmd = CmdHolder<SetDescriptorSetCmdImpl<false>>;
     using SetDescriptorSetWithPushCmd = CmdHolder<SetDescriptorSetCmdImpl<true>>;
 
+    struct BindCachedDescriptorSetCmdImpl {
+        vk::PipelineLayout layout;
+        vk::DescriptorSet set;
+        u32 index;
+        void Record(GPU &, vk::raii::CommandBuffer &commandBuffer) {
+            commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, layout, index, set, {});
+        }
+    };
+    using BindCachedDescriptorSetCmd = CmdHolder<BindCachedDescriptorSetCmdImpl>;
+
     struct SetPipelineCmdImpl {
         void Record(GPU &gpu, vk::raii::CommandBuffer &commandBuffer) {
             commandBuffer.bindPipeline(bindPoint, pipeline);
@@ -526,6 +536,10 @@ namespace skyline::gpu::interconnect {
                 {
                     .updateInfo = updateInfo,
                 });
+        }
+
+        void BindCachedComputeDescriptors(vk::PipelineLayout layout, u32 index, vk::DescriptorSet set) {
+            AppendCmd<BindCachedDescriptorSetCmd>({.layout = layout, .set = set, .index = index});
         }
 
         void SetRenderArea(vk::PipelineLayout pipelineLayout, const std::array<f32, 4> &renderArea) {

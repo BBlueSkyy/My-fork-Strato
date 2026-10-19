@@ -25,10 +25,12 @@ namespace skyline::gpu::interconnect {
       public:
         span<TextureImageControl> textureHeaders;
         u64 bindingGeneration{}; //!< Changes whenever the TIC pool binding is refreshed
+        std::vector<TextureImageControl> dynamicHeaders;
 
         TexturePoolState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine);
 
         void Flush(InterconnectContext &ctx);
+        span<const TextureImageControl> ReadDynamicHeaders(InterconnectContext &ctx);
 
         void PurgeCaches();
     };
@@ -69,6 +71,13 @@ namespace skyline::gpu::interconnect {
             u64 bindingGeneration;
         };
         std::vector<CacheEntry> textureHeaderCache;
+        struct DynamicMapping {
+            size_t size{};
+            GuestTexture::Mappings mappings;
+        };
+        // Requested mappings, rather than the (possibly larger) aliased backing.
+        tsl::robin_map<TextureImageControl, DynamicMapping, util::ObjectHash<TextureImageControl>> dynamicTextureMappings;
+        tsl::robin_map<vk::Format, vk::FormatFeatureFlags> dynamicFormatFeatures;
 
       public:
         Textures(DirtyManager &manager, const TexturePoolState::EngineRegisters &engine);
@@ -76,6 +85,11 @@ namespace skyline::gpu::interconnect {
         void MarkAllDirty();
 
         u64 GetBindingGeneration(InterconnectContext &ctx);
+
+        span<const TextureImageControl> GetPoolHeaders(InterconnectContext &ctx);
+        TextureView *GetDynamicTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType);
+        Shader::TextureComponentType GetDynamicTextureComponentType(u32 index);
+        bool DynamicTextureSupportsLinear(InterconnectContext &ctx, u32 index);
 
         TextureView *GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType);
 

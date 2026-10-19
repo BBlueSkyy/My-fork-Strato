@@ -245,7 +245,8 @@ namespace skyline::gpu {
             vk::PhysicalDeviceConditionalRenderingFeaturesEXT,
             vk::PhysicalDeviceIndexTypeUint8FeaturesEXT,
             vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
-            vk::PhysicalDeviceRobustness2FeaturesEXT>()};
+            vk::PhysicalDeviceRobustness2FeaturesEXT,
+            vk::PhysicalDeviceDescriptorIndexingFeatures>()};
         decltype(deviceFeatures2) enabledFeatures2{}; // We only want to enable features we required due to potential overhead from unused features
 
         #define FEAT_REQ(structName, feature)                                            \
@@ -283,7 +284,7 @@ namespace skyline::gpu {
             vk::PhysicalDeviceTransformFeedbackPropertiesEXT,
             vk::PhysicalDeviceSubgroupProperties>()};
 
-        traits = TraitManager{deviceFeatures2, enabledFeatures2, deviceExtensions, enabledExtensions, deviceProperties2, physicalDevice};
+        traits = TraitManager{deviceFeatures2, enabledFeatures2, deviceExtensions, enabledExtensions, deviceProperties2, physicalDevice, VkApiVersion};
         // Keep the extension ABI structs alive until vkCreateDevice consumes
         // their chain. The pinned Vulkan-Hpp predates these two extensions.
         feedback::LayoutFeatures feedbackLayout;

@@ -265,6 +265,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/gpu/interconnect/common/common.cpp
         ${source_DIR}/skyline/gpu/interconnect/common/samplers.cpp
         ${source_DIR}/skyline/gpu/interconnect/common/textures.cpp
+        ${source_DIR}/skyline/gpu/interconnect/common/dynamic_descriptors.cpp
         ${source_DIR}/skyline/gpu/interconnect/common/shader_cache.cpp
         ${source_DIR}/skyline/gpu/interconnect/common/pipeline_state_bundle.cpp
         ${source_DIR}/skyline/gpu/interconnect/common/file_pipeline_state_accessor.cpp

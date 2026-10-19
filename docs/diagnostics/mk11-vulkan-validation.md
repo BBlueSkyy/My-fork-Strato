@@ -1,6 +1,15 @@
 # MK11 Vulkan validation follow-up
 
-## Latest result: memory-loaded bindless handle provenance (verified partial fix)
+## Latest integration: GPU-selected SSBO texture handles
+
+The compute dynamic-descriptor integration now supersedes the rejection-only
+result below. See [the implementation and validation report](dynamic-bindless.md)
+for the supported operations, real Vulkan execution tests, feature requirements,
+resource lifetime and remaining limitations. Prior evidence and fixes remain
+recorded below; successful menu/gameplay and performance on the Moto G100 still
+require device testing.
+
+## Earlier result: memory-loaded bindless handle provenance (verified partial fix)
 
 The new evidence is `mk11_shader_evidencias.zip`, containing the original
 5,400-byte Maxwell and complete IR snapshots for compute shader

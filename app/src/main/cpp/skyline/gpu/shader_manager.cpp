@@ -127,6 +127,7 @@ namespace skyline::gpu {
             .supported_spirv = traits.supportsSpirv14 ? 0x00010400U : 0x00010000U,
             .unified_descriptor_binding = true,
             .support_descriptor_aliasing = true,
+            .support_dynamic_texture_handles = traits.supportsDynamicTextureHandles,
             .support_int8 = traits.supportsInt8,
             .support_int16 = traits.supportsInt16,
             .support_storage8 = traits.supportsStorage8,
@@ -308,6 +309,7 @@ namespace skyline::gpu {
         ShaderManager::GetTextureComponentType getTextureComponentType;
         ShaderManager::GetTextureCompareFunc getTextureCompareFunc;
         bool diagnosticTexturePass{};
+        bool supportsDynamicTextureHandles{};
     
       public:
         ComputeEnvironment(span<u8> pBinary,
@@ -318,7 +320,7 @@ namespace skyline::gpu {
                            ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType,
                            ShaderManager::GetTextureComponentType getTextureComponentType,
                            ShaderManager::GetTextureCompareFunc getTextureCompareFunc,
-                           bool traceTexturePass)
+                           bool traceTexturePass, bool dynamicTextureHandles)
             : binary{pBinary},
               baseOffset{baseOffset},
               textureBufferIndex{textureBufferIndex},
@@ -329,10 +331,15 @@ namespace skyline::gpu {
               getTextureType{std::move(getTextureType)},
               getTextureComponentType{std::move(getTextureComponentType)},
               getTextureCompareFunc{std::move(getTextureCompareFunc)},
-              diagnosticTexturePass{traceTexturePass} {
+              diagnosticTexturePass{traceTexturePass},
+              supportsDynamicTextureHandles{dynamicTextureHandles} {
             stage = Shader::Stage::Compute;
             start_address = baseOffset;
             is_propietary_driver = textureBufferIndex == 2;
+        }
+
+        [[nodiscard]] bool SupportsDynamicTextureHandles() const final {
+            return supportsDynamicTextureHandles;
         }
 
         [[nodiscard]] bool WantsTexturePassDiagnostic() const final {
@@ -527,7 +534,7 @@ namespace skyline::gpu {
             }
         }
 
-        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, getTextureComponentType, getTextureCompareFunc, traceTarget};
+        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, getTextureComponentType, getTextureCompareFunc, traceTarget, gpu.traits.supportsDynamicTextureHandles};
         Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset)}};
         return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
     }

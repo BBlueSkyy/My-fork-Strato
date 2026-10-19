@@ -68,16 +68,31 @@ namespace skyline::gpu::interconnect::kepler_compute {
     static Pipeline::CompiledPipeline MakeCompiledPipeline(InterconnectContext &ctx,
                                                                                const PackedPipelineState &packedState,
                                                                                const Pipeline::ShaderStage &shaderStage,
-                                                                               span<vk::DescriptorSetLayoutBinding> layoutBindings) {
+                                                                               span<vk::DescriptorSetLayoutBinding> layoutBindings,
+                                                                               DynamicDescriptors *dynamicDescriptors) {
+        if (dynamicDescriptors) {
+            u32 sampled{}, samplers{}, resources{}, storage{};
+            for (const auto &binding : layoutBindings) {
+                resources += binding.descriptorCount;
+                if (binding.descriptorType == vk::DescriptorType::eCombinedImageSampler || binding.descriptorType == vk::DescriptorType::eSampledImage || binding.descriptorType == vk::DescriptorType::eUniformTexelBuffer)
+                    sampled += binding.descriptorCount;
+                if (binding.descriptorType == vk::DescriptorType::eCombinedImageSampler || binding.descriptorType == vk::DescriptorType::eSampler)
+                    samplers += binding.descriptorCount;
+                if (binding.descriptorType == vk::DescriptorType::eStorageBuffer)
+                    storage += binding.descriptorCount;
+            }
+            dynamicDescriptors->ValidateLimits(ctx, sampled, samplers, resources, storage);
+        }
         vk::raii::DescriptorSetLayout descriptorSetLayout{ctx.gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
             .flags = vk::DescriptorSetLayoutCreateFlags{ctx.gpu.traits.supportsPushDescriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR : vk::DescriptorSetLayoutCreateFlags{}},
             .pBindings = layoutBindings.data(),
             .bindingCount = static_cast<u32>(layoutBindings.size()),
         }};
 
+        const std::array layouts{*descriptorSetLayout, dynamicDescriptors ? dynamicDescriptors->Layout() : vk::DescriptorSetLayout{}};
         vk::raii::PipelineLayout pipelineLayout{ctx.gpu.vkDevice, vk::PipelineLayoutCreateInfo{
-            .pSetLayouts = &*descriptorSetLayout,
-            .setLayoutCount = 1,
+            .pSetLayouts = layouts.data(),
+            .setLayoutCount = dynamicDescriptors ? 2U : 1U,
         }};
 
         vk::PipelineShaderStageCreateInfo shaderStageInfo{
@@ -107,7 +122,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
     Pipeline::Pipeline(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary)
         : shaderStage{MakePipelineShader(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)},
           descriptorInfo{MakePipelineDescriptorInfo(shaderStage)},
-          compiledPipeline{MakeCompiledPipeline(ctx, packedState, shaderStage, descriptorInfo.descriptorSetLayoutBindings)},
+          dynamicDescriptors{shaderStage.info.dynamic_textures.empty() ? nullptr : std::make_unique<DynamicDescriptors>(ctx, textures, samplers, shaderStage.info.dynamic_textures)},
+          compiledPipeline{MakeCompiledPipeline(ctx, packedState, shaderStage, descriptorInfo.descriptorSetLayoutBindings, dynamicDescriptors.get())},
           sourcePackedState{packedState} {
         size_t storageBufferCount{};
         for (const auto &desc : shaderStage.info.storage_buffers_descriptors)

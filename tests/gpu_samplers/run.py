@@ -14,6 +14,8 @@ with tempfile.TemporaryDirectory(prefix="strato-samplers-") as directory:
         (GPU / "tsc.h", "tsc.inc", "namespace skyline::gpu::interconnect"),
         (GPU / "samplers.h", "samplers_header.inc", "namespace skyline::gpu::interconnect"),
         (GPU / "samplers.cpp", "samplers_source.inc", "namespace skyline::gpu::interconnect"),
+        (GPU / "dynamic_pool.h", "dynamic_pool.inc", "namespace skyline::gpu::interconnect"),
+        (ROOT / "app/src/main/cpp/skyline/common/interval_list.h", "intervals.inc", "namespace skyline"),
     ):
         text = source.read_text()
         # GCC lacks Clang's nested member designator extension. Change only

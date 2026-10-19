@@ -9,6 +9,8 @@
 #include <functional>
 #include <iostream>
 #include <numeric>
+#include <memory>
+#include <unordered_map>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -48,32 +50,59 @@ namespace util { template<class T, class U> constexpr T BitCast(const U &u) { re
 #include "tic.inc"
 #include "bundle.inc"
 namespace skyline::gpu::interconnect {
-struct TextureView { struct Texture { bool replaced{}; } *texture; };
+struct TextureView { struct Texture { bool replaced{}; vk::SampleCountFlagBits sampleCount=vk::SampleCountFlagBits::e1; } *texture; vk::ImageUsageFlags usage=vk::ImageUsageFlagBits::eSampled; vk::ImageUsageFlags GetUsage(){return usage;} };
 struct AddressSpace {
     struct Gmmu {
         span<u8> bytes;
         std::pair<span<u8>, size_t> LookupBlock(u64 offset) { return {bytes, offset}; }
+        struct Mapping { u8 *pointer; size_t length; bool valid()const{return pointer;} bool empty()const{return !length;} u8 *data()const{return pointer;} size_t size()const{return length;} };
+        std::vector<Mapping> dynamicMappings;
+        auto TranslateRange(u64,size_t requested) { return dynamicMappings.empty()?std::vector<Mapping>{{bytes.data(),requested}}:dynamicMappings; }
     } gmmu;
 };
 struct InterconnectContext {
     struct Channel { u64 channelSequenceNumber{}; AddressSpace *asCtx{}; } channelCtx;
+    struct { struct { vk::PhysicalDeviceLimits dynamicDescriptorLimits{.maxImageDimension2D=4096}; } traits;
+        struct Physical { vk::FormatFeatureFlags features=vk::FormatFeatureFlagBits::eSampledImage|vk::FormatFeatureFlagBits::eSampledImageFilterLinear; unsigned queries{}; vk::FormatProperties getFormatProperties(vk::Format){++queries;return {.optimalTilingFeatures=features};} } vkPhysicalDevice;
+    } gpu;
+    struct { std::vector<std::shared_ptr<void>> dependencies; void AttachDependency(const std::shared_ptr<void> &resource){dependencies.push_back(resource);} } executor;
 };
 struct TexturePoolState {
-    struct Registers { struct HeaderPool { u64 offset{}; u32 maximumIndex{}; } texHeaderPool; } *engine;
+    struct Registers { struct HeaderPool { u64 offset{}; u32 maximumIndex{}; } texHeaderPool; };
     span<TextureImageControl> textureHeaders;
+    Registers *engine{};
     u64 bindingGeneration{};
     void Flush(InterconnectContext &ctx);
-};
-struct Pool {
-    span<TextureImageControl> textureHeaders;
-    u64 bindingGeneration{1};
     unsigned reads{};
-    Pool &UpdateGet(InterconnectContext &) { ++reads; return *this; }
+    TexturePoolState &UpdateGet(InterconnectContext &) { ++reads; return *this; }
+    std::vector<TextureImageControl> dynamicHeaders;
+    TexturePoolState &Get(){return *this;}
 };
 struct Textures {
-    Pool texturePool;
+    TexturePoolState texturePool;
     struct CacheEntry { TextureImageControl tic; TextureView *view; u64 sequenceNumber; u64 bindingGeneration; };
     std::vector<CacheEntry> textureHeaderCache;
+    struct RawHash { size_t operator()(const TextureImageControl &tic)const{const auto*p=reinterpret_cast<const u8*>(&tic);size_t hash{};for(size_t i{};i<sizeof(tic);++i)hash=hash*31+p[i];return hash;} };
+    struct DynamicMapping { size_t size{}; std::vector<AddressSpace::Gmmu::Mapping> mappings; };
+    std::unordered_map<TextureImageControl,DynamicMapping,RawHash> dynamicTextureMappings;
+    std::unordered_map<TextureImageControl,std::shared_ptr<TextureView>,RawHash> textureHeaderStore;
+    std::unordered_map<vk::Format,vk::FormatFeatureFlags> dynamicFormatFeatures;
+    std::shared_ptr<TextureView> nullTextureView;
+    TextureView *resolvedView{};
+    unsigned dynamicLookups{};
+    bool throwLookup{};
+    TextureView *GetTexture(InterconnectContext &ctx,u32 index,Shader::TextureType) {
+        ++dynamicLookups;
+        if(throwLookup) throw std::runtime_error("texture creation failed");
+        const auto &textureHeader=texturePool.Get().dynamicHeaders.at(index);
+        struct Guest { size_t size; std::vector<AddressSpace::Gmmu::Mapping> mappings; size_t GetSize(){return size;} } guest{16,ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(),16)};
+#include "mapping.inc"
+        if(index<textureHeaderCache.size()) textureHeaderCache[index]={textureHeader,resolvedView,ctx.channelCtx.channelSequenceNumber,texturePool.bindingGeneration};
+        return resolvedView;
+    }
+    TextureView *GetDynamicTexture(InterconnectContext&,u32,Shader::TextureType);
+    bool DynamicTextureSupportsLinear(InterconnectContext&,u32);
+    Shader::TextureComponentType GetDynamicTextureComponentType(u32);
     Shader::TextureComponentType GetTextureComponentType(InterconnectContext &ctx, u32 index);
     u64 GetBindingGeneration(InterconnectContext &ctx);
     TextureView *GetCached(InterconnectContext &ctx, u32 index) {
@@ -82,6 +111,7 @@ struct Textures {
     }
 };
 #include "components.inc"
+#include "dynamic.inc"
 #include "pool.inc"
 }
 namespace skyline::gpu::interconnect::maxwell3d {
@@ -110,6 +140,49 @@ TextureImageControl tic(TextureImageControl::ImageFormat format, TextureImageCon
         .componentB = component, .componentA = component, .swizzleX = TextureImageControl::ImageSwizzle::R};
     return result;
 }
+void testDynamicTextureBoundary() {
+    using TIC=TextureImageControl;
+    auto valid=tic(TIC::ImageFormat::R8,TIC::ImageComponent::Uint);
+    valid.addressLow=1;valid.textureType=TIC::TextureType::e2D;valid.headerType=TIC::HeaderType::Pitch;valid.widthMinusOne=7;valid.heightMinusOne=7;
+    std::array<u8,32> memory{}; AddressSpace as{{span<u8>{memory},{{memory.data(),8},{memory.data()+8,8}}}};
+    InterconnectContext ctx{{0,&as}};
+    TextureView::Texture backing;TextureView view{&backing};
+    Textures textures;textures.resolvedView=&view;textures.textureHeaderCache.resize(2);
+    auto resolve=[&](TIC header){textures.texturePool.dynamicHeaders={header,header};return textures.GetDynamicTexture(ctx,0,Shader::TextureType::Color2D);};
+    std::array<TIC,2> live{tic(TIC::ImageFormat::R8,TIC::ImageComponent::Sint),valid};
+    textures.texturePool.textureHeaders=span<TIC>{live};
+    check(resolve(valid)==&view,"valid dynamic texture rejected");
+    check(textures.texturePool.textureHeaders.data()==live.data(),"dynamic lookup replaced live static pool span");
+    check(textures.GetDynamicTextureComponentType(0)==Type::Uint&&textures.GetTextureComponentType(ctx,0)==Type::Sint,"dynamic and static numeric queries share stale metadata");
+    check(!textures.GetCached(ctx,0),"dynamic lookup left snapshot view in live static fast cache");
+    textures.throwLookup=true;try{resolve(valid);}catch(const std::runtime_error&){}textures.throwLookup=false;
+    check(textures.texturePool.textureHeaders.data()==live.data(),"failed dynamic lookup did not restore live pool span");
+    check(textures.dynamicTextureMappings.at(valid).size==16&&textures.dynamicTextureMappings.at(valid).mappings.size()==2,"full requested guest mappings not recorded");
+    check(textures.DynamicTextureSupportsLinear(ctx,0),"linear feature lost");check(ctx.gpu.vkPhysicalDevice.queries==1,"format features not cached");
+    auto previous=std::make_shared<TextureView>(TextureView{&backing});std::weak_ptr<TextureView> retained=previous;
+    textures.textureHeaderStore[valid]=previous;
+    textures.textureHeaderCache[1]={valid,previous.get(),0,0};previous.reset();
+    check(resolve(valid)==&view&&textures.textureHeaderStore.contains(valid),"unchanged mapping erased texture store");
+    as.gmmu.dynamicMappings[1].pointer=memory.data()+16;
+    check(resolve(valid)==&view&&!textures.textureHeaderStore.contains(valid),"tail mapping remap reused old texture view");
+    check(!textures.textureHeaderCache[1].view,"same-TIC alias retained dangling view after remap");
+    check(!retained.expired(),"remap released image view used by queued commands");ctx.executor.dependencies.clear();check(retained.expired(),"retired remap view leaked");
+    as.gmmu.dynamicMappings[1].pointer=nullptr;check(!resolve(valid),"unmapped dynamic image tail accepted");as.gmmu.dynamicMappings[1].pointer=memory.data()+8;
+    auto invalid=valid;invalid.viewConfig.msaaMode=static_cast<TIC::MsaaMode>(1);check(!resolve(invalid),"multisample TIC accepted");
+    invalid=valid;invalid.isSparse=true;check(!resolve(invalid),"sparse TIC accepted");
+    invalid=valid;invalid.depthMinusOne=1;check(!resolve(invalid),"array/depth TIC accepted");
+    invalid=valid;invalid.viewLayerBase_0_2=1;check(!resolve(invalid),"nonzero base layer accepted");
+    invalid=valid;invalid.widthMinusOne=4096;check(!resolve(invalid),"device image dimension limit ignored");
+    invalid=valid;invalid.mipMaxLevels=4;check(!resolve(invalid),"mip count exceeds extent");
+    invalid=valid;invalid.viewConfig.mipMinLevel=2;invalid.viewConfig.mipMaxLevel=1;check(!resolve(invalid),"inverted mip view accepted");
+    invalid=valid;invalid.viewConfig.mipMaxLevel=1;check(!resolve(invalid),"mip view exceeds backing count");
+    invalid=valid;invalid.formatWord.swizzleX=static_cast<TIC::ImageSwizzle>(1);check(!resolve(invalid),"constant-one swizzle accepted");
+    textures.dynamicFormatFeatures.clear();ctx.gpu.vkPhysicalDevice.features={};check(!resolve(valid),"unsupported sampled format accepted");
+    textures.dynamicFormatFeatures.clear();ctx.gpu.vkPhysicalDevice.features=vk::FormatFeatureFlagBits::eSampledImage;
+    check(resolve(valid)==&view&&!textures.DynamicTextureSupportsLinear(ctx,0),"nonlinear sampled format rejected or linear feature invented");
+    view.usage={};check(!resolve(valid),"texture missing sampled usage accepted");view.usage=vk::ImageUsageFlagBits::eSampled;
+    backing.sampleCount=vk::SampleCountFlagBits::e2;check(!resolve(valid),"multisampled backing accepted");
+}
 int main(int argc, char **argv) {
     try {
         using F = TextureImageControl::ImageFormat;
@@ -135,11 +208,11 @@ int main(int argc, char **argv) {
         depthFirst.formatWord.swizzleX = S::G;
         headers.push_back(depthFirst);
         headers.push_back({});
-        Textures textures{.texturePool = {headers}};
+        Textures textures{.texturePool = {.textureHeaders=headers,.bindingGeneration=1}};
         AddressSpace as{{span<u8>{reinterpret_cast<u8 *>(headers.data()), headers.size() * sizeof(TextureImageControl)}}};
         InterconnectContext ctx{{0, &as}};
         TexturePoolState::Registers registers{{0, 0}};
-        TexturePoolState pool{&registers};
+        TexturePoolState pool{.engine=&registers};
         pool.Flush(ctx);
         check(pool.bindingGeneration == 1 && pool.textureHeaders.data() == headers.data(), "initial pool flush did not expose generation");
         registers.texHeaderPool.offset = sizeof(TextureImageControl);
@@ -196,6 +269,7 @@ int main(int argc, char **argv) {
         bool missing{};
         try { bundle.LookupTextureComponentType(1); } catch (const std::runtime_error &) { missing = true; }
         check(missing, "reset retained numeric component type");
-        std::cout << "PASS production TIC signedness, stencil aspects, pool cache refresh and numeric bundle round-trip\n";
+        testDynamicTextureBoundary();
+        std::cout << "PASS production TIC signedness, stencil aspects, pool cache refresh, strict dynamic textures/remaps and numeric bundle round-trip\n";
     } catch (const std::exception &e) { std::cerr << "FAIL " << e.what() << '\n'; return 1; }
 }
