@@ -1,5 +1,65 @@
 # MK11 Vulkan validation follow-up
 
+## Latest result: memory-loaded bindless handle provenance (verified partial fix)
+
+The new evidence is `mk11_shader_evidencias.zip`, containing the original
+5,400-byte Maxwell and complete IR snapshots for compute shader
+`0x55736CD732068324`. It demonstrates a compiler value-provenance error:
+`LoadStorage32(0, address - aligned_cbuf_base) | CBUF6[0]` was reconstructed as
+`(CBUF0[0x260] & 0xfffffffc) | CBUF6[0]`. The SSBO address was mistaken for
+the loaded value. The full SSA chain includes identities %142/%212/%219, not
+a direct CBUF handle. Original Maxwell independently confirms LDG.E.32 into R8,
+followed by OR with CBUF6 and TEX.B consuming R8.
+
+Compiler #9 commit `6f57053773f050a15e6345d1ed34a12801ff5957` replaces dependency BFS with explicit
+value transformations and rejects unmodelled provenance. CBUF masks, shifts,
+split handles and bounded CBUF arrays remain; selected CBUF-pair lanes retain
+the correct word offset. Invalid OR branches cannot be silently discarded.
+Collection rejects before texture-type/descriptor lookup or texture IR rewriting.
+Legitimate static CBUF1 mask reads on valid sibling expressions remain permitted;
+no CPU SSBO readback is added.
+
+**This is a partial correctness fix, not dynamic SSBO-handle support.** The
+captured MK11 shader now reports unsupported handle provenance during
+translation (the full host replay first encounters a Phi in post-order; the
+focused captured-sample regression rejects LoadStorage32). It cannot execute correctly with Strato's current CBUF-only
+descriptor metadata and CPU binding path. This APK is not expected to bypass
+that missing feature or establish menu/gameplay support.
+
+A complete implementation requires GPU-side TIC/TSC indexing, typed separate
+image/sampler tables, real descriptor-indexing feature/limit checks, and
+resource residency, barriers and lifetime management. The existing small CBUF
+arrays do not provide that architecture. Enabling an extension alone or reading
+the SSBO from the CPU would not implement it correctly. No new Vulkan feature,
+sampler replacement, pool-index substitution, cache purge or synchronization
+was introduced.
+
+See the companion
+[provenance report](https://github.com/BBlueSkyy/shader-compiler/blob/6f57053773f050a15e6345d1ed34a12801ff5957/tests/handle_tracking/PROVENANCE.md)
+for instruction offsets, SSA, Eden/Ryujinx comparison and the remaining design
+requirements. The earlier report below describes previous stages of #365;
+its former uncertainty about provenance is superseded by this captured case.
+The observed numeric example produces TSC 2029, not a one-to-one reconstruction
+of the earlier 1772/2993 handles.
+
+Validation: five compiler CTests pass with Clang and the exact pinned Strato
+dependencies; 929 SPIR-V modules validate, including 57 modules emitted after the
+real TexturePass. Memory/atomic/alias/variable-offset negative controls reject;
+static descriptors and the 256-access deduplication control remain intact.
+The complete host compiler builds. A replay of the original Maxwell reproduces
+the entire pre-pass SSA after normalizing host pointer prefixes; the old pass
+accepts the fabricated 0x7ed15200 handle and the corrected pass rejects before
+any texture descriptor query. Strato sampler, bindless-binding and compact
+descriptor suites pass. Device rendering and performance remain unverified.
+
+Only the compiler gitlink and this report change on Strato. Scheduler #362,
+Strato #363, earlier #365 fixes and the targeted diagnostic captures are
+preserved. The existing workflow runs host gates before one ARM64
+`:app:assembleDevReldebug` APK, retains Gradle/CCache, and uploads
+`strato-pr365-reldebug.apk`. No clean, extra APK variant, merge or Actions
+monitoring is requested.
+
+
 ## Baseline and evidence
 
 This branch depends on Strato #363, `5bf1a37572c531b7a3213b749b97113907ae6e60`.
