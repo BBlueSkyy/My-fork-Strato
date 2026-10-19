@@ -4,6 +4,7 @@
 #pragma once
 
 #include <functional>
+#include <unordered_set>
 #include <tsl/robin_map.h>
 #include <shader_compiler/shader_info.h>
 #include <gpu/texture/texture.h>
@@ -55,6 +56,10 @@ namespace skyline::gpu::interconnect {
 
         std::shared_ptr<TextureView> nullTextureView{};
         dirty::ManualDirtyState<TexturePoolState> texturePool;
+
+        // Diagnostic-only, bounded by MaxLoggedUnmappedTextureAddresses in GetTexture.
+        std::unordered_set<u64> loggedUnmappedTextureAddresses;
+        bool unmappedTextureLogLimitReached{};
 
         tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
         tsl::robin_map<TexelBufferViewKey, std::unique_ptr<vk::raii::BufferView>, TexelBufferViewKeyHash> texelBufferViewStore;
