@@ -14,7 +14,7 @@ int main() {
     static_assert(IsWideTextStripGeometry(1664, 96));
     static_assert(IsWideTextStripGeometry(768, 96));
     static_assert(IsWideTextStripGeometry(704, 96));
-    static_assert(UiFrameCapture::MaxPostSecondTextBytes >=
+    static_assert(UiFrameCapture::MaxPostFourthTextBytes >=
                   24ULL * 1600 * 900 * 4);
     static_assert(!IsWideTextStripGeometry(1024, 1024));
     static_assert(!IsWideTextStripGeometry(224, 64));
@@ -82,25 +82,28 @@ int main() {
         capture.CompleteUiCompositorCycle(0xA100);
     }
     assert(!capture.ClaimUiBeforeText(0xA100, 2822400)); // budget exhausted
-    // Capture after the second observed text consumer of each completed
-    // composition cycle, regardless of where Maxwell splits submissions.
-    assert(!capture.ClaimPostSecondText(0, 2822400));
-    assert(!capture.ClaimPostSecondText(0xA100, 2822400));
-    assert(capture.ClaimPostSecondText(0xA100, 2822400) == 0);
-    assert(!capture.ClaimPostSecondText(0xA100, 2822400)); // third draw ignored
-    capture.CompleteUiCompositorCycle(0xA100); // actual reverse Fermi boundary
-    assert(!capture.ClaimPostSecondText(0xA100, 2822400));
-    assert(capture.ClaimPostSecondText(0xA100, 2822400) == 1);
-    assert(!capture.ClaimPostSecondText(0xA200, 2822400));
-    assert(capture.ClaimPostSecondText(0xA200, 2822400) == 2);
-    for (std::uint32_t n{3}; n < UiFrameCapture::MaxPostSecondTextSnapshots; ++n) {
+    // Only the fourth actual text consumer may allocate a snapshot.
+    // The 0->1 re-arm after the reverse Fermi boundary is exercised here.
+    assert(!capture.ClaimPostFourthText(0, 2822400));
+    auto probeFourth = [&](std::uintptr_t target, std::uint32_t expect) {
+        assert(!capture.ClaimPostFourthText(target, 2822400)); // draw 1
+        assert(!capture.ClaimPostFourthText(target, 2822400)); // draw 2
+        assert(!capture.ClaimPostFourthText(target, 2822400)); // draw 3
+        assert(capture.ClaimPostFourthText(target, 2822400) == expect); // draw 4
+        assert(!capture.ClaimPostFourthText(target, 2822400)); // draw 5
+        assert(!capture.ClaimPostFourthText(target, 2822400)); // draw 6
+    };
+    probeFourth(0xA100, 0);
+    capture.CompleteUiCompositorCycle(0xA100);
+    probeFourth(0xA100, 1);
+    probeFourth(0xA200, 2);
+    for (std::uint32_t n{3}; n < UiFrameCapture::MaxPostFourthTextSnapshots; ++n) {
         capture.CompleteUiCompositorCycle(0xA100);
-        assert(!capture.ClaimPostSecondText(0xA100, 2822400));
-        assert(capture.ClaimPostSecondText(0xA100, 2822400) == n);
+        probeFourth(0xA100, n);
     }
     capture.CompleteUiCompositorCycle(0xA100);
-    assert(!capture.ClaimPostSecondText(0xA100, 2822400));
-    assert(!capture.ClaimPostSecondText(0xA100, 2822400)); // exhausted
+    for (int j{}; j < 6; ++j)
+        assert(!capture.ClaimPostFourthText(0xA100, 2822400)); // cap exhausted
     // Background-only Fermi source is never eligible. Register the
     // compositor's actual target as observed from a GPU consumer draw.
     assert(!capture.ReserveFermiSource(0, 0xF200, 2822400));
@@ -133,8 +136,10 @@ int main() {
     assert(fs::exists(root / "gpu_events.txt"));
 
     capture.Start(root.string());
-    assert(!capture.ClaimPostSecondText(0xA100, 2822400));
-    assert(capture.ClaimPostSecondText(0xA100, 2822400) == 0);
+    assert(!capture.ClaimPostFourthText(0xA100, 2822400));
+    assert(!capture.ClaimPostFourthText(0xA100, 2822400));
+    assert(!capture.ClaimPostFourthText(0xA100, 2822400));
+    assert(capture.ClaimPostFourthText(0xA100, 2822400) == 0);
 
     assert(capture.ClaimUiBeforeText(0xA100, 2822400) == 0); // session reset
     assert(!capture.ClaimUiBeforeText(0xA100, 2822400));
