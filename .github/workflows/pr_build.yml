@@ -76,7 +76,7 @@ jobs:
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
         run: |
-          if [[ "${{ github.head_ref }}" == "debug/naruto-connections-mini-renderdoc" ]]; then
+          if [[ "${{ github.head_ref }}" == "debug/ender-lilies-mini-renderdoc" ]]; then
             ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevReldebug
           else
             ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
@@ -84,13 +84,13 @@ jobs:
       - name: Rename APKs
         if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
         run: |
-          if [[ "${{ github.head_ref }}" != "debug/naruto-connections-mini-renderdoc" ]]; then
+          if [[ "${{ github.head_ref }}" != "debug/ender-lilies-mini-renderdoc" ]]; then
             mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
           fi
           mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
 
       - name: Upload Release APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && github.head_ref != 'debug/naruto-connections-mini-renderdoc' }}
+        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && github.head_ref != 'debug/ender-lilies-mini-renderdoc' }}
         uses: actions/upload-artifact@v4
         with:
           name: strato-pr${{ github.event.number }}-release.apk
