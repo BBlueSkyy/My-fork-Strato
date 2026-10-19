@@ -433,20 +433,34 @@ namespace skyline::gpu::interconnect {
 
     TextureView *Textures::GetDynamicTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
         const auto &headers{texturePool.Get().dynamicHeaders};
-        if (index >= headers.size() || shaderType != Shader::TextureType::Color2D)
+        if (index >= headers.size())
             return nullptr;
         const auto &tic{headers[index]};
         using TIC = TextureImageControl;
-        if ((tic.textureType != TIC::TextureType::e2D && tic.textureType != TIC::TextureType::e2DNoMipmap) ||
-            (tic.headerType != TIC::HeaderType::Pitch && tic.headerType != TIC::HeaderType::BlockLinear) ||
-            !tic.Iova() || tic.BaseLayer() || tic.depthMinusOne || static_cast<u32>(tic.viewConfig.msaaMode) != 0 ||
+        const bool array2D{shaderType == Shader::TextureType::ColorArray2D};
+        if (shaderType != Shader::TextureType::Color2D && !array2D)
+            return nullptr;
+        // The dynamic array group accepts actual e2DArray TICs. Converting
+        // ordinary e2D TICs requires shader-type-aware view caching; do not
+        // accidentally reuse a 2D VkImageView as a 2D-array image.
+        if (array2D ? tic.textureType != TIC::TextureType::e2DArray
+                    : (tic.textureType != TIC::TextureType::e2D &&
+                       tic.textureType != TIC::TextureType::e2DNoMipmap))
+            return nullptr;
+        const u32 layerCount{static_cast<u32>(tic.depthMinusOne) + 1};
+        if ((tic.headerType != TIC::HeaderType::Pitch && tic.headerType != TIC::HeaderType::BlockLinear) ||
+            !tic.Iova() || (array2D
+                ? (tic.BaseLayer() >= layerCount ||
+                   layerCount > ctx.gpu.traits.dynamicDescriptorLimits.maxImageArrayLayers)
+                : (tic.BaseLayer() != 0 || tic.depthMinusOne != 0)) ||
+            static_cast<u32>(tic.viewConfig.msaaMode) != 0 ||
             u64{tic.widthMinusOne} + 1 > ctx.gpu.traits.dynamicDescriptorLimits.maxImageDimension2D ||
             u64{tic.heightMinusOne} + 1 > ctx.gpu.traits.dynamicDescriptorLimits.maxImageDimension2D ||
             tic.viewConfig.mipMinLevel > tic.viewConfig.mipMaxLevel ||
             tic.viewConfig.mipMaxLevel > tic.mipMaxLevels)
             return nullptr;
         const u32 maximumDimension{std::max(u32{tic.widthMinusOne} + 1, u32{tic.heightMinusOne} + 1)};
-        if (tic.isSparse || (tic.textureType == TIC::TextureType::e2D &&
+        if (tic.isSparse || (tic.textureType != TIC::TextureType::e2DNoMipmap &&
             (u32{1} << tic.mipMaxLevels) > maximumDimension))
             return nullptr;
         const auto format{ConvertTicFormat(tic.formatWord, tic.isSrgb, false)};
@@ -502,6 +516,8 @@ namespace skyline::gpu::interconnect {
         } restore{pool, pool.textureHeaders, textureHeaderCache, index};
         pool.textureHeaders = pool.dynamicHeaders;
         auto *view{GetTexture(ctx, index, shaderType)};
+        if (array2D && view && view->type != vk::ImageViewType::e2DArray)
+            return nullptr;
         return !view || view == nullTextureView.get() || view->texture->sampleCount != vk::SampleCountFlagBits::e1 ||
                !(view->GetUsage() & vk::ImageUsageFlagBits::eSampled) ? nullptr : view;
     }

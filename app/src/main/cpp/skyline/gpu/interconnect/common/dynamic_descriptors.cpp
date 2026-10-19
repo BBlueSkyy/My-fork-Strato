@@ -216,8 +216,9 @@ namespace skyline::gpu::interconnect {
         if (stages != vk::ShaderStageFlagBits::eCompute)
             impl->readStage = vk::PipelineStageFlagBits::eAllGraphics;
         for (const auto &group : groups)
-            if (group.type != Shader::TextureType::Color2D || group.is_depth)
-                throw exception("Dynamic texture descriptors initially support non-depth 2D images only");
+            if ((group.type != Shader::TextureType::Color2D &&
+                 group.type != Shader::TextureType::ColorArray2D) || group.is_depth)
+                throw exception("Dynamic texture descriptors support only non-depth 2D and 2D-array images");
         vk::PipelineStageFlags src{}, dst{};
         const auto state{impl->Collect(ctx, textures, samplers, false, src, dst)};
         for (auto count : state.Counts()) impl->capacities.push_back(Capacity(count));
