@@ -598,13 +598,13 @@ namespace skyline::gpu::interconnect {
 
         if (match->kind == diagnostic::UiFrameCapture::TextFocus::FullConsumer) {
             const auto target{match->target->texture};
-            // Draw nodes have already been recorded. Pair the two observed
+            // Draw nodes have already been recorded. Pair the four observed
             // text consumers by the live compositor backing across Maxwell
             // submissions, ending this group at the reverse Fermi blit.
             // Neither present index nor shader/game ID determines grouping.
-            if (auto secondId{capture.ClaimPostSecondText(
+            if (auto fourthId{capture.ClaimPostFourthText(
                     reinterpret_cast<uintptr_t>(target.get()), target->surfaceSize)}) {
-                BreakRenderPass(); // Ensure the second text draw completes first.
+                BreakRenderPass(); // Ensure the fourth text draw completes first.
                 auto staging{gpu.memory.AllocateStagingBuffer(target->surfaceSize)};
                 slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
                     [target, staging](vk::raii::CommandBuffer &commandBuffer,
@@ -614,25 +614,25 @@ namespace skyline::gpu::interconnect {
                         RecordFullBarrier(commandBuffer);
                     });
                 const auto directory{std::filesystem::path(capture.CaptureDirectory())};
-                const auto rawPath{directory / fmt::format("ui_posttext2_{:02}_{}x{}_{}.raw",
-                    *secondId, target->dimensions.width, target->dimensions.height,
+                const auto rawPath{directory / fmt::format("ui_posttext4_{:02}_{}x{}_{}.raw",
+                    *fourthId, target->dimensions.width, target->dimensions.height,
                     vk::to_string(target->format->vkFormat))};
-                const auto metaPath{directory / fmt::format("ui_posttext2_{:02}.txt", *secondId)};
+                const auto metaPath{directory / fmt::format("ui_posttext4_{:02}.txt", *fourthId)};
                 const auto guestMap{guestAddress(match->target)};
                 const auto meta{fmt::format(
-                    "posttext2_id={} approx_present={} executor=0x{:X} submission={} "
+                    "posttext4_id={} approx_present={} executor=0x{:X} submission={} "
                     "render_pass={} draw_id={} target=0x{:X} guest_map=0x{:X} "
                     "source=0x{:X} source_guest=0x{:X} "
-                    "note=after_second_text_draw_before_later_sprites_not_exact_present_frame\n",
-                    *secondId, interval, reinterpret_cast<uintptr_t>(this), submissionNumber,
+                    "note=after_fourth_text_draw_before_later_sprites_not_exact_present_frame\n",
+                    *fourthId, interval, reinterpret_cast<uintptr_t>(this), submissionNumber,
                     renderPassIndex, drawId, reinterpret_cast<uintptr_t>(target.get()),
                     guestMap, reinterpret_cast<uintptr_t>(match->source->texture.get()),
                     guestAddress(match->source))};
                 diagnosticReadbackCallbacks.emplace_back(
-                    [staging, rawPath, metaPath, meta, id = *secondId] {
+                    [staging, rawPath, metaPath, meta, id = *fourthId] {
                         std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
                         if (!raw) {
-                            LOGE("MINIRD_CONNECTIONS UI post-text-2 {} could not open output", id);
+                            LOGE("MINIRD_CONNECTIONS UI post-text-4 {} could not open output", id);
                             return;
                         }
                         raw.write(reinterpret_cast<const char *>(staging->data()),
@@ -641,13 +641,13 @@ namespace skyline::gpu::interconnect {
                         std::ofstream info(metaPath, std::ios::trunc);
                         if (info)
                             info << meta;
-                        LOGI("MINIRD_CONNECTIONS wrote UI post-text-2 {}: {}",
+                        LOGI("MINIRD_CONNECTIONS wrote UI post-text-4 {}: {}",
                              id, rawPath.string());
                     });
                 capture.Record(fmt::format(
-                    "UI_COMPOSITOR_POSTTEXT2 id={} draw_id={} executor=0x{:X} "
+                    "UI_COMPOSITOR_POSTTEXT4 id={} draw_id={} executor=0x{:X} "
                     "submission={} target=0x{:X} guest_map=0x{:X} source=0x{:X}",
-                    *secondId, drawId, reinterpret_cast<uintptr_t>(this), submissionNumber,
+                    *fourthId, drawId, reinterpret_cast<uintptr_t>(this), submissionNumber,
                     reinterpret_cast<uintptr_t>(target.get()), guestMap,
                     reinterpret_cast<uintptr_t>(match->source->texture.get())));
             }
