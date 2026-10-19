@@ -1,5 +1,36 @@
 # GPU-selected texture handles
 
+## Fragment follow-up: unresolved shape/status classification
+
+`emulation(20261019-210859).zip` contains only emulation.log. It identifies
+fragment shader `0x34BADCCFFEBF7034`, base `0x3BA4030`, and the combined
+non-2D/depth/sparse rejection; it has no Maxwell, IR or individual flags.
+Those three alternatives cannot be distinguished from the supplied capture.
+In the accepted-opcode switch, depth-comparison sample opcodes would already
+fail the preceding operation gate; the combined message alone is not proof
+of a depth texture.
+
+A local production TexturePass regression demonstrates a separate false
+rejection: an unused residency predicate survives until the later DCE pass.
+It is now removed only when it has no consumers, allowing the original
+dynamic 2D operation without requiring sparse Vulkan capabilities. Live sparse
+predicates and unsupported resource shapes remain explicit errors. This is
+verified functional progress, not proof that the named shader is repaired.
+
+The error now includes opcode, image type, depth/sparse bits and coordinate
+type. Graphics translation failures additionally preserve bounded Maxwell
+translation input chunks, using the existing encoder with a generic hash.
+Successful translations add no payload capture. Extract a failed shader with
+`python3 scripts/extract_mk11_shader_trace.py emulation.zip output --hash 34BADCCFFEBF7034`.
+This provides the actual instructions needed to finish support without guessing
+an image shape or inventing sparse semantics. Existing compute captures remain
+compatible.
+
+The PR workflow changes from `5eb22fa` are preserved: added host regression
+steps no longer block #365; one ARM64 DevReldebug APK with Gradle cache and
+CCache remains configured. No new suite, game/hash execution exception, merge
+or Actions monitoring is added.
+
 ## Gold-logo regression: graphics integration
 
 The two October 19 device logs end with `Bindless texture handle provenance

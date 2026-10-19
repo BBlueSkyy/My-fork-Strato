@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reassemble the targeted MK11 Maxwell and TexturePass IR traces from emulation.log(.zip).
+"""Reassemble Maxwell/IR traces and generic failed-shader captures from emulation.log(.zip).
 
 Usage: python3 scripts/extract_mk11_shader_trace.py emulation.zip output_dir
 No Android filesystem access or additional capture files are required.
@@ -18,11 +18,11 @@ NAMES = {
     "after_texture_pass": f"{TARGET_HASH}.after_texture_pass.ir.txt",
 }
 BEGIN = re.compile(
-    r"MK11ShaderDumpBegin: hash=0x([0-9A-Fa-f]+) phase=(\w+) "
+    r"(?:MK11Shader|ShaderFailure)DumpBegin: hash=0x([0-9A-Fa-f]+) phase=(\w+) "
     r"totalBytes=(\d+) capturedBytes=(\d+) truncated=(true|false|0|1)"
 )
-CHUNK = re.compile(r"MK11ShaderDumpChunk: phase=(\w+) offset=(\d+) hex=([0-9a-fA-F]+)")
-END = re.compile(r"MK11ShaderDumpEnd: hash=0x([0-9A-Fa-f]+) phase=(\w+) capturedBytes=(\d+)")
+CHUNK = re.compile(r"(?:MK11Shader|ShaderFailure)DumpChunk: phase=(\w+) offset=(\d+) hex=([0-9a-fA-F]+)")
+END = re.compile(r"(?:MK11Shader|ShaderFailure)DumpEnd: hash=0x([0-9A-Fa-f]+) phase=(\w+) capturedBytes=(\d+)")
 
 
 def read_log(source: Path) -> str:
@@ -35,12 +35,19 @@ def read_log(source: Path) -> str:
     return source.read_text(encoding="utf-8", errors="replace")
 
 
-def extract(log: str, destination: Path) -> int:
+def extract(log: str, destination: Path, target_hash: str = TARGET_HASH) -> int:
+    target_hash = target_hash.removeprefix("0x").removeprefix("0X").upper()
+    if not re.fullmatch(r"[0-9A-F]{1,16}", target_hash):
+        raise ValueError("Invalid shader hash")
+    target_hash = target_hash.zfill(16)
+    names = {phase: name.replace(TARGET_HASH, target_hash) for phase, name in NAMES.items()}
     parts = {}
+    active = {}
     for line in log.splitlines():
         if match := BEGIN.search(line):
             shader_hash, phase, total, captured, truncated = match.groups()
-            if shader_hash.upper() == TARGET_HASH and phase in NAMES:
+            active[phase] = shader_hash.upper().zfill(16) == target_hash
+            if active[phase] and phase in names:
                 parts[phase] = {
                     "total": int(total),
                     "size": int(captured),
@@ -51,7 +58,7 @@ def extract(log: str, destination: Path) -> int:
             continue
         if match := CHUNK.search(line):
             phase, offset, hex_data = match.groups()
-            if phase in parts:
+            if phase in parts and active.get(phase, False):
                 value = bytes.fromhex(hex_data)
                 index = int(offset)
                 previous = parts[phase]["chunks"].get(index)
@@ -61,7 +68,7 @@ def extract(log: str, destination: Path) -> int:
             continue
         if match := END.search(line):
             shader_hash, phase, captured = match.groups()
-            if shader_hash.upper() == TARGET_HASH and phase in parts:
+            if shader_hash.upper().zfill(16) == target_hash and phase in parts:
                 parts[phase]["ended"] = int(captured) == parts[phase]["size"]
 
     if not parts:
@@ -79,7 +86,7 @@ def extract(log: str, destination: Path) -> int:
             offset = len(payload)
         if offset != blob["size"] or not blob["ended"]:
             raise ValueError(f"Incomplete {phase}: {offset}/{blob['size']} bytes, end={blob['ended']}")
-        path = destination / NAMES[phase]
+        path = destination / names[phase]
         path.write_bytes(payload)
         print(f"{phase}: {len(payload)}/{blob['total']} bytes -> {path}"
               + (" (TRUNCATED)" if blob["truncated"] else ""))
@@ -90,9 +97,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--hash", default=TARGET_HASH, help="Shader hash to extract (hex)")
     args = parser.parse_args()
     try:
-        return extract(read_log(args.log), args.output)
+        return extract(read_log(args.log), args.output, args.hash)
     except (OSError, ValueError, zipfile.BadZipFile) as exc:
         print(f"Extraction failed: {exc}", file=sys.stderr)
         return 2

@@ -69,11 +69,11 @@ namespace skyline::gpu {
 
         // Hex chunks are independently recoverable from emulation.log (including
         // on Android, where app-private shader dump directories are hard to reach).
-        void TraceMk11ShaderPayload(std::string_view phase, const u8 *data, size_t size) {
+        void TraceShaderPayload(std::string_view label, u64 hash, std::string_view phase, const u8 *data, size_t size) {
             constexpr char HexDigits[]{"0123456789ABCDEF"};
             const size_t captured{std::min(size, Mk11TraceMaxBytes)};
-            LOGW("MK11ShaderDumpBegin: hash=0x{:016X} phase={} totalBytes={} capturedBytes={} truncated={}",
-                 Mk11TargetComputeHash, phase, size, captured, size > captured);
+            LOGW("{}DumpBegin: hash=0x{:016X} phase={} totalBytes={} capturedBytes={} truncated={}",
+                 label, hash, phase, size, captured, size > captured);
             for (size_t offset{}; offset < captured; offset += Mk11TraceChunkBytes) {
                 const size_t count{std::min(Mk11TraceChunkBytes, captured - offset)};
                 std::string hex(count * 2, '0');
@@ -82,10 +82,14 @@ namespace skyline::gpu {
                     hex[2 * i] = HexDigits[byte >> 4];
                     hex[2 * i + 1] = HexDigits[byte & 0xF];
                 }
-                LOGW("MK11ShaderDumpChunk: phase={} offset={} hex={}", phase, offset, hex);
+                LOGW("{}DumpChunk: phase={} offset={} hex={}", label, phase, offset, hex);
             }
-            LOGW("MK11ShaderDumpEnd: hash=0x{:016X} phase={} capturedBytes={}",
-                 Mk11TargetComputeHash, phase, captured);
+            LOGW("{}DumpEnd: hash=0x{:016X} phase={} capturedBytes={}",
+                 label, hash, phase, captured);
+        }
+
+        void TraceMk11ShaderPayload(std::string_view phase, const u8 *data, size_t size) {
+            TraceShaderPayload("MK11Shader", Mk11TargetComputeHash, phase, data, size);
         }
     }
 
@@ -532,6 +536,12 @@ namespace skyline::gpu {
         } catch (const std::exception &error) {
             LOGE("ShaderTranslationFailure: stage={} hash=0x{:016X} baseOffset=0x{:X} dynamicHandles={} reason={}",
                  ShaderStageName(stage), hash, baseOffset, environment.SupportsDynamicTextureHandles(), error.what());
+            try {
+                // Failure-only capture: successful shaders incur no copy or log.
+                TraceShaderPayload("ShaderFailure", hash, "maxwell_translation_input", binary.data(), binary.size());
+            } catch (...) {
+                // Preserve the original exception if diagnostic allocation fails.
+            }
             throw;
         }
     }
