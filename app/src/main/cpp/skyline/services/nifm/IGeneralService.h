@@ -151,6 +151,7 @@ namespace skyline::service::nifm {
         Result GetCurrentNetworkProfile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result GetCurrentIpAddress(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result GetCurrentIpConfigInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        Result SetWirelessCommunicationEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result IsWirelessCommunicationEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result GetInternetConnectionStatus(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
         Result IsAnyInternetRequestAccepted(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
@@ -162,6 +163,7 @@ namespace skyline::service::nifm {
             SFUNC(0x5, IGeneralService, GetCurrentNetworkProfile),
             SFUNC(0xC, IGeneralService, GetCurrentIpAddress),
             SFUNC(0xF, IGeneralService, GetCurrentIpConfigInfo),
+            SFUNC(0x10, IGeneralService, SetWirelessCommunicationEnabled),
             SFUNC(0x11, IGeneralService, IsWirelessCommunicationEnabled),
             SFUNC(0x12, IGeneralService, GetInternetConnectionStatus),
             SFUNC(0x15, IGeneralService, IsAnyInternetRequestAccepted)

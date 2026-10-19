@@ -52,7 +52,7 @@ namespace skyline::service::socket {
 
         if (!(*state.settings->isInternetEnabled)) {
             LOGI("Internet access disabled, DNS Blocked: {}", hostname);
-            return {0, -1};
+            return {0, EAI_AGAIN};
         }
 
         addrinfo *result;
