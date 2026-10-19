@@ -82,13 +82,13 @@ jobs:
 
       - name: Install shader validation tools
         if: ${{ github.head_ref == 'fix/mk11-shader-android' }}
-        run: sudo apt-get install -y spirv-tools libboost-dev
+        run: sudo apt-get install -y spirv-tools libboost-dev clang
 
       - name: Shader compiler SPIR-V regressions
         if: ${{ github.head_ref == 'fix/mk11-shader-android' }}
         run: |
           cmake -S app/libraries/shader-compiler/tests/storage_subword -B build/shader-host -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DHOST_DEPS="${PWD}/app/libraries" -DBOOST_INCLUDE_DIR=/usr/include
           cmake --build build/shader-host --parallel 2
           ctest --test-dir build/shader-host --output-on-failure
