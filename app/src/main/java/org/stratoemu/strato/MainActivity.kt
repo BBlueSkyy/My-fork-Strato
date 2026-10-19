@@ -38,7 +38,6 @@ import org.stratoemu.strato.loader.RomType
 import org.stratoemu.strato.preference.FolderPickerPreference
 import org.stratoemu.strato.provider.DocumentsProvider
 import org.stratoemu.strato.settings.AppSettings
-import org.stratoemu.strato.settings.AirplaneModeSettings
 import org.stratoemu.strato.settings.EmulationSettings
 import org.stratoemu.strato.settings.SettingsActivity
 import org.stratoemu.strato.utils.GpuDriverHelper
@@ -131,8 +130,6 @@ class MainActivity : AppCompatActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsHelper.applyToActivity(binding.root, binding.appList)
 
-        // Migrate the old inverted key before AndroidX inserts new XML defaults.
-        AirplaneModeSettings.migrate(this)
         PreferenceManager.setDefaultValues(this, R.xml.app_preferences, false)
         PreferenceManager.setDefaultValues(this, R.xml.emulation_preferences, false)
 

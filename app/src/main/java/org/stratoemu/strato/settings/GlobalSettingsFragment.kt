@@ -16,6 +16,7 @@ import androidx.preference.TwoStatePreference
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import org.stratoemu.strato.BuildConfig
+import org.stratoemu.strato.preference.AirplaneModePreferenceBinder
 import org.stratoemu.strato.MainActivity
 import org.stratoemu.strato.R
 import org.stratoemu.strato.utils.GpuDriverHelper
@@ -39,11 +40,13 @@ class GlobalSettingsFragment : PreferenceFragmentCompat() {
      * This constructs the preferences from XML preference resources
      */
     override fun onCreatePreferences(savedInstanceState : Bundle?, rootKey : String?) {
-        AirplaneModeSettings.migrate(requireContext())
         addPreferencesFromResource(R.xml.app_preferences)
         addPreferencesFromResource(R.xml.emulation_preferences)
         addPreferencesFromResource(R.xml.input_preferences)
         addPreferencesFromResource(R.xml.credits_preferences)
+
+        // UI-only inversion; NativeSettings still reads the original key.
+        AirplaneModePreferenceBinder.bind(findPreference("airplane_mode_ui"), preferenceManager.sharedPreferences)
 
         // Re-launch the app if Material You is toggled
         findPreference<Preference>("use_material_you")?.setOnPreferenceChangeListener { _, _ ->

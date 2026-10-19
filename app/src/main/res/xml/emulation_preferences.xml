@@ -32,12 +32,12 @@
             app:key="system_region"
             app:title="@string/system_region"
             app:useSimpleSummaryProvider="true" />
-        <!-- Airplane mode is stored directly. Legacy internet-enabled values are
-             migrated once before preferences inflate. Native IPC sees its inverse. -->
+        <!-- The switch is a view of the original internet flag, not a new setting. -->
         <SwitchPreferenceCompat
             android:defaultValue="true"
+            android:persistent="false"
             android:summary="@string/airplane_mode_description"
-            app:key="is_airplane_mode"
+            app:key="airplane_mode_ui"
             app:title="@string/airplane_mode" />
     </PreferenceCategory>
     <PreferenceCategory
