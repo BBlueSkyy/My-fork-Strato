@@ -427,3 +427,48 @@ compare each post-text target with pre-reverse-Fermi input and VI,
 using metadata + image-content alignment. If absent again, inspect
 format/transfer capabilities and actual binding traces without
 inferring a rendering defect from diagnostic absence.
+
+
+## Post-second-text capture verified; late-P1 probe moved to fourth text draw
+
+On the latest 1120x630 Qualcomm 0.777.0 capture, the diagnostic produces
+**23 complete ui_posttext2 images**, 23 reverse-Fermi input images, 24 VI
+presentation sources, and 24 focused first-four-interval pass snapshots.
+The trace contains **3,210** qualifying UI consumer events: 3,069
+compressed sprite consumers and 141 text-strip consumers. No output file
+write failures were observed.
+
+**Finding:** all 23 ui_posttext2 images already contain two CPU move-list
+bars but **do not yet contain P1 move-list bars**. This is expected:
+every full UI composition cycle contains approximately **six (sometimes
+seven) text-strip draws**, and the post-second-text boundary occurs
+early, before a large block of sprite draws and the third/fourth/fifth
+text draws. The UI P1 list appears between this boundary and the
+composed reverse-Fermi input, so another pre-Fermi-copy/wait fix is not
+warranted.
+
+At reverse-Fermi input **20** the P1 move-list crop is significantly
+reduced (fraction of pixels RGB<80: ~0.4945 versus 0.7154 at input 19
+and 0.7270 at input 21). The CPU side remains ~0.754. A character-color
+region overlaps the P1 list in this particular source, but its relationship
+to the reported flicker is not yet causally proven; animation or a late
+sprite draw may be responsible. The logo/nameplate glitch is not
+conclusively reproduced here. Across all 23 pairs, Fermi source N best
+corresponds to VI source N+1 after vertical inversion.
+
+**Opt-in diagnostic change:** use the exact same independent 24-snapshot,
+144 MiB budget for **ui_posttext4** instead of redundant ui_posttext2.
+Track text-strip draws by live compositor target until the reverse
+Fermi2D copy, with explicit four-stage counter: first/second/third
+increment; fourth queues ordered render-target readback; fifth/sixth
+cannot allocate again. Reset counter on reverse-Fermi boundary and new
+manual sessions. New metadata files named ui_posttext4_XX.txt, raw
+ui_posttext4_XX_* and trace event UI_COMPOSITOR_POSTTEXT4.
+This checkpoint follows the first large group of intervening sprite
+draws; it may or may not already include P1 bars and must be verified
+by the next capture.
+
+This change does not alter production rendering, shader, sampler,
+texture matching, memory aliases, or synchronization. No title-ID,
+fixed shader, fixed IOVA, or ROI is used to select the probe. #359
+preserved; #360 Draft; do not merge or follow Actions automatically.
