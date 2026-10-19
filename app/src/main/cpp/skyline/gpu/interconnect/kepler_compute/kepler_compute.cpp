@@ -16,6 +16,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
                                  DirtyManager &manager,
                                  const EngineRegisterBundle &registerBundle)
         : ctx{channelCtx, channelCtx.executor, gpu, trap, memoryManager},
+          diagnosticRegisters{registerBundle},
           pipelineState{manager, registerBundle.pipelineStateRegisters},
           samplers{manager, registerBundle.samplerPoolRegisters},
           textures{manager, registerBundle.texturePoolRegisters} {
@@ -41,8 +42,36 @@ namespace skyline::gpu::interconnect::kepler_compute {
         auto *pipeline{pipelineState.Update(ctx, builder, textures, samplers, constantBuffers.boundConstantBuffers, qmd)};
 
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
-        auto *descUpdateInfo{pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures, srcStageMask, dstStageMask,
-            {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth})};
+        DescriptorUpdateInfo *descUpdateInfo{};
+        try {
+            descUpdateInfo = pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures, srcStageMask, dstStageMask,
+                {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth});
+        } catch (...) {
+            // Failure-only QMD snapshot. Capture actual guest addresses and pool
+            // limits, including inactive CBUF slots with retained views.
+            // Never replace a guest handle or change the original exception.
+            const auto &registers{diagnosticRegisters};
+            const auto programBase{static_cast<u64>(registers.pipelineStateRegisters.pipelineStageRegisters.programRegion)};
+            const auto &header{registers.texturePoolRegisters.texHeaderPool};
+            const auto &sampler{registers.samplerPoolRegisters.texSamplerPool};
+            const bool viaHeader{qmd.samplerIndex == QMD::SamplerIndex::ViaHeaderIndex};
+            LOGW("ComputeQmdTrace: shaderHash=0x{:016X} shaderBase=0x{:016X} programOffset=0x{:X} shaderAddress=0x{:016X} bindlessSlot={} samplerViaHeader={} TICpool=0x{:016X} TICmax={} TSCpool=0x{:016X} TSCmax={} effectiveTSCmax={} CBUFvalidMask=0x{:02X}",
+                 pipeline->sourcePackedState.shaderHash, programBase, qmd.programOffset,
+                 programBase + qmd.programOffset, pipeline->sourcePackedState.bindlessTextureConstantBufferSlotSelect,
+                 viaHeader, static_cast<u64>(header.offset), header.maximumIndex,
+                 static_cast<u64>(sampler.offset), sampler.maximumIndex,
+                 viaHeader ? header.maximumIndex : sampler.maximumIndex,
+                 static_cast<u32>(qmd.constantBufferValid));
+            for (u32 index{}; index < QMD::ConstantBufferCount; ++index) {
+                const bool qmdValid{(qmd.constantBufferValid & (1U << index)) != 0};
+                const auto &bound{constantBuffers.boundConstantBuffers[index].view};
+                LOGW("ComputeQmdCbufTrace: slot={} QMDvalid={} GPUaddress=0x{:016X} QMDsize=0x{:X} boundView={} viewSize=0x{:X}",
+                     index, qmdValid, qmd.constantBuffer[index].Address(),
+                     qmd.constantBuffer[index].size, static_cast<bool>(bound),
+                     bound ? bound.size : 0);
+            }
+            throw;
+        }
         builder.SetPipeline(*pipeline->compiledPipeline.pipeline, vk::PipelineBindPoint::eCompute);
 
         if (ctx.gpu.traits.supportsPushDescriptors) {
