@@ -122,7 +122,8 @@
     <string name="profile_picture_not_selected">No picture selected</string>
     <string name="system_language">System Language</string>
     <string name="system_region">System Region</string>
-    <string name="internet">The system will be able to use internet</string>
+    <string name="airplane_mode">Airplane Mode</string>
+    <string name="airplane_mode_description">Disables emulated Switch network access without changing Android connectivity</string>
     <!-- Settings - Display -->
     <string name="display">Display</string>
     <string name="perf_stats">Show Performance Statistics</string>

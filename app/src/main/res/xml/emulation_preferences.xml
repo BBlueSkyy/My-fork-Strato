@@ -32,11 +32,14 @@
             app:key="system_region"
             app:title="@string/system_region"
             app:useSimpleSummaryProvider="true" />
-        <SwitchPreferenceCompat
-            android:defaultValue="false"
-            android:summary="@string/internet"
+        <!-- The persisted key is the legacy internet-allowed value. The
+             preference inverts it to expose airplane mode without migrating
+             global or per-game settings. -->
+        <org.stratoemu.strato.preference.AirplaneModePreference
+            android:defaultValue="true"
+            android:summary="@string/airplane_mode_description"
             app:key="is_internet_enabled"
-            app:title="Enable Internet" />
+            app:title="@string/airplane_mode" />
     </PreferenceCategory>
     <PreferenceCategory
         android:key="category_presentation"
