@@ -19,8 +19,6 @@ object AirplaneModeSettings {
     const val KEY = "is_airplane_mode"
     private const val LEGACY_KEY = "is_internet_enabled"
 
-    fun isInternetEnabled(isAirplaneMode: Boolean): Boolean = !isAirplaneMode
-
     fun migrate(context: Context, prefName: String? = null) {
         val preferences = prefName?.let { context.getSharedPreferences(it, Context.MODE_PRIVATE) }
             ?: PreferenceManager.getDefaultSharedPreferences(context)
@@ -31,6 +29,6 @@ object AirplaneModeSettings {
 
         // Preserve the actual pre-upgrade network state (and the offline default).
         val oldInternetEnabled = values[LEGACY_KEY] as? Boolean ?: false
-        preferences.edit().putBoolean(KEY, !oldInternetEnabled).apply()
+        preferences.edit().putBoolean(KEY, AirplaneModePolicy.fromLegacyInternetEnabled(oldInternetEnabled)).apply()
     }
 }

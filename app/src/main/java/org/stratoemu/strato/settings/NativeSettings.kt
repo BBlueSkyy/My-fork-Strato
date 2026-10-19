@@ -55,7 +55,7 @@ data class NativeSettings(
         pref.systemLanguage,
         pref.systemRegion,
         // Keep the existing native ABI; only invert the explicit Android UI state.
-        AirplaneModeSettings.isInternetEnabled(pref.isAirplaneMode),
+        AirplaneModePolicy.toNativeInternetEnabled(pref.isAirplaneMode),
         pref.isAudioOutputDisabled,
         if (pref.gpuDriver == EmulationSettings.SYSTEM_GPU_DRIVER) "" else pref.gpuDriver,
         if (pref.gpuDriver == EmulationSettings.SYSTEM_GPU_DRIVER) "" else GpuDriverHelper.getLibraryName(context, pref.gpuDriver),

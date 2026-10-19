@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
-// Host-side self-contained mapping checks: no Android runtime required.
-// This source mirrors the pure inverse used by AirplaneModeSettings.
+import org.stratoemu.strato.settings.AirplaneModePolicy
+
 fun main() {
+    // Offline must remain offline during upgrades; online must remain online.
     for (legacyInternetEnabled in listOf(false, true)) {
-        val migratedAirplaneMode = !legacyInternetEnabled
-        val nativeInternetEnabled = !migratedAirplaneMode
-        check(nativeInternetEnabled == legacyInternetEnabled)
+        val migrated = AirplaneModePolicy.fromLegacyInternetEnabled(legacyInternetEnabled)
+        val nativeValue = AirplaneModePolicy.toNativeInternetEnabled(migrated)
+        check(nativeValue == legacyInternetEnabled)
     }
-    check(!true == false)  // Airplane on -> native internet off
-    check(!false == true)  // Airplane off -> native internet allowed
+
+    check(AirplaneModePolicy.fromLegacyInternetEnabled(false))
+    check(!AirplaneModePolicy.fromLegacyInternetEnabled(true))
+    check(!AirplaneModePolicy.toNativeInternetEnabled(true))
+    check(AirplaneModePolicy.toNativeInternetEnabled(false))
+    println("Airplane Mode migration and native mapping: PASS")
 }
