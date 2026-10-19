@@ -13,6 +13,7 @@ from pathlib import Path
 TARGET_HASH = "55736CD732068324"
 NAMES = {
     "maxwell": f"{TARGET_HASH}.maxwell.bin",
+    "maxwell_translation_input": f"{TARGET_HASH}.maxwell_translation_input.bin",
     "before_texture_pass": f"{TARGET_HASH}.before_texture_pass.ir.txt",
     "after_texture_pass": f"{TARGET_HASH}.after_texture_pass.ir.txt",
 }
