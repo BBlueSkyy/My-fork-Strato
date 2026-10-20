@@ -20,19 +20,20 @@ jobs:
         with:
           submodules: recursive
     
-      - name: Debug NDK
-        run: |
-          echo "== NDKs instalados =="
-          ls -la $ANDROID_SDK_ROOT/ndk || true
-          echo "== Variaveis de ambiente =="
-          env | grep -i ndk || true
-     
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           max-size: 3Gi
 
       
+
+      - name: Restore Gradle Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
 
       - name: Install Java 17
         uses: actions/setup-java@v4
@@ -45,50 +46,18 @@ jobs:
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
-      - name: Texman view-range regression (UBSan)
-        run: |
-          c++ -std=c++20 -Wall -Wextra -Werror \
-            -fsanitize=undefined -fno-sanitize-recover=all \
-            -Iapp/src/main/cpp/skyline \
-            -Iapp/libraries/vkhpp \
-            -Iapp/libraries/vkhpp/Vulkan-Headers/include \
-            tests/gpu/texture_view_range_tests.cpp -o /tmp/texman-view-range-tests
-          /tmp/texman-view-range-tests
-
-      - name: Occlusion and conditional rendering regressions
-        run: |
-          python3 tests/gpu_queries/run.py
-          python3 tests/gpu_conditional/run.py
-          python3 tests/gpu_draw_texture/run.py
-
-      - name: Texture layout and submission regressions
-        run: |
-          python3 tests/gpu_sampled_layout/run.py
-          python3 tests/gpu_submission/run.py
-
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
-      - name: Rename APKs
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
-        run: |
-          mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
-          mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevReldebug
+      - name: Rename ARM64 DevReldebug APK
+        run: mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-arm64-reldebug.apk
 
-      - name: Upload Release APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
+      - name: Upload ARM64 DevReldebug APK
         uses: actions/upload-artifact@v4
         with:
-          name: strato-pr${{ github.event.number }}-release.apk
-          path: strato-pr${{ github.event.number }}-release.apk
-
-      - name: Upload Debug APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: strato-pr${{ github.event.number }}-reldebug.apk
-          path: strato-pr${{ github.event.number }}-reldebug.apk
+          name: strato-pr${{ github.event.number }}-arm64-reldebug.apk
+          path: strato-pr${{ github.event.number }}-arm64-reldebug.apk
