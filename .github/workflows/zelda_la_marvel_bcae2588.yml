@@ -1,0 +1,58 @@
+name: Zelda LA marvel APK (bcae2588)
+
+# A one-off historical build for FPS regression comparison.
+# This workflow builds the pinned Marvel #294 source, not the branch's master tree.
+on:
+  push:
+    branches:
+      - build/zelda-la-marvel-bcae2588
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zelda-la-marvel-bcae2588
+  cancel-in-progress: true
+
+jobs:
+  android-arm64-reldebug:
+    name: Build Marvel #294 ARM64 DevReldebug
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact Marvel #294 Strato commit
+        uses: actions/checkout@v4
+        with:
+          ref: bcae2588809b561a93da04fcaceb913bc37c9a92
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore CCache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 3Gi
+
+      - name: Install Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          ln -s /usr/bin/ninja ./ninja
+
+      - name: Assemble ARM64 DevReldebug (no extra test suites)
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevReldebug
+
+      - name: Upload Marvel #294 Zelda marvel APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: strato-zelda-marvel-bcae2588-arm64-devreldebug
+          path: app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk
+          if-no-files-found: error
+          retention-days: 14
