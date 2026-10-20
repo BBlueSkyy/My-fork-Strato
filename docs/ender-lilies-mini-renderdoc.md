@@ -4,13 +4,13 @@ Instrumentação **manual, limitada e sem correção gráfica** para investigar 
 
 ## Base e escopo
 
-Esta branch é **empilhada sobre** `debug/naruto-connections-mini-renderdoc` (#360), reutilizando os mecanismos já existentes de readback GPU, extração de shaders, CBUF, descritores de texturas/TIC/TSC, draw/vertex/index, Fermi2D/DMA e apresentação. A #360 original **não é modificada**. Esta instrumentação é experimental e **não deve ser mesclada** no master. O APK do diagnóstico é **DevReldebug**.
+Esta branch é **empilhada sobre** `debug/naruto-connections-mini-renderdoc` (#360), reutilizando os mecanismos já existentes de readback GPU, extração de shaders, CBUF, descritores de texturas/TIC/TSC, draw/vertex/index, Fermi2D/DMA e apresentação. A #360 original **não é modificada**. Esta instrumentação é experimental e **não deve ser mesclada** no master. O APK do diagnóstico é **DevRelease**. Essa variante compila a instrumentação C++ de captura, mas não inclui as camadas de validação Vulkan do tipo Reldebug. A captura continua opt-in.
 
 A captura de Ender Lilies usa `gpu_capture/ender_lilies` e seleciona candidatos por dimensões/formato/uso de imagens, **sem Title ID, shader hash, nomes de driver ou hacks no jogo**. Os antigos símbolos internos `NarutoUiCapture`, `UI_PRE_*` e `TextFocus` são nomes herdados da infraestrutura, não implicam seleção por jogo.
 
 ## Como capturar no Moto G100
 
-1. Instale o APK **DevReldebug da PR deste diagnóstico**. Reproduza a corrupção em uma cena estável de Ender Lilies; não capture durante o splash screen.
+1. Instale o APK **DevRelease da PR deste diagnóstico**. Reproduza a corrupção em uma cena estável de Ender Lilies; não capture durante o splash screen.
 2. Na pasta pública de arquivos do Strato, abra `gpu_capture/ender_lilies/`.
 3. Renomeie `ARM_CAPTURE.rename_this_file_when_ready` para `ARM_CAPTURE` (sem extensão). Se a pasta ainda não aparecer, abra o jogo ao menos uma vez com a build do diagnóstico.
 4. Volte ao jogo. O marcador é detectado quando um novo frame é apresentado; são coletados **24 presentation sources consecutivos**, e, nos primeiros **quatro intervalos aproximados**, até dois draws de cena classificados: primeiro com **blending ativo** e primeiro **opaco**.
