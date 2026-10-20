@@ -54,6 +54,10 @@ namespace skyline::gpu::interconnect {
         };
 
         std::shared_ptr<TextureView> nullTextureView{};
+        // Independent, initialized zero backing for non-resident sparse sampled 2D textures.
+        // Never put it in the TIC or TextureManager caches: a later Remap must be retried.
+        std::shared_ptr<TextureView> sparseZeroTextureView{};
+        bool reportedSparseZeroFallback{};
         dirty::ManualDirtyState<TexturePoolState> texturePool;
 
         tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
