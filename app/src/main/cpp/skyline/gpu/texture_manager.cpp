@@ -46,6 +46,7 @@ namespace skyline::gpu {
         u32 depthSliceLevel{};
         u32 depthSlice{};
         u32 depthSliceParentDepth{};
+        bool sawRejectedExtentAlias{}; // Track whether rejection caused a lookup miss.
 
         while (hostMapping != textures.begin() && (--hostMapping)->end() > guestMapping.begin()) {
             auto &hostMappings{hostMapping->texture->guest->mappings};
@@ -89,6 +90,7 @@ namespace skyline::gpu {
                         (matchGuestTexture.dimensions.width != guestTexture.dimensions.width ||
                          matchGuestTexture.dimensions.height != guestTexture.dimensions.height) &&
                         matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) {
+                        sawRejectedExtentAlias = true;
                         static std::atomic<u64> rejectedLegacyAliases{0};
                         const auto count{rejectedLegacyAliases.fetch_add(1, std::memory_order_relaxed) + 1};
                         if ((count & (count - 1)) == 0)
@@ -200,6 +202,13 @@ namespace skyline::gpu {
             }
          }
 
+        // Distinguish repeated candidate rejections from actual cache misses.
+        if (sawRejectedExtentAlias && (depthSliceMatch || layerMipMatch || fullMatch)) {
+            static std::atomic<u64> rejectedButReused{0};
+            const auto count{rejectedButReused.fetch_add(1, std::memory_order_relaxed) + 1};
+            if ((count & (count - 1)) == 0)
+                LOGI("PerfDiag294: rejected alias but found usable texture={}", count);
+        }
         if (depthSliceMatch) {
             // Prefer the real 3D storage over an independently cached slice. The latter
             // would otherwise retain stale contents after the guest renders into another
@@ -335,6 +344,13 @@ namespace skyline::gpu {
                 if (std::find(matches.begin(), matches.end(), source.texture) == matches.end())
                     matches.push_back(source.texture);
             }
+        }
+
+        if (sawRejectedExtentAlias) {
+            static std::atomic<u64> rejectedAndNewTexture{0};
+            const auto count{rejectedAndNewTexture.fetch_add(1, std::memory_order_relaxed) + 1};
+            if ((count & (count - 1)) == 0)
+                LOGI("PerfDiag294: rejected alias followed by new texture={} overlaps={}", count, matches.size());
         }
 
         for (auto &texture : matches)
