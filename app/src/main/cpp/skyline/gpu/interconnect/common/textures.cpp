@@ -466,7 +466,9 @@ namespace skyline::gpu::interconnect {
                     (textureHeader.textureType == TextureImageControl::TextureType::e2D ||
                      textureHeader.textureType == TextureImageControl::TextureType::e2DNoMipmap) &&
                     guest.dimensions.width <= 1024 && guest.dimensions.height <= 1024 &&
-                    guest.mipLevelCount <= 11 && guest.viewMipCount &&
+                    guest.mipLevelCount >= 1 && guest.mipLevelCount <= 11 &&
+                    (1U << (guest.mipLevelCount - 1)) <= std::max(guest.dimensions.width, guest.dimensions.height) &&
+                    guest.viewMipCount &&
                     guest.viewMipBase < guest.mipLevelCount &&
                     guest.viewMipCount <= guest.mipLevelCount - guest.viewMipBase
                 };
