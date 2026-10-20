@@ -380,10 +380,43 @@ namespace skyline::gpu::interconnect {
                     guest.tileConfig.blockHeight >>= 1;
             }
 
-            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
+            const auto textureIova{textureHeader.Iova()};
+            const auto textureSize{guest.GetSize()};
+            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureIova, textureSize)};
             guest.mappings.assign(mappings.begin(), mappings.end());
             if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
-                LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
+                // Diagnostics only on the failed path: no additional translation,
+                // allocations, or GMMU state checks for normally mapped textures.
+                size_t cursor{}, mappedBytes{}, firstBadOffset{}, firstBadBytes{};
+                bool foundBad{};
+                for (const auto &mapping : guest.mappings) {
+                    if (mapping.valid() && !mapping.empty()) {
+                        mappedBytes += mapping.size();
+                    } else if (!foundBad) {
+                        firstBadOffset = cursor;
+                        firstBadBytes = mapping.size();
+                        foundBad = true;
+                    }
+                    cursor += mapping.size();
+                }
+                if (!foundBad) {
+                    firstBadOffset = cursor;
+                    firstBadBytes = textureSize > cursor ? textureSize - cursor : 0;
+                }
+
+                const auto firstBadIova{textureIova + firstBadOffset};
+                const auto state{ctx.channelCtx.asCtx->gmmu.GetMappingStateForDiagnostics(firstBadIova)};
+                const char *stateName{"unmapped"};
+                switch (state) {
+                    case soc::gm20b::GMMU::MappingState::Sparse: stateName = "sparse"; break;
+                    case soc::gm20b::GMMU::MappingState::Resident: stateName = "resident-now"; break;
+                    case soc::gm20b::GMMU::MappingState::Unmapped: break;
+                }
+                LOGW("Unmapped texture in pool: 0x{:X} tic={} first_bad=0x{:X} bad_bytes=0x{:X} state={} mapped=0x{:X}/0x{:X} segments={} dims={}x{}x{} layers={} base_layer={} mips={} view_mips={}/{} format=0x{:X} tiling={}",
+                     textureIova, index, firstBadIova, firstBadBytes, stateName, mappedBytes, textureSize,
+                     guest.mappings.size(), guest.dimensions.width, guest.dimensions.height, guest.dimensions.depth,
+                     guest.layerCount, guest.baseArrayLayer, guest.mipLevelCount, guest.viewMipBase,
+                     guest.viewMipCount, textureHeader.formatWord.Raw(), static_cast<u32>(guest.tileConfig.mode));
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
 
