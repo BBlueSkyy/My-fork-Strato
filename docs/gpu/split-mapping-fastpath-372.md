@@ -47,7 +47,8 @@ single-block calls are not cached via this secondary path.
 
 For genuinely disjoint mappings, the old first-span behavior is deliberately
 retained, with error logging limited to 16 initial global samples and
-periodic aggregates every 4096 unresolved hits. This is not complete split
+periodic aggregates every 1024 unresolved hits. Physically contiguous recoveries
+log only their first 8 cold-path occurrences and every 1024 thereafter. This is not complete split
 mapping support. In particular, no read-only bounce alias or writable staging
 buffer is introduced because the guest/GPU coherence and fence semantics
 would require additional work.
