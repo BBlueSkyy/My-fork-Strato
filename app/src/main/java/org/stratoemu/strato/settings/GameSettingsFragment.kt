@@ -10,6 +10,7 @@ import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.preference.*
 import org.stratoemu.strato.BuildConfig
+import org.stratoemu.strato.preference.AirplaneModePreferenceBinder
 import org.stratoemu.strato.R
 import org.stratoemu.strato.data.BaseAppItem
 import org.stratoemu.strato.data.AppItemTag
@@ -40,6 +41,8 @@ class GameSettingsFragment : PreferenceFragmentCompat() {
         preferenceManager.sharedPreferencesName = EmulationSettings.prefNameForTitle(item.titleId ?: item.key())
         addPreferencesFromResource(R.xml.custom_game_preferences)
         addPreferencesFromResource(R.xml.emulation_preferences)
+
+        AirplaneModePreferenceBinder.bind(findPreference("airplane_mode_ui"), preferenceManager.sharedPreferences)
 
         // Toggle emulation settings enabled state based on use_custom_settings state
         listOf<Preference?>(

@@ -4,6 +4,8 @@
 #include "IScanRequest.h"
 #include "IRequest.h"
 #include "IGeneralService.h"
+#include "network_policy.h"
+#include <services/settings/ISystemSettingsServer.h>
 #include <common/settings.h>
 #include <jvm.h>
 
@@ -41,8 +43,12 @@ namespace skyline::service::nifm {
     }
 
     Result IGeneralService::GetCurrentNetworkProfile(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        if (!(*state.settings->isInternetEnabled))
-            return result::NoInternetConnection;
+        // Match Eden's zero-initialized profile when no network is available.
+        // Do not expose the Android host's DHCP data in the emulated offline state.
+        if (!(*state.settings->isInternetEnabled)) {
+            request.outputBuf.at(0).as<SfNetworkProfileData>() = {};
+            return {};
+        }
 
         const UUID uuid{static_cast<u128>(0xdeadbeef) << 64};
         const auto dhcpInfo{state.jvm->GetDhcpInfo()};
@@ -82,8 +88,10 @@ namespace skyline::service::nifm {
     }
 
     Result IGeneralService::GetCurrentIpAddress(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        if (!(*state.settings->isInternetEnabled))
-            return result::NoInternetConnection;
+        if (!(*state.settings->isInternetEnabled)) {
+            response.Push(std::array<u8, 4>{});
+            return {};
+        }
 
         const auto dhcpInfo{state.jvm->GetDhcpInfo()};
         response.Push(ConvertIntToByteArray(dhcpInfo.ipAddress));
@@ -91,16 +99,17 @@ namespace skyline::service::nifm {
     }
 
     Result IGeneralService::GetCurrentIpConfigInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        if (!(*state.settings->isInternetEnabled))
-            return result::NoInternetConnection;
-
-        const auto dhcpInfo{state.jvm->GetDhcpInfo()};
-
         struct IpConfigInfo {
             IpAddressSetting ipAddressSetting;
             DnsSetting dnsSetting;
         };
         static_assert(sizeof(IpConfigInfo) == 0x16);
+
+        if (!(*state.settings->isInternetEnabled)) {
+            response.Push(IpConfigInfo{});
+            return {};
+        }
+        const auto dhcpInfo{state.jvm->GetDhcpInfo()};
 
         const IpConfigInfo ipConfigInfo{
             .ipAddressSetting{
@@ -120,28 +129,22 @@ namespace skyline::service::nifm {
         return {};
     }
 
+    Result IGeneralService::SetWirelessCommunicationEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // Reuse set:sys's persisted wireless state and Android host permission ceiling.
+        // The guest must not silently enable internet that the user disabled.
+        return manager.CreateOrGetService<settings::ISystemSettingsServer>("set:sys")
+            ->SetWirelessLanEnableFlag(session, request, response);
+    }
+
     Result IGeneralService::IsWirelessCommunicationEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         response.Push<u8>(*state.settings->isInternetEnabled);
         return {};
     }
 
     Result IGeneralService::GetInternetConnectionStatus(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        if (!(*state.settings->isInternetEnabled))
-            return result::NoInternetConnection;
-
-        struct Status {
-            u8 type;
-            u8 wifiStrength;
-            u8 state;
-        };
-        static_assert(sizeof(Status) == 0x3);
-
-        const Status status{
-            .type{static_cast<u8>(NetworkInterfaceType::Wifi)},
-            .wifiStrength{3},
-            .state{4},
-        };
-        response.Push(status);
+        // A disconnected network is a valid status, not an IPC failure. Applications
+        // need to see this response to take their offline initialization path.
+        response.Push(MakeInternetConnectionStatus(*state.settings->isInternetEnabled));
         return {};
     }
 

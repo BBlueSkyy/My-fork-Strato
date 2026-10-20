@@ -9,6 +9,8 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <vector>
+#include <common/settings.h>
+#include <services/nifm/network_policy.h>
 #include "IClient.h"
 
 namespace skyline::service::socket {
@@ -75,6 +77,10 @@ namespace skyline::service::socket {
             return PushBsdResult(response, -1, EINVAL);
 
         i32 hostType{static_cast<i32>(guestType & GuestSocketTypeMask)};
+        // Eden rejects connection-oriented sockets while emulated airplane mode is
+        // active. Check before opening an Android fd to avoid leaking host sockets.
+        if (!(*state.settings->isInternetEnabled) && nifm::IsConnectionOrientedSocket(hostType))
+            return PushBsdResult(response, -1, ENOTCONN);
         if (guestFlags & GuestSocketCloseOnExecution)
             hostType |= SOCK_CLOEXEC;
         if (guestFlags & GuestSocketNonBlocking)
@@ -177,6 +183,8 @@ namespace skyline::service::socket {
     Result IClient::Send(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         i32 fd{request.Pop<i32>()};
         i32 flags{request.Pop<i32>()};
+        if (!(*state.settings->isInternetEnabled))
+            return PushBsdResult(response, -1, ENETUNREACH);
 
         ssize_t result{send(fd, request.inputBuf.at(0).data(), request.inputBuf.at(0).size(), flags)};
         return PushBsdResultErrno(response, result);
@@ -185,6 +193,8 @@ namespace skyline::service::socket {
     Result IClient::SendTo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         i32 fd{request.Pop<i32>()};
         i32 flags{request.Pop<i32>()};
+        if (!(*state.settings->isInternetEnabled))
+            return PushBsdResult(response, -1, ENETUNREACH);
 
         sockaddr_in hostAddress{};
         if (request.inputBuf.size() < 2 || !ToHostAddress(request.inputBuf.at(1), hostAddress))
@@ -227,6 +237,8 @@ namespace skyline::service::socket {
 
     Result IClient::Connect(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         i32 fd{request.Pop<i32>()};
+        if (!(*state.settings->isInternetEnabled))
+            return PushBsdResult(response, -1, ENETUNREACH);
         sockaddr_in hostAddress{};
         if (request.inputBuf.empty() || !ToHostAddress(request.inputBuf.at(0), hostAddress))
             return PushBsdResult(response, -1, EAFNOSUPPORT);
