@@ -21,11 +21,111 @@ namespace skyline::nce {
         return killAllThreads ? "ExitProcess" : "ExitThread";
     }
 
-    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx) {
+    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, u64 guestSp, u64 guestFp, u64 guestX21, u64 guestX22) {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
         auto svc{kernel::svc::SvcTable[svcId]};
+
+        // Diagnostic-only: two bounded samples of a long-running migration-yield loop on HOS-1.
+        // No guest memory or scheduler state is modified.
+        if (state.thread->id == 1) {
+            thread_local u32 consecutiveMigrationYields{};
+            thread_local u8 emittedReports{};
+            if (svcId == 0xB && ctx->gpr.x0 == std::numeric_limits<u64>::max()) {
+                // Saturate *past* the final threshold to avoid emitting on every subsequent yield.
+                if (consecutiveMigrationYields < 262145)
+                    ++consecutiveMigrationYields;
+                if (emittedReports < 2 && (consecutiveMigrationYields == 4096 || consecutiveMigrationYields == 262144)) {
+                    ++emittedReports;
+
+                    auto guestMapped = [&](u64 address, size_t size) {
+                        if (!address || address > std::numeric_limits<u64>::max() - size)
+                            return false;
+                        auto bytes = span<u8>{reinterpret_cast<u8 *>(address), size};
+                        if (!state.process->memory.AddressSpaceContains(bytes) ||
+                            !state.process->memory.IsRangeMapped(bytes))
+                            return false;
+                        // The VMM can contain mapped but unreadable ranges.
+                        const auto chunk = state.process->memory.GetChunk(bytes.data());
+                        return chunk && chunk->second.permission.r;
+                    };
+
+                    // The per-SVC stub saves the original guest LR at [guestSp].
+                    // The shared trampoline saves its patch-return LR at [guestSp + 8].
+                    u64 guestLr{};
+                    u64 patchReturn{};
+                    if (guestMapped(guestSp, 2 * sizeof(u64))) {
+                        std::memcpy(&guestLr, reinterpret_cast<const void *>(guestSp), sizeof(guestLr));
+                        std::memcpy(&patchReturn, reinterpret_cast<const void *>(guestSp + sizeof(u64)), sizeof(patchReturn));
+                    }
+
+                    // Per-SVC patch: BL shared_trampoline; BL LoadCtx; LDR LR; B original_svc+4.
+                    // Decode the last B to recover the exact original SVC instruction address.
+                    u64 guestSvcPc{};
+                    u32 patchBranchInstruction{};
+                    bool patchBranchReadable{};
+                    if (patchReturn && patchReturn <= std::numeric_limits<u64>::max() - 8) {
+                        const u64 patchBranchPc{patchReturn + 8};
+                        if (guestMapped(patchBranchPc, sizeof(patchBranchInstruction))) {
+                            patchBranchReadable = true;
+                            std::memcpy(&patchBranchInstruction, reinterpret_cast<const void *>(patchBranchPc), sizeof(patchBranchInstruction));
+                            if ((patchBranchInstruction & 0xFC000000U) == 0x14000000U) {
+                                const i64 branchOffset{static_cast<i64>(static_cast<i32>(patchBranchInstruction << 6) >> 6) * 4};
+                                const u64 nextPc{static_cast<u64>(static_cast<i64>(patchBranchPc) + branchOffset)};
+                                if (nextPc >= 4 && guestMapped(nextPc - 4, sizeof(patchBranchInstruction)))
+                                    guestSvcPc = nextPc - 4;
+                            }
+                        }
+                    }
+
+                    // In MK11's Wwise GetSpeakerConfiguration loop, X21 is a pointer to
+                    // the 32-bit initialization flag and X22 is a pointer to audio state.
+                    // Both are callee-saved AAPCS64 registers; read only, never mutate.
+                    u32 audioInitFlag{};
+                    const bool audioFlagReadable = guestMapped(guestX21, sizeof(audioInitFlag));
+                    if (audioFlagReadable)
+                        std::memcpy(&audioInitFlag, reinterpret_cast<const void *>(guestX21), sizeof(audioInitFlag));
+
+                    std::vector<void *> guestFrames;
+                    if (guestSvcPc)
+                        guestFrames.push_back(reinterpret_cast<void *>(guestSvcPc));
+                    if (guestLr)
+                        guestFrames.push_back(reinterpret_cast<void *>(guestLr));
+
+                    // AArch64 frame records are [previous X29, saved X30]. Stop on invalid
+                    // or non-increasing pointers; never call the unchecked host stack walker.
+                    u64 fp{guestFp};
+                    for (size_t depth{}; depth < 8 && !(fp & 0xF) && guestMapped(fp, 2 * sizeof(u64)); depth++) {
+                        u64 previousFp{}, savedLr{};
+                        std::memcpy(&previousFp, reinterpret_cast<const void *>(fp), sizeof(previousFp));
+                        std::memcpy(&savedLr, reinterpret_cast<const void *>(fp + sizeof(u64)), sizeof(savedLr));
+                        if (savedLr)
+                            guestFrames.push_back(reinterpret_cast<void *>(savedLr));
+                        if (previousFp <= fp || previousFp - fp > 0x100000)
+                            break;
+                        fp = previousFp;
+                    }
+
+                    std::string rawFrames;
+                    for (void *address : guestFrames)
+                        rawFrames += fmt::format(" 0x{:X}", reinterpret_cast<uintptr_t>(address));
+
+                    LOGW("YieldDiag: HOS-{} consecutive={} guest_svc_pc=0x{:X} guest_lr=0x{:X} "
+                         "guest_fp=0x{:X} guest_sp=0x{:X} core={} ideal_core={} priority={} "
+                         "affinity=0x{:X} paused={} force_yield={} pending_yield={}",
+                         state.thread->id, consecutiveMigrationYields, guestSvcPc, guestLr, guestFp, guestSp,
+                         static_cast<unsigned>(state.thread->coreId), static_cast<unsigned>(state.thread->idealCore),
+                         static_cast<int>(state.thread->priority.load()), state.thread->affinityMask.to_ullong(),
+                         state.thread->isPaused, state.thread->forceYield, state.thread->pendingYield);
+                    LOGW("YieldDiag: guest_x21=0x{:X} audio_flag_readable={} audio_init_flag=0x{:X} guest_x22=0x{:X} patch_return=0x{:X} patch_branch_readable={} patch_branch=0x{:08X} guest_frames={}",
+                         guestX21, audioFlagReadable, audioInitFlag, guestX22,
+                         patchReturn, patchBranchReadable, patchBranchInstruction, rawFrames);
+                }
+            } else {
+                consecutiveMigrationYields = 0;
+            }
+        }
         try {
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
@@ -239,7 +339,7 @@ namespace skyline::nce {
         });
     }
 
-    constexpr size_t TrampolineSize{18}; // Size of the main SVC trampoline function in u32 units
+    constexpr size_t TrampolineSize{21}; // Passes guest FP, X21 and X22 to the bounded diagnostic handler
 
     /**
      * @brief Writes a trampoline to the given target address that saves the current context and calls the given function
@@ -258,18 +358,21 @@ namespace skyline::nce {
         *code++ = 0x910003E2; // MOV X2, SP
         *code++ = 0xF9415423; // LDR X3, [X1, #0x2A8] (ThreadContext::hostSp)
         *code++ = 0x9100007F; // MOV SP, X3
+        *code++ = instructions::Mov(registers::X3, registers::X29).raw; // Guest FP
+        *code++ = instructions::Mov(registers::X4, registers::X21).raw; // Guest Wwise init-flag pointer
+        *code++ = instructions::Mov(registers::X5, registers::X22).raw; // Guest audio-state pointer
 
         /* Store Skyline TLS + guest SP on stack */
         *code++ = 0xA9BF0BE1; // STP X1, X2, [SP, #-16]!
 
-        /* Jump to SvcHandler */
-        for (const auto &mov : instructions::MoveRegister(registers::X2, target)) {
+        /* X2-X5 hold guest diagnostic arguments. Use X6 for the function target. */
+        for (const auto &mov : instructions::MoveRegister(registers::X6, target)) {
             if (mov)
                 *code++ = mov;
             else
                 *code++ = 0xD503201F; // NOP
         }
-        *code++ = 0xD63F0040; // BLR X2
+        *code++ = 0xD63F00C0; // BLR X6
 
         /* Restore Skyline TLS + guest SP */
         *code++ = 0xA8C10BE1; // LDP X1, X2, [SP], #16

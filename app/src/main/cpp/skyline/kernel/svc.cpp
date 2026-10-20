@@ -391,7 +391,7 @@ namespace skyline::kernel::svc {
         } else {
             switch (in) {
                 case yieldWithCoreMigration: {
-                    LOGD("Waking any appropriate parked threads and yielding");
+                    // YieldDiag samples this path in NCE; avoid millions of identical log messages.
                     TRACE_EVENT("kernel", "YieldWithCoreMigration");
                     state.scheduler->WakeParkedThread();
                     state.scheduler->Rotate();
