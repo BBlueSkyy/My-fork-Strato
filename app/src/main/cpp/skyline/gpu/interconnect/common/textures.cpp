@@ -5,6 +5,7 @@
 #include <soc/gm20b/gmmu.h>
 #include <gpu/texture_manager.h>
 #include <gpu/texture/format.h>
+#include <array>
 #include "textures.h"
 
 namespace skyline::gpu::interconnect {
@@ -224,13 +225,14 @@ namespace skyline::gpu::interconnect {
         };
     }
 
-    static std::shared_ptr<TextureView> CreateNullTexture(InterconnectContext &ctx) {
+    static std::shared_ptr<TextureView> CreateNullTexture(InterconnectContext &ctx, bool zeroInitialize = false) {
         constexpr texture::Format NullImageFormat{format::R8G8B8A8Unorm};
         constexpr texture::Dimensions NullImageDimensions{1, 1, 1};
         constexpr vk::ImageLayout NullImageInitialLayout{vk::ImageLayout::eUndefined};
         constexpr vk::ImageTiling NullImageTiling{vk::ImageTiling::eOptimal};
         constexpr vk::ImageCreateFlags NullImageFlags{};
-        constexpr vk::ImageUsageFlags NullImageUsage{vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled};
+        const vk::ImageUsageFlags NullImageUsage{vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled |
+            (zeroInitialize ? vk::ImageUsageFlagBits::eTransferDst : vk::ImageUsageFlags{})};
 
         auto vkImage{ctx.gpu.memory.AllocateImage(
             {
@@ -252,6 +254,36 @@ namespace skyline::gpu::interconnect {
 
         auto nullTexture{std::make_shared<Texture>(ctx.gpu, std::move(vkImage), NullImageDimensions, NullImageFormat, NullImageInitialLayout, NullImageTiling, NullImageFlags, NullImageUsage)};
         nullTexture->TransitionLayout(vk::ImageLayout::eGeneral);
+        if (zeroInitialize) {
+            // A non-resident sparse read returns zero. The old null image had
+            // undefined contents, so it could produce arbitrary sampled colors.
+            // Clear it once and order subsequent shader reads after the transfer.
+            const auto transitionCycle{nullTexture->cycle};
+            auto clearCycle{ctx.gpu.scheduler.Submit([nullTexture](vk::raii::CommandBuffer &commandBuffer) {
+                const vk::ImageSubresourceRange range{
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .levelCount = 1,
+                    .layerCount = 1,
+                };
+                const std::array<float, 4> zeros{};
+                commandBuffer.clearColorImage(nullTexture->GetBacking(), vk::ImageLayout::eGeneral,
+                                              vk::ClearColorValue{zeros}, range);
+                commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands,
+                                              {}, {}, {}, vk::ImageMemoryBarrier{
+                    .image = nullTexture->GetBacking(),
+                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+                    .oldLayout = vk::ImageLayout::eGeneral,
+                    .newLayout = vk::ImageLayout::eGeneral,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .subresourceRange = range,
+                });
+            })};
+            clearCycle->AttachObject(nullTexture);
+            clearCycle->ChainCycle(transitionCycle);
+            nullTexture->cycle = clearCycle;
+        }
         return nullTexture->GetView(vk::ImageViewType::e2D, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,
@@ -412,6 +444,28 @@ namespace skyline::gpu::interconnect {
                     case soc::gm20b::GMMU::MappingState::Sparse: stateName = "sparse"; break;
                     case soc::gm20b::GMMU::MappingState::Resident: stateName = "resident-now"; break;
                     case soc::gm20b::GMMU::MappingState::Unmapped: break;
+                }
+                // The observed UE4 TICs are wholly non-resident sampled color 2D
+                // textures. Sparse reads must be zero; never expose the placeholder
+                // as a physical alias in TextureManager. Do not cache the failed TIC:
+                // a later GMMU Remap must immediately use the real texture.
+                const bool fullySparseColor2D{
+                    guest.mappings.size() == 1 && !guest.mappings.front().valid() &&
+                    firstBadOffset == 0 && firstBadBytes == textureSize && mappedBytes == 0 &&
+                    state == soc::gm20b::GMMU::MappingState::Sparse &&
+                    shaderType == Shader::TextureType::Color2D &&
+                    guest.aspect == vk::ImageAspectFlagBits::eColor &&
+                    (textureHeader.textureType == TextureImageControl::TextureType::e2D ||
+                     textureHeader.textureType == TextureImageControl::TextureType::e2DNoMipmap)
+                };
+                if (fullySparseColor2D) {
+                    if (!sparseZeroTextureView)
+                        sparseZeroTextureView = CreateNullTexture(ctx, true);
+                    if (!reportedSparseZeroFallback) {
+                        LOGI("Sampled sparse 2D textures without resident pages use an initialized zero fallback (remaps are retried)");
+                        reportedSparseZeroFallback = true;
+                    }
+                    return sparseZeroTextureView.get();
                 }
                 LOGW("Unmapped texture in pool: 0x{:X} tic={} first_bad=0x{:X} bad_bytes=0x{:X} state={} mapped=0x{:X}/0x{:X} segments={} dims={}x{}x{} layers={} base_layer={} mips={} view_mips={}/{} format=0x{:X} tiling={}",
                      textureIova, index, firstBadIova, firstBadBytes, stateName, mappedBytes, textureSize,
