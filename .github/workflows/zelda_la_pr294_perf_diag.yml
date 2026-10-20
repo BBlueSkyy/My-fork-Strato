@@ -1,0 +1,78 @@
+name: Zelda LA PR294 texture cost diagnostics
+
+# Single diagnostic build for the confirmed PR294 Zelda FPS regression.
+# This workflow builds PR294 + two prior correctness fixes + low-volume counters, not master.
+on:
+  push:
+    branches:
+      - diag/zelda-la-marvel-texture-costs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zelda-la-pr294-texture-costs
+  cancel-in-progress: true
+
+jobs:
+  android-arm64-reldebug:
+    name: Build PR294 texture diag ARM64 DevReldebug
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact Marvel #294 Strato commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Fetch exact historical submodules with network retries
+        run: |
+          git submodule sync --recursive
+          for attempt in 1 2 3 4; do
+            if git -c protocol.version=2 submodule update --init --force --depth=1 --recursive; then
+              echo "Submodules fetched successfully (attempt $attempt)"
+              break
+            fi
+            if [ "$attempt" -eq 4 ]; then
+              echo "::error::Submodule checkout failed after four attempts"
+              exit 1
+            fi
+            echo "::warning::Transient submodule fetch failure (attempt $attempt/4); retrying"
+          done
+
+      - name: Verify comparison source
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          echo "PR294 + prior correctness fixes + sampled low-volume diagnostic counters"
+
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore CCache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 3Gi
+
+      - name: Install Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          ln -s /usr/bin/ninja ./ninja
+
+      - name: Assemble ARM64 DevReldebug (no extra test suites)
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevReldebug
+
+      - name: Upload PR294 Zelda texture diag APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: strato-zelda-pr294-texture-diag-arm64-devreldebug
+          path: app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk
+          if-no-files-found: error
+          retention-days: 14
