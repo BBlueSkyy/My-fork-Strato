@@ -62,6 +62,8 @@ namespace skyline::kernel {
             void *stackTop; //!< The top of the guest's stack, this is set to the initial guest stack pointer
             u8 *tlsRegion{}; //!< The TLS region for this thread, this is a host pointer so it may need translation before use in guest code
 
+            CoreMask parkedWakeCores{}; //!< Protected by Scheduler::parkedMutex; deferred yield handoffs after migration-lock contention
+            bool parkedRecheck{}; //!< Protected by Scheduler::parkedMutex; requests an idle-core recheck after a contended wake
             AdaptiveSingleWaiterConditionVariable scheduleCondition; //!< Signalled to wake the thread when it's scheduled or its resident core changes
             std::atomic<i8> basePriority; //!< The priority of the thread for the scheduler without any priority-inheritance
             std::atomic<i8> priority; //!< The priority of the thread for the scheduler including priority-inheritance
