@@ -83,27 +83,27 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || github.run_number }}
         run: |
           if [[ "${{ github.head_ref || github.ref_name }}" == "debug/ender-lilies-mini-renderdoc" ]]; then
-            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevReldebug
+            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
           else
             ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
           fi
       - name: Rename APKs
         if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
         run: |
+          mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.pull_request.number || github.run_number }}-release.apk
           if [[ "${{ github.head_ref || github.ref_name }}" != "debug/ender-lilies-mini-renderdoc" ]]; then
-            mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.pull_request.number || github.run_number }}-release.apk
+            mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.pull_request.number || github.run_number }}-reldebug.apk
           fi
-          mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.pull_request.number || github.run_number }}-reldebug.apk
 
       - name: Upload Release APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && github.head_ref != 'debug/ender-lilies-mini-renderdoc' && github.ref_name != 'debug/ender-lilies-mini-renderdoc' }}
+        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: strato-pr${{ github.event.pull_request.number || github.run_number }}-release.apk
           path: strato-pr${{ github.event.pull_request.number || github.run_number }}-release.apk
 
       - name: Upload Debug APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
+        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && github.head_ref != 'debug/ender-lilies-mini-renderdoc' && github.ref_name != 'debug/ender-lilies-mini-renderdoc' }}
         uses: actions/upload-artifact@v4
         with:
           name: strato-pr${{ github.event.pull_request.number || github.run_number }}-reldebug.apk
