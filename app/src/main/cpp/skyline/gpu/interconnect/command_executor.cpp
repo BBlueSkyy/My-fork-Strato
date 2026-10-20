@@ -496,7 +496,7 @@ namespace skyline::gpu::interconnect {
         if (!capture.active.load(std::memory_order_acquire))
             return false;
         const auto match{FindFocusedFullDraw(sampled, color, blendingEnabled)};
-        if (!match)
+        if (!match || match->kind != diagnostic::UiFrameCapture::TextFocus::FullSprite)
             return false;
 
         // Snapshot a real descriptor-resolved source, target before the draw,
@@ -519,8 +519,25 @@ namespace skyline::gpu::interconnect {
         // Capture the descriptor-resolved source BEFORE it is sampled. Copying
         // it after the draw could falsely blame a producer when the output
         // aliases the source backing or a subsequent writer modifies it.
-        diagnosticPassImages.push_back({match->source->texture, false, true, false, true,
-                                        drawId, "scene_source_before"});
+        // Four source views are descriptor-resolved by the current pipeline.
+        // The first capture proved the HDR scene is intact, while the BGRA8
+        // result is already corrupt. Reallocate the former final-pass budget
+        // to snapshot ALL sampled inputs of the actual HDR->BGRA pass, rather
+        // than assuming the HDR view alone determines its output.
+        for (std::size_t i{}; i < sampled.size(); ++i) {
+            auto *view{sampled[i]};
+            if (!view || !view->texture ||
+                view->texture.get() == match->target->texture.get() ||
+                !IsDiagnosticSceneSource(*view->texture))
+                continue;
+            diagnosticPassImages.push_back({view->texture, false, true, false, true,
+                                            drawId, "scene_sampled_before"});
+            capture.Record(fmt::format(
+                "SCENE_SAMPLED_INPUT draw_id={} slot={} image=0x{:X} {}x{} format={} bytes={}",
+                drawId, i, reinterpret_cast<std::uintptr_t>(view->texture.get()),
+                view->texture->dimensions.width, view->texture->dimensions.height,
+                vk::to_string(view->texture->format->vkFormat), view->texture->surfaceSize));
+        }
         capture.Record(fmt::format(
             "SCENE_CONSUMER_PRE draw_id={} kind={} interval={} executor=0x{:X} "
             "submission={} rp={} source=0x{:X} source_cycle=0x{:X} "
@@ -594,6 +611,10 @@ namespace skyline::gpu::interconnect {
             reinterpret_cast<uintptr_t>(match->source->texture->cycle.get()),
             match->source->range.levelCount, match->source->range.layerCount,
             bindings));
+        // The last BGRA->RGBA pass preserves the corruption: retain its state
+        // in the trace but avoid needless renderpass splits/readbacks here.
+        if (match->kind != diagnostic::UiFrameCapture::TextFocus::FullSprite)
+            return;
 
         // The earlier Naruto-specific fourth-text compositor probe is
         // deliberately disabled for scene diagnostics. Paired draws below
