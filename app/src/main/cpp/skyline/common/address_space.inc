@@ -239,7 +239,9 @@ namespace skyline {
         VaType blockSize{std::min(successor->virt - virt, size)};
 
         while (size) {
-            if (predecessor->phys) {
+            // Sparse allocations contain a non-dereferenceable placeholder. Match
+            // LookupBlockLocked() and report them as unavailable host memory.
+            if (predecessor->phys && !predecessor->extraInfo.sparseMapped) {
                 span cpuBlock{blockPhys, blockSize};
                 if (cpuAccessCallback)
                     cpuAccessCallback(cpuBlock);
