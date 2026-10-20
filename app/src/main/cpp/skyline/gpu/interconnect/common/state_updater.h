@@ -226,7 +226,8 @@ namespace skyline::gpu::interconnect {
             }
 
             if constexpr (PushDescriptor) {
-                commandBuffer.pushDescriptorSetKHR(updateInfo->bindPoint, updateInfo->pipelineLayout, updateInfo->descriptorSetIndex, updateInfo->writes);
+                if (!updateInfo->writes.empty())
+                    commandBuffer.pushDescriptorSetKHR(updateInfo->bindPoint, updateInfo->pipelineLayout, updateInfo->descriptorSetIndex, updateInfo->writes);
             } else {
                 // Set the destination/(source) descriptor set(s) for all writes/(copies)
                 for (auto &write : updateInfo->writes)

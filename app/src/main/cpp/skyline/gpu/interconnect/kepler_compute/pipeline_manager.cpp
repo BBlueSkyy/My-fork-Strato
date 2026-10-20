@@ -69,8 +69,17 @@ namespace skyline::gpu::interconnect::kepler_compute {
                                                                                const PackedPipelineState &packedState,
                                                                                const Pipeline::ShaderStage &shaderStage,
                                                                                span<vk::DescriptorSetLayoutBinding> layoutBindings) {
+        u32 descriptorCount{};
+        for (const auto &binding : layoutBindings)
+            descriptorCount += binding.descriptorCount;
+
+        const bool usesPushDescriptors{
+            ctx.gpu.traits.supportsPushDescriptors &&
+            descriptorCount <= ctx.gpu.traits.maxPushDescriptors
+        };
+
         vk::raii::DescriptorSetLayout descriptorSetLayout{ctx.gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
-            .flags = vk::DescriptorSetLayoutCreateFlags{ctx.gpu.traits.supportsPushDescriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR : vk::DescriptorSetLayoutCreateFlags{}},
+            .flags = usesPushDescriptors ? vk::DescriptorSetLayoutCreateFlags{vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR} : vk::DescriptorSetLayoutCreateFlags{},
             .pBindings = layoutBindings.data(),
             .bindingCount = static_cast<u32>(layoutBindings.size()),
         }};
@@ -101,6 +110,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             .pipeline = std::move(pipeline),
             .pipelineLayout = std::move(pipelineLayout),
             .descriptorSetLayout = std::move(descriptorSetLayout),
+            .usesPushDescriptors = usesPushDescriptors,
         };
     }
 
