@@ -47,10 +47,18 @@ namespace skyline::gpu::interconnect {
         blockMappingEndAddr = 0; // Will force a retranslate of `blockMapping` on the next `Update()` call
     }
 
-    void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset, std::source_location location) {
+    void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset,
+                              std::source_location location, bool retryPendingGpuWrites) {
         ContextLock lock{executor.tag, view};
-        view.Read(lock.IsFirstUsage(), [location, srcOffset, size = dstBuffer.size()] {
-            // TODO: here we should trigger `Execute()`, however that doesn't currently work due to Read being called mid-draw and attached objects not handling this case
+        view.Read(lock.IsFirstUsage(), [retryPendingGpuWrites, location, srcOffset, size = dstBuffer.size()] {
+            if (retryPendingGpuWrites) {
+                // The caller is preparing a draw, possibly from the shader
+                // compiler. A direct Submit here would run while the buffer
+                // and other draw resources are locked, and would invalidate
+                // partially constructed pipeline/descriptor state. Unwind and
+                // let the outer draw retry boundary submit before recreating it.
+                throw GpuDirtyConstantBufferReadRequest{};
+            }
             LOGW("GPU dirty buffer reads for attached buffers are unimplemented (caller: {}:{}, function: {}, offset: 0x{:X}, size: 0x{:X})",
                  location.file_name(), location.line(), location.function_name(), srcOffset, size);
         }, dstBuffer, srcOffset);

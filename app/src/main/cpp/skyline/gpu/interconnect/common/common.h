@@ -24,6 +24,11 @@ namespace skyline::gpu::interconnect {
 namespace skyline::gpu::interconnect {
     namespace engine_common = skyline::soc::gm20b::engine;
 
+    // Ask the surrounding draw-preparation retry boundary to submit pending
+    // writes before compiling a shader that requires their CPU-visible result.
+    // Thrown only for a GPU-dirty constant-buffer read performed mid-draw.
+    struct GpuDirtyConstantBufferReadRequest {};
+
     /**
      * @brief Holds GPU context for an interconnect instance
      */
@@ -75,13 +80,25 @@ namespace skyline::gpu::interconnect {
         BufferView view;
 
         void Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset,
-                  std::source_location location = std::source_location::current());
+                  std::source_location location = std::source_location::current(),
+                  bool retryPendingGpuWrites = false);
 
         template<typename T>
         T Read(CommandExecutor &executor, size_t srcOffset,
                std::source_location location = std::source_location::current()) {
             T object;
             Read(executor, span<T>{object}.template cast<u8>(), srcOffset, location);
+            return object;
+        }
+
+        // Only call from an operation guarded by RunWithTextureBackingRetry.
+        // Unlike a normal read, attached GPU-dirty data must unwind the draw
+        // before submitting, then reconstruct shader/pipeline state on retry.
+        template<typename T>
+        T ReadForShaderCompile(CommandExecutor &executor, size_t srcOffset,
+                               std::source_location location = std::source_location::current()) {
+            T object;
+            Read(executor, span<T>{object}.template cast<u8>(), srcOffset, location, true);
             return object;
         }
     };

@@ -41,6 +41,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     void ConstantBuffers::Load(InterconnectContext &ctx, span<u32> data, u32 offset) {
         TRACE_EVENT("gpu", "ConstantBuffers::Load");
+        // The contents of an already-bound CBUF can change without a new bind.
+        // Its descriptor must be refreshed rather than reused unchanged.
+        DisableQuickBind();
 
         auto &view{*selectorState.UpdateGet(ctx, data.size_bytes()).view};
         auto srcCpuBuf{data.cast<u8>()};
@@ -83,19 +86,27 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
     }
 
-   void ConstantBuffers::Bind(InterconnectContext &ctx, engine::ShaderStage stage, size_t index) {
-      auto &view{*selectorState.UpdateGet(ctx).view};
-      if (!view)
-        throw exception("Constant buffer selector is not mapped");
+    void ConstantBuffers::Bind(InterconnectContext &ctx, engine::ShaderStage stage, size_t index) {
+        auto &view{*selectorState.UpdateGet(ctx).view};
+        if (!view)
+            throw exception("Constant buffer selector is not mapped");
 
         boundConstantBuffers[static_cast<size_t>(stage)][index] = {view};
 
-        // Forçando o caminho lento para testar os vértices do DBFZ
-        DisableQuickBind(); 
-            }
+        // The fast path can update one changed CBUF binding between draws.
+        // After two distinct binds the descriptors need a full refresh.
+        if (quickBindEnabled) {
+            if (quickBind)
+                DisableQuickBind();
+            else
+                quickBind = QuickBind{index, stage};
+        }
+    }
 
     void ConstantBuffers::Unbind(engine::ShaderStage stage, size_t index) {
         boundConstantBuffers[static_cast<size_t>(stage)][index] = {};
+        // The quick updater expects a valid bound view, not an unbound slot.
+        DisableQuickBind();
     }
 
     void ConstantBuffers::ResetQuickBind() {
