@@ -9,7 +9,8 @@
 #include "common.h"
 
 namespace skyline::gpu::interconnect {
-    void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn) {
+    void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn,
+                                        std::source_location location) {
         // Keep the original O(1) single-block lookup. The GMMU cache is purged
         // after remapping/semaphores, exactly as before this change.
         if (address < blockMappingStartAddr || address >= blockMappingEndAddr) {
@@ -44,9 +45,13 @@ namespace skyline::gpu::interconnect {
         if (splitMappingWarn && isSplit) {
             bool resolved{};
             size_t mappingCount{};
+            size_t secondMappingSize{};
+            const char *failureReason{"gpu-address-overflow"};
             if (size <= std::numeric_limits<u64>::max() - address) {
                 auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(address, size)};
                 mappingCount = mappings.size();
+                secondMappingSize = mappingCount > 1 ? mappings[1].size() : 0;
+                failureReason = "incomplete-or-empty-range";
 
                 // Only a fully mapped, physically adjacent sequence can use the
                 // existing BufferManager and its zero-copy BufferView semantics.
@@ -57,15 +62,25 @@ namespace skyline::gpu::interconnect {
                 uintptr_t nextPhysical{};
                 bool physicallyContiguous{!mappings.empty()};
                 for (const auto &mapping : mappings) {
-                    if (!mapping.valid() || mapping.empty() ||
-                        mapping.size() > size - translatedSize) {
+                    if (!mapping.valid() || mapping.empty()) {
+                        failureReason = "unmapped-or-empty-piece";
+                        physicallyContiguous = false;
+                        break;
+                    }
+                    if (mapping.size() > size - translatedSize) {
+                        failureReason = "translated-range-exceeds-request";
                         physicallyContiguous = false;
                         break;
                     }
                     const uintptr_t begin{reinterpret_cast<uintptr_t>(mapping.data())};
                     if (begin == 0 ||
-                        mapping.size() > std::numeric_limits<uintptr_t>::max() - begin ||
-                        (translatedSize != 0 && begin != nextPhysical)) {
+                        mapping.size() > std::numeric_limits<uintptr_t>::max() - begin) {
+                        failureReason = "physical-address-overflow";
+                        physicallyContiguous = false;
+                        break;
+                    }
+                    if (translatedSize != 0 && begin != nextPhysical) {
+                        failureReason = "noncontiguous-physical-pieces";
                         physicallyContiguous = false;
                         break;
                     }
@@ -74,6 +89,7 @@ namespace skyline::gpu::interconnect {
                 }
                 if (physicallyContiguous && translatedSize == size &&
                     mappings.front().data() == fullMapping.data()) {
+                    failureReason = "buffer-view-not-created";
                     auto completeMapping{span<u8>{mappings.front().data(), size}};
                     if (view) {
                         if (auto reused{view.GetBuffer()->TryGetView(completeMapping)}; reused) {
@@ -89,6 +105,8 @@ namespace skyline::gpu::interconnect {
                             });
                         resolved = static_cast<bool>(view);
                     }
+                } else if (physicallyContiguous && translatedSize == size) {
+                    failureReason = "first-physical-mapping-mismatch";
                 }
             }
 
@@ -112,8 +130,9 @@ namespace skyline::gpu::interconnect {
             static std::atomic<u64> warningCount{};
             const u64 hit{warningCount.fetch_add(1, std::memory_order_relaxed) + 1};
             if (hit <= 16 || (hit & 0x3FF) == 0) {
-                LOGW("Split buffer mappings are not supported: hit={} address=0x{:X} size=0x{:X} first=0x{:X} mappings={}",
-                     hit, address, size, fullMapping.size(), mappingCount);
+                LOGW("Split buffer mappings are not supported: hit={} address=0x{:X} size=0x{:X} first=0x{:X} mappings={} second=0x{:X} reason={} caller={}:{} function={}",
+                     hit, address, size, fullMapping.size(), mappingCount, secondMappingSize,
+                     failureReason, location.file_name(), location.line(), location.function_name());
             }
         }
 
