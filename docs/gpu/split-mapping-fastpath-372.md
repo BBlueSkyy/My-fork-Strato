@@ -104,3 +104,33 @@ Remaining work to fix the noncontiguous split requires a split-only
 multi-mapping backing path, preserving the original O(1) BufferManager
 and BufferView hot paths and correct GPU writeback/alias/fence semantics.
 Do not import #321's global mapping-container rewrite wholesale.
+
+## Follow-up Release log after compute CBUF retry change
+
+Uploaded `emulation.zip` contains Jujutsu v1.0.0 on Turnip Adreno 650
+driver 24.0.99. The last message is `VK_ERROR_DEVICE_LOST` at
+59,751,045 microseconds, after three `VK_ERROR_OUT_OF_POOL_MEMORY`
+messages. The previous `GPU dirty buffer reads for attached buffers are
+unimplemented` warnings are absent (zero); the prior bindless tracking
+exception remains absent.
+
+There is still **no** `Split buffer mapping recovered` message. Two
+disjoint ranges appear in throttled logs:
+
+- GPU 0x407CE0000: requested 0x1E0000, first 0x140000, two pieces.
+- GPU 0x40B020000: requested 0x200000, first 0x180000, two pieces.
+
+The warning hit counter reached 3072; this is **not** the total of
+logged warning lines, which are throttled. The new Release-log
+instrumentation records source-location, the second piece's size and
+the rejection reason only on preexisting warned split failures.
+It performs no additional work in the contiguous map branch besides
+passing the caller's compile-time location to the function. This
+diagnostic is not a noncontiguous split fix. Use it to identify the
+actual binding category (SSBO, image buffer, vertex/index, etc.)
+before implementing proper read/write and fence semantics.
+
+The previous log with five GPU-dirty warnings and device loss at
+137.7s also reported Turnip 24.0.99; neither run establishes a
+performance regression or causal explanation for DEVICE_LOST
+without controlled, repeatable device measurements.
