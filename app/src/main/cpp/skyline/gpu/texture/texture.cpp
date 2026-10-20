@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu.h>
+#include <atomic>
 #include <kernel/memory.h>
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
@@ -987,6 +988,14 @@ namespace skyline::gpu {
         backingViewFormats = gpu.traits.supportsImageFormatList ? std::move(admitted) : std::vector<vk::Format>{};
         ++backingGeneration;
         cycle = std::move(copyCycle);
+        // Diagnosis only: log successful backing promotions at powers of two.
+        // No logging or atomics are added to the per-draw fast path.
+        static std::atomic<u64> promotions{0};
+        const auto count{promotions.fetch_add(1, std::memory_order_relaxed) + 1};
+        if ((count & (count - 1)) == 0)
+            LOGI("PerfDiag294: backing promotions={} latest={}x{} mips={} layers={} sourceValid={}",
+                 count, dimensions.width, dimensions.height, levelCount, layerCount,
+                 layout != vk::ImageLayout::eUndefined);
     }
 
     std::shared_ptr<TextureView> Texture::GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format pFormat, vk::ComponentMapping mapping, ContextTag context) {
