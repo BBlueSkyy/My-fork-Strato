@@ -491,6 +491,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
 
             ENGINE_CASE(invalidateTextureHeaderCacheAll, {
                 channelCtx.executor.Submit();
+                interconnect.InvalidateTicCache();
             })
 
             // Begin a batch constant buffer update, this case will never be reached if a batch update is currently active

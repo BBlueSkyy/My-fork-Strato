@@ -145,6 +145,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
                   DirtyManager &manager,
                   const EngineRegisterBundle &registerBundle);
 
+        // Called only after the Maxwell TIC-header invalidate command has
+        // submitted earlier work. Drops resolved descriptor-view caches.
+        void InvalidateTicCache();
+
         /**
          * @brief Loads the given data into the constant buffer pointed by the constant buffer selector starting at the given offset
          */

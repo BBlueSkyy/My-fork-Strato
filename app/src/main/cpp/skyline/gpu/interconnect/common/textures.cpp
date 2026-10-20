@@ -17,7 +17,14 @@ namespace skyline::gpu::interconnect {
     void TexturePoolState::Flush(InterconnectContext &ctx) {
         auto mapping{ctx.channelCtx.asCtx->gmmu.LookupBlock(engine->texHeaderPool.offset)};
 
-        textureHeaders = mapping.first.subspan(mapping.second).cast<TextureImageControl>().first(engine->texHeaderPool.maximumIndex + 1);
+        auto headers{mapping.first.subspan(mapping.second).cast<TextureImageControl>().first(engine->texHeaderPool.maximumIndex + 1)};
+        if (!hasBoundPool || lastPoolBase != headers.data() || lastPoolSize != headers.size()) {
+            ++poolGeneration;
+            lastPoolBase = headers.data();
+            lastPoolSize = headers.size();
+            hasBoundPool = true;
+        }
+        textureHeaders = headers;
     }
 
     void TexturePoolState::PurgeCaches() {
@@ -28,6 +35,13 @@ namespace skyline::gpu::interconnect {
 
     void Textures::MarkAllDirty() {
         texturePool.MarkDirty(true);
+        // Flushes invalidate the index-local fast path, not shared views.
+        ticCache.InvalidateIndexed();
+    }
+
+    void Textures::InvalidateTicCache() {
+        texturePool.MarkDirty(true);
+        ticCache.InvalidateAll();
     }
 
     static texture::Format ConvertTicFormat(TextureImageControl::FormatWord format, bool srgb) {
@@ -259,42 +273,15 @@ namespace skyline::gpu::interconnect {
         });;
     }
 
-    TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
-        if (textureHeaderCache.size() != textureHeaders.size()) {
-            textureHeaderCache.resize(textureHeaders.size());
-            std::fill(textureHeaderCache.begin(), textureHeaderCache.end(), CacheEntry{});
-        } else if (textureHeaders.size() > index && textureHeaderCache[index].view) {
-            auto &cached{textureHeaderCache[index]};
-            if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber)
-                return cached.view;
-
-            if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
-                cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
-                return cached.view;
-            }
-        }
-
-        if (index >= textureHeaders.size()) {
-            if (!nullTextureView)
-                nullTextureView = CreateNullTexture(ctx);
-
-            return nullTextureView.get();
-        }
-
-        TextureImageControl &textureHeader{textureHeaders[index]};
-        auto &texture{textureHeaderStore[textureHeader]};
-
-        if (!texture || texture->texture->replaced) {
-            // If the entry didn't exist prior then we need to convert the TIC to a GuestTexture
+    // Decode guest TIC metadata without consulting host Vulkan textures or caches.
+    // Address translation and backing resolution happen separately.
+    static std::optional<GuestTexture> DecodeGuestTic(const TextureImageControl &textureHeader,
+                                                      Shader::TextureType shaderType) {
             GuestTexture guest{};
             if (auto format{ConvertTicFormat(textureHeader.formatWord, textureHeader.isSrgb)}) {
                 guest.format = format;
             } else {
-                if (!nullTextureView)
-                    nullTextureView = CreateNullTexture(ctx);
-
-                return nullTextureView.get();
+                return {};
             }
 
             guest.aspect = guest.format->Aspect(textureHeader.formatWord.swizzleX == TextureImageControl::ImageSwizzle::R);
@@ -380,20 +367,47 @@ namespace skyline::gpu::interconnect {
                     guest.tileConfig.blockHeight >>= 1;
             }
 
-            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
-            guest.mappings.assign(mappings.begin(), mappings.end());
-            if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
-                LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
-                if (!nullTextureView)
-                    nullTextureView = CreateNullTexture(ctx);
+        return guest;
+    }
 
-                return nullTextureView.get();
-            }
-            texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
+    TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
+        auto &pool{texturePool.UpdateGet(ctx)};
+        auto headers{pool.textureHeaders};
+        ticCache.ObservePool(headers.size(), pool.poolGeneration);
+
+        if (index >= headers.size()) {
+            if (!nullTextureView)
+                nullTextureView = CreateNullTexture(ctx);
+            return nullTextureView.get();
         }
 
-        textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber};
-        return texture.get();
+        const auto textureHeader{headers[index]};
+        if (auto *cached{ticCache.Lookup(index, textureHeader, shaderType)})
+            return cached;
+
+        auto guest{DecodeGuestTic(textureHeader, shaderType)};
+        if (!guest) {
+            if (!nullTextureView)
+                nullTextureView = CreateNullTexture(ctx);
+            return nullTextureView.get();
+        }
+
+        // The TIC decoder is independent of GMMU identity and the Texman.
+        // A fresh resolution is required after an explicit TIC invalidation.
+        auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest->GetSize())};
+        guest->mappings.assign(mappings.begin(), mappings.end());
+        if (guest->mappings.empty() ||
+            !std::all_of(guest->mappings.begin(), guest->mappings.end(), [](auto map) { return map.valid(); }) ||
+            guest->mappings.front().empty()) {
+            LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
+            if (!nullTextureView)
+                nullTextureView = CreateNullTexture(ctx);
+            return nullTextureView.get();
+        }
+
+        auto view{ctx.gpu.texture.FindOrCreate(*guest, ctx.executor.tag)};
+        ticCache.Remember(index, textureHeader, shaderType, view);
+        return view.get();
     }
 
     Shader::TextureType Textures::GetTextureType(InterconnectContext &ctx, u32 index) {

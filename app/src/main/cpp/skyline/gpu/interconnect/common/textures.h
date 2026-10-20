@@ -9,6 +9,7 @@
 #include <gpu/texture/texture.h>
 #include "common.h"
 #include "tic.h"
+#include "tic_cache_v2.h"
 
 namespace skyline::gpu::interconnect {
     class TexturePoolState : dirty::CachedManualDirty {
@@ -21,9 +22,13 @@ namespace skyline::gpu::interconnect {
 
       private:
         dirty::BoundSubresource<EngineRegisters> engine;
+        const TextureImageControl *lastPoolBase{};
+        size_t lastPoolSize{};
+        bool hasBoundPool{};
 
       public:
         span<TextureImageControl> textureHeaders;
+        u64 poolGeneration{1};
 
         TexturePoolState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine);
 
@@ -56,22 +61,22 @@ namespace skyline::gpu::interconnect {
         std::shared_ptr<TextureView> nullTextureView{};
         dirty::ManualDirtyState<TexturePoolState> texturePool;
 
-        tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
+        using TextureHeaderKey = tic_cache::Key<TextureImageControl, Shader::TextureType>;
+        using TextureHeaderKeyHash = tic_cache::KeyHash<
+            TextureImageControl, Shader::TextureType, util::ObjectHash<TextureImageControl>>;
+        using TextureHeaderStore = tsl::robin_map<
+            TextureHeaderKey, std::shared_ptr<TextureView>, TextureHeaderKeyHash>;
+        tic_cache::Cache<TextureImageControl, Shader::TextureType, TextureView, TextureHeaderStore> ticCache;
         tsl::robin_map<TexelBufferViewKey, std::unique_ptr<vk::raii::BufferView>, TexelBufferViewKeyHash> texelBufferViewStore;
 
         vk::raii::BufferView *GetOrCreateTexelBufferView(InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format);
 
-        struct CacheEntry {
-            TextureImageControl tic;
-            TextureView *view;
-            u64 sequenceNumber;
-        };
-        std::vector<CacheEntry> textureHeaderCache;
-
+ 
       public:
         Textures(DirtyManager &manager, const TexturePoolState::EngineRegisters &engine);
 
         void MarkAllDirty();
+        void InvalidateTicCache();
 
         TextureView *GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType);
 
