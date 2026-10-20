@@ -23,8 +23,23 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: 8c3f1b7bbf43d2c4d3fc91abd422fed5c971f0e9
-          submodules: recursive
+          submodules: false
           persist-credentials: false
+
+      - name: Fetch exact historical submodules with network retries
+        run: |
+          git submodule sync --recursive
+          for attempt in 1 2 3 4; do
+            if git -c protocol.version=2 submodule update --init --force --depth=1 --recursive; then
+              echo "Submodules fetched successfully (attempt $attempt)"
+              break
+            fi
+            if [ "$attempt" -eq 4 ]; then
+              echo "::error::Submodule checkout failed after four attempts"
+              exit 1
+            fi
+            echo "::warning::Transient submodule fetch failure (attempt $attempt/4); retrying"
+          done
 
       - name: Verify comparison source
         run: |
