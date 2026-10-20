@@ -380,6 +380,7 @@ namespace skyline::gpu::interconnect {
                     guest.tileConfig.blockHeight >>= 1;
             }
 
+            // End TIC construction: guest memory mapping and size validation follow.
             const auto textureIova{textureHeader.Iova()};
             const auto textureSize{guest.GetSize()};
             auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureIova, textureSize)};
