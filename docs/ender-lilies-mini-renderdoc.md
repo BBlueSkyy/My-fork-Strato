@@ -57,3 +57,17 @@ O shader fragment `FB8C54CC98E5C241` tem **quatro operações** `OpImageSampleIm
 **Nova instrumentação (commit `b943f24`)**: usar as seis cópias por intervalo para `target_before` + **todos os quatro sampled inputs pré-draw**, incluindo slots 0, 1 e 2, + `target_after` para o primeiro pass **HDR->BGRA8**. A posição real dos slots vai em `SCENE_SAMPLED_INPUT slot=N`; cada source RAW é correlacionável por `PHASE2_SNAPSHOT`, `draw_id`, textura, formato e ordem dos eventos. O pass final continua rastreado em `SCENE_CONSUMER_DRAW`, mas não recebe mais cópias nem split de render pass.
 
 **Por que não corrigir ainda:** a imagem HDR estar correta prova que o primeiro input principal foi produzido, mas não prova a qualidade dos 32×32, 1×1, 320×180, ou a tradução de amostragem/cálculos do shader. Identificar o primeiro input inválido ou uma divergência SPIR-V/CBUF é essencial para correção genérica sem regressões. A captura é manual, **DevRelease**, PR Draft sem merge; não acompanhar Actions automaticamente.
+
+## Quarta captura — textura 3D de gradação de cores (análise de `capture_001.zip` mais recente)
+
+A terceira execução de DevRelease completou 24 frames de apresentação. O compositor `FB8C54CC98E5C241` continua lendo **quatro** entradas, mas a captura anterior salvou apenas as entradas 1 (1×1 RGBA8 = `[0,0,0,255]`), 2 (320×180 HDR, imagem desfocada) e 3 (1280×720 HDR, cenário completo). O BGRA8 pré-draw está zerado e o BGRA8 pós-draw apresenta a silhueta preta.
+
+**Nova evidência decisiva para direcionar a investigação, mas não ainda a causa comprovada:**
+
+- O SPIR-V real `ui_i0_d1_shader_FB8C54CC98E5C241.spv` declara `OpTypeImage` com `Dim=3D` para a primeira textura `fs_tex2_168`. O formato do recurso vinculado é `A2B10G10R10UnormPack32`, declarado como 32×32 no trace (sem informar profundidade).
+- A GPU registra um produtor real: `DRAW kind=direct indexed=false count=4 instances=32 scissor=0,0,32x32` com target **a mesma textura**. Isso é compatível com o preenchimento de 32 slices de uma LUT 3D, mas não comprova que todas tenham sido escritas corretamente.
+- O filtro `IsDiagnosticSceneSource` anterior tinha `dimensions.depth == 1`. Por isso, um recurso 3D com depth > 1 seria **ignorado**, mesmo estando devidamente vinculado. Não é prova de falta de suporte na emulação — só uma omissão da própria instrumentação.
+
+**Nova instrumentação** (commit `9f963a0`): aceitar snapshots de fontes 3D compactas, dimensões até 128×128×64 e ≤16 MiB, conservando as verificações de `TransferSrc`, cor, mip/layer e layout válido. Cada `SCENE_SAMPLED_INPUT` registra agora `WxHxD`, e cada `pre_XX.txt` inclui `depth=`. A cópia de imagens 3D usa `Texture::CopyIntoStagingBuffer` com `GetBufferImageCopies()`, no mesmo command stream e sem alteração funcional. Caso a LUT continue ausente, será necessário registrar as razões exatas da rejeição, não capturar pixels de memória guest potencialmente desatualizados.
+
+**Objetivo do próximo teste:** verificar se os 32 slices contêm gradação de cores válida, zeros ou dados não inicializados e correlacionar o produtor com o consumidor. Capturar `capture_###.zip` e `emulation.log` do novo **DevRelease**; não fazer correção especulativa na GPU. PR Draft, sem merge; não acompanhar Actions automaticamente.
