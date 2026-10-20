@@ -76,3 +76,31 @@ Awakening and at least one unchanged title for regression.
 The final GPU device loss may instead originate from GPU-dirty CBUF reads,
 descriptor lifetime/resource use, or another Turnip fault. This experiment
 does not claim to fix those separate causes.
+
+## Jujutsu device log follow-up (Oct 20, 2026)
+
+The new ARM64 Release log reports the repeated exact GPU address 0x407CE0000:
+requested 0x1E0000 (1,966,080 bytes), first physical mapping 0x140000
+(1,310,720 bytes), two GMMU mappings. No
+`Split buffer mapping recovered` line appeared. The counter reached at
+least 4096 while warnings were rate limited. This proves the physically
+contiguous path in this PR did not solve the observed split request.
+
+The same run has four Turnip VK_ERROR_OUT_OF_POOL_MEMORY reports and ends
+with VK_ERROR_DEVICE_LOST at log timestamp 137678469 (about 137.7 s).
+The crash is not proven to be caused by this split.
+
+Five `GPU dirty buffer reads for attached buffers are unimplemented`
+warnings identify `kepler_compute/pipeline_manager.cpp:21`. There, shader
+translation called the ordinary ConstantBuffer::Read<int> instead of
+ReadForShaderCompile<int>, despite Dispatch already being protected by
+RunWithTextureBackingRetry. The follow-up commit uses the existing
+retry-safe read. On CPU-clean reads, no extra Submit/Wait occurs; only
+GPU-dirty shader-compile reads unwind to the existing dispatch retry
+boundary. This fixes a separate demonstrated correctness hole; whether it
+prevents DEVICE_LOST needs Android testing.
+
+Remaining work to fix the noncontiguous split requires a split-only
+multi-mapping backing path, preserving the original O(1) BufferManager
+and BufferView hot paths and correct GPU writeback/alias/fence semantics.
+Do not import #321's global mapping-container rewrite wholesale.
