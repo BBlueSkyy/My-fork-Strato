@@ -57,7 +57,7 @@ namespace skyline::gpu {
         /**
          * @return A shader program that corresponds to all the supplied state including the current state of the constant buffers
          */
-        Shader::IR::Program ParseGraphicsShader(const std::array<u32, 8> &postVtgShaderAttributeSkipMask, Shader::Stage stage, u64 hash, span<u8> binary, u32 baseOffset, u32 textureConstantBufferIndex, bool viewportTransformEnabled, const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc);
+        Shader::IR::Program ParseGraphicsShader(const std::array<u32, 8> &postVtgShaderAttributeSkipMask, Shader::Stage stage, u64 hash, span<u8> binary, u32 baseOffset, u32 textureConstantBufferIndex, bool viewportTransformEnabled, const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc, bool allowNativePassthrough = true);
 
         /**
          * @brief Combines the VertexA and VertexB shader programs into a single program

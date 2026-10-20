@@ -1,0 +1,39 @@
+name: Geometry Passthrough Regression
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'app/libraries/shader-compiler'
+      - 'app/src/main/cpp/skyline/gpu/**'
+      - 'app/src/main/cpp/skyline/gpu.cpp'
+      - 'app/src/main/cpp/skyline/gpu.h'
+      - 'tests/gpu_geometry_pipeline/**'
+      - 'tests/gpu_device_fault/**'
+      - '.github/workflows/geometry_passthrough_tests.yml'
+jobs:
+  geometry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install host validation dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang cmake libboost-dev spirv-tools glslang-tools libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
+      - name: Validate compiler and SPIR-V
+        env:
+          CC: clang
+          CXX: clang++
+          SHADER_TEST_BUILD_DIR: ${{ runner.temp }}/geometry-compiler
+        run: bash app/libraries/shader-compiler/tests/run.sh
+      - name: Validate pipeline policy and post-loss collection
+        run: |
+          python3 tests/gpu_geometry_pipeline/run.py
+          python3 tests/gpu_device_fault/run.py
+          python3 tests/gpu_device_fault/compile_vulkan.py
+      - name: Compare direct and lowered Vulkan rendering
+        env:
+          XDG_RUNTIME_DIR: ${{ runner.temp }}
+        run: |
+          export VK_ICD_FILENAMES=$(find /usr/share/vulkan/icd.d -name '*lvp*.json' -print -quit)
+          test -n "$VK_ICD_FILENAMES"
+          python3 tests/gpu_geometry_pipeline/run_vulkan.py --require-synthetic "${{ runner.temp }}/geometry-compiler/modules"

@@ -162,6 +162,9 @@ namespace skyline::gpu {
                     // eErrorInitializationFailed occurs on Mali GPU drivers due to them using the ppoll() syscall which isn't correctly restarted after a signal, we need to manually retry waiting in that case
                     continue;
 
+                if (waitResult == vk::Result::eErrorDeviceLost)
+                    throw vk::DeviceLostError("FenceCycle::Wait");
+
                 throw exception("An error occurred while waiting for fence {}: {}", fmt::ptr(static_cast<VkFence>(fence)), vk::to_string(waitResult));
             }
 

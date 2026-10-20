@@ -23,6 +23,13 @@ namespace skyline::gpu {
                 state.process->Kill(false);
             else
                 std::rethrow_exception(std::current_exception());
+        } catch (const vk::DeviceLostError &e) {
+            gpu.ReportDeviceLoss("command fence waiter");
+            LOGE("{}", e.what());
+            if (state.process)
+                state.process->Kill(false);
+            else
+                std::rethrow_exception(std::current_exception());
         } catch (const std::exception &e) {
             LOGE("{}", e.what());
             if (state.process)
@@ -104,9 +111,8 @@ namespace skyline::gpu {
                     .pSignalSemaphores = fullSignalSemaphores.data(),
                 }, cycle->fence);
             } catch (const vk::DeviceLostError &e) {
-                // Wait 5 seconds to give traces etc. time to settle
-                std::this_thread::sleep_for(std::chrono::seconds(5));
-                throw exception("Vulkan device lost!");
+                gpu.ReportDeviceLoss("queue submit");
+                throw;
             }
         }
 
