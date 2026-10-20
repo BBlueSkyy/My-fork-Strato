@@ -15,13 +15,31 @@ namespace skyline::gpu::interconnect::node {
             // If we cannot find any matches for the specified attachment, we add it as a new one
             attachments.push_back(vkView);
 
+            // A Vulkan framebuffer's layer count controls which gl_Layer
+            // outputs are rasterized. It must not remain 1 for a layered
+            // 2D-array view, including a view over 3D image depth slices.
+            // Resolve VK_REMAINING_ARRAY_LAYERS to its actual range so the
+            // imageless attachment declaration agrees with the image view.
+            u32 viewLayers{view->range.layerCount};
+            if (viewLayers == VK_REMAINING_ARRAY_LAYERS) {
+                const auto backingLayers{
+                    view->texture->dimensions.depth > 1 &&
+                    (view->type == vk::ImageViewType::e2D ||
+                     view->type == vk::ImageViewType::e2DArray)
+                        ? std::max(1U, view->texture->dimensions.depth >> view->range.baseMipLevel)
+                        : view->texture->layerCount};
+                viewLayers = backingLayers - view->range.baseArrayLayer;
+            }
+            framebufferLayers = framebufferLayers ? std::min(framebufferLayers, viewLayers)
+                                                  : viewLayers;
+
             if (gpu.traits.supportsImagelessFramebuffers)
                 attachmentInfo.push_back(vk::FramebufferAttachmentImageInfo{
                     .flags = view->texture->flags,
                     .usage = view->GetUsage(),
                     .width = std::max(1U, view->texture->dimensions.width >> view->range.baseMipLevel),
                     .height = std::max(1U, view->texture->dimensions.height >> view->range.baseMipLevel),
-                    .layerCount = view->range.layerCount,
+                    .layerCount = viewLayers,
                     .viewFormatCount = view->texture->GetBackingViewFormats().empty() ? 1 : static_cast<u32>(view->texture->GetBackingViewFormats().size()),
                     .pViewFormats = view->texture->GetBackingViewFormats().empty() ? &view->format->vkFormat : view->texture->GetBackingViewFormats().data(),
                 });
@@ -261,7 +279,7 @@ namespace skyline::gpu::interconnect::node {
                 .pAttachments = attachments.data(),
                 .width = renderArea.extent.width + static_cast<u32>(renderArea.offset.x),
                 .height = renderArea.extent.height + static_cast<u32>(renderArea.offset.y),
-                .layers = 1,
+                .layers = framebufferLayers ? framebufferLayers : 1,
             },
             vk::FramebufferAttachmentsCreateInfo{
                 .attachmentImageInfoCount = static_cast<u32>(attachmentInfo.size()),
