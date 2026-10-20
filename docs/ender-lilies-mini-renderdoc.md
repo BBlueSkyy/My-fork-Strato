@@ -71,3 +71,22 @@ A terceira execução de DevRelease completou 24 frames de apresentação. O com
 **Nova instrumentação** (commit `9f963a0`): aceitar snapshots de fontes 3D compactas, dimensões até 128×128×64 e ≤16 MiB, conservando as verificações de `TransferSrc`, cor, mip/layer e layout válido. Cada `SCENE_SAMPLED_INPUT` registra agora `WxHxD`, e cada `pre_XX.txt` inclui `depth=`. A cópia de imagens 3D usa `Texture::CopyIntoStagingBuffer` com `GetBufferImageCopies()`, no mesmo command stream e sem alteração funcional. Caso a LUT continue ausente, será necessário registrar as razões exatas da rejeição, não capturar pixels de memória guest potencialmente desatualizados.
 
 **Objetivo do próximo teste:** verificar se os 32 slices contêm gradação de cores válida, zeros ou dados não inicializados e correlacionar o produtor com o consumidor. Capturar `capture_###.zip` e `emulation.log` do novo **DevRelease**; não fazer correção especulativa na GPU. PR Draft, sem merge; não acompanhar Actions automaticamente.
+
+## Política daqui para frente — UMA captura completa, não várias parciais
+
+A pedido do usuário, a instrumentação agora junta a cadeia de pós-processamento em **uma única sessão de captura**. Não será necessário regravar uma execução separada só para o shader final depois de capturar o primeiro.
+
+**Orçamento detalhado por intervalo** (quatro intervalos aproximados no início dos 24 presented sources):
+
+| Tipo | Máximo | Dados |
+| --- | ---: | --- |
+| HDR -> BGRA8 | 6 | destination before, até quatro sampled inputs before (incluindo LUT 3D), destination after |
+| BGRA8 -> RGBA8 | 5 | destination before, até três sampled inputs before (incluindo R8s), destination after |
+| LUT producer (caso execute enquanto armada) | 1 | output do draw que escreve pequena imagem 3D ou de múltiplas layers A2B10G10R10 |
+| **Total por intervalo** | **12** | arquivos binários RAW + metadados + shader/CBUF/TSC já instrumentados |
+
+Máximo global **48 snapshots** e **160 MiB** para esta classe de snapshots; até **12000 eventos**; além dos snapshots do VI, cujos limites são separados. A seleção se faz por **geometria, uso e formato** das imagens efetivamente ligadas aos draws, nunca por ID de jogo, driver, shader hash ou endereço pré-fixado. Uma fonte de volume compacta pode ser 3D com `depth<=64` ou uma imagem 2D-array compacta com `layerCount<=64`. O `SCENE_INPUT_ELIGIBILITY` registra caso uma fonte seja rejeitada por não ser segura para readback.
+
+**Limitações honestas:** o produtor da LUT pode não executar enquanto o arquivo `ARM_CAPTURE` estiver armado, e alguns formatos/imagens podem não permitir readback por Vulkan. Em ambos os casos, a cópia **pré-consumo** da LUT (se elegível) e os eventos de shader descritor ainda serão coletados. Quadros/filas GPU são assíncronos: eventos `present_index_approx` são aproximações, não alinhamento perfeito. Não há promessa de que um trace único revele toda a causa. Se faltar evidência, priorizar análise do código, não uma nova sequência de instrumentações.
+
+Para o próximo teste, basta **um** APK `DevRelease`, **uma** captura `capture_###.zip` e `emulation.log` da mesma execução. Não compilar Reldebug, não acompanhar Actions, não fazer merge.
