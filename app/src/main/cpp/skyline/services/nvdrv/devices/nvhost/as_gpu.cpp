@@ -353,6 +353,10 @@ namespace skyline::service::nvdrv::device::nvhost {
 
                 asCtx->gmmu.Map(virtAddr, cpuPtr, size);
             }
+            // MapBufferEx and UnmapBuffer already log at debug level. Include
+            // sparse Remap operations so failed TIC ranges can be correlated.
+            LOGD("Remap GPU region: iova=0x{:X}, size=0x{:X}, sparse={}, handle={}, handle_offset_pages=0x{:X}",
+                 virtAddr, size, !entry.handle, entry.handle, entry.handleOffsetBigPages);
         }
 
         return PosixResult::Success;
