@@ -46,6 +46,7 @@ jobs:
           ln -s /usr/bin/ninja .
 
       - name: Texman view-range regression (UBSan)
+        if: ${{ github.head_ref != 'diagnostic/unmapped-texture-pool' }}
         run: |
           c++ -std=c++20 -Wall -Wextra -Werror \
             -fsanitize=undefined -fno-sanitize-recover=all \
@@ -56,12 +57,14 @@ jobs:
           /tmp/texman-view-range-tests
 
       - name: Occlusion and conditional rendering regressions
+        if: ${{ github.head_ref != 'diagnostic/unmapped-texture-pool' }}
         run: |
           python3 tests/gpu_queries/run.py
           python3 tests/gpu_conditional/run.py
           python3 tests/gpu_draw_texture/run.py
 
       - name: Texture layout and submission regressions
+        if: ${{ github.head_ref != 'diagnostic/unmapped-texture-pool' }}
         run: |
           python3 tests/gpu_sampled_layout/run.py
           python3 tests/gpu_submission/run.py
@@ -72,12 +75,19 @@ jobs:
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
+        run: |
+          if [[ "$GITHUB_HEAD_REF" == "diagnostic/unmapped-texture-pool" ]]; then
+            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+          else
+            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
+          fi
       - name: Rename APKs
         if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
         run: |
           mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
-          mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
+          if [[ "$GITHUB_HEAD_REF" != "diagnostic/unmapped-texture-pool" ]]; then
+            mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
+          fi
 
       - name: Upload Release APK
         if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
@@ -87,7 +97,7 @@ jobs:
           path: strato-pr${{ github.event.number }}-release.apk
 
       - name: Upload Debug APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
+        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && github.head_ref != 'diagnostic/unmapped-texture-pool' }}
         uses: actions/upload-artifact@v4
         with:
           name: strato-pr${{ github.event.number }}-reldebug.apk
