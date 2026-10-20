@@ -36,12 +36,14 @@ Reference: https://github.com/BBlueSkyy/shader-compiler/tree/eb248b060d0aefa28a1
 
 The compiler throws a dedicated BindlessTextureTrackingError with the failing
 texture instruction address, handle instruction address/opcode, texture opcode,
-type, depth bit, and raw instruction flags. TexturePass exports its IR while the
+type, depth bit, and raw instruction flags. TexturePass retains its IR in the exception while the
 initial collection loop is still intact, before any texture opcode replacement.
 
 Strato catches only that exception and adds stage, hash, base offset, texture CBUF
-index, and graphics/compute environment parameters. It records the same Maxwell
-bytes that were passed to translation, including any configured replacement.
+index, and graphics/compute environment parameters. It synchronously records shader identity before the same Maxwell
+bytes that were passed to translation, including any configured replacement, and
+then the IR retained in the exception. Only this fatal path uses synchronous
+CPU file logging; it does not synchronize the GPU or alter the normal logger.
 No guest memory or constant-buffer callback is read for diagnostics.
 
 IR and Maxwell are hex-encoded in numbered, contiguous chunks in emulation.log.
@@ -86,3 +88,24 @@ normal emulation.log ZIP. No cache deletion, game-file extraction, or global sha
 tracing is required. Use that capture to reproduce the actual SSA expression,
 implement the smallest necessary static/dynamic support, and compare device
 performance with master before calling the functional correction complete.
+
+## Follow-up: incomplete first device capture
+
+The attached emulation.log announced a 335797-byte IR snapshot but ended after
+78336 bytes, before its End marker, original exception identity and Maxwell
+payload. The initial asynchronous capture could lose its tail when execution
+ended before the logger drained. The actual failing instruction remains unknown;
+the captured prefix alone is insufficient to choose a functional fix.
+
+The compiler now attaches the IR to its dedicated exception instead of queuing
+logs while unwinding. The host writes shader identity first, followed by Maxwell
+and IR, through the existing synchronous file logger. Each chunk is flushed
+before the error propagates. No global logging behavior changes. Missing snapshots
+are explicitly marked IRUnavailable. A hard process kill during capture can still
+interrupt it; validate the byte counts and End markers.
+
+A host reproduction discarded the asynchronous queue after the producer returned:
+the previous production payload helper lost its output; the revised helper
+preserved all 8193 Maxwell bytes and a 335797-byte IR snapshot, reconstructed
+byte-for-byte. The original compiler rejection and successful shader execution
+semantics remain unchanged. ARM64 DevRelease-only CI is retained.
