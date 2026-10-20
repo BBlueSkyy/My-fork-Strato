@@ -2,11 +2,14 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/trace.h>
+#include <atomic>
 #include "texture/layout.h"
 #include "texture_manager.h"
 
 namespace skyline::gpu {
-    TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
+    TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {
+        LOGI("PerfDiag294: texture counters enabled (sampling only at powers of two)");
+    }
 
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
@@ -77,6 +80,22 @@ namespace skyline::gpu {
                     // aliases are handled by the representable view paths below.
                     fullMatch = hostMapping->texture;
                 } else {
+                    // Diagnosis only: count candidates the pre-#294 equal-allocation
+                    // rule would have reused despite different logical extents.
+                    if (matchGuestTexture.viewMipBase == 0 &&
+                        matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
+                        matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                        matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth() &&
+                        (matchGuestTexture.dimensions.width != guestTexture.dimensions.width ||
+                         matchGuestTexture.dimensions.height != guestTexture.dimensions.height) &&
+                        matchGuestTexture.CalculateLayerSize() == guestTexture.CalculateLayerSize()) {
+                        static std::atomic<u64> rejectedLegacyAliases{0};
+                        const auto count{rejectedLegacyAliases.fetch_add(1, std::memory_order_relaxed) + 1};
+                        if ((count & (count - 1)) == 0)
+                            LOGI("PerfDiag294: differing-extent aliases formerly reused={} backing={}x{} requested={}x{}",
+                                 count, matchGuestTexture.dimensions.width, matchGuestTexture.dimensions.height,
+                                 guestTexture.dimensions.width, guestTexture.dimensions.height);
+                    }
                     matches.push_back(hostMapping->texture);
                 }
             } else {
@@ -325,6 +344,12 @@ namespace skyline::gpu {
 
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
+        static std::atomic<u64> newTextures{0};
+        const auto created{newTextures.fetch_add(1, std::memory_order_relaxed) + 1};
+        if ((created & (created - 1)) == 0)
+            LOGI("PerfDiag294: new guest texture objects={} last={}x{} levels={} layers={}",
+                 created, guestTexture.dimensions.width, guestTexture.dimensions.height,
+                 guestTexture.mipLevelCount, guestTexture.layerCount);
         texture->SetupGuestMappings();
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto it{texture->guest->mappings.begin()};
