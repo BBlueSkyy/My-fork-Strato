@@ -147,6 +147,23 @@ namespace skyline {
         }
 
         /**
+         * @brief Reports the backing of one GPU virtual address for failure diagnostics.
+         * @note Only call on error paths; normal translations remain unchanged.
+         */
+        enum class MappingState : u8 { Unmapped, Sparse, Resident };
+
+        MappingState GetMappingStateForDiagnostics(VaType virt) {
+            if (virt >= AddressSpaceSize)
+                return MappingState::Unmapped;
+
+            std::shared_lock lock{this->blockMutex};
+            const auto &entry{blockSegmentTable[virt]};
+            if (entry.extraInfo.sparseMapped)
+                return MappingState::Sparse;
+            return entry.phys ? MappingState::Resident : MappingState::Unmapped;
+        }
+
+        /**
          * @brief Translates a region in the VA space to a corresponding set of regions in the PA space
          */
         TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}) {
