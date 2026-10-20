@@ -72,7 +72,7 @@ cache formats/keys remain unchanged. There is no game-ID check or cache reset.
   compiler: median 47.730 ms versus 46.851 ms, with ranges 39.031–61.753 ms and
   36.769–54.978 ms. No slowdown was observed in this noisy host probe; it does not
   establish Android FPS or game compatibility.
-- Validated workflow YAML: one assembleDevReldebug invocation, existing ARM64-only
+- Validated workflow YAML: one assembleDevRelease invocation, existing ARM64-only
   ABI filter, ccache/Gradle caches, one unconditional APK upload, no mandatory tests.
 
 No Android SDK/NDK was available locally. The full APK is delegated to the PR
@@ -81,7 +81,7 @@ comparison was possible here. Keep both PRs Draft, with no merge.
 
 ## Next required evidence
 
-Run the ARM64 DevReldebug APK from this PR until the Jujutsu error and export its
+Run the ARM64 DevRelease APK from this PR until the Jujutsu error and export its
 normal emulation.log ZIP. No cache deletion, game-file extraction, or global shader
 tracing is required. Use that capture to reproduce the actual SSA expression,
 implement the smallest necessary static/dynamic support, and compare device
