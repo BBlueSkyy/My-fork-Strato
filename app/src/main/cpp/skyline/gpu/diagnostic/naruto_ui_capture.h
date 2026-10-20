@@ -58,10 +58,10 @@ namespace skyline::gpu::diagnostic {
         static constexpr std::size_t MaxPostFourthTextBytes{144ULL * 1024 * 1024};
         // Full evidence in one armed capture, per interval:
         // 6 HDR compositor snapshots (target + 4 sources + output),
-        // 3 final compositor snapshots (target + source + output),
+        // 5 final compositor snapshots (target + 3 sources + output),
         // and 1 opportunistic 3D LUT producer output.
-        static constexpr std::uint32_t PassSnapshotsPerInterval{10};
-        static constexpr std::uint32_t MaxPassSnapshots{40};
+        static constexpr std::uint32_t PassSnapshotsPerInterval{12};
+        static constexpr std::uint32_t MaxPassSnapshots{48};
         static constexpr std::uint32_t AtlasSnapshotsPerInterval{2};
         static constexpr std::size_t MaxPassCaptureBytes{160ULL * 1024 * 1024};
 
