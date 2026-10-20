@@ -134,3 +134,57 @@ The previous log with five GPU-dirty warnings and device loss at
 137.7s also reported Turnip 24.0.99; neither run establishes a
 performance regression or causal explanation for DEVICE_LOST
 without controlled, repeatable device measurements.
+
+## Confirmed image-buffer caller from the next instrumented device log
+
+The user-supplied Release emulation.log (227 lines) now contains
+source locations. **All 20 printed split warnings come from
+Textures::GetImageBufferView in gpu/interconnect/common/textures.cpp:540.**
+The real call chain is GetImageBufferBinding (common/pipeline.inc),
+Textures::GetImageBufferView, CachedMappedBufferView::Update.
+It is a Vulkan **storage texel buffer**, not an ordinary SSBO.
+
+Representative observed requests:
+- GPU 0x407CE0000: size 0x1E0000; first 0x140000 and
+  second 0xA0000. Physical pieces are noncontiguous; sometimes the
+  second mapping is absent (unmapped-or-empty-piece).
+- GPU 0x41AF50000: size 0x200000; first 0x180000 and
+  second 0x80000; observed unmapped-or-empty-piece.
+- Unresolved warning hit counter reached 4096. This is a counter of
+  *failed cold-path observations*, not a count of printed log lines.
+- Zero successful contiguous-split recoveries, zero previous bindless
+  tracking exceptions, zero GPU-dirty buffer-read warnings.
+- Three VK_ERROR_OUT_OF_POOL_MEMORY driver diagnostic messages;
+  GPU loss at 106,581,293 microseconds. Neither the pool messages
+  nor the missing mappings are proved to be the *direct* cause of
+  VK_ERROR_DEVICE_LOST by this trace alone.
+
+IMPORTANT: The shader fixed in compiler PR #10 uses
+`BindlessImageWrite Buffer`, so some affected image-buffer operations
+can write. Do not reuse #321's read-only independent aliases for
+writable storage-buffer-image descriptors. A partial first-span
+VkBufferView silently excludes the second region.
+
+## Specific next implementation boundary
+
+The fix should be on the **split storage-texel-buffer path**, keeping
+BufferManager::FindOrCreate(span), Buffer::TryGetView(span) and global
+contiguous-buffer lookup unmodified. For real physical discontiguity,
+support a coherent linear GPU-visible logical range with per-piece
+tracking, preservation of aliased buffer contents, GPU-write
+synchronization and host guest-memory commit/writeback to the
+correct original pieces. Cache by the exact GPU mapping identity
+and invalidate on GMMU changes, guest CPU writes and fence/sequence
+transitions. Do not copy every draw or force GPU->CPU readback
+on the clean/contiguous path.
+
+Partially unmapped/sparse second pieces cannot be treated as
+physically contiguous or written blindly to a null mapping. Inspect
+whether mapping becomes valid before relevant GPU writes and handle
+sparse semantics separately.
+
+Validation must explicitly cover GPU-written storage texel buffer
+spanning two physically disjoint host mappings, guest-visible
+writeback, alias coherency, unmapped/sparse second piece, remap,
+multiple dispatches, and the device's FPS vs #372 and #374.
+Avoid moving #321's global de-dup/sort/lookup into common code.
