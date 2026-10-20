@@ -457,24 +457,35 @@ namespace skyline::gpu::interconnect {
     static std::optional<FocusedFullDraw> FindFocusedFullDraw(span<TextureView *> sampled,
                                                              span<TextureView *> color,
                                                              bool blendingEnabled) {
-        // Two independent first-draw probes: blended and opaque. Both can hide
-        // an incorrect scene, so never require text strips or a BC3 logo.
-        TextureView *target{};
-        for (auto *view : color)
-            if (view && view->texture && IsDiagnosticSceneTarget(*view->texture)) {
-                target = view;
-                break;
-            }
-        if (!target)
+        // Trace-derived, format/geometry-only probes for two final 2D passes:
+        // HDR/full-size scene -> BGRA8 intermediate -> RGBA8 presentation.
+        // Both observed passes were opaque. Never select by title/hash/IOVA.
+        if (blendingEnabled)
             return std::nullopt;
-
-        for (auto *view : sampled) {
-            if (!view || !view->texture || view->texture.get() == target->texture.get())
+        for (auto *target : color) {
+            if (!target || !target->texture || !IsDiagnosticSceneTarget(*target->texture))
                 continue;
-            if (IsDiagnosticSceneSource(*view->texture))
-                return FocusedFullDraw{target, view,
-                    blendingEnabled ? diagnostic::UiFrameCapture::TextFocus::FullConsumer
-                                    : diagnostic::UiFrameCapture::TextFocus::FullSprite};
+            const auto &dst{*target->texture};
+            const bool intermediate{dst.format->vkFormat == vk::Format::eB8G8R8A8Unorm};
+            const bool finalOutput{dst.format->vkFormat == vk::Format::eR8G8B8A8Unorm};
+            if (!intermediate && !finalOutput)
+                continue;
+            for (auto *source : sampled) {
+                if (!source || !source->texture || source->texture.get() == target->texture.get() ||
+                    !IsDiagnosticSceneSource(*source->texture))
+                    continue;
+                const auto &src{*source->texture};
+                if (src.dimensions.width != dst.dimensions.width ||
+                    src.dimensions.height != dst.dimensions.height)
+                    continue;
+                if (intermediate &&
+                    src.format->vkFormat == vk::Format::eB10G11R11UfloatPack32)
+                    return FocusedFullDraw{target, source,
+                        diagnostic::UiFrameCapture::TextFocus::FullSprite};
+                if (finalOutput && src.format->vkFormat == vk::Format::eB8G8R8A8Unorm)
+                    return FocusedFullDraw{target, source,
+                        diagnostic::UiFrameCapture::TextFocus::FullConsumer};
+            }
         }
         return std::nullopt;
     }
@@ -489,8 +500,8 @@ namespace skyline::gpu::interconnect {
             return false;
 
         // Snapshot a real descriptor-resolved source, target before the draw,
-        // and its output afterward. The two quotas cover opaque and blended
-        // full-scene draws in each of four approximate presentation intervals.
+        // and its output afterward. The two quotas cover HDR-to-BGRA intermediate and BGRA-to-RGBA final
+        // draws in each of four approximate presentation intervals.
         const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
         const bool sprite{match->kind == diagnostic::UiFrameCapture::TextFocus::FullSprite};
         if (!(sprite ? capture.ClaimPreSpriteDraw(interval) : capture.ClaimPreUiDraw(interval)))
@@ -514,7 +525,7 @@ namespace skyline::gpu::interconnect {
             "SCENE_CONSUMER_PRE draw_id={} kind={} interval={} executor=0x{:X} "
             "submission={} rp={} source=0x{:X} source_cycle=0x{:X} "
             "target=0x{:X} target_cycle=0x{:X}",
-            drawId, sprite ? "opaque" : "blended", interval,
+            drawId, sprite ? "scene_to_bgra8" : "bgra8_to_rgba8", interval,
             reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
             reinterpret_cast<uintptr_t>(match->source->texture.get()),
             reinterpret_cast<uintptr_t>(sourceCycle),
@@ -572,7 +583,7 @@ namespace skyline::gpu::interconnect {
             "target=0x{:X} guest=0x{:X} target_cycle=0x{:X} "
             "source=0x{:X} source_guest=0x{:X} source_cycle=0x{:X} "
             "source_mips={} source_layers={} bindings={}",
-            drawId, sprite ? "opaque" : "blended", indexed,
+            drawId, sprite ? "scene_to_bgra8" : "bgra8_to_rgba8", indexed,
             drawArgument, shaderHashes, reinterpret_cast<uintptr_t>(this),
             submissionNumber, renderPassIndex,
             reinterpret_cast<uintptr_t>(match->target->texture.get()),
@@ -598,7 +609,7 @@ namespace skyline::gpu::interconnect {
                                         drawId, "scene_target_after"});
         capture.Record(fmt::format("SCENE_FOCUS stage={} ordinal={} draw_id={} "
                                    "executor=0x{:X} submission={} rp={}",
-                                   sprite ? "opaque_to_full" : "blended_to_full",
+                                   sprite ? "scene_to_bgra8" : "bgra8_to_rgba8",
                                    *ordinal, drawId, reinterpret_cast<uintptr_t>(this),
                                    submissionNumber, renderPassIndex));
         BreakRenderPass();
