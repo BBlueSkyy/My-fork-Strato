@@ -3,6 +3,7 @@
 
 #include <gpu.h>
 #include <atomic>
+#include <chrono>
 #include <kernel/memory.h>
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
@@ -885,6 +886,7 @@ namespace skyline::gpu {
             // If the texture has differing formats on the guest and host, we don't support converting back in that case as it may involve recompression of a decompressed texture
             return;
 
+        const auto readbackStart{std::chrono::steady_clock::now()};
         WaitOnBacking();
 
         if (tiling == vk::ImageTiling::eOptimal || !std::holds_alternative<memory::Image>(backing)) {
@@ -911,6 +913,17 @@ namespace skyline::gpu {
                 gpu.state.process->trap.DeleteTrap(*trapHandle);
             else
                 gpu.state.process->trap.TrapRegions(*trapHandle, true); // Trap any future CPU writes to this texture
+
+        // Count real guest readbacks, including blocking wait and GPU->CPU copy.
+        const auto elapsedUs{static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - readbackStart).count())};
+        static std::atomic<u64> guestReadbacks{0};
+        static std::atomic<u64> readbackTotalUs{0};
+        const auto totalUs{readbackTotalUs.fetch_add(elapsedUs, std::memory_order_relaxed) + elapsedUs};
+        const auto count{guestReadbacks.fetch_add(1, std::memory_order_relaxed) + 1};
+        if ((count & (count - 1)) == 0)
+            LOGI("PerfDiag294: blocking GPU guest readbacks={} cumulative_ms={} latest_us={} image={}x{}",
+                 count, totalUs / 1000, elapsedUs, dimensions.width, dimensions.height);
     }
 
     bool Texture::ViewFormatAdmitted(vk::Format requested) const {
