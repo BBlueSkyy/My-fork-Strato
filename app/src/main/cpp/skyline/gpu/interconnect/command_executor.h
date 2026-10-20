@@ -4,6 +4,7 @@
 #pragma once
 
 #include <gpu/texture/backing_promotion.h>
+#include <string>
 
 #include <boost/container/stable_vector.hpp>
 #include <renderdoc_app.h>
@@ -215,6 +216,29 @@ namespace skyline::gpu::interconnect {
         std::vector<vk::ImageView> lastSubpassInputAttachments; //!< The set of input attachments used in the last subpass
         std::vector<vk::ImageView> lastSubpassColorAttachments; //!< The set of color attachments used in the last subpass
         vk::ImageView lastSubpassDepthStencilAttachment{}; //!< The depth stencil attachment used in the last subpass
+
+        struct DiagnosticBoundaryPass {
+            struct SampledInput {
+                std::shared_ptr<Texture> texture;
+                vk::ImageSubresourceRange range{};
+                std::uint32_t step{};
+                std::uint32_t slot{};
+            };
+            std::shared_ptr<Texture> target;
+            vk::ImageSubresourceRange range{};
+            std::string metadata;
+            std::uint64_t targetArea{};
+            std::uint32_t targetPriority{};
+            std::uint32_t operationCount{};
+            bool focusCandidate{};
+            std::vector<SampledInput> focusedInputs;
+        };
+        std::optional<DiagnosticBoundaryPass> diagnosticBoundaryPass;
+        std::vector<std::function<void()>> diagnosticBoundaryCallbacks;
+        void TrackDiagnosticBoundaryPass(vk::Rect2D renderArea, span<TextureView *> sampledImages,
+                                         span<TextureView *> colorAttachments, TextureView *depthStencilAttachment);
+        void QueueDiagnosticBoundaryPassReadback();
+        void QueueFocusedInputProbes(const DiagnosticBoundaryPass &pass);
 
         std::vector<std::function<void()>> flushCallbacks; //!< Set of persistent callbacks that will be called at the start of Execute in order to flush data required for recording
         std::vector<std::function<void()>> pipelineChangeCallbacks; //!< Set of persistent callbacks that will be called after any non-Maxwell 3D engine changes the active pipeline

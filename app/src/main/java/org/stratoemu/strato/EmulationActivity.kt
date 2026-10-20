@@ -616,6 +616,26 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
         super.onCreate(savedInstanceState)
 
+        // Diagnostic APK: prepare the capture trigger before guest startup.
+        // A crash before the first presented frame must not hide the folder.
+        try {
+            val captureDir = File(getPublicFilesDir(), "gpu_capture/cosmic_shake")
+            if (captureDir.isDirectory || captureDir.mkdirs()) {
+                val triggerHint = File(captureDir, "ARM_CAPTURE.rename_this_file_when_ready")
+                if (!triggerHint.exists()) {
+                    triggerHint.writeText(
+                        "Rename this file to ARM_CAPTURE to capture six presented frames. " +
+                            "The game must reach presentation for frame readback.\\n"
+                    )
+                }
+                Log.i(Tag, "COSMIC_SHAKE_CAPTURE directory: ${captureDir.absolutePath}")
+            } else {
+                Log.e(Tag, "COSMIC_SHAKE_CAPTURE failed to create: ${captureDir.absolutePath}")
+            }
+        } catch (e: Exception) {
+            Log.e(Tag, "COSMIC_SHAKE_CAPTURE failed to prepare capture directory", e)
+        }
+
         populateAppItem()
         emulationSettings = EmulationSettings.forEmulation(item.titleId ?: item.key())
 

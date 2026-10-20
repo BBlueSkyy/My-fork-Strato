@@ -5,6 +5,7 @@
 #include <soc/gm20b/gmmu.h>
 #include <gpu/texture_manager.h>
 #include <gpu/texture/format.h>
+#include <gpu/diagnostic/cosmic_shake_pass.h>
 #include "textures.h"
 
 namespace skyline::gpu::interconnect {
@@ -383,6 +384,62 @@ namespace skyline::gpu::interconnect {
             auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
             guest.mappings.assign(mappings.begin(), mappings.end());
             if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
+                // This opt-in capture is bounded by distinct IOVA. Do not change
+                // the GMMU translation, residency checks, or the null fallback.
+                auto &ticCapture{diagnostic::CosmicShakePass()};
+                if (ticCapture.ReserveTicFault(textureHeader.Iova())) {
+                    u64 mappedBytes{}, invalidBytes{}, offset{};
+                    std::optional<u64> firstInvalid;
+                    std::string ranges;
+                    std::size_t segmentCount{};
+                    for (auto segment : guest.mappings) {
+                        const bool valid{segment.valid() && !segment.empty()};
+                        if (!valid && !firstInvalid)
+                            firstInvalid = offset;
+                        if (valid)
+                            mappedBytes += segment.size();
+                        else
+                            invalidBytes += segment.size();
+                        if (segmentCount < 12) {
+                            ranges += fmt::format("{}[+0x{:X},0x{:X},{}]",
+                                segmentCount ? "," : "", offset, segment.size(),
+                                valid ? "mapped" : "unmapped");
+                        }
+                        offset += segment.size();
+                        ++segmentCount;
+                    }
+                    if (offset < guest.GetSize()) {
+                        if (!firstInvalid)
+                            firstInvalid = offset;
+                        invalidBytes += guest.GetSize() - offset;
+                        ranges += fmt::format("{}[+0x{:X},0x{:X},missing_tail]",
+                            segmentCount ? "," : "", offset, guest.GetSize() - offset);
+                    }
+                    ticCapture.RecordTicFault(fmt::format(
+                        "TIC_UNMAPPED frame={} submission={} rp={} channel_sequence={} "
+                        "tic_index={} shader_type={} iova=0x{:X} requested_bytes={} "
+                        "mapped_bytes={} invalid_bytes={} first_invalid_offset={} "
+                        "dimensions={}x{}x{} format_word=0x{:X} "
+                        "texture_type={} header_type={} mip_levels={} view_mip={}+{} "
+                        "layers={} base_layer={} tile_mode={} pitch={} "
+                        "segments={} ranges={}",
+                        ticCapture.presentIndex.load(std::memory_order_relaxed),
+                        ctx.executor.submissionNumber, ctx.executor.GetRenderPassIndex().value_or(0),
+                        ctx.channelCtx.channelSequenceNumber, index,
+                        static_cast<u32>(shaderType), textureHeader.Iova(),
+                        guest.GetSize(), mappedBytes, invalidBytes,
+                        firstInvalid ? fmt::format("0x{:X}", *firstInvalid) : "none",
+                        guest.dimensions.width, guest.dimensions.height,
+                        guest.dimensions.depth, textureHeader.formatWord.Raw(),
+                        static_cast<u32>(textureHeader.textureType),
+                        static_cast<u32>(textureHeader.headerType),
+                        guest.mipLevelCount, guest.viewMipBase, guest.viewMipCount,
+                        guest.layerCount, guest.baseArrayLayer,
+                        static_cast<u32>(guest.tileConfig.mode),
+                        guest.tileConfig.mode == texture::TileMode::Pitch
+                            ? guest.tileConfig.pitch : 0U,
+                        segmentCount, ranges));
+                }
                 LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);

@@ -3,6 +3,8 @@
 
 #include <common/trace.h>
 #include <gpu.h>
+#include <gpu/diagnostic/cosmic_shake_pass.h>
+#include <fmt/format.h>
 #include "texture/layout.h"
 #include "texture_manager.h"
 #include "texture/backing_promotion.h"
@@ -30,6 +32,31 @@ namespace skyline::gpu {
             guestTexture.baseArrayLayer, guestTexture.GetViewLayerCount(),
         };
         const auto requestedStride{guestTexture.layerStride ? guestTexture.layerStride : guestTexture.CalculateLayerSize()};
+
+        auto recordDecision{[&](const char *decision, const std::shared_ptr<Texture> &selected = {},
+                                u32 selectedMip = 0, u32 selectedLayer = 0) {
+            auto &capture{diagnostic::CosmicShakePass()};
+            if (!capture.RecordingMetadata())
+                return;
+            size_t mappedBytes{};
+            for (const auto &mapping : guestTexture.mappings)
+                mappedBytes += mapping.size();
+            capture.RecordTexman(fmt::format(
+                "decision={} request_map=0x{:X} mapped_bytes={} dimensions={}x{}x{} view_type={} "
+                "view_mip={}+{} view_layer={}+{} declared_mips={} declared_layers={} stride={} "
+                "tile_mode={} block_h={} block_d={} pitch={} selected_texture=0x{:X} selected_mip={} selected_layer={} "
+                "selected_levels={} selected_layers={} alias_stale={} alias_read_only={}",
+                decision, reinterpret_cast<uintptr_t>(guestMapping.data()), mappedBytes,
+                guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
+                vk::to_string(guestTexture.viewType), guestTexture.viewMipBase, guestTexture.viewMipCount,
+                guestTexture.baseArrayLayer, guestTexture.GetViewLayerCount(), guestTexture.mipLevelCount,
+                guestTexture.layerCount, requestedStride, static_cast<u32>(guestTexture.tileConfig.mode),
+                guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth, guestTexture.tileConfig.pitch,
+                selected ? reinterpret_cast<uintptr_t>(selected.get()) : 0,
+                selectedMip, selectedLayer, selected ? selected->levelCount : 0,
+                selected ? selected->layerCount : 0, selected ? selected->aliasStale.load() : false,
+                selected ? selected->aliasReadOnly.load() : false));
+        }};
 
         /*
          * Iterate over all textures that overlap with the first mapping of the guest texture and compare the mappings:
@@ -352,6 +379,7 @@ namespace skyline::gpu {
             if (fullMatch && fullMatch != depthSliceMatch)
                 fullMatch->replaced = true;
 
+            recordDecision("depth_slice_match", depthSliceMatch, depthSliceLevel, depthSlice);
             ContextLock textureLock{tag, *depthSliceMatch};
             return depthSliceMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
                 .aspectMask = guestTexture.aspect,
@@ -361,12 +389,14 @@ namespace skyline::gpu {
                 .layerCount = guestTexture.GetViewLayerCount(),
             }, guestTexture.format, guestTexture.swizzle, tag);
         } else if (layerMipMatch) {
+            recordDecision("layer_mip_match", layerMipMatch, matchLevel, matchLayer);
             ContextLock textureLock{tag, *layerMipMatch};
             auto range{requestedRange};
             range.baseMipLevel += matchLevel;
             range.baseArrayLayer += matchLayer;
             return layerMipMatch->GetView(guestTexture.viewType, range, guestTexture.format, guestTexture.swizzle, tag);
         } else if (fullMatch) {
+            recordDecision("full_match", fullMatch, requestedRange.baseMipLevel, requestedRange.baseArrayLayer);
             ContextLock textureLock{tag, *fullMatch};
             if (!fullMatch->ViewRangeFits(guestTexture.viewType, requestedRange)) {
                 // Submit only at a genuine backing incompatibility. Retrying also
@@ -492,6 +522,7 @@ namespace skyline::gpu {
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();
+        recordDecision("new_texture", texture, requestedRange.baseMipLevel, requestedRange.baseArrayLayer);
         texture->aliasReadOnly = requestedReadOnlyAlias;
         if (separateGroup) {
             std::scoped_lock metadata{separateGroup->mutex};
