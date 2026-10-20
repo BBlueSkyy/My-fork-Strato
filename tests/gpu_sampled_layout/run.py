@@ -42,7 +42,9 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
             "void CopyBlockLinearToLinear(Dimensions dimensions",
             "void CopyBlockLinearToLinear(const GuestTexture &guest")) + "\n}\n")
     start = textures.index("            constexpr size_t CubeFaceCount", textures.index("TextureView *Textures::GetTexture("))
-    end = textures.index("            auto mappings{", start)
+    # Exclude GPU mapping/size validation: GetSize() materializes the lazy
+    # layerStride, which is intentionally unset after constructing a mipmapped TIC.
+    end = textures.index("            // End TIC construction:", start)
     # This is the unchanged complete production dimensions/type/tiling setup.
     (build / "tic-construction.inc").write_text(textures[start:end])
     manager = (GPU / "texture_manager.cpp").read_text()
