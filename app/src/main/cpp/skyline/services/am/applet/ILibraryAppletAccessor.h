@@ -33,6 +33,9 @@ namespace skyline::service::am {
         u64 appletResourceUserId{};
         u64 indirectLayerHandle{};
         bool exited{};
+        u32 swkbdInteractiveTraceCount{};
+        bool swkbdIndirectHandleTraced{};
+        bool swkbdInteractiveEventTraced{};
 
       public:
         ILibraryAppletAccessor(const DeviceState &state, ServiceManager &manager,
