@@ -203,7 +203,8 @@ namespace skyline::gpu::diagnostic {
                                          : start - guestAddress < bytes;
         }
 
-        // Reused diagnostic quotas: FullConsumer=blended scene draw, FullSprite=opaque scene draw.\n        enum class TextFocus : std::uint8_t { GlyphOutput, StripComposite, FullConsumer, FullSprite };
+        // Reused diagnostic quotas: FullConsumer=blended scene draw, FullSprite=opaque scene draw.
+        enum class TextFocus : std::uint8_t { GlyphOutput, StripComposite, FullConsumer, FullSprite };
 
         // These scopes are selected only after a render target/source has been
         // identified by its format/geometry while capture is armed. They are not
