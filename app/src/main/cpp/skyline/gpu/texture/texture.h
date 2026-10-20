@@ -13,6 +13,9 @@
 #include <gpu/usage_tracker.h>
 
 namespace skyline::gpu {
+    namespace interconnect {
+        class CommandExecutor;
+    }
     namespace texture {
         enum class RenderPassUsage : u8 {
             None,
@@ -427,6 +430,7 @@ namespace skyline::gpu {
 
         friend TextureManager;
         friend TextureView;
+        friend class interconnect::CommandExecutor; // Build-only access fix for #294 diagnostic
 
         /**
          * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid
