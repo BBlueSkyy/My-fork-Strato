@@ -533,8 +533,21 @@ namespace skyline::gpu::interconnect {
         for (std::size_t i{}; i < sampled.size(); ++i) {
             auto *view{sampled[i]};
             if (!view || !view->texture ||
-                view->texture.get() == match->target->texture.get() ||
-                !IsDiagnosticSceneSource(*view->texture))
+                view->texture.get() == match->target->texture.get())
+                continue;
+            const auto &texture{*view->texture};
+            const bool eligible{IsDiagnosticSceneSource(texture)};
+            // Include rejected inputs so a missing 3D readback can be
+            // distinguished from a resource that was not actually bound.
+            capture.Record(fmt::format(
+                "SCENE_INPUT_ELIGIBILITY draw_id={} slot={} {}x{}x{} layers={} mips={} "
+                "format={} usage={} aspect={} layout={} size={} eligible={}",
+                drawId, i, texture.dimensions.width, texture.dimensions.height,
+                texture.dimensions.depth, texture.layerCount, texture.levelCount,
+                vk::to_string(texture.format->vkFormat),
+                vk::to_string(texture.usage), vk::to_string(texture.format->vkAspect),
+                vk::to_string(texture.layout), texture.surfaceSize, eligible));
+            if (!eligible)
                 continue;
             diagnosticPassImages.push_back({view->texture, false, true, false, true,
                                             drawId, "scene_sampled_before"});
