@@ -413,9 +413,15 @@ namespace skyline::gpu::interconnect {
     }
 
     static bool IsDiagnosticSceneSource(const Texture &texture) {
+        // Include compact 3D color-grading LUTs: the observed 32x32 shader
+        // resource is a 3D sampled image, not a 2D atlas. Keep the bound
+        // tight and restrict image readback to safe transfer-src backing.
+        const bool source2D{texture.dimensions.depth == 1};
+        const bool compact3D{texture.dimensions.depth > 1 && texture.dimensions.depth <= 64 &&
+            texture.dimensions.width <= 128 && texture.dimensions.height <= 128};
         return texture.dimensions.width > 0 && texture.dimensions.width <= 4096 &&
                texture.dimensions.height > 0 && texture.dimensions.height <= 4096 &&
-               texture.dimensions.depth == 1 && texture.layerCount == 1 &&
+               (source2D || compact3D) && texture.layerCount == 1 &&
                texture.sampleCount == vk::SampleCountFlagBits::e1 &&
                texture.surfaceSize > 0 && texture.surfaceSize <= 16ULL * 1024 * 1024 &&
                (texture.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
@@ -533,9 +539,10 @@ namespace skyline::gpu::interconnect {
             diagnosticPassImages.push_back({view->texture, false, true, false, true,
                                             drawId, "scene_sampled_before"});
             capture.Record(fmt::format(
-                "SCENE_SAMPLED_INPUT draw_id={} slot={} image=0x{:X} {}x{} format={} bytes={}",
+                "SCENE_SAMPLED_INPUT draw_id={} slot={} image=0x{:X} {}x{}x{} format={} bytes={}",
                 drawId, i, reinterpret_cast<std::uintptr_t>(view->texture.get()),
                 view->texture->dimensions.width, view->texture->dimensions.height,
+                view->texture->dimensions.depth,
                 vk::to_string(view->texture->format->vkFormat), view->texture->surfaceSize));
         }
         capture.Record(fmt::format(
@@ -764,7 +771,7 @@ namespace skyline::gpu::interconnect {
                 "capture_index={} approx_present={} render_pass={} submission={} "
                 "kind={} focus={} executor=0x{:X} texture=0x{:X} dimensions={}x{} "
                 "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} mips={} layers={} "
-                "draw_id={} role={} note=late_draw_boundary_approximate_presentation\n",
+                "depth={} draw_id={} role={} note=late_draw_boundary_approximate_presentation\n",
                 index, interval, renderPassIndex, submissionNumber,
                 atlas ? "sampled_atlas" : entry.beforeUiDraw ?
                     (entry.renderTarget ? "pre_ui_render_target" : "sampled_input_before_draw") :
@@ -773,7 +780,7 @@ namespace skyline::gpu::interconnect {
                     "before_first_matching_consumer_draw" : "consumer_output",
                 executorIdentity, identity, width, height, format, vk::to_string(texture->layout),
                 texture->surfaceSize, guestMap, guestBytes, texture->levelCount, texture->layerCount,
-                entry.drawId, entry.role ? entry.role : "legacy")};
+                texture->dimensions.depth, entry.drawId, entry.role ? entry.role : "legacy")};
             auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
             slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
                 [texture, staging, beforeUiDraw = entry.beforeUiDraw](vk::raii::CommandBuffer &commandBuffer,
