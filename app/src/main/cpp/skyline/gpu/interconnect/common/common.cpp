@@ -93,6 +93,13 @@ namespace skyline::gpu::interconnect {
             }
 
             if (resolved) {
+                // Emit only cold-path successes, not repeated draw-time cache hits.
+                static std::atomic<u64> contiguousRecoveryCount{};
+                const u64 recovery{contiguousRecoveryCount.fetch_add(1, std::memory_order_relaxed) + 1};
+                if (recovery <= 8 || (recovery & 0x3FF) == 0) {
+                    LOGI("Split buffer mapping recovered: count={} address=0x{:X} size=0x{:X} mappings={}",
+                         recovery, address, size, mappingCount);
+                }
                 lastSplitAddress = address;
                 lastSplitSize = size;
                 lastSplitResolved = true;
@@ -104,7 +111,7 @@ namespace skyline::gpu::interconnect {
             // missing portion was mapped.
             static std::atomic<u64> warningCount{};
             const u64 hit{warningCount.fetch_add(1, std::memory_order_relaxed) + 1};
-            if (hit <= 16 || (hit & 0xFFF) == 0) {
+            if (hit <= 16 || (hit & 0x3FF) == 0) {
                 LOGW("Split buffer mappings are not supported: hit={} address=0x{:X} size=0x{:X} first=0x{:X} mappings={}",
                      hit, address, size, fullMapping.size(), mappingCount);
             }
