@@ -5,6 +5,8 @@ on:
   pull_request:
     types: [ opened, synchronize, reopened ]
     branches: [ master, UE4-fixes ]
+  push:
+    branches: [ debug/ender-lilies-mini-renderdoc ]
 
 # Only allow the latest build to run for a given PR, and cancel any previous builds
 concurrency:
@@ -46,6 +48,7 @@ jobs:
           ln -s /usr/bin/ninja .
 
       - name: Texman view-range regression (UBSan)
+        if: ${{ github.head_ref != 'debug/ender-lilies-mini-renderdoc' && github.ref_name != 'debug/ender-lilies-mini-renderdoc' }}
         run: |
           c++ -std=c++20 -Wall -Wextra -Werror \
             -fsanitize=undefined -fno-sanitize-recover=all \
@@ -56,17 +59,20 @@ jobs:
           /tmp/texman-view-range-tests
 
       - name: Occlusion and conditional rendering regressions
+        if: ${{ github.head_ref != 'debug/ender-lilies-mini-renderdoc' && github.ref_name != 'debug/ender-lilies-mini-renderdoc' }}
         run: |
           python3 tests/gpu_queries/run.py
           python3 tests/gpu_conditional/run.py
           python3 tests/gpu_draw_texture/run.py
 
       - name: Texture layout and submission regressions
+        if: ${{ github.head_ref != 'debug/ender-lilies-mini-renderdoc' && github.ref_name != 'debug/ender-lilies-mini-renderdoc' }}
         run: |
           python3 tests/gpu_sampled_layout/run.py
           python3 tests/gpu_submission/run.py
 
       - name: Mini-RenderDoc budget and watch regressions
+        if: ${{ github.head_ref != 'debug/ender-lilies-mini-renderdoc' && github.ref_name != 'debug/ender-lilies-mini-renderdoc' }}
         run: bash tests/naruto_ui_capture/run.sh
 
       - name: Android Assemble
@@ -74,31 +80,31 @@ jobs:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
-          PR_NUMBER: ${{ github.event.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_number }}
         run: |
-          if [[ "${{ github.head_ref }}" == "debug/naruto-connections-mini-renderdoc" ]]; then
-            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevReldebug
+          if [[ "${{ github.head_ref || github.ref_name }}" == "debug/ender-lilies-mini-renderdoc" ]]; then
+            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
           else
             ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
           fi
       - name: Rename APKs
         if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
         run: |
-          if [[ "${{ github.head_ref }}" != "debug/naruto-connections-mini-renderdoc" ]]; then
-            mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
+          mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.pull_request.number || github.run_number }}-release.apk
+          if [[ "${{ github.head_ref || github.ref_name }}" != "debug/ender-lilies-mini-renderdoc" ]]; then
+            mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.pull_request.number || github.run_number }}-reldebug.apk
           fi
-          mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
 
       - name: Upload Release APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && github.head_ref != 'debug/naruto-connections-mini-renderdoc' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: strato-pr${{ github.event.number }}-release.apk
-          path: strato-pr${{ github.event.number }}-release.apk
-
-      - name: Upload Debug APK
         if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: strato-pr${{ github.event.number }}-reldebug.apk
-          path: strato-pr${{ github.event.number }}-reldebug.apk
+          name: strato-pr${{ github.event.pull_request.number || github.run_number }}-release.apk
+          path: strato-pr${{ github.event.pull_request.number || github.run_number }}-release.apk
+
+      - name: Upload Debug APK
+        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && github.head_ref != 'debug/ender-lilies-mini-renderdoc' && github.ref_name != 'debug/ender-lilies-mini-renderdoc' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: strato-pr${{ github.event.pull_request.number || github.run_number }}-reldebug.apk
+          path: strato-pr${{ github.event.pull_request.number || github.run_number }}-reldebug.apk

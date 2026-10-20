@@ -156,7 +156,7 @@ namespace skyline::gpu {
             static std::uint32_t pollCount{};
             static std::uint32_t remainingFrames{};
             static fs::path captureDirectory{};
-            const fs::path root{fs::path(state.os->publicAppFilesPath) / "gpu_capture" / "naruto_connections"};
+            const fs::path root{fs::path(state.os->publicAppFilesPath) / "gpu_capture" / "ender_lilies"};
 
             if (!remainingFrames && (++pollCount % 16 == 1)) {
                 std::error_code ec;
@@ -179,7 +179,7 @@ namespace skyline::gpu {
                                 session.Start(candidate.string());
                                 std::ofstream readme(candidate / "README.txt");
                                 if (readme) {
-                                    readme << "Strato Naruto Connections mini-RenderDoc (diagnostic only)\n"
+                                    readme << "Strato Ender Lilies mini-RenderDoc (diagnostic only)\n"
                                            << "24 consecutive presented source frames; the first may have been rendered before arming.\n"
                                            << "Only the first 4 approximate frames have detailed draw readbacks.\n"
                                            << "present_source_XX.raw is a linear host GPU readback, not a PNG.\n"
@@ -187,7 +187,7 @@ namespace skyline::gpu {
                                            << "present_index_approx is approximate due to asynchronous rendering.\n"
                                            << "No guest memory or rendering semantics changed.\n";
                                 }
-                                LOGI("MINIRD_CONNECTIONS armed: {}", candidate.string());
+                                LOGI("MINIRD_ENDER armed: {}", candidate.string());
                                 break;
                             }
                         }
@@ -197,7 +197,7 @@ namespace skyline::gpu {
                         if (!fs::exists(hint, ec) && !ec) {
                             std::ofstream instructions(hint);
                             if (instructions)
-                                instructions << "Open Naruto Connections character selection, rename this file to ARM_CAPTURE and return to Strato.\n";
+                                instructions << "Open the Ender Lilies scene showing the black/white corruption, rename this file to ARM_CAPTURE and return to Strato.\n";
                         }
                     }
                 }
@@ -267,12 +267,12 @@ namespace skyline::gpu {
                     if (raw) {
                         raw.write(reinterpret_cast<const char *>(staging->data()),
                                   static_cast<std::streamsize>(staging->size()));
-                        LOGI("MINIRD_CONNECTIONS wrote frame {}: {}", captureIndex, fileName);
+                        LOGI("MINIRD_ENDER wrote frame {}: {}", captureIndex, fileName);
                     } else {
-                        LOGE("MINIRD_CONNECTIONS could not write frame {}", captureIndex);
+                        LOGE("MINIRD_ENDER could not write frame {}", captureIndex);
                     }
                 } else {
-                    LOGW("MINIRD_CONNECTIONS frame {} skipped: unsupported source layout/size", captureIndex);
+                    LOGW("MINIRD_ENDER frame {} skipped: unsupported source layout/size", captureIndex);
                 }
                 if (--remainingFrames == 0) {
                     session.Finish();
@@ -281,7 +281,7 @@ namespace skyline::gpu {
                         complete << fmt::format("capture_complete=true\nframes={}\ndetailed_intervals={}\n",
                                                 diagnostic::UiFrameCapture::PresentFrameCount,
                                                 diagnostic::UiFrameCapture::FrameCount);
-                    LOGI("MINIRD_CONNECTIONS capture complete");
+                    LOGI("MINIRD_ENDER capture complete");
                 }
             }
         }

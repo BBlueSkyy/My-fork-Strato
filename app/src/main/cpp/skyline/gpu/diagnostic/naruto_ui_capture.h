@@ -33,7 +33,7 @@ namespace skyline::gpu::diagnostic {
         std::atomic<std::uint32_t> eventCount{0};
         std::atomic<std::uint32_t> sampledDrawEvents{0};
         std::atomic<std::uint64_t> nextFocusedDrawId{1};
-        static constexpr std::uint32_t MaxEvents{6000};
+        static constexpr std::uint32_t MaxEvents{12000};
         static constexpr std::uint32_t FrameCount{4}; // Full draw-pair probes only.
         // Continue source frames for roughly one second, because sporadic UI
         // flickers can be missed by a ~120 ms four-frame presentation window.
@@ -56,11 +56,12 @@ namespace skyline::gpu::diagnostic {
         // 24-frame presentation window. This larger quota is only for the
         // manually armed post-text probe, not production rendering.
         static constexpr std::size_t MaxPostFourthTextBytes{144ULL * 1024 * 1024};
-        // Reserve budget for late UI composition and each of the four intervals.
-        // Phase 6 only needs the first UI draw before/after images. Keep one
-        // atlas per interval; the shader/CB/TSC evidence is tiny by comparison.
-        static constexpr std::uint32_t PassSnapshotsPerInterval{6};
-        static constexpr std::uint32_t MaxPassSnapshots{24};
+        // Full evidence in one armed capture, per interval:
+        // 6 HDR compositor snapshots (target + 4 sources + output),
+        // 5 final compositor snapshots (target + 3 sources + output),
+        // and 1 opportunistic 3D LUT producer output.
+        static constexpr std::uint32_t PassSnapshotsPerInterval{12};
+        static constexpr std::uint32_t MaxPassSnapshots{48};
         static constexpr std::uint32_t AtlasSnapshotsPerInterval{2};
         static constexpr std::size_t MaxPassCaptureBytes{160ULL * 1024 * 1024};
 
@@ -78,6 +79,7 @@ namespace skyline::gpu::diagnostic {
         std::array<std::array<std::uint32_t, 4>, FrameCount> textFocusCounts{};
         std::array<bool, FrameCount> preUiDrawClaimed{};
         std::array<bool, FrameCount> preSpriteDrawClaimed{};
+        std::array<bool, FrameCount> lutProducerClaimed{};
         std::optional<std::pair<std::uintptr_t, std::uintptr_t>> fermiSourceDirection;
         // Live backing identities actually written by a qualifying
         // full-resolution UI consumer draw. The first Fermi blit receives
@@ -117,6 +119,7 @@ namespace skyline::gpu::diagnostic {
             textFocusCounts.fill({});
             preUiDrawClaimed.fill(false);
             preSpriteDrawClaimed.fill(false);
+            lutProducerClaimed.fill(false);
             fermiSourceDirection.reset();
             uiCompositorTargets.clear();
             uiTextConsumersByTarget.clear();
@@ -203,6 +206,7 @@ namespace skyline::gpu::diagnostic {
                                          : start - guestAddress < bytes;
         }
 
+        // Reused diagnostic quotas: FullConsumer=blended scene draw, FullSprite=opaque scene draw.
         enum class TextFocus : std::uint8_t { GlyphOutput, StripComposite, FullConsumer, FullSprite };
 
         // These scopes are selected only after a render target/source has been
@@ -366,6 +370,17 @@ namespace skyline::gpu::diagnostic {
             return true;
         }
 
+        // Opportunistically capture one compact LUT producer per interval when
+        // it is actually executed during the manually armed capture.
+        bool ClaimLutProducer(std::uint32_t interval) {
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_acquire) || interval >= FrameCount ||
+                lutProducerClaimed[interval])
+                return false;
+            lutProducerClaimed[interval] = true;
+            return true;
+        }
+
         // Suppress redundant atlases across executors and presentation intervals.
         std::optional<std::uint32_t> ReserveAtlasSnapshot(std::uint32_t interval,
                                                             std::uintptr_t imageIdentity,
@@ -415,9 +430,9 @@ namespace skyline::gpu::diagnostic {
             std::scoped_lock lock(mutex);
             std::ofstream out(std::filesystem::path(path) / "gpu_events.txt", std::ios::trunc);
             if (out) {
-                out << "GPU events collected while 4 frames were being presented.\n"
+                out << "GPU events collected while 24 frames were being presented.\n"
                     << "present_index_approx is NOT exact GPU/present synchronization.\n"
-                    << "Events are capped at 6000; routine draws sampled 1/16.\n\n";
+                    << "Events are capped at 12000; routine draws sampled 1/16.\n\n";
                 for (const auto &event : events)
                     out << event << '\n';
             }
