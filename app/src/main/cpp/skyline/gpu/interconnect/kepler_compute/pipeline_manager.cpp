@@ -18,7 +18,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             packedState.localMemorySize, packedState.sharedMemorySize,
             packedState.dimensions,
             [&](u32 index, u32 offset) {
-                return constantBuffers[index].Read<int>(ctx.executor, offset);
+                return constantBuffers[index].ReadForShaderCompile<int>(ctx.executor, offset);
             }, [&](u32 index) {
                 return textures.GetTextureType(ctx, BindlessHandle{ .raw = index }.textureIndex);
             }, [&](u32 index) {
