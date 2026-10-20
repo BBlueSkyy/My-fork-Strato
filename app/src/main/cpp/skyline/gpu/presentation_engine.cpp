@@ -2,6 +2,10 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <android/native_window_jni.h>
+#include <filesystem>
+#include <fstream>
+#include <gpu/diagnostic/naruto_ui_capture.h>
+#include <os.h>
 #include <android/choreographer.h>
 #include <common/settings.h>
 #include <common/signal.h>
@@ -143,6 +147,144 @@ namespace skyline::gpu {
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
         texture->SynchronizeHost();
+
+        // Diagnostic only: manual four-frame source capture before host swapchain copy.
+        // Deliberately independent of Title ID and the programmable GPU pipeline.
+        {
+            namespace fs = std::filesystem;
+            auto &session{diagnostic::NarutoUiCapture()};
+            static std::uint32_t pollCount{};
+            static std::uint32_t remainingFrames{};
+            static fs::path captureDirectory{};
+            const fs::path root{fs::path(state.os->publicAppFilesPath) / "gpu_capture" / "naruto_connections"};
+
+            if (!remainingFrames && (++pollCount % 16 == 1)) {
+                std::error_code ec;
+                fs::create_directories(root, ec);
+                if (!ec) {
+                    const auto armPath{root / "ARM_CAPTURE"};
+                    if (fs::exists(armPath, ec) && !ec) {
+                        ec.clear();
+                        fs::remove(armPath, ec);
+                        if (!ec) {
+                            for (unsigned index{1}; index <= 999; ++index) {
+                                const auto candidate{root / fmt::format("capture_{:03}", index)};
+                                ec.clear();
+                                if (fs::exists(candidate, ec) || ec)
+                                    continue;
+                                if (!fs::create_directories(candidate, ec) || ec)
+                                    continue;
+                                captureDirectory = candidate;
+                                remainingFrames = diagnostic::UiFrameCapture::PresentFrameCount;
+                                session.Start(candidate.string());
+                                std::ofstream readme(candidate / "README.txt");
+                                if (readme) {
+                                    readme << "Strato Naruto Connections mini-RenderDoc (diagnostic only)\n"
+                                           << "24 consecutive presented source frames; the first may have been rendered before arming.\n"
+                                           << "Only the first 4 approximate frames have detailed draw readbacks.\n"
+                                           << "present_source_XX.raw is a linear host GPU readback, not a PNG.\n"
+                                           << "gpu_events.txt contains bounded draw, shader, sampler and TIC diagnostics.\n"
+                                           << "present_index_approx is approximate due to asynchronous rendering.\n"
+                                           << "No guest memory or rendering semantics changed.\n";
+                                }
+                                LOGI("MINIRD_CONNECTIONS armed: {}", candidate.string());
+                                break;
+                            }
+                        }
+                    } else {
+                        const auto hint{root / "ARM_CAPTURE.rename_this_file_when_ready"};
+                        ec.clear();
+                        if (!fs::exists(hint, ec) && !ec) {
+                            std::ofstream instructions(hint);
+                            if (instructions)
+                                instructions << "Open Naruto Connections character selection, rename this file to ARM_CAPTURE and return to Strato.\n";
+                        }
+                    }
+                }
+            }
+
+            if (remainingFrames) {
+                const auto captureIndex{diagnostic::UiFrameCapture::PresentFrameCount - remainingFrames};
+                // Intervals 0..3 retain original detailed draw budget. Later
+                // presents collect source only; 4 means "not eligible for draw probes".
+                session.presentIndex.store(
+                    std::min(captureIndex, diagnostic::UiFrameCapture::FrameCount),
+                    std::memory_order_release);
+                uintptr_t guestMap{};
+                size_t guestSize{};
+                if (texture->guest) {
+                    if (!texture->guest->mappings.empty())
+                        guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                    for (const auto &mapping : texture->guest->mappings)
+                        guestSize += mapping.size();
+                }
+                const auto validReadback{
+                    texture->layout != vk::ImageLayout::eUndefined &&
+                    texture->levelCount == 1 && texture->layerCount == 1 &&
+                    texture->sampleCount == vk::SampleCountFlagBits::e1 &&
+                    texture->surfaceSize > 0 && texture->surfaceSize <= 12ULL * 1024 * 1024 &&
+                    (texture->format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+                    !texture->format->IsCompressed()
+                };
+
+                std::ofstream meta(captureDirectory / fmt::format("present_{:02}.txt", captureIndex));
+                if (meta)
+                    meta << fmt::format(
+                        "frame={} frame_id={} host={}x{} format={} layout={} size={} "
+                        "guest_map=0x{:X} guest_map_bytes={} texture=0x{:X} "
+                        "crop={},{},{},{} transform={} scaling={} eligible={}\n",
+                        captureIndex, frame.id, texture->dimensions.width, texture->dimensions.height,
+                        vk::to_string(texture->format->vkFormat),
+                        vk::to_string(texture->layout), texture->surfaceSize,
+                        guestMap, guestSize, reinterpret_cast<uintptr_t>(texture.get()),
+                        frame.crop.left, frame.crop.top, frame.crop.right, frame.crop.bottom,
+                        static_cast<u32>(frame.transform), static_cast<u32>(frame.scalingMode),
+                        validReadback);
+
+                session.Record(fmt::format(
+                    "PRESENT_SOURCE frame_index={} frame_id={} source_texture=0x{:X} "
+                    "guest_map=0x{:X} guest_bytes={} source_cycle=0x{:X} dimensions={}x{} eligible={}",
+                    captureIndex, frame.id, reinterpret_cast<uintptr_t>(texture.get()),
+                    guestMap, guestSize, reinterpret_cast<uintptr_t>(texture->cycle.get()),
+                    texture->dimensions.width, texture->dimensions.height, validReadback));
+
+                if (validReadback) {
+                    // Same proven readback path as earlier mini-RenderDoc diagnostic PRs.
+                    // Wait only on this explicit, opt-in diagnostic path.
+                    if (texture->cycle)
+                        texture->cycle->Wait();
+                    auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+                    auto diagnosticCycle{gpu.scheduler.Submit(
+                        [texture, staging](vk::raii::CommandBuffer &commandBuffer) {
+                            texture->CopyIntoStagingBuffer(commandBuffer, staging);
+                        })};
+                    diagnosticCycle->AttachObjects(texture, staging);
+                    diagnosticCycle->Wait();
+                    const auto fileName{fmt::format("present_source_{:02}_{}x{}_{}.raw",
+                        captureIndex, texture->dimensions.width, texture->dimensions.height,
+                        vk::to_string(texture->format->vkFormat))};
+                    std::ofstream raw(captureDirectory / fileName, std::ios::binary | std::ios::trunc);
+                    if (raw) {
+                        raw.write(reinterpret_cast<const char *>(staging->data()),
+                                  static_cast<std::streamsize>(staging->size()));
+                        LOGI("MINIRD_CONNECTIONS wrote frame {}: {}", captureIndex, fileName);
+                    } else {
+                        LOGE("MINIRD_CONNECTIONS could not write frame {}", captureIndex);
+                    }
+                } else {
+                    LOGW("MINIRD_CONNECTIONS frame {} skipped: unsupported source layout/size", captureIndex);
+                }
+                if (--remainingFrames == 0) {
+                    session.Finish();
+                    std::ofstream complete(captureDirectory / "capture_complete.txt");
+                    if (complete)
+                        complete << fmt::format("capture_complete=true\nframes={}\ndetailed_intervals={}\n",
+                                                diagnostic::UiFrameCapture::PresentFrameCount,
+                                                diagnostic::UiFrameCapture::FrameCount);
+                    LOGI("MINIRD_CONNECTIONS capture complete");
+                }
+            }
+        }
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,

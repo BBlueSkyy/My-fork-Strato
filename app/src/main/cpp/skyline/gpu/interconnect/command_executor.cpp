@@ -11,6 +11,10 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <gpu/diagnostic/naruto_ui_capture.h>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -382,6 +386,459 @@ namespace skyline::gpu::interconnect {
         return (!a && !b) || (a && b && b->GetView() == a);
     }
 
+
+    // Target full-resolution UI composition layers, not startup atlases or depth.
+    // Like the earlier mini-RenderDoc probes, all image copies remain on the
+    // existing command stream and only execute at a render-pass boundary.
+    static bool IsNarutoUiPassImage(const Texture &texture) {
+        return texture.dimensions.width >= 1000 && texture.dimensions.width <= 1920 &&
+               texture.dimensions.height >= 600 && texture.dimensions.height <= 1080 &&
+               texture.dimensions.depth == 1 && texture.levelCount == 1 &&
+               texture.layerCount == 1 &&
+               texture.sampleCount == vk::SampleCountFlagBits::e1 &&
+               texture.surfaceSize && texture.surfaceSize <= 8ULL * 1024 * 1024 &&
+               (texture.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+               !texture.format->IsCompressed() &&
+               (texture.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+               texture.layout != vk::ImageLayout::eUndefined;
+    }
+
+    static bool IsDiagnosticUiOutput(diagnostic::UiFrameCapture &capture, const Texture &texture) {
+        // A Connections UI nameplate may be rendered directly into a full-sized
+        // RT without a previously observed Fermi2D flip. Treat every eligible
+        // color target as a candidate while the explicit capture is armed.
+        // Fermi flip identity remains available in the GPU event history.
+        (void)capture;
+        return IsNarutoUiPassImage(texture);
+    }
+
+    static bool IsNarutoAtlasImage(const Texture &texture) {
+        return texture.dimensions.width > 0 && texture.dimensions.width <= 2048 &&
+               texture.dimensions.height > 0 && texture.dimensions.height <= 2048 &&
+               texture.dimensions.depth == 1 && texture.layerCount == 1 &&
+               texture.sampleCount == vk::SampleCountFlagBits::e1 &&
+               texture.surfaceSize > 0 && texture.surfaceSize <= 8ULL * 1024 * 1024 &&
+               (texture.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+               (texture.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+               texture.layout != vk::ImageLayout::eUndefined;
+    }
+
+    // Readback eligibility is separate from draw selection. RGBA text strips
+    // can scale in width from 1184 to 1664 (and vary in height). Select using
+    // generic wide-and-shallow geometry instead of a fixed resolution range.
+    static bool IsDiagnosticTextStrip(const Texture &texture) {
+        return diagnostic::IsWideTextStripGeometry(texture.dimensions.width,
+                                                   texture.dimensions.height) &&
+               texture.format->vkFormat == vk::Format::eR8G8B8A8Unorm &&
+               IsNarutoAtlasImage(texture);
+    }
+
+    static bool IsDiagnosticGlyphAtlas(const Texture &texture) {
+        return texture.dimensions.width == 1024 && texture.dimensions.height == 1024 &&
+               texture.format->vkFormat == vk::Format::eR8Unorm &&
+               IsNarutoAtlasImage(texture);
+    }
+
+    void CommandExecutor::TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color) {
+        // Stop queuing background RT snapshots at unrelated pass boundaries.
+        // Only the explicitly selected post-draw checkpoints arm readbacks.
+        (void)sampled;
+        (void)color;
+    }
+
+    // Diagnostic-only selection by observed image geometry/format. No title IDs,
+    // shader hashes, permanent render state or driver-specific behavior.
+    struct FocusedFullDraw {
+        TextureView *target{};
+        TextureView *source{};
+        diagnostic::UiFrameCapture::TextFocus kind{};
+    };
+
+    static std::optional<FocusedFullDraw> FindFocusedFullDraw(span<TextureView *> sampled,
+                                                             span<TextureView *> color,
+                                                             bool blendingEnabled) {
+        if (!blendingEnabled)
+            return std::nullopt;
+
+        TextureView *target{};
+        for (auto *view : color)
+            if (view && view->texture && IsNarutoUiPassImage(*view->texture)) {
+                target = view;
+                break;
+            }
+        if (!target)
+            return std::nullopt;
+
+        TextureView *strip{};
+        TextureView *sprite{};
+        for (auto *view : sampled) {
+            if (!view || !view->texture || view->texture.get() == target->texture.get())
+                continue;
+            const auto &texture{*view->texture};
+            if (!strip && IsDiagnosticTextStrip(texture))
+                strip = view;
+            // This shape was observed in full-size UI sprite draws. Selection
+            // is diagnostic, not a functional texture/sampler policy.
+            if (!sprite && IsNarutoAtlasImage(texture) && texture.format->IsCompressed() &&
+                texture.dimensions.width == 1024 && texture.dimensions.height == 1024)
+                sprite = view;
+        }
+        if (strip)
+            return FocusedFullDraw{target, strip, diagnostic::UiFrameCapture::TextFocus::FullConsumer};
+        if (sprite)
+            return FocusedFullDraw{target, sprite, diagnostic::UiFrameCapture::TextFocus::FullSprite};
+        return std::nullopt;
+    }
+
+    bool CommandExecutor::ProbeDiagnosticUiPreDraw(span<TextureView *> sampled, span<TextureView *> color, bool blendingEnabled) {
+        auto &capture{diagnostic::NarutoUiCapture()};
+        diagnosticPendingPreDrawId = 0;
+        if (!capture.active.load(std::memory_order_acquire))
+            return false;
+        const auto match{FindFocusedFullDraw(sampled, color, blendingEnabled)};
+        if (!match)
+            return false;
+
+        // The 24-frame trace proved that the P1 list is normally absent
+        // before this draw and appears in the later composer stages.
+        // Reallocate the same 72 MiB diagnostic budget to the result
+        // immediately after the SECOND text draw of this submission.
+        const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+        const bool sprite{match->kind == diagnostic::UiFrameCapture::TextFocus::FullSprite};
+        if (!(sprite ? capture.ClaimPreSpriteDraw(interval) : capture.ClaimPreUiDraw(interval)))
+            return false;
+
+        const auto drawId{capture.NextFocusedDrawId()};
+        diagnosticPendingPreDrawId = drawId;
+        const auto sourceCycle{match->source->texture->cycle.get()};
+        const auto targetCycle{match->target->texture->cycle.get()};
+        // This split orders the baseline copy strictly ahead of the draw in
+        // the same GPU command stream. It is never enabled in normal rendering.
+        BreakRenderPass();
+        diagnosticPassImages.push_back({match->target->texture, true, true, false, true,
+                                        drawId, "before_consumer"});
+        // Capture the descriptor-resolved source BEFORE it is sampled. Copying
+        // it after the draw could falsely blame a producer when the output
+        // aliases the source backing or a subsequent writer modifies it.
+        diagnosticPassImages.push_back({match->source->texture, false, true, false, true,
+                                        drawId, "source_before_sampling"});
+        capture.Record(fmt::format(
+            "TEXT_CONSUMER_PRE draw_id={} kind={} interval={} executor=0x{:X} "
+            "submission={} rp={} source=0x{:X} source_cycle=0x{:X} "
+            "target=0x{:X} target_cycle=0x{:X}",
+            drawId, sprite ? "compressed_sprite" : "text_strip", interval,
+            reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
+            reinterpret_cast<uintptr_t>(match->source->texture.get()),
+            reinterpret_cast<uintptr_t>(sourceCycle),
+            reinterpret_cast<uintptr_t>(match->target->texture.get()),
+            reinterpret_cast<uintptr_t>(targetCycle)));
+        QueueDiagnosticPassReadbacks();
+        return true;
+    }
+
+    void CommandExecutor::MarkDiagnosticUiOutput(span<TextureView *> sampled, span<TextureView *> color,
+                                                  bool blendingEnabled, std::string_view shaderHashes,
+                                                  u32 drawArgument, bool indexed) {
+        auto &capture{diagnostic::NarutoUiCapture()};
+        if (!capture.active.load(std::memory_order_acquire))
+            return;
+        const auto match{FindFocusedFullDraw(sampled, color, blendingEnabled)};
+        if (!match) {
+            diagnosticPendingPreDrawId = 0;
+            return;
+        }
+        // Mark the *produced* full-resolution target, not the background
+        // Fermi2D input. The following reverse blit can then snapshot
+        // precisely the texture that received these compositor draws.
+        capture.ObserveUiCompositorTarget(reinterpret_cast<uintptr_t>(match->target->texture.get()));
+        const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+        const bool sprite{match->kind == diagnostic::UiFrameCapture::TextFocus::FullSprite};
+        const auto drawId{diagnosticPendingPreDrawId ? diagnosticPendingPreDrawId : capture.NextFocusedDrawId()};
+        diagnosticPendingPreDrawId = 0;
+
+        const auto guestAddress{[](const TextureView *view) -> uintptr_t {
+            if (!view || !view->texture || !view->texture->guest ||
+                view->texture->guest->mappings.empty())
+                return 0;
+            return reinterpret_cast<uintptr_t>(view->texture->guest->mappings.front().data());
+        }};
+        // Log ALL qualifying consumers, even those not selected for readback.
+        // Unlike a sampled generic DRAW event, these retain actual resolved
+        // descriptors and are explicitly linked to a CPU draw ID.
+        std::string bindings;
+        for (std::size_t i{}; i < sampled.size() && i < 16; ++i) {
+            const auto *view{sampled[i]};
+            if (!view || !view->texture)
+                continue;
+            const auto &texture{*view->texture};
+            bindings += fmt::format(
+                "[{}]=0x{:X}:{}x{}:{}:guest=0x{:X}:cycle=0x{:X},",
+                i, reinterpret_cast<uintptr_t>(&texture),
+                texture.dimensions.width, texture.dimensions.height,
+                vk::to_string(texture.format->vkFormat), guestAddress(view),
+                reinterpret_cast<uintptr_t>(texture.cycle.get()));
+        }
+        capture.Record(fmt::format(
+            "TEXT_CONSUMER_DRAW draw_id={} kind={} indexed={} draw_arg={} "
+            "shaders={} executor=0x{:X} submission={} rp={} "
+            "target=0x{:X} guest=0x{:X} target_cycle=0x{:X} "
+            "source=0x{:X} source_guest=0x{:X} source_cycle=0x{:X} "
+            "source_mips={} source_layers={} bindings={}",
+            drawId, sprite ? "compressed_sprite" : "text_strip", indexed,
+            drawArgument, shaderHashes, reinterpret_cast<uintptr_t>(this),
+            submissionNumber, renderPassIndex,
+            reinterpret_cast<uintptr_t>(match->target->texture.get()),
+            guestAddress(match->target),
+            reinterpret_cast<uintptr_t>(match->target->texture->cycle.get()),
+            reinterpret_cast<uintptr_t>(match->source->texture.get()),
+            guestAddress(match->source),
+            reinterpret_cast<uintptr_t>(match->source->texture->cycle.get()),
+            match->source->range.levelCount, match->source->range.layerCount,
+            bindings));
+
+        if (match->kind == diagnostic::UiFrameCapture::TextFocus::FullConsumer) {
+            const auto target{match->target->texture};
+            // Draw nodes have already been recorded. Pair the four observed
+            // text consumers by the live compositor backing across Maxwell
+            // submissions, ending this group at the reverse Fermi blit.
+            // Neither present index nor shader/game ID determines grouping.
+            if (auto fourthId{capture.ClaimPostFourthText(
+                    reinterpret_cast<uintptr_t>(target.get()), target->surfaceSize)}) {
+                BreakRenderPass(); // Ensure the fourth text draw completes first.
+                auto staging{gpu.memory.AllocateStagingBuffer(target->surfaceSize)};
+                slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                    [target, staging](vk::raii::CommandBuffer &commandBuffer,
+                                      const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                        cycle->AttachObjects(target, staging);
+                        target->CopyIntoStagingBuffer(commandBuffer, staging);
+                        RecordFullBarrier(commandBuffer);
+                    });
+                const auto directory{std::filesystem::path(capture.CaptureDirectory())};
+                const auto rawPath{directory / fmt::format("ui_posttext4_{:02}_{}x{}_{}.raw",
+                    *fourthId, target->dimensions.width, target->dimensions.height,
+                    vk::to_string(target->format->vkFormat))};
+                const auto metaPath{directory / fmt::format("ui_posttext4_{:02}.txt", *fourthId)};
+                const auto guestMap{guestAddress(match->target)};
+                const auto meta{fmt::format(
+                    "posttext4_id={} approx_present={} executor=0x{:X} submission={} "
+                    "render_pass={} draw_id={} target=0x{:X} guest_map=0x{:X} "
+                    "source=0x{:X} source_guest=0x{:X} "
+                    "note=after_fourth_text_draw_before_later_sprites_not_exact_present_frame\n",
+                    *fourthId, interval, reinterpret_cast<uintptr_t>(this), submissionNumber,
+                    renderPassIndex, drawId, reinterpret_cast<uintptr_t>(target.get()),
+                    guestMap, reinterpret_cast<uintptr_t>(match->source->texture.get()),
+                    guestAddress(match->source))};
+                diagnosticReadbackCallbacks.emplace_back(
+                    [staging, rawPath, metaPath, meta, id = *fourthId] {
+                        std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                        if (!raw) {
+                            LOGE("MINIRD_CONNECTIONS UI post-text-4 {} could not open output", id);
+                            return;
+                        }
+                        raw.write(reinterpret_cast<const char *>(staging->data()),
+                                  static_cast<std::streamsize>(staging->size()));
+                        raw.close();
+                        std::ofstream info(metaPath, std::ios::trunc);
+                        if (info)
+                            info << meta;
+                        LOGI("MINIRD_CONNECTIONS wrote UI post-text-4 {}: {}",
+                             id, rawPath.string());
+                    });
+                capture.Record(fmt::format(
+                    "UI_COMPOSITOR_POSTTEXT4 id={} draw_id={} executor=0x{:X} "
+                    "submission={} target=0x{:X} guest_map=0x{:X} source=0x{:X}",
+                    *fourthId, drawId, reinterpret_cast<uintptr_t>(this), submissionNumber,
+                    reinterpret_cast<uintptr_t>(target.get()), guestMap,
+                    reinterpret_cast<uintptr_t>(match->source->texture.get())));
+            }
+        }
+
+        const auto ordinal{capture.ClaimTextFocus(interval, match->kind)};
+        if (!ordinal)
+            return;
+        // The pre-draw source and destination have already been queued on
+        // this command stream. Only the destination needs a post-draw copy.
+        diagnosticPassImages.clear();
+        diagnosticPassImages.push_back({match->target->texture, true, true, false, false,
+                                        drawId, "after_consumer"});
+        capture.Record(fmt::format("TEXT_FOCUS stage={} ordinal={} draw_id={} "
+                                   "executor=0x{:X} submission={} rp={}",
+                                   sprite ? "sprite_to_full" : "text_to_full",
+                                   *ordinal, drawId, reinterpret_cast<uintptr_t>(this),
+                                   submissionNumber, renderPassIndex));
+        BreakRenderPass();
+    }
+
+    void CommandExecutor::ProbeDiagnosticFermiInput(TextureView *source, TextureView *destination) {
+        auto &capture{diagnostic::NarutoUiCapture()};
+        if (!capture.active.load(std::memory_order_acquire) || !source || !destination ||
+            !source->texture || !destination->texture ||
+            !IsNarutoUiPassImage(*source->texture) ||
+            source->texture.get() == destination->texture.get())
+            return;
+
+        const auto src{source->texture};
+        const auto dst{destination->texture};
+        // The reverse blit ends one logical UI composition cycle. Do this
+        // even if the pre-Fermi readback budget was exhausted.
+        capture.CompleteUiCompositorCycle(reinterpret_cast<uintptr_t>(src.get()));
+        const auto id{capture.ReserveFermiSource(reinterpret_cast<uintptr_t>(src.get()),
+                                                 reinterpret_cast<uintptr_t>(dst.get()),
+                                                 src->surfaceSize)};
+        if (!id)
+            return;
+        // Same GPU command stream as the imminent blit, with no CPU GPU-fence
+        // wait. This captures pixels BEFORE Fermi2D samples the source.
+        BreakRenderPass();
+        auto staging{gpu.memory.AllocateStagingBuffer(src->surfaceSize)};
+        slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+            [src, staging](vk::raii::CommandBuffer &commandBuffer,
+                           const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                cycle->AttachObjects(src, staging);
+                src->CopyIntoStagingBuffer(commandBuffer, staging);
+                RecordFullBarrier(commandBuffer);
+            });
+
+        const auto directory{std::filesystem::path(capture.CaptureDirectory())};
+        const auto rawName{fmt::format("fermi_input_{:02}_{}x{}_{}.raw",
+                                      *id, src->dimensions.width, src->dimensions.height,
+                                      vk::to_string(src->format->vkFormat))};
+        const auto rawPath{directory / rawName};
+        const auto metaPath{directory / fmt::format("fermi_input_{:02}.txt", *id)};
+        const auto mapAddress{[](const auto &texture) -> uintptr_t {
+            return texture->guest && !texture->guest->mappings.empty()
+                ? reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data()) : 0;
+        }};
+        const auto meta{fmt::format(
+            "fermi_input_id={} approx_present={} executor=0x{:X} submission={} "
+            "source=0x{:X} dest=0x{:X} source_guest=0x{:X} dest_guest=0x{:X} "
+            "source_cycle=0x{:X} dest_cycle=0x{:X} dimensions={}x{} format={} "
+            "note=GPU_ordered_after_UI_compositor_before_reverse_Fermi_blit_not_exact_present_frame\n",
+            *id, capture.presentIndex.load(std::memory_order_acquire),
+            reinterpret_cast<uintptr_t>(this), submissionNumber,
+            reinterpret_cast<uintptr_t>(src.get()), reinterpret_cast<uintptr_t>(dst.get()),
+            mapAddress(src), mapAddress(dst),
+            reinterpret_cast<uintptr_t>(src->cycle.get()),
+            reinterpret_cast<uintptr_t>(dst->cycle.get()),
+            src->dimensions.width, src->dimensions.height, vk::to_string(src->format->vkFormat))};
+        diagnosticReadbackCallbacks.emplace_back([staging, rawPath, metaPath, meta, id = *id] {
+            std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+            if (!raw) {
+                LOGE("MINIRD_CONNECTIONS Fermi input {} could not open output", id);
+                return;
+            }
+            raw.write(reinterpret_cast<const char *>(staging->data()),
+                      static_cast<std::streamsize>(staging->size()));
+            raw.close();
+            std::ofstream info(metaPath, std::ios::trunc);
+            if (info)
+                info << meta;
+            LOGI("MINIRD_CONNECTIONS wrote Fermi input {}: {}", id, rawPath.string());
+        });
+        capture.Record(fmt::format(
+            "FERMI_COMPOSITED_UI_SOURCE id={} executor=0x{:X} submission={} "
+            "source=0x{:X} dest=0x{:X} source_guest=0x{:X} dest_guest=0x{:X}",
+            *id, reinterpret_cast<uintptr_t>(this), submissionNumber,
+            reinterpret_cast<uintptr_t>(src.get()), reinterpret_cast<uintptr_t>(dst.get()),
+            mapAddress(src), mapAddress(dst)));
+    }
+
+    void CommandExecutor::QueueDiagnosticPassReadbacks() {
+        if (diagnosticPassImages.empty())
+            return;
+        auto images{std::move(diagnosticPassImages)};
+        diagnosticPassImages.clear();
+        auto &capture{diagnostic::NarutoUiCapture()};
+        if (!capture.active.load(std::memory_order_acquire))
+            return;
+
+        const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+        if (interval >= diagnostic::UiFrameCapture::FrameCount)
+            return;
+        const std::filesystem::path directory{capture.CaptureDirectory()};
+        if (directory.empty())
+            return;
+
+        for (const auto &entry : images) {
+            const auto &texture{entry.texture};
+            if (!entry.priority)
+                continue;
+            const bool atlas{entry.atlas};
+            if (atlas ? !IsNarutoAtlasImage(*texture) :
+                      !(IsNarutoUiPassImage(*texture) || IsDiagnosticTextStrip(*texture) ||
+                        (!entry.renderTarget && IsNarutoAtlasImage(*texture))))
+                continue;
+
+            const auto identity{reinterpret_cast<uintptr_t>(texture.get())};
+            const auto snapshotId{atlas ?
+                capture.ReserveAtlasSnapshot(interval, identity, texture->surfaceSize) :
+                capture.ReservePassSnapshot(interval, texture->surfaceSize)};
+            if (!snapshotId)
+                continue;
+            const auto index{*snapshotId};
+            const auto width{texture->dimensions.width};
+            const auto height{texture->dimensions.height};
+            const auto format{vk::to_string(texture->format->vkFormat)};
+            const auto executorIdentity{reinterpret_cast<uintptr_t>(this)};
+            uintptr_t guestMap{};
+            size_t guestBytes{};
+            if (texture->guest) {
+                if (!texture->guest->mappings.empty())
+                    guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                for (const auto &mapping : texture->guest->mappings)
+                    guestBytes += mapping.size();
+            }
+            const auto prefix{atlas ? "atlas" : entry.beforeUiDraw ? "pre" : "pass"};
+            const auto fileName{fmt::format("{}_{:02}_rp{}_{}x{}_{}.raw",
+                prefix, index, renderPassIndex, width, height, format)};
+            const auto rawPath{directory / fileName};
+            const auto metaPath{directory / fmt::format("{}_{:02}.txt", prefix, index)};
+            const auto meta{fmt::format(
+                "capture_index={} approx_present={} render_pass={} submission={} "
+                "kind={} focus={} executor=0x{:X} texture=0x{:X} dimensions={}x{} "
+                "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} mips={} layers={} "
+                "draw_id={} role={} note=late_draw_boundary_approximate_presentation\n",
+                index, interval, renderPassIndex, submissionNumber,
+                atlas ? "sampled_atlas" : entry.beforeUiDraw ?
+                    (entry.renderTarget ? "pre_ui_render_target" : "sampled_input_before_draw") :
+                    entry.renderTarget ? "render_target" : "sampled_input",
+                atlas ? "glyph_or_sampled_source" : entry.beforeUiDraw ?
+                    "before_first_matching_consumer_draw" : "consumer_output",
+                executorIdentity, identity, width, height, format, vk::to_string(texture->layout),
+                texture->surfaceSize, guestMap, guestBytes, texture->levelCount, texture->layerCount,
+                entry.drawId, entry.role ? entry.role : "legacy")};
+            auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [texture, staging, beforeUiDraw = entry.beforeUiDraw](vk::raii::CommandBuffer &commandBuffer,
+                                   const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    cycle->AttachObjects(texture, staging);
+                    texture->CopyIntoStagingBuffer(commandBuffer, staging);
+                    if (beforeUiDraw)
+                        RecordFullBarrier(commandBuffer); // Transfer read must complete before the next color write.
+                });
+            diagnosticReadbackCallbacks.emplace_back(
+                [staging, rawPath, metaPath, meta, index] {
+                    std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                    if (!raw) {
+                        LOGE("MINIRD_CONNECTIONS_PHASE2 failed to open snapshot {}", index);
+                        return;
+                    }
+                    raw.write(reinterpret_cast<const char *>(staging->data()),
+                              static_cast<std::streamsize>(staging->size()));
+                    raw.close();
+                    std::ofstream info(metaPath, std::ios::trunc);
+                    if (info)
+                        info << meta;
+                    LOGI("MINIRD_CONNECTIONS_PHASE2 wrote snapshot {}: {}", index, rawPath.string());
+                });
+            capture.Record(fmt::format(
+                "PHASE2_SNAPSHOT index={} rp={} submission={} executor=0x{:X} interval={} kind={} texture=0x{:X} {}x{} format={} draw_id={} role={}",
+                index, renderPassIndex, submissionNumber, executorIdentity, interval,
+                atlas ? "atlas" : entry.beforeUiDraw ? "pre_ui" : entry.renderTarget ? "rt" : "sampled", identity, width, height, format,
+                entry.drawId, entry.role ? entry.role : "legacy"));
+        }
+    }
+
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
         auto addSubpass{[&] {
             renderPass->AddSubpass(inputAttachments, colorAttachments, depthStencilAttachment, gpu);
@@ -417,6 +874,7 @@ namespace skyline::gpu::interconnect {
 
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+                QueueDiagnosticPassReadbacks();
                 renderPassIndex++;
             }
             renderPass = &std::get<node::RenderPassNode>(slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassNode>(), renderArea));
@@ -442,6 +900,7 @@ namespace skyline::gpu::interconnect {
         for (auto view : sampledImages)
             view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
+        TrackDiagnosticPassImages(sampledImages, colorAttachments);
         return gotoNext;
     }
 
@@ -452,6 +911,7 @@ namespace skyline::gpu::interconnect {
 
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+            QueueDiagnosticPassReadbacks();
             renderPassIndex++;
 
             renderPass = nullptr;
@@ -786,6 +1246,12 @@ namespace skyline::gpu::interconnect {
             SubmitInternal();
             submissionNumber++;
         }
+        // SubmitInternal() closes the final render pass and may enqueue more
+        // diagnostic readbacks. Queue file writes AFTER that point so callbacks
+        // belong to the correct GPU cycle (already registered above).
+        for (auto &cb : diagnosticReadbackCallbacks)
+            waiterThread.Queue(nullptr, std::move(cb));
+        diagnosticReadbackCallbacks.clear();
 
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission

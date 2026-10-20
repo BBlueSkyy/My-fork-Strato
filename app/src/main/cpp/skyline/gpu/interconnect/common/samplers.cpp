@@ -175,6 +175,16 @@ namespace skyline::gpu::interconnect {
             return vk::BorderColor::eFloatTransparentBlack;
     }
 
+    bool Samplers::ReadDiagnosticSampler(u32 samplerIndex, u32 textureIndex,
+                                         u32 &effectiveIndex, TextureSamplerControl &control) {
+        const auto &pool{samplerPool.Get()};
+        effectiveIndex = pool.didUseTexHeaderBinding ? textureIndex : samplerIndex;
+        if (effectiveIndex >= pool.texSamplers.size())
+            return false;
+        control = pool.texSamplers[effectiveIndex];
+        return true;
+    }
+
     vk::raii::Sampler *Samplers::GetSampler(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex) {
         const auto &samplerPoolObj{samplerPool.Get()};
         return GetSampler(ctx, samplerPoolObj.didUseTexHeaderBinding ? textureIndex : samplerIndex);

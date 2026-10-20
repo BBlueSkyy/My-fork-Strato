@@ -256,6 +256,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         bool MayWriteBuffer(Buffer *buffer) const;
 
+        // Dump the bound CB ranges + bindless handles resolved by this very
+        // pipeline at the selected first sprite draw; diagnostic only.
+        void CaptureDiagnosticFirstUiDraw(InterconnectContext &ctx,
+                                          ConstantBufferSet &constantBuffers,
+                                          Samplers &samplers, u32 interval, u64 drawId);
+
         u32 GetTotalSampledImageCount() const;
 
         bool UsesRenderArea() const {

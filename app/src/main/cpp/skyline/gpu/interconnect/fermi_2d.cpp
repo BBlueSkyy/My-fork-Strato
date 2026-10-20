@@ -5,6 +5,7 @@
 #include <gpu/texture/format.h>
 #include <gpu/texture/texture.h>
 #include <gpu/texture_manager.h>
+#include <gpu/diagnostic/naruto_ui_capture.h>
 #include <soc/gm20b/gmmu.h>
 #include <soc/gm20b/channel.h>
 #include "fermi_2d.h"
@@ -150,6 +151,57 @@ namespace skyline::gpu::interconnect {
         dstTextureView->texture->MarkGpuDirty(executor.usageTracker);
 
         executor.NotifyPipelineChange();
+        if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire)) {
+            auto &capture{diagnostic::NarutoUiCapture()};
+            const auto guestAddress{[](const GuestTexture &t) -> uintptr_t {
+                return t.mappings.empty() ? 0 : reinterpret_cast<uintptr_t>(t.mappings.front().data());
+            }};
+            capture.Record(fmt::format(
+                "FERMI2D executor=0x{:X} submission={} src_iova=0x{:X} dst_iova=0x{:X} "
+                "src_guest=0x{:X} dst_guest=0x{:X} src_texture=0x{:X} dst_texture=0x{:X} "
+                "src={}x{} dst={}x{} src_rect={},{},{},{} dst_rect={},{},{},{} filter={}",
+                reinterpret_cast<uintptr_t>(&executor), executor.submissionNumber,
+                u64{srcSurface.address}, u64{dstSurface.address},
+                guestAddress(srcGuestTexture), guestAddress(dstGuestTexture),
+                reinterpret_cast<uintptr_t>(srcTextureView->texture.get()),
+                reinterpret_cast<uintptr_t>(dstTextureView->texture.get()),
+                srcGuestTexture.dimensions.width, srcGuestTexture.dimensions.height,
+                dstGuestTexture.dimensions.width, dstGuestTexture.dimensions.height,
+                centredSrcRectX, centredSrcRectY, duDx * dstRectWidth, dvDy * dstRectHeight,
+                dstRectX, dstRectY, dstRectWidth, dstRectHeight, static_cast<u32>(filter)));
+
+            // The full-surface negative-height blit establishes a potential
+            // screen-space UI destination for this capture interval. Trace its
+            // *guest backing*, never a transient Vulkan texture pointer.
+            // A later Fermi2D flip may overwrite the candidate, but only after
+            // the current UI draws have been recorded.
+            if (dvDy < 0.0f && dstRectX == 0 && dstRectY == 0 &&
+                dstRectWidth == dstGuestTexture.dimensions.width &&
+                dstRectHeight == dstGuestTexture.dimensions.height &&
+                srcGuestTexture.dimensions.width == dstGuestTexture.dimensions.width &&
+                srcGuestTexture.dimensions.height == dstGuestTexture.dimensions.height &&
+                !dstGuestTexture.mappings.empty()) {
+                const auto &map{dstGuestTexture.mappings.front()};
+                if (map.valid()) {
+                    const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+                    capture.MarkFlippedDestination(interval, reinterpret_cast<uintptr_t>(map.data()), map.size());
+                    capture.Record(fmt::format("FLIPPED_UI_DESTINATION interval={} guest_map=0x{:X} bytes={} texture=0x{:X}",
+                                                interval, reinterpret_cast<uintptr_t>(map.data()), map.size(),
+                                                reinterpret_cast<uintptr_t>(dstTextureView->texture.get())));
+                }
+            }
+        }
+
+        // Only full-surface inverted blits are relevant to the generic
+        // producer -> Fermi2D transfer. Never activate outside manual capture.
+        if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire) &&
+            dvDy < 0.0f && dstRectX == 0 && dstRectY == 0 &&
+            dstRectWidth == dstGuestTexture.dimensions.width &&
+            dstRectHeight == dstGuestTexture.dimensions.height &&
+            srcGuestTexture.dimensions.width == dstGuestTexture.dimensions.width &&
+            srcGuestTexture.dimensions.height == dstGuestTexture.dimensions.height)
+            executor.ProbeDiagnosticFermiInput(srcTextureView.get(), dstTextureView.get());
+
         executor.AddCheckpoint("Before blit");
         gpu.helperShaders.blitHelperShader.Blit(
             gpu,

@@ -223,6 +223,22 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
+        // Phase 2, PR #336: bounded readbacks *after* real render-pass endings.
+        struct DiagnosticPassImage {
+            std::shared_ptr<Texture> texture;
+            bool renderTarget{};
+            bool priority{};
+            bool atlas{};
+            bool beforeUiDraw{}; // Snapshot of destination before the selected draw.
+            std::uint64_t drawId{}; // Correlates GPU-ordered pre/source/post within one draw.
+            const char *role{}; // Static diagnostic label, never owned by a guest resource.
+        };
+        std::vector<DiagnosticPassImage> diagnosticPassImages;
+        std::uint64_t diagnosticPendingPreDrawId{}; // Only the immediately following GPU draw may consume it.
+        std::vector<std::function<void()>> diagnosticReadbackCallbacks;
+        void TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color);
+        void QueueDiagnosticPassReadbacks();
+
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
         void RotateRecordSlot();
@@ -266,6 +282,22 @@ namespace skyline::gpu::interconnect {
         ContextTag executionTag{};
         bool captureNextExecution{};
         UsageTracker usageTracker;
+
+        // Diagnostic-only: force an ordered readback *before* the first matching
+        // blended BCn sprite draw. Only called while the capture is active.
+        bool ProbeDiagnosticUiPreDraw(span<TextureView *> sampled, span<TextureView *> color, bool blendingEnabled);
+
+        std::uint64_t GetDiagnosticPreDrawId() const { return diagnosticPendingPreDrawId; }
+
+        // Opt-in capture of the actual full-surface blit input at the
+        // Maxwell3D -> Fermi2D boundary, strictly before this blit.
+        void ProbeDiagnosticFermiInput(TextureView *source, TextureView *destination);
+
+        // Diagnostic only: annotate a full-screen blended/compressed-sprite pass.
+        // Called after adding the draw, while its active attachments are known.
+        void MarkDiagnosticUiOutput(span<TextureView *> sampled, span<TextureView *> color,
+                                    bool blendingEnabled, std::string_view shaderHashes,
+                                    u32 drawArgument, bool indexed);
 
         CommandExecutor(const DeviceState &state);
 

@@ -6,6 +6,7 @@
 #include <gpu/texture_manager.h>
 #include <gpu/texture/format.h>
 #include "textures.h"
+#include <gpu/diagnostic/naruto_ui_capture.h>
 
 namespace skyline::gpu::interconnect {
     void TexturePoolState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
@@ -384,6 +385,19 @@ namespace skyline::gpu::interconnect {
             guest.mappings.assign(mappings.begin(), mappings.end());
             if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
                 LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
+                if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire)) {
+                    size_t validMappings{};
+                    for (const auto &map : guest.mappings)
+                        if (map.valid() && !map.empty())
+                            ++validMappings;
+                    diagnostic::NarutoUiCapture().Record(fmt::format(
+                        "TIC_UNMAPPED index={} iova=0x{:X} guest_size={} width={} height={} format={} "
+                        "mapping_count={} valid_mappings={} channel_sequence={}",
+                        index, textureHeader.Iova(), guest.GetSize(),
+                        guest.dimensions.width, guest.dimensions.height,
+                        vk::to_string(guest.format->vkFormat), guest.mappings.size(),
+                        validMappings, ctx.channelCtx.channelSequenceNumber));
+                }
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
 

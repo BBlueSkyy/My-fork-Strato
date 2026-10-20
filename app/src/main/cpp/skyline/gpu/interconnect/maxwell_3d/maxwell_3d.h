@@ -90,6 +90,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
         const engine::SamplerBinding &samplerBinding;
         Textures textures;
         const u32 &sampleCounterEnable;
+        // Refer directly to persistent Maxwell registers, never to the
+        // temporary EngineRegisterBundle argument of the constructor.
+        const std::array<engine::VertexStream, engine::VertexStreamCount> &captureVertexStreams;
+        const engine::IndexBuffer &captureIndexBuffer;
+        const engine_common::TexSamplerPool &captureSamplerPool;
         std::shared_ptr<memory::Buffer> quadConversionBuffer{};
         bool quadConversionBufferAttached{};
         BufferView indirectBufferView;

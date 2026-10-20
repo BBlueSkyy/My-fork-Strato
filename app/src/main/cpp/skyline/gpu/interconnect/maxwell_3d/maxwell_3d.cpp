@@ -3,6 +3,11 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <cmath>
+#include <algorithm>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <limits>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -10,6 +15,8 @@
 #include "common/utils.h"
 #include "maxwell_3d.h"
 #include "common.h"
+#include <gpu/diagnostic/naruto_ui_capture.h>
+#include <gpu/shader_manager.h>
 
 namespace skyline::gpu::interconnect::maxwell3d {
     Maxwell3D::RenderConditionResources::RenderConditionResources(GPU &gpu)
@@ -30,6 +37,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
           samplerBinding{registerBundle.samplerBinding},
           textures{manager, registerBundle.texturePoolRegisters},
           sampleCounterEnable{registerBundle.sampleCounterEnable},
+          captureVertexStreams{registerBundle.activeStateRegisters.pipelineRegisters.vertexInputRegisters.vertexStreams},
+          captureIndexBuffer{registerBundle.activeStateRegisters.indexBufferRegisters.indexBuffer},
+          captureSamplerPool{registerBundle.samplerPoolRegisters.texSamplerPool},
           directState{activeState.directState},
           queries{gpu} {
         ctx.executor.AddFlushCallback([this] {
@@ -152,6 +162,50 @@ namespace skyline::gpu::interconnect::maxwell3d {
              return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
          });
           InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
+
+        if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire)) {
+            std::string shaderHashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    shaderHashes += fmt::format("{:016X},", hash);
+            }
+            std::string targets;
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->texture) {
+                    targets += fmt::format("0x{:X}:{}x{}:{},",
+                        reinterpret_cast<uintptr_t>(target->texture.get()),
+                        target->texture->dimensions.width,
+                        target->texture->dimensions.height,
+                        vk::to_string(target->texture->format->vkFormat));
+                } else {
+                    targets += "null,";
+                }
+            }
+            std::string blend;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto packed{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                blend = fmt::format("mask=0x{:X},enabled={}",
+                    static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
+            }
+            std::string sampledViews;
+            for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
+                auto *view{activeDescriptorSetSampledImages[i]};
+                if (view && view->texture)
+                    sampledViews += fmt::format("[{}]=0x{:X}:{}x{}:{},", i,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            diagnostic::NarutoUiCapture().Record(fmt::format(
+                "DRAW kind=inline indexed=1 count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+            if (auto *pipeline{activeState.GetPipeline()})
+                ctx.executor.MarkDiagnosticUiOutput(
+                    activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
+                    static_cast<bool>(pipeline->sourcePackedState.GetAttachmentBlendState(0).blendEnable),
+                    shaderHashes, count, true);
+        }
           ctx.executor.AddCheckpoint("After inline index draw");
      
         });
@@ -324,6 +378,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto *source{textures.GetTexture(ctx, params.textureIndex, Shader::TextureType::Color2D)};
         auto *sampler{samplers.GetSampler(ctx, params.samplerIndex)};
         auto destination{activeState.GetColorRenderTargetForClear(ctx, colorTargetIndex)};
+        if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire)) {
+            diagnostic::NarutoUiCapture().Record(fmt::format(
+                "DRAW_TEXTURE texture_index={} sampler_index={} target={} source_present={} sampler_present={} destination_present={} dst={},{} {}x{}",
+                params.textureIndex, params.samplerIndex, colorTargetIndex,
+                source != nullptr, sampler != nullptr, static_cast<bool>(destination),
+                params.dstX, params.dstY, params.dstWidth, params.dstHeight));
+        }
         if (!source || !sampler || !destination)
             return;
 
@@ -783,6 +844,147 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");
+        if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire)) {
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto blend{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                if (ctx.executor.ProbeDiagnosticUiPreDraw(
+                        activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
+                        static_cast<bool>(blend.blendEnable))) {
+                    auto &capture{diagnostic::NarutoUiCapture()};
+                    const auto focusDrawId{ctx.executor.GetDiagnosticPreDrawId()};
+                    capture.Record(fmt::format(
+                        "UI_PRE_DRAW_STATE draw_id={} indexed={} count={} instances={} first={} vertex_offset={} first_instance={} topology={} "
+                        "scissor={},{},{}x{} conditional={} divisor_supported={} zero_divisor_supported={}",
+                        focusDrawId, indexed, count, instanceCount, first, vertexOffset, firstInstance, static_cast<u32>(topology),
+                        scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height,
+                        activeRenderCondition.enabled, ctx.gpu.traits.supportsVertexAttributeDivisor,
+                        ctx.gpu.traits.supportsVertexAttributeZeroDivisor));
+                    capture.Record(fmt::format(
+                        "UI_PRE_DRAW_BLEND mask=0x{:X} enabled={} color_op={} src_color={} dst_color={} "
+                        "alpha_op={} src_alpha={} dst_alpha={}",
+                        static_cast<u32>(blend.colorWriteMask), static_cast<bool>(blend.blendEnable),
+                        static_cast<u32>(blend.colorBlendOp), static_cast<u32>(blend.srcColorBlendFactor),
+                        static_cast<u32>(blend.dstColorBlendFactor), static_cast<u32>(blend.alphaBlendOp),
+                        static_cast<u32>(blend.srcAlphaBlendFactor), static_cast<u32>(blend.dstAlphaBlendFactor)));
+                    for (u32 i{}; i < pipeline->sourcePackedState.vertexBindings.size(); ++i) {
+                        const auto binding{pipeline->sourcePackedState.vertexBindings[i]};
+                        if (!binding.enable)
+                            continue;
+                        capture.Record(fmt::format(
+                            "UI_PRE_VERTEX_BINDING index={} stride={} instanced={} divisor={}",
+                            i, pipeline->sourcePackedState.vertexStrides[i],
+                            binding.GetInputRate() == vk::VertexInputRate::eInstance, binding.divisor));
+                    }
+                    for (u32 i{}; i < pipeline->sourcePackedState.vertexAttributes.size(); ++i) {
+                        const auto &attribute{pipeline->sourcePackedState.vertexAttributes[i]};
+                        if (attribute.source != engine::VertexAttribute::Source::Active)
+                            continue;
+                        capture.Record(fmt::format(
+                            "UI_PRE_VERTEX_ATTRIBUTE location={} stream={} offset={} numerical_type={} component_widths={}",
+                            i, static_cast<u32>(attribute.stream), static_cast<u32>(attribute.offset),
+                            static_cast<u32>(attribute.numericalType), static_cast<u32>(attribute.componentBitWidths)));
+                    }
+                    for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 12; ++i) {
+                        auto *view{activeDescriptorSetSampledImages[i]};
+                        if (!view || !view->texture)
+                            continue;
+                        const auto &texture{view->texture};
+                        capture.Record(fmt::format(
+                            "UI_PRE_SAMPLED slot={} texture=0x{:X} format={} width={} height={} "
+                            "mip_base={} mip_count={} layer_base={} layer_count={} level_count={} ",
+                            i, reinterpret_cast<uintptr_t>(texture.get()),
+                            vk::to_string(texture->format->vkFormat), texture->dimensions.width, texture->dimensions.height,
+                            view->range.baseMipLevel, view->range.levelCount,
+                            view->range.baseArrayLayer, view->range.layerCount, texture->levelCount));
+                    }
+                    // Diagnostic-only GMMU snapshot of the *actual guest
+                    // registers* behind this exact selected sprite draw.
+                    // Read a bounded prefix only; no GPU readback/synchronization
+                    // or host-side emulation state is changed.
+                    const auto dumpGuest{[&](const char *name, u64 iova, std::size_t wanted) {
+                        constexpr std::size_t MaxDump{16 * 1024};
+                        wanted = std::min(wanted, MaxDump);
+                        if (!iova || !wanted)
+                            return;
+                        const auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(iova, wanted)};
+                        auto directory{std::filesystem::path(capture.CaptureDirectory())};
+                        if (directory.empty())
+                            return;
+                        auto out{std::ofstream(directory / fmt::format("ui_draw_i{}_d{}_{}.bin", capture.presentIndex.load(std::memory_order_acquire), focusDrawId, name),
+                                               std::ios::binary | std::ios::trunc)};
+                        if (!out)
+                            return;
+                        std::size_t written{};
+                        bool valid{true};
+                        for (const auto &mapping : mappings) {
+                            if (!mapping.valid()) {
+                                valid = false;
+                                break;
+                            }
+                            const auto amount{std::min(mapping.size(), wanted - written)};
+                            out.write(reinterpret_cast<const char *>(mapping.data()),
+                                      static_cast<std::streamsize>(amount));
+                            written += amount;
+                            if (written == wanted)
+                                break;
+                        }
+                        out.close();
+                        capture.Record(fmt::format("UI_DRAW_BUFFER draw_id={} name={} iova=0x{:X} wanted={} written={} fully_mapped={}",
+                                                   focusDrawId, name, iova, wanted, written, valid && written == wanted));
+                    }};
+
+                    if (indexed && !directState.inputAssembly.NeedsQuadConversion()) {
+                        const auto indexSize{1U << static_cast<u32>(captureIndexBuffer.indexSize)};
+                        if (indexSize == 1 || indexSize == 2 || indexSize == 4) {
+                            capture.Record(fmt::format(
+                                "UI_REAL_INDEX_BUFFER iova=0x{:X} limit=0x{:X} index_size={} first={} count={}",
+                                u64{captureIndexBuffer.address}, u64{captureIndexBuffer.limit},
+                                indexSize, first, count));
+                            const auto prefix{std::min<std::size_t>(
+                                (static_cast<std::size_t>(first) + static_cast<std::size_t>(count)) * indexSize,
+                                4096)};
+                            dumpGuest("indices", u64{captureIndexBuffer.address}, prefix);
+                        }
+                    }
+                    for (u32 stream{}; stream < captureVertexStreams.size(); ++stream) {
+                        const auto &vbo{captureVertexStreams[stream]};
+                        if (!vbo.format.enable)
+                            continue;
+                        const u32 stride{vbo.format.stride};
+                        capture.Record(fmt::format(
+                            "UI_REAL_VERTEX_BUFFER stream={} iova=0x{:X} stride={} frequency={} format=0x{:X}",
+                            stream, u64{vbo.location}, stride, vbo.frequency, vbo.format.raw));
+                        // Draw uses 30 indices: a few KiB per enabled stream
+                        // suffices to reconstruct the accessed position/UV
+                        // records with the separate index dump.
+                        if (stride && stream < 4)
+                            dumpGuest(fmt::format("vbo{}", stream).c_str(),
+                                      u64{vbo.location}, std::min<std::size_t>(4096, stride * 128ULL));
+                    }
+                    // A small sampler-pool prefix for offline TSC inspection.
+                    // Actual bindless indices require shader handle tracing;
+                    // do not claim these TSCs are necessarily bound.
+                    capture.Record(fmt::format("UI_TSC_POOL base=0x{:X} max_index={}",
+                                               u64{captureSamplerPool.offset}, captureSamplerPool.maximumIndex));
+                    if (captureSamplerPool.maximumIndex < 65536)
+                        dumpGuest("tsc_prefix", u64{captureSamplerPool.offset},
+                                  std::min<std::size_t>(512, (static_cast<std::size_t>(captureSamplerPool.maximumIndex) + 1) * 32));
+
+                    const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+                    pipeline->CaptureDiagnosticFirstUiDraw(
+                        ctx, constantBuffers.boundConstantBuffers, samplers, interval, focusDrawId);
+                    const auto dir{std::filesystem::path(capture.CaptureDirectory())};
+                    for (auto hash : pipeline->sourcePackedState.shaderHashes) {
+                        if (!hash)
+                            continue;
+                        const auto filename{fmt::format("ui_i{}_d{}_shader_{:016X}.spv", interval, focusDrawId, hash)};
+                        const bool found{ctx.gpu.shader->ExportDiagnosticSpirv(hash, dir / filename)};
+                        capture.Record(fmt::format("UI_PRE_SHADER draw_id={} hash={:016X} spv_found={} filename={}",
+                                                   focusDrawId, hash, found, filename));
+                    }
+                }
+            }
+        }
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
 
@@ -812,6 +1014,50 @@ namespace skyline::gpu::interconnect::maxwell3d {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
+
+        if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire)) {
+            std::string shaderHashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    shaderHashes += fmt::format("{:016X},", hash);
+            }
+            std::string targets;
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->texture) {
+                    targets += fmt::format("0x{:X}:{}x{}:{},",
+                        reinterpret_cast<uintptr_t>(target->texture.get()),
+                        target->texture->dimensions.width,
+                        target->texture->dimensions.height,
+                        vk::to_string(target->texture->format->vkFormat));
+                } else {
+                    targets += "null,";
+                }
+            }
+            std::string blend;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto packed{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                blend = fmt::format("mask=0x{:X},enabled={}",
+                    static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
+            }
+            std::string sampledViews;
+            for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
+                auto *view{activeDescriptorSetSampledImages[i]};
+                if (view && view->texture)
+                    sampledViews += fmt::format("[{}]=0x{:X}:{}x{}:{},", i,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            diagnostic::NarutoUiCapture().Record(fmt::format(
+                "DRAW kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                indexed, count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+            if (auto *pipeline{activeState.GetPipeline()})
+                ctx.executor.MarkDiagnosticUiOutput(
+                    activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
+                    static_cast<bool>(pipeline->sourcePackedState.GetAttachmentBlendState(0).blendEnable),
+                    shaderHashes, count, indexed);
+        }
         ctx.executor.AddCheckpoint("After draw");
     
         });
@@ -896,6 +1142,50 @@ namespace skyline::gpu::interconnect::maxwell3d {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
+
+        if (diagnostic::NarutoUiCapture().active.load(std::memory_order_acquire)) {
+            std::string shaderHashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    shaderHashes += fmt::format("{:016X},", hash);
+            }
+            std::string targets;
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->texture) {
+                    targets += fmt::format("0x{:X}:{}x{}:{},",
+                        reinterpret_cast<uintptr_t>(target->texture.get()),
+                        target->texture->dimensions.width,
+                        target->texture->dimensions.height,
+                        vk::to_string(target->texture->format->vkFormat));
+                } else {
+                    targets += "null,";
+                }
+            }
+            std::string blend;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto packed{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                blend = fmt::format("mask=0x{:X},enabled={}",
+                    static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
+            }
+            std::string sampledViews;
+            for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
+                auto *view{activeDescriptorSetSampledImages[i]};
+                if (view && view->texture)
+                    sampledViews += fmt::format("[{}]=0x{:X}:{}x{}:{},", i,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            diagnostic::NarutoUiCapture().Record(fmt::format(
+                "DRAW kind=indirect indexed={} count={} instances=0 scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                indexed, count, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+            if (auto *pipeline{activeState.GetPipeline()})
+                ctx.executor.MarkDiagnosticUiOutput(
+                    activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
+                    static_cast<bool>(pipeline->sourcePackedState.GetAttachmentBlendState(0).blendEnable),
+                    shaderHashes, count, indexed);
+        }
         ctx.executor.AddCheckpoint("After indirect draw");
     
         });
