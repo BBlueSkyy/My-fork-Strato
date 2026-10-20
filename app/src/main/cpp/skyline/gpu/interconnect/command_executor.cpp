@@ -416,12 +416,14 @@ namespace skyline::gpu::interconnect {
         // Include compact 3D color-grading LUTs: the observed 32x32 shader
         // resource is a 3D sampled image, not a 2D atlas. Keep the bound
         // tight and restrict image readback to safe transfer-src backing.
-        const bool source2D{texture.dimensions.depth == 1};
-        const bool compact3D{texture.dimensions.depth > 1 && texture.dimensions.depth <= 64 &&
-            texture.dimensions.width <= 128 && texture.dimensions.height <= 128};
+        const bool source2D{texture.dimensions.depth == 1 && texture.layerCount == 1};
+        const bool compactVolume{texture.dimensions.width <= 128 &&
+            texture.dimensions.height <= 128 &&
+            ((texture.dimensions.depth > 1 && texture.dimensions.depth <= 64 && texture.layerCount == 1) ||
+             (texture.dimensions.depth == 1 && texture.layerCount > 1 && texture.layerCount <= 64))};
         return texture.dimensions.width > 0 && texture.dimensions.width <= 4096 &&
                texture.dimensions.height > 0 && texture.dimensions.height <= 4096 &&
-               (source2D || compact3D) && texture.layerCount == 1 &&
+               (source2D || compactVolume) &&
                texture.sampleCount == vk::SampleCountFlagBits::e1 &&
                texture.surfaceSize > 0 && texture.surfaceSize <= 16ULL * 1024 * 1024 &&
                (texture.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
@@ -502,7 +504,7 @@ namespace skyline::gpu::interconnect {
         if (!capture.active.load(std::memory_order_acquire))
             return false;
         const auto match{FindFocusedFullDraw(sampled, color, blendingEnabled)};
-        if (!match || match->kind != diagnostic::UiFrameCapture::TextFocus::FullSprite)
+        if (!match)
             return false;
 
         // Snapshot a real descriptor-resolved source, target before the draw,
@@ -581,6 +583,38 @@ namespace skyline::gpu::interconnect {
         const auto match{FindFocusedFullDraw(sampled, color, blendingEnabled)};
         if (!match) {
             diagnosticPendingPreDrawId = 0;
+            // Only if this producer actually runs while capture is armed:
+            // record one compact 3D/array LUT write per presentation interval.
+            const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+            if (interval >= diagnostic::UiFrameCapture::FrameCount)
+                return;
+            for (auto *view : color) {
+                if (!view || !view->texture)
+                    continue;
+                const auto &texture{*view->texture};
+                if (texture.dimensions.width < 16 || texture.dimensions.height < 16 ||
+                    texture.dimensions.width > 128 || texture.dimensions.height > 128 ||
+                    texture.format->vkFormat != vk::Format::eA2B10G10R10UnormPack32 ||
+                    !IsDiagnosticSceneSource(texture) ||
+                    (texture.dimensions.depth <= 1 && texture.layerCount <= 1))
+                    continue;
+                if (!capture.ClaimLutProducer(interval))
+                    return;
+                const auto drawId{capture.NextFocusedDrawId()};
+                capture.Record(fmt::format(
+                    "SCENE_LUT_PRODUCER draw_id={} interval={} executor=0x{:X} "
+                    "submission={} rp={} shaders={} indexed={} count={} "
+                    "image=0x{:X} {}x{}x{} layers={} role=lut_producer_after",
+                    drawId, interval, reinterpret_cast<uintptr_t>(this),
+                    submissionNumber, renderPassIndex, shaderHashes, indexed, drawArgument,
+                    reinterpret_cast<uintptr_t>(view->texture.get()),
+                    texture.dimensions.width, texture.dimensions.height,
+                    texture.dimensions.depth, texture.layerCount));
+                diagnosticPassImages.push_back({view->texture, true, true, false,
+                                                false, drawId, "lut_producer_after"});
+                BreakRenderPass();
+                return;
+            }
             return;
         }
         // Mark the *produced* full-resolution target, not the background
@@ -631,11 +665,7 @@ namespace skyline::gpu::interconnect {
             reinterpret_cast<uintptr_t>(match->source->texture->cycle.get()),
             match->source->range.levelCount, match->source->range.layerCount,
             bindings));
-        // The last BGRA->RGBA pass preserves the corruption: retain its state
-        // in the trace but avoid needless renderpass splits/readbacks here.
-        if (match->kind != diagnostic::UiFrameCapture::TextFocus::FullSprite)
-            return;
-
+        // The output of both passes is included in the same capture.
         // The earlier Naruto-specific fourth-text compositor probe is
         // deliberately disabled for scene diagnostics. Paired draws below
         // provide the needed ordered evidence within the existing quota.
@@ -751,9 +781,12 @@ namespace skyline::gpu::interconnect {
             if (!entry.priority)
                 continue;
             const bool atlas{entry.atlas};
+            const bool lutProducer{entry.role &&
+                std::string_view(entry.role) == "lut_producer_after"};
             if (atlas ? !IsDiagnosticSceneSource(*texture) :
                       !(IsDiagnosticSceneTarget(*texture) || IsDiagnosticTextStrip(*texture) ||
-                        (!entry.renderTarget && IsDiagnosticSceneSource(*texture))))
+                        (!entry.renderTarget && IsDiagnosticSceneSource(*texture)) ||
+                        (lutProducer && IsDiagnosticSceneSource(*texture))))
                 continue;
 
             const auto identity{reinterpret_cast<uintptr_t>(texture.get())};
