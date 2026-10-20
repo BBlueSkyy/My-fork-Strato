@@ -1,7 +1,7 @@
 name: Zelda LA marvel APK (bcae2588)
 
 # A one-off historical build for FPS regression comparison.
-# This workflow builds Marvel #294 plus a single C++ access-control compilation fix, not master.
+# This workflow builds Marvel #294 plus two targeted correctness fixes (access control and sampled-vs-storage validation), not master.
 on:
   push:
     branches:
@@ -22,7 +22,7 @@ jobs:
       - name: Checkout exact Marvel #294 Strato commit
         uses: actions/checkout@v4
         with:
-          ref: 8c3f1b7bbf43d2c4d3fc91abd422fed5c971f0e9
+          ref: e7290a9b5f4c346a2e5198210d022a8da151f6ab
           submodules: false
           persist-credentials: false
 
@@ -43,8 +43,8 @@ jobs:
 
       - name: Verify comparison source
         run: |
-          test "$(git rev-parse HEAD)" = "8c3f1b7bbf43d2c4d3fc91abd422fed5c971f0e9"
-          echo "Marvel #294 runtime: bcae2588 + friend declaration compile fix"
+          test "$(git rev-parse HEAD)" = "e7290a9b5f4c346a2e5198210d022a8da151f6ab"
+          echo "Marvel #294 runtime: bcae2588 + friend declaration + correct storage descriptor validation"
 
       - name: Install Java 17
         uses: actions/setup-java@v4
