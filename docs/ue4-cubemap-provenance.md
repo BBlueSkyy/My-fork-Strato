@@ -104,3 +104,32 @@ Counters and the proof-selection state are updated only when
 This is an observability-only change. No upload is forced, no wait/barrier
 or texture decoding is modified, and no GPU-copy quota is raised. Repeat
 the same fully restarted opt-in capture once and send the matching ZIP/log.
+
+
+## Phase 9 — avoid starving the draw-20 cube retention budget
+
+The on-device phase-8 capture produced `proof_reason=budget_rejected`,
+`sync_attempts=1`, `copy_buffer_to_image_count=1`,
+`budget_used_on_reject=16766784` and `budget_limit=16777216` for
+the sampled 128x128, six-face, eight-mip FP16 cubemap. The last real upload
+was recorded by Vulkan, but there were only 10,432 bytes left and retaining
+its mapped guest, linear and staged bytes would need approximately 3.18 MiB.
+This is a **confirmed instrumentation budget failure, not a proven graphics
+root cause**. That same readback contained NaN/extreme FP16 patterns again.
+
+When `ENABLE_UPLOAD_PROVENANCE` is set, keep lightweight status/copy counters
+for all six-layer FP16 cubemaps, but allow full byte retention **only** for
+native guest+host FP16 backings with the observed target geometry: 128x128,
+depth 1, six layers, eight mipmaps. Other cubemaps receive
+`proof_reason=outside_focused_cubemap`, avoiding reservation contention.
+The existing 16 MiB global budget and per-image limits remain unchanged.
+
+This does not guarantee an available proof if more than a few identically
+sized cubemaps are uploaded before the target, or if the renderer selects
+a different backing. If budget rejection recurs, do **not** increase the
+limit blindly: use the actual new diagnostics to distinguish that case.
+
+Restart with `ENABLE_UPLOAD_PROVENANCE` present **before game startup**,
+arm the same corrupt scene, and send the whole ZIP and matching log.
+The normal renderer/upload path is unchanged, and this remains a Draft
+diagnostic only.

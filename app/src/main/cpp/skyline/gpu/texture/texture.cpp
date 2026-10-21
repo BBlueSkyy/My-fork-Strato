@@ -357,6 +357,11 @@ namespace skyline::gpu {
                 reason = Reason::NoStagingBuffer;
             else if (guest->tileConfig.mode != texture::TileMode::Block)
                 reason = Reason::UnsupportedTileMode;
+            else if (!diagnostic::IsFocusedCubeGeometry(
+                         dimensions.width, dimensions.height, dimensions.depth,
+                         layerCount, levelCount) ||
+                     guest->format->vkFormat != vk::Format::eR16G16B16A16Sfloat)
+                reason = Reason::OutsideFocusedCubemap;
             else if (mirror.size() > 4ULL * 1024 * 1024)
                 reason = Reason::GuestBytesOverLimit;
             else if (deswizzledSurfaceSize > 2ULL * 1024 * 1024)

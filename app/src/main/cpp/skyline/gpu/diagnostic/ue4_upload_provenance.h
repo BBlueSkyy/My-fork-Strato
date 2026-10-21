@@ -19,6 +19,7 @@ namespace skyline::gpu::diagnostic {
         SynchronizeEntered,
         NoStagingBuffer,
         UnsupportedTileMode,
+        OutsideFocusedCubemap,
         GuestBytesOverLimit,
         LinearBytesOverLimit,
         UploadBytesOverLimit,
@@ -33,6 +34,7 @@ namespace skyline::gpu::diagnostic {
             case UploadRetentionStatus::SynchronizeEntered: return "synchronize_entered";
             case UploadRetentionStatus::NoStagingBuffer: return "no_staging_buffer";
             case UploadRetentionStatus::UnsupportedTileMode: return "unsupported_tile_mode";
+            case UploadRetentionStatus::OutsideFocusedCubemap: return "outside_focused_cubemap";
             case UploadRetentionStatus::GuestBytesOverLimit: return "guest_bytes_over_limit";
             case UploadRetentionStatus::LinearBytesOverLimit: return "linear_bytes_over_limit";
             case UploadRetentionStatus::UploadBytesOverLimit: return "upload_bytes_over_limit";
@@ -41,6 +43,15 @@ namespace skyline::gpu::diagnostic {
             case UploadRetentionStatus::UploadRecorded: return "upload_recorded";
         }
         return "unknown";
+    }
+
+    // Capture only the proven draw-20 cube's geometry. Previously all FP16
+    // six-layer backings competed for the 16 MiB lifetime budget and starved
+    // this 128x128/8-mip material before capture was armed.
+    constexpr bool IsFocusedCubeGeometry(size_t width, size_t height, size_t depth,
+                                         size_t layers, size_t mips) {
+        return width == 128 && height == 128 && depth == 1 &&
+               layers == 6 && mips == 8;
     }
 
     struct UploadProof {

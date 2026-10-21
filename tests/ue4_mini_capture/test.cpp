@@ -92,6 +92,12 @@ int main() {
     assert(uploads.UsedBytes() == 0);
     assert(std::string(UploadRetentionStatusName(UploadRetentionStatus::NeverObserved)) == "never_observed");
     assert(std::string(UploadRetentionStatusName(UploadRetentionStatus::BudgetRejected)) == "budget_rejected");
+    assert(std::string(UploadRetentionStatusName(UploadRetentionStatus::OutsideFocusedCubemap)) == "outside_focused_cubemap");
+    assert(IsFocusedCubeGeometry(128, 128, 1, 6, 8));
+    assert(!IsFocusedCubeGeometry(1, 1, 1, 6, 1));
+    assert(!IsFocusedCubeGeometry(128, 128, 1, 6, 7));
+    assert(!IsFocusedCubeGeometry(256, 128, 1, 6, 8));
+    assert(!IsFocusedCubeGeometry(128, 128, 1, 1, 8));
     assert(std::string(UploadRetentionStatusName(UploadRetentionStatus::UploadRecorded)) == "upload_recorded");
     uploads.enabled = true;
     auto full = uploads.Reserve(Ue4UploadProvenance::MaxBytes);
