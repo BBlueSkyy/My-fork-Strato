@@ -11,6 +11,38 @@
 #include <vector>
 
 namespace skyline::gpu::diagnostic {
+    // Why the actual cubemap upload did not leave a retained proof.
+    // A missing proof alone must never be interpreted as evidence that
+    // Vulkan or guest memory was valid or invalid.
+    enum class UploadRetentionStatus : std::uint8_t {
+        NeverObserved,
+        SynchronizeEntered,
+        NoStagingBuffer,
+        UnsupportedTileMode,
+        GuestBytesOverLimit,
+        LinearBytesOverLimit,
+        UploadBytesOverLimit,
+        BudgetRejected,
+        ProofRetained,
+        UploadRecorded,
+    };
+
+    constexpr const char *UploadRetentionStatusName(UploadRetentionStatus status) {
+        switch (status) {
+            case UploadRetentionStatus::NeverObserved: return "never_observed";
+            case UploadRetentionStatus::SynchronizeEntered: return "synchronize_entered";
+            case UploadRetentionStatus::NoStagingBuffer: return "no_staging_buffer";
+            case UploadRetentionStatus::UnsupportedTileMode: return "unsupported_tile_mode";
+            case UploadRetentionStatus::GuestBytesOverLimit: return "guest_bytes_over_limit";
+            case UploadRetentionStatus::LinearBytesOverLimit: return "linear_bytes_over_limit";
+            case UploadRetentionStatus::UploadBytesOverLimit: return "upload_bytes_over_limit";
+            case UploadRetentionStatus::BudgetRejected: return "budget_rejected";
+            case UploadRetentionStatus::ProofRetained: return "proof_retained";
+            case UploadRetentionStatus::UploadRecorded: return "upload_recorded";
+        }
+        return "unknown";
+    }
+
     struct UploadProof {
         std::shared_ptr<std::atomic<size_t>> budget;
         size_t charge{};
@@ -78,6 +110,7 @@ namespace skyline::gpu::diagnostic {
         // Opt-in BEFORE loading the game, independent of the later six-frame capture.
         std::atomic<bool> enabled{false};
         static constexpr size_t MaxBytes{16ULL * 1024 * 1024};
+        size_t UsedBytes() const { return bytes->load(std::memory_order_relaxed); }
         std::shared_ptr<UploadProof> Reserve(size_t count) {
             if (!enabled.load(std::memory_order_relaxed) || !count || count > MaxBytes) return {};
             auto proof{std::make_shared<UploadProof>()};

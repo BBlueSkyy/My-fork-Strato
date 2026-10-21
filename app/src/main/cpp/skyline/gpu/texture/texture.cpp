@@ -293,6 +293,16 @@ namespace skyline::gpu {
     }
 
     std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl() {
+        // Record only the target class of image, and only when opt-in was
+        // enabled at GPU initialization; do not change any upload decision.
+        const bool traceCubemap{diagnostic::Ue4Uploads().enabled.load(std::memory_order_relaxed) &&
+            layerCount == 6 && dimensions.depth == 1 &&
+            format->vkFormat == vk::Format::eR16G16B16A16Sfloat};
+        if (traceCubemap) {
+            diagnosticUploadSyncAttempts.fetch_add(1, std::memory_order_relaxed);
+            diagnosticUploadStatus.store(diagnostic::UploadRetentionStatus::SynchronizeEntered,
+                                         std::memory_order_relaxed);
+        }
         if (guest->dimensions != dimensions)
             throw exception("Guest and host dimensions being different is not supported currently");
 
@@ -334,14 +344,34 @@ namespace skyline::gpu {
         // Retain the ACTUAL upload source, never reconstruct it from potentially
         // freed/stale guest memory at draw time. No extra uploads or GPU waits.
         std::shared_ptr<diagnostic::UploadProof> proof;
+        if (traceCubemap && diagnosticUploadProof)
+            diagnosticUploadProofDiscards.fetch_add(1, std::memory_order_relaxed);
         diagnosticUploadProof.reset();
-        if (diagnostic::Ue4Uploads().enabled.load(std::memory_order_relaxed) &&
-            layerCount == 6 && dimensions.depth == 1 &&
-            format->vkFormat == vk::Format::eR16G16B16A16Sfloat &&
-            guest->tileConfig.mode == texture::TileMode::Block && stagingBuffer &&
-            mirror.size() <= 4ULL * 1024 * 1024 && surfaceSize <= 2ULL * 1024 * 1024 &&
-            deswizzledSurfaceSize <= 2ULL * 1024 * 1024) {
-            proof = diagnostic::Ue4Uploads().Reserve(mirror.size() + deswizzledSurfaceSize + surfaceSize);
+        if (traceCubemap) {
+            // Exact precedence of rejection reasons, evaluated for every
+            // attempted synchronization of this cubemap. This avoids
+            // interpreting "proof_available=false" as a specific failure.
+            using Reason = diagnostic::UploadRetentionStatus;
+            auto reason{Reason::ProofRetained};
+            if (!stagingBuffer)
+                reason = Reason::NoStagingBuffer;
+            else if (guest->tileConfig.mode != texture::TileMode::Block)
+                reason = Reason::UnsupportedTileMode;
+            else if (mirror.size() > 4ULL * 1024 * 1024)
+                reason = Reason::GuestBytesOverLimit;
+            else if (deswizzledSurfaceSize > 2ULL * 1024 * 1024)
+                reason = Reason::LinearBytesOverLimit;
+            else if (surfaceSize > 2ULL * 1024 * 1024)
+                reason = Reason::UploadBytesOverLimit;
+            else {
+                proof = diagnostic::Ue4Uploads().Reserve(mirror.size() + deswizzledSurfaceSize + surfaceSize);
+                if (!proof) {
+                    reason = Reason::BudgetRejected;
+                    diagnosticUploadBudgetUsedOnReject.store(diagnostic::Ue4Uploads().UsedBytes(),
+                                                              std::memory_order_relaxed);
+                }
+            }
+            diagnosticUploadStatus.store(reason, std::memory_order_relaxed);
             if (proof) {
                 proof->guest.assign(mirror.data(), mirror.data() + mirror.size());
                 proof->writeSerial = gpuWriteSerial;
@@ -543,8 +573,16 @@ namespace skyline::gpu {
         auto bufferImageCopies{GetBufferImageCopies()};
         commandBuffer.copyBufferToImage(stagingBuffer->vkBuffer, image, layout,
             vk::ArrayProxy(static_cast<u32>(bufferImageCopies.size()), bufferImageCopies.data()));
-        if (diagnosticUploadProof && diagnosticUploadProof->stagingIdentity == stagingBuffer.get())
+        if (diagnostic::Ue4Uploads().enabled.load(std::memory_order_relaxed) &&
+            layerCount == 6 && dimensions.depth == 1 &&
+            format->vkFormat == vk::Format::eR16G16B16A16Sfloat) {
+            diagnosticUploadCopyCount.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (diagnosticUploadProof && diagnosticUploadProof->stagingIdentity == stagingBuffer.get()) {
             diagnosticUploadProof->recorded = true;
+            diagnosticUploadStatus.store(diagnostic::UploadRetentionStatus::UploadRecorded,
+                                         std::memory_order_relaxed);
+        }
 
         // Make the transfer write visible to the next use without a global
         // execution wait. This dependency is scoped to this image/subresource set.

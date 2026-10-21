@@ -62,3 +62,45 @@ This compares the **last real upload** with the **draw-time GPU readback**, not 
 - `git diff --check`.
 
 No Android SDK/NDK build or on-device Vulkan validation was performed locally. Still required: compile the APK, launch with retention enabled, capture the same corrupt scene once, and compare the new provenance blobs/manifest. Keep #375 Draft; no merge and no automatic Actions monitoring.
+
+
+## Phase 8 — explicit reason for missing upload proof
+
+The first correctly armed provenance capture reported `provenance_enabled=true`,
+`proof_available=false`, with a current FP16 guest/host cube (six layers,
+eight mips, base layer 0) and no observed GPU writes or aliases. The
+cubemap readback happened to contain only zero bytes, while the final frame
+remained excessively bright. That result **does not establish** where the
+texture was initialized or whether the readback matches the actual shader
+sampling event.
+
+The previous code wrote only a generic list of reasons when proof retention
+failed. This revision records the actual result for each cubemap's most
+recent `Texture::SynchronizeHostImpl` attempt:
+
+- `never_observed`: no eligible CPU synchronization attempted for this
+  texture while tracing was enabled;
+- `synchronize_entered`: synchronization began but did not reach proof
+  retention (for example, an exception);
+- `no_staging_buffer`, `unsupported_tile_mode`,
+  `guest_bytes_over_limit`, `linear_bytes_over_limit`,
+  `upload_bytes_over_limit`: the exact disqualifying condition;
+- `budget_rejected`: limits were otherwise satisfied, but the 16 MiB
+  global retention budget declined the reservation;
+- `proof_retained`: the immutable upload inputs were retained;
+- `upload_recorded`: those retained bytes were actually submitted
+  to `copyBufferToImage`.
+
+Each `focus_XX_provenance.txt` includes `proof_reason`,
+`sync_attempts`, `copy_buffer_to_image_count`,
+`proof_discard_count`, `budget_used_on_reject`,
+`budget_used_now` and the existing 16 MiB cap, plus guest tile mode,
+guest mirror bytes, stride, linear bytes and upload bytes. The reason is
+reported even when `proof_available=false`; a copy count can distinguish
+an upload performed without retained proof from a never-uploaded texture.
+Counters and the proof-selection state are updated only when
+`ENABLE_UPLOAD_PROVENANCE` was enabled before boot.
+
+This is an observability-only change. No upload is forced, no wait/barrier
+or texture decoding is modified, and no GPU-copy quota is raised. Repeat
+the same fully restarted opt-in capture once and send the matching ZIP/log.

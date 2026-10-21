@@ -579,12 +579,26 @@ namespace skyline::gpu::interconnect {
                     "readback_guest_format={} readback_host_format={} current_write_serial={} "
                     "current_backing_generation={} ever_gpu_writer={} dirty_state={} memory_freed={} "
                     "alias={} alias_stale={} alias_read_only={} alias_retired={} "
-                    "provenance_enabled={} proof_available={} comparison=last_actual_upload_vs_draw_readback\n",
+                    "provenance_enabled={} proof_available={} comparison=last_actual_upload_vs_draw_readback "
+                    "proof_reason={} sync_attempts={} copy_buffer_to_image_count={} "
+                    "proof_discard_count={} budget_used_on_reject={} budget_used_now={} budget_limit={} "
+                    "guest_tile_mode={} guest_mirror_bytes={} guest_layer_stride={} "
+                    "linear_bytes={} staging_bytes={}\n",
                     vk::to_string(texture->guest->format->vkFormat), vk::to_string(texture->format->vkFormat),
                     texture->gpuWriteSerial, texture->backingGeneration, texture->everUsedAsGpuWrite,
                     static_cast<u32>(texture->dirtyState), texture->memoryFreed, texture->HasAliases(),
                     texture->aliasStale.load(), texture->aliasReadOnly.load(), texture->aliasRetired.load(),
-                    diagnostic::Ue4Uploads().enabled.load(), static_cast<bool>(provenanceResult->first));
+                    diagnostic::Ue4Uploads().enabled.load(), static_cast<bool>(provenanceResult->first),
+                    diagnostic::UploadRetentionStatusName(
+                        texture->diagnosticUploadStatus.load(std::memory_order_relaxed)),
+                    texture->diagnosticUploadSyncAttempts.load(std::memory_order_relaxed),
+                    texture->diagnosticUploadCopyCount.load(std::memory_order_relaxed),
+                    texture->diagnosticUploadProofDiscards.load(std::memory_order_relaxed),
+                    texture->diagnosticUploadBudgetUsedOnReject.load(std::memory_order_relaxed),
+                    diagnostic::Ue4Uploads().UsedBytes(), diagnostic::Ue4UploadProvenance::MaxBytes,
+                    static_cast<u32>(texture->guest->tileConfig.mode), texture->mirror.size(),
+                    texture->guest->GetLayerStride(), texture->deswizzledSurfaceSize,
+                    texture->surfaceSize));
             });
         }
         diagnosticReadbackCallbacks.emplace_back(
@@ -607,7 +621,8 @@ namespace skyline::gpu::interconnect {
                             LOGE("MINIRD_UE4_PROVENANCE write failed: {}", proofPath.string());
                     } else {
                         std::ofstream missing(proofPath.string() + ".txt");
-                        missing << current << "No retained upload: disabled, over budget, unsupported layout, or no CPU upload.\n";
+                        missing << current << "No upload proof retained; use proof_reason, sync_attempts, "
+                               << "copy_buffer_to_image_count and budget counters above.\n";
                     }
                 }
                 LOGI("MINIRD_UE4_FOCUS wrote snapshot {}: {}", id, rawPath.string());

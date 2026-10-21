@@ -89,10 +89,16 @@ int main() {
     using namespace skyline::gpu::diagnostic;
     Ue4UploadProvenance uploads;
     assert(!uploads.Reserve(8));
+    assert(uploads.UsedBytes() == 0);
+    assert(std::string(UploadRetentionStatusName(UploadRetentionStatus::NeverObserved)) == "never_observed");
+    assert(std::string(UploadRetentionStatusName(UploadRetentionStatus::BudgetRejected)) == "budget_rejected");
+    assert(std::string(UploadRetentionStatusName(UploadRetentionStatus::UploadRecorded)) == "upload_recorded");
     uploads.enabled = true;
     auto full = uploads.Reserve(Ue4UploadProvenance::MaxBytes);
     assert(full && !uploads.Reserve(1));
+    assert(uploads.UsedBytes() == Ue4UploadProvenance::MaxBytes);
     full.reset();
+    assert(uploads.UsedBytes() == 0);
     auto proof = uploads.Reserve(12);
     assert(proof);
     proof->guest = {1, 2, 3, 4};
