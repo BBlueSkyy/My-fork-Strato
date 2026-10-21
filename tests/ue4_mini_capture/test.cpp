@@ -130,5 +130,41 @@ int main() {
     std::ifstream invalidManifest(prefix.string() + ".txt");
     comparison.assign(std::istreambuf_iterator<char>(invalidManifest), {});
     assert(comparison.find("invalid_slice mip=0 face=1") != std::string::npos);
+    // Host-only first HDR anomaly scan: does not require a Vulkan device.
+    std::ofstream(path / "ENABLE_HDR_FIRST_BAD").close();
+    cap.Start(path.string());
+    assert(cap.HdrFirstBadMode());
+    assert(!cap.ClaimMaterialInputs());
+    assert(!cap.ClaimConversion());
+    cap.presentIndex.store(2);
+    assert(!cap.ClaimHdrDraw(0));
+    auto first = cap.ClaimHdrDraw(0x1111);
+    assert(first && *first == 1);
+    for (std::uint32_t ordinal = 2; ordinal <= 32; ++ordinal) {
+        assert(!cap.ClaimHdrDraw(0x2222)); // another backing must not steal ordinals
+        auto selected = cap.ClaimHdrDraw(0x1111);
+        assert(selected && *selected == ordinal);
+    }
+    assert(!cap.ClaimHdrDraw(0x1111));
+    cap.presentIndex.store(3);
+    assert(!cap.ClaimHdrDraw(0x1111)); // only the first target/interval
+
+    // 2x1 pixels: zero, then +Inf in red on the second pixel (R11 E=31).
+    const std::uint8_t baseline[8]{};
+    const std::uint8_t abnormal[8]{0, 0, 0, 0, 0xC0, 0x07, 0, 0};
+    cap.RecordHdrScan(0, 2, 1, baseline, sizeof(baseline));
+    cap.RecordHdrScan(1, 2, 1, abnormal, sizeof(abnormal));
+    std::ifstream report(path / "hdr_first_suspect.txt");
+    const std::string reportText((std::istreambuf_iterator<char>(report)), {});
+    assert(reportText.find("first_new_nonfinite_draw=1") != std::string::npos);
+    cap.Finish();
+    fs::remove(path / "ENABLE_HDR_FIRST_BAD");
+
+    // The upload-provenance retention mode must be mutually exclusive.
+    std::ofstream(path / "ENABLE_HDR_FIRST_BAD").close();
+    std::ofstream(path / "ENABLE_UPLOAD_PROVENANCE").close();
+    cap.Start(path.string());
+    assert(!cap.HdrFirstBadMode());
+    cap.Finish();
     fs::remove_all(path);
 }

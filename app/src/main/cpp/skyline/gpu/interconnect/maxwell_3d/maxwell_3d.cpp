@@ -897,7 +897,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 if (!view || !view->texture ||
                     view->texture->format->vkFormat != vk::Format::eB10G11R11UfloatPack32)
                     continue;
-                hdrProbe = capture.ClaimHdrDraw();
+                hdrProbe = capture.ClaimHdrDraw(reinterpret_cast<uintptr_t>(view->texture.get()));
                 if (hdrProbe) {
                     // Correlate each bracketing pair with exact shader state,
                     // fully resolved sampled image views, and only descriptor-
@@ -1028,8 +1028,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
                             }
                         }
                     }
-                    ctx.executor.QueueUe4FocusedImage(view,
-                        fmt::format("hdr_before_{}", *hdrProbe), *hdrProbe);
+                    if (capture.HdrFirstBadMode()) {
+                        if (*hdrProbe == 1)
+                            ctx.executor.QueueUe4FocusedImage(view, "hdr_scan_before_1", 0);
+                    } else {
+                        ctx.executor.QueueUe4FocusedImage(view,
+                            fmt::format("hdr_before_{}", *hdrProbe), *hdrProbe);
+                    }
                 }
                 break;
             }
@@ -1113,7 +1118,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     if (target && target->texture &&
                         target->texture->format->vkFormat == vk::Format::eB10G11R11UfloatPack32) {
                         ctx.executor.QueueUe4FocusedImage(target,
-                            fmt::format("hdr_after_{}", *hdrProbe), *hdrProbe);
+                            diagnostic::Ue4Capture().HdrFirstBadMode()
+                                ? fmt::format("hdr_scan_after_{}", *hdrProbe)
+                                : fmt::format("hdr_after_{}", *hdrProbe), *hdrProbe);
                         break;
                     }
                 }

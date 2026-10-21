@@ -3,6 +3,10 @@
 // One-shot diagnostic only. This is a small, bounded trace, not the RenderDoc API.
 // No guest data or guest GPU command is modified.
 #include <array>
+#include <bit>
+#include <cmath>
+#include <limits>
+#include <map>
 #include <atomic>
 #include <cstddef>
 #include <optional>
@@ -43,6 +47,16 @@ namespace skyline::gpu::diagnostic {
         std::optional<std::uint32_t> firstHdrInterval{};
         std::array<std::uint32_t, FrameCount> hdrDrawCountByInterval{};
         std::array<bool, FrameCount> conversionClaimed{};
+        std::atomic<bool> hdrFirstBadEnabled{false};
+        std::uintptr_t firstHdrTarget{};
+        static constexpr std::uint32_t MaxHdrScanDraws{32};
+        struct HdrScanStats {
+            std::uint32_t ordinal{}, width{}, height{};
+            std::size_t nan{}, infinity{}, over1000{}, over10000{};
+            float maxFinite{};
+            std::vector<std::uint64_t> badMask, highMask;
+        };
+        std::map<std::uint32_t, HdrScanStats> hdrScanResults;
         std::uint32_t focusSnapshotCount{};
         std::size_t focusBytes{};
         bool materialInputsClaimed{};
@@ -74,10 +88,125 @@ namespace skyline::gpu::diagnostic {
         std::vector<std::pair<std::uintptr_t, std::size_t>> watchedMappings;
 
       public:
+        bool HdrFirstBadMode() const {
+            return hdrFirstBadEnabled.load(std::memory_order_acquire);
+        }
+
+        // R11G11B10 UINT-packed GPU readback, processed only after completion.
+        // Threshold exceedance alone never establishes a rendering bug.
+        void RecordHdrScan(std::uint32_t ordinal, std::uint32_t width, std::uint32_t height,
+                           const std::uint8_t *data, std::size_t bytes) {
+            if (!HdrFirstBadMode() || !data || !width || !height ||
+                bytes != static_cast<std::size_t>(width) * height * 4 ||
+                ordinal > MaxHdrScanDraws)
+                return;
+            const auto decode{[](std::uint32_t v, int mantissaBits) -> float {
+                const std::uint32_t m{v & ((1u << mantissaBits) - 1)};
+                const std::uint32_t e{(v >> mantissaBits) & 31u};
+                if (e == 31u)
+                    return m ? std::numeric_limits<float>::quiet_NaN()
+                             : std::numeric_limits<float>::infinity();
+                if (!e)
+                    return std::ldexp(static_cast<float>(m), -14 - mantissaBits);
+                return std::ldexp(static_cast<float>((1u << mantissaBits) | m),
+                                  static_cast<int>(e) - 15 - mantissaBits);
+            }};
+            HdrScanStats result;
+            result.ordinal = ordinal;
+            result.width = width;
+            result.height = height;
+            const std::size_t pixels{bytes / 4};
+            result.badMask.resize((pixels + 63) / 64);
+            result.highMask.resize((pixels + 63) / 64);
+            for (std::size_t pixel{}; pixel < pixels; ++pixel) {
+                const std::size_t off{pixel * 4};
+                const std::uint32_t raw{static_cast<std::uint32_t>(data[off]) |
+                    (static_cast<std::uint32_t>(data[off + 1]) << 8) |
+                    (static_cast<std::uint32_t>(data[off + 2]) << 16) |
+                    (static_cast<std::uint32_t>(data[off + 3]) << 24)};
+                const std::array<float, 3> rgb{
+                    decode(raw & 0x7ffu, 6), decode((raw >> 11) & 0x7ffu, 6),
+                    decode((raw >> 22) & 0x3ffu, 5)};
+                bool nan{}, inf{}, high{}, veryHigh{};
+                for (float value : rgb) {
+                    nan |= std::isnan(value);
+                    inf |= std::isinf(value);
+                    high |= value > 1000.f;
+                    veryHigh |= value > 10000.f;
+                    if (std::isfinite(value) && value > result.maxFinite)
+                        result.maxFinite = value;
+                }
+                result.nan += nan;
+                result.infinity += inf;
+                result.over1000 += high;
+                result.over10000 += veryHigh;
+                if (nan || inf)
+                    result.badMask[pixel >> 6] |= (1ULL << (pixel & 63));
+                if (high)
+                    result.highMask[pixel >> 6] |= (1ULL << (pixel & 63));
+            }
+            std::scoped_lock lock(mutex);
+            hdrScanResults[ordinal] = std::move(result);
+            const auto folder{std::filesystem::path(path)};
+            std::ofstream csv(folder / "hdr_scan_stats.csv", std::ios::trunc);
+            if (!csv)
+                return;
+            csv << "ordinal,phase,pixels,nan,inf,over1000,over10000,new_nonfinite,new_over1000,max_finite,previous_available\n";
+            std::optional<std::uint32_t> firstNonfinite, firstHigh;
+            std::uint32_t previousOrdinal{};
+            const HdrScanStats *previous{};
+            for (const auto &[id, current] : hdrScanResults) {
+                std::size_t newBad{}, newHigh{};
+                const bool adjacent{previous && previousOrdinal + 1 == id &&
+                                    previous->width == current.width &&
+                                    previous->height == current.height};
+                if (adjacent) {
+                    for (std::size_t i{}; i < current.badMask.size(); ++i) {
+                        newBad += std::popcount(current.badMask[i] & ~previous->badMask[i]);
+                        newHigh += std::popcount(current.highMask[i] & ~previous->highMask[i]);
+                    }
+                    if (newBad && !firstNonfinite)
+                        firstNonfinite = id;
+                    if (newHigh && !firstHigh)
+                        firstHigh = id;
+                }
+                csv << id << ',' << (id ? "after_draw" : "before_draw_1") << ','
+                    << static_cast<std::size_t>(current.width) * current.height << ','
+                    << current.nan << ',' << current.infinity << ','
+                    << current.over1000 << ',' << current.over10000 << ','
+                    << newBad << ',' << newHigh << ',' << current.maxFinite << ','
+                    << adjacent << '\n';
+                previous = &current;
+                previousOrdinal = id;
+            }
+            csv.close();
+            std::ofstream summary(folder / "hdr_first_suspect.txt", std::ios::trunc);
+            if (summary) {
+                summary << "R11G11B10 HDR first-anomaly scan, sorted by draw ordinal.\n"
+                        << "baseline_present=" << hdrScanResults.contains(0) << '\n'
+                        << "snapshots_complete=" << (hdrScanResults.size() == MaxHdrScanDraws + 1) << '\n'
+                        << "first_new_nonfinite_draw="
+                        << (firstNonfinite ? std::to_string(*firstNonfinite) : "none_or_incomplete") << '\n'
+                        << "first_new_over1000_draw="
+                        << (firstHigh ? std::to_string(*firstHigh) : "none_or_incomplete") << '\n'
+                        << "Nonfinite bit patterns are definite; large HDR values may be valid.\n"
+                        << "A reported transition is a candidate, not a proved root cause.\n"
+                        << "Gaps, intervening clears/copies and other GPU writers can confound attribution.\n";
+            }
+        }
+
         void Start(std::string captureDirectory) {
             std::scoped_lock lock(mutex);
             path = std::move(captureDirectory);
             events.clear();
+            const auto folder{std::filesystem::path(path)};
+            const bool scanRequested{std::filesystem::exists(folder / "ENABLE_HDR_FIRST_BAD")};
+            const bool provenance{std::filesystem::exists(folder / "ENABLE_UPLOAD_PROVENANCE")};
+            hdrFirstBadEnabled.store(scanRequested && !provenance, std::memory_order_release);
+            if (scanRequested && provenance)
+                events.emplace_back("HDR_SCAN_DISABLED reason=conflicts_with_upload_provenance");
+            hdrScanResults.clear();
+            firstHdrTarget = 0;
             passCountByInterval.fill(0);
             firstHdrInterval.reset();
             hdrDrawCountByInterval.fill(0);
@@ -90,7 +219,7 @@ namespace skyline::gpu::diagnostic {
             nextPassIndex = 0;
             passBytes = 0;
             watchedMappings.clear();
-            eventCount.store(0, std::memory_order_relaxed);
+            eventCount.store(static_cast<std::uint32_t>(events.size()), std::memory_order_relaxed);
             presentIndex.store(0, std::memory_order_relaxed);
             active.store(true, std::memory_order_release);
         }
@@ -118,7 +247,7 @@ namespace skyline::gpu::diagnostic {
         // Exactly one complete material-resource capture on an actual
         // suspect draw. The raw snapshots share the global byte quota.
         bool ClaimMaterialInputs() {
-            if (!active.load(std::memory_order_acquire))
+            if (HdrFirstBadMode() || !active.load(std::memory_order_acquire))
                 return false;
             std::scoped_lock lock(mutex);
             if (!active.load(std::memory_order_relaxed) || materialInputsClaimed)
@@ -130,7 +259,7 @@ namespace skyline::gpu::diagnostic {
         // One-shot phase 3. All indexes and claims are shared by executor threads.
         // Returns the draw ordinal only at sampling points; the rest do not
         // cause staging allocations or render-pass breaks.
-        std::optional<std::uint32_t> ClaimHdrDraw() {
+        std::optional<std::uint32_t> ClaimHdrDraw(std::uintptr_t targetIdentity = 0) {
             if (!active.load(std::memory_order_acquire))
                 return std::nullopt;
             std::scoped_lock lock(mutex);
@@ -141,6 +270,19 @@ namespace skyline::gpu::diagnostic {
             // both HDR probes on fixed presentation indices 0 and 1.
             if (!firstHdrInterval)
                 firstHdrInterval = frame;
+            if (HdrFirstBadMode()) {
+                if (frame != *firstHdrInterval)
+                    return std::nullopt;
+                if (!targetIdentity)
+                    return std::nullopt;
+                if (!firstHdrTarget)
+                    firstHdrTarget = targetIdentity;
+                if (firstHdrTarget != targetIdentity)
+                    return std::nullopt;
+                const auto ordinal{++hdrDrawCountByInterval[frame]};
+                return ordinal <= MaxHdrScanDraws ? std::optional<std::uint32_t>(ordinal)
+                                                 : std::nullopt;
+            }
             if (frame < *firstHdrInterval || frame - *firstHdrInterval >= 2)
                 return std::nullopt;
             const auto ordinal{++hdrDrawCountByInterval[frame]};
@@ -152,7 +294,7 @@ namespace skyline::gpu::diagnostic {
         }
 
         bool ClaimConversion() {
-            if (!active.load(std::memory_order_acquire))
+            if (HdrFirstBadMode() || !active.load(std::memory_order_acquire))
                 return false;
             std::scoped_lock lock(mutex);
             const auto frame{presentIndex.load(std::memory_order_relaxed)};

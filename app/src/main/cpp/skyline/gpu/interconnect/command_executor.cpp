@@ -517,6 +517,18 @@ namespace skyline::gpu::interconnect {
         if (!capture.active.load(std::memory_order_acquire) || !view || !view->texture)
             return;
         const auto texture{std::shared_ptr<Texture>(view->texture)};
+        const bool hdrScanPhase{phase.starts_with("hdr_scan_")};
+        if (capture.HdrFirstBadMode() && !hdrScanPhase)
+            return;
+        if (hdrScanPhase &&
+            (texture->format->vkFormat != vk::Format::eB10G11R11UfloatPack32 ||
+             texture->levelCount != 1 || texture->layerCount != 1 ||
+             texture->surfaceSize != static_cast<std::size_t>(texture->dimensions.width) *
+                                         texture->dimensions.height * 4)) {
+            capture.Record(fmt::format("HDR_SCAN_UNSUPPORTED phase={} format={}",
+                                       phase, vk::to_string(texture->format->vkFormat)));
+            return;
+        }
         if (diagnostic::Ue4Uploads().enabled.load(std::memory_order_relaxed) &&
             (!phase.starts_with("material_input_") || texture->layerCount != 6 ||
              texture->format->vkFormat != vk::Format::eR16G16B16A16Sfloat))
@@ -602,7 +614,12 @@ namespace skyline::gpu::interconnect {
             });
         }
         diagnosticReadbackCallbacks.emplace_back(
-            [staging, rawPath, metaPath, meta, id, provenanceResult, proofPath] {
+            [staging, rawPath, metaPath, meta, id, provenanceResult, proofPath,
+             hdrScanPhase, ordinal, width = texture->dimensions.width,
+             height = texture->dimensions.height] {
+                if (hdrScanPhase)
+                    diagnostic::Ue4Capture().RecordHdrScan(ordinal, width, height,
+                                                            staging->data(), staging->size());
                 std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
                 if (!raw) {
                     LOGE("MINIRD_UE4_FOCUS failed to write snapshot {}", id);
