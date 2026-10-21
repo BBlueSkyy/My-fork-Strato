@@ -27,69 +27,139 @@ namespace skyline::gpu::interconnect {
             blockMappingEndAddr = blockMappingStartAddr + blockMapping.size();
         }
 
-        // Reuse an exact logical view until the normal GMMU/semaphore purge.
+        // Frequent split SSBOs must not retranslate and allocate a small vector
+        // on every draw. A cache hit is valid until PurgeCaches() invalidates the
+        // underlying GPU virtual mappings. Both successful and legacy fallback
+        // views are cached only for their exact requested range.
         if (splitMappingWarn && lastSplitResolved && view &&
-            address == lastSplitAddress && size == lastSplitSize)
+            address == lastSplitAddress && size == lastSplitSize) {
             return;
+        }
         lastSplitResolved = false;
 
         auto fullMapping{blockMapping.subspan(address - blockMappingStartAddr)};
-        if (splitMappingWarn && fullMapping.size() < size) {
-            // Mirror page-aligned physical pieces in GPU-virtual order. This is
-            // one canonical Buffer, not a per-draw gather/scatter allocation.
-            constexpr u64 pageMask{constant::PageSize - 1};
-            if (address > std::numeric_limits<u64>::max() - pageMask ||
-                size > std::numeric_limits<u64>::max() - pageMask - address) {
-                view = {};
+        const bool isSplit{fullMapping.size() < size};
+
+        // Some callers supply an upper bound rather than a guaranteed mapped
+        // length. Preserve their original clamping behavior when warned=false.
+        if (splitMappingWarn && isSplit) {
+            bool resolved{};
+            size_t mappingCount{};
+            size_t secondMappingSize{};
+            const char *failureReason{"gpu-address-overflow"};
+            if (size <= std::numeric_limits<u64>::max() - address) {
+                auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(address, size)};
+                mappingCount = mappings.size();
+                secondMappingSize = mappingCount > 1 ? mappings[1].size() : 0;
+                failureReason = "incomplete-or-empty-range";
+
+                // Only a fully mapped, physically adjacent sequence can use the
+                // existing BufferManager and its zero-copy BufferView semantics.
+                // Noncontiguous/sparse/aliased mappings require a separate
+                // multi-mapping implementation and must not be misrepresented
+                // by a single span.
+                u64 translatedSize{};
+                uintptr_t nextPhysical{};
+                bool physicallyContiguous{!mappings.empty()};
+                for (const auto &mapping : mappings) {
+                    if (!mapping.valid() || mapping.empty()) {
+                        failureReason = "unmapped-or-empty-piece";
+                        physicallyContiguous = false;
+                        break;
+                    }
+                    if (mapping.size() > size - translatedSize) {
+                        failureReason = "translated-range-exceeds-request";
+                        physicallyContiguous = false;
+                        break;
+                    }
+                    const uintptr_t begin{reinterpret_cast<uintptr_t>(mapping.data())};
+                    if (begin == 0 ||
+                        mapping.size() > std::numeric_limits<uintptr_t>::max() - begin) {
+                        failureReason = "physical-address-overflow";
+                        physicallyContiguous = false;
+                        break;
+                    }
+                    if (translatedSize != 0 && begin != nextPhysical) {
+                        failureReason = "noncontiguous-physical-pieces";
+                        physicallyContiguous = false;
+                        break;
+                    }
+                    translatedSize += mapping.size();
+                    nextPhysical = begin + mapping.size();
+                }
+                if (physicallyContiguous && translatedSize == size &&
+                    mappings.front().data() == fullMapping.data()) {
+                    failureReason = "buffer-view-not-created";
+                    auto completeMapping{span<u8>{mappings.front().data(), size}};
+                    if (view) {
+                        if (auto reused{view.GetBuffer()->TryGetView(completeMapping)}; reused) {
+                            view = reused;
+                            resolved = true;
+                        }
+                    }
+                    if (!resolved) {
+                        view = ctx.gpu.buffer.FindOrCreate(
+                            completeMapping, ctx.executor.tag,
+                            [&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
+                                ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
+                            });
+                        resolved = static_cast<bool>(view);
+                    }
+                } else if (physicallyContiguous && translatedSize == size) {
+                    failureReason = "first-physical-mapping-mismatch";
+                }
+            }
+
+            if (resolved) {
+                // Emit only cold-path successes, not repeated draw-time cache hits.
+                static std::atomic<u64> contiguousRecoveryCount{};
+                const u64 recovery{contiguousRecoveryCount.fetch_add(1, std::memory_order_relaxed) + 1};
+                if (recovery <= 8 || (recovery & 0x3FF) == 0) {
+                    LOGI("Split buffer mapping recovered: count={} address=0x{:X} size=0x{:X} mappings={}",
+                         recovery, address, size, mappingCount);
+                }
+                lastSplitAddress = address;
+                lastSplitSize = size;
+                lastSplitResolved = true;
                 return;
             }
-            const u64 alignedAddress{util::AlignDown(address, constant::PageSize)};
-            const u64 alignedEnd{util::AlignUp(address + size, constant::PageSize)};
-            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(alignedAddress, alignedEnd - alignedAddress)};
-            GuestBuffer guest{GuestBuffer::Mappings{mappings.begin(), mappings.end()}};
-            auto attach{[&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
-                ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
-            }};
-            const char *failureReason{"unmapped-or-aliased-range"};
-            if (guest.valid() && guest.size() == alignedEnd - alignedAddress) {
-                failureReason = "incompatible-buffer-alias-layout";
-                if (guest.mappings.size() == 1) {
-                    // Physically adjacent GMMU blocks retain the ordinary path.
-                    auto requested{guest.mappings.front().subspan(address - alignedAddress, size)};
-                    view = ctx.gpu.buffer.FindOrCreate(requested, ctx.executor.tag, attach);
-                } else {
-                    view = ctx.gpu.buffer.FindOrCreate(guest, address - alignedAddress, size,
-                                                       ctx.executor.tag, attach);
-                }
-                if (view) {
+
+            // Bounded diagnosis: unlimited warning spam previously caused extra
+            // CPU work. Preserve the failure instead of pretending that the
+            // missing portion was mapped.
+            static std::atomic<u64> warningCount{};
+            const u64 hit{warningCount.fetch_add(1, std::memory_order_relaxed) + 1};
+            if (hit <= 16 || (hit & 0x3FF) == 0) {
+                LOGW("Split buffer mappings are not supported: hit={} address=0x{:X} size=0x{:X} first=0x{:X} mappings={} second=0x{:X} reason={} caller={}:{} function={}",
+                     hit, address, size, fullMapping.size(), mappingCount, secondMappingSize,
+                     failureReason, location.file_name(), location.line(), location.function_name());
+            }
+        }
+
+        // Legacy behavior for genuinely non-contiguous mappings: do not bind
+        // out-of-range memory or create a writable GPU staging alias.
+        auto viewMapping{fullMapping.first(std::min(fullMapping.size(), size))};
+        if (view) {
+            if (view = view.GetBuffer()->TryGetView(viewMapping); view) {
+                if (splitMappingWarn && isSplit) {
                     lastSplitAddress = address;
                     lastSplitSize = size;
                     lastSplitResolved = true;
-                    return;
                 }
+                return;
             }
-
-            // Never turn an exact writable descriptor into a first-piece view.
-            // Missing pages or non-affine aliases cannot be guessed safely.
-            view = {};
-            static std::atomic<u64> warningCount{};
-            const u64 hit{warningCount.fetch_add(1, std::memory_order_relaxed) + 1};
-            if (hit <= 16 || (hit & 0x3FF) == 0)
-                LOGW("Unresolved split buffer: hit={} address=0x{:X} size=0x{:X} mappings={} reason={} caller={}:{}",
-                     hit, address, size, guest.mappings.size(), failureReason,
-                     location.file_name(), location.line());
-            return;
         }
 
-        // Upper-bound callers (warn=false) retain the legacy clamp.
-        auto viewMapping{fullMapping.first(std::min(fullMapping.size(), size))};
-        if (view)
-            if (view = view.GetBuffer()->TryGetView(viewMapping); view)
-                return;
-        view = ctx.gpu.buffer.FindOrCreate(viewMapping, ctx.executor.tag,
+        view = ctx.gpu.buffer.FindOrCreate(
+            viewMapping, ctx.executor.tag,
             [&ctx](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
                 ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
             });
+        if (splitMappingWarn && isSplit && view) {
+            lastSplitAddress = address;
+            lastSplitSize = size;
+            lastSplitResolved = true;
+        }
     }
 
     void CachedMappedBufferView::PurgeCaches() {

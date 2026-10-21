@@ -434,9 +434,6 @@ namespace skyline::gpu::interconnect {
                     return;
                 } catch (const GpuDirtyConstantBufferReadRequest &) {
                     Submit();
-                } catch (const BufferBackingRecreationRequest &request) {
-                    Submit();
-                    request.resolve();
                 }
             }
         }

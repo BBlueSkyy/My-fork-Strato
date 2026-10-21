@@ -1,3 +1,21 @@
+> Current status after device regression: the writable multi-mapping experiment
+> from 974af2fa has been rolled back. BufferManager, guest-buffer representation,
+> draw/DMA retry boundaries and CachedMappedBufferView behavior are restored to
+> 5b7fc4d6. Buffer-owned texel views and the idle descriptor-pool fix remain.
+> The workflow is ARM64 DevRelease. Sections describing full writable split
+> backing below are historical and no longer describe the active code.
+>
+> New device logs: Dragon Ball has 233 new unmapped-image-buffer messages;
+> Jujutsu has 3753, with incompatible overlapping layouts sharing the same first
+> physical piece and different second pieces. Both logs end without DEVICE_LOST.
+> Rejecting these requests with an empty BufferView is a demonstrated binding
+> regression compared with the previous first-piece compatibility path. The
+> shared-prefix/divergent-tail case cannot be represented by a single affine
+> BufferDelegate displacement, so the partial coalescer is removed rather than
+> treating it as complete alias support. Returning to gameplay still requires
+> device confirmation; the original split limitation and eventual GPU loss
+> remain unresolved.
+
 # Fast-path-safe split GPU buffer mapping experiment (stacked on #372)
 
 ## Scope and why #321 is not replayed

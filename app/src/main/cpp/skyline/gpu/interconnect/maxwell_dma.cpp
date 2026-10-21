@@ -14,7 +14,6 @@ namespace skyline::gpu::interconnect {
           executor{channelCtx.executor} {}
 
     void MaxwellDma::Copy(span<u8> dstMapping, span<u8> srcMapping) {
-        executor.RunWithTextureBackingRetry([&] {
         auto srcBuf{gpu.buffer.FindOrCreate(srcMapping, executor.tag, [this](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
             executor.AttachLockedBuffer(buffer, std::move(lock));
         })};
@@ -52,11 +51,9 @@ namespace skyline::gpu::interconnect {
                 }, {}, {});
             });
         });
-        });
     }
 
     void MaxwellDma::Clear(span<u8> mapping, u32 value) {
-        executor.RunWithTextureBackingRetry([&] {
         if (!util::IsAligned(mapping.size(), 4))
             throw exception("Cleared buffer's size is not aligned to 4 bytes!");
 
@@ -81,7 +78,6 @@ namespace skyline::gpu::interconnect {
                 .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
                 .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
             }, {}, {});
-        });
         });
     }
 }

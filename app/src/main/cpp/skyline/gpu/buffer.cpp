@@ -25,7 +25,7 @@ namespace skyline::gpu {
 
         // We can't just capture this in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Buffer> weakThis{shared_from_this()};
-        trapHandle = gpu.state.process->trap.CreateTrap(guest->mappings, [weakThis] {
+        trapHandle = gpu.state.process->trap.CreateTrap(*guest, [weakThis] {
             auto buffer{weakThis.lock()};
             if (!buffer)
                 return;
@@ -380,29 +380,20 @@ namespace skyline::gpu {
             MarkGpuDirtyImplStaged();
     }
 
-    Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, GuestBuffer pGuest, size_t id, bool direct)
+    Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, GuestBuffer guest, size_t id, bool direct)
         : gpu{gpu},
-          guest{std::move(pGuest)},
+          guest{guest},
+      mirror{gpu.state.process->memory.CreateMirror(guest)},
           delegate{delegateAllocator.EmplaceUntracked<BufferDelegate>(this)},
           isDirect{direct},
-          id{id} {
-        if (!guest->valid())
-            throw exception("Cannot create a buffer from invalid guest mappings");
-
-        if (guest->mappings.size() == 1) {
-            mirror = gpu.state.process->memory.CreateMirror(guest->mappings.front());
-        } else {
-            std::vector<span<u8>> mappings{guest->mappings.begin(), guest->mappings.end()};
-            mirror = gpu.state.process->memory.CreateMirrors(mappings);
-        }
-
+          id{id},
+          megaBufferTableShift{std::max(std::bit_width(guest.size() / MegaBufferTableMaxEntries - 1), MegaBufferTableShiftMin)} {
         if (isDirect)
             directBacking = gpu.memory.ImportBuffer(mirror);
         else
             backing = gpu.memory.AllocateBuffer(mirror.size());
 
-        megaBufferTableShift = std::max(std::bit_width(guest->size() / MegaBufferTableMaxEntries - 1), MegaBufferTableShiftMin);
-        megaBufferTable.resize(guest->size() / (1 << megaBufferTableShift));
+        megaBufferTable.resize(guest.size() / (1 << megaBufferTableShift));
     }
 
     Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, vk::DeviceSize size, size_t id)
@@ -437,8 +428,7 @@ namespace skyline::gpu {
         if (!guest)
             return;
 
-        for (const auto &mapping : guest->mappings)
-            usageTracker.dirtyIntervals.Insert(mapping);
+        usageTracker.dirtyIntervals.Insert(*guest);
         MarkGpuDirtyImpl();
     }
 
@@ -546,8 +536,7 @@ namespace skyline::gpu {
         AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
         everHadInlineUpdate = true;
 
-        for (const auto &mapping : guest->mappings)
-            usageTracker.sequencedIntervals.Insert(mapping);
+        usageTracker.sequencedIntervals.Insert(*guest);
 
         if (isDirect)
             return WriteImplDirect(data, offset, usageTracker, gpuCopyCallback);
@@ -562,8 +551,7 @@ namespace skyline::gpu {
         AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
         everHadInlineUpdate = true;
 
-        for (const auto &mapping : guest->mappings)
-            usageTracker.sequencedIntervals.Insert(mapping);
+        usageTracker.sequencedIntervals.Insert(*guest);
 
         if (isDirect)
             CopyFromImplDirect(dstOffset, src, srcOffset, size, usageTracker, gpuCopyCallback);
@@ -576,37 +564,10 @@ namespace skyline::gpu {
     }
 
     BufferView Buffer::TryGetView(span<u8> mapping) {
-        if (!guest)
+        if (guest->contains(mapping))
+            return GetView(static_cast<vk::DeviceSize>(std::distance(guest->begin(), mapping.begin())), mapping.size());
+        else
             return {};
-
-        if (guest->mappings.size() == 1) [[likely]] {
-            const auto &region{guest->mappings.front()};
-            if (region.contains(mapping))
-                return GetView(static_cast<vk::DeviceSize>(mapping.data() - region.data()), mapping.size());
-            return {};
-        }
-
-        if (auto offset{guest->Find(mapping)})
-            return GetView(*offset, mapping.size());
-
-        return {};
-    }
-
-    BufferView Buffer::TryGetView(const GuestBuffer &mapping, vk::DeviceSize viewOffset, vk::DeviceSize viewSize) {
-        if (!guest)
-            return {};
-
-        auto offset{guest->Find(mapping)};
-        if (!offset || viewOffset > mapping.size())
-            return {};
-
-        const auto available{mapping.size() - static_cast<size_t>(viewOffset)};
-        if (!viewSize)
-            viewSize = available;
-        if (viewSize > available)
-            return {};
-
-        return GetView(*offset + viewOffset, viewSize);
     }
 
     BufferBinding Buffer::TryMegaBufferView(const std::shared_ptr<FenceCycle> &pCycle, MegaBufferAllocator &allocator, ContextTag executionTag,
