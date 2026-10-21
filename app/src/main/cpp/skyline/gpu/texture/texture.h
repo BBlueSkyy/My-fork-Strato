@@ -325,6 +325,8 @@ namespace skyline::gpu {
       private:
         vk::ImageView vkView{};
         u64 vkViewGeneration{};
+        vk::ImageView identityVkView{};
+        u64 identityVkViewGeneration{};
 
       public:
         LockableSharedPtr<Texture> texture;
@@ -369,9 +371,10 @@ namespace skyline::gpu {
 
         /**
          * @return A VkImageView that corresponds to the properties of this view
+         * @param identityMapping Ignore sampled component swizzles for storage-image bindings
          * @note The texture **must** be locked prior to calling this
          */
-        vk::ImageView GetView();
+        vk::ImageView GetView(bool identityMapping = false);
 
         bool operator==(const TextureView &rhs) {
             return texture == rhs.texture && type == rhs.type && format == rhs.format && mapping == rhs.mapping && range == rhs.range;
