@@ -190,7 +190,7 @@
             android:summaryOff="@string/validation_layer_disabled"
             android:summaryOn="@string/validation_layer_enabled"
             app:key="validation_layer"
-            app:isPreferenceVisible="false"
+            app:isPreferenceVisible="true"
             app:title="@string/validation_layer" />
     </PreferenceCategory>
 </androidx.preference.PreferenceScreen>

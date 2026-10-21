@@ -18,10 +18,10 @@ namespace skyline::gpu {
         };
 
         std::vector<const char *> requiredLayers{};
-        #ifndef NDEBUG
+        // Validation is an explicit diagnostic setting, independent of native
+        // optimization/debug-symbol flags. Release ships the same bundled layer.
         if (*state.settings->validationLayer)
             requiredLayers.push_back("VK_LAYER_KHRONOS_validation");
-        #endif
 
         auto instanceLayers{context.enumerateInstanceLayerProperties()};
         if (AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Debug)) {
@@ -59,13 +59,16 @@ namespace skyline::gpu {
                 throw exception("Cannot find Vulkan instance extension: \"{}\"", requiredExtension);
         }
 
-        return vk::raii::Instance(context, vk::InstanceCreateInfo{
+        auto instance{vk::raii::Instance(context, vk::InstanceCreateInfo{
             .pApplicationInfo = &applicationInfo,
             .enabledLayerCount = static_cast<u32>(requiredLayers.size()),
             .ppEnabledLayerNames = requiredLayers.data(),
             .enabledExtensionCount = requiredInstanceExtensions.size(),
             .ppEnabledExtensionNames = requiredInstanceExtensions.data(),
-        });
+        })};
+        if (!requiredLayers.empty())
+            LOGI("Vulkan validation enabled: VK_LAYER_KHRONOS_validation (core validation)");
+        return instance;
     }
 
     static VkBool32 DebugCallback(vk::DebugReportFlagsEXT flags, vk::DebugReportObjectTypeEXT objectType, u64 object, size_t location, i32 messageCode, const char *layerPrefix, const char *messageCStr, GPU *gpu) {
