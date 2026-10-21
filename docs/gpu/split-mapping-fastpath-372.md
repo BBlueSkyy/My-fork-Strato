@@ -222,3 +222,13 @@ proof of the device's final GPU-loss cause.
 Essential checks: host syntax check of production mapping/buffer-manager
 headers, whitespace and workflow YAML consistency. No tests were added.
 ARM64 DevReldebug and runtime/FPS validation remain pending; no Actions monitoring.
+
+Descriptor allocation already accepts OUT_OF_POOL_MEMORY/FRAGMENTED_POOL and
+retries with a replacement pool, explaining why execution continues after the
+four driver messages. ActiveDescriptorSet ownership is retained by fence
+objects; no premature set reuse was demonstrated. One additional cold-path
+correction resets an exhausted pool before growth when the allocator is its
+sole shared owner. This reclaims descriptors held by idle sets of other layouts
+without resetting in-flight sets, scanning retired pools or waiting on the GPU.
+Host syntax checks use the pinned Vulkan-Hpp/C headers, a GPU field declaration
+shim and Android/Perfetto declaration shims; these are not an Android build.
