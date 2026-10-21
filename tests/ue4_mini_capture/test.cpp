@@ -15,20 +15,20 @@ int main() {
     cap.Start(path.string());
     assert(cap.active.load());
 
-    // Actual HDR draws begin at approximate presentation index 2, as
-    // observed in the Cosmic Shake phase-3 capture. Select the first
-    // TWO intervals containing HDR draws, not hard-coded indices 0/1.
+    // Capture the specific boundaries of the three shader groups
+    // implicated by the prior HDR NaN progression.
     cap.presentIndex.store(2);
     for (std::uint32_t ordinal = 1; ordinal <= 200; ++ordinal) {
         auto selected = cap.ClaimHdrDraw();
-        const bool expected = ordinal == 1 || ordinal == 32 ||
-                              ordinal == 128 || ordinal == 200;
+        const bool expected = ordinal == 2 || ordinal == 18 || ordinal == 19 ||
+                              ordinal == 22 || ordinal == 23 || ordinal == 31;
         assert(bool(selected) == expected);
         if (selected)
             assert(*selected == ordinal);
     }
     cap.presentIndex.store(3);
-    assert(cap.ClaimHdrDraw().value() == 1);
+    assert(!cap.ClaimHdrDraw()); // ordinal 1 is deliberately not sampled
+    assert(cap.ClaimHdrDraw().value() == 2);
     cap.presentIndex.store(4);
     assert(!cap.ClaimHdrDraw()); // third interval is excluded
     assert(cap.ClaimConversion());
@@ -37,7 +37,8 @@ int main() {
     assert(cap.ClaimConversion());
 
     cap.Start(path.string()); // all focused draw state resets on re-arming
-    assert(cap.ClaimHdrDraw().value() == 1);
+    assert(!cap.ClaimHdrDraw());
+    assert(cap.ClaimHdrDraw().value() == 2);
 
     // Separate focus quota: no more than 48 concurrent claims, even if
     // different executors try to reserve at the same time.

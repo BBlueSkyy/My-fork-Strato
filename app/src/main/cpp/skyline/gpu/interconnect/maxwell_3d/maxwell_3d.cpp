@@ -898,9 +898,82 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     view->texture->format->vkFormat != vk::Format::eB10G11R11UfloatPack32)
                     continue;
                 hdrProbe = capture.ClaimHdrDraw();
-                if (hdrProbe)
+                if (hdrProbe) {
+                    // Correlate each bracketing pair with exact shader state,
+                    // fully resolved sampled image views, and only descriptor-
+                    // referenced CBUF slots. Do not read GPU-dirty CBUF bytes.
+                    auto hashes{std::string{}};
+                    if (pipeline) {
+                        for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                            hashes += fmt::format("{:016X},", hash);
+                    }
+                    capture.Record(fmt::format(
+                        "HDR_DRAW_FOCUS ordinal={} interval={} executor=0x{:X} submission={} "
+                        "count={} instances={} indexed={} scissor={},{},{}x{} hashes={} "
+                        "target=0x{:X} target_view={}x{} format={}",
+                        *hdrProbe, capture.presentIndex.load(std::memory_order_relaxed),
+                        reinterpret_cast<uintptr_t>(&ctx.executor), ctx.executor.submissionNumber,
+                        count, instanceCount, indexed, scissor.offset.x, scissor.offset.y,
+                        scissor.extent.width, scissor.extent.height, hashes,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->format->vkFormat)));
+
+                    const auto maxViews{std::min<size_t>(activeDescriptorSetSampledImages.size(), 24)};
+                    for (size_t idx{}; idx < maxViews; ++idx) {
+                        auto *sample{activeDescriptorSetSampledImages[idx]};
+                        if (!sample || !sample->texture) {
+                            capture.Record(fmt::format("HDR_DRAW_IMAGE ordinal={} index={} null=1", *hdrProbe, idx));
+                            continue;
+                        }
+                        capture.Record(fmt::format(
+                            "HDR_DRAW_IMAGE ordinal={} index={} texture=0x{:X} view_type={} "
+                            "mip={} mip_levels={} layer={} layers={} image={}x{} "
+                            "view_format={} backing_format={} layout={}",
+                            *hdrProbe, idx, reinterpret_cast<uintptr_t>(sample->texture.get()),
+                            vk::to_string(sample->type), sample->range.baseMipLevel,
+                            sample->range.levelCount, sample->range.baseArrayLayer,
+                            sample->range.layerCount, sample->texture->dimensions.width,
+                            sample->texture->dimensions.height,
+                            vk::to_string(sample->format->vkFormat),
+                            vk::to_string(sample->texture->format->vkFormat),
+                            vk::to_string(sample->texture->layout)));
+                    }
+                    if (activeDescriptorSetSampledImages.size() > maxViews)
+                        capture.Record(fmt::format("HDR_DRAW_IMAGE_TRUNCATED ordinal={} total={} recorded={}",
+                            *hdrProbe, activeDescriptorSetSampledImages.size(), maxViews));
+
+                    if (pipeline) {
+                        const auto &info{pipeline->GetDiagnosticDescriptorInfo()};
+                        for (size_t stageIdx{}; stageIdx < info.stages.size(); ++stageIdx) {
+                            const auto &stageInfo{info.stages[stageIdx]};
+                            const auto &slots{constantBuffers.boundConstantBuffers[stageIdx]};
+                            for (const auto &uniformDesc : stageInfo.uniformBufferDescs) {
+                                for (size_t arrayIdx{}; arrayIdx < uniformDesc.count; ++arrayIdx) {
+                                    const auto slot{static_cast<size_t>(uniformDesc.index) + arrayIdx};
+                                    if (slot >= slots.size())
+                                        continue;
+                                    const auto usedBytes{slot < stageInfo.constantBufferUsedSizes.size()
+                                        ? stageInfo.constantBufferUsedSizes[slot] : 0};
+                                    capture.Record(fmt::format(
+                                        "HDR_DRAW_CBUF ordinal={} stage={} index={} "
+                                        "bound_bytes={} shader_used_bytes={} source=uniform_descriptor",
+                                        *hdrProbe, stageIdx, slot, slots[slot].view.size, usedBytes));
+                                }
+                            }
+                            for (const auto &imageDesc : stageInfo.combinedImageSamplerDescs) {
+                                capture.Record(fmt::format(
+                                    "HDR_DRAW_TEXTURE_DESC ordinal={} stage={} "
+                                    "cbuf={} offset={} count={} type={}",
+                                    *hdrProbe, stageIdx, imageDesc.cbuf_index,
+                                    imageDesc.cbuf_offset, imageDesc.count,
+                                    static_cast<u32>(imageDesc.type)));
+                            }
+                        }
+                    }
                     ctx.executor.QueueUe4FocusedImage(view,
                         fmt::format("hdr_before_{}", *hdrProbe), *hdrProbe);
+                }
                 break;
             }
         }

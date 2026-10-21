@@ -88,7 +88,11 @@ namespace skyline::gpu::diagnostic {
             if (frame < *firstHdrInterval || frame - *firstHdrInterval >= 2)
                 return std::nullopt;
             const auto ordinal{++hdrDrawCountByInterval[frame]};
-            if (ordinal == 1 || ordinal == 32 || ordinal == 128 || ordinal == 200)
+            // Previous HDR brackets show 20% invalid pixels by the start
+            // of draw 32. Sample boundaries of the candidate shader groups
+            // to determine which draw introduces the large NaN increase.
+            if (ordinal == 2 || ordinal == 18 || ordinal == 19 ||
+                ordinal == 22 || ordinal == 23 || ordinal == 31)
                 return ordinal;
             return std::nullopt;
         }

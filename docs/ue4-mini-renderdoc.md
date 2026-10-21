@@ -116,3 +116,42 @@ the converter input. About 0.294% of pixels had a NaN component, but
 69.8% of pixels in the converter's BGRA8 output were almost white.
 These measurements implicate upstream HDR values, without proving the
 first responsible shader or the origin of their amplification.
+
+
+## Phase 4: shader-group transition probes (draws 2–31)
+
+The latest HDR before/after pairs show 0% NaNs before draw 1,
+five pixels after draw 1, and ~20.15% before draw 32.
+The direct draws between these points use the following fragment
+shader groups (based on the previous captured trace):
+
+| Draw ordinals | Fragment shader |
+| --- | --- |
+| 2–18 | `7161B14045F710B5` |
+| 19–22 | `EA18B70958415FF3` |
+| 23–31 | `9784BD03FBB0AAC9` |
+
+The phase-4 manual capture now records HDR before/after pairs around
+ordinals **2, 18, 19, 22, 23 and 31**, in each of the first two intervals
+that contain HDR draw commands. All other draw ordinals incur only
+the active-session counter check; there are no new copies.
+
+For each selected draw, `gpu_events.txt` now records:
+
+- `HDR_DRAW_FOCUS`: draw ordinal, executor, submission, render dimensions,
+  shader hashes, index/instance counts, and output view format;
+- `HDR_DRAW_IMAGE`: up to 24 *resolved sampled image views*, with actual
+  image dimensions, view format, backing format, mip/layer range and layout;
+- `HDR_DRAW_CBUF`: CBUF slots referenced by uniform descriptors,
+  their bound sizes, and the compiler's declared used byte counts;
+- `HDR_DRAW_TEXTURE_DESC`: shader-declared sampled image descriptor
+  CBUF index/offset/type/count (not a dump of private texture content).
+
+These are diagnostic metadata only. The capture does **not** read
+GPU-dirty CBUF bytes, modify shader code, or change descriptors.
+It may still split render passes and lower FPS **while armed**.
+The existing 48-image / 144-MiB budget is retained.
+
+The selected group boundaries may locate the responsible group, but
+are not guaranteed to find the *first* defective draw. Only conclude
+a precise culprit when a verified before/after pair demonstrates it.
