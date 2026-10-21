@@ -15,6 +15,31 @@
 #include <utility>
 
 namespace skyline::gpu::diagnostic {
+    enum class SparkingFocusRole : std::uint8_t {
+        SceneHdr,
+        ToneHdrInput,
+        ToneLdrOutput,
+        PostLdrInput,
+        PostLdrOutput,
+        UpscaleLdrInput,
+        UpscaleLdrOutput,
+        Count,
+    };
+
+    constexpr const char *SparkingFocusName(SparkingFocusRole role) {
+        switch (role) {
+            case SparkingFocusRole::SceneHdr: return "scene_hdr";
+            case SparkingFocusRole::ToneHdrInput: return "tonemap_hdr_input";
+            case SparkingFocusRole::ToneLdrOutput: return "tonemap_ldr_output";
+            case SparkingFocusRole::PostLdrInput: return "post_ldr_input";
+            case SparkingFocusRole::PostLdrOutput: return "post_ldr_output";
+            case SparkingFocusRole::UpscaleLdrInput: return "upscale_ldr_input";
+            case SparkingFocusRole::UpscaleLdrOutput: return "upscale_ldr_output";
+            case SparkingFocusRole::Count: break;
+        }
+        return "unknown";
+    }
+
     class SparkingFrameCapture {
       public:
         std::atomic<bool> active{false};
@@ -22,9 +47,9 @@ namespace skyline::gpu::diagnostic {
         std::atomic<std::uint32_t> eventCount{0};
         static constexpr std::uint32_t MaxEvents{12000};
         static constexpr std::uint32_t FrameCount{6};
-        // Reserve budget for late UI composition and each of the four intervals.
-        static constexpr std::uint32_t PassSnapshotsPerInterval{6};
-        static constexpr std::uint32_t MaxPassSnapshots{30};
+        // Reserve separate quotas for HDR, tone mapping, LDR postprocess and upscale.
+        static constexpr std::uint32_t PassSnapshotsPerInterval{8};
+        static constexpr std::uint32_t MaxPassSnapshots{48};
         static constexpr std::size_t MaxPassCaptureBytes{160ULL * 1024 * 1024};
 
       private:
@@ -34,6 +59,7 @@ namespace skyline::gpu::diagnostic {
         // One registry shared by all GPU command executors. Individual executor
         // counters collided in the previous capture and overwrote raw files.
         std::array<std::uint32_t, FrameCount> passCountByInterval{};
+        std::array<std::array<std::uint8_t, static_cast<std::size_t>(SparkingFocusRole::Count)>, FrameCount> roleCounts{};
         std::uint32_t nextPassIndex{};
         std::size_t passBytes{};
         // Guest backing ranges shared across Maxwell3D, Fermi2D and VI executors.
@@ -46,6 +72,8 @@ namespace skyline::gpu::diagnostic {
             path = std::move(captureDirectory);
             events.clear();
             passCountByInterval.fill(0);
+            for (auto &counts : roleCounts)
+                counts.fill(0);
             nextPassIndex = 0;
             passBytes = 0;
             watchedMappings.clear();
@@ -56,16 +84,22 @@ namespace skyline::gpu::diagnostic {
 
         // Allocates a unique, globally capped snapshot ID across all executors.
         // Called before allocating staging buffers or writing file names.
-        std::optional<std::uint32_t> ReservePassSnapshot(std::uint32_t interval, std::size_t bytes) {
+        std::optional<std::uint32_t> ReservePassSnapshot(std::uint32_t interval, std::size_t bytes,
+                                                        SparkingFocusRole role) {
             std::scoped_lock lock(mutex);
+            const auto roleIndex{static_cast<std::size_t>(role)};
             if (!active.load(std::memory_order_acquire) ||
-                interval >= FrameCount || bytes == 0 ||
-                passCountByInterval[interval] >= PassSnapshotsPerInterval ||
-                nextPassIndex >= MaxPassSnapshots ||
-                passBytes > MaxPassCaptureBytes ||
-                bytes > MaxPassCaptureBytes - passBytes)
+                interval >= FrameCount || roleIndex >= static_cast<std::size_t>(SparkingFocusRole::Count) ||
+                bytes == 0 || passCountByInterval[interval] >= PassSnapshotsPerInterval ||
+                nextPassIndex >= MaxPassSnapshots || bytes > MaxPassCaptureBytes ||
+                passBytes > MaxPassCaptureBytes - bytes)
                 return std::nullopt;
-
+            // Earlier capture spent all six slots on repeated 1024x256 auxiliaries.
+            // Reserve one per role, except two independent HDR scene outputs.
+            const std::uint8_t limit{role == SparkingFocusRole::SceneHdr ? std::uint8_t{2} : std::uint8_t{1}};
+            if (roleCounts[interval][roleIndex] >= limit)
+                return std::nullopt;
+            ++roleCounts[interval][roleIndex];
             ++passCountByInterval[interval];
             passBytes += bytes;
             return nextPassIndex++;

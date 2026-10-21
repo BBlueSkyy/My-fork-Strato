@@ -387,125 +387,105 @@ namespace skyline::gpu::interconnect {
     }
 
 
-    // Target full-resolution UI composition layers, not startup atlases or depth.
-    // Like the earlier mini-RenderDoc probes, all image copies remain on the
-    // existing command stream and only execute at a render-pass boundary.
+    // Phase 2: the first capture proved that 1024x256 auxiliaries starve
+    // readback quotas. The recorded arena path is 856x480 HDR -> 856x480
+    // RGBA8 -> 856x480 RGBA8 -> 1280x720. Only probe that chain.
     static bool IsSparkingColorImage(const Texture &texture) {
-        return texture.dimensions.width >= 256 && texture.dimensions.width <= 2560 &&
-               texture.dimensions.height >= 144 && texture.dimensions.height <= 1440 &&
-               texture.dimensions.depth == 1 && texture.levelCount == 1 &&
-               texture.layerCount == 1 &&
-               texture.sampleCount == vk::SampleCountFlagBits::e1 &&
-               texture.surfaceSize && texture.surfaceSize <= 20ULL * 1024 * 1024 &&
+        return texture.dimensions.depth == 1 && texture.levelCount == 1 &&
+               texture.layerCount == 1 && texture.sampleCount == vk::SampleCountFlagBits::e1 &&
+               texture.surfaceSize > 0 && texture.surfaceSize <= 20ULL * 1024 * 1024 &&
                (texture.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
                !texture.format->IsCompressed() &&
                (texture.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
                texture.layout != vk::ImageLayout::eUndefined;
     }
 
+    static bool IsSparkingImage(const Texture &texture, std::uint32_t width, std::uint32_t height,
+                               vk::Format format) {
+        return IsSparkingColorImage(texture) &&
+               texture.dimensions.width == width && texture.dimensions.height == height &&
+               texture.format->vkFormat == format;
+    }
+
+    static bool IsSparkingLdr(const Texture &texture, std::uint32_t width, std::uint32_t height) {
+        return IsSparkingImage(texture, width, height, vk::Format::eR8G8B8A8Unorm) ||
+               IsSparkingImage(texture, width, height, vk::Format::eB8G8R8A8Unorm);
+    }
+
     void CommandExecutor::TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color) {
         auto &capture{diagnostic::SparkingCapture()};
         if (!capture.active.load(std::memory_order_acquire))
             return;
-
-        // Follow an already identified output into subsequent postprocessing,
-        // including a different command executor. Keep the watch by guest backing
-        // because Texture* may change when a view/alias is recreated.
-        bool followsUi{};
-        for (auto *view : sampled) {
-            if (!view || !view->texture || !view->texture->guest)
+        (void)sampled;
+        // HDR scene producers do not necessarily sample a prior scene texture.
+        // Collect only actual 856x480 B10G11R11 color targets, not every
+        // bound auxiliary image. Later postpasses are identified by shader.
+        for (auto *view : color) {
+            if (!view || !view->texture ||
+                !IsSparkingImage(*view->texture, 856, 480, vk::Format::eB10G11R11UfloatPack32))
                 continue;
-            for (const auto &mapping : view->texture->guest->mappings) {
-                if (capture.IsWatchedMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size())) {
-                    followsUi = true;
-                    break;
-                }
-            }
-            if (followsUi)
-                break;
-        }
-        // Color targets before sampled inputs. Only a candidate output or one
-        // of its downstream consumers receives the scarce image readback budget.
-        const auto track{[&](span<TextureView *> views, bool rt) {
-            for (auto *view : views) {
-                if (!view || !view->texture)
-                    continue;
-                std::shared_ptr<Texture> texture{view->texture};
-                if (!IsSparkingColorImage(*texture))
-                    continue;
-                auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
-                    [&](const DiagnosticPassImage &candidate) {
-                        return candidate.texture.get() == texture.get();
-                    })};
-                if (it != diagnosticPassImages.end()) {
-                    it->renderTarget |= rt;
-                    it->priority |= (rt && followsUi);
-                } else if (diagnosticPassImages.size() < 24) {
-                    diagnosticPassImages.push_back({std::move(texture), rt, rt && followsUi});
-                }
-            }
-        }};
-        track(color, true);
-        track(sampled, false);
-        if (followsUi) {
-            for (auto *view : color) {
-                if (!view || !view->texture || !IsSparkingColorImage(*view->texture) || !view->texture->guest)
-                    continue;
-                for (const auto &mapping : view->texture->guest->mappings)
-                    capture.WatchMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
-            }
+            auto texture{view->texture};
+            const auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
+                [&](const DiagnosticPassImage &entry) { return entry.texture.get() == texture.get(); })};
+            if (it == diagnosticPassImages.end() && diagnosticPassImages.size() < 16)
+                diagnosticPassImages.push_back({std::move(texture), true, true,
+                    diagnostic::SparkingFocusRole::SceneHdr, 0});
         }
     }
 
-    void CommandExecutor::MarkDiagnosticSparkingOutput(span<TextureView *> sampled, span<TextureView *> color, bool hasSampledImage) {
+    void CommandExecutor::MarkDiagnosticSparkingOutput(span<TextureView *> sampled, span<TextureView *> color,
+                                                       std::uint64_t fragmentShaderHash) {
         auto &capture{diagnostic::SparkingCapture()};
-        if (!hasSampledImage || !capture.active.load(std::memory_order_acquire))
+        if (!capture.active.load(std::memory_order_acquire))
             return;
-        // Scene-color input to a render target is a useful HDR/postprocessing
-        // transition even when there is no blending or compressed sprite.
-        bool samplesColor{};
-        for (auto *view : sampled) {
-            if (view && view->texture && IsSparkingColorImage(*view->texture)) {
-                samplesColor = true;
-                break;
-            }
-        }
-        if (!samplesColor)
-            return;
-        bool hasTarget{};
-        for (auto *view : color)
-            if (view && view->texture && IsSparkingColorImage(*view->texture))
-                hasTarget = true;
-        if (!hasTarget)
+        // Observed in capture_001. Exact hashes keep the next readback cheap.
+        constexpr std::uint64_t ToneMap{0x3332897FCDBD1264ULL};
+        constexpr std::uint64_t PostLdr{0x96D28FD4260951CBULL};
+        constexpr std::uint64_t Upscale{0x2CFA19C0057B1932ULL};
+        if (fragmentShaderHash != ToneMap && fragmentShaderHash != PostLdr &&
+            fragmentShaderHash != Upscale)
             return;
 
-        const auto mark{[&](span<TextureView *> views, bool target) {
+        const auto append{[&](span<TextureView *> views, diagnostic::SparkingFocusRole role,
+                              std::uint32_t width, std::uint32_t height, bool hdr, bool target) {
             for (auto *view : views) {
-                if (!view || !view->texture || !IsSparkingColorImage(*view->texture))
+                if (!view || !view->texture)
                     continue;
                 const auto &texture{view->texture};
+                const bool eligible{hdr
+                    ? IsSparkingImage(*texture, width, height, vk::Format::eB10G11R11UfloatPack32)
+                    : IsSparkingLdr(*texture, width, height)};
+                if (!eligible)
+                    continue;
+                // De-duplicate by role + image identity, NOT by renderpass
+                // alone: the same source can also be a target in another pass.
                 const auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
-                    [&](const DiagnosticPassImage &entry) { return entry.texture.get() == texture.get(); })};
-                if (it != diagnosticPassImages.end()) {
-                    it->priority = true;
-                    it->renderTarget |= target;
-                } else if (diagnosticPassImages.size() < 24) {
-                    diagnosticPassImages.push_back({texture, target, true});
-                }
-                if (target && texture->guest) {
-                    for (const auto &mapping : texture->guest->mappings)
-                        capture.WatchMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
-                }
+                    [&](const DiagnosticPassImage &entry) {
+                        return entry.texture.get() == texture.get() && entry.role == role;
+                    })};
+                if (it == diagnosticPassImages.end() && diagnosticPassImages.size() < 16)
+                    diagnosticPassImages.push_back({texture, target, true, role, fragmentShaderHash});
                 capture.Record(fmt::format(
-                    "COLOR_PASS_CANDIDATE executor=0x{:X} submission={} rp={} role={} texture=0x{:X} dimensions={}x{} format={}",
+                    "FOCUS_BINDING shader={:016X} role={} executor=0x{:X} submission={} rp={} "
+                    "texture=0x{:X} {}x{} format={} kind={}",
+                    fragmentShaderHash, diagnostic::SparkingFocusName(role),
                     reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
-                    target ? "output" : "input", reinterpret_cast<uintptr_t>(texture.get()),
-                    texture->dimensions.width, texture->dimensions.height,
-                    vk::to_string(texture->format->vkFormat)));
+                    reinterpret_cast<uintptr_t>(texture.get()), width, height,
+                    vk::to_string(texture->format->vkFormat), target ? "target" : "sampled"));
+                break;
             }
         }};
-        mark(sampled, false);
-        mark(color, true);
+
+        if (fragmentShaderHash == ToneMap) {
+            append(sampled, diagnostic::SparkingFocusRole::ToneHdrInput, 856, 480, true, false);
+            append(color, diagnostic::SparkingFocusRole::ToneLdrOutput, 856, 480, false, true);
+        } else if (fragmentShaderHash == PostLdr) {
+            append(sampled, diagnostic::SparkingFocusRole::PostLdrInput, 856, 480, false, false);
+            append(color, diagnostic::SparkingFocusRole::PostLdrOutput, 856, 480, false, true);
+        } else {
+            append(sampled, diagnostic::SparkingFocusRole::UpscaleLdrInput, 856, 480, false, false);
+            append(color, diagnostic::SparkingFocusRole::UpscaleLdrOutput, 1280, 720, false, true);
+        }
     }
 
     void CommandExecutor::QueueDiagnosticPassReadbacks() {
@@ -529,7 +509,7 @@ namespace skyline::gpu::interconnect {
             if (!entry.priority || !IsSparkingColorImage(*texture))
                 continue;
 
-            const auto snapshotId{capture.ReservePassSnapshot(interval, texture->surfaceSize)};
+            const auto snapshotId{capture.ReservePassSnapshot(interval, texture->surfaceSize, entry.role)};
             if (!snapshotId)
                 continue;
             const auto index{*snapshotId};
@@ -552,11 +532,12 @@ namespace skyline::gpu::interconnect {
             const auto metaPath{directory / fmt::format("pass_{:02}.txt", index)};
             const auto meta{fmt::format(
                 "capture_index={} approx_present={} render_pass={} submission={} "
-                "kind={} focus=sparking_color_postprocess executor=0x{:X} texture=0x{:X} dimensions={}x{} "
+                "kind={} focus={} shader={:016X} executor=0x{:X} texture=0x{:X} dimensions={}x{} "
                 "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} "
                 "note=recorded_after_render_pass_end_not_exact_frame_correlation\n",
                 index, interval, renderPassIndex, submissionNumber,
-                entry.renderTarget ? "render_target" : "sampled_input", executorIdentity, identity,
+                entry.renderTarget ? "render_target" : "sampled_input",
+                diagnostic::SparkingFocusName(entry.role), entry.shaderHash, executorIdentity, identity,
                 width, height, format, vk::to_string(texture->layout),
                 texture->surfaceSize, guestMap, guestBytes)};
             auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
@@ -582,9 +563,10 @@ namespace skyline::gpu::interconnect {
                     LOGI("MINIRD_SPARKING_PHASE2 wrote snapshot {}: {}", index, rawPath.string());
                 });
             capture.Record(fmt::format(
-                "PHASE2_SNAPSHOT index={} rp={} submission={} executor=0x{:X} interval={} kind={} texture=0x{:X} {}x{} format={}",
+                "PHASE2_SNAPSHOT index={} rp={} submission={} executor=0x{:X} interval={} kind={} focus={} shader={:016X} texture=0x{:X} {}x{} format={}",
                 index, renderPassIndex, submissionNumber, executorIdentity, interval,
-                entry.renderTarget ? "rt" : "sampled", identity, width, height, format));
+                entry.renderTarget ? "rt" : "sampled", diagnostic::SparkingFocusName(entry.role),
+                entry.shaderHash, identity, width, height, format));
         }
     }
 

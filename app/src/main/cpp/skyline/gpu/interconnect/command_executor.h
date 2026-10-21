@@ -4,6 +4,7 @@
 #pragma once
 
 #include <gpu/texture/backing_promotion.h>
+#include <gpu/diagnostic/sparking_frame_capture.h>
 #include "common/common.h"
 
 #include <boost/container/stable_vector.hpp>
@@ -228,6 +229,8 @@ namespace skyline::gpu::interconnect {
             std::shared_ptr<Texture> texture;
             bool renderTarget{};
             bool priority{};
+            diagnostic::SparkingFocusRole role{diagnostic::SparkingFocusRole::SceneHdr};
+            std::uint64_t shaderHash{};
         };
         std::vector<DiagnosticPassImage> diagnosticPassImages;
         std::vector<std::function<void()>> diagnosticReadbackCallbacks;
@@ -280,7 +283,7 @@ namespace skyline::gpu::interconnect {
 
         // Diagnostic only: annotate a scene-color sampling pass.
         // Called after adding the draw, while its active attachments are known.
-        void MarkDiagnosticSparkingOutput(span<TextureView *> sampled, span<TextureView *> color, bool blendingEnabled);
+        void MarkDiagnosticSparkingOutput(span<TextureView *> sampled, span<TextureView *> color, std::uint64_t fragmentShaderHash);
 
         CommandExecutor(const DeviceState &state);
 

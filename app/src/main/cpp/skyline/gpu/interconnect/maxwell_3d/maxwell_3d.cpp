@@ -194,7 +194,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (auto *pipeline{activeState.GetPipeline()})
                 ctx.executor.MarkDiagnosticSparkingOutput(
                     activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
-                    !activeDescriptorSetSampledImages.empty());
+                    pipeline->sourcePackedState.shaderHashes[5]);
         }
           ctx.executor.AddCheckpoint("After inline index draw");
      
@@ -904,7 +904,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (auto *pipeline{activeState.GetPipeline()})
                 ctx.executor.MarkDiagnosticSparkingOutput(
                     activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
-                    !activeDescriptorSetSampledImages.empty());
+                    pipeline->sourcePackedState.shaderHashes[5]);
         }
         ctx.executor.AddCheckpoint("After draw");
     
@@ -1031,7 +1031,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (auto *pipeline{activeState.GetPipeline()})
                 ctx.executor.MarkDiagnosticSparkingOutput(
                     activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
-                    !activeDescriptorSetSampledImages.empty());
+                    pipeline->sourcePackedState.shaderHashes[5]);
         }
         ctx.executor.AddCheckpoint("After indirect draw");
     
