@@ -4,16 +4,22 @@
 #pragma once
 
 #include <boost/functional/hash.hpp>
+#include <functional>
+#include <tsl/robin_map.h>
 #include <common/linear_allocator.h>
 #include <common/spin_lock.h>
 #include <common/trap_manager.h>
 #include <gpu/tag_allocator.h>
 #include "usage_tracker.h"
+#include "guest_buffer.h"
 #include "megabuffer.h"
 #include "memory_manager.h"
 
 namespace skyline::gpu {
-    using GuestBuffer = span<u8>; //!< The CPU mapping for the guest buffer, multiple mappings for buffers aren't supported since overlaps cannot be reconciled
+    // Recreate only after the outer draw/dispatch boundary submits old users.
+    struct BufferBackingRecreationRequest {
+        std::function<void()> resolve;
+    };
 
     class BufferView;
     class BufferManager;
@@ -113,6 +119,28 @@ namespace skyline::gpu {
         void ResetMegabufferState();
 
       private:
+        struct TexelBufferViewKey {
+            VkBuffer buffer;
+            VkDeviceSize offset;
+            VkDeviceSize range;
+            VkFormat format;
+
+            bool operator==(const TexelBufferViewKey &) const = default;
+        };
+
+        struct TexelBufferViewKeyHash {
+            size_t operator()(const TexelBufferViewKey &key) const {
+                size_t hash{std::hash<VkBuffer>{}(key.buffer)};
+                hash ^= std::hash<VkDeviceSize>{}(key.offset) + 0x9E3779B9 + (hash << 6) + (hash >> 2);
+                hash ^= std::hash<VkDeviceSize>{}(key.range) + 0x9E3779B9 + (hash << 6) + (hash >> 2);
+                hash ^= std::hash<VkFormat>{}(key.format) + 0x9E3779B9 + (hash << 6) + (hash >> 2);
+                return hash;
+            }
+        };
+
+        // Destroy views with their exact backing, after its fence completes.
+        tsl::robin_map<TexelBufferViewKey, std::unique_ptr<vk::raii::BufferView>, TexelBufferViewKeyHash> texelBufferViewStore;
+
         BufferDelegate *delegate;
 
         friend BufferView;
@@ -182,6 +210,9 @@ namespace skyline::gpu {
             newCycle->ChainCycle(cycle);
             cycle = newCycle;
         }
+
+        bool HasTexelBufferViews() const { return !texelBufferViewStore.empty(); }
+        vk::raii::BufferView *GetTexelBufferView(vk::DeviceSize offset, vk::DeviceSize size, vk::Format format);
 
         constexpr vk::Buffer GetBacking() {
             return backing ? backing->vkBuffer : *directBacking->vkBuffer;
@@ -404,6 +435,12 @@ namespace skyline::gpu {
          * @note The buffer **must** be locked prior to calling this
          */
         BufferView TryGetView(span<u8> mapping);
+
+        /**
+         * @return A view containing the supplied ordered guest mappings, or an empty view when
+         *         the mappings are not one contiguous logical subrange of this buffer.
+         */
+        BufferView TryGetView(const GuestBuffer &mapping, vk::DeviceSize viewOffset = 0, vk::DeviceSize viewSize = 0);
 
         /*
          * @brief If megabuffering is determined to be beneficial for this buffer, allocates and copies the given view of buffer into the megabuffer (in case of cache miss), returning a binding of the allocated megabuffer region

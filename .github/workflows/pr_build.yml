@@ -52,12 +52,12 @@ jobs:
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
-      - name: Rename ARM64 DevRelease APK
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevReldebug
+      - name: Rename ARM64 DevReldebug APK
+        run: mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-arm64-reldebug.apk
 
-      - name: Upload ARM64 DevRelease APK
+      - name: Upload ARM64 DevReldebug APK
         uses: actions/upload-artifact@v4
         with:
-          name: strato-pr${{ github.event.number }}-arm64-release.apk
-          path: strato-pr${{ github.event.number }}-arm64-release.apk
+          name: strato-pr${{ github.event.number }}-arm64-reldebug.apk
+          path: strato-pr${{ github.event.number }}-arm64-reldebug.apk

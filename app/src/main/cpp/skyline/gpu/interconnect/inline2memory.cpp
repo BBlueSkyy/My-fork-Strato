@@ -16,6 +16,7 @@ namespace skyline::gpu::interconnect {
           executor{channelCtx.executor} {}
 
     void Inline2Memory::UploadSingleMapping(span<u8> dst, span<u8> src) {
+        executor.RunWithTextureBackingRetry([&] {
         auto dstBuf{gpu.buffer.FindOrCreate(dst, executor.tag, [this](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
             executor.AttachLockedBuffer(buffer, std::move(lock));
         })};
@@ -41,6 +42,7 @@ namespace skyline::gpu::interconnect {
                     .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite
                 }, {}, {});
             });
+        });
         });
     }
 

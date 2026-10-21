@@ -188,3 +188,37 @@ spanning two physically disjoint host mappings, guest-visible
 writeback, alias coherency, unmapped/sparse second piece, remap,
 multiple dispatches, and the device's FPS vs #372 and #374.
 Avoid moving #321's global de-dup/sort/lookup into common code.
+
+## Writable split backing follow-up: Sparking! ZERO
+
+The SparkingZERO-Switch-Shipping log (010035F022078000, v2.0.7) has four
+recoverable descriptor-pool errors at 12.40, 31.68, 34.13 and 94.59 seconds.
+Split image-buffer warnings begin at 34.24 seconds: 0xE0000 requested,
+0x78000 + 0x68000 noncontiguous pieces. DEVICE_LOST is at 386.94 seconds.
+This chronology does not establish that descriptor-pool exhaustion causes
+GPU loss; the log lacks a GPU fault address or final command capture.
+
+The implementation now reuses #321's ordered guest mappings, multi-mirrors,
+per-piece traps/dirty tracking and affine delegate reconciliation. It excludes
+its independent read-only aliases. Single-span FindOrCreate/TryGetView and
+Lookup retain their constant-time containment/page-table returns. Overlap
+searches stop at the physical interval boundary instead of scanning all
+previous mappings. Sorting/deduplication are restricted to split overlaps.
+Exact split views are cached until the existing mapping purge. No gather or
+scatter copy is added per draw. Sparse or non-affine/repeated physical layouts
+are rejected without binding a misleading first-piece writable descriptor;
+these layouts are not fully implemented by this change.
+
+For staged buffers with pending writers or texel readers, backing recreation
+unwinds draw/dispatch/DMA/upload preparation, submits preceding work, then
+migrates completed source data and rebuilds descriptors. Waiting is limited
+to backing recreation that already needs source contents, not ordinary binding.
+CPU guest accesses use the existing fence/trap writeback to the original pages.
+Texel-buffer views now belong to their Buffer and survive with its fence, so
+recycled Vulkan handles cannot reuse a dead backing's view or grow a permanent
+Textures-level view cache. This is a source-level lifetime correction, not
+proof of the device's final GPU-loss cause.
+
+Essential checks: host syntax check of production mapping/buffer-manager
+headers, whitespace and workflow YAML consistency. No tests were added.
+ARM64 DevReldebug and runtime/FPS validation remain pending; no Actions monitoring.
