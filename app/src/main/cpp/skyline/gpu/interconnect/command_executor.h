@@ -231,6 +231,7 @@ namespace skyline::gpu::interconnect {
         };
         std::vector<DiagnosticPassImage> diagnosticPassImages;
         std::vector<std::function<void()>> diagnosticReadbackCallbacks;
+        std::vector<std::function<void()>> diagnosticUploadCallbacks; // Prepared under attachment locks after uploads.
         void TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color);
         void QueueDiagnosticPassReadbacks();
 

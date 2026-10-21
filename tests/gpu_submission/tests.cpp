@@ -155,6 +155,7 @@ struct CommandExecutor {
     std::shared_ptr<FenceCycle> cycle;
     std::vector<std::shared_ptr<Texture>> attachedTextures, preserveAttachedTextures;
     std::vector<BufferView> attachedBuffers, preserveAttachedBuffers;
+    std::vector<std::function<void()>> diagnosticUploadCallbacks;
     void FinishRenderPass() {}
     void RotateRecordSlot() {}
     void SubmitInternal();
@@ -169,6 +170,12 @@ static void stagedUploadWaitsForPriorSubmission() {
     std::promise<void> synchronized;
     auto syncFuture = synchronized.get_future();
     executor.attachedTextures.push_back(std::make_shared<Texture>(previous, true, [&] { synchronized.set_value(); }));
+    bool proofPrepared{};
+    executor.diagnosticUploadCallbacks.emplace_back([&] {
+        check(syncFuture.wait_for(0ms) == std::future_status::ready,
+              "upload provenance is prepared after actual guest-to-host synchronization");
+        proofPrepared = true;
+    });
     std::promise<void> started;
     auto submit = std::async(std::launch::async, [&] { started.set_value(); executor.SubmitInternal(); });
     started.get_future().get();
@@ -177,6 +184,8 @@ static void stagedUploadWaitsForPriorSubmission() {
     previous->NotifySubmitted();
     check(ready(syncFuture), "staged synchronization proceeds after the previous submission");
     submit.get();
+    check(proofPrepared && executor.diagnosticUploadCallbacks.empty(),
+          "provenance preparation runs once before the slot is handed to the recording thread");
     check(!previous->Poll(), "prior GPU work need not complete before recording staged synchronization");
     previous->Cancel(); current->Cancel();
 }

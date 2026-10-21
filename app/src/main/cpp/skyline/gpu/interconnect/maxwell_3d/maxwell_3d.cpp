@@ -994,6 +994,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                 *hdrProbe, idx, reinterpret_cast<uintptr_t>(input.get()),
                                 input->surfaceSize, input->levelCount, input->layerCount,
                                 vk::to_string(sample->type), vk::to_string(input->format->vkFormat)));
+                            textures.RecordCubemapMappings(ctx, sample);
                             ctx.executor.QueueUe4FocusedImage(sample,
                                 fmt::format("material_input_{}_{}", *hdrProbe, idx), *hdrProbe);
                         }

@@ -15,6 +15,7 @@
 #include "image_format_policy.h"
 #include "backing_promotion.h"
 #include "view_range.h"
+#include <gpu/diagnostic/ue4_upload_provenance.h>
 #include <bit>
 #include <numeric>
 
@@ -330,6 +331,51 @@ namespace skyline::gpu {
         }
 
         auto guestLayerStride{guest->GetLayerStride()};
+        // Retain the ACTUAL upload source, never reconstruct it from potentially
+        // freed/stale guest memory at draw time. No extra uploads or GPU waits.
+        std::shared_ptr<diagnostic::UploadProof> proof;
+        diagnosticUploadProof.reset();
+        if (diagnostic::Ue4Uploads().enabled.load(std::memory_order_relaxed) &&
+            layerCount == 6 && dimensions.depth == 1 &&
+            format->vkFormat == vk::Format::eR16G16B16A16Sfloat &&
+            guest->tileConfig.mode == texture::TileMode::Block && stagingBuffer &&
+            mirror.size() <= 4ULL * 1024 * 1024 && surfaceSize <= 2ULL * 1024 * 1024 &&
+            deswizzledSurfaceSize <= 2ULL * 1024 * 1024) {
+            proof = diagnostic::Ue4Uploads().Reserve(mirror.size() + deswizzledSurfaceSize + surfaceSize);
+            if (proof) {
+                proof->guest.assign(mirror.data(), mirror.data() + mirror.size());
+                proof->writeSerial = gpuWriteSerial;
+                proof->backingGeneration = backingGeneration;
+                proof->stagingIdentity = stagingBuffer.get();
+                proof->metadata = fmt::format(
+                    "guest_format={} host_format={} dimensions={}x{}x{} layers={} mips={} "
+                    "tile_mode={} block_height={} block_depth={} pitch={} guest_stride={} "
+                    "mirror_bytes={} base_layer={} view_mip={} view_mips={} upload_alias={} upload_alias_stale={}\n",
+                    vk::to_string(guest->format->vkFormat), vk::to_string(format->vkFormat),
+                    dimensions.width, dimensions.height, dimensions.depth, layerCount, levelCount,
+                    static_cast<u32>(guest->tileConfig.mode), guest->tileConfig.blockHeight,
+                    guest->tileConfig.blockDepth, guest->tileConfig.pitch, guestLayerStride, mirror.size(),
+                    guest->baseArrayLayer, guest->viewMipBase, guest->viewMipCount,
+                    HasAliases(), aliasStale.load());
+                size_t logicalOffset{};
+                for (const auto &mapping : guest->mappings) {
+                    proof->metadata += fmt::format("mapping logical_offset={} cpu=0x{:X} bytes={} valid={}\n",
+                        logicalOffset, reinterpret_cast<uintptr_t>(mapping.data()), mapping.size(), mapping.valid());
+                    logicalOffset += mapping.size();
+                }
+                size_t guestOffset{}, linearOffset{}, hostOffset{}, mip{};
+                for (const auto &level : mipLayouts) {
+                    for (size_t layer{}; layer < layerCount; ++layer)
+                        proof->slices.push_back({mip, layer, layer * guestLayerStride + guestOffset,
+                            level.blockLinearSize, linearOffset + layer * level.linearSize,
+                            level.linearSize, hostOffset + layer * level.targetLinearSize, level.targetLinearSize});
+                    guestOffset += level.blockLinearSize;
+                    linearOffset += layerCount * level.linearSize;
+                    hostOffset += layerCount * level.targetLinearSize;
+                    ++mip;
+                }
+            }
+        }
         if (levelCount == 1) {
             auto outputLayer{deswizzleOutput};
             for (size_t layer{}; layer < layerCount; layer++) {
@@ -364,6 +410,8 @@ namespace skyline::gpu {
             throw exception("Mipmapped textures with tiling mode '{}' aren't supported", static_cast<int>(tiling));
         }
 
+        if (proof)
+            proof->linear.assign(deswizzleOutput, deswizzleOutput + deswizzledSurfaceSize);
         if (!deswizzleBuffer.empty()) {
             for (const auto &level : mipLayouts) {
                 auto decode{[&](const u8 *decodeInput, u8 *decodeOutput, size_t decodeHeight) {
@@ -429,6 +477,10 @@ namespace skyline::gpu {
             }
         }
 
+        if (proof) {
+            proof->upload.assign(stagingBuffer->data(), stagingBuffer->data() + surfaceSize);
+            diagnosticUploadProof = std::move(proof);
+        }
         return stagingBuffer;
     }
 
@@ -491,6 +543,8 @@ namespace skyline::gpu {
         auto bufferImageCopies{GetBufferImageCopies()};
         commandBuffer.copyBufferToImage(stagingBuffer->vkBuffer, image, layout,
             vk::ArrayProxy(static_cast<u32>(bufferImageCopies.size()), bufferImageCopies.data()));
+        if (diagnosticUploadProof && diagnosticUploadProof->stagingIdentity == stagingBuffer.get())
+            diagnosticUploadProof->recorded = true;
 
         // Make the transfer write visible to the next use without a global
         // execution wait. This dependency is scoped to this image/subresource set.

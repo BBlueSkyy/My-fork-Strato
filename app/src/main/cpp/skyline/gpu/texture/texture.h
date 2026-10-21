@@ -15,6 +15,7 @@
 #include <gpu/usage_tracker.h>
 
 namespace skyline::gpu {
+    namespace diagnostic { struct UploadProof; }
     namespace interconnect {
         class CommandExecutor;
     }
@@ -397,6 +398,7 @@ namespace skyline::gpu {
         BackingType backing; //!< The Vulkan image that backs this texture, it is nullable
         vk::ImageType backingImageType; //!< Immutable image type supplied at allocation/wrapping.
 
+        std::shared_ptr<diagnostic::UploadProof> diagnosticUploadProof;
         span<u8> mirror{}; //!< A contiguous mirror of all the guest mappings to allow linear access on the CPU
         span<u8> alignedMirror{}; //!< The mirror mapping aligned to page size to reflect the full mapping
         std::optional<TrapHandle> trapHandle{}; //!< The handle of the traps for the guest mappings

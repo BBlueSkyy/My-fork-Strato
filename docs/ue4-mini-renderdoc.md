@@ -219,3 +219,14 @@ resources can be large, wait for all `MINIRD_UE4_FOCUS wrote snapshot`
 messages and include the `shader_*` files when packaging the capture.
 This is a diagnostic, not a shader-compiler fix; GPU pass splitting can
 perturb only the armed run, and BC blocks require offline decoding.
+
+## Phase 7 — cubemap upload provenance
+
+See [ue4-cubemap-provenance.md](ue4-cubemap-provenance.md) for the static findings,
+reference comparison and interpretation limits. For the new bounded probe, create
+`gpu_capture/ue4/ENABLE_UPLOAD_PROVENANCE` **before launching**, fully restart,
+then arm `ARM_CAPTURE` in the corrupt scene as usual. It retains real upload
+bytes and compares each face/mip with the existing cube readback. No reupload is
+forced. In this mode the previous generic HDR/material focused readbacks are
+suppressed. Send the complete capture directory/zip and matching log, including
+`focus_*_provenance*`. Remove the enable file and restart after testing.

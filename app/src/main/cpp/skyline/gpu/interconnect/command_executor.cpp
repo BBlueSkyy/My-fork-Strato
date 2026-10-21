@@ -12,6 +12,7 @@
 #include <dlfcn.h>
 #include "command_executor.h"
 #include <gpu/diagnostic/ue4_frame_capture.h>
+#include <gpu/diagnostic/ue4_upload_provenance.h>
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -516,6 +517,10 @@ namespace skyline::gpu::interconnect {
         if (!capture.active.load(std::memory_order_acquire) || !view || !view->texture)
             return;
         const auto texture{std::shared_ptr<Texture>(view->texture)};
+        if (diagnostic::Ue4Uploads().enabled.load(std::memory_order_relaxed) &&
+            (!phase.starts_with("material_input_") || texture->layerCount != 6 ||
+             texture->format->vkFormat != vk::Format::eR16G16B16A16Sfloat))
+            return; // Provenance mode reuses just the cubemap readback, not the completed HDR/material scan.
         if (texture->layout == vk::ImageLayout::eUndefined ||
             texture->dimensions.depth != 1 || texture->levelCount > 12 ||
             texture->layerCount > 6 || texture->sampleCount != vk::SampleCountFlagBits::e1 ||
@@ -552,6 +557,13 @@ namespace skyline::gpu::interconnect {
             vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout),
             texture->surfaceSize, texture->levelCount, texture->layerCount)};
         auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+        const bool provenance{phase.starts_with("material_input_") && texture->guest &&
+            texture->layerCount == 6 && texture->format->vkFormat == vk::Format::eR16G16B16A16Sfloat};
+        // Filled during submission preparation, AFTER attached textures have performed
+        // their pending CPU uploads. Retain immutable upload bytes for the writer.
+        using ProvenanceResult = std::pair<std::shared_ptr<diagnostic::UploadProof>, std::string>;
+        auto provenanceResult{provenance ? std::make_shared<ProvenanceResult>() : nullptr};
+        const auto proofPath{directory / fmt::format("focus_{:02}_provenance", id)};
         // AddOutsideRpCommand closes the previous render pass first, then
         // enqueues the copy in the SAME executor's ordered Vulkan stream.
         AddOutsideRpCommand([texture, staging](vk::raii::CommandBuffer &commands,
@@ -559,8 +571,24 @@ namespace skyline::gpu::interconnect {
             cycle->AttachObjects(texture, staging);
             texture->CopyIntoStagingBuffer(commands, staging);
         });
+        if (provenanceResult) {
+            diagnosticUploadCallbacks.emplace_back([texture, provenanceResult] {
+                provenanceResult->first = texture->diagnosticUploadProof;
+                std::scoped_lock stateLock{texture->stateMutex};
+                provenanceResult->second = fmt::format(
+                    "readback_guest_format={} readback_host_format={} current_write_serial={} "
+                    "current_backing_generation={} ever_gpu_writer={} dirty_state={} memory_freed={} "
+                    "alias={} alias_stale={} alias_read_only={} alias_retired={} "
+                    "provenance_enabled={} proof_available={} comparison=last_actual_upload_vs_draw_readback\n",
+                    vk::to_string(texture->guest->format->vkFormat), vk::to_string(texture->format->vkFormat),
+                    texture->gpuWriteSerial, texture->backingGeneration, texture->everUsedAsGpuWrite,
+                    static_cast<u32>(texture->dirtyState), texture->memoryFreed, texture->HasAliases(),
+                    texture->aliasStale.load(), texture->aliasReadOnly.load(), texture->aliasRetired.load(),
+                    diagnostic::Ue4Uploads().enabled.load(), static_cast<bool>(provenanceResult->first));
+            });
+        }
         diagnosticReadbackCallbacks.emplace_back(
-            [staging, rawPath, metaPath, meta, id] {
+            [staging, rawPath, metaPath, meta, id, provenanceResult, proofPath] {
                 std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
                 if (!raw) {
                     LOGE("MINIRD_UE4_FOCUS failed to write snapshot {}", id);
@@ -572,6 +600,16 @@ namespace skyline::gpu::interconnect {
                 std::ofstream info(metaPath, std::ios::trunc);
                 if (info)
                     info << meta;
+                if (provenanceResult) {
+                    const auto &[proof, current]{*provenanceResult};
+                    if (proof) {
+                        if (!proof->Write(proofPath, {staging->data(), staging->size()}, current))
+                            LOGE("MINIRD_UE4_PROVENANCE write failed: {}", proofPath.string());
+                    } else {
+                        std::ofstream missing(proofPath.string() + ".txt");
+                        missing << current << "No retained upload: disabled, over budget, unsupported layout, or no CPU upload.\n";
+                    }
+                }
                 LOGI("MINIRD_UE4_FOCUS wrote snapshot {}: {}", id, rawPath.string());
             });
         capture.Record(fmt::format("FOCUS_QUEUED id={} phase={} draw={} executor=0x{:X} submit={} image=0x{:X}",
@@ -950,6 +988,8 @@ namespace skyline::gpu::interconnect {
             }
         }
 
+        for (auto &prepare : diagnosticUploadCallbacks) prepare();
+        diagnosticUploadCallbacks.clear();
         RotateRecordSlot();
     }
 
