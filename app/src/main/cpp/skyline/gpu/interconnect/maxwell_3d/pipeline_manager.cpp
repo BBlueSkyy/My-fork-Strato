@@ -115,6 +115,37 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 return Shader::OutputTopology::TriangleStrip;
         }
     }
+
+    static Shader::AttributeType ConvertFragmentColorType(texture::Format format) {
+        if (!format)
+            return Shader::AttributeType::Float;
+        switch (format->vkFormat) {
+            case vk::Format::eR8Uint:
+            case vk::Format::eR8G8Uint:
+            case vk::Format::eR8G8B8A8Uint:
+            case vk::Format::eR16Uint:
+            case vk::Format::eR16G16Uint:
+            case vk::Format::eR16G16B16A16Uint:
+            case vk::Format::eR32Uint:
+            case vk::Format::eR32G32Uint:
+            case vk::Format::eR32G32B32A32Uint:
+            case vk::Format::eA2B10G10R10UintPack32:
+                return Shader::AttributeType::UnsignedInt;
+            case vk::Format::eR8Sint:
+            case vk::Format::eR8G8Sint:
+            case vk::Format::eR8G8B8A8Sint:
+            case vk::Format::eR16Sint:
+            case vk::Format::eR16G16Sint:
+            case vk::Format::eR16G16B16A16Sint:
+            case vk::Format::eR32Sint:
+            case vk::Format::eR32G32Sint:
+            case vk::Format::eR32G32B32A32Sint:
+                return Shader::AttributeType::SignedInt;
+            default:
+                return Shader::AttributeType::Float;
+        }
+    }
+
     /**
      * @notes Roughly based on https://github.com/yuzu-emu/yuzu/blob/4ffbbc534884841f9a5536e57539bf3d1642af26/src/video_core/renderer_vulkan/vk_pipeline_cache.cpp#L127
      */
@@ -156,6 +187,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 info.convert_depth_mode = packedState.openGlNdc;
                 break;
             case Shader::Stage::Fragment:
+                for (u32 i{}; i < packedState.GetColorRenderTargetCount(); ++i)
+                    info.fragment_color_types[i] = ConvertFragmentColorType(
+                        packedState.GetColorRenderTargetFormat(packedState.ctSelect[i]));
                 if (packedState.alphaTestEnable) {
                     info.alpha_test_func = packedState.GetAlphaFunc();
                     info.alpha_test_reference = packedState.alphaRef;
