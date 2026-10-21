@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -43,7 +45,26 @@ namespace skyline::gpu::diagnostic {
         std::array<bool, FrameCount> conversionClaimed{};
         std::uint32_t focusSnapshotCount{};
         std::size_t focusBytes{};
-        static constexpr std::uint32_t MaxFocusSnapshots{48};
+        bool materialInputsClaimed{};
+        struct SavedTargetShader {
+            std::uint64_t hash{};
+            bool spirv{};
+            std::vector<std::uint8_t> bytes;
+        };
+        std::vector<SavedTargetShader> savedTargetShaders;
+
+        static void WriteSavedTargetShader(const std::string &directory, const SavedTargetShader &entry) {
+            std::ostringstream name;
+            name << "shader_" << std::uppercase << std::hex << std::setw(16)
+                 << std::setfill('0') << entry.hash
+                 << (entry.spirv ? ".spv" : ".maxwell.bin");
+            std::ofstream out(std::filesystem::path(directory) / name.str(), std::ios::binary | std::ios::trunc);
+            if (out)
+                out.write(reinterpret_cast<const char *>(entry.bytes.data()),
+                          static_cast<std::streamsize>(entry.bytes.size()));
+        }
+
+        static constexpr std::uint32_t MaxFocusSnapshots{64};
         static constexpr std::size_t MaxFocusBytes{144ULL * 1024 * 1024};
         std::array<std::uint32_t, FrameCount> passCountByInterval{};
         std::uint32_t nextPassIndex{};
@@ -63,12 +84,47 @@ namespace skyline::gpu::diagnostic {
             conversionClaimed.fill(false);
             focusSnapshotCount = 0;
             focusBytes = 0;
+            materialInputsClaimed = false;
+            for (const auto &entry : savedTargetShaders)
+                WriteSavedTargetShader(path, entry);
             nextPassIndex = 0;
             passBytes = 0;
             watchedMappings.clear();
             eventCount.store(0, std::memory_order_relaxed);
             presentIndex.store(0, std::memory_order_relaxed);
             active.store(true, std::memory_order_release);
+        }
+
+        // Bounded code artifacts for the exact suspect fragment shader and
+        // its observed vertex shader. A shader is often compiled before the
+        // user arms the diagnostic, so cache just these two identities.
+        void RememberTargetShader(std::uint64_t hash, bool spirv,
+                                  const std::uint8_t *bytes, std::size_t size) {
+            if ((hash != 0x7161B14045F710B5ULL && hash != 0x027CCF34AF69591BULL) ||
+                !bytes || !size || size > 2ULL * 1024 * 1024)
+                return;
+            std::scoped_lock lock(mutex);
+            for (const auto &existing : savedTargetShaders)
+                if (existing.hash == hash && existing.spirv == spirv)
+                    return;
+            auto &entry{savedTargetShaders.emplace_back()};
+            entry.hash = hash;
+            entry.spirv = spirv;
+            entry.bytes.assign(bytes, bytes + size);
+            if (active.load(std::memory_order_relaxed) && !path.empty())
+                WriteSavedTargetShader(path, entry);
+        }
+
+        // Exactly one complete material-resource capture on an actual
+        // suspect draw. The raw snapshots share the global byte quota.
+        bool ClaimMaterialInputs() {
+            if (!active.load(std::memory_order_acquire))
+                return false;
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_relaxed) || materialInputsClaimed)
+                return false;
+            materialInputsClaimed = true;
+            return true;
         }
 
         // One-shot phase 3. All indexes and claims are shared by executor threads.

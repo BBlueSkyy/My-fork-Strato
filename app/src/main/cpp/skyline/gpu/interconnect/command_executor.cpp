@@ -517,12 +517,11 @@ namespace skyline::gpu::interconnect {
             return;
         const auto texture{std::shared_ptr<Texture>(view->texture)};
         if (texture->layout == vk::ImageLayout::eUndefined ||
-            texture->dimensions.depth != 1 || texture->levelCount != 1 ||
-            texture->layerCount != 1 || texture->sampleCount != vk::SampleCountFlagBits::e1 ||
+            texture->dimensions.depth != 1 || texture->levelCount > 12 ||
+            texture->layerCount > 6 || texture->sampleCount != vk::SampleCountFlagBits::e1 ||
             !texture->surfaceSize || texture->surfaceSize > 20ULL * 1024 * 1024 ||
             !(texture->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
-            !(texture->format->vkAspect & vk::ImageAspectFlagBits::eColor) ||
-            texture->format->IsCompressed()) {
+            !(texture->format->vkAspect & vk::ImageAspectFlagBits::eColor)) {
             capture.Record(fmt::format("FOCUS_SKIP phase={} draw={} format={} usage={} layout={}",
                 phase, ordinal, vk::to_string(texture->format->vkFormat),
                 vk::to_string(texture->usage), vk::to_string(texture->layout)));
@@ -544,13 +543,14 @@ namespace skyline::gpu::interconnect {
         const auto meta{fmt::format(
             "focus_id={} phase={} hdr_draw_ordinal={} present_index_approx={} executor=0x{:X} "
             "submission={} render_pass={} texture=0x{:X} view_mip={} view_layer={} "
-            "image={}x{} format={} layout={} bytes={}\n",
+            "image={}x{} format={} layout={} bytes={} mip_levels={} layers={} "
+            "packing=mip_major_all_layers vulkan_copy_format=backing\n",
             id, phase, ordinal, interval, reinterpret_cast<uintptr_t>(this),
             submissionNumber, renderPassIndex, reinterpret_cast<uintptr_t>(texture.get()),
             view->range.baseMipLevel, view->range.baseArrayLayer,
             texture->dimensions.width, texture->dimensions.height,
             vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout),
-            texture->surfaceSize)};
+            texture->surfaceSize, texture->levelCount, texture->layerCount)};
         auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
         // AddOutsideRpCommand closes the previous render pass first, then
         // enqueues the copy in the SAME executor's ordered Vulkan stream.

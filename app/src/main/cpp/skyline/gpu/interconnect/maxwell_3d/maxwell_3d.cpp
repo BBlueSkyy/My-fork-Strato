@@ -955,32 +955,48 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         capture.Record(fmt::format("HDR_DRAW_IMAGE_TRUNCATED ordinal={} total={} recorded={}",
                             *hdrProbe, activeDescriptorSetSampledImages.size(), maxViews));
 
-                    // One bounded, independently ordered sampled-image readback
-                    // per focused draw. Avoid copies of attachment aliases,
-                    // unsupported 3D/mipped/sparse-like layouts, and huge
-                    // textures. The descriptor event list above preserves the
-                    // identities of inputs not copied.
-                    for (size_t idx{}; idx < activeDescriptorSetSampledImages.size(); ++idx) {
-                        auto *sample{activeDescriptorSetSampledImages[idx]};
-                        if (!sample || !sample->texture || sample->texture.get() == view->texture.get())
-                            continue;
-                        const auto &input{sample->texture};
-                        if (input->dimensions.depth != 1 || input->levelCount != 1 ||
-                            input->layerCount != 1 ||
-                            input->sampleCount != vk::SampleCountFlagBits::e1 ||
-                            input->surfaceSize == 0 || input->surfaceSize > 4ULL * 1024 * 1024 ||
-                            input->layout == vk::ImageLayout::eUndefined ||
-                            !(input->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
-                            !(input->format->vkAspect & vk::ImageAspectFlagBits::eColor) ||
-                            input->format->IsCompressed())
-                            continue;
-                        capture.Record(fmt::format("HDR_DRAW_INPUT_SELECTED ordinal={} index={} "
-                            "texture=0x{:X} bytes={} format={}", *hdrProbe, idx,
-                            reinterpret_cast<uintptr_t>(input.get()), input->surfaceSize,
-                            vk::to_string(input->format->vkFormat)));
-                        ctx.executor.QueueUe4FocusedImage(sample,
-                            fmt::format("hdr_input_{}_{}", *hdrProbe, idx), *hdrProbe);
-                        break;
+                    // The previous capture picked only a 1x1 3D dummy and
+                    // missed all of the real materials and the HDR cubemap.
+                    // Capture the complete set of distinct, resolved source
+                    // images once for the confirmed fragment-shader/draw pair.
+                    // Copy the *backing* (all mips/layers, including BCn blocks)
+                    // so the original descriptor's sampled levels are preserved.
+                    const bool suspectFragment{pipeline && pipeline->sourcePackedState.shaderHashes[5] ==
+                        0x7161B14045F710B5ULL};
+                    if (*hdrProbe == 20 && suspectFragment && capture.ClaimMaterialInputs()) {
+                        std::vector<const Texture *> seen;
+                        for (size_t idx{}; idx < activeDescriptorSetSampledImages.size() && idx < 32; ++idx) {
+                            auto *sample{activeDescriptorSetSampledImages[idx]};
+                            if (!sample || !sample->texture ||
+                                sample->texture.get() == view->texture.get() ||
+                                sample->type == vk::ImageViewType::e3D)
+                                continue;
+                            const auto &input{sample->texture};
+                            if (std::find(seen.begin(), seen.end(), input.get()) != seen.end())
+                                continue;
+                            seen.push_back(input.get());
+                            if (input->dimensions.depth != 1 || input->levelCount > 12 ||
+                                input->layerCount > 6 ||
+                                input->sampleCount != vk::SampleCountFlagBits::e1 ||
+                                input->surfaceSize == 0 || input->surfaceSize > 20ULL * 1024 * 1024 ||
+                                input->layout == vk::ImageLayout::eUndefined ||
+                                !(input->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+                                !(input->format->vkAspect & vk::ImageAspectFlagBits::eColor)) {
+                                capture.Record(fmt::format("HDR_MATERIAL_SKIP index={} bytes={} "
+                                    "mips={} layers={} type={} format={}", idx, input->surfaceSize,
+                                    input->levelCount, input->layerCount, vk::to_string(sample->type),
+                                    vk::to_string(input->format->vkFormat)));
+                                continue;
+                            }
+                            capture.Record(fmt::format(
+                                "HDR_MATERIAL_CAPTURE ordinal={} index={} texture=0x{:X} "
+                                "bytes={} mips={} layers={} view_type={} format={}",
+                                *hdrProbe, idx, reinterpret_cast<uintptr_t>(input.get()),
+                                input->surfaceSize, input->levelCount, input->layerCount,
+                                vk::to_string(sample->type), vk::to_string(input->format->vkFormat)));
+                            ctx.executor.QueueUe4FocusedImage(sample,
+                                fmt::format("material_input_{}_{}", *hdrProbe, idx), *hdrProbe);
+                        }
                     }
 
                     if (pipeline) {

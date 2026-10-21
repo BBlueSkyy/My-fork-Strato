@@ -183,3 +183,39 @@ The overall 48-image / 144-MiB cap still applies, including tone-map
 snapshots. No guest CBUF contents are read. Readbacks split render passes
 only after the user manually arms the capture. No renderer correctness
 change is made; this commit is strictly an investigation aid.
+
+
+## Phase 6 — material sources and shader-binary replay after PR #376
+
+PR #376's CBUF used-size propagation did not fix the visible UE4 color
+corruption. Phase 5 successfully bracketed the large HDR change in draws
+20/21, but its input-selection rule read only a **1x1 3D dummy**. The
+resolved descriptor list actually includes BC1/BC3/BC5 materials, BGRA8
+scene inputs and an R16G16B16A16Sfloat cubemap with six layers/eight mips.
+
+Phase 6 preserves HDR brackets for draws 19/20/21, and **once per manual
+capture**, on the first observed draw 20 with fragment hash
+`7161B14045F710B5`, copies the unique resolved sampled backings (up to
+32 descriptor indices). Supported images: color images with defined
+layout/TransferSrc, no MSAA, depth=1, at most 12 mips / six layers /
+20 MiB per image. Compressed BCn image blocks are copied *as blocks*
+without host-side decompression. Their linear GPU readbacks are packed
+mip-major, with all array layers for each mip; `focus_XX.txt` records
+full backing format, mip count and layers. The 1x1 3D dummy is skipped.
+Large or unsupported sources log `HDR_MATERIAL_SKIP`.
+
+The targeted fragment shader and its observed vertex partner are cached
+in memory at compilation (max 2 MiB per binary) and written to the next
+manually armed capture directory as `shader_<HASH>.maxwell.bin` (guest
+Maxwell) and `shader_<HASH>.spv` (actual host SPIR-V). Shader caching
+handles compilation before arming; **no files** are emitted until the
+user explicitly activates the diagnostic. These files enable offline
+comparison of guest instructions and Vulkan translation without asking
+for more repeated HDR sweeps.
+
+The global focus quota becomes **64 images / 144 MiB** (previously 48 /
+144 MiB); writes and Vulkan readbacks are still strictly opt-in. Because
+resources can be large, wait for all `MINIRD_UE4_FOCUS wrote snapshot`
+messages and include the `shader_*` files when packaging the capture.
+This is a diagnostic, not a shader-compiler fix; GPU pass splitting can
+perturb only the armed run, and BC blocks require offline decoding.

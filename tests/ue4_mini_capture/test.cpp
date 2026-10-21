@@ -12,8 +12,14 @@ int main() {
     auto path = fs::temp_directory_path() / "strato_ue4_capture_budget";
     fs::create_directories(path);
     skyline::gpu::diagnostic::Ue4FrameCapture cap;
+    const std::uint8_t fixtureShader[]{0x03, 0x02, 0x23, 0x07};
+    cap.RememberTargetShader(0x7161B14045F710B5ULL, true,
+                             fixtureShader, sizeof(fixtureShader));
     cap.Start(path.string());
     assert(cap.active.load());
+    assert(fs::file_size(path / "shader_7161B14045F710B5.spv") == sizeof(fixtureShader));
+    assert(cap.ClaimMaterialInputs());
+    assert(!cap.ClaimMaterialInputs());
 
     // Capture only the three draws responsible for the large observed
     // increase in finite HDR values, not earlier shader-group boundaries.
@@ -40,6 +46,8 @@ int main() {
     assert(cap.ClaimConversion());
 
     cap.Start(path.string()); // all focused draw state resets on re-arming
+    assert(cap.ClaimMaterialInputs());
+    assert(!cap.ClaimMaterialInputs());
     for (std::uint32_t ordinal = 1; ordinal < 19; ++ordinal)
         assert(!cap.ClaimHdrDraw());
     assert(cap.ClaimHdrDraw().value() == 19);
@@ -68,6 +76,7 @@ int main() {
     assert(!cap.active.load());
     assert(!cap.ClaimHdrDraw());
     assert(!cap.ClaimConversion());
+    assert(!cap.ClaimMaterialInputs());
     assert(!cap.ReserveFocusedImage(1));
 
     std::ifstream in(path / "gpu_events.txt");
