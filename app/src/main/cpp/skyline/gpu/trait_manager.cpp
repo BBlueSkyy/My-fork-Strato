@@ -6,7 +6,7 @@
 
 namespace skyline::gpu {
     TraitManager::TraitManager(const DeviceFeatures2 &deviceFeatures2, DeviceFeatures2 &enabledFeatures2, const std::vector<vk::ExtensionProperties> &deviceExtensions, std::vector<std::array<char, VK_MAX_EXTENSION_NAME_SIZE>> &enabledExtensions, const DeviceProperties2 &deviceProperties2, const vk::raii::PhysicalDevice &physicalDevice) : quirks(deviceProperties2.get<vk::PhysicalDeviceProperties2>().properties, deviceProperties2.get<vk::PhysicalDeviceDriverProperties>()) {
-        bool hasCustomBorderColorExt{}, hasShaderAtomicInt64Ext{}, hasShaderFloat16Int8Ext{}, hasShaderDemoteToHelperExt{}, hasVertexAttributeDivisorExt{}, hasProvokingVertexExt{}, hasPrimitiveTopologyListRestartExt{}, hasImagelessFramebuffersExt{}, hasTransformFeedbackExt{}, hasConditionalRenderingExt{}, hasUint8IndicesExt{}, hasExtendedDynamicStateExt{}, hasRobustness2Ext{};
+        bool hasCustomBorderColorExt{}, hasShaderAtomicInt64Ext{}, hasShaderFloat16Int8Ext{}, hasShaderDemoteToHelperExt{}, hasVertexAttributeDivisorExt{}, hasProvokingVertexExt{}, hasPrimitiveTopologyListRestartExt{}, hasImagelessFramebuffersExt{}, hasTransformFeedbackExt{}, hasConditionalRenderingExt{}, hasUint8IndicesExt{}, hasExtendedDynamicStateExt{}, hasRobustness2Ext{}, hasTexelBufferAlignmentExt{};
         bool supportsUniformBufferStandardLayout{}; // We require VK_KHR_uniform_buffer_standard_layout but assume it is implicitly supported even when not present
 
         for (auto &extension : deviceExtensions) {
@@ -61,6 +61,7 @@ namespace skyline::gpu {
                 EXT_SET("VK_EXT_conditional_rendering", hasConditionalRenderingExt);
                 EXT_SET_COND("VK_EXT_extended_dynamic_state", hasExtendedDynamicStateExt, !quirks.brokenDynamicStateVertexBindings);
                 EXT_SET("VK_EXT_robustness2", hasRobustness2Ext);
+                EXT_SET("VK_EXT_texel_buffer_alignment", hasTexelBufferAlignmentExt);
             }
 
             #undef EXT_SET_COND
@@ -83,7 +84,22 @@ namespace skyline::gpu {
         FEAT_SET(vk::PhysicalDeviceFeatures2, features.shaderInt16, supportsInt16)
         FEAT_SET(vk::PhysicalDeviceFeatures2, features.shaderInt64, supportsInt64)
         FEAT_SET(vk::PhysicalDeviceFeatures2, features.shaderStorageImageReadWithoutFormat, supportsImageReadWithoutFormat)
+        // These features are already consumed by pipeline state and image views.
+        FEAT_SET(vk::PhysicalDeviceFeatures2, features.depthBounds, std::ignore)
+        FEAT_SET(vk::PhysicalDeviceFeatures2, features.imageCubeArray, std::ignore)
         FEAT_SET(vk::PhysicalDeviceFeatures2, features.robustBufferAccess, std::ignore)
+
+        if (hasTexelBufferAlignmentExt) {
+            FEAT_SET(vk::PhysicalDeviceTexelBufferAlignmentFeaturesEXT, texelBufferAlignment, supportsTexelBufferAlignment)
+            if (supportsTexelBufferAlignment) {
+                const auto &alignment{deviceProperties2.get<vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT>()};
+                LOGI("Texel buffer alignment enabled: uniform={} singleTexel={} storage={} singleTexel={}",
+                     alignment.uniformTexelBufferOffsetAlignmentBytes, static_cast<bool>(alignment.uniformTexelBufferOffsetSingleTexelAlignment),
+                     alignment.storageTexelBufferOffsetAlignmentBytes, static_cast<bool>(alignment.storageTexelBufferOffsetSingleTexelAlignment));
+            }
+        } else {
+            enabledFeatures2.unlink<vk::PhysicalDeviceTexelBufferAlignmentFeaturesEXT>();
+        }
 
         if (hasUint8IndicesExt)
             FEAT_SET(vk::PhysicalDeviceIndexTypeUint8FeaturesEXT, indexTypeUint8, supportsUint8Indices)
