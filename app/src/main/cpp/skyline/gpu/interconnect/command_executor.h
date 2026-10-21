@@ -282,6 +282,9 @@ namespace skyline::gpu::interconnect {
         // Called after adding the draw, while its active attachments are known.
         void MarkDiagnosticUe4Output(span<TextureView *> sampled, span<TextureView *> color, bool blendingEnabled);
 
+        // Opt-in phase 3 source/output raw readback around one GPU draw.
+        void QueueUe4FocusedImage(TextureView *view, std::string phase, u32 ordinal);
+
         CommandExecutor(const DeviceState &state);
 
         ~CommandExecutor();

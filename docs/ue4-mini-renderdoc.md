@@ -63,3 +63,39 @@ transfer copies are performed unless capture has been manually armed.
 Opt-in readback changes timing during capture. The first candidate pass
 may not be the first incorrect pass, so a second targeted capture may
 be required. Keep this PR in Draft; **never merge as a rendering fix**.
+
+## Phase 3: focused HDR draw and tone-map capture
+
+The first Cosmic Shake capture established that the pre-Android present source
+already contains corruption and that the R11G11B10 HDR buffer contains invalid
+float encodings. It did **not** prove the first offending draw or the cause.
+
+Phase 3 replaces the 30 generic pass snapshots with GPU-ordered individual
+draw probes. The folder `gpu_capture/ue4/ARM_CAPTURE` and six-present trigger
+remain unchanged. The `focus_XX.txt` / `focus_XX_*.raw` files now include:
+
+- `hdr_before_1`, `hdr_after_1` etc for HDR output on observed draw
+  ordinals 1, 32, 128, 200 during the first two approximate intervals.
+  A pre/post pair corresponds to a single executor-ordered draw.
+- `tonemap_hdr_input_*` for the actual R11G11B10 source bound by fragment
+  shader `9CDBA917AFDC0187`; `tonemap_aux_input_*` for its selected
+  tiny 1x1/32x32 sampled resources; and `tonemap_bgra_output` immediately
+  after that draw, once per approximate interval.
+- `FOCUS_DESCRIPTOR` logs report **resolved** sampled texture/view,
+  mip/layer and Vulkan format. `FOCUS_CBUF` reports the bound constant
+  buffer slots and view sizes, but deliberately does not read GPU-dirty CBUF
+  contents or assert that every listed slot is read by the shader.
+- Separate global budget: max 48 focus images and 144 MiB. A skipped image
+  logs FOCUS_SKIP or FOCUS_BUDGET_EXHAUSTED. Each image copy happens on
+  the same GPU command stream, with a forced pass boundary only when armed.
+
+These probes can affect frame pacing and pass coalescing **while capturing**.
+Compare HDR before/after images *only within the same draw ordinal and
+executor* to locate when new NaNs appear. The two approximate frame
+intervals are not exact GPU frame boundaries, and the selected ordinals
+may miss the first offending draw. If so, retarget ordinal selection using
+these captures. A captured input being bad does not automatically implicate
+the consuming shader.
+
+Wait for all `MINIRD_UE4_FOCUS wrote snapshot` log lines before zipping.
+Do not merge this diagnostic PR.

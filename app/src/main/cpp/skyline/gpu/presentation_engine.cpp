@@ -273,7 +273,7 @@ namespace skyline::gpu {
                     session.Finish();
                     std::ofstream complete(captureDirectory / "capture_complete.txt");
                     if (complete)
-                        complete << "capture_complete=true\nframes=4\n";
+                        complete << "capture_complete=true\nframes=6\nphase=3\n";
                     LOGI("MINIRD_UE4 capture complete");
                 }
             }

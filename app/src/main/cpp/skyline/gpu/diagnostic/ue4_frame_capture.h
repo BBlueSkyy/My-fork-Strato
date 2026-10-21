@@ -33,6 +33,15 @@ namespace skyline::gpu::diagnostic {
         std::string path;
         // One registry shared by all GPU command executors. Individual executor
         // counters collided in the previous capture and overwrote raw files.
+        // Phase 3 uses separate quotas from legacy pass-end snapshots.
+        // A fixed-size, low-impact scan samples selected HDR draws and
+        // the observed HDR->BGRA8 conversion instead of 30 unrelated inputs.
+        std::array<std::uint32_t, FrameCount> hdrDrawCountByInterval{};
+        std::array<bool, FrameCount> conversionClaimed{};
+        std::uint32_t focusSnapshotCount{};
+        std::size_t focusBytes{};
+        static constexpr std::uint32_t MaxFocusSnapshots{48};
+        static constexpr std::size_t MaxFocusBytes{144ULL * 1024 * 1024};
         std::array<std::uint32_t, FrameCount> passCountByInterval{};
         std::uint32_t nextPassIndex{};
         std::size_t passBytes{};
@@ -46,12 +55,56 @@ namespace skyline::gpu::diagnostic {
             path = std::move(captureDirectory);
             events.clear();
             passCountByInterval.fill(0);
+            hdrDrawCountByInterval.fill(0);
+            conversionClaimed.fill(false);
+            focusSnapshotCount = 0;
+            focusBytes = 0;
             nextPassIndex = 0;
             passBytes = 0;
             watchedMappings.clear();
             eventCount.store(0, std::memory_order_relaxed);
             presentIndex.store(0, std::memory_order_relaxed);
             active.store(true, std::memory_order_release);
+        }
+
+        // One-shot phase 3. All indexes and claims are shared by executor threads.
+        // Returns the draw ordinal only at sampling points; the rest do not
+        // cause staging allocations or render-pass breaks.
+        std::optional<std::uint32_t> ClaimHdrDraw() {
+            if (!active.load(std::memory_order_acquire))
+                return std::nullopt;
+            std::scoped_lock lock(mutex);
+            const auto frame{presentIndex.load(std::memory_order_relaxed)};
+            if (!active.load(std::memory_order_relaxed) || frame >= 2)
+                return std::nullopt;
+            const auto ordinal{++hdrDrawCountByInterval[frame]};
+            if (ordinal == 1 || ordinal == 32 || ordinal == 128 || ordinal == 200)
+                return ordinal;
+            return std::nullopt;
+        }
+
+        bool ClaimConversion() {
+            if (!active.load(std::memory_order_acquire))
+                return false;
+            std::scoped_lock lock(mutex);
+            const auto frame{presentIndex.load(std::memory_order_relaxed)};
+            if (!active.load(std::memory_order_relaxed) || frame >= FrameCount ||
+                conversionClaimed[frame])
+                return false;
+            conversionClaimed[frame] = true;
+            return true;
+        }
+
+        std::optional<std::uint32_t> ReserveFocusedImage(std::size_t bytes) {
+            if (!bytes || !active.load(std::memory_order_acquire))
+                return std::nullopt;
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_relaxed) ||
+                focusSnapshotCount >= MaxFocusSnapshots ||
+                bytes > MaxFocusBytes || focusBytes > MaxFocusBytes - bytes)
+                return std::nullopt;
+            focusBytes += bytes;
+            return focusSnapshotCount++;
         }
 
         // Allocates a unique, globally capped snapshot ID across all executors.

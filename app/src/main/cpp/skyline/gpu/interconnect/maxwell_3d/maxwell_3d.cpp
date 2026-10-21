@@ -831,6 +831,79 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         vk::Rect2D scissor{GetDrawScissor()};
 
+        [[maybe_unused]] std::optional<u32> hdrProbe{};
+        [[maybe_unused]] bool conversionProbe{};
+        if (diagnostic::Ue4Capture().active.load(std::memory_order_acquire)) {
+            auto &capture{diagnostic::Ue4Capture()};
+            auto *pipeline{activeState.GetPipeline()};
+            bool conversionShader{};
+            if (pipeline) {
+                for (auto hash : pipeline->sourcePackedState.shaderHashes)
+                    if (hash == 0x9CDBA917AFDC0187ULL)
+                        conversionShader = true;
+            }
+
+            // This fragment shader consumed an HDR R11G11B10 image at
+            // sampled binding 4 in capture_001 and wrote BGRA8. Match
+            // the observed shader identity, never an application Title ID.
+            if (conversionShader && capture.ClaimConversion()) {
+                conversionProbe = true;
+                capture.Record(fmt::format(
+                    "CONVERSION_FOCUS shader=9CDBA917AFDC0187 submission={} executor=0x{:X} sampled_count={}",
+                    ctx.executor.submissionNumber, reinterpret_cast<uintptr_t>(&ctx.executor),
+                    activeDescriptorSetSampledImages.size()));
+
+                for (size_t index{}; index < activeDescriptorSetSampledImages.size(); ++index) {
+                    auto *view{activeDescriptorSetSampledImages[index]};
+                    if (!view || !view->texture) {
+                        capture.Record(fmt::format("FOCUS_DESCRIPTOR index={} null=1", index));
+                        continue;
+                    }
+                    const auto &texture{view->texture};
+                    capture.Record(fmt::format(
+                        "FOCUS_DESCRIPTOR index={} texture=0x{:X} view_type={} base_mip={} levels={} base_layer={} layers={} "
+                        "image={}x{} format={} layout={}",
+                        index, reinterpret_cast<uintptr_t>(texture.get()),
+                        vk::to_string(view->type), view->range.baseMipLevel,
+                        view->range.levelCount, view->range.baseArrayLayer, view->range.layerCount,
+                        texture->dimensions.width, texture->dimensions.height,
+                        vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout)));
+                    // Capture the actual HDR source and small exposure/LUT
+                    // inputs, not all potentially huge sampled textures.
+                    const bool hdr{texture->format->vkFormat == vk::Format::eB10G11R11UfloatPack32};
+                    const bool small{texture->dimensions.width <= 32 && texture->dimensions.height <= 32};
+                    if (hdr || small)
+                        ctx.executor.QueueUe4FocusedImage(view,
+                            hdr ? fmt::format("tonemap_hdr_input_{}", index)
+                                : fmt::format("tonemap_aux_input_{}", index), 0);
+                }
+
+                // Log CBUF bindings without attempting CPU reads of potentially
+                // GPU-dirty data; that could itself change guest execution.
+                for (size_t stage{}; stage < constantBuffers.boundConstantBuffers.size(); ++stage) {
+                    const auto &stageBuffers{constantBuffers.boundConstantBuffers[stage]};
+                    for (size_t idx{}; idx < stageBuffers.size(); ++idx) {
+                        const auto &buffer{stageBuffers[idx]};
+                        if (buffer.view.size)
+                            capture.Record(fmt::format("FOCUS_CBUF stage={} index={} view_size={}",
+                                stage, idx, buffer.view.size));
+                    }
+                }
+            }
+
+            // Probe early/mid/late individual draws writing R11G11B10 HDR
+            // in the first two approximate presentation intervals.
+            for (auto *view : activeState.GetColorAttachments()) {
+                if (!view || !view->texture ||
+                    view->texture->format->vkFormat != vk::Format::eB10G11R11UfloatPack32)
+                    continue;
+                hdrProbe = capture.ClaimHdrDraw();
+                if (hdrProbe)
+                    ctx.executor.QueueUe4FocusedImage(view,
+                        fmt::format("hdr_before_{}", *hdrProbe), *hdrProbe);
+                break;
+            }
+        }
 
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");
@@ -905,6 +978,24 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 ctx.executor.MarkDiagnosticUe4Output(
                     activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
                     !activeDescriptorSetSampledImages.empty());
+            if (hdrProbe) {
+                for (auto *target : activeState.GetColorAttachments()) {
+                    if (target && target->texture &&
+                        target->texture->format->vkFormat == vk::Format::eB10G11R11UfloatPack32) {
+                        ctx.executor.QueueUe4FocusedImage(target,
+                            fmt::format("hdr_after_{}", *hdrProbe), *hdrProbe);
+                        break;
+                    }
+                }
+            }
+            if (conversionProbe) {
+                for (auto *target : activeState.GetColorAttachments()) {
+                    if (target && target->texture) {
+                        ctx.executor.QueueUe4FocusedImage(target, "tonemap_bgra_output", 0);
+                        break;
+                    }
+                }
+            }
         }
         ctx.executor.AddCheckpoint("After draw");
     

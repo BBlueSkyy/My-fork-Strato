@@ -508,84 +508,82 @@ namespace skyline::gpu::interconnect {
         mark(color, true);
     }
 
-    void CommandExecutor::QueueDiagnosticPassReadbacks() {
-        if (diagnosticPassImages.empty())
-            return;
-        auto images{std::move(diagnosticPassImages)};
-        diagnosticPassImages.clear();
+    // GPU-ordered snapshot, not a CPU map. Force a pass boundary so the copy
+    // occurs exactly before or after the selected draw's Vulkan commands.
+    // Unlike the generic pass tracker, this also accepts tiny 1x1 LUT inputs.
+    void CommandExecutor::QueueUe4FocusedImage(TextureView *view, std::string phase, u32 ordinal) {
         auto &capture{diagnostic::Ue4Capture()};
-        if (!capture.active.load(std::memory_order_acquire))
+        if (!capture.active.load(std::memory_order_acquire) || !view || !view->texture)
             return;
-
-        const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
-        if (interval >= diagnostic::Ue4FrameCapture::FrameCount)
+        const auto texture{std::shared_ptr<Texture>(view->texture)};
+        if (texture->layout == vk::ImageLayout::eUndefined ||
+            texture->dimensions.depth != 1 || texture->levelCount != 1 ||
+            texture->layerCount != 1 || texture->sampleCount != vk::SampleCountFlagBits::e1 ||
+            !texture->surfaceSize || texture->surfaceSize > 20ULL * 1024 * 1024 ||
+            !(texture->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+            !(texture->format->vkAspect & vk::ImageAspectFlagBits::eColor) ||
+            texture->format->IsCompressed()) {
+            capture.Record(fmt::format("FOCUS_SKIP phase={} draw={} format={} usage={} layout={}",
+                phase, ordinal, vk::to_string(texture->format->vkFormat),
+                vk::to_string(texture->usage), vk::to_string(texture->layout)));
             return;
-        const std::filesystem::path directory{capture.CaptureDirectory()};
-        if (directory.empty())
-            return;
-
-        for (const auto &entry : images) {
-            const auto &texture{entry.texture};
-            if (!entry.priority || !IsUe4ColorImage(*texture))
-                continue;
-
-            const auto snapshotId{capture.ReservePassSnapshot(interval, texture->surfaceSize)};
-            if (!snapshotId)
-                continue;
-            const auto index{*snapshotId};
-            const auto width{texture->dimensions.width};
-            const auto height{texture->dimensions.height};
-            const auto format{vk::to_string(texture->format->vkFormat)};
-            const auto identity{reinterpret_cast<uintptr_t>(texture.get())};
-            const auto executorIdentity{reinterpret_cast<uintptr_t>(this)};
-            uintptr_t guestMap{};
-            size_t guestBytes{};
-            if (texture->guest) {
-                if (!texture->guest->mappings.empty())
-                    guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
-                for (const auto &mapping : texture->guest->mappings)
-                    guestBytes += mapping.size();
-            }
-            const auto fileName{fmt::format("pass_{:02}_rp{}_{}x{}_{}.raw",
-                index, renderPassIndex, width, height, format)};
-            const auto rawPath{directory / fileName};
-            const auto metaPath{directory / fmt::format("pass_{:02}.txt", index)};
-            const auto meta{fmt::format(
-                "capture_index={} approx_present={} render_pass={} submission={} "
-                "kind={} focus=ue4_color_postprocess executor=0x{:X} texture=0x{:X} dimensions={}x{} "
-                "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} "
-                "note=recorded_after_render_pass_end_not_exact_frame_correlation\n",
-                index, interval, renderPassIndex, submissionNumber,
-                entry.renderTarget ? "render_target" : "sampled_input", executorIdentity, identity,
-                width, height, format, vk::to_string(texture->layout),
-                texture->surfaceSize, guestMap, guestBytes)};
-            auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
-            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
-                [texture, staging](vk::raii::CommandBuffer &commandBuffer,
-                                   const std::shared_ptr<FenceCycle> &cycle, GPU &) {
-                    cycle->AttachObjects(texture, staging);
-                    texture->CopyIntoStagingBuffer(commandBuffer, staging);
-                });
-            diagnosticReadbackCallbacks.emplace_back(
-                [staging, rawPath, metaPath, meta, index] {
-                    std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
-                    if (!raw) {
-                        LOGE("MINIRD_UE4_PHASE2 failed to open snapshot {}", index);
-                        return;
-                    }
-                    raw.write(reinterpret_cast<const char *>(staging->data()),
-                              static_cast<std::streamsize>(staging->size()));
-                    raw.close();
-                    std::ofstream info(metaPath, std::ios::trunc);
-                    if (info)
-                        info << meta;
-                    LOGI("MINIRD_UE4_PHASE2 wrote snapshot {}: {}", index, rawPath.string());
-                });
-            capture.Record(fmt::format(
-                "PHASE2_SNAPSHOT index={} rp={} submission={} executor=0x{:X} interval={} kind={} texture=0x{:X} {}x{} format={}",
-                index, renderPassIndex, submissionNumber, executorIdentity, interval,
-                entry.renderTarget ? "rt" : "sampled", identity, width, height, format));
         }
+        const auto index{capture.ReserveFocusedImage(texture->surfaceSize)};
+        if (!index) {
+            capture.Record(fmt::format("FOCUS_BUDGET_EXHAUSTED phase={} draw={}", phase, ordinal));
+            return;
+        }
+        const auto directory{std::filesystem::path(capture.CaptureDirectory())};
+        const auto id{*index};
+        const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+        const auto filename{fmt::format("focus_{:02}_{}_{}x{}_{}.raw", id, phase,
+            texture->dimensions.width, texture->dimensions.height,
+            vk::to_string(texture->format->vkFormat))};
+        const auto rawPath{directory / filename};
+        const auto metaPath{directory / fmt::format("focus_{:02}.txt", id)};
+        const auto meta{fmt::format(
+            "focus_id={} phase={} hdr_draw_ordinal={} present_index_approx={} executor=0x{:X} "
+            "submission={} render_pass={} texture=0x{:X} view_mip={} view_layer={} "
+            "image={}x{} format={} layout={} bytes={}\n",
+            id, phase, ordinal, interval, reinterpret_cast<uintptr_t>(this),
+            submissionNumber, renderPassIndex, reinterpret_cast<uintptr_t>(texture.get()),
+            view->range.baseMipLevel, view->range.baseArrayLayer,
+            texture->dimensions.width, texture->dimensions.height,
+            vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout),
+            texture->surfaceSize)};
+        auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+        // AddOutsideRpCommand closes the previous render pass first, then
+        // enqueues the copy in the SAME executor's ordered Vulkan stream.
+        AddOutsideRpCommand([texture, staging](vk::raii::CommandBuffer &commands,
+                                               const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+            cycle->AttachObjects(texture, staging);
+            texture->CopyIntoStagingBuffer(commands, staging);
+        });
+        diagnosticReadbackCallbacks.emplace_back(
+            [staging, rawPath, metaPath, meta, id] {
+                std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                if (!raw) {
+                    LOGE("MINIRD_UE4_FOCUS failed to write snapshot {}", id);
+                    return;
+                }
+                raw.write(reinterpret_cast<const char *>(staging->data()),
+                          static_cast<std::streamsize>(staging->size()));
+                raw.close();
+                std::ofstream info(metaPath, std::ios::trunc);
+                if (info)
+                    info << meta;
+                LOGI("MINIRD_UE4_FOCUS wrote snapshot {}: {}", id, rawPath.string());
+            });
+        capture.Record(fmt::format("FOCUS_QUEUED id={} phase={} draw={} executor=0x{:X} submit={} image=0x{:X}",
+            id, phase, ordinal, reinterpret_cast<uintptr_t>(this),
+            submissionNumber, reinterpret_cast<uintptr_t>(texture.get())));
+    }
+
+    void CommandExecutor::QueueDiagnosticPassReadbacks() {
+        // Phase 3's bounded draw-level probes supersede the original
+        // render-pass tracker: those snapshots consumed the entire budget
+        // before the HDR->BGRA8 transition.
+        diagnosticPassImages.clear();
     }
 
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
