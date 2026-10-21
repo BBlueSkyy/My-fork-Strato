@@ -69,8 +69,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
                                                                                const PackedPipelineState &packedState,
                                                                                const Pipeline::ShaderStage &shaderStage,
                                                                                span<vk::DescriptorSetLayoutBinding> layoutBindings) {
+        const bool usesPushDescriptors{ctx.gpu.traits.CanUsePushDescriptors(layoutBindings)};
         vk::raii::DescriptorSetLayout descriptorSetLayout{ctx.gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
-            .flags = vk::DescriptorSetLayoutCreateFlags{ctx.gpu.traits.supportsPushDescriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR : vk::DescriptorSetLayoutCreateFlags{}},
+            .flags = vk::DescriptorSetLayoutCreateFlags{usesPushDescriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR : vk::DescriptorSetLayoutCreateFlags{}},
             .pBindings = layoutBindings.data(),
             .bindingCount = static_cast<u32>(layoutBindings.size()),
         }};
@@ -98,9 +99,10 @@ namespace skyline::gpu::interconnect::kepler_compute {
         vk::raii::Pipeline pipeline{ctx.gpu.vkDevice, nullptr, pipelineInfo};
 
         return Pipeline::CompiledPipeline{
-            .pipeline = std::move(pipeline),
-            .pipelineLayout = std::move(pipelineLayout),
             .descriptorSetLayout = std::move(descriptorSetLayout),
+            .pipelineLayout = std::move(pipelineLayout),
+            .pipeline = std::move(pipeline),
+            .usesPushDescriptors = usesPushDescriptors,
         };
     }
 

@@ -202,6 +202,21 @@ namespace skyline::gpu {
             #undef IGNORE_TYPE
         }
 
+        // Preserve initial samples and exponential repetition counts. Validation
+        // can otherwise produce gigabytes of duplicate messages and perturb the
+        // crash being investigated. Driver errors are never rate-limited here.
+        u64 validationRepeat{};
+        if (layerPrefix && std::string_view{layerPrefix} == "Validation") {
+            static std::mutex validationLogMutex;
+            static std::unordered_map<i32, u64> validationMessageCounts;
+            std::scoped_lock lock{validationLogMutex};
+            validationRepeat = ++validationMessageCounts[messageCode];
+            if (validationRepeat > 32 && (validationRepeat & (validationRepeat - 1)) != 0)
+                return VK_FALSE;
+        }
+        if (validationRepeat > 32)
+            LOGW("Vulkan validation diagnostic repeated: messageCode={} count={}", messageCode, validationRepeat);
+
         auto logLevel{severityLookup.at(static_cast<size_t>(std::countr_zero(static_cast<u32>(flags))))};
         if (AsyncLogger::CheckLogLevel(logLevel))
             AsyncLogger::LogAsync(logLevel, fmt::format("Vk{}:{}[0x{:X}]:I{}:L{}: {}", layerPrefix, vk::to_string(vk::DebugReportObjectTypeEXT(objectType)), object, messageCode, location, message));
@@ -281,7 +296,8 @@ namespace skyline::gpu {
             vk::PhysicalDeviceDriverProperties,
             vk::PhysicalDeviceFloatControlsProperties,
             vk::PhysicalDeviceTransformFeedbackPropertiesEXT,
-            vk::PhysicalDeviceSubgroupProperties>()};
+            vk::PhysicalDeviceSubgroupProperties,
+            vk::PhysicalDevicePushDescriptorPropertiesKHR>()};
 
         traits = TraitManager{deviceFeatures2, enabledFeatures2, deviceExtensions, enabledExtensions, deviceProperties2, physicalDevice};
         traits.ApplyDriverPatches(context, mapping);
