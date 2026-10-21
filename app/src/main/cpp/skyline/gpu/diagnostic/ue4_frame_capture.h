@@ -36,6 +36,9 @@ namespace skyline::gpu::diagnostic {
         // Phase 3 uses separate quotas from legacy pass-end snapshots.
         // A fixed-size, low-impact scan samples selected HDR draws and
         // the observed HDR->BGRA8 conversion instead of 30 unrelated inputs.
+        // First actual HDR-producing interval can be later than presentation
+        // 0/1 because guest rendering is asynchronous to Android presentation.
+        std::optional<std::uint32_t> firstHdrInterval{};
         std::array<std::uint32_t, FrameCount> hdrDrawCountByInterval{};
         std::array<bool, FrameCount> conversionClaimed{};
         std::uint32_t focusSnapshotCount{};
@@ -55,6 +58,7 @@ namespace skyline::gpu::diagnostic {
             path = std::move(captureDirectory);
             events.clear();
             passCountByInterval.fill(0);
+            firstHdrInterval.reset();
             hdrDrawCountByInterval.fill(0);
             conversionClaimed.fill(false);
             focusSnapshotCount = 0;
@@ -75,7 +79,13 @@ namespace skyline::gpu::diagnostic {
                 return std::nullopt;
             std::scoped_lock lock(mutex);
             const auto frame{presentIndex.load(std::memory_order_relaxed)};
-            if (!active.load(std::memory_order_relaxed) || frame >= 2)
+            if (!active.load(std::memory_order_relaxed) || frame >= FrameCount)
+                return std::nullopt;
+            // Previous capture: no HDR draws until interval 2. Do not spend
+            // both HDR probes on fixed presentation indices 0 and 1.
+            if (!firstHdrInterval)
+                firstHdrInterval = frame;
+            if (frame < *firstHdrInterval || frame - *firstHdrInterval >= 2)
                 return std::nullopt;
             const auto ordinal{++hdrDrawCountByInterval[frame]};
             if (ordinal == 1 || ordinal == 32 || ordinal == 128 || ordinal == 200)

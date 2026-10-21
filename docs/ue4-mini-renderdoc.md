@@ -75,7 +75,7 @@ draw probes. The folder `gpu_capture/ue4/ARM_CAPTURE` and six-present trigger
 remain unchanged. The `focus_XX.txt` / `focus_XX_*.raw` files now include:
 
 - `hdr_before_1`, `hdr_after_1` etc for HDR output on observed draw
-  ordinals 1, 32, 128, 200 during the first two approximate intervals.
+  ordinals 1, 32, 128, 200 during the first two intervals in which HDR draws actually occur.
   A pre/post pair corresponds to a single executor-ordered draw.
 - `tonemap_hdr_input_*` for the actual R11G11B10 source bound by fragment
   shader `9CDBA917AFDC0187`; `tonemap_aux_input_*` for its selected
@@ -99,3 +99,20 @@ the consuming shader.
 
 Wait for all `MINIRD_UE4_FOCUS wrote snapshot` log lines before zipping.
 Do not merge this diagnostic PR.
+
+### Phase 3 follow-up: missed HDR draws fixed
+
+The 2026-10-21 capture contained 20 successful converter snapshots (4 HDR
+inputs, 4 BGRA8 outputs and 12 1x1 auxiliary inputs), but **zero**
+`hdr_before_`/`hdr_after_` images. The draw selector incorrectly only
+accepted present indices 0 and 1, while the HDR draws began in interval
+2. The corrected selector starts on the first observed HDR draw and
+allows the following interval, regardless of the initial present index.
+Its state resets on each new manual session and maintains all snapshot
+quotas. No GPU code is modified unless capture is explicitly armed.
+
+The HDR values (median R/G/B approximately 2032/1184/864) already reach
+the converter input. About 0.294% of pixels had a NaN component, but
+69.8% of pixels in the converter's BGRA8 output were almost white.
+These measurements implicate upstream HDR values, without proving the
+first responsible shader or the origin of their amplification.
