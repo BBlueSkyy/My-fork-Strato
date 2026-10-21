@@ -208,14 +208,15 @@ namespace skyline::gpu {
         u64 validationRepeat{};
         if (layerPrefix && std::string_view{layerPrefix} == "Validation") {
             static std::mutex validationLogMutex;
-            static std::unordered_map<i32, u64> validationMessageCounts;
+            // This layer puts its MessageID in location and leaves messageCode zero.
+            static std::unordered_map<i32, std::unordered_map<size_t, u64>> validationMessageCounts;
             std::scoped_lock lock{validationLogMutex};
-            validationRepeat = ++validationMessageCounts[messageCode];
+            validationRepeat = ++validationMessageCounts[messageCode][location];
             if (validationRepeat > 32 && (validationRepeat & (validationRepeat - 1)) != 0)
                 return VK_FALSE;
         }
         if (validationRepeat > 32)
-            LOGW("Vulkan validation diagnostic repeated: messageCode={} count={}", messageCode, validationRepeat);
+            LOGW("Vulkan validation diagnostic repeated: messageCode={} location={} count={}", messageCode, location, validationRepeat);
 
         auto logLevel{severityLookup.at(static_cast<size_t>(std::countr_zero(static_cast<u32>(flags))))};
         if (AsyncLogger::CheckLogLevel(logLevel))

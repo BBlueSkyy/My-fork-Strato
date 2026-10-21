@@ -107,17 +107,21 @@ namespace skyline::gpu {
         return usage;
     }
 
-    vk::ImageView TextureView::GetView() {
+    vk::ImageView TextureView::GetView(bool identityMapping) {
         if (!texture->ViewRangeFits(type, range) || !range.aspectMask || (range.aspectMask & ~texture->format->vkAspect))
             throw exception("Texture view exceeds backing mip/layer bounds or has an incompatible view type");
         const auto requested{format ? format->vkFormat : texture->format->vkFormat};
         if (!texture->ViewFormatAdmitted(requested))
             throw exception("Texture view format {} is not admitted by backing {}", vk::to_string(requested), vk::to_string(texture->format->vkFormat));
-        if (vkView && vkViewGeneration == texture->backingGeneration)
-            return vkView;
+        auto &cachedView{identityMapping ? identityVkView : vkView};
+        auto &cachedGeneration{identityMapping ? identityVkViewGeneration : vkViewGeneration};
+        if (cachedView && cachedGeneration == texture->backingGeneration)
+            return cachedView;
 
-        auto it{std::find_if(texture->views.begin(), texture->views.end(), [this](const Texture::TextureViewStorage &view) {
-            return view.type == type && view.format == format && view.mapping == mapping && view.range == range;
+        const vk::ComponentMapping viewMapping{identityMapping ? vk::ComponentMapping{} : mapping};
+
+        auto it{std::find_if(texture->views.begin(), texture->views.end(), [this, &viewMapping](const Texture::TextureViewStorage &view) {
+            return view.type == type && view.format == format && view.mapping == viewMapping && view.range == range;
         })};
         if (it == texture->views.end()) {
             // Foreign formats need not support every usage of the native image (e.g.
@@ -128,15 +132,15 @@ namespace skyline::gpu {
                 .image = texture->GetBacking(),
                 .viewType = type,
                 .format = format ? *format : *texture->format,
-                .components = mapping,
+                .components = viewMapping,
                 .subresourceRange = range,
             };
 
-            it = texture->views.emplace(texture->views.end(), type, format, mapping, range, vk::raii::ImageView{texture->gpu.vkDevice, createInfo});
+            it = texture->views.emplace(texture->views.end(), type, format, viewMapping, range, vk::raii::ImageView{texture->gpu.vkDevice, createInfo});
         }
 
-        vkViewGeneration = texture->backingGeneration;
-        return vkView = *it->vkView;
+        cachedGeneration = texture->backingGeneration;
+        return cachedView = *it->vkView;
     }
 
     void TextureView::lock() {
