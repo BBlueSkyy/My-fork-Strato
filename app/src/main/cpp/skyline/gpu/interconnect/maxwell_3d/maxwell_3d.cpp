@@ -919,6 +919,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         view->texture->dimensions.width, view->texture->dimensions.height,
                         vk::to_string(view->format->vkFormat)));
 
+                    // Preserve actual per-draw pipeline state, not a guess
+                    // based on the visually adjacent pass.
+                    if (pipeline) {
+                        const auto packedBlend{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                        capture.Record(fmt::format(
+                            "HDR_DRAW_BLEND ordinal={} enabled={} color_mask=0x{:X} "
+                            "conditional={} transform_feedback={}",
+                            *hdrProbe, static_cast<bool>(packedBlend.blendEnable),
+                            static_cast<u32>(packedBlend.colorWriteMask),
+                            activeRenderCondition.enabled,
+                            drawParams->transformFeedbackEnable));
+                    }
                     const auto maxViews{std::min<size_t>(activeDescriptorSetSampledImages.size(), 24)};
                     for (size_t idx{}; idx < maxViews; ++idx) {
                         auto *sample{activeDescriptorSetSampledImages[idx]};
@@ -942,6 +954,34 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     if (activeDescriptorSetSampledImages.size() > maxViews)
                         capture.Record(fmt::format("HDR_DRAW_IMAGE_TRUNCATED ordinal={} total={} recorded={}",
                             *hdrProbe, activeDescriptorSetSampledImages.size(), maxViews));
+
+                    // One bounded, independently ordered sampled-image readback
+                    // per focused draw. Avoid copies of attachment aliases,
+                    // unsupported 3D/mipped/sparse-like layouts, and huge
+                    // textures. The descriptor event list above preserves the
+                    // identities of inputs not copied.
+                    for (size_t idx{}; idx < activeDescriptorSetSampledImages.size(); ++idx) {
+                        auto *sample{activeDescriptorSetSampledImages[idx]};
+                        if (!sample || !sample->texture || sample->texture.get() == view->texture.get())
+                            continue;
+                        const auto &input{sample->texture};
+                        if (input->dimensions.depth != 1 || input->levelCount != 1 ||
+                            input->layerCount != 1 ||
+                            input->sampleCount != vk::SampleCountFlagBits::e1 ||
+                            input->surfaceSize == 0 || input->surfaceSize > 4ULL * 1024 * 1024 ||
+                            input->layout == vk::ImageLayout::eUndefined ||
+                            !(input->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+                            !(input->format->vkAspect & vk::ImageAspectFlagBits::eColor) ||
+                            input->format->IsCompressed())
+                            continue;
+                        capture.Record(fmt::format("HDR_DRAW_INPUT_SELECTED ordinal={} index={} "
+                            "texture=0x{:X} bytes={} format={}", *hdrProbe, idx,
+                            reinterpret_cast<uintptr_t>(input.get()), input->surfaceSize,
+                            vk::to_string(input->format->vkFormat)));
+                        ctx.executor.QueueUe4FocusedImage(sample,
+                            fmt::format("hdr_input_{}_{}", *hdrProbe, idx), *hdrProbe);
+                        break;
+                    }
 
                     if (pipeline) {
                         const auto &info{pipeline->GetDiagnosticDescriptorInfo()};

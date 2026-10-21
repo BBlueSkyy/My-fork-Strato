@@ -15,20 +15,23 @@ int main() {
     cap.Start(path.string());
     assert(cap.active.load());
 
-    // Capture the specific boundaries of the three shader groups
-    // implicated by the prior HDR NaN progression.
+    // Capture only the three draws responsible for the large observed
+    // increase in finite HDR values, not earlier shader-group boundaries.
     cap.presentIndex.store(2);
     for (std::uint32_t ordinal = 1; ordinal <= 200; ++ordinal) {
         auto selected = cap.ClaimHdrDraw();
-        const bool expected = ordinal == 2 || ordinal == 18 || ordinal == 19 ||
-                              ordinal == 22 || ordinal == 23 || ordinal == 31;
+        const bool expected = ordinal == 19 || ordinal == 20 || ordinal == 21;
         assert(bool(selected) == expected);
         if (selected)
             assert(*selected == ordinal);
     }
     cap.presentIndex.store(3);
-    assert(!cap.ClaimHdrDraw()); // ordinal 1 is deliberately not sampled
-    assert(cap.ClaimHdrDraw().value() == 2);
+    for (std::uint32_t ordinal = 1; ordinal <= 21; ++ordinal) {
+        const auto selected = cap.ClaimHdrDraw();
+        assert(bool(selected) == (ordinal >= 19));
+        if (selected)
+            assert(*selected == ordinal);
+    }
     cap.presentIndex.store(4);
     assert(!cap.ClaimHdrDraw()); // third interval is excluded
     assert(cap.ClaimConversion());
@@ -37,8 +40,11 @@ int main() {
     assert(cap.ClaimConversion());
 
     cap.Start(path.string()); // all focused draw state resets on re-arming
-    assert(!cap.ClaimHdrDraw());
-    assert(cap.ClaimHdrDraw().value() == 2);
+    for (std::uint32_t ordinal = 1; ordinal < 19; ++ordinal)
+        assert(!cap.ClaimHdrDraw());
+    assert(cap.ClaimHdrDraw().value() == 19);
+    assert(cap.ClaimHdrDraw().value() == 20);
+    assert(cap.ClaimHdrDraw().value() == 21);
 
     // Separate focus quota: no more than 48 concurrent claims, even if
     // different executors try to reserve at the same time.

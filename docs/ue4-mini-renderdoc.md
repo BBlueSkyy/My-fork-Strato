@@ -155,3 +155,31 @@ The existing 48-image / 144-MiB budget is retained.
 The selected group boundaries may locate the responsible group, but
 are not guaranteed to find the *first* defective draw. Only conclude
 a precise culprit when a verified before/after pair demonstrates it.
+
+
+## Phase 5: focused single-draw HDR diagnosis (19, 20, 21)
+
+The preceding on-device capture shows a rapid increase in finite HDR values
+above 1000: 0.68% before draw 19, 4.51% after draw 19, and 33.93% before
+draw 22. This localizes the main increase to draws **19, 20 and 21**;
+it does not yet establish whether source data or shader execution is wrong.
+
+Phase 5 uses only those three draw ordinals in the first two actual HDR
+intervals. Each selected draw receives:
+
+- `hdr_before_19/20/21` and `hdr_after_19/20/21` GPU-ordered output images;
+- `HDR_DRAW_FOCUS`, `HDR_DRAW_IMAGE`, `HDR_DRAW_CBUF`, and
+  `HDR_DRAW_TEXTURE_DESC` records for the corresponding compiled shaders,
+  sampled image views, descriptor-referenced CBUF slots and byte extents;
+- `HDR_DRAW_BLEND` with the actual attachment-0 blend enabled state,
+  channel-write mask, conditional rendering and transform-feedback flags;
+- at most **one** `hdr_input_<draw>_<index>` readback per selected draw.
+  Eligible image: a non-target, single-layer and single-mip 2D-color
+  backing, at most 4 MiB, with a defined layout and TransferSrc usage.
+  Descriptor metadata is retained for all other inputs, which are not
+  read back. An input might be unavailable due to these restrictions.
+
+The overall 48-image / 144-MiB cap still applies, including tone-map
+snapshots. No guest CBUF contents are read. Readbacks split render passes
+only after the user manually arms the capture. No renderer correctness
+change is made; this commit is strictly an investigation aid.
