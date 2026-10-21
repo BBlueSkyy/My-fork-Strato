@@ -598,7 +598,7 @@ namespace skyline::gpu::interconnect {
                     diagnostic::Ue4Uploads().UsedBytes(), diagnostic::Ue4UploadProvenance::MaxBytes,
                     static_cast<u32>(texture->guest->tileConfig.mode), texture->mirror.size(),
                     texture->guest->GetLayerStride(), texture->deswizzledSurfaceSize,
-                    texture->surfaceSize));
+                    texture->surfaceSize);
             });
         }
         diagnosticReadbackCallbacks.emplace_back(
