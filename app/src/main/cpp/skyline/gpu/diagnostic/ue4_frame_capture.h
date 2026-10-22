@@ -200,11 +200,16 @@ namespace skyline::gpu::diagnostic {
             path = std::move(captureDirectory);
             events.clear();
             const auto folder{std::filesystem::path(path)};
-            const bool scanRequested{std::filesystem::exists(folder / "ENABLE_HDR_FIRST_BAD")};
-            const bool provenance{std::filesystem::exists(folder / "ENABLE_UPLOAD_PROVENANCE")};
+            // Control markers are placed in gpu_capture/ue4, not capture_001.
+            // Start() receives the new session directory, so inspect its parent.
+            const auto controlFolder{folder.parent_path()};
+            const bool scanRequested{std::filesystem::exists(controlFolder / "ENABLE_HDR_FIRST_BAD")};
+            const bool provenance{std::filesystem::exists(controlFolder / "ENABLE_UPLOAD_PROVENANCE")};
             hdrFirstBadEnabled.store(scanRequested && !provenance, std::memory_order_release);
             if (scanRequested && provenance)
                 events.emplace_back("HDR_SCAN_DISABLED reason=conflicts_with_upload_provenance");
+            else if (scanRequested)
+                events.emplace_back("HDR_SCAN_ARMED mode=first_32_draws baseline=before_draw_1");
             hdrScanResults.clear();
             firstHdrTarget = 0;
             passCountByInterval.fill(0);

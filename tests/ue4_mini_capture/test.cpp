@@ -130,9 +130,15 @@ int main() {
     std::ifstream invalidManifest(prefix.string() + ".txt");
     comparison.assign(std::istreambuf_iterator<char>(invalidManifest), {});
     assert(comparison.find("invalid_slice mip=0 face=1") != std::string::npos);
-    // Host-only first HDR anomaly scan: does not require a Vulkan device.
+    // Host-only first HDR anomaly scan: the marker lives in the parent
+    // gpu_capture/ue4 directory, whereas Start() receives capture_001.
+    const auto sessionDir{path / "capture_001"};
+    fs::create_directories(sessionDir);
+    cap.Start(sessionDir.string());
+    assert(!cap.HdrFirstBadMode()); // absent marker keeps legacy behavior
+    cap.Finish();
     std::ofstream(path / "ENABLE_HDR_FIRST_BAD").close();
-    cap.Start(path.string());
+    cap.Start(sessionDir.string());
     assert(cap.HdrFirstBadMode());
     assert(!cap.ClaimMaterialInputs());
     assert(!cap.ClaimConversion());
@@ -154,7 +160,7 @@ int main() {
     const std::uint8_t abnormal[8]{0, 0, 0, 0, 0xC0, 0x07, 0, 0};
     cap.RecordHdrScan(0, 2, 1, baseline, sizeof(baseline));
     cap.RecordHdrScan(1, 2, 1, abnormal, sizeof(abnormal));
-    std::ifstream report(path / "hdr_first_suspect.txt");
+    std::ifstream report(sessionDir / "hdr_first_suspect.txt");
     const std::string reportText((std::istreambuf_iterator<char>(report)), {});
     assert(reportText.find("first_new_nonfinite_draw=1") != std::string::npos);
     cap.Finish();
@@ -163,7 +169,7 @@ int main() {
     // The upload-provenance retention mode must be mutually exclusive.
     std::ofstream(path / "ENABLE_HDR_FIRST_BAD").close();
     std::ofstream(path / "ENABLE_UPLOAD_PROVENANCE").close();
-    cap.Start(path.string());
+    cap.Start(sessionDir.string());
     assert(!cap.HdrFirstBadMode());
     cap.Finish();
     fs::remove_all(path);
