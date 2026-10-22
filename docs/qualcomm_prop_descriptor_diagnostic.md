@@ -75,3 +75,20 @@ The diagnostic now logs all up to 16 members of multi-element texel
 and buffer descriptor writes (`TEXEL_ELEMENT`, `BUFFER_ELEMENT`), to
 compare all seven handles and buffer ranges against creation traces.
 No shader, view, descriptor, binding, or runtime semantics are changed.
+
+## Fourth diagnostic revision: isolate both writes of the failing batch
+
+The next Release APK reproduces the same **two VkWriteDescriptorSet
+structures**, preserving all seven resource handles, offsets and ranges.
+Only batches with four UBO descriptors at binding 0 and three uniform
+texel-buffer descriptors at binding 4 are issued as **two sequential
+vkUpdateDescriptorSets calls**. Markers `PRE_SPLIT_WRITE` and
+`POST_SPLIT_WRITE` with `index=0` (UBO) and `index=1` (texel views)
+will reveal which call faults. If both complete, the batch grouping or
+driver behavior is implicated; this is an A/B test, not a production
+workaround. Unrelated batches retain the original one-call path.
+
+`VIEW_LIMITS` now records whether the Qualcomm physical device reports
+uniform/storage texel-buffer support for each created view's format and
+its reported `maxTexelBufferElements` limit. No formats or view sizes
+are changed. The project remains in **DevRelease** mode and Draft.

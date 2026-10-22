@@ -311,7 +311,36 @@ namespace skyline::gpu::interconnect {
                 if (!updateInfo->writes.empty()) {
                     if (trace)
                         LOGW("[PROP_DESC] PRE_WRITE seq={}", traceId);
-                    gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {});
+
+                    // A/B diagnostic for the reproducible Qualcomm SpongeBob
+                    // crash: 4 uniform-buffer descriptors at binding 0 followed
+                    // by 3 uniform-texel-buffer descriptors at binding 4.
+                    // Vulkan allows distinct updateDescriptorSets calls for
+                    // these writes; no descriptor contents or binding indices
+                    // are changed. A separate PRE/POST pair identifies which
+                    // write triggers the driver fault (or whether batching does).
+                    const bool splitQualcommCrashBatch{
+                        updateInfo->bindPoint == vk::PipelineBindPoint::eGraphics &&
+                        updateInfo->writes.size() == 2 &&
+                        updateInfo->writes[0].dstBinding == 0 &&
+                        updateInfo->writes[0].descriptorType == vk::DescriptorType::eUniformBuffer &&
+                        updateInfo->writes[0].descriptorCount == 4 &&
+                        updateInfo->writes[1].dstBinding == 4 &&
+                        updateInfo->writes[1].descriptorType == vk::DescriptorType::eUniformTexelBuffer &&
+                        updateInfo->writes[1].descriptorCount == 3
+                    };
+                    if (splitQualcommCrashBatch) {
+                        for (size_t writeIndex{}; writeIndex < updateInfo->writes.size(); ++writeIndex) {
+                            LOGW("[PROP_DESC] PRE_SPLIT_WRITE seq={} index={} binding={} type={}",
+                                 traceId, writeIndex, updateInfo->writes[writeIndex].dstBinding,
+                                 static_cast<u32>(updateInfo->writes[writeIndex].descriptorType));
+                            gpu.vkDevice.updateDescriptorSets(updateInfo->writes.subspan(writeIndex, 1), {});
+                            LOGW("[PROP_DESC] POST_SPLIT_WRITE seq={} index={}", traceId, writeIndex);
+                        }
+                    } else {
+                        gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {});
+                    }
+
                     if (trace)
                         LOGW("[PROP_DESC] POST_WRITE seq={}", traceId);
                 }

@@ -469,6 +469,13 @@ namespace skyline::gpu::interconnect {
                 LOGW("[PROP_DESC] VIEW_CREATE seq={} format={} offset={} range={} alignment={} misaligned={} buffer=0x{:X}",
                      traceId, static_cast<u32>(format), binding.offset, binding.size, alignment,
                      misaligned, std::bit_cast<std::uint64_t>(static_cast<VkBuffer>(binding.buffer)));
+                const auto formatFeatures{ctx.gpu.vkPhysicalDevice.getFormatProperties(format).bufferFeatures};
+                const auto maxTexelElements{ctx.gpu.vkPhysicalDevice.getProperties().limits.maxTexelBufferElements};
+                LOGW("[PROP_DESC] VIEW_LIMITS seq={} format={} uniformTexel={} storageTexel={} maxTexelElements={}",
+                     traceId, static_cast<u32>(format),
+                     static_cast<bool>(formatFeatures & vk::FormatFeatureFlagBits::eUniformTexelBuffer),
+                     static_cast<bool>(formatFeatures & vk::FormatFeatureFlagBits::eStorageTexelBuffer),
+                     maxTexelElements);
             }
             bufferView = std::make_unique<vk::raii::BufferView>(ctx.gpu.vkDevice, vk::BufferViewCreateInfo{
                 .buffer = binding.buffer,
