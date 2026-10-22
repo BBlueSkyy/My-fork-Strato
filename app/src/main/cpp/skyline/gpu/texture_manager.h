@@ -4,6 +4,7 @@
 #pragma once
 
 #include "texture/texture.h"
+#include "texture/overlap_index.h"
 
 namespace skyline::gpu {
     /**
@@ -27,6 +28,7 @@ namespace skyline::gpu {
 
         GPU &gpu;
         std::vector<TextureMapping> textures; //!< A sorted vector of all texture mappings
+        texture::MappingOverlapIndex overlaps; //!< Non-owning augmentation of the start-sorted mapping vector.
 
       public:
         TextureManager(GPU &gpu);

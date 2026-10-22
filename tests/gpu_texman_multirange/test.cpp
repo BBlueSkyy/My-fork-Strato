@@ -14,6 +14,8 @@ struct Entry {
     int id;
     auto begin() const { return range.begin(); }
     auto end() const { return range.end(); }
+    auto data() const { return range.data(); }
+    auto size() const { return range.size(); }
 };
 
 int main() {
@@ -37,21 +39,23 @@ int main() {
     };
 
     std::vector<int> found;
-    skyline::gpu::texture::ForEachSecondaryMappingOverlap(guest, entries,
+    skyline::gpu::texture::MappingOverlapIndex overlaps;
+    overlaps.Rebuild(entries);
+    skyline::gpu::texture::ForEachSecondaryMappingOverlap(guest, entries, overlaps,
         [&](const Entry &entry) { found.push_back(entry.id); });
     std::sort(found.begin(), found.end());
     assert((found == std::vector<int>{1, 2}));
 
     guest.resize(1);
     found.clear();
-    skyline::gpu::texture::ForEachSecondaryMappingOverlap(guest, entries,
+    skyline::gpu::texture::ForEachSecondaryMappingOverlap(guest, entries, overlaps,
         [&](const Entry &entry) { found.push_back(entry.id); });
     assert(found.empty());
 
     guest.emplace_back(memory.data() + 48, 8);
     guest.emplace_back(memory.data() + 700, 8);
     found.clear();
-    skyline::gpu::texture::ForEachSecondaryMappingOverlap(guest, entries,
+    skyline::gpu::texture::ForEachSecondaryMappingOverlap(guest, entries, overlaps,
         [&](const Entry &entry) { found.push_back(entry.id); });
     std::sort(found.begin(), found.end());
     assert((found == std::vector<int>{1, 2}));
