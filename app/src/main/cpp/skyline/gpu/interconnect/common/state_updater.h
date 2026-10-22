@@ -270,6 +270,32 @@ namespace skyline::gpu::interconnect {
                              reinterpret_cast<std::uintptr_t>(write.pImageInfo),
                              reinterpret_cast<std::uintptr_t>(write.pBufferInfo),
                              reinterpret_cast<std::uintptr_t>(write.pTexelBufferView));
+                        // SpongeBob Qualcomm driver crash at seq=6368: the only
+                        // 3-element uniform texel-buffer write in that capture.
+                        // Previously only element zero was logged, leaving the
+                        // potentially invalid second and third views unknown.
+                        // Do not modify views or the Vulkan call: diagnostics only.
+                        if (hasView && write.descriptorCount > 1) {
+                            for (u32 viewIndex{}; viewIndex < write.descriptorCount && viewIndex < 16; ++viewIndex) {
+                                const auto viewHandle{std::bit_cast<std::uint64_t>(
+                                    static_cast<VkBufferView>(write.pTexelBufferView[viewIndex]))};
+                                LOGW("[PROP_DESC] TEXEL_ELEMENT seq={} binding={} element={} view=0x{:X}",
+                                     traceId, write.dstBinding, write.dstArrayElement + viewIndex, viewHandle);
+                            }
+                        }
+                        // Also capture the four UBO descriptors sharing that exact
+                        // update: an invalid uniform buffer can equally fault the
+                        // driver, so do not assume the texel array is responsible.
+                        if (write.pBufferInfo && write.descriptorCount > 1) {
+                            for (u32 bufferIndex{}; bufferIndex < write.descriptorCount && bufferIndex < 16; ++bufferIndex) {
+                                const auto &bufferInfo{write.pBufferInfo[bufferIndex]};
+                                const auto bufferHandle{std::bit_cast<std::uint64_t>(
+                                    static_cast<VkBuffer>(bufferInfo.buffer))};
+                                LOGW("[PROP_DESC] BUFFER_ELEMENT seq={} binding={} element={} buffer=0x{:X} offset={} range={}",
+                                     traceId, write.dstBinding, write.dstArrayElement + bufferIndex,
+                                     bufferHandle, static_cast<u64>(bufferInfo.offset), static_cast<u64>(bufferInfo.range));
+                            }
+                        }
                     }
                 }
 

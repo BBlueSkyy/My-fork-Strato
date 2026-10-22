@@ -59,3 +59,19 @@ limited to 24 entries, but every update receives the pre/post markers.
 Logs are intentionally verbose; do not use this branch for FPS tests.
 The `VIEW_CREATE` instrumentation remains unchanged. No speculative
 runtime correction is included.
+
+## Third diagnostic revision (Release, Qualcomm 0.777.0)
+
+New full-trace log pinpoints `PRE_WRITE seq=6368` with no matching
+`POST_WRITE`; the stack faults in Qualcomm `vkUpdateDescriptorSets`.
+That batch has four uniform buffers (binding 0) and **three uniform
+texel-buffer views (binding 4)**, with zero copies. This is the *only*
+multi-element type-4 write in the logged run. Its first view was
+created as format 99 at offset 2560 (64-byte aligned), so evidence
+does not establish that the first view is malformed. The remaining
+two handles were not yet logged.
+
+The diagnostic now logs all up to 16 members of multi-element texel
+and buffer descriptor writes (`TEXEL_ELEMENT`, `BUFFER_ELEMENT`), to
+compare all seven handles and buffer ranges against creation traces.
+No shader, view, descriptor, binding, or runtime semantics are changed.
