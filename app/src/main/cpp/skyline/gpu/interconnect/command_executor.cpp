@@ -412,9 +412,106 @@ namespace skyline::gpu::interconnect {
                IsSparkingImage(texture, width, height, vk::Format::eB8G8R8A8Unorm);
     }
 
+    std::optional<u32> CommandExecutor::BeginDiagnosticSparkingDraw(span<TextureView *> color) {
+        auto &capture{diagnostic::SparkingCapture()};
+        if (!capture.active.load(std::memory_order_acquire) || !capture.hdrDrawScan.load(std::memory_order_acquire))
+            return std::nullopt;
+        for (auto *view : color) {
+            if (!view || !view->texture ||
+                !IsSparkingImage(*view->texture, 856, 480, vk::Format::eB10G11R11UfloatPack32)) continue;
+            auto ordinal{capture.ClaimHdrDraw(reinterpret_cast<uintptr_t>(view->texture.get()),
+                                             reinterpret_cast<uintptr_t>(this))};
+            if (ordinal && *ordinal == 1) QueueSparkingScanImage(view, "before_first", 0, true);
+            return ordinal;
+        }
+        return std::nullopt;
+    }
+
+    void CommandExecutor::EndDiagnosticSparkingDraw(u32 ordinal, span<TextureView *> color) {
+        for (auto *view : color) {
+            if (!view || !view->texture ||
+                !IsSparkingImage(*view->texture, 856, 480, vk::Format::eB10G11R11UfloatPack32)) continue;
+            QueueSparkingScanImage(view, "after", ordinal, true);
+            break;
+        }
+    }
+
+    void CommandExecutor::QueueSparkingScanImage(TextureView *view, const std::string &phase,
+                                               u32 ordinal, bool hdrStats) {
+        auto &capture{diagnostic::SparkingCapture()};
+        if (!view || !view->texture || !capture.active.load(std::memory_order_acquire)) return;
+        auto texture{view->texture};
+        if (texture->dimensions.depth != 1 || texture->levelCount > 12 || texture->layerCount > 6 ||
+            texture->sampleCount != vk::SampleCountFlagBits::e1 || !texture->surfaceSize ||
+            texture->surfaceSize > 20ULL * 1024 * 1024 ||
+            (texture->layout != vk::ImageLayout::eGeneral && texture->layout != vk::ImageLayout::eTransferSrcOptimal) ||
+            !(texture->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+            !(texture->format->vkAspect & vk::ImageAspectFlagBits::eColor)) {
+            capture.Record(fmt::format("HDR_SCAN_SKIP draw={} phase={} reason=unsupported_image", ordinal, phase));
+            return;
+        }
+        if (hdrStats && texture->surfaceSize != static_cast<size_t>(texture->dimensions.width) * texture->dimensions.height * 4) {
+            capture.Record(fmt::format("HDR_SCAN_SKIP draw={} phase={} reason=nonpacked_hdr", ordinal, phase));
+            return;
+        }
+        if (!capture.ReserveScanBytes(texture->surfaceSize)) {
+            capture.Record(fmt::format("HDR_SCAN_SKIP draw={} phase={} reason=byte_budget", ordinal, phase));
+            return;
+        }
+        const std::filesystem::path directory{capture.CaptureDirectory()};
+        const auto stem{fmt::format("hdr_draw_{:03}_{}", ordinal, phase)};
+        const auto bytes{texture->surfaceSize};
+        const auto meta{fmt::format("ordinal={} phase={} executor=0x{:X} submission={} rp={} "
+            "texture=0x{:X} image={}x{} format={} bytes={} levels={} layers={} "
+            "view_mip={} view_levels={} view_layer={} view_layers={} packing=mip_major_all_layers\n",
+            ordinal, phase, reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
+            reinterpret_cast<uintptr_t>(texture.get()), texture->dimensions.width, texture->dimensions.height,
+            vk::to_string(texture->format->vkFormat), bytes, texture->levelCount, texture->layerCount,
+            view->range.baseMipLevel, view->range.levelCount, view->range.baseArrayLayer, view->range.layerCount)};
+        AttachTexture(view); // Reattach if AddSubpass auto-submitted the writer's execution.
+        auto staging{gpu.memory.AllocateStagingBuffer(bytes)};
+        // Ends the current render pass, then copies in this executor's ordered stream.
+        // No submit, CPU readback wait or device-idle is introduced here.
+        AddOutsideRpCommand([texture, staging](vk::raii::CommandBuffer &commands,
+                                               const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+            cycle->AttachObjects(texture, staging);
+            texture->CopyIntoStagingBuffer(commands, staging);
+            // Order this diagnostic transfer read before any later image writer.
+            // CopyIntoStagingBuffer supplies the preceding-write -> read dependency.
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands,
+                {}, {}, {}, vk::ImageMemoryBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eTransferRead,
+                    .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                    .oldLayout = texture->layout,
+                    .newLayout = texture->layout,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = texture->GetBacking(),
+                    .subresourceRange = {texture->format->vkAspect, 0, texture->levelCount, 0, texture->layerCount},
+                });
+        });
+        diagnosticReadbackCallbacks.emplace_back([staging, directory, stem, meta, bytes, ordinal, hdrStats] {
+            std::ofstream raw(directory / (stem + ".raw"), std::ios::binary | std::ios::trunc);
+            raw.write(reinterpret_cast<const char *>(staging->data()), static_cast<std::streamsize>(bytes));
+            if (!raw) { LOGE("MINIRD_SPARKING_DRAW failed to write {}", stem); return; }
+            std::ofstream info(directory / (stem + ".txt"), std::ios::trunc);
+            info << meta;
+            if (hdrStats) {
+                const auto stats{diagnostic::SparkingHdrStats::Decode(
+                    std::span<const std::uint8_t>{staging->data(), static_cast<size_t>(bytes)})};
+                // The selected executor's waiter serializes these callbacks.
+                std::ofstream csv(directory / "hdr_draw_stats.csv", std::ios::app);
+                csv << ordinal << ',' << stem << ',' << stats.nanPixels << ',' << stats.infPixels << '\n';
+            }
+            LOGI("MINIRD_SPARKING_DRAW wrote {}", stem);
+        });
+        capture.Record(fmt::format("HDR_SCAN_COPY ordinal={} phase={} bytes={} metadata={}",
+                                   ordinal, phase, bytes, stem));
+    }
+
     void CommandExecutor::TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color) {
         auto &capture{diagnostic::SparkingCapture()};
-        if (!capture.active.load(std::memory_order_acquire))
+        if (!capture.active.load(std::memory_order_acquire) || capture.hdrDrawScan.load(std::memory_order_acquire))
             return;
         (void)sampled;
         // HDR scene producers do not necessarily sample a prior scene texture.
@@ -436,7 +533,7 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::MarkDiagnosticSparkingOutput(span<TextureView *> sampled, span<TextureView *> color,
                                                        std::uint64_t fragmentShaderHash) {
         auto &capture{diagnostic::SparkingCapture()};
-        if (!capture.active.load(std::memory_order_acquire))
+        if (!capture.active.load(std::memory_order_acquire) || capture.hdrDrawScan.load(std::memory_order_acquire))
             return;
         // Observed in capture_001. Exact hashes keep the next readback cheap.
         constexpr std::uint64_t ToneMap{0x3332897FCDBD1264ULL};
@@ -494,7 +591,7 @@ namespace skyline::gpu::interconnect {
         auto images{std::move(diagnosticPassImages)};
         diagnosticPassImages.clear();
         auto &capture{diagnostic::SparkingCapture()};
-        if (!capture.active.load(std::memory_order_acquire))
+        if (!capture.active.load(std::memory_order_acquire) || capture.hdrDrawScan.load(std::memory_order_acquire))
             return;
 
         const auto interval{capture.presentIndex.load(std::memory_order_acquire)};

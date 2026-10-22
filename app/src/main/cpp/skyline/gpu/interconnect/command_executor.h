@@ -284,6 +284,10 @@ namespace skyline::gpu::interconnect {
         // Diagnostic only: annotate a scene-color sampling pass.
         // Called after adding the draw, while its active attachments are known.
         void MarkDiagnosticSparkingOutput(span<TextureView *> sampled, span<TextureView *> color, std::uint64_t fragmentShaderHash);
+        std::optional<u32> BeginDiagnosticSparkingDraw(span<TextureView *> color);
+        void EndDiagnosticSparkingDraw(u32 ordinal, span<TextureView *> color);
+        void QueueSparkingScanImage(TextureView *view, const std::string &phase, u32 ordinal, bool hdrStats);
+
 
         CommandExecutor(const DeviceState &state);
 

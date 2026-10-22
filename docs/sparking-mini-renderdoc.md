@@ -59,3 +59,65 @@ prove which descriptor, source texture or constant-buffer value caused it.
 Capture overhead can also affect timing; performance comparisons should use
 capture disabled. Android compilation and this refreshed capture need device
 validation on the Moto G100. No mandatory build tests were added.
+
+
+## Phase 3 — opt-in HDR draw scan
+
+The two device captures show nonfinite scene-HDR pixels before tone mapping.
+The first capture has 223,831 NaN pixels in `pass_01`; the second reaches 271,012
+in `pass_33`. These are after-pass observations, not proof of a particular draw
+or source. Phase 3 narrows that interval without changing guest shader code.
+
+1. Install this PR's ARM64 **DevRelease** APK. In `gpu_capture/sparking`, create
+   the empty file **`ENABLE_HDR_DRAW_SCAN`** and fully restart the app before
+   launching the game. The startup marker also enables bounded shader dumps.
+2. Enter gameplay with visible corruption, then create/rename **`ARM_CAPTURE`**
+   in the same folder. The Cosmic Shake `ENABLE_HDR_FIRST_BAD` marker is unused.
+3. After capture completion, wait for pending `MINIRD_SPARKING_DRAW wrote ...`
+   log messages to finish. Send the new `capture_###` folder, the matching log,
+   a screenshot, **and the sibling `scan_shaders` folder**.
+4. Remove `ENABLE_HDR_DRAW_SCAN` and restart to return to the existing phase-2
+   pass capture. Remove the marker and leave capture unarmed for normal play.
+
+The scan follows the first eligible 856x480 R11G11B10 HDR backing on one executor.
+It saves a baseline before its first selected draw, then a snapshot after each
+of up to **192 draw calls**, while the existing six-present capture is active.
+Inline and indirect paths participate; one indirect API call may contain several
+GPU draws. The baseline may already contain corruption if armed mid-frame.
+`hdr_draw_stats.csv` records ordinal, snapshot name, NaN pixel count and infinity
+pixel count. The same pixel can contribute to both counts if different channels
+are nonfinite. There is no separate before-image for every draw: clears, other
+writers/executors, skipped targets and conditional/indirect execution still need
+trace correlation. Fixed dimensions and the single target can miss other paths.
+
+`HDR_SCAN_DRAW` correlates hashes/parameters; `HDR_SCAN_INPUT` records up to 32
+sampled views with format, mip and layer selection. First-use input backings are
+copied once, at most 64 backings and 48 MiB. They are not guaranteed fresh for
+later draws; depth, 3D, multisampled, oversized or unsupported inputs are skipped.
+CBUF records contain descriptor bindings and declared/used sizes **only**, not
+CBUF contents. This avoids CPU reads of GPU-dirty buffers or introducing waits.
+
+`scan_shaders` contains guest and emitted/replacement-selected SPIR-V binaries
+seen during compilation, capped at 2048 files / 64 MiB per process. Filenames use
+decimal guest hash and FNV-1a content hash; `shader_manifest.txt` maps them. More
+than one runtime variant may share a guest hash; hashes alone do not prove the
+exact module variant used by a captured pipeline. Already cached shaders may
+not be emitted again, so enable the marker before a fresh app process.
+
+Raw scan allocations are capped at **384 MiB** including inputs. The phase-2
+pass snapshots are disabled in this mode; the six presentation sources remain.
+Render passes are split around diagnostic image copies and an image-specific
+transfer-read dependency orders later writers. Copies remain in the existing
+executor stream, without a new explicit submit, fence wait or device-idle call.
+Readbacks, disk writes and pass splits can materially alter timing and memory
+use while armed. CPU statistics/file writes run through completion callbacks.
+An incomplete/truncated scan or a timing-dependent disappearance is not a fix.
+Android compilation, device behavior and whether the first anomaly fits inside
+the selected window still require validation on the Moto G100.
+
+Host check: `python3 tests/gpu_sparking_scan/run.py` (ASan/UBSan; Vulkan and fmt
+headers required for the extracted production-function facade). It exercises
+opt-in/default behavior, target/executor selection, quotas/reset, packed HDR
+nonfinite decoding and production helper metadata/readback scheduling. The
+facade does not execute Vulkan commands or validate a real GPU render-pass split.
+No test was added to APK workflows.

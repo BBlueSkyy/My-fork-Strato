@@ -236,6 +236,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         void SyncCachedStorageBufferViews(ContextTag executionTag);
 
       public:
+        const DescriptorInfo &GetDiagnosticDescriptorInfo() const { return descriptorInfo; }
         GraphicsPipelineAssembler::CompiledPipeline compiledPipeline;
 
         Pipeline(GPU &gpu, PipelineStateAccessor &accessor, const PackedPipelineState &packedState);
