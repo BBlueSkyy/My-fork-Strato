@@ -5,6 +5,7 @@
 #include <gpu/texture/format.h>
 #include <gpu/texture/texture.h>
 #include <gpu/texture_manager.h>
+#include <gpu/diagnostic/ue4_ui_capture.h>
 #include <soc/gm20b/gmmu.h>
 #include <soc/gm20b/channel.h>
 #include "fermi_2d.h"
@@ -148,6 +149,16 @@ namespace skyline::gpu::interconnect {
         executor.AttachDependency(dstTextureView);
         executor.AttachTexture(dstTextureView.get());
         dstTextureView->texture->MarkGpuDirty(executor.usageTracker);
+        if (diagnostic::UiSurfaceCapture().active.load(std::memory_order_acquire))
+            diagnostic::UiSurfaceCapture().Record(fmt::format("FERMI_BLIT src={}x{} dst={}x{} "
+                "src_xy={},{} dst_xy={},{} dst_size={}x{} gradient={},{} filter={} "
+                "src_texture=0x{:X} dst_texture=0x{:X}",
+                srcGuestTexture.dimensions.width, srcGuestTexture.dimensions.height,
+                dstGuestTexture.dimensions.width, dstGuestTexture.dimensions.height,
+                centredSrcRectX, centredSrcRectY, dstRectX, dstRectY,
+                dstRectWidth, dstRectHeight, duDx, dvDy, static_cast<int>(filter),
+                reinterpret_cast<uintptr_t>(srcTextureView->texture.get()),
+                reinterpret_cast<uintptr_t>(dstTextureView->texture.get())));
 
         executor.NotifyPipelineChange();
         executor.AddCheckpoint("Before blit");

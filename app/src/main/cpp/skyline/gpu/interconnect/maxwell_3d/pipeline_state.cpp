@@ -9,11 +9,13 @@
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include <gpu.h>
+#include <gpu/diagnostic/ue4_ui_capture.h>
 #include "pipeline_state.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
     static void DetermineRenderTargetDimensions(GuestTexture &guest, const engine::SurfaceClip &clip) {
         // RT dimensions always include block linear alignment and contain the unaligned dimensions in surface clip, we ideally want to create the texture using the unaligned dimensions since the texture manager doesn't support resolving such overlaps yet. By checking that the layer size calculated is equal to the RT size we can eliminate most cases where the clip is used not just for aligmnent
+        const auto originalDimensions{guest.dimensions};
         u32 underlyingRtLayerSize{guest.CalculateLayerSize()};
         texture::Dimensions underlyingRtDimensions{guest.dimensions};
         guest.dimensions = texture::Dimensions{static_cast<u32>(clip.horizontal.width + clip.horizontal.x),
@@ -24,6 +26,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
         // If the calculated sizes don't match then always use the RT dimensions
         if (clippedRtLayerSize != underlyingRtLayerSize)
             guest.dimensions = underlyingRtDimensions;
+        auto &cap{diagnostic::UiSurfaceCapture()};
+        if (cap.active.load(std::memory_order_acquire))
+            cap.Record(fmt::format("RT_DIM original={}x{} chosen={}x{} clip={},{} {}x{} "
+                "original_layer={} clipped_layer={} tile={} gob_height={} gob_depth={}",
+                originalDimensions.width, originalDimensions.height,
+                guest.dimensions.width, guest.dimensions.height,
+                clip.horizontal.x, clip.vertical.y, clip.horizontal.width, clip.vertical.height,
+                underlyingRtLayerSize, clippedRtLayerSize, static_cast<int>(guest.tileConfig.mode),
+                guest.tileConfig.blockHeight, guest.tileConfig.blockDepth));
     }
 
     /* Colour Render Target */

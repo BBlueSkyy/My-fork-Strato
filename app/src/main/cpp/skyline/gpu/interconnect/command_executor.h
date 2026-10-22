@@ -223,6 +223,11 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
+        // Opt-in UE4 UI surface diagnostic, inactive on every normal execution.
+        std::vector<std::shared_ptr<Texture>> uiCapturePassImages;
+        std::vector<std::function<void()>> uiCaptureReadbacks;
+        void QueueUiCapturePassReadbacks();
+
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
         void RotateRecordSlot();

@@ -11,6 +11,10 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <gpu/diagnostic/ue4_ui_capture.h>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -382,6 +386,66 @@ namespace skyline::gpu::interconnect {
         return (!a && !b) || (a && b && b->GetView() == a);
     }
 
+    static bool IsUiCaptureColorImage(const Texture &t) {
+        return t.dimensions.width >= 480 && t.dimensions.width <= 3840 &&
+            t.dimensions.height >= 270 && t.dimensions.height <= 2160 &&
+            t.dimensions.depth == 1 && t.levelCount == 1 && t.layerCount == 1 &&
+            t.sampleCount == vk::SampleCountFlagBits::e1 && t.surfaceSize &&
+            t.surfaceSize <= 12ULL * 1024 * 1024 &&
+            (t.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+            !t.format->IsCompressed() &&
+            (t.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+            t.layout != vk::ImageLayout::eUndefined;
+    }
+
+    void CommandExecutor::QueueUiCapturePassReadbacks() {
+        if (uiCapturePassImages.empty()) return;
+        auto images{std::move(uiCapturePassImages)};
+        uiCapturePassImages.clear();
+        auto &cap{diagnostic::UiSurfaceCapture()};
+        if (!cap.active.load(std::memory_order_acquire)) return;
+        const auto interval{cap.presentIndex.load(std::memory_order_acquire)};
+        if (interval >= diagnostic::Ue4UiCaptureState::FrameCount) return;
+        const std::filesystem::path dir{cap.CaptureDirectory()};
+        if (dir.empty()) return;
+        for (const auto &tex : images) {
+            if (!IsUiCaptureColorImage(*tex)) continue;
+            const auto idOpt{cap.ReservePassSnapshot(interval, tex->surfaceSize)};
+            if (!idOpt) break;
+            const auto id{*idOpt}, w{tex->dimensions.width}, h{tex->dimensions.height};
+            const auto fmtName{vk::to_string(tex->format->vkFormat)};
+            const auto rawPath{dir / fmt::format("pass_{:02}_rp{}_{}x{}_{}.raw", id, renderPassIndex, w, h, fmtName)};
+            const auto metaPath{dir / fmt::format("pass_{:02}.txt", id)};
+            const auto meta{fmt::format(
+                "id={} approx_present={} executor=0x{:X} submission={} render_pass={} "
+                "texture=0x{:X} width={} height={} format={} layout={} bytes={} "
+                "note=GPU_readback_after_render_pass_end\\n",
+                id, interval, reinterpret_cast<uintptr_t>(this), submissionNumber,
+                renderPassIndex, reinterpret_cast<uintptr_t>(tex.get()),
+                w, h, fmtName, vk::to_string(tex->layout), tex->surfaceSize)};
+            auto staging{gpu.memory.AllocateStagingBuffer(tex->surfaceSize)};
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [tex, staging](vk::raii::CommandBuffer &cmd,
+                               const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    cycle->AttachObjects(tex, staging);
+                    tex->CopyIntoStagingBuffer(cmd, staging);
+                });
+            uiCaptureReadbacks.emplace_back([staging, rawPath, metaPath, meta, id] {
+                std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                if (!raw) { LOGE("MINIRD_UE4_UI cannot write pass {}", id); return; }
+                raw.write(reinterpret_cast<const char *>(staging->data()),
+                          static_cast<std::streamsize>(staging->size()));
+                raw.close();
+                std::ofstream info(metaPath, std::ios::trunc);
+                if (info) info << meta;
+                LOGI("MINIRD_UE4_UI wrote pass {}: {}", id, rawPath.string());
+            });
+            cap.Record(fmt::format("PASS_READBACK id={} exec=0x{:X} submission={} rp={} texture=0x{:X}",
+                id, reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
+                reinterpret_cast<uintptr_t>(tex.get())));
+        }
+    }
+
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
         auto addSubpass{[&] {
             renderPass->AddSubpass(inputAttachments, colorAttachments, depthStencilAttachment, gpu);
@@ -417,6 +481,7 @@ namespace skyline::gpu::interconnect {
 
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+                QueueUiCapturePassReadbacks();
                 renderPassIndex++;
             }
             renderPass = &std::get<node::RenderPassNode>(slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassNode>(), renderArea));
@@ -442,6 +507,25 @@ namespace skyline::gpu::interconnect {
         for (auto view : sampledImages)
             view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
+        auto &cap{diagnostic::UiSurfaceCapture()};
+        if (cap.active.load(std::memory_order_acquire)) {
+            for (auto *view : colorAttachments) {
+                if (!view || !view->texture || !IsUiCaptureColorImage(*view->texture))
+                    continue;
+                std::shared_ptr<Texture> image{view->texture};
+                if (std::find(uiCapturePassImages.begin(), uiCapturePassImages.end(), image) == uiCapturePassImages.end()
+                    && uiCapturePassImages.size() < 12)
+                    uiCapturePassImages.push_back(std::move(image));
+                cap.Record(fmt::format("PASS_TARGET exec=0x{:X} submit={} rp={} area={},{} {}x{} "
+                    "texture=0x{:X} dimensions={}x{} format={} sampled={}",
+                    reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
+                    renderArea.offset.x, renderArea.offset.y, renderArea.extent.width, renderArea.extent.height,
+                    reinterpret_cast<uintptr_t>(view->texture.get()), view->texture->dimensions.width,
+                    view->texture->dimensions.height, vk::to_string(view->texture->format->vkFormat),
+                    sampledImages.size()));
+            }
+        }
+
         return gotoNext;
     }
 
@@ -452,6 +536,7 @@ namespace skyline::gpu::interconnect {
 
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+            QueueUiCapturePassReadbacks();
             renderPassIndex++;
 
             renderPass = nullptr;
@@ -786,6 +871,12 @@ namespace skyline::gpu::interconnect {
             SubmitInternal();
             submissionNumber++;
         }
+
+        // The cycle completion waiter was queued before SubmitInternal.
+        // Process GPU readback files only after it has completed.
+        for (auto &cb : uiCaptureReadbacks)
+            waiterThread.Queue(nullptr, std::move(cb));
+        uiCaptureReadbacks.clear();
 
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission

@@ -9,6 +9,7 @@
 #include <soc/gm20b/channel.h>
 #include "common/utils.h"
 #include "maxwell_3d.h"
+#include <gpu/diagnostic/ue4_ui_capture.h>
 #include "common.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
@@ -779,7 +780,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                                          ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
 
         vk::Rect2D scissor{GetDrawScissor()};
-
+        if (diagnostic::UiSurfaceCapture().active.load(std::memory_order_acquire)) {
+            std::string hashes{};
+            if (auto *pipeline{activeState.GetPipeline()})
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    hashes += fmt::format("{:016X},", hash);
+            diagnostic::UiSurfaceCapture().Record(fmt::format(
+                "DRAW indexed={} count={} instances={} scissor={},{} {}x{} shaders={} "
+                "sampled_views={} color_targets={}",
+                indexed, count, instanceCount, scissor.offset.x, scissor.offset.y,
+                scissor.extent.width, scissor.extent.height, hashes,
+                activeDescriptorSetSampledImages.size(), activeState.GetColorAttachments().size()));
+        }
 
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");

@@ -9,6 +9,7 @@
 #include <soc/gm20b/gmmu.h>
 #include <gpu/buffer_manager.h>
 #include <gpu/interconnect/command_executor.h>
+#include <gpu/diagnostic/ue4_ui_capture.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
 #include "common.h"
@@ -294,6 +295,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void ViewportState::Flush(InterconnectContext &ctx, StateUpdateBuilder &builder) {
+        auto &cap{diagnostic::UiSurfaceCapture()};
+        if (cap.active.load(std::memory_order_acquire))
+            cap.Record(fmt::format("VIEWPORT index={} enabled={} surface_clip={},{} {}x{} "
+                "scale={},{} offset={},{} origin_lower_left={}",
+                index, engine->viewportScaleOffsetEnable, engine->surfaceClip.horizontal.x,
+                engine->surfaceClip.vertical.y, engine->surfaceClip.horizontal.width,
+                engine->surfaceClip.vertical.height, engine->viewport.scaleX,
+                engine->viewport.scaleY, engine->viewport.offsetX,
+                engine->viewport.offsetY, engine->windowOrigin.lowerLeft));
         if (index != 0 && !ctx.gpu.traits.supportsMultipleViewports)
             return;
 
@@ -321,6 +331,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
     ScissorState::ScissorState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine, u32 index) : engine{manager, dirtyHandle, engine}, index{index} {}
 
     void ScissorState::Flush(InterconnectContext &ctx, StateUpdateBuilder &builder) {
+        auto &cap{diagnostic::UiSurfaceCapture()};
+        if (cap.active.load(std::memory_order_acquire))
+            cap.Record(fmt::format("SCISSOR index={} enabled={} x_min={} y_min={} x_max={} y_max={}",
+                index, engine->scissor.enable, engine->scissor.horizontal.xMin,
+                engine->scissor.vertical.yMin, engine->scissor.horizontal.xMax,
+                engine->scissor.vertical.yMax));
         if (index != 0 && !ctx.gpu.traits.supportsMultipleViewports)
             return;
 
