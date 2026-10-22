@@ -36,6 +36,25 @@ namespace skyline::gpu::diagnostic {
         std::array<std::uint32_t, FrameCount> passCountByInterval{};
         std::uint32_t nextPassIndex{};
         std::size_t passBytes{};
+        std::uint32_t pendingPassSnapshots{};
+        std::uint32_t successfulPassSnapshots{};
+        std::uint32_t failedPassSnapshots{};
+        bool presentationSamplesFinished{};
+
+        // Must be called while mutex is held. This marker is different from
+        // capture_complete.txt: it only appears once every reserved pass
+        // readback callback has finished writing (or reported failure).
+        void MaybeWritePassCompletionLocked() {
+            if (!presentationSamplesFinished || pendingPassSnapshots)
+                return;
+            std::ofstream out(std::filesystem::path(path) / "pass_readbacks_done.txt",
+                              std::ios::trunc);
+            if (out)
+                out << "readback_callbacks_finished=true\n"
+                    << "requested=" << nextPassIndex << "\n"
+                    << "written=" << successfulPassSnapshots << "\n"
+                    << "failed=" << failedPassSnapshots << "\n";
+        }
         // Guest backing ranges shared across Maxwell3D, Fermi2D and VI executors.
         // No texture pointers, shader hashes or game IDs are used as persistent keys.
         std::vector<std::pair<std::uintptr_t, std::size_t>> watchedMappings;
@@ -48,6 +67,10 @@ namespace skyline::gpu::diagnostic {
             passCountByInterval.fill(0);
             nextPassIndex = 0;
             passBytes = 0;
+            pendingPassSnapshots = 0;
+            successfulPassSnapshots = 0;
+            failedPassSnapshots = 0;
+            presentationSamplesFinished = false;
             watchedMappings.clear();
             eventCount.store(0, std::memory_order_relaxed);
             presentIndex.store(0, std::memory_order_relaxed);
@@ -68,7 +91,20 @@ namespace skyline::gpu::diagnostic {
 
             ++passCountByInterval[interval];
             passBytes += bytes;
+            ++pendingPassSnapshots;
             return nextPassIndex++;
+        }
+
+        void PassSnapshotFinished(bool success) {
+            std::scoped_lock lock(mutex);
+            if (!pendingPassSnapshots)
+                return;
+            --pendingPassSnapshots;
+            if (success)
+                ++successfulPassSnapshots;
+            else
+                ++failedPassSnapshots;
+            MaybeWritePassCompletionLocked();
         }
 
         // One-shot diagnostic: a blended draw sampling compressed assets may
@@ -127,6 +163,8 @@ namespace skyline::gpu::diagnostic {
                     out << event << '\n';
             }
             events.clear();
+            presentationSamplesFinished = true;
+            MaybeWritePassCompletionLocked();
         }
     };
 

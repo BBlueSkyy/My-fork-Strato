@@ -432,13 +432,26 @@ namespace skyline::gpu::interconnect {
                 });
             uiCaptureReadbacks.emplace_back([staging, rawPath, metaPath, meta, id] {
                 std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
-                if (!raw) { LOGE("MINIRD_UE4_UI cannot write pass {}", id); return; }
+                if (!raw) {
+                    LOGE("MINIRD_UE4_UI cannot open pass {}", id);
+                    diagnostic::UiSurfaceCapture().PassSnapshotFinished(false);
+                    return;
+                }
                 raw.write(reinterpret_cast<const char *>(staging->data()),
                           static_cast<std::streamsize>(staging->size()));
                 raw.close();
+                const bool rawOk{raw.good()};
                 std::ofstream info(metaPath, std::ios::trunc);
-                if (info) info << meta;
-                LOGI("MINIRD_UE4_UI wrote pass {}: {}", id, rawPath.string());
+                if (info)
+                    info << meta;
+                info.close();
+                const bool metadataOk{info.good()};
+                if (rawOk && metadataOk)
+                    LOGI("MINIRD_UE4_UI wrote pass {}: {}", id, rawPath.string());
+                else
+                    LOGE("MINIRD_UE4_UI incomplete pass {} raw_ok={} metadata_ok={}",
+                         id, rawOk, metadataOk);
+                diagnostic::UiSurfaceCapture().PassSnapshotFinished(rawOk && metadataOk);
             });
             cap.Record(fmt::format("PASS_READBACK id={} exec=0x{:X} submission={} rp={} texture=0x{:X}",
                 id, reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
