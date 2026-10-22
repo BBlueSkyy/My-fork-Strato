@@ -506,12 +506,14 @@ namespace skyline::gpu {
             texture->aliasStale = separateGroup->guestGeneration != separateGroup->generation;
         }
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
+        auto firstChanged{textures.size()};
         for (auto it{texture->guest->mappings.begin()}; it != texture->guest->mappings.end(); ++it) {
             auto mapping{std::upper_bound(textures.begin(), textures.end(), reinterpret_cast<uintptr_t>(it->data()),
                 [](uintptr_t address, const TextureMapping &entry) { return address < reinterpret_cast<uintptr_t>(entry.data()); })};
+            firstChanged = std::min(firstChanged, static_cast<size_t>(mapping - textures.begin()));
             textures.emplace(mapping, TextureMapping{texture, it, *it});
         }
-        overlaps.Rebuild(textures);
+        overlaps.Update(textures, firstChanged);
 
         if (!tag) texture->ReconcileAliases();
         return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);

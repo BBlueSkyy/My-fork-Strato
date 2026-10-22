@@ -15,8 +15,9 @@ Scope: PR #385, branch `feat/texman-ryujinx-overlap-stage1`, extending
 The old primary lookup binary-searched by mapping end, although insertion of
 secondary spans used start-address ordering. Nested interval ends are not
 monotonic; even insertion of the primary mapping used this inconsistent order.
-All insertion now uses start-address ordering. The index is rebuilt once after
-inserting a new texture's mappings, never on an unchanged lookup.
+All insertion now uses start-address ordering. The index is updated once after
+inserting a new texture's mappings, never on an unchanged lookup. The performance
+follow-up below batches append rebuilds instead of rebuilding after every texture.
 
 This is an original adaptation of the reference mechanisms, not a transplant of
 their memory managers, tracking systems, caches, or texture lifetime models.
@@ -41,10 +42,13 @@ and augmenting it avoids another owner and per-page entry duplication.
 - Lookup allocates no index storage and prunes subtrees by maximum end and
   minimum start. Common single-span textures retain the same view/backing paths;
   the secondary query returns immediately for them.
-- Metadata uses one `uintptr_t` per mapping (8 bytes on ARM64), with vector
-  capacity retained across insertions. Rebuilding costs O(N) per newly
-  materialized texture; mapping insertion was already O(N). This added CPU work
-  needs device measurement, especially in scenes creating many unique textures.
+- The performance follow-up uses two logical `uintptr_t` entries per mapping
+  (16 bytes on ARM64), plus retained vector capacity and two address scalars.
+  This trades extra CPU metadata for lower repeated lookup/rebuild work.
+  Up to 128 pending suffix mappings use a small separate median tree. Only
+  insertions into the indexed prefix or pending-tail overflow rebuild the whole
+  primary tree. Prefix insertion remains O(N); append rebuilds are batched, not
+  claimed asymptotically constant. No image/view backing is recreated by this.
 - Existing GPU-written overlap fallback can still download/wait on the source
   texture. Correctly discovering a previously missed overlap can reach that
   existing path more often. No new fence wait, global synchronization, submission
@@ -121,3 +125,44 @@ existing ARM64 DevReldebug APK on Moto G100 before merging.
 - The harness now accepts optional `CXXFLAGS` and restores the matching old
   secondary-overlap header for baseline controls. No CI workflow invokes the
   new tests or requires the host Vulkan case.
+
+## Performance follow-up after device reports
+
+The user reports lower performance versus master in Bulletstorm, Dragon Ball
+FighterZ, Demon Slayer and Burnout. The user also reports a Bulletstorm visual
+improvement from this branch. Neither observation identifies an individual CPU
+cost or readback as the cause. No on-device FPS recovery is claimed here.
+
+The confirmed avoidable cost was rebuilding all index entries on every newly
+materialized texture. The follow-up retains the original compact median query
+and overlap/mapping/readback rules, batches appended mappings in a bounded
+128-entry suffix tree, and maintains prefix maximum ends. A binary start lookup
+returns a single candidate only when its preceding prefix maximum proves that
+no earlier mapping can overlap. Nested aliases still use complete traversal;
+a known containing allocation skips the unsuccessful single-candidate probe.
+Tail-first traversal preserves descending global candidate order.
+
+Optional `tests/gpu_texman_multirange/benchmark.cpp` measures 12,000 sequential
+mapping appends and 240,000 lookups. The nested variant adds one enclosing
+allocation. Five interleaved runs, median milliseconds on this x86 host with
+`-O3 -DNDEBUG`, comparing the header at `643fcf15` to the follow-up:
+
+| Compiler / distribution | Append before | Append after | Query before | Query after |
+| --- | ---: | ---: | ---: | ---: |
+| GCC / disjoint | 199.216 | 4.167 | 24.478 | 22.889 |
+| GCC / nested | 218.870 | 4.001 | 38.288 | 37.930 |
+| Clang 18 / disjoint | 371.945 | 7.307 | 31.280 | 9.148 |
+| Clang 18 / nested | 371.241 | 7.244 | 43.814 | 45.467 |
+
+Append address reads fell from 72,006,000 to 1,343,764 in both distributions.
+Hit counts were identical (240,000 disjoint; 479,980 nested). These timings
+include benchmark address-read counters; they are CPU microbenchmarks, not game
+FPS/frame-time measurements or predictions for Android. Nested Clang queries
+were slightly slower in this run, so universal lookup speedup is not claimed.
+Middle insertions still rebuild the primary index, and the existing necessary
+GPU readback fallback is unchanged. Those can remain runtime bottlenecks.
+
+The benchmark is optional and is not added to `run.py` or any APK workflow.
+For an older header, export it with `git show` and compile with
+`-DTEXMAN_INDEX_HEADER='"/tmp/old-overlap-index.h"'`. Compile normally for the
+current header; run the binary with `nested` to select enclosing intervals.
