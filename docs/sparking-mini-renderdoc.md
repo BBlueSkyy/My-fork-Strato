@@ -1,6 +1,6 @@
 # Dragon Ball: Sparking! ZERO — mini-RenderDoc (Strato)
 
-This is a manual opt-in trace built from the first-stage UE4 capture in PR #375, stacked on PR #374. It does not produce a RenderDoc .rdc file or itself fix graphics or DEVICE_LOST.
+This is a manual opt-in trace built from the first-stage UE4 capture in PR #375. The existing PR #377 history is retained and refreshed onto master at `68f4f3ab` (including merged PRs #383 and #385). It does not produce a RenderDoc .rdc file or itself fix graphics or DEVICE_LOST.
 
 ## Capturing on the Moto G100
 
@@ -32,3 +32,30 @@ The precise texture role and target fragment shader hash are included in each `p
 As with the initial implementation, these are after-pass snapshots, **not** exact pre/post-draw image pairs, and GPU work may lag the approximate present index. Readbacks are opt-in only. If no scene targets appear because dimensions, format, transfer usage or shaders differ in another fight, inspect the DRAW/FOCUS_BINDING metadata instead of assuming a stage is valid. The independent `VK_ERROR_OUT_OF_POOL_MEMORY` warnings remain unresolved; do not attribute corruption to them without evidence.
 
 Capture instructions and trigger are unchanged: create `gpu_capture/sparking/ARM_CAPTURE` when fighting, then collect the next `capture_###` folder plus `emulation.log`. Verify pending asynchronous pass writes finish before zipping.
+
+
+## Comparing different boots on the same base
+
+Use the ARM64 DevRelease APK of this refreshed PR #377 for both runs. The update
+preserves the phase-2 capture and current master shader-compiler pin; it is not a
+fix for arena corruption. No need to arm the Cosmic Shake HDR marker.
+
+1. Start a fresh app process and enter the same arena, with the same fighters,
+   graphics settings and driver. Once the corruption is visible, arm
+   `gpu_capture/sparking/ARM_CAPTURE`.
+2. Wait for capture completion and pending asynchronous snapshot writes as above.
+   Save the complete capture folder, matching `emulation.log` and a screenshot
+   together, labeled with the observed result (for example `green`).
+3. Close the app completely, relaunch the same APK and repeat when a different
+   result appears (for example `black` or `magenta`). Preserve both captures;
+   their folder numbers alone do not identify the boot or APK version.
+4. Compare the `scene_hdr`, tone-map, postprocess and upscale roles by dimensions,
+   format and shader, not by host pointer or physical address across processes.
+   Include the APK commit and driver version with both captures.
+
+These are still after-pass readbacks, not exact before/after snapshots of one
+draw. They can locate the first captured stage that differs, but cannot alone
+prove which descriptor, source texture or constant-buffer value caused it.
+Capture overhead can also affect timing; performance comparisons should use
+capture disabled. Android compilation and this refreshed capture need device
+validation on the Moto G100. No mandatory build tests were added.

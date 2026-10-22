@@ -12,6 +12,10 @@
 #include <gpu/texture/backing_promotion.h>
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
+#include <gpu/texture/pitch_linear.h>
+#include <gpu/texture/secondary_overlap.h>
+#include <gpu/texture/overlap_index.h>
+#include <gpu/texture/mapping_match.h>
 #include <bit>
 #include <chrono>
 #include <numeric>
@@ -232,7 +236,15 @@ namespace skyline::gpu {
             struct Memory {
                 unsigned discards{};
                 span<u8> CreateMirror(span<u8> mapping) { return mapping; }
-                span<u8> CreateMirrors(const std::vector<span<u8>> &) { throw std::runtime_error("Host mapping adapter tests one contiguous mapping"); }
+                span<u8> CreateMirrors(const std::vector<span<u8>> &mappings) {
+                    size_t size{};
+                    for (const auto &mapping : mappings) {
+                        if (mapping.data() != mappings.front().data() + size)
+                            throw std::runtime_error("Host mapping adapter requires physically adjacent segments");
+                        size += mapping.size();
+                    }
+                    return {mappings.front().data(), size};
+                }
                 void FreeMemory(span<u8> mirror) { ++discards; std::fill(mirror.begin(), mirror.end(), 0); }
             } memory;
             struct Trap {
@@ -302,6 +314,11 @@ namespace skyline::gpu {
             return vk::ImageType::e2D;
         }
         u32 GetLayerStride() { return layerStride; }
+        size_t GetSize() {
+            if (tileConfig.mode == texture::TileMode::Pitch)
+                return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), layerCount, baseArrayLayer);
+            return GetLayerStride() * (layerCount - baseArrayLayer);
+        }
         u32 GetViewLayerCount() const { return layerCount; }
         u32 GetViewDepth() const { return dimensions.depth; }
         u32 CalculateLayerSize() const {
@@ -356,7 +373,8 @@ namespace skyline::gpu {
         u64 backingGeneration{1};
         std::condition_variable backingCondition;
         // Sentinels: backing promotion must not rewrite dirty/lifetime/alias identity state.
-        int dirtyState{2};
+        enum DirtyState { Clean = 0, CpuDirty = 1, GpuDirty = 2 };
+        DirtyState dirtyState{GpuDirty};
         bool memoryFreed{false};
         mutable std::recursive_mutex stateMutex;
         std::atomic<std::shared_ptr<texture::AliasGroup>> aliasGroup{};
@@ -379,7 +397,6 @@ namespace skyline::gpu {
         void ReconcileAliases();
         void RecordGpuWrite();
         void SynchronizeGuest(bool, bool);
-        struct DirtyState { static constexpr int Clean{0}, CpuDirty{1}, GpuDirty{2}; };
         std::optional<int> trapHandle{777};
         u32 guestMemoryPins{};
         std::chrono::nanoseconds accumulatedGuestWaitTime{};
@@ -454,13 +471,15 @@ namespace skyline::gpu {
         vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, 3, 0, 2};
         vk::ImageView vkView{};
         u64 vkViewGeneration{};
+        vk::ImageView identityVkView{};
+        u64 identityVkViewGeneration{};
         TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, NativeFormat *format)
             : texture{std::move(texture)}, type{type}, format{format} {}
         TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, vk::ImageSubresourceRange range,
                     NativeFormat *format, vk::ComponentMapping mapping)
             : texture{std::move(texture)}, type{type}, format{format}, mapping{mapping}, range{range} {}
         vk::ImageUsageFlags GetUsage() const;
-        vk::ImageView GetView();
+        #include "view_api.inc"
         bool LockWithTag(ContextTag) { return false; } // Executor tag/resource-lock host boundary.
     };
     struct ContextLock { ContextLock(ContextTag, Texture &) {} };
@@ -559,6 +578,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
 
     void CheckImagelessAttachment(GPU &gpu, TextureView *view) {
         std::vector<vk::FramebufferAttachmentImageInfo> attachmentInfo;
+        const auto viewLayers{view->range.layerCount};
         #include "attachment.inc" // Exact metadata emitted by RenderPassNode::AddAttachment.
         assert(attachmentInfo.front().usage == view->GetUsage());
         const vk::AttachmentDescription attachment{.format = *view->format, .samples = vk::SampleCountFlagBits::e1,
@@ -918,7 +938,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
                     .image = original, .subresourceRange = base});
         });
         texture->layout = vk::ImageLayout::eGeneral;
-        texture->dirtyState = cpuDirty ? 1 : 2;
+        texture->dirtyState = cpuDirty ? Texture::DirtyState::CpuDirty : Texture::DirtyState::GpuDirty;
         texture->downloadStagingBuffer = gpu.memory.AllocateStagingBuffer(texture->surfaceSize);
         auto previous{texture->cycle};
 
@@ -1179,6 +1199,52 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(!validationErrors);
     }
 
+    void CheckManagerOverlapLookup(GPU &gpu) {
+        // The host mirror adapter supports page-aligned, adjacent physical
+        // segments. Actual disjoint segment order is checked by mapping_match.
+        std::vector<u8> storage(131072 + 4096, 0x2D);
+        auto *data{util::AlignUp(storage.data(), 4096)};
+        TextureManager manager{gpu};
+        GuestTexture descriptor;
+        descriptor.format = format::R8G8B8A8Unorm;
+        descriptor.dimensions = vk::Extent3D{128,128,1};
+        descriptor.viewType = vk::ImageViewType::e2D;
+        descriptor.mipLevelCount = descriptor.viewMipCount = descriptor.layerCount = 1;
+        descriptor.layerStride = 65536;
+        descriptor.mappings = {{data, 32768}, {data + 32768, 32768}};
+        auto original{manager.FindOrCreate(descriptor)};
+        const auto allocations{gpu.memory.count}, submissions{gpu.scheduler.submissions};
+        assert(manager.FindOrCreate(descriptor)->texture == original->texture);
+        assert(gpu.memory.count == allocations && gpu.scheduler.submissions == submissions);
+
+        auto nested{descriptor};
+        nested.dimensions = vk::Extent3D{32,32,1};
+        nested.layerStride = 4096;
+        nested.mappings = {{data + 4096, 4096}};
+        auto small{manager.FindOrCreate(nested)};
+        assert(small->texture != original->texture);
+        assert(manager.FindOrCreate(descriptor)->texture == original->texture);
+        assert(manager.FindOrCreate(nested)->texture == small->texture);
+
+        // A new larger mapping must preserve a GPU writer contained inside it,
+        // even though the writer cannot contain the requested primary mapping.
+        auto source{nested};
+        source.mappings = {{data + 98304, 4096}};
+        auto writer{manager.FindOrCreate(source)};
+        WriteAliasRenderTarget(writer->texture, {1,0,0,1});
+        std::vector<u8> expected(4096, 0x2D);
+        EncodeAliasBase(writer->texture, expected, {255,0,0,255});
+        auto parent{nested};
+        parent.dimensions = vk::Extent3D{64,64,1};
+        parent.layerStride = 16384;
+        parent.mappings = {{data + 94208, 16384}};
+        auto larger{manager.FindOrCreate(parent)};
+        assert(larger->texture != writer->texture);
+        assert(std::equal(expected.begin(), expected.end(), data + 98304));
+        assert(writer->texture->gpuReadbackSerial == writer->texture->gpuWriteSerial);
+        gpu.scheduler.Complete();
+    }
+
     void CheckManagerAliases(GPU &gpu) {
         TextureManager manager{gpu};
         std::vector<u8> guest(90112*6,0x2D),expected{guest};
@@ -1280,11 +1346,11 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         bool guarded{}; try { manager.FindOrCreate(invalid); } catch(const std::runtime_error&) { guarded=true; }
         assert(guarded); // The original safety guard is retained for impossible guest layouts.
         invalid=different; invalid.tileConfig.mode=texture::TileMode::Pitch; invalid.tileConfig.pitch=512;
-        guarded=false; try { manager.FindOrCreate(invalid); } catch(const std::runtime_error&) { guarded=true; }
-        assert(guarded); // Existing-group adoption must not bypass reversibility validation.
+        auto pitchAlias{manager.FindOrCreate(invalid)};
+        assert(pitchAlias->texture->aliasReadOnly); // Existing policy permits materialization, never writer authority.
         invalid=different; invalid.tileConfig.mode=texture::TileMode::Linear;
-        guarded=false; try { manager.FindOrCreate(invalid); } catch(const std::runtime_error&) { guarded=true; }
-        assert(guarded);
+        auto linearAlias{manager.FindOrCreate(invalid)};
+        assert(linearAlias->texture->aliasReadOnly);
         gpu.scheduler.Complete();
     }
 
@@ -1571,18 +1637,20 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         guestTexture.mappings = texture->guest->mappings;
         const ContextTag tag{};
         texture->dirtyState = Texture::DirtyState::CpuDirty;
+        bool requestedReadOnlyAlias{};
         bool rejected{};
         try {
             #include "unrepresentable.inc"
         } catch (const std::runtime_error &) { rejected = true; }
         assert(!rejected); // A valid separate representation must have a coherent fallback.
+        assert(!requestedReadOnlyAlias); // Both native block-linear layouts remain reversible.
     }
 
     void CheckMaterializationVsWriteback() {
         std::vector<u8> pitchBytes(64 * 32 * 4);
         GuestTexture pitch;
         pitch.format = format::R8G8B8A8Unorm;
-        pitch.dimensions = {64,32,1};
+        pitch.dimensions = vk::Extent3D{64,32,1};
         pitch.mipLevelCount = 1;
         pitch.viewMipCount = 1;
         pitch.layerCount = 1;
@@ -1600,7 +1668,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
 
         GuestTexture volume;
         volume.format = format::R8G8B8A8Unorm;
-        volume.dimensions = {16,16,4};
+        volume.dimensions = vk::Extent3D{16,16,4};
         volume.viewType = vk::ImageViewType::e3D;
         volume.layerCount = 1;
         volume.mipLevelCount = 3;
@@ -1667,7 +1735,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         std::vector<u8> bytes(64 * 64 * 4, 0x31);
         GuestTexture guest;
         guest.format = format::R8G8B8A8Unorm;
-        guest.dimensions = {64,64,1};
+        guest.dimensions = vk::Extent3D{64,64,1};
         guest.mipLevelCount = 1;
         guest.viewMipCount = 1;
         guest.layerCount = 1;
@@ -1708,7 +1776,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         std::vector<u8> bytes(90112 * 6, 0x4D);
         GuestTexture guest;
         guest.format = format::R8G8B8A8Unorm;
-        guest.dimensions = {128,128,1};
+        guest.dimensions = vk::Extent3D{128,128,1};
         guest.mipLevelCount = 8;
         guest.viewMipCount = 8;
         guest.layerCount = 6;
@@ -1805,8 +1873,13 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
+                CheckManagerOverlapLookup(gpu);
+                continue;
+            }
             CheckSeparateLayouts(gpu);
             CheckIndependentAliases(gpu);
+            if (!std::getenv("TEXMAN_SKIP_LOOKUP")) CheckManagerOverlapLookup(gpu);
             CheckManagerAliases(gpu);
             for (bool authoritative : {false,true})
                 for (bool readBack : {false,true})
@@ -1833,5 +1906,9 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
+        std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
+        return 0;
+    }
     std::puts("Production Texman: full FindOrCreate separate-layout fallback, read-only materialized alias write gates, three aliases, alternating RT writers, stale invalidation, historical non-reversible alias retirement/authority/rollback, real CPU traps/contention, failed download/upload recovery, test-only Vulkan transport, no redundant copies, views/fences; existing promotion and 1-to-8 mip expansion (6 faces) passed; zero Vulkan validation errors");
 }

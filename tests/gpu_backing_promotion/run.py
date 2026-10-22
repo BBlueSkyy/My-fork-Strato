@@ -6,6 +6,7 @@ image views, copy commands and fences use the Vulkan ICD and validation layer.
 """
 import os
 import pathlib
+import shlex
 import subprocess
 import tempfile
 
@@ -29,6 +30,11 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     baseline = os.environ.get("TEXMAN_BASELINE_VIEWS_REF")
     view_source = subprocess.check_output(["git", "show", baseline + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"],
         cwd=ROOT, text=True) if baseline else source
+    # The storage-identity view API from PR #383 adds an optional bool. Match
+    # the exact production definition under test, including older baselines.
+    view_api = function(view_source, "vk::ImageView TextureView::GetView(").split("{", 1)[0].strip()
+    view_api = view_api.replace("TextureView::", "").replace("(bool identityMapping)", "(bool identityMapping = false)")
+    (directory / "view_api.inc").write_text(view_api + ";\n")
     # Optional negative control: replace only the two view APIs with their
     # actual baseline bodies. The current bounds test must then fail.
     (directory / "production.inc").write_text("\n".join(function(
@@ -92,6 +98,13 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     end = manager.index("&& matchGuestTexture.GetImageType()", start)
     (directory / "manager_class.inc").write_text(function((GPU / "texture_manager.h").read_text(), "class TextureManager") + ";\n")
     manager_baseline = os.environ.get("TEXMAN_BASELINE_MANAGER_REF")
+    if manager_baseline:
+        secondary = subprocess.run(["git", "show", manager_baseline + ":app/src/main/cpp/skyline/gpu/texture/secondary_overlap.h"],
+            cwd=ROOT, text=True, capture_output=True)
+        if secondary.returncode == 0:
+            helper = directory / "gpu/texture/secondary_overlap.h"
+            helper.parent.mkdir(parents=True, exist_ok=True)
+            helper.write_text(secondary.stdout)
     manager_runtime = subprocess.check_output(["git","show",manager_baseline+":app/src/main/cpp/skyline/gpu/texture_manager.cpp"],cwd=ROOT,text=True) if manager_baseline else manager
     (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate("))
     (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset("))
@@ -117,5 +130,5 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
                     "-I" + os.environ.get("BOOST_INCLUDE_DIR", "/usr/include"),
                     str(ROOT / "tests/gpu_backing_promotion/tests.cpp"),
                     os.environ.get("VULKAN_LOADER_LIBRARY", "-lvulkan"),
-                    "-o", str(directory / "tests")], check=True)
+                    "-o", str(directory / "tests")] + shlex.split(os.environ.get("CXXFLAGS", "")), check=True)
     subprocess.run([str(directory / "tests")], check=True)
