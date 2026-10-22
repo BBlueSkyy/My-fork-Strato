@@ -15,6 +15,10 @@
 #include <gpu/usage_tracker.h>
 
 namespace skyline::gpu {
+    namespace diagnostic {
+        struct UploadProof;
+        enum class UploadRetentionStatus : std::uint8_t;
+    }
     namespace interconnect {
         class CommandExecutor;
     }
@@ -315,6 +319,7 @@ namespace skyline::gpu {
     };
 
     class TextureManager;
+    namespace interconnect { class CommandExecutor; }
 
     /**
      * @brief A view into a specific subresource of a Texture
@@ -396,6 +401,14 @@ namespace skyline::gpu {
         BackingType backing; //!< The Vulkan image that backs this texture, it is nullable
         vk::ImageType backingImageType; //!< Immutable image type supplied at allocation/wrapping.
 
+        std::shared_ptr<diagnostic::UploadProof> diagnosticUploadProof;
+        // All fields remain untouched with ENABLE_UPLOAD_PROVENANCE off.
+        // Atomics make metadata inspection safe across executor threads.
+        std::atomic<diagnostic::UploadRetentionStatus> diagnosticUploadStatus{};
+        std::atomic<u32> diagnosticUploadSyncAttempts{};
+        std::atomic<u32> diagnosticUploadCopyCount{};
+        std::atomic<u32> diagnosticUploadProofDiscards{};
+        std::atomic<size_t> diagnosticUploadBudgetUsedOnReject{};
         span<u8> mirror{}; //!< A contiguous mirror of all the guest mappings to allow linear access on the CPU
         span<u8> alignedMirror{}; //!< The mirror mapping aligned to page size to reflect the full mapping
         std::optional<TrapHandle> trapHandle{}; //!< The handle of the traps for the guest mappings
@@ -459,6 +472,8 @@ namespace skyline::gpu {
 
         friend TextureManager;
         friend TextureView;
+        friend class interconnect::CommandExecutor; // Diagnostic GPU readback only
+        friend class PresentationEngine; // Diagnostic presentation-source GPU readback
 
         /**
          * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid

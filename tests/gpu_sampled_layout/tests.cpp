@@ -37,6 +37,43 @@ namespace {
         tic.viewConfig.mipMaxLevel = mipLevels - 1;
         return tic;
     }
+    // Independent byte-address oracle over every mip/face of the observed
+    // cube shape. Test native FP16 and compressed block geometry separately;
+    // this does not assert that the game's guest texture is BC6H.
+    void CubemapMipCase(const texture::Format &format, size_t declaredHeight) {
+        const texture::Dimensions dimensions{128, 128, 1};
+        const auto levels{texture::GetBlockLinearMipLayout(dimensions,
+            format.blockHeight, format.blockWidth, format.bpb,
+            format.blockHeight, format.blockWidth, format.bpb, declaredHeight, 1, 8)};
+        Check(levels.size() == 8, "cube mip count");
+        size_t expectedHeight{declaredHeight};
+        for (size_t mip{}; mip < 8; ++mip) {
+            const size_t extent{128U >> mip};
+            const size_t rows{(extent + format.blockHeight - 1) / format.blockHeight};
+            const size_t rowBytes{((extent + format.blockWidth - 1) / format.blockWidth) * format.bpb};
+            const size_t tiledSize{((rowBytes + 63) / 64) * 64 *
+                ((rows + expectedHeight * 8 - 1) / (expectedHeight * 8)) * expectedHeight * 8};
+            const auto &level{levels[mip]};
+            Check(level.dimensions.width == extent && level.dimensions.height == extent &&
+                  level.blockHeight == expectedHeight && level.blockLinearSize == tiledSize &&
+                  level.linearSize == rowBytes * rows, "cube mip layout vs independent sizing");
+            for (size_t face{}; face < 6; ++face) {
+                std::vector<u8> raw(tiledSize, 0xEA), expected(rowBytes * rows), actual(expected.size(), 0xCC);
+                for (size_t y{}; y < rows; ++y)
+                    for (size_t x{}; x < rowBytes; ++x) {
+                        const auto byte{static_cast<u8>((x * 37 + y * 11 + mip * 19 + face * 53) % 229)};
+                        expected[y * rowBytes + x] = byte;
+                        raw.at(Address(x, y, 0, rowBytes, rows, expectedHeight, 1)) = byte;
+                    }
+                texture::CopyBlockLinearToLinear(level.dimensions, format.blockWidth, format.blockHeight,
+                    format.bpb, level.blockHeight, level.blockDepth, raw.data(), actual.data());
+                Check(actual == expected, "cube mip/face deswizzle differs from address oracle");
+            }
+            const size_t nextRows{((std::max(extent / 2, size_t{1})) + format.blockHeight - 1) / format.blockHeight};
+            while (expectedHeight > 1 && nextRows <= (expectedHeight / 2) * 8) expectedHeight /= 2;
+        }
+        std::cout << "PASS: 128x128 cube: all 8 mips x 6 faces; bytes/block=" << format.bpb << '\n';
+    }
     size_t cases{};
     void UploadCase(const char *name, TextureImageControl tic, const texture::Format &format,
                     u8 effectiveHeight, u32 expectedStride = 0) {
@@ -83,6 +120,8 @@ namespace {
 int main() {
     try {
         const texture::Format bc3{4, 4, 16}, rgba{1, 1, 4}, astc5x5{5, 5, 16};
+        CubemapMipCase(texture::Format{1, 1, 8}, 16);
+        CubemapMipCase(texture::Format{4, 4, 16}, 4);
         const texture::Format depth{1, 1, 4, vk::ImageAspectFlagBits::eDepth};
         UploadCase("512x128 BC3 BH16 -> BH4", Header(512, 128, 1, 4), bc3, 4, 262144);
         UploadCase("odd BC3 height rounds compressed rows up", Header(513, 129, 1, 4), bc3, 8);

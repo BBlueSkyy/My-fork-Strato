@@ -10,6 +10,7 @@
 #include "common/utils.h"
 #include "maxwell_3d.h"
 #include "common.h"
+#include <gpu/diagnostic/ue4_frame_capture.h>
 
 namespace skyline::gpu::interconnect::maxwell3d {
     Maxwell3D::RenderConditionResources::RenderConditionResources(GPU &gpu)
@@ -152,6 +153,49 @@ namespace skyline::gpu::interconnect::maxwell3d {
              return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
          });
           InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
+
+        if (diagnostic::Ue4Capture().active.load(std::memory_order_acquire)) {
+            std::string shaderHashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    shaderHashes += fmt::format("{:016X},", hash);
+            }
+            std::string targets;
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->texture) {
+                    targets += fmt::format("0x{:X}:{}x{}:{},",
+                        reinterpret_cast<uintptr_t>(target->texture.get()),
+                        target->texture->dimensions.width,
+                        target->texture->dimensions.height,
+                        vk::to_string(target->texture->format->vkFormat));
+                } else {
+                    targets += "null,";
+                }
+            }
+            std::string blend;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto packed{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                blend = fmt::format("mask=0x{:X},enabled={}",
+                    static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
+            }
+            std::string sampledViews;
+            for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
+                auto *view{activeDescriptorSetSampledImages[i]};
+                if (view && view->texture)
+                    sampledViews += fmt::format("[{}]=0x{:X}:{}x{}:{},", i,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            diagnostic::Ue4Capture().Record(fmt::format(
+                "DRAW kind=inline indexed=1 count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+            if (auto *pipeline{activeState.GetPipeline()})
+                ctx.executor.MarkDiagnosticUe4Output(
+                    activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
+                    !activeDescriptorSetSampledImages.empty());
+        }
           ctx.executor.AddCheckpoint("After inline index draw");
      
         });
@@ -324,6 +368,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto *source{textures.GetTexture(ctx, params.textureIndex, Shader::TextureType::Color2D)};
         auto *sampler{samplers.GetSampler(ctx, params.samplerIndex)};
         auto destination{activeState.GetColorRenderTargetForClear(ctx, colorTargetIndex)};
+        if (diagnostic::Ue4Capture().active.load(std::memory_order_acquire)) {
+            diagnostic::Ue4Capture().Record(fmt::format(
+                "DRAW_TEXTURE texture_index={} sampler_index={} target={} source_present={} sampler_present={} destination_present={} dst={},{} {}x{}",
+                params.textureIndex, params.samplerIndex, colorTargetIndex,
+                source != nullptr, sampler != nullptr, static_cast<bool>(destination),
+                params.dstX, params.dstY, params.dstWidth, params.dstHeight));
+        }
         if (!source || !sampler || !destination)
             return;
 
@@ -780,6 +831,209 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         vk::Rect2D scissor{GetDrawScissor()};
 
+        [[maybe_unused]] std::optional<u32> hdrProbe{};
+        [[maybe_unused]] bool conversionProbe{};
+        if (diagnostic::Ue4Capture().active.load(std::memory_order_acquire)) {
+            auto &capture{diagnostic::Ue4Capture()};
+            auto *pipeline{activeState.GetPipeline()};
+            bool conversionShader{};
+            if (pipeline) {
+                for (auto hash : pipeline->sourcePackedState.shaderHashes)
+                    if (hash == 0x9CDBA917AFDC0187ULL)
+                        conversionShader = true;
+            }
+
+            // This fragment shader consumed an HDR R11G11B10 image at
+            // sampled binding 4 in capture_001 and wrote BGRA8. Match
+            // the observed shader identity, never an application Title ID.
+            if (conversionShader && capture.ClaimConversion()) {
+                conversionProbe = true;
+                capture.Record(fmt::format(
+                    "CONVERSION_FOCUS shader=9CDBA917AFDC0187 submission={} executor=0x{:X} sampled_count={}",
+                    ctx.executor.submissionNumber, reinterpret_cast<uintptr_t>(&ctx.executor),
+                    activeDescriptorSetSampledImages.size()));
+
+                for (size_t index{}; index < activeDescriptorSetSampledImages.size(); ++index) {
+                    auto *view{activeDescriptorSetSampledImages[index]};
+                    if (!view || !view->texture) {
+                        capture.Record(fmt::format("FOCUS_DESCRIPTOR index={} null=1", index));
+                        continue;
+                    }
+                    const auto &texture{view->texture};
+                    capture.Record(fmt::format(
+                        "FOCUS_DESCRIPTOR index={} texture=0x{:X} view_type={} base_mip={} levels={} base_layer={} layers={} "
+                        "image={}x{} format={} layout={}",
+                        index, reinterpret_cast<uintptr_t>(texture.get()),
+                        vk::to_string(view->type), view->range.baseMipLevel,
+                        view->range.levelCount, view->range.baseArrayLayer, view->range.layerCount,
+                        texture->dimensions.width, texture->dimensions.height,
+                        vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout)));
+                    // Capture the actual HDR source and small exposure/LUT
+                    // inputs, not all potentially huge sampled textures.
+                    const bool hdr{texture->format->vkFormat == vk::Format::eB10G11R11UfloatPack32};
+                    const bool small{texture->dimensions.width <= 32 && texture->dimensions.height <= 32};
+                    if (hdr || small)
+                        ctx.executor.QueueUe4FocusedImage(view,
+                            hdr ? fmt::format("tonemap_hdr_input_{}", index)
+                                : fmt::format("tonemap_aux_input_{}", index), 0);
+                }
+
+                // Log CBUF bindings without attempting CPU reads of potentially
+                // GPU-dirty data; that could itself change guest execution.
+                for (size_t stage{}; stage < constantBuffers.boundConstantBuffers.size(); ++stage) {
+                    const auto &stageBuffers{constantBuffers.boundConstantBuffers[stage]};
+                    for (size_t idx{}; idx < stageBuffers.size(); ++idx) {
+                        const auto &buffer{stageBuffers[idx]};
+                        if (buffer.view.size)
+                            capture.Record(fmt::format("FOCUS_CBUF stage={} index={} view_size={}",
+                                stage, idx, buffer.view.size));
+                    }
+                }
+            }
+
+            // Probe early/mid/late individual draws writing R11G11B10 HDR
+            // in the first two approximate presentation intervals.
+            for (auto *view : activeState.GetColorAttachments()) {
+                if (!view || !view->texture ||
+                    view->texture->format->vkFormat != vk::Format::eB10G11R11UfloatPack32)
+                    continue;
+                hdrProbe = capture.ClaimHdrDraw();
+                if (hdrProbe) {
+                    // Correlate each bracketing pair with exact shader state,
+                    // fully resolved sampled image views, and only descriptor-
+                    // referenced CBUF slots. Do not read GPU-dirty CBUF bytes.
+                    auto hashes{std::string{}};
+                    if (pipeline) {
+                        for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                            hashes += fmt::format("{:016X},", hash);
+                    }
+                    capture.Record(fmt::format(
+                        "HDR_DRAW_FOCUS ordinal={} interval={} executor=0x{:X} submission={} "
+                        "count={} instances={} indexed={} scissor={},{},{}x{} hashes={} "
+                        "target=0x{:X} target_view={}x{} format={}",
+                        *hdrProbe, capture.presentIndex.load(std::memory_order_relaxed),
+                        reinterpret_cast<uintptr_t>(&ctx.executor), ctx.executor.submissionNumber,
+                        count, instanceCount, indexed, scissor.offset.x, scissor.offset.y,
+                        scissor.extent.width, scissor.extent.height, hashes,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->format->vkFormat)));
+
+                    // Preserve actual per-draw pipeline state, not a guess
+                    // based on the visually adjacent pass.
+                    if (pipeline) {
+                        const auto packedBlend{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                        capture.Record(fmt::format(
+                            "HDR_DRAW_BLEND ordinal={} enabled={} color_mask=0x{:X} "
+                            "conditional={} transform_feedback={}",
+                            *hdrProbe, static_cast<bool>(packedBlend.blendEnable),
+                            static_cast<u32>(packedBlend.colorWriteMask),
+                            activeRenderCondition.enabled,
+                            drawParams->transformFeedbackEnable));
+                    }
+                    const auto maxViews{std::min<size_t>(activeDescriptorSetSampledImages.size(), 24)};
+                    for (size_t idx{}; idx < maxViews; ++idx) {
+                        auto *sample{activeDescriptorSetSampledImages[idx]};
+                        if (!sample || !sample->texture) {
+                            capture.Record(fmt::format("HDR_DRAW_IMAGE ordinal={} index={} null=1", *hdrProbe, idx));
+                            continue;
+                        }
+                        capture.Record(fmt::format(
+                            "HDR_DRAW_IMAGE ordinal={} index={} texture=0x{:X} view_type={} "
+                            "mip={} mip_levels={} layer={} layers={} image={}x{} "
+                            "view_format={} backing_format={} layout={}",
+                            *hdrProbe, idx, reinterpret_cast<uintptr_t>(sample->texture.get()),
+                            vk::to_string(sample->type), sample->range.baseMipLevel,
+                            sample->range.levelCount, sample->range.baseArrayLayer,
+                            sample->range.layerCount, sample->texture->dimensions.width,
+                            sample->texture->dimensions.height,
+                            vk::to_string(sample->format->vkFormat),
+                            vk::to_string(sample->texture->format->vkFormat),
+                            vk::to_string(sample->texture->layout)));
+                    }
+                    if (activeDescriptorSetSampledImages.size() > maxViews)
+                        capture.Record(fmt::format("HDR_DRAW_IMAGE_TRUNCATED ordinal={} total={} recorded={}",
+                            *hdrProbe, activeDescriptorSetSampledImages.size(), maxViews));
+
+                    // The previous capture picked only a 1x1 3D dummy and
+                    // missed all of the real materials and the HDR cubemap.
+                    // Capture the complete set of distinct, resolved source
+                    // images once for the confirmed fragment-shader/draw pair.
+                    // Copy the *backing* (all mips/layers, including BCn blocks)
+                    // so the original descriptor's sampled levels are preserved.
+                    const bool suspectFragment{pipeline && pipeline->sourcePackedState.shaderHashes[5] ==
+                        0x7161B14045F710B5ULL};
+                    if (*hdrProbe == 20 && suspectFragment && capture.ClaimMaterialInputs()) {
+                        std::vector<const Texture *> seen;
+                        for (size_t idx{}; idx < activeDescriptorSetSampledImages.size() && idx < 32; ++idx) {
+                            auto *sample{activeDescriptorSetSampledImages[idx]};
+                            if (!sample || !sample->texture ||
+                                sample->texture.get() == view->texture.get() ||
+                                sample->type == vk::ImageViewType::e3D)
+                                continue;
+                            const auto &input{sample->texture};
+                            if (std::find(seen.begin(), seen.end(), input.get()) != seen.end())
+                                continue;
+                            seen.push_back(input.get());
+                            if (input->dimensions.depth != 1 || input->levelCount > 12 ||
+                                input->layerCount > 6 ||
+                                input->sampleCount != vk::SampleCountFlagBits::e1 ||
+                                input->surfaceSize == 0 || input->surfaceSize > 20ULL * 1024 * 1024 ||
+                                input->layout == vk::ImageLayout::eUndefined ||
+                                !(input->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+                                !(input->format->vkAspect & vk::ImageAspectFlagBits::eColor)) {
+                                capture.Record(fmt::format("HDR_MATERIAL_SKIP index={} bytes={} "
+                                    "mips={} layers={} type={} format={}", idx, input->surfaceSize,
+                                    input->levelCount, input->layerCount, vk::to_string(sample->type),
+                                    vk::to_string(input->format->vkFormat)));
+                                continue;
+                            }
+                            capture.Record(fmt::format(
+                                "HDR_MATERIAL_CAPTURE ordinal={} index={} texture=0x{:X} "
+                                "bytes={} mips={} layers={} view_type={} format={}",
+                                *hdrProbe, idx, reinterpret_cast<uintptr_t>(input.get()),
+                                input->surfaceSize, input->levelCount, input->layerCount,
+                                vk::to_string(sample->type), vk::to_string(input->format->vkFormat)));
+                            textures.RecordCubemapMappings(ctx, sample);
+                            ctx.executor.QueueUe4FocusedImage(sample,
+                                fmt::format("material_input_{}_{}", *hdrProbe, idx), *hdrProbe);
+                        }
+                    }
+
+                    if (pipeline) {
+                        const auto &info{pipeline->GetDiagnosticDescriptorInfo()};
+                        for (size_t stageIdx{}; stageIdx < info.stages.size(); ++stageIdx) {
+                            const auto &stageInfo{info.stages[stageIdx]};
+                            const auto &slots{constantBuffers.boundConstantBuffers[stageIdx]};
+                            for (const auto &uniformDesc : stageInfo.uniformBufferDescs) {
+                                for (size_t arrayIdx{}; arrayIdx < uniformDesc.count; ++arrayIdx) {
+                                    const auto slot{static_cast<size_t>(uniformDesc.index) + arrayIdx};
+                                    if (slot >= slots.size())
+                                        continue;
+                                    const auto usedBytes{slot < stageInfo.constantBufferUsedSizes.size()
+                                        ? stageInfo.constantBufferUsedSizes[slot] : 0};
+                                    capture.Record(fmt::format(
+                                        "HDR_DRAW_CBUF ordinal={} stage={} index={} "
+                                        "bound_bytes={} shader_used_bytes={} source=uniform_descriptor",
+                                        *hdrProbe, stageIdx, slot, slots[slot].view.size, usedBytes));
+                                }
+                            }
+                            for (const auto &imageDesc : stageInfo.combinedImageSamplerDescs) {
+                                capture.Record(fmt::format(
+                                    "HDR_DRAW_TEXTURE_DESC ordinal={} stage={} "
+                                    "cbuf={} offset={} count={} type={}",
+                                    *hdrProbe, stageIdx, imageDesc.cbuf_index,
+                                    imageDesc.cbuf_offset, imageDesc.count,
+                                    static_cast<u32>(imageDesc.type)));
+                            }
+                        }
+                    }
+                    ctx.executor.QueueUe4FocusedImage(view,
+                        fmt::format("hdr_before_{}", *hdrProbe), *hdrProbe);
+                }
+                break;
+            }
+        }
 
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");
@@ -812,6 +1066,67 @@ namespace skyline::gpu::interconnect::maxwell3d {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
+
+        if (diagnostic::Ue4Capture().active.load(std::memory_order_acquire)) {
+            std::string shaderHashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    shaderHashes += fmt::format("{:016X},", hash);
+            }
+            std::string targets;
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->texture) {
+                    targets += fmt::format("0x{:X}:{}x{}:{},",
+                        reinterpret_cast<uintptr_t>(target->texture.get()),
+                        target->texture->dimensions.width,
+                        target->texture->dimensions.height,
+                        vk::to_string(target->texture->format->vkFormat));
+                } else {
+                    targets += "null,";
+                }
+            }
+            std::string blend;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto packed{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                blend = fmt::format("mask=0x{:X},enabled={}",
+                    static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
+            }
+            std::string sampledViews;
+            for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
+                auto *view{activeDescriptorSetSampledImages[i]};
+                if (view && view->texture)
+                    sampledViews += fmt::format("[{}]=0x{:X}:{}x{}:{},", i,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            diagnostic::Ue4Capture().Record(fmt::format(
+                "DRAW kind=direct indexed={} count={} instances={} scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                indexed, count, instanceCount, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+            if (auto *pipeline{activeState.GetPipeline()})
+                ctx.executor.MarkDiagnosticUe4Output(
+                    activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
+                    !activeDescriptorSetSampledImages.empty());
+            if (hdrProbe) {
+                for (auto *target : activeState.GetColorAttachments()) {
+                    if (target && target->texture &&
+                        target->texture->format->vkFormat == vk::Format::eB10G11R11UfloatPack32) {
+                        ctx.executor.QueueUe4FocusedImage(target,
+                            fmt::format("hdr_after_{}", *hdrProbe), *hdrProbe);
+                        break;
+                    }
+                }
+            }
+            if (conversionProbe) {
+                for (auto *target : activeState.GetColorAttachments()) {
+                    if (target && target->texture) {
+                        ctx.executor.QueueUe4FocusedImage(target, "tonemap_bgra_output", 0);
+                        break;
+                    }
+                }
+            }
+        }
         ctx.executor.AddCheckpoint("After draw");
     
         });
@@ -896,6 +1211,49 @@ namespace skyline::gpu::interconnect::maxwell3d {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
+
+        if (diagnostic::Ue4Capture().active.load(std::memory_order_acquire)) {
+            std::string shaderHashes;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    shaderHashes += fmt::format("{:016X},", hash);
+            }
+            std::string targets;
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->texture) {
+                    targets += fmt::format("0x{:X}:{}x{}:{},",
+                        reinterpret_cast<uintptr_t>(target->texture.get()),
+                        target->texture->dimensions.width,
+                        target->texture->dimensions.height,
+                        vk::to_string(target->texture->format->vkFormat));
+                } else {
+                    targets += "null,";
+                }
+            }
+            std::string blend;
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto packed{pipeline->sourcePackedState.GetAttachmentBlendState(0)};
+                blend = fmt::format("mask=0x{:X},enabled={}",
+                    static_cast<u32>(packed.colorWriteMask), static_cast<bool>(packed.blendEnable));
+            }
+            std::string sampledViews;
+            for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < 8; ++i) {
+                auto *view{activeDescriptorSetSampledImages[i]};
+                if (view && view->texture)
+                    sampledViews += fmt::format("[{}]=0x{:X}:{}x{}:{},", i,
+                        reinterpret_cast<uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            diagnostic::Ue4Capture().Record(fmt::format(
+                "DRAW kind=indirect indexed={} count={} instances=0 scissor={},{},{}x{} shaders={} targets={} blend={} sampled={}",
+                indexed, count, scissor.offset.x, scissor.offset.y, scissor.extent.width,
+                scissor.extent.height, shaderHashes, targets, blend, sampledViews));
+            if (auto *pipeline{activeState.GetPipeline()})
+                ctx.executor.MarkDiagnosticUe4Output(
+                    activeDescriptorSetSampledImages, activeState.GetColorAttachments(),
+                    !activeDescriptorSetSampledImages.empty());
+        }
         ctx.executor.AddCheckpoint("After indirect draw");
     
         });
