@@ -12,6 +12,8 @@
 #include <gpu/texture/backing_promotion.h>
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
+#include <gpu/texture/secondary_overlap.h>
+#include <gpu/texture/mapping_match.h>
 #include <bit>
 #include <chrono>
 #include <numeric>
