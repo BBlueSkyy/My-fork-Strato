@@ -7,6 +7,7 @@
 #include "texture_manager.h"
 #include "texture/backing_promotion.h"
 #include "texture/view_range.h"
+#include "texture/secondary_overlap.h"
 
 namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
@@ -482,6 +483,18 @@ namespace skyline::gpu {
                     matches.push_back(source.texture);
             }
         }
+
+        // The primary range matcher does not see textures overlapping only a
+        // later physical mapping. Preserve their pending GPU writes before
+        // materializing a new texture from the combined guest mappings.
+        // Single-range lookups return immediately; no new hot-path scan.
+        texture::ForEachSecondaryMappingOverlap(guestTexture.mappings, textures,
+            [&](const TextureMapping &entry) {
+                if (!entry.texture || entry.texture->replaced || entry.texture->aliasRetired.load())
+                    return;
+                if (std::find(matches.begin(), matches.end(), entry.texture) == matches.end())
+                    matches.push_back(entry.texture);
+            });
 
         for (auto &texture : matches)
             if (!separateGroup || texture->aliasGroup.load() != separateGroup)
