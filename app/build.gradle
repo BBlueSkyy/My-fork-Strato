@@ -131,6 +131,12 @@ android {
 
     /* Vulkan Validation Layers */
     sourceSets {
+        release {
+            jniLibs {
+                srcDir "libraries/vklayers"
+            }
+        }
+
         reldebug {
             jniLibs {
                 srcDir "libraries/vklayers"

@@ -35,6 +35,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             vk::raii::DescriptorSetLayout descriptorSetLayout;
             vk::raii::PipelineLayout pipelineLayout;
             vk::raii::Pipeline pipeline;
+            bool usesPushDescriptors{};
         };
 
       private:

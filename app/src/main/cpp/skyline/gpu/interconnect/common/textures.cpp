@@ -4,6 +4,7 @@
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include <gpu/texture_manager.h>
+#include <gpu/buffer_manager.h>
 #include <gpu/texture/format.h>
 #include "textures.h"
 
@@ -445,24 +446,10 @@ namespace skyline::gpu::interconnect {
 
     vk::raii::BufferView *Textures::GetOrCreateTexelBufferView(
         InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format) {
-        auto binding{cachedView.view.GetBinding(ctx.gpu)};
-        Textures::TexelBufferViewKey key{
-            .buffer = static_cast<VkBuffer>(binding.buffer),
-            .offset = binding.offset,
-            .range = binding.size,
-            .format = static_cast<VkFormat>(format),
-        };
-
-        auto &bufferView{texelBufferViewStore[key]};
-        if (!bufferView) {
-            bufferView = std::make_unique<vk::raii::BufferView>(ctx.gpu.vkDevice, vk::BufferViewCreateInfo{
-                .buffer = binding.buffer,
-                .format = format,
-                .offset = binding.offset,
-                .range = binding.size,
-            });
-        }
-        return bufferView.get();
+        // The owner, not a raw/recyclable VkBuffer handle, determines lifetime.
+        std::scoped_lock lock{ctx.gpu.buffer.recreationMutex};
+        return cachedView.view.GetBuffer()->GetTexelBufferView(
+            cachedView.view.GetOffset(), cachedView.view.size, format);
     }
 
     vk::raii::BufferView *Textures::GetTextureBufferView(InterconnectContext &ctx, u32 index, CachedMappedBufferView &cachedView) {

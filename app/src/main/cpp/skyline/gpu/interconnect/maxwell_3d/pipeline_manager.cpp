@@ -755,7 +755,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (auto it{bindingMatchCache.find(other)}; it != bindingMatchCache.end())
             return it->second;
 
-        if (stageMask != other->stageMask) {
+        if (stageMask != other->stageMask ||
+            compiledPipeline.usesPushDescriptors != other->compiledPipeline.usesPushDescriptors) {
             bindingMatchCache[other] = false;
             return false;
         }
