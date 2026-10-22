@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <atomic>
+#include <bit>
+#include <cstdint>
 #include <future>
 #include <gpu/interconnect/command_executor.h>
 #include "common.h"
@@ -237,12 +240,51 @@ namespace skyline::gpu::interconnect {
                     copy.srcSet = **srcSet;
                 }
 
-                // Perform the updates, doing copies first to avoid overwriting
-                if (!updateInfo->copies.empty())
-                    gpu.vkDevice.updateDescriptorSets({}, updateInfo->copies);
+                // Diagnostic only. Correlate a texel buffer's VkBufferView handle
+                // with IMAGE_BUFFER / TEXTURE_BUFFER lines before the driver call.
+                // Include the latest write batch even if vkUpdateDescriptorSets faults.
+                static std::atomic<u64> descriptorTraceCount{};
+                const auto traceId{descriptorTraceCount.fetch_add(1, std::memory_order_relaxed)};
+                const bool trace{traceId < 3072 || traceId % 128 == 0};
+                if (trace) {
+                    LOGW("[PROP_DESC] PRE_UPDATE seq={} compute={} set=0x{:X} copies={} writes={}",
+                         traceId, updateInfo->bindPoint == vk::PipelineBindPoint::eCompute,
+                         std::bit_cast<std::uint64_t>(static_cast<VkDescriptorSet>(**dstSet)),
+                         updateInfo->copies.size(), updateInfo->writes.size());
+                    size_t reported{};
+                    for (const auto &write : updateInfo->writes) {
+                        const bool isTexel{write.descriptorType == vk::DescriptorType::eStorageTexelBuffer ||
+                                           write.descriptorType == vk::DescriptorType::eUniformTexelBuffer};
+                        if (write.dstBinding != 2 && write.dstBinding != 3 && !isTexel)
+                            continue;
+                        if (reported++ >= 24)
+                            break;
+                        const bool hasView{isTexel && write.descriptorCount && write.pTexelBufferView};
+                        const auto rawView{hasView
+                            ? std::bit_cast<std::uint64_t>(static_cast<VkBufferView>(write.pTexelBufferView[0]))
+                            : 0ULL};
+                        LOGW("[PROP_DESC] WRITE seq={} binding={} array={} count={} type={} hasTexelView={} firstView=0x{:X}",
+                             traceId, write.dstBinding, write.dstArrayElement, write.descriptorCount,
+                             static_cast<u32>(write.descriptorType), hasView, rawView);
+                    }
+                }
 
-                if (!updateInfo->writes.empty())
+                // Preserve existing copy-before-write order; do not alter any bindings.
+                if (!updateInfo->copies.empty()) {
+                    if (trace)
+                        LOGW("[PROP_DESC] PRE_COPY seq={}", traceId);
+                    gpu.vkDevice.updateDescriptorSets({}, updateInfo->copies);
+                    if (trace)
+                        LOGW("[PROP_DESC] POST_COPY seq={}", traceId);
+                }
+
+                if (!updateInfo->writes.empty()) {
+                    if (trace)
+                        LOGW("[PROP_DESC] PRE_WRITE seq={}", traceId);
                     gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {});
+                    if (trace)
+                        LOGW("[PROP_DESC] POST_WRITE seq={}", traceId);
+                }
 
                 // Bind the updated descriptor set and we're done!
                 commandBuffer.bindDescriptorSets(updateInfo->bindPoint, updateInfo->pipelineLayout, updateInfo->descriptorSetIndex, **dstSet, {});

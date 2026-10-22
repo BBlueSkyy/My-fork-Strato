@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
+#include <bit>
+#include <cstdint>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include <gpu/texture_manager.h>
@@ -455,12 +458,28 @@ namespace skyline::gpu::interconnect {
 
         auto &bufferView{texelBufferViewStore[key]};
         if (!bufferView) {
+            // Diagnostic only: report the original binding and device limit before
+            // vkCreateBufferView; never round or replace the guest-visible offset.
+            const auto alignment{ctx.gpu.vkPhysicalDevice.getProperties().limits.minTexelBufferOffsetAlignment};
+            const bool misaligned{alignment != 0 && binding.offset % alignment != 0};
+            static std::atomic<u64> viewTraceCount{};
+            const auto traceId{viewTraceCount.fetch_add(1, std::memory_order_relaxed)};
+            const bool trace{traceId < 512 || (traceId % 128) == 0};
+            if (trace || misaligned) {
+                LOGW("[PROP_DESC] VIEW_CREATE seq={} format={} offset={} range={} alignment={} misaligned={} buffer=0x{:X}",
+                     traceId, static_cast<u32>(format), binding.offset, binding.size, alignment,
+                     misaligned, std::bit_cast<std::uint64_t>(static_cast<VkBuffer>(binding.buffer)));
+            }
             bufferView = std::make_unique<vk::raii::BufferView>(ctx.gpu.vkDevice, vk::BufferViewCreateInfo{
                 .buffer = binding.buffer,
                 .format = format,
                 .offset = binding.offset,
                 .range = binding.size,
             });
+            if (trace || misaligned) {
+                LOGW("[PROP_DESC] VIEW_READY seq={} view=0x{:X}",
+                     traceId, std::bit_cast<std::uint64_t>(static_cast<VkBufferView>(**bufferView)));
+            }
         }
         return bufferView.get();
     }
@@ -491,7 +510,20 @@ namespace skyline::gpu::interconnect {
             return nullptr;
         }
 
-        return GetOrCreateTexelBufferView(ctx, cachedView, format->vkFormat);
+        auto *bufferView{GetOrCreateTexelBufferView(ctx, cachedView, format->vkFormat)};
+        if (bufferView) {
+            static std::atomic<u64> textureTraceCount{};
+            const auto traceId{textureTraceCount.fetch_add(1, std::memory_order_relaxed)};
+            if (traceId < 256 || traceId % 128 == 0) {
+                const auto binding{cachedView.view.GetBinding(ctx.gpu)};
+                LOGW("[PROP_DESC] TEXTURE_BUFFER seq={} tic={} ticRaw=0x{:X} iova=0x{:X} ticVkFormat={} view=0x{:X} offset={} bytes={}",
+                     traceId, index, textureHeader.formatWord.Raw(), textureHeader.Iova(),
+                     static_cast<u32>(format->vkFormat),
+                     std::bit_cast<std::uint64_t>(static_cast<VkBufferView>(**bufferView)),
+                     binding.offset, sizeBytes);
+            }
+        }
+        return bufferView;
     }
 
     static std::optional<std::pair<vk::Format, u8>> ConvertShaderImageFormat(Shader::ImageFormat format) {
@@ -543,6 +575,22 @@ namespace skyline::gpu::interconnect {
             return nullptr;
         }
 
-        return GetOrCreateTexelBufferView(ctx, cachedView, format->first);
+        auto *bufferView{GetOrCreateTexelBufferView(ctx, cachedView, format->first)};
+        if (bufferView) {
+            static std::atomic<u64> imageTraceCount{};
+            const auto traceId{imageTraceCount.fetch_add(1, std::memory_order_relaxed)};
+            if (traceId < 512 || traceId % 128 == 0) {
+                const auto ticFormat{ConvertTicFormat(textureHeader.formatWord, textureHeader.isSrgb)};
+                const auto binding{cachedView.view.GetBinding(ctx.gpu)};
+                LOGW("[PROP_DESC] IMAGE_BUFFER seq={} tic={} ticRaw=0x{:X} iova=0x{:X} shaderFormat={} typeless={} ticVkFormat={} viewVkFormat={} view=0x{:X} offset={} bytes={}",
+                     traceId, index, textureHeader.formatWord.Raw(), textureHeader.Iova(),
+                     static_cast<u32>(shaderFormat), shaderFormat == Shader::ImageFormat::Typeless,
+                     ticFormat ? static_cast<u32>(ticFormat->vkFormat) : 0u,
+                     static_cast<u32>(format->first),
+                     std::bit_cast<std::uint64_t>(static_cast<VkBufferView>(**bufferView)),
+                     binding.offset, sizeBytes);
+            }
+        }
+        return bufferView;
     }
 }
