@@ -9,7 +9,6 @@ import android.os.Bundle
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.preference.*
-import org.stratoemu.strato.BuildConfig
 import org.stratoemu.strato.R
 import org.stratoemu.strato.data.BaseAppItem
 import org.stratoemu.strato.data.AppItemTag
@@ -59,10 +58,6 @@ class GameSettingsFragment : PreferenceFragmentCompat() {
             true
         }
 
-        // Only show validation layer setting in debug builds
-        @Suppress("SENSELESS_COMPARISON")
-        if (BuildConfig.BUILD_TYPE != "release")
-            findPreference<Preference>("validation_layer")?.isVisible = true
 
         if (!GpuDriverHelper.supportsForceMaxGpuClocks()) {
             val forceMaxGpuClocksPref = findPreference<TwoStatePreference>("force_max_gpu_clocks")!!
@@ -86,10 +81,5 @@ class GameSettingsFragment : PreferenceFragmentCompat() {
         prefToRemove = findPreference<Preference>("log_level")
         prefToRemove?.parent?.removePreference(prefToRemove)
 
-        // TODO: remove this once we have more settings under the debug category
-        // Avoid showing the debug category if no settings under it are visible
-        @Suppress("SENSELESS_COMPARISON")
-        if (BuildConfig.BUILD_TYPE == "release")
-            findPreference<PreferenceCategory>("category_debug")?.isVisible = false
     }
 }
