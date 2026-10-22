@@ -6,6 +6,7 @@ image views, copy commands and fences use the Vulkan ICD and validation layer.
 """
 import os
 import pathlib
+import shlex
 import subprocess
 import tempfile
 
@@ -92,6 +93,13 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     end = manager.index("&& matchGuestTexture.GetImageType()", start)
     (directory / "manager_class.inc").write_text(function((GPU / "texture_manager.h").read_text(), "class TextureManager") + ";\n")
     manager_baseline = os.environ.get("TEXMAN_BASELINE_MANAGER_REF")
+    if manager_baseline:
+        secondary = subprocess.run(["git", "show", manager_baseline + ":app/src/main/cpp/skyline/gpu/texture/secondary_overlap.h"],
+            cwd=ROOT, text=True, capture_output=True)
+        if secondary.returncode == 0:
+            helper = directory / "gpu/texture/secondary_overlap.h"
+            helper.parent.mkdir(parents=True, exist_ok=True)
+            helper.write_text(secondary.stdout)
     manager_runtime = subprocess.check_output(["git","show",manager_baseline+":app/src/main/cpp/skyline/gpu/texture_manager.cpp"],cwd=ROOT,text=True) if manager_baseline else manager
     (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate("))
     (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset("))
@@ -117,5 +125,5 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
                     "-I" + os.environ.get("BOOST_INCLUDE_DIR", "/usr/include"),
                     str(ROOT / "tests/gpu_backing_promotion/tests.cpp"),
                     os.environ.get("VULKAN_LOADER_LIBRARY", "-lvulkan"),
-                    "-o", str(directory / "tests")], check=True)
+                    "-o", str(directory / "tests")] + shlex.split(os.environ.get("CXXFLAGS", "")), check=True)
     subprocess.run([str(directory / "tests")], check=True)
