@@ -7,6 +7,7 @@
 #include <common/signal.h>
 #include <jvm.h>
 #include <gpu.h>
+#include <os.h>
 #include <gpu/diagnostic/ue4_ui_capture.h>
 #include <filesystem>
 #include <fstream>
