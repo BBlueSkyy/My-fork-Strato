@@ -381,9 +381,36 @@ namespace skyline::gpu::interconnect {
             }
 
             auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
+            const auto guestSize{guest.GetSize()};
             guest.mappings.assign(mappings.begin(), mappings.end());
             if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
-                LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
+                // A failed lookup is deliberately not cached: the guest can map the same
+                // address later. Avoid flooding logcat for every draw in the meantime.
+                constexpr size_t MaxLoggedUnmappedTextureAddresses{512};
+                if (loggedUnmappedTextureAddresses.size() < MaxLoggedUnmappedTextureAddresses &&
+                    loggedUnmappedTextureAddresses.insert(textureHeader.Iova()).second) {
+                    size_t validPrefix{};
+                    size_t missingSpanSize{};
+                    for (const auto mapping : guest.mappings) {
+                        if (!mapping.valid() || mapping.empty()) {
+                            missingSpanSize = mapping.size();
+                            break;
+                        }
+                        validPrefix += mapping.size();
+                    }
+
+                    LOGW("Unmapped texture in pool: TIC={} IOVA=0x{:X} bytes=0x{:X} first_invalid=0x{:X} invalid_span=0x{:X} segments={} dimensions={}x{}x{} mips={} layers={} format=0x{:X}",
+                         index, textureHeader.Iova(), guestSize, textureHeader.Iova() + validPrefix,
+                         missingSpanSize, guest.mappings.size(), guest.dimensions.width,
+                         guest.dimensions.height, guest.dimensions.depth, guest.mipLevelCount,
+                         guest.layerCount, textureHeader.formatWord.Raw());
+                } else if (loggedUnmappedTextureAddresses.size() >= MaxLoggedUnmappedTextureAddresses &&
+                           !unmappedTextureLogLimitReached) {
+                    LOGW("Unmapped texture in pool: diagnostic limit of {} distinct addresses reached; further warnings suppressed",
+                         MaxLoggedUnmappedTextureAddresses);
+                    unmappedTextureLogLimitReached = true;
+                }
+
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
 
