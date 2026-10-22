@@ -30,6 +30,11 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     baseline = os.environ.get("TEXMAN_BASELINE_VIEWS_REF")
     view_source = subprocess.check_output(["git", "show", baseline + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"],
         cwd=ROOT, text=True) if baseline else source
+    # The storage-identity view API from PR #383 adds an optional bool. Match
+    # the exact production definition under test, including older baselines.
+    view_api = function(view_source, "vk::ImageView TextureView::GetView(").split("{", 1)[0].strip()
+    view_api = view_api.replace("TextureView::", "").replace("(bool identityMapping)", "(bool identityMapping = false)")
+    (directory / "view_api.inc").write_text(view_api + ";\n")
     # Optional negative control: replace only the two view APIs with their
     # actual baseline bodies. The current bounds test must then fail.
     (directory / "production.inc").write_text("\n".join(function(

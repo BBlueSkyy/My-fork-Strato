@@ -471,13 +471,15 @@ namespace skyline::gpu {
         vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, 3, 0, 2};
         vk::ImageView vkView{};
         u64 vkViewGeneration{};
+        vk::ImageView identityVkView{};
+        u64 identityVkViewGeneration{};
         TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, NativeFormat *format)
             : texture{std::move(texture)}, type{type}, format{format} {}
         TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, vk::ImageSubresourceRange range,
                     NativeFormat *format, vk::ComponentMapping mapping)
             : texture{std::move(texture)}, type{type}, format{format}, mapping{mapping}, range{range} {}
         vk::ImageUsageFlags GetUsage() const;
-        vk::ImageView GetView();
+        #include "view_api.inc"
         bool LockWithTag(ContextTag) { return false; } // Executor tag/resource-lock host boundary.
     };
     struct ContextLock { ContextLock(ContextTag, Texture &) {} };
