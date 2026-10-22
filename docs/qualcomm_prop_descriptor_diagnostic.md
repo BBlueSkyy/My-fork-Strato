@@ -40,3 +40,22 @@ These logs can support a root-cause hypothesis but are not proof by
 themselves: a crash inside a driver can also reflect earlier corruption,
 invalid lifetime or synchronization. Inspect the Vulkan validation results
 before implementing a fix.
+
+## Second diagnostic revision
+
+The first Qualcomm capture successfully found 34 misaligned view creations
+of 69, and repeatedly correlated TIC 504 (`ticVkFormat=74`,
+`shaderFormat=0 Typeless`, `viewVkFormat=98`) with a storage-texel
+descriptor in binding 5. This is a **format divergence**, not proof of
+the precise crash cause.
+
+The old `PRE_WRITE` sampler stopped reporting every update after
+sequence 3072; the last sampled seq=6400 completed around 62.5ms before
+the SIGSEGV. That sample gap prevented identifying the crashing call.
+In this revision **every** `PRE_UPDATE`, `WRITE`, `PRE_WRITE`,
+and `POST_WRITE` is logged for all Vulkan descriptor types, with
+pointer identities for each write. The per-update descriptor summary is
+limited to 24 entries, but every update receives the pre/post markers.
+Logs are intentionally verbose; do not use this branch for FPS tests.
+The `VIEW_CREATE` instrumentation remains unchanged. No speculative
+runtime correction is included.

@@ -245,7 +245,10 @@ namespace skyline::gpu::interconnect {
                 // Include the latest write batch even if vkUpdateDescriptorSets faults.
                 static std::atomic<u64> descriptorTraceCount{};
                 const auto traceId{descriptorTraceCount.fetch_add(1, std::memory_order_relaxed)};
-                const bool trace{traceId < 3072 || traceId % 128 == 0};
+                // Crash can occur well beyond the initial sampling window.
+                // Trace every update in this diagnostic-only build so the exact
+                // PRE_WRITE without POST_WRITE survives the Qualcomm SIGSEGV.
+                const bool trace{true};
                 if (trace) {
                     LOGW("[PROP_DESC] PRE_UPDATE seq={} compute={} set=0x{:X} copies={} writes={}",
                          traceId, updateInfo->bindPoint == vk::PipelineBindPoint::eCompute,
@@ -255,17 +258,18 @@ namespace skyline::gpu::interconnect {
                     for (const auto &write : updateInfo->writes) {
                         const bool isTexel{write.descriptorType == vk::DescriptorType::eStorageTexelBuffer ||
                                            write.descriptorType == vk::DescriptorType::eUniformTexelBuffer};
-                        if (write.dstBinding != 2 && write.dstBinding != 3 && !isTexel)
-                            continue;
                         if (reported++ >= 24)
                             break;
                         const bool hasView{isTexel && write.descriptorCount && write.pTexelBufferView};
                         const auto rawView{hasView
                             ? std::bit_cast<std::uint64_t>(static_cast<VkBufferView>(write.pTexelBufferView[0]))
                             : 0ULL};
-                        LOGW("[PROP_DESC] WRITE seq={} binding={} array={} count={} type={} hasTexelView={} firstView=0x{:X}",
+                        LOGW("[PROP_DESC] WRITE seq={} binding={} array={} count={} type={} hasTexelView={} firstView=0x{:X} imageInfo=0x{:X} bufferInfo=0x{:X} texelPtr=0x{:X}",
                              traceId, write.dstBinding, write.dstArrayElement, write.descriptorCount,
-                             static_cast<u32>(write.descriptorType), hasView, rawView);
+                             static_cast<u32>(write.descriptorType), hasView, rawView,
+                             reinterpret_cast<std::uintptr_t>(write.pImageInfo),
+                             reinterpret_cast<std::uintptr_t>(write.pBufferInfo),
+                             reinterpret_cast<std::uintptr_t>(write.pTexelBufferView));
                     }
                 }
 
