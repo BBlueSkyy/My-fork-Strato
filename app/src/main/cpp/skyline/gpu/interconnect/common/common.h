@@ -46,8 +46,14 @@ namespace skyline::gpu::interconnect {
     class CachedMappedBufferView {
       private:
         span<u8> blockMapping; //!< The underlying mapping that `view` is a part of
-        u64 blockMappingStartAddr; //!< The start GPU address of `blockMapping`
-        u64 blockMappingEndAddr; //!< The end GPU address of `blockMapping`
+        u64 blockMappingStartAddr{}; //!< The start GPU address of `blockMapping`
+        u64 blockMappingEndAddr{}; //!< The end GPU address of `blockMapping`
+
+        // Cache only exact split requests. GMMU mapping changes call PurgeCaches().
+        // No extra translation or dynamic allocation for the contiguous fast path.
+        u64 lastSplitAddress{};
+        u64 lastSplitSize{};
+        bool lastSplitResolved{};
 
       public:
         BufferView view{}; //!< The buffer view created as a result of a call to `Update()`
@@ -55,7 +61,8 @@ namespace skyline::gpu::interconnect {
         /**
          * @brief Updates `view` based on the supplied GPU mapping
          */
-        void Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn = true);
+        void Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn = true,
+                    std::source_location location = std::source_location::current());
 
         /**
          * @brief Purges the cached block mapping so the next `Update()` call will perform a full lookup

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <fstream>
 #include <range/v3/algorithm.hpp>
 #include <boost/functional/hash.hpp>
@@ -8,6 +9,7 @@
 #include <common/settings.h>
 #include <shader_compiler/common/settings.h>
 #include <shader_compiler/common/log.h>
+#include <shader_compiler/exception.h>
 #include <shader_compiler/frontend/maxwell/translate_program.h>
 #include <shader_compiler/backend/spirv/emit_spirv.h>
 #include <vulkan/vulkan_raii.hpp>
@@ -30,6 +32,58 @@ namespace Shader::Log {
 }
 
 namespace skyline::gpu {
+    namespace {
+        const char *ShaderStageName(Shader::Stage stage) {
+            switch (stage) {
+                case Shader::Stage::VertexA: return "VertexA";
+                case Shader::Stage::VertexB: return "VertexB";
+                case Shader::Stage::TessellationControl: return "TessellationControl";
+                case Shader::Stage::TessellationEval: return "TessellationEval";
+                case Shader::Stage::Geometry: return "Geometry";
+                case Shader::Stage::Fragment: return "Fragment";
+                case Shader::Stage::Compute: return "Compute";
+                default: return "Unknown";
+            }
+        }
+
+        // Only this fatal translation path uses synchronous CPU file logging.
+        // Successful shaders and the normal logger retain their existing paths.
+        void LogBindlessFailure(std::string message) {
+            AsyncLogger::LogSync(AsyncLogger::LogLevel::Error, std::move(message));
+        }
+
+        void TraceBindlessPayload(u64 hash, std::string_view kind, span<const u8> data) {
+            constexpr size_t MaxBytes{2 * 1024 * 1024};
+            constexpr size_t ChunkBytes{768};
+            constexpr char Hex[]{"0123456789ABCDEF"};
+            const size_t captured{std::min(data.size(), MaxBytes)};
+            LogBindlessFailure(fmt::format("BindlessTracking{}Begin: hash=0x{:016X} bytes={} captured={} truncated={}",
+                                          kind, hash, data.size(), captured, data.size() > captured));
+            for (size_t offset{}; offset < captured; offset += ChunkBytes) {
+                const size_t count{std::min(ChunkBytes, captured - offset)};
+                std::string hex(count * 2, '0');
+                for (size_t i{}; i < count; ++i) {
+                    const u8 byte{data[offset + i]};
+                    hex[2 * i] = Hex[byte >> 4];
+                    hex[2 * i + 1] = Hex[byte & 15];
+                }
+                LogBindlessFailure(fmt::format("BindlessTracking{}Chunk: hash=0x{:016X} offset={} hex={}",
+                                              kind, hash, offset, hex));
+            }
+            LogBindlessFailure(fmt::format("BindlessTracking{}End: hash=0x{:016X} captured={}", kind, hash, captured));
+        }
+
+        void TraceBindlessFailure(u64 hash, span<u8> binary, std::string_view diagnostic_ir) {
+            TraceBindlessPayload(hash, "Maxwell", {binary.data(), binary.size()});
+            if (diagnostic_ir.empty()) {
+                LogBindlessFailure(fmt::format("BindlessTrackingIRUnavailable: hash=0x{:016X} reason=no IR snapshot", hash));
+                return;
+            }
+            TraceBindlessPayload(hash, "IR", {reinterpret_cast<const u8*>(diagnostic_ir.data()), diagnostic_ir.size()});
+        }
+
+    }
+
     void ShaderManager::LoadShaderReplacements(std::string_view replacementDir) {
         std::filesystem::path replacementDirPath{replacementDir};
         if (std::filesystem::exists(replacementDirPath)) {
@@ -430,8 +484,22 @@ namespace skyline::gpu {
         std::scoped_lock lock{poolMutex};
 
         GraphicsEnvironment environment{postVtgShaderAttributeSkipMask, stage, binary, baseOffset, textureConstantBufferIndex, viewportTransformEnabled, constantBufferRead, getTextureType, isTexturePixelFormatInteger, getTextureCompareFunc};
-        Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset + sizeof(Shader::ProgramHeader))}};
-        return  Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
+        try {
+            Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset + sizeof(Shader::ProgramHeader))}};
+            return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
+        } catch (const Shader::BindlessTextureTrackingError &error) {
+            try {
+                LogBindlessFailure(fmt::format("BindlessTrackingFailure: stage={} hash=0x{:016X} baseOffset=0x{:X} textureCbuf={} viewportTransform={} reason={}",
+                     ShaderStageName(stage), hash, baseOffset, textureConstantBufferIndex, viewportTransformEnabled, error.what()));
+                LogBindlessFailure(fmt::format("BindlessTrackingGraphicsState: postVtgSkipMask={:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X}",
+                     postVtgShaderAttributeSkipMask[0], postVtgShaderAttributeSkipMask[1], postVtgShaderAttributeSkipMask[2], postVtgShaderAttributeSkipMask[3],
+                     postVtgShaderAttributeSkipMask[4], postVtgShaderAttributeSkipMask[5], postVtgShaderAttributeSkipMask[6], postVtgShaderAttributeSkipMask[7]));
+                TraceBindlessFailure(hash, binary, error.DiagnosticIR());
+            } catch (...) {
+                // Preserve the compiler failure if diagnostic allocation/logging fails.
+            }
+            throw;
+        }
     }
 
     Shader::IR::Program ShaderManager::CombineVertexShaders(Shader::IR::Program &vertexA, Shader::IR::Program &vertexB, span<u8> vertexBBinary) {
@@ -457,8 +525,20 @@ namespace skyline::gpu {
         std::scoped_lock lock{poolMutex};
 
         ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, isTexturePixelFormatInteger, getTextureCompareFunc};
-        Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset)}};
-        return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
+        try {
+            Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset)}};
+            return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
+        } catch (const Shader::BindlessTextureTrackingError &error) {
+            try {
+                LogBindlessFailure(fmt::format("BindlessTrackingFailure: stage=Compute hash=0x{:016X} baseOffset=0x{:X} textureCbuf={} localMemory={} sharedMemory={} workgroup={},{},{} reason={}",
+                     hash, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize,
+                     workgroupDimensions[0], workgroupDimensions[1], workgroupDimensions[2], error.what()));
+                TraceBindlessFailure(hash, binary, error.DiagnosticIR());
+            } catch (...) {
+                // Preserve the compiler failure if diagnostic allocation/logging fails.
+            }
+            throw;
+        }
     }
 
     vk::ShaderModule ShaderManager::CompileShader(const Shader::RuntimeInfo &runtimeInfo, Shader::IR::Program &program, Shader::Backend::Bindings &bindings, u64 hash) {

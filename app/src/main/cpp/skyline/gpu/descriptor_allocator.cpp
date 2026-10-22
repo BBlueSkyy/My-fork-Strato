@@ -20,28 +20,28 @@ namespace skyline::gpu {
 
         constexpr DescriptorSizes BaseDescriptorSizes{
             vk::DescriptorPoolSize{
-                .descriptorCount = 512,
                 .type = vk::DescriptorType::eUniformBuffer,
+                .descriptorCount = 512,
             },
             vk::DescriptorPoolSize{
-                .descriptorCount = 64,
                 .type = vk::DescriptorType::eStorageBuffer,
-            },
-            vk::DescriptorPoolSize{
-                .descriptorCount = 256,
-                .type = vk::DescriptorType::eCombinedImageSampler,
-            },
-            vk::DescriptorPoolSize{
-                .descriptorCount = 16,
-                .type = vk::DescriptorType::eStorageImage,
-            },
-            vk::DescriptorPoolSize{
                 .descriptorCount = 64,
-                .type = vk::DescriptorType::eUniformTexelBuffer,
             },
             vk::DescriptorPoolSize{
+                .type = vk::DescriptorType::eCombinedImageSampler,
+                .descriptorCount = 256,
+            },
+            vk::DescriptorPoolSize{
+                .type = vk::DescriptorType::eStorageImage,
                 .descriptorCount = 16,
+            },
+            vk::DescriptorPoolSize{
+                .type = vk::DescriptorType::eUniformTexelBuffer,
+                .descriptorCount = 64,
+            },
+            vk::DescriptorPoolSize{
                 .type = vk::DescriptorType::eStorageTexelBuffer,
+                .descriptorCount = 16,
             } //!< Approximated descriptor counts based off empirical testing, the total amount will grow in these ratios
         };
 
@@ -52,8 +52,8 @@ namespace skyline::gpu {
 
         pool = std::make_shared<DescriptorPool>(gpu.vkDevice, vk::DescriptorPoolCreateInfo{
             .maxSets = descriptorSetCount,
-            .pPoolSizes = descriptorSizes.data(),
             .poolSizeCount = descriptorSizes.size(),
+            .pPoolSizes = descriptorSizes.data(),
         });
 
         pool->freeSetCount = descriptorSetCount;
@@ -62,8 +62,8 @@ namespace skyline::gpu {
     vk::ResultValue<vk::DescriptorSet> DescriptorAllocator::AllocateVkDescriptorSet(vk::DescriptorSetLayout layout) {
         vk::DescriptorSetAllocateInfo allocateInfo{
             .descriptorPool = **pool,
-            .pSetLayouts = &layout,
             .descriptorSetCount = 1,
+            .pSetLayouts = &layout,
         };
         vk::DescriptorSet descriptorSet{};
 
@@ -129,6 +129,24 @@ namespace skyline::gpu {
             } else {
                 lastResult = set.result;
             }
+        }
+
+        // Inactive sets remain allocated to their layouts. Reclaim those
+        // descriptors before growing the pool for another layout. Active sets
+        // each own this pool until their fence dependency is released, so a
+        // sole allocator reference proves that reset cannot touch GPU users.
+        if (pool.use_count() == 1 && !pool->layoutSlots.empty()) {
+            pool->reset();
+            pool->layoutSlots.clear();
+            pool->freeSetCount = descriptorSetCount;
+            auto set{AllocateVkDescriptorSet(layout)};
+            if (set.result == vk::Result::eSuccess) {
+                auto &slots{pool->layoutSlots.try_emplace(layout).first->second};
+                auto &slot{slots.emplace_back(set.value)};
+                slot.active.test_and_set(std::memory_order_release);
+                return ActiveDescriptorSet{pool, &slot};
+            }
+            lastResult = set.result;
         }
 
         while (true) {
