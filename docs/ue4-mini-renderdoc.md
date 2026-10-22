@@ -270,3 +270,18 @@ executors can prevent attribution. **An HDR threshold alone is not an error**;
 nonfinite encodings and the first new bit-pattern locations are stronger
 evidence but still do not establish whether the shader inputs or the shader
 itself are wrong. Do not treat `hdr_first_suspect.txt` as a proven root cause.
+
+
+### Shader binaries for first-HDR event and first green-channel NaN
+
+The first HDR peak is on draw 1 (fragment `EA18B70958415FF3`,
+vertex `ACF76CF575A996D5`), and the first green-channel NaN is on
+HDR draw 7 (fragment `1B8CB95A440E18C1`, vertex
+`35F3C8B5DDB72D36`). This diagnostic branch now retains both the
+guest Maxwell and compiled host SPIR-V binaries for these four hashes,
+in addition to the previously selected draw-20 pair, with a 2-MiB cap
+per code artifact. These files are emitted to the capture directory
+as `shader_<HASH>.maxwell.bin` and `shader_<HASH>.spv` when armed.
+If a hash is absent, inspect `gpu_events.txt` and `emulation.log`;
+it may never have been compiled while the emulator was running.
+This adds no shader modifications or per-draw readback operations.

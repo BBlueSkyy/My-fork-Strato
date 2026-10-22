@@ -19,6 +19,14 @@ int main() {
     cap.Start(path.string());
     assert(cap.active.load());
     assert(fs::file_size(path / "shader_7161B14045F710B5.spv") == sizeof(fixtureShader));
+    // The first green-channel NaN is in this fragment shader, and its
+    // generated SPIR-V must be preserved even when compiled before arming.
+    cap.RememberTargetShader(0x1B8CB95A440E18C1ULL, true,
+                             fixtureShader, sizeof(fixtureShader));
+    assert(fs::file_size(path / "shader_1B8CB95A440E18C1.spv") == sizeof(fixtureShader));
+    cap.RememberTargetShader(0xEA18B70958415FF3ULL, false,
+                             fixtureShader, sizeof(fixtureShader));
+    assert(fs::file_size(path / "shader_EA18B70958415FF3.maxwell.bin") == sizeof(fixtureShader));
     assert(cap.ClaimMaterialInputs());
     assert(!cap.ClaimMaterialInputs());
 

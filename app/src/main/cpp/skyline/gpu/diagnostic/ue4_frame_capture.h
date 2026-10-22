@@ -229,12 +229,15 @@ namespace skyline::gpu::diagnostic {
             active.store(true, std::memory_order_release);
         }
 
-        // Bounded code artifacts for the exact suspect fragment shader and
-        // its observed vertex shader. A shader is often compiled before the
-        // user arms the diagnostic, so cache just these two identities.
+        // Bounded code artifacts for the observed HDR fragment shaders and
+        // their matching vertex stages (original draw 20, first HDR peak at
+        // draw 1, first green-channel NaN at draw 7). Shaders are often
+        // compiled before ARM_CAPTURE, so retain only these identities.
         void RememberTargetShader(std::uint64_t hash, bool spirv,
                                   const std::uint8_t *bytes, std::size_t size) {
-            if ((hash != 0x7161B14045F710B5ULL && hash != 0x027CCF34AF69591BULL) ||
+            if ((hash != 0x7161B14045F710B5ULL && hash != 0x027CCF34AF69591BULL &&
+                 hash != 0xEA18B70958415FF3ULL && hash != 0xACF76CF575A996D5ULL &&
+                 hash != 0x1B8CB95A440E18C1ULL && hash != 0x35F3C8B5DDB72D36ULL) ||
                 !bytes || !size || size > 2ULL * 1024 * 1024)
                 return;
             std::scoped_lock lock(mutex);
