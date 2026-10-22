@@ -80,10 +80,10 @@ jobs:
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
         run: |
-          # Diagnostic PR #384 needs only the instrumented ARM64 DevReldebug APK.
+          # Diagnostic PR #384 needs only the instrumented ARM64 DevRelease APK.
           # Other PRs preserve the normal dual-variant build.
           if [ "${{ github.event.number }}" = "384" ]; then
-            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevReldebug
+            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
           else
             ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
           fi
@@ -93,19 +93,19 @@ jobs:
           mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
           mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
 
-      - name: Rename DevReldebug APK (PR #384)
+      - name: Rename DevRelease APK (PR #384)
         if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && github.event.number == 384 }}
-        run: mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
+        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
 
       - name: Upload Release APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && github.event.number != 384 }}
+        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: strato-pr${{ github.event.number }}-release.apk
           path: strato-pr${{ github.event.number }}-release.apk
 
       - name: Upload Debug APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
+        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && github.event.number != 384 }}
         uses: actions/upload-artifact@v4
         with:
           name: strato-pr${{ github.event.number }}-reldebug.apk
