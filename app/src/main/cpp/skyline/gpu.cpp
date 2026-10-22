@@ -18,10 +18,10 @@ namespace skyline::gpu {
         };
 
         std::vector<const char *> requiredLayers{};
-        #ifndef NDEBUG
+        // Validation is an explicit diagnostic setting, independent of native
+        // optimization/debug-symbol flags. Release ships the same bundled layer.
         if (*state.settings->validationLayer)
             requiredLayers.push_back("VK_LAYER_KHRONOS_validation");
-        #endif
 
         auto instanceLayers{context.enumerateInstanceLayerProperties()};
         if (AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Debug)) {
@@ -59,13 +59,16 @@ namespace skyline::gpu {
                 throw exception("Cannot find Vulkan instance extension: \"{}\"", requiredExtension);
         }
 
-        return vk::raii::Instance(context, vk::InstanceCreateInfo{
+        auto instance{vk::raii::Instance(context, vk::InstanceCreateInfo{
             .pApplicationInfo = &applicationInfo,
             .enabledLayerCount = static_cast<u32>(requiredLayers.size()),
             .ppEnabledLayerNames = requiredLayers.data(),
             .enabledExtensionCount = requiredInstanceExtensions.size(),
             .ppEnabledExtensionNames = requiredInstanceExtensions.data(),
-        });
+        })};
+        if (!requiredLayers.empty())
+            LOGI("Vulkan validation enabled: VK_LAYER_KHRONOS_validation (core validation)");
+        return instance;
     }
 
     static VkBool32 DebugCallback(vk::DebugReportFlagsEXT flags, vk::DebugReportObjectTypeEXT objectType, u64 object, size_t location, i32 messageCode, const char *layerPrefix, const char *messageCStr, GPU *gpu) {
@@ -199,6 +202,22 @@ namespace skyline::gpu {
             #undef IGNORE_TYPE
         }
 
+        // Preserve initial samples and exponential repetition counts. Validation
+        // can otherwise produce gigabytes of duplicate messages and perturb the
+        // crash being investigated. Driver errors are never rate-limited here.
+        u64 validationRepeat{};
+        if (layerPrefix && std::string_view{layerPrefix} == "Validation") {
+            static std::mutex validationLogMutex;
+            // This layer puts its MessageID in location and leaves messageCode zero.
+            static std::unordered_map<i32, std::unordered_map<size_t, u64>> validationMessageCounts;
+            std::scoped_lock lock{validationLogMutex};
+            validationRepeat = ++validationMessageCounts[messageCode][location];
+            if (validationRepeat > 32 && (validationRepeat & (validationRepeat - 1)) != 0)
+                return VK_FALSE;
+        }
+        if (validationRepeat > 32)
+            LOGW("Vulkan validation diagnostic repeated: messageCode={} location={} count={}", messageCode, location, validationRepeat);
+
         auto logLevel{severityLookup.at(static_cast<size_t>(std::countr_zero(static_cast<u32>(flags))))};
         if (AsyncLogger::CheckLogLevel(logLevel))
             AsyncLogger::LogAsync(logLevel, fmt::format("Vk{}:{}[0x{:X}]:I{}:L{}: {}", layerPrefix, vk::to_string(vk::DebugReportObjectTypeEXT(objectType)), object, messageCode, location, message));
@@ -242,7 +261,8 @@ namespace skyline::gpu {
             vk::PhysicalDeviceConditionalRenderingFeaturesEXT,
             vk::PhysicalDeviceIndexTypeUint8FeaturesEXT,
             vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
-            vk::PhysicalDeviceRobustness2FeaturesEXT>()};
+            vk::PhysicalDeviceRobustness2FeaturesEXT,
+            vk::PhysicalDeviceTexelBufferAlignmentFeaturesEXT>()};
         decltype(deviceFeatures2) enabledFeatures2{}; // We only want to enable features we required due to potential overhead from unused features
 
         #define FEAT_REQ(structName, feature)                                            \
@@ -278,7 +298,9 @@ namespace skyline::gpu {
             vk::PhysicalDeviceDriverProperties,
             vk::PhysicalDeviceFloatControlsProperties,
             vk::PhysicalDeviceTransformFeedbackPropertiesEXT,
-            vk::PhysicalDeviceSubgroupProperties>()};
+            vk::PhysicalDeviceSubgroupProperties,
+            vk::PhysicalDevicePushDescriptorPropertiesKHR,
+            vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT>()};
 
         traits = TraitManager{deviceFeatures2, enabledFeatures2, deviceExtensions, enabledExtensions, deviceProperties2, physicalDevice};
         traits.ApplyDriverPatches(context, mapping);
