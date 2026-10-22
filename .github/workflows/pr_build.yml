@@ -72,12 +72,20 @@ jobs:
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
+        run: |
+          # No Reldebug for UE4 graphics diagnostic branches.
+          if [[ "${{ startsWith(github.head_ref, 'debug/ue4-') }}" == "true" ]]; then
+            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+          else
+            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
+          fi
       - name: Rename APKs
         if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
         run: |
           mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
-          mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
+          if [[ "${{ startsWith(github.head_ref, 'debug/ue4-') }}" != "true" ]]; then
+            mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
+          fi
 
       - name: Upload Release APK
         if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
@@ -87,7 +95,7 @@ jobs:
           path: strato-pr${{ github.event.number }}-release.apk
 
       - name: Upload Debug APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
+        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && !startsWith(github.head_ref, 'debug/ue4-') }}
         uses: actions/upload-artifact@v4
         with:
           name: strato-pr${{ github.event.number }}-reldebug.apk

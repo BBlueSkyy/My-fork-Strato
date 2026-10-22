@@ -11,6 +11,11 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <gpu/diagnostic/ue4_frame_capture.h>
+#include <gpu/diagnostic/ue4_upload_provenance.h>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -382,6 +387,275 @@ namespace skyline::gpu::interconnect {
         return (!a && !b) || (a && b && b->GetView() == a);
     }
 
+
+    // Target full-resolution UI composition layers, not startup atlases or depth.
+    // Like the earlier mini-RenderDoc probes, all image copies remain on the
+    // existing command stream and only execute at a render-pass boundary.
+    static bool IsUe4ColorImage(const Texture &texture) {
+        return texture.dimensions.width >= 256 && texture.dimensions.width <= 2560 &&
+               texture.dimensions.height >= 144 && texture.dimensions.height <= 1440 &&
+               texture.dimensions.depth == 1 && texture.levelCount == 1 &&
+               texture.layerCount == 1 &&
+               texture.sampleCount == vk::SampleCountFlagBits::e1 &&
+               texture.surfaceSize && texture.surfaceSize <= 20ULL * 1024 * 1024 &&
+               (texture.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+               !texture.format->IsCompressed() &&
+               (texture.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+               texture.layout != vk::ImageLayout::eUndefined;
+    }
+
+    void CommandExecutor::TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color) {
+        auto &capture{diagnostic::Ue4Capture()};
+        if (!capture.active.load(std::memory_order_acquire))
+            return;
+
+        // Follow an already identified output into subsequent postprocessing,
+        // including a different command executor. Keep the watch by guest backing
+        // because Texture* may change when a view/alias is recreated.
+        bool followsUi{};
+        for (auto *view : sampled) {
+            if (!view || !view->texture || !view->texture->guest)
+                continue;
+            for (const auto &mapping : view->texture->guest->mappings) {
+                if (capture.IsWatchedMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size())) {
+                    followsUi = true;
+                    break;
+                }
+            }
+            if (followsUi)
+                break;
+        }
+        // Color targets before sampled inputs. Only a candidate output or one
+        // of its downstream consumers receives the scarce image readback budget.
+        const auto track{[&](span<TextureView *> views, bool rt) {
+            for (auto *view : views) {
+                if (!view || !view->texture)
+                    continue;
+                std::shared_ptr<Texture> texture{view->texture};
+                if (!IsUe4ColorImage(*texture))
+                    continue;
+                auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
+                    [&](const DiagnosticPassImage &candidate) {
+                        return candidate.texture.get() == texture.get();
+                    })};
+                if (it != diagnosticPassImages.end()) {
+                    it->renderTarget |= rt;
+                    it->priority |= (rt && followsUi);
+                } else if (diagnosticPassImages.size() < 24) {
+                    diagnosticPassImages.push_back({std::move(texture), rt, rt && followsUi});
+                }
+            }
+        }};
+        track(color, true);
+        track(sampled, false);
+        if (followsUi) {
+            for (auto *view : color) {
+                if (!view || !view->texture || !IsUe4ColorImage(*view->texture) || !view->texture->guest)
+                    continue;
+                for (const auto &mapping : view->texture->guest->mappings)
+                    capture.WatchMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
+            }
+        }
+    }
+
+    void CommandExecutor::MarkDiagnosticUe4Output(span<TextureView *> sampled, span<TextureView *> color, bool hasSampledImage) {
+        auto &capture{diagnostic::Ue4Capture()};
+        if (!hasSampledImage || !capture.active.load(std::memory_order_acquire))
+            return;
+        // Scene-color input to a render target is a useful HDR/postprocessing
+        // transition even when there is no blending or compressed sprite.
+        bool samplesColor{};
+        for (auto *view : sampled) {
+            if (view && view->texture && IsUe4ColorImage(*view->texture)) {
+                samplesColor = true;
+                break;
+            }
+        }
+        if (!samplesColor)
+            return;
+        bool hasTarget{};
+        for (auto *view : color)
+            if (view && view->texture && IsUe4ColorImage(*view->texture))
+                hasTarget = true;
+        if (!hasTarget)
+            return;
+
+        const auto mark{[&](span<TextureView *> views, bool target) {
+            for (auto *view : views) {
+                if (!view || !view->texture || !IsUe4ColorImage(*view->texture))
+                    continue;
+                const auto &texture{view->texture};
+                const auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
+                    [&](const DiagnosticPassImage &entry) { return entry.texture.get() == texture.get(); })};
+                if (it != diagnosticPassImages.end()) {
+                    it->priority = true;
+                    it->renderTarget |= target;
+                } else if (diagnosticPassImages.size() < 24) {
+                    diagnosticPassImages.push_back({texture, target, true});
+                }
+                if (target && texture->guest) {
+                    for (const auto &mapping : texture->guest->mappings)
+                        capture.WatchMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
+                }
+                capture.Record(fmt::format(
+                    "COLOR_PASS_CANDIDATE executor=0x{:X} submission={} rp={} role={} texture=0x{:X} dimensions={}x{} format={}",
+                    reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
+                    target ? "output" : "input", reinterpret_cast<uintptr_t>(texture.get()),
+                    texture->dimensions.width, texture->dimensions.height,
+                    vk::to_string(texture->format->vkFormat)));
+            }
+        }};
+        mark(sampled, false);
+        mark(color, true);
+    }
+
+    // GPU-ordered snapshot, not a CPU map. Force a pass boundary so the copy
+    // occurs exactly before or after the selected draw's Vulkan commands.
+    // Unlike the generic pass tracker, this also accepts tiny 1x1 LUT inputs.
+    void CommandExecutor::QueueUe4FocusedImage(TextureView *view, std::string phase, u32 ordinal) {
+        auto &capture{diagnostic::Ue4Capture()};
+        if (!capture.active.load(std::memory_order_acquire) || !view || !view->texture)
+            return;
+        const auto texture{std::shared_ptr<Texture>(view->texture)};
+        const bool hdrScanPhase{phase.starts_with("hdr_scan_")};
+        if (capture.HdrFirstBadMode() && !hdrScanPhase)
+            return;
+        if (hdrScanPhase &&
+            (texture->format->vkFormat != vk::Format::eB10G11R11UfloatPack32 ||
+             texture->levelCount != 1 || texture->layerCount != 1 ||
+             texture->surfaceSize != static_cast<std::size_t>(texture->dimensions.width) *
+                                         texture->dimensions.height * 4)) {
+            capture.Record(fmt::format("HDR_SCAN_UNSUPPORTED phase={} format={}",
+                                       phase, vk::to_string(texture->format->vkFormat)));
+            return;
+        }
+        if (diagnostic::Ue4Uploads().enabled.load(std::memory_order_relaxed) &&
+            (!phase.starts_with("material_input_") || texture->layerCount != 6 ||
+             texture->format->vkFormat != vk::Format::eR16G16B16A16Sfloat))
+            return; // Provenance mode reuses just the cubemap readback, not the completed HDR/material scan.
+        if (texture->layout == vk::ImageLayout::eUndefined ||
+            texture->dimensions.depth != 1 || texture->levelCount > 12 ||
+            texture->layerCount > 6 || texture->sampleCount != vk::SampleCountFlagBits::e1 ||
+            !texture->surfaceSize || texture->surfaceSize > 20ULL * 1024 * 1024 ||
+            !(texture->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+            !(texture->format->vkAspect & vk::ImageAspectFlagBits::eColor)) {
+            capture.Record(fmt::format("FOCUS_SKIP phase={} draw={} format={} usage={} layout={}",
+                phase, ordinal, vk::to_string(texture->format->vkFormat),
+                vk::to_string(texture->usage), vk::to_string(texture->layout)));
+            return;
+        }
+        const auto index{capture.ReserveFocusedImage(texture->surfaceSize)};
+        if (!index) {
+            capture.Record(fmt::format("FOCUS_BUDGET_EXHAUSTED phase={} draw={}", phase, ordinal));
+            return;
+        }
+        const auto directory{std::filesystem::path(capture.CaptureDirectory())};
+        const auto id{*index};
+        const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+        const auto filename{fmt::format("focus_{:02}_{}_{}x{}_{}.raw", id, phase,
+            texture->dimensions.width, texture->dimensions.height,
+            vk::to_string(texture->format->vkFormat))};
+        const auto rawPath{directory / filename};
+        const auto metaPath{directory / fmt::format("focus_{:02}.txt", id)};
+        const auto meta{fmt::format(
+            "focus_id={} phase={} hdr_draw_ordinal={} present_index_approx={} executor=0x{:X} "
+            "submission={} render_pass={} texture=0x{:X} view_mip={} view_layer={} "
+            "image={}x{} format={} layout={} bytes={} mip_levels={} layers={} "
+            "packing=mip_major_all_layers vulkan_copy_format=backing\n",
+            id, phase, ordinal, interval, reinterpret_cast<uintptr_t>(this),
+            submissionNumber, renderPassIndex, reinterpret_cast<uintptr_t>(texture.get()),
+            view->range.baseMipLevel, view->range.baseArrayLayer,
+            texture->dimensions.width, texture->dimensions.height,
+            vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout),
+            texture->surfaceSize, texture->levelCount, texture->layerCount)};
+        auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+        const bool provenance{phase.starts_with("material_input_") && texture->guest &&
+            texture->layerCount == 6 && texture->format->vkFormat == vk::Format::eR16G16B16A16Sfloat};
+        // Filled during submission preparation, AFTER attached textures have performed
+        // their pending CPU uploads. Retain immutable upload bytes for the writer.
+        using ProvenanceResult = std::pair<std::shared_ptr<diagnostic::UploadProof>, std::string>;
+        auto provenanceResult{provenance ? std::make_shared<ProvenanceResult>() : nullptr};
+        const auto proofPath{directory / fmt::format("focus_{:02}_provenance", id)};
+        // AddOutsideRpCommand closes the previous render pass first, then
+        // enqueues the copy in the SAME executor's ordered Vulkan stream.
+        AddOutsideRpCommand([texture, staging](vk::raii::CommandBuffer &commands,
+                                               const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+            cycle->AttachObjects(texture, staging);
+            texture->CopyIntoStagingBuffer(commands, staging);
+        });
+        if (provenanceResult) {
+            diagnosticUploadCallbacks.emplace_back([texture, provenanceResult] {
+                provenanceResult->first = texture->diagnosticUploadProof;
+                std::scoped_lock stateLock{texture->stateMutex};
+                provenanceResult->second = fmt::format(
+                    "readback_guest_format={} readback_host_format={} current_write_serial={} "
+                    "current_backing_generation={} ever_gpu_writer={} dirty_state={} memory_freed={} "
+                    "alias={} alias_stale={} alias_read_only={} alias_retired={} "
+                    "provenance_enabled={} proof_available={} comparison=last_actual_upload_vs_draw_readback "
+                    "proof_reason={} sync_attempts={} copy_buffer_to_image_count={} "
+                    "proof_discard_count={} budget_used_on_reject={} budget_used_now={} budget_limit={} "
+                    "guest_tile_mode={} guest_mirror_bytes={} guest_layer_stride={} "
+                    "linear_bytes={} staging_bytes={}\n",
+                    vk::to_string(texture->guest->format->vkFormat), vk::to_string(texture->format->vkFormat),
+                    texture->gpuWriteSerial, texture->backingGeneration, texture->everUsedAsGpuWrite,
+                    static_cast<u32>(texture->dirtyState), texture->memoryFreed, texture->HasAliases(),
+                    texture->aliasStale.load(), texture->aliasReadOnly.load(), texture->aliasRetired.load(),
+                    diagnostic::Ue4Uploads().enabled.load(), static_cast<bool>(provenanceResult->first),
+                    diagnostic::UploadRetentionStatusName(
+                        texture->diagnosticUploadStatus.load(std::memory_order_relaxed)),
+                    texture->diagnosticUploadSyncAttempts.load(std::memory_order_relaxed),
+                    texture->diagnosticUploadCopyCount.load(std::memory_order_relaxed),
+                    texture->diagnosticUploadProofDiscards.load(std::memory_order_relaxed),
+                    texture->diagnosticUploadBudgetUsedOnReject.load(std::memory_order_relaxed),
+                    diagnostic::Ue4Uploads().UsedBytes(), diagnostic::Ue4UploadProvenance::MaxBytes,
+                    static_cast<u32>(texture->guest->tileConfig.mode), texture->mirror.size(),
+                    texture->guest->GetLayerStride(), texture->deswizzledSurfaceSize,
+                    texture->surfaceSize);
+            });
+        }
+        diagnosticReadbackCallbacks.emplace_back(
+            [staging, rawPath, metaPath, meta, id, provenanceResult, proofPath,
+             hdrScanPhase, ordinal, width = texture->dimensions.width,
+             height = texture->dimensions.height] {
+                if (hdrScanPhase)
+                    diagnostic::Ue4Capture().RecordHdrScan(ordinal, width, height,
+                                                            staging->data(), staging->size());
+                std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                if (!raw) {
+                    LOGE("MINIRD_UE4_FOCUS failed to write snapshot {}", id);
+                    return;
+                }
+                raw.write(reinterpret_cast<const char *>(staging->data()),
+                          static_cast<std::streamsize>(staging->size()));
+                raw.close();
+                std::ofstream info(metaPath, std::ios::trunc);
+                if (info)
+                    info << meta;
+                if (provenanceResult) {
+                    const auto &[proof, current]{*provenanceResult};
+                    if (proof) {
+                        if (!proof->Write(proofPath, {staging->data(), staging->size()}, current))
+                            LOGE("MINIRD_UE4_PROVENANCE write failed: {}", proofPath.string());
+                    } else {
+                        std::ofstream missing(proofPath.string() + ".txt");
+                        missing << current << "No upload proof retained; use proof_reason, sync_attempts, "
+                               << "copy_buffer_to_image_count and budget counters above.\n";
+                    }
+                }
+                LOGI("MINIRD_UE4_FOCUS wrote snapshot {}: {}", id, rawPath.string());
+            });
+        capture.Record(fmt::format("FOCUS_QUEUED id={} phase={} draw={} executor=0x{:X} submit={} image=0x{:X}",
+            id, phase, ordinal, reinterpret_cast<uintptr_t>(this),
+            submissionNumber, reinterpret_cast<uintptr_t>(texture.get())));
+    }
+
+    void CommandExecutor::QueueDiagnosticPassReadbacks() {
+        // Phase 3's bounded draw-level probes supersede the original
+        // render-pass tracker: those snapshots consumed the entire budget
+        // before the HDR->BGRA8 transition.
+        diagnosticPassImages.clear();
+    }
+
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
         auto addSubpass{[&] {
             renderPass->AddSubpass(inputAttachments, colorAttachments, depthStencilAttachment, gpu);
@@ -417,6 +691,7 @@ namespace skyline::gpu::interconnect {
 
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+                QueueDiagnosticPassReadbacks();
                 renderPassIndex++;
             }
             renderPass = &std::get<node::RenderPassNode>(slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassNode>(), renderArea));
@@ -442,6 +717,7 @@ namespace skyline::gpu::interconnect {
         for (auto view : sampledImages)
             view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
+        TrackDiagnosticPassImages(sampledImages, colorAttachments);
         return gotoNext;
     }
 
@@ -452,6 +728,7 @@ namespace skyline::gpu::interconnect {
 
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+            QueueDiagnosticPassReadbacks();
             renderPassIndex++;
 
             renderPass = nullptr;
@@ -743,6 +1020,8 @@ namespace skyline::gpu::interconnect {
             }
         }
 
+        for (auto &prepare : diagnosticUploadCallbacks) prepare();
+        diagnosticUploadCallbacks.clear();
         RotateRecordSlot();
     }
 
@@ -786,6 +1065,12 @@ namespace skyline::gpu::interconnect {
             SubmitInternal();
             submissionNumber++;
         }
+        // SubmitInternal() closes the final render pass and may enqueue more
+        // diagnostic readbacks. Queue file writes AFTER that point so callbacks
+        // belong to the correct GPU cycle (already registered above).
+        for (auto &cb : diagnosticReadbackCallbacks)
+            waiterThread.Queue(nullptr, std::move(cb));
+        diagnosticReadbackCallbacks.clear();
 
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission
