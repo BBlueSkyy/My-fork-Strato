@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <atomic>
+#include <bit>
+#include <cstdint>
 #include <future>
 #include <gpu/interconnect/command_executor.h>
 #include "common.h"
@@ -237,12 +240,110 @@ namespace skyline::gpu::interconnect {
                     copy.srcSet = **srcSet;
                 }
 
-                // Perform the updates, doing copies first to avoid overwriting
-                if (!updateInfo->copies.empty())
-                    gpu.vkDevice.updateDescriptorSets({}, updateInfo->copies);
+                // Diagnostic only. Correlate a texel buffer's VkBufferView handle
+                // with IMAGE_BUFFER / TEXTURE_BUFFER lines before the driver call.
+                // Include the latest write batch even if vkUpdateDescriptorSets faults.
+                static std::atomic<u64> descriptorTraceCount{};
+                const auto traceId{descriptorTraceCount.fetch_add(1, std::memory_order_relaxed)};
+                // Crash can occur well beyond the initial sampling window.
+                // Trace every update in this diagnostic-only build so the exact
+                // PRE_WRITE without POST_WRITE survives the Qualcomm SIGSEGV.
+                const bool trace{true};
+                if (trace) {
+                    LOGW("[PROP_DESC] PRE_UPDATE seq={} compute={} set=0x{:X} copies={} writes={}",
+                         traceId, updateInfo->bindPoint == vk::PipelineBindPoint::eCompute,
+                         std::bit_cast<std::uint64_t>(static_cast<VkDescriptorSet>(**dstSet)),
+                         updateInfo->copies.size(), updateInfo->writes.size());
+                    size_t reported{};
+                    for (const auto &write : updateInfo->writes) {
+                        const bool isTexel{write.descriptorType == vk::DescriptorType::eStorageTexelBuffer ||
+                                           write.descriptorType == vk::DescriptorType::eUniformTexelBuffer};
+                        if (reported++ >= 24)
+                            break;
+                        const bool hasView{isTexel && write.descriptorCount && write.pTexelBufferView};
+                        const auto rawView{hasView
+                            ? std::bit_cast<std::uint64_t>(static_cast<VkBufferView>(write.pTexelBufferView[0]))
+                            : 0ULL};
+                        LOGW("[PROP_DESC] WRITE seq={} binding={} array={} count={} type={} hasTexelView={} firstView=0x{:X} imageInfo=0x{:X} bufferInfo=0x{:X} texelPtr=0x{:X}",
+                             traceId, write.dstBinding, write.dstArrayElement, write.descriptorCount,
+                             static_cast<u32>(write.descriptorType), hasView, rawView,
+                             reinterpret_cast<std::uintptr_t>(write.pImageInfo),
+                             reinterpret_cast<std::uintptr_t>(write.pBufferInfo),
+                             reinterpret_cast<std::uintptr_t>(write.pTexelBufferView));
+                        // SpongeBob Qualcomm driver crash at seq=6368: the only
+                        // 3-element uniform texel-buffer write in that capture.
+                        // Previously only element zero was logged, leaving the
+                        // potentially invalid second and third views unknown.
+                        // Do not modify views or the Vulkan call: diagnostics only.
+                        if (hasView && write.descriptorCount > 1) {
+                            for (u32 viewIndex{}; viewIndex < write.descriptorCount && viewIndex < 16; ++viewIndex) {
+                                const auto viewHandle{std::bit_cast<std::uint64_t>(
+                                    static_cast<VkBufferView>(write.pTexelBufferView[viewIndex]))};
+                                LOGW("[PROP_DESC] TEXEL_ELEMENT seq={} binding={} element={} view=0x{:X}",
+                                     traceId, write.dstBinding, write.dstArrayElement + viewIndex, viewHandle);
+                            }
+                        }
+                        // Also capture the four UBO descriptors sharing that exact
+                        // update: an invalid uniform buffer can equally fault the
+                        // driver, so do not assume the texel array is responsible.
+                        if (write.pBufferInfo && write.descriptorCount > 1) {
+                            for (u32 bufferIndex{}; bufferIndex < write.descriptorCount && bufferIndex < 16; ++bufferIndex) {
+                                const auto &bufferInfo{write.pBufferInfo[bufferIndex]};
+                                const auto bufferHandle{std::bit_cast<std::uint64_t>(
+                                    static_cast<VkBuffer>(bufferInfo.buffer))};
+                                LOGW("[PROP_DESC] BUFFER_ELEMENT seq={} binding={} element={} buffer=0x{:X} offset={} range={}",
+                                     traceId, write.dstBinding, write.dstArrayElement + bufferIndex,
+                                     bufferHandle, static_cast<u64>(bufferInfo.offset), static_cast<u64>(bufferInfo.range));
+                            }
+                        }
+                    }
+                }
 
-                if (!updateInfo->writes.empty())
-                    gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {});
+                // Preserve existing copy-before-write order; do not alter any bindings.
+                if (!updateInfo->copies.empty()) {
+                    if (trace)
+                        LOGW("[PROP_DESC] PRE_COPY seq={}", traceId);
+                    gpu.vkDevice.updateDescriptorSets({}, updateInfo->copies);
+                    if (trace)
+                        LOGW("[PROP_DESC] POST_COPY seq={}", traceId);
+                }
+
+                if (!updateInfo->writes.empty()) {
+                    if (trace)
+                        LOGW("[PROP_DESC] PRE_WRITE seq={}", traceId);
+
+                    // A/B diagnostic for the reproducible Qualcomm SpongeBob
+                    // crash: 4 uniform-buffer descriptors at binding 0 followed
+                    // by 3 uniform-texel-buffer descriptors at binding 4.
+                    // Vulkan allows distinct updateDescriptorSets calls for
+                    // these writes; no descriptor contents or binding indices
+                    // are changed. A separate PRE/POST pair identifies which
+                    // write triggers the driver fault (or whether batching does).
+                    const bool splitQualcommCrashBatch{
+                        updateInfo->bindPoint == vk::PipelineBindPoint::eGraphics &&
+                        updateInfo->writes.size() == 2 &&
+                        updateInfo->writes[0].dstBinding == 0 &&
+                        updateInfo->writes[0].descriptorType == vk::DescriptorType::eUniformBuffer &&
+                        updateInfo->writes[0].descriptorCount == 4 &&
+                        updateInfo->writes[1].dstBinding == 4 &&
+                        updateInfo->writes[1].descriptorType == vk::DescriptorType::eUniformTexelBuffer &&
+                        updateInfo->writes[1].descriptorCount == 3
+                    };
+                    if (splitQualcommCrashBatch) {
+                        for (size_t writeIndex{}; writeIndex < updateInfo->writes.size(); ++writeIndex) {
+                            LOGW("[PROP_DESC] PRE_SPLIT_WRITE seq={} index={} binding={} type={}",
+                                 traceId, writeIndex, updateInfo->writes[writeIndex].dstBinding,
+                                 static_cast<u32>(updateInfo->writes[writeIndex].descriptorType));
+                            gpu.vkDevice.updateDescriptorSets(updateInfo->writes.subspan(writeIndex, 1), {});
+                            LOGW("[PROP_DESC] POST_SPLIT_WRITE seq={} index={}", traceId, writeIndex);
+                        }
+                    } else {
+                        gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {});
+                    }
+
+                    if (trace)
+                        LOGW("[PROP_DESC] POST_WRITE seq={}", traceId);
+                }
 
                 // Bind the updated descriptor set and we're done!
                 commandBuffer.bindDescriptorSets(updateInfo->bindPoint, updateInfo->pipelineLayout, updateInfo->descriptorSetIndex, **dstSet, {});
