@@ -4,6 +4,8 @@
 #pragma once
 
 #include <functional>
+#include <map>
+#include <tuple>
 #include <tsl/robin_map.h>
 #include <shader_compiler/shader_info.h>
 #include <gpu/texture/texture.h>
@@ -54,6 +56,13 @@ namespace skyline::gpu::interconnect {
         };
 
         std::shared_ptr<TextureView> nullTextureView{};
+        // Separate read-only zero images grouped by (width, height, mip count).
+        // Only consult these caches after a fresh failed GMMU translation, so
+        // later Remap operations can immediately recover the actual texture.
+        std::map<std::tuple<u32, u32, u32>, std::shared_ptr<Texture>> sparseZeroImages;
+        tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> sparseZeroViews;
+        size_t sparseZeroAllocatedBytes{};
+        bool reportedSparseZeroFallback{};
         dirty::ManualDirtyState<TexturePoolState> texturePool;
 
         tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;

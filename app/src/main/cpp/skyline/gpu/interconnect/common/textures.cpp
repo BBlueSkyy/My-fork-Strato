@@ -5,6 +5,7 @@
 #include <soc/gm20b/gmmu.h>
 #include <gpu/texture_manager.h>
 #include <gpu/texture/format.h>
+#include <array>
 #include "textures.h"
 
 namespace skyline::gpu::interconnect {
@@ -224,21 +225,23 @@ namespace skyline::gpu::interconnect {
         };
     }
 
-    static std::shared_ptr<TextureView> CreateNullTexture(InterconnectContext &ctx) {
+    static std::shared_ptr<Texture> CreateFallbackImage(InterconnectContext &ctx,
+                                                        texture::Dimensions dimensions, u32 mipLevels,
+                                                        bool zeroInitialize) {
         constexpr texture::Format NullImageFormat{format::R8G8B8A8Unorm};
-        constexpr texture::Dimensions NullImageDimensions{1, 1, 1};
         constexpr vk::ImageLayout NullImageInitialLayout{vk::ImageLayout::eUndefined};
         constexpr vk::ImageTiling NullImageTiling{vk::ImageTiling::eOptimal};
         constexpr vk::ImageCreateFlags NullImageFlags{};
-        constexpr vk::ImageUsageFlags NullImageUsage{vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled};
+        const vk::ImageUsageFlags NullImageUsage{vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled |
+            (zeroInitialize ? vk::ImageUsageFlagBits::eTransferDst : vk::ImageUsageFlags{})};
 
         auto vkImage{ctx.gpu.memory.AllocateImage(
             {
                 .flags = NullImageFlags,
                 .imageType = vk::ImageType::e2D,
                 .format = NullImageFormat->vkFormat,
-                .extent = NullImageDimensions,
-                .mipLevels = 1,
+                .extent = dimensions,
+                .mipLevels = mipLevels,
                 .arrayLayers = 1,
                 .samples = vk::SampleCountFlagBits::e1,
                 .tiling = NullImageTiling,
@@ -250,13 +253,50 @@ namespace skyline::gpu::interconnect {
             }
         )};
 
-        auto nullTexture{std::make_shared<Texture>(ctx.gpu, std::move(vkImage), NullImageDimensions, NullImageFormat, NullImageInitialLayout, NullImageTiling, NullImageFlags, NullImageUsage)};
-        nullTexture->TransitionLayout(vk::ImageLayout::eGeneral);
-        return nullTexture->GetView(vk::ImageViewType::e2D, vk::ImageSubresourceRange{
-            .aspectMask = vk::ImageAspectFlagBits::eColor,
-            .levelCount = 1,
-            .layerCount = 1,
-        });;
+        auto image{std::make_shared<Texture>(ctx.gpu, std::move(vkImage), dimensions, NullImageFormat,
+                                             NullImageInitialLayout, NullImageTiling, NullImageFlags,
+                                             NullImageUsage, mipLevels)};
+        image->TransitionLayout(vk::ImageLayout::eGeneral);
+        if (zeroInitialize) {
+            // A sparse read of non-resident pages must be deterministic, not the
+            // undefined contents of the old 1x1 null texture. Initialize *all*
+            // mip levels and make the transfer visible before shader sampling.
+            const auto transitionCycle{image->cycle};
+            auto clearCycle{ctx.gpu.scheduler.Submit([image, mipLevels](vk::raii::CommandBuffer &commandBuffer) {
+                const vk::ImageSubresourceRange range{
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .levelCount = mipLevels,
+                    .layerCount = 1,
+                };
+                const std::array<float, 4> zeros{};
+                commandBuffer.clearColorImage(image->GetBacking(), vk::ImageLayout::eGeneral,
+                                              vk::ClearColorValue{zeros}, range);
+                commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands,
+                                              {}, {}, {}, vk::ImageMemoryBarrier{
+                    .image = image->GetBacking(),
+                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+                    .oldLayout = vk::ImageLayout::eGeneral,
+                    .newLayout = vk::ImageLayout::eGeneral,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .subresourceRange = range,
+                });
+            })};
+            clearCycle->AttachObject(image);
+            clearCycle->ChainCycle(transitionCycle);
+            image->cycle = clearCycle;
+        }
+        return image;
+    }
+
+    static std::shared_ptr<TextureView> CreateNullTexture(InterconnectContext &ctx) {
+        return CreateFallbackImage(ctx, texture::Dimensions{1, 1, 1}, 1, false)->GetView(
+            vk::ImageViewType::e2D, vk::ImageSubresourceRange{
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .levelCount = 1,
+                .layerCount = 1,
+            });
     }
 
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
@@ -380,10 +420,92 @@ namespace skyline::gpu::interconnect {
                     guest.tileConfig.blockHeight >>= 1;
             }
 
-            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
+            // End TIC construction: guest memory mapping and size validation follow.
+            const auto textureIova{textureHeader.Iova()};
+            const auto textureSize{guest.GetSize()};
+            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureIova, textureSize)};
             guest.mappings.assign(mappings.begin(), mappings.end());
             if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
-                LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
+                // Diagnostics only on the failed path: no additional translation,
+                // allocations, or GMMU state checks for normally mapped textures.
+                size_t cursor{}, mappedBytes{}, firstBadOffset{}, firstBadBytes{};
+                bool foundBad{};
+                for (const auto &mapping : guest.mappings) {
+                    if (mapping.valid() && !mapping.empty()) {
+                        mappedBytes += mapping.size();
+                    } else if (!foundBad) {
+                        firstBadOffset = cursor;
+                        firstBadBytes = mapping.size();
+                        foundBad = true;
+                    }
+                    cursor += mapping.size();
+                }
+                if (!foundBad) {
+                    firstBadOffset = cursor;
+                    firstBadBytes = textureSize > cursor ? textureSize - cursor : 0;
+                }
+
+                const auto firstBadIova{textureIova + firstBadOffset};
+                const auto state{ctx.channelCtx.asCtx->gmmu.GetMappingStateForDiagnostics(firstBadIova)};
+                const char *stateName{"unmapped"};
+                switch (state) {
+                    case soc::gm20b::GMMU::MappingState::Sparse: stateName = "sparse"; break;
+                    case soc::gm20b::GMMU::MappingState::Resident: stateName = "resident-now"; break;
+                    case soc::gm20b::GMMU::MappingState::Unmapped: break;
+                }
+                // Fully sparse sampled 2D color textures have no backing bytes.
+                // Do not send the placeholder to TextureManager: it isn't guest
+                // physical memory and would create false aliases. Preserve mip
+                // levels and dimensions (texelFetch and textureSize need both).
+                const bool fullySparseColor2D{
+                    guest.mappings.size() == 1 && !guest.mappings.front().valid() &&
+                    firstBadOffset == 0 && firstBadBytes == textureSize && mappedBytes == 0 &&
+                    state == soc::gm20b::GMMU::MappingState::Sparse &&
+                    shaderType == Shader::TextureType::Color2D &&
+                    guest.aspect == vk::ImageAspectFlagBits::eColor && !IsIntegerTicFormat(guest.format) &&
+                    (textureHeader.textureType == TextureImageControl::TextureType::e2D ||
+                     textureHeader.textureType == TextureImageControl::TextureType::e2DNoMipmap) &&
+                    guest.dimensions.width <= 1024 && guest.dimensions.height <= 1024 &&
+                    guest.mipLevelCount >= 1 && guest.mipLevelCount <= 11 &&
+                    (1U << (guest.mipLevelCount - 1)) <= std::max(guest.dimensions.width, guest.dimensions.height) &&
+                    guest.viewMipCount &&
+                    guest.viewMipBase < guest.mipLevelCount &&
+                    guest.viewMipCount <= guest.mipLevelCount - guest.viewMipBase
+                };
+                if (fullySparseColor2D) {
+                    const auto key{std::tuple{guest.dimensions.width, guest.dimensions.height, guest.mipLevelCount}};
+                    auto existing{sparseZeroImages.find(key)};
+                    // Bound the extra device memory. This limit is only relevant
+                    // on sparse misses; all resident texture paths stay unchanged.
+                    constexpr size_t MaxSparseZeroBytes{32 * 1024 * 1024};
+                    const size_t estimatedBytes{size_t{guest.dimensions.width} * guest.dimensions.height * 8};
+                    if (existing != sparseZeroImages.end() || estimatedBytes <= MaxSparseZeroBytes - sparseZeroAllocatedBytes) {
+                        auto &view{sparseZeroViews[textureHeader]};
+                        if (!view) {
+                            if (existing == sparseZeroImages.end()) {
+                                auto image{CreateFallbackImage(ctx, guest.dimensions, guest.mipLevelCount, true)};
+                                existing = sparseZeroImages.emplace(key, std::move(image)).first;
+                                sparseZeroAllocatedBytes += estimatedBytes;
+                            }
+                            view = existing->second->GetView(vk::ImageViewType::e2D, vk::ImageSubresourceRange{
+                                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                                .baseMipLevel = guest.viewMipBase,
+                                .levelCount = guest.viewMipCount,
+                                .layerCount = 1,
+                            }, {}, guest.swizzle);
+                        }
+                        if (!reportedSparseZeroFallback) {
+                            LOGI("Fully sparse 2D sampled textures use mip-complete zero images; physical remaps are retried");
+                            reportedSparseZeroFallback = true;
+                        }
+                        return view.get();
+                    }
+                }
+                LOGW("Unmapped texture in pool: 0x{:X} tic={} first_bad=0x{:X} bad_bytes=0x{:X} state={} mapped=0x{:X}/0x{:X} segments={} dims={}x{}x{} layers={} base_layer={} mips={} view_mips={}/{} format=0x{:X} tiling={}",
+                     textureIova, index, firstBadIova, firstBadBytes, stateName, mappedBytes, textureSize,
+                     guest.mappings.size(), guest.dimensions.width, guest.dimensions.height, guest.dimensions.depth,
+                     guest.layerCount, guest.baseArrayLayer, guest.mipLevelCount, guest.viewMipBase,
+                     guest.viewMipCount, textureHeader.formatWord.Raw(), static_cast<u32>(guest.tileConfig.mode));
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
 
