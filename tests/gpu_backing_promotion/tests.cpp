@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include <algorithm>
 #include <atomic>
+#include <fmt/format.h>
+#include <gpu/diagnostic/sparking_upload_provenance.h>
 #include <functional>
 #include <future>
 #include <thread>
@@ -356,6 +358,7 @@ namespace skyline::gpu {
             dirtyState=DirtyState::CpuDirty;
         }
         void SetupGuestMappings();
+        void RecordSparkingTic(uintptr_t addressSpace, u64 iova, u32 index, span<const u8> tic);
         ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
         BackingType backing;
         vk::ImageType backingImageType{vk::ImageType::e2D};
@@ -382,6 +385,15 @@ namespace skyline::gpu {
         std::atomic<bool> aliasRetired{};
         std::atomic<bool> aliasReadOnly{};
         u64 gpuWriteSerial{},gpuReadbackSerial{};
+        std::shared_ptr<diagnostic::SparkingUploadProof> sparkingUploadProof, sparkingCreationProof;
+        // All fields remain untouched with ENABLE_HDR_DRAW_SCAN off.
+        // Atomics make metadata inspection safe across executor threads.
+        std::atomic<diagnostic::SparkingUploadStatus> sparkingUploadStatus{};
+        std::atomic<u32> sparkingUploadSyncAttempts{};
+        std::atomic<u32> sparkingUploadCopyCount{};
+        std::atomic<u32> sparkingUploadProofDiscards{};
+        std::atomic<size_t> sparkingUploadBudgetUsedOnReject{};
+
         bool replaced{};
         vk::PipelineStageFlags pendingStageMask{}, readStageMask{};
         std::recursive_mutex mutex;
@@ -1199,6 +1211,68 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(!validationErrors);
     }
 
+    void CheckSparkingUploadProof(GPU &gpu) {
+        auto texture{std::make_shared<Texture>(gpu, vk::Format::eR16G16B16A16Sfloat,
+            vk::Extent3D{128,128,1}, 8, 6)};
+        texture->native.bpb=8;
+        texture->mipLayouts=texture::GetBlockLinearMipLayout(texture->dimensions,1,1,8,1,1,8,4,1,8);
+        texture->surfaceSize=texture->deswizzledSurfaceSize=CalculateLevelStride(texture->mipLayouts)*6;
+        texture->guest->tileConfig.mode=texture::TileMode::Block;
+        texture->guest->tileConfig.blockHeight=4;
+        texture->guest->tileConfig.blockDepth=1;
+        size_t guestLevels{};
+        for (const auto &mip:texture->mipLayouts) guestLevels+=mip.blockLinearSize;
+        const auto stride{util::AlignUp(guestLevels,size_t{512})};
+        texture->guest->layerStride=stride;
+        std::vector<u8> guest(stride*6,0xA5), expected;
+        size_t guestMip{};
+        for (size_t level{};level<texture->mipLayouts.size();++level) {
+            const auto &mip{texture->mipLayouts[level]};
+            for (size_t face{};face<6;++face) {
+                std::vector<u8> linear(mip.linearSize);
+                for (size_t i{};i<linear.size();i+=2) {
+                    const std::uint16_t half=static_cast<std::uint16_t>(0x3000+level*16+face);
+                    linear[i]=half&255;linear[i+1]=half>>8;
+                }
+                texture::CopyLinearToBlockLinear(mip.dimensions,1,1,8,mip.blockHeight,mip.blockDepth,
+                    linear.data(),guest.data()+face*stride+guestMip);
+                expected.insert(expected.end(),linear.begin(),linear.end());
+            }
+            guestMip+=mip.blockLinearSize;
+        }
+        texture->mirror=guest;
+        texture->guest->mappings={texture->mirror};
+        diagnostic::SparkingUploads().enabled=true;
+        texture->SetupGuestMappings();
+        const auto creation=texture->sparkingCreationProof;
+        assert(creation && creation->guest==guest);
+        std::array<u8,32> tic{};tic[0]=0x42;
+        texture->RecordSparkingTic(1,0x10000,7,tic);
+        assert(creation->metadata.find("index=7")!=std::string::npos);
+        texture->RecordSparkingTic(1,0x20000,9,tic);
+        assert(creation->iova==0x10000); // Keep the first observation.
+        auto staging{texture->SynchronizeHostImpl()};
+        auto proof{texture->sparkingUploadProof};
+        assert(proof && !proof->recorded.load() && proof->slices.size()==48);
+        assert(proof->creation==creation);
+        assert(proof->guest==guest && proof->linear==expected && proof->upload==expected);
+        auto cycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
+            texture->CopyFromStagingBuffer(commands,staging);
+        })};
+        cycle->AttachObjects(texture,staging);
+        assert(proof->recorded.load() && texture->sparkingUploadCopyCount==1);
+        auto readback{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+        auto readCycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
+            texture->CopyIntoStagingBuffer(commands,readback);
+        })};
+        readCycle->AttachObjects(texture,readback);
+        readCycle->Wait();
+        assert(std::equal(expected.begin(),expected.end(),readback->data()));
+        assert(std::equal(guest.begin(),guest.end(),texture->mirror.begin()));
+        diagnostic::SparkingUploads().enabled=false;
+        assert(!validationErrors);
+    }
+
     void CheckManagerOverlapLookup(GPU &gpu) {
         // The host mirror adapter supports page-aligned, adjacent physical
         // segments. Actual disjoint segment order is checked by mapping_match.
@@ -1873,6 +1947,10 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("SPARKING_UPLOAD_ONLY")) {
+                CheckSparkingUploadProof(gpu);
+                continue;
+            }
             if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
                 CheckManagerOverlapLookup(gpu);
                 continue;
@@ -1906,6 +1984,10 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if (std::getenv("SPARKING_UPLOAD_ONLY")) {
+        std::puts("PASS: production cubemap guest/deswizzle/upload proof, 48 mip/face slices and Vulkan readback equality; zero validation errors");
+        return 0;
+    }
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;

@@ -11,6 +11,10 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <gpu/diagnostic/sparking_frame_capture.h>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -382,6 +386,327 @@ namespace skyline::gpu::interconnect {
         return (!a && !b) || (a && b && b->GetView() == a);
     }
 
+
+    // Phase 2: the first capture proved that 1024x256 auxiliaries starve
+    // readback quotas. The recorded arena path is 856x480 HDR -> 856x480
+    // RGBA8 -> 856x480 RGBA8 -> 1280x720. Only probe that chain.
+    static bool IsSparkingColorImage(const Texture &texture) {
+        return texture.dimensions.depth == 1 && texture.levelCount == 1 &&
+               texture.layerCount == 1 && texture.sampleCount == vk::SampleCountFlagBits::e1 &&
+               texture.surfaceSize > 0 && texture.surfaceSize <= 20ULL * 1024 * 1024 &&
+               (texture.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+               !texture.format->IsCompressed() &&
+               (texture.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+               texture.layout != vk::ImageLayout::eUndefined;
+    }
+
+    static bool IsSparkingImage(const Texture &texture, std::uint32_t width, std::uint32_t height,
+                               vk::Format format) {
+        return IsSparkingColorImage(texture) &&
+               texture.dimensions.width == width && texture.dimensions.height == height &&
+               texture.format->vkFormat == format;
+    }
+
+    static bool IsSparkingLdr(const Texture &texture, std::uint32_t width, std::uint32_t height) {
+        return IsSparkingImage(texture, width, height, vk::Format::eR8G8B8A8Unorm) ||
+               IsSparkingImage(texture, width, height, vk::Format::eB8G8R8A8Unorm);
+    }
+
+    std::optional<u32> CommandExecutor::BeginDiagnosticSparkingDraw(span<TextureView *> color) {
+        auto &capture{diagnostic::SparkingCapture()};
+        if (!capture.active.load(std::memory_order_acquire) || !capture.hdrDrawScan.load(std::memory_order_acquire))
+            return std::nullopt;
+        for (auto *view : color) {
+            if (!view || !view->texture ||
+                !IsSparkingImage(*view->texture, 856, 480, vk::Format::eB10G11R11UfloatPack32)) continue;
+            auto ordinal{capture.ClaimHdrDraw(reinterpret_cast<uintptr_t>(view->texture.get()),
+                                             reinterpret_cast<uintptr_t>(this))};
+            if (ordinal && *ordinal == 1) QueueSparkingScanImage(view, "before_first", 0, true);
+            return ordinal;
+        }
+        return std::nullopt;
+    }
+
+    void CommandExecutor::EndDiagnosticSparkingDraw(u32 ordinal, span<TextureView *> color) {
+        for (auto *view : color) {
+            if (!view || !view->texture ||
+                !IsSparkingImage(*view->texture, 856, 480, vk::Format::eB10G11R11UfloatPack32)) continue;
+            QueueSparkingScanImage(view, "after", ordinal, true);
+            break;
+        }
+    }
+
+    void CommandExecutor::QueueSparkingScanImage(TextureView *view, const std::string &phase,
+                                               u32 ordinal, bool hdrStats) {
+        auto &capture{diagnostic::SparkingCapture()};
+        if (!view || !view->texture || !capture.active.load(std::memory_order_acquire)) return;
+        auto texture{view->texture};
+        if (texture->dimensions.depth != 1 || texture->levelCount > 12 || texture->layerCount > 6 ||
+            texture->sampleCount != vk::SampleCountFlagBits::e1 || !texture->surfaceSize ||
+            texture->surfaceSize > 20ULL * 1024 * 1024 ||
+            (texture->layout != vk::ImageLayout::eGeneral && texture->layout != vk::ImageLayout::eTransferSrcOptimal) ||
+            !(texture->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+            !(texture->format->vkAspect & vk::ImageAspectFlagBits::eColor)) {
+            capture.Record(fmt::format("HDR_SCAN_SKIP draw={} phase={} reason=unsupported_image", ordinal, phase));
+            return;
+        }
+        if (hdrStats && texture->surfaceSize != static_cast<size_t>(texture->dimensions.width) * texture->dimensions.height * 4) {
+            capture.Record(fmt::format("HDR_SCAN_SKIP draw={} phase={} reason=nonpacked_hdr", ordinal, phase));
+            return;
+        }
+        if (!capture.ReserveScanBytes(texture->surfaceSize)) {
+            capture.Record(fmt::format("HDR_SCAN_SKIP draw={} phase={} reason=byte_budget", ordinal, phase));
+            return;
+        }
+        const std::filesystem::path directory{capture.CaptureDirectory()};
+        const auto stem{fmt::format("hdr_draw_{:03}_{}", ordinal, phase)};
+        const auto bytes{texture->surfaceSize};
+        const auto meta{fmt::format("ordinal={} phase={} executor=0x{:X} submission={} rp={} "
+            "texture=0x{:X} image={}x{} format={} bytes={} levels={} layers={} "
+            "view_mip={} view_levels={} view_layer={} view_layers={} packing=mip_major_all_layers\n",
+            ordinal, phase, reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
+            reinterpret_cast<uintptr_t>(texture.get()), texture->dimensions.width, texture->dimensions.height,
+            vk::to_string(texture->format->vkFormat), bytes, texture->levelCount, texture->layerCount,
+            view->range.baseMipLevel, view->range.levelCount, view->range.baseArrayLayer, view->range.layerCount)};
+        AttachTexture(view); // Reattach if AddSubpass auto-submitted the writer's execution.
+        auto staging{gpu.memory.AllocateStagingBuffer(bytes)};
+        using ProofResult = std::pair<std::shared_ptr<diagnostic::SparkingUploadProof>, std::string>;
+        const bool provenance{phase.starts_with("input_") &&
+            diagnostic::IsSparkingCubeGeometry(texture->dimensions.width, texture->dimensions.height,
+                texture->dimensions.depth, texture->layerCount, texture->levelCount) &&
+            texture->format->vkFormat == vk::Format::eR16G16B16A16Sfloat};
+        auto proofResult{provenance ? std::make_shared<ProofResult>() : nullptr};
+        if (proofResult) {
+            // Run on the preparation thread after host uploads, while texture locks
+            // are held. Never reconstruct guest bytes during the later GPU callback.
+            diagnosticUploadCallbacks.emplace_back([texture, proofResult] {
+                proofResult->first = texture->sparkingUploadProof;
+                std::scoped_lock stateLock{texture->stateMutex};
+                proofResult->second = fmt::format(
+                    "readback_guest_format={} readback_host_format={} current_write_claim_serial={} current_backing_generation={} "
+                    "ever_gpu_writer={} dirty_state={} memory_freed={} alias={} alias_stale={} "
+                    "alias_read_only={} alias_retired={} provenance_enabled={} proof_available={} "
+                    "proof_reason={} sync_attempts={} copy_buffer_to_image_count={} proof_discard_count={} "
+                    "budget_used_on_reject={} budget_used_now={} budget_limit={}\n",
+                    texture->guest ? vk::to_string(texture->guest->format->vkFormat) : "none",
+                    vk::to_string(texture->format->vkFormat), texture->gpuWriteSerial, texture->backingGeneration,
+                    texture->everUsedAsGpuWrite, static_cast<u32>(texture->dirtyState), texture->memoryFreed,
+                    texture->HasAliases(), texture->aliasStale.load(), texture->aliasReadOnly.load(),
+                    texture->aliasRetired.load(), diagnostic::SparkingUploads().enabled.load(),
+                    static_cast<bool>(proofResult->first), diagnostic::SparkingUploadStatusName(texture->sparkingUploadStatus.load()),
+                    texture->sparkingUploadSyncAttempts.load(), texture->sparkingUploadCopyCount.load(),
+                    texture->sparkingUploadProofDiscards.load(), texture->sparkingUploadBudgetUsedOnReject.load(),
+                    diagnostic::SparkingUploads().UsedBytes(), diagnostic::SparkingUploadProvenance::MaxBytes);
+            });
+        }
+        // Ends the current render pass, then copies in this executor's ordered stream.
+        // No submit, CPU readback wait or device-idle is introduced here.
+        AddOutsideRpCommand([texture, staging](vk::raii::CommandBuffer &commands,
+                                               const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+            cycle->AttachObjects(texture, staging);
+            texture->CopyIntoStagingBuffer(commands, staging);
+            // Order this diagnostic transfer read before any later image writer.
+            // CopyIntoStagingBuffer supplies the preceding-write -> read dependency.
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands,
+                {}, {}, {}, vk::ImageMemoryBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eTransferRead,
+                    .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                    .oldLayout = texture->layout,
+                    .newLayout = texture->layout,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = texture->GetBacking(),
+                    .subresourceRange = {texture->format->vkAspect, 0, texture->levelCount, 0, texture->layerCount},
+                });
+        });
+        diagnosticReadbackCallbacks.emplace_back([staging, directory, stem, meta, bytes, ordinal, hdrStats, proofResult] {
+            std::ofstream raw(directory / (stem + ".raw"), std::ios::binary | std::ios::trunc);
+            raw.write(reinterpret_cast<const char *>(staging->data()), static_cast<std::streamsize>(bytes));
+            if (!raw) { LOGE("MINIRD_SPARKING_DRAW failed to write {}", stem); return; }
+            std::ofstream info(directory / (stem + ".txt"), std::ios::trunc);
+            info << meta;
+            if (hdrStats) {
+                const auto stats{diagnostic::SparkingHdrStats::Decode(
+                    std::span<const std::uint8_t>{staging->data(), static_cast<size_t>(bytes)})};
+                // The selected executor's waiter serializes these callbacks.
+                std::ofstream csv(directory / "hdr_draw_stats.csv", std::ios::app);
+                csv << ordinal << ',' << stem << ',' << stats.nanPixels << ',' << stats.infPixels << '\n';
+            }
+            if (proofResult) {
+                const auto prefix{directory / (stem + "_provenance")};
+                if (const auto &proof{proofResult->first}) {
+                    if (!proof->Write(prefix, std::span<const std::uint8_t>{staging->data(), static_cast<size_t>(bytes)},
+                                      proofResult->second))
+                        LOGE("MINIRD_SPARKING_PROVENANCE write failed: {}", prefix.string());
+                } else {
+                    std::ofstream missing(prefix.string() + ".txt");
+                    missing << proofResult->second << "No retained upload proof; this does not identify the corrupting stage.\n";
+                }
+            }
+            LOGI("MINIRD_SPARKING_DRAW wrote {}", stem);
+        });
+        capture.Record(fmt::format("HDR_SCAN_COPY ordinal={} phase={} bytes={} metadata={}",
+                                   ordinal, phase, bytes, stem));
+    }
+
+    void CommandExecutor::TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color) {
+        auto &capture{diagnostic::SparkingCapture()};
+        if (!capture.active.load(std::memory_order_acquire) || capture.hdrDrawScan.load(std::memory_order_acquire))
+            return;
+        (void)sampled;
+        // HDR scene producers do not necessarily sample a prior scene texture.
+        // Collect only actual 856x480 B10G11R11 color targets, not every
+        // bound auxiliary image. Later postpasses are identified by shader.
+        for (auto *view : color) {
+            if (!view || !view->texture ||
+                !IsSparkingImage(*view->texture, 856, 480, vk::Format::eB10G11R11UfloatPack32))
+                continue;
+            auto texture{view->texture};
+            const auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
+                [&](const DiagnosticPassImage &entry) { return entry.texture.get() == texture.get(); })};
+            if (it == diagnosticPassImages.end() && diagnosticPassImages.size() < 16)
+                diagnosticPassImages.push_back({std::move(texture), true, true,
+                    diagnostic::SparkingFocusRole::SceneHdr, 0});
+        }
+    }
+
+    void CommandExecutor::MarkDiagnosticSparkingOutput(span<TextureView *> sampled, span<TextureView *> color,
+                                                       std::uint64_t fragmentShaderHash) {
+        auto &capture{diagnostic::SparkingCapture()};
+        if (!capture.active.load(std::memory_order_acquire) || capture.hdrDrawScan.load(std::memory_order_acquire))
+            return;
+        // Observed in capture_001. Exact hashes keep the next readback cheap.
+        constexpr std::uint64_t ToneMap{0x3332897FCDBD1264ULL};
+        constexpr std::uint64_t PostLdr{0x96D28FD4260951CBULL};
+        constexpr std::uint64_t Upscale{0x2CFA19C0057B1932ULL};
+        if (fragmentShaderHash != ToneMap && fragmentShaderHash != PostLdr &&
+            fragmentShaderHash != Upscale)
+            return;
+
+        const auto append{[&](span<TextureView *> views, diagnostic::SparkingFocusRole role,
+                              std::uint32_t width, std::uint32_t height, bool hdr, bool target) {
+            for (auto *view : views) {
+                if (!view || !view->texture)
+                    continue;
+                const auto &texture{view->texture};
+                const bool eligible{hdr
+                    ? IsSparkingImage(*texture, width, height, vk::Format::eB10G11R11UfloatPack32)
+                    : IsSparkingLdr(*texture, width, height)};
+                if (!eligible)
+                    continue;
+                // De-duplicate by role + image identity, NOT by renderpass
+                // alone: the same source can also be a target in another pass.
+                const auto it{std::find_if(diagnosticPassImages.begin(), diagnosticPassImages.end(),
+                    [&](const DiagnosticPassImage &entry) {
+                        return entry.texture.get() == texture.get() && entry.role == role;
+                    })};
+                if (it == diagnosticPassImages.end() && diagnosticPassImages.size() < 16)
+                    diagnosticPassImages.push_back({texture, target, true, role, fragmentShaderHash});
+                capture.Record(fmt::format(
+                    "FOCUS_BINDING shader={:016X} role={} executor=0x{:X} submission={} rp={} "
+                    "texture=0x{:X} {}x{} format={} kind={}",
+                    fragmentShaderHash, diagnostic::SparkingFocusName(role),
+                    reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
+                    reinterpret_cast<uintptr_t>(texture.get()), width, height,
+                    vk::to_string(texture->format->vkFormat), target ? "target" : "sampled"));
+                break;
+            }
+        }};
+
+        if (fragmentShaderHash == ToneMap) {
+            append(sampled, diagnostic::SparkingFocusRole::ToneHdrInput, 856, 480, true, false);
+            append(color, diagnostic::SparkingFocusRole::ToneLdrOutput, 856, 480, false, true);
+        } else if (fragmentShaderHash == PostLdr) {
+            append(sampled, diagnostic::SparkingFocusRole::PostLdrInput, 856, 480, false, false);
+            append(color, diagnostic::SparkingFocusRole::PostLdrOutput, 856, 480, false, true);
+        } else {
+            append(sampled, diagnostic::SparkingFocusRole::UpscaleLdrInput, 856, 480, false, false);
+            append(color, diagnostic::SparkingFocusRole::UpscaleLdrOutput, 1280, 720, false, true);
+        }
+    }
+
+    void CommandExecutor::QueueDiagnosticPassReadbacks() {
+        if (diagnosticPassImages.empty())
+            return;
+        auto images{std::move(diagnosticPassImages)};
+        diagnosticPassImages.clear();
+        auto &capture{diagnostic::SparkingCapture()};
+        if (!capture.active.load(std::memory_order_acquire) || capture.hdrDrawScan.load(std::memory_order_acquire))
+            return;
+
+        const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+        if (interval >= diagnostic::SparkingFrameCapture::FrameCount)
+            return;
+        const std::filesystem::path directory{capture.CaptureDirectory()};
+        if (directory.empty())
+            return;
+
+        for (const auto &entry : images) {
+            const auto &texture{entry.texture};
+            if (!entry.priority || !IsSparkingColorImage(*texture))
+                continue;
+
+            const auto snapshotId{capture.ReservePassSnapshot(interval, texture->surfaceSize, entry.role)};
+            if (!snapshotId)
+                continue;
+            const auto index{*snapshotId};
+            const auto width{texture->dimensions.width};
+            const auto height{texture->dimensions.height};
+            const auto format{vk::to_string(texture->format->vkFormat)};
+            const auto identity{reinterpret_cast<uintptr_t>(texture.get())};
+            const auto executorIdentity{reinterpret_cast<uintptr_t>(this)};
+            uintptr_t guestMap{};
+            size_t guestBytes{};
+            if (texture->guest) {
+                if (!texture->guest->mappings.empty())
+                    guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                for (const auto &mapping : texture->guest->mappings)
+                    guestBytes += mapping.size();
+            }
+            const auto fileName{fmt::format("pass_{:02}_rp{}_{}x{}_{}.raw",
+                index, renderPassIndex, width, height, format)};
+            const auto rawPath{directory / fileName};
+            const auto metaPath{directory / fmt::format("pass_{:02}.txt", index)};
+            const auto meta{fmt::format(
+                "capture_index={} approx_present={} render_pass={} submission={} "
+                "kind={} focus={} shader={:016X} executor=0x{:X} texture=0x{:X} dimensions={}x{} "
+                "format={} layout={} bytes={} guest_map=0x{:X} guest_bytes={} "
+                "note=recorded_after_render_pass_end_not_exact_frame_correlation\n",
+                index, interval, renderPassIndex, submissionNumber,
+                entry.renderTarget ? "render_target" : "sampled_input",
+                diagnostic::SparkingFocusName(entry.role), entry.shaderHash, executorIdentity, identity,
+                width, height, format, vk::to_string(texture->layout),
+                texture->surfaceSize, guestMap, guestBytes)};
+            auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [texture, staging](vk::raii::CommandBuffer &commandBuffer,
+                                   const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    cycle->AttachObjects(texture, staging);
+                    texture->CopyIntoStagingBuffer(commandBuffer, staging);
+                });
+            diagnosticReadbackCallbacks.emplace_back(
+                [staging, rawPath, metaPath, meta, index] {
+                    std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                    if (!raw) {
+                        LOGE("MINIRD_SPARKING_PHASE2 failed to open snapshot {}", index);
+                        return;
+                    }
+                    raw.write(reinterpret_cast<const char *>(staging->data()),
+                              static_cast<std::streamsize>(staging->size()));
+                    raw.close();
+                    std::ofstream info(metaPath, std::ios::trunc);
+                    if (info)
+                        info << meta;
+                    LOGI("MINIRD_SPARKING_PHASE2 wrote snapshot {}: {}", index, rawPath.string());
+                });
+            capture.Record(fmt::format(
+                "PHASE2_SNAPSHOT index={} rp={} submission={} executor=0x{:X} interval={} kind={} focus={} shader={:016X} texture=0x{:X} {}x{} format={}",
+                index, renderPassIndex, submissionNumber, executorIdentity, interval,
+                entry.renderTarget ? "rt" : "sampled", diagnostic::SparkingFocusName(entry.role),
+                entry.shaderHash, identity, width, height, format));
+        }
+    }
+
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
         auto addSubpass{[&] {
             renderPass->AddSubpass(inputAttachments, colorAttachments, depthStencilAttachment, gpu);
@@ -417,6 +742,7 @@ namespace skyline::gpu::interconnect {
 
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+                QueueDiagnosticPassReadbacks();
                 renderPassIndex++;
             }
             renderPass = &std::get<node::RenderPassNode>(slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassNode>(), renderArea));
@@ -442,6 +768,7 @@ namespace skyline::gpu::interconnect {
         for (auto view : sampledImages)
             view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
+        TrackDiagnosticPassImages(sampledImages, colorAttachments);
         return gotoNext;
     }
 
@@ -452,6 +779,7 @@ namespace skyline::gpu::interconnect {
 
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+            QueueDiagnosticPassReadbacks();
             renderPassIndex++;
 
             renderPass = nullptr;
@@ -743,6 +1071,8 @@ namespace skyline::gpu::interconnect {
             }
         }
 
+        for (auto &prepare : diagnosticUploadCallbacks) prepare();
+        diagnosticUploadCallbacks.clear();
         RotateRecordSlot();
     }
 
@@ -786,6 +1116,12 @@ namespace skyline::gpu::interconnect {
             SubmitInternal();
             submissionNumber++;
         }
+        // SubmitInternal() closes the final render pass and may enqueue more
+        // diagnostic readbacks. Queue file writes AFTER that point so callbacks
+        // belong to the correct GPU cycle (already registered above).
+        for (auto &cb : diagnosticReadbackCallbacks)
+            waiterThread.Queue(nullptr, std::move(cb));
+        diagnosticReadbackCallbacks.clear();
 
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission

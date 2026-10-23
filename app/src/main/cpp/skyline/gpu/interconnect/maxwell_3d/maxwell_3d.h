@@ -127,6 +127,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
          * @brief A scissor derived from the current draw register state and bound RTs
          */
         vk::Rect2D GetDrawScissor();
+        std::optional<u32> BeginSparkingHdrDraw(u32 count, u32 instances, bool indexed, const vk::Rect2D &scissor);
 
         /**
          * @brief Performs operations common across indirect and regular draws

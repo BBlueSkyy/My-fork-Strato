@@ -4,6 +4,7 @@
 #pragma once
 
 #include "alias_group.h"
+#include <gpu/diagnostic/sparking_upload_provenance.h>
 
 #include <range/v3/view.hpp>
 #include <range/v3/algorithm.hpp>
@@ -318,6 +319,7 @@ namespace skyline::gpu {
     };
 
     class TextureManager;
+    namespace interconnect { class CommandExecutor; }
 
     /**
      * @brief A view into a specific subresource of a Texture
@@ -402,6 +404,14 @@ namespace skyline::gpu {
         BackingType backing; //!< The Vulkan image that backs this texture, it is nullable
         vk::ImageType backingImageType; //!< Immutable image type supplied at allocation/wrapping.
 
+        std::shared_ptr<diagnostic::SparkingUploadProof> sparkingUploadProof, sparkingCreationProof;
+        // All fields remain untouched with ENABLE_HDR_DRAW_SCAN off.
+        // Atomics make metadata inspection safe across executor threads.
+        std::atomic<diagnostic::SparkingUploadStatus> sparkingUploadStatus{};
+        std::atomic<u32> sparkingUploadSyncAttempts{};
+        std::atomic<u32> sparkingUploadCopyCount{};
+        std::atomic<u32> sparkingUploadProofDiscards{};
+        std::atomic<size_t> sparkingUploadBudgetUsedOnReject{};
         span<u8> mirror{}; //!< A contiguous mirror of all the guest mappings to allow linear access on the CPU
         span<u8> alignedMirror{}; //!< The mirror mapping aligned to page size to reflect the full mapping
         std::optional<TrapHandle> trapHandle{}; //!< The handle of the traps for the guest mappings
@@ -465,6 +475,8 @@ namespace skyline::gpu {
 
         friend TextureManager;
         friend TextureView;
+        friend class interconnect::CommandExecutor; // Diagnostic GPU readback only
+        friend class PresentationEngine; // Diagnostic presentation-source GPU readback
 
         /**
          * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid
@@ -514,6 +526,8 @@ namespace skyline::gpu {
         std::chrono::nanoseconds accumulatedGuestWaitTime{}; //!< Amount of time the texture has been waited on for since the `SkipReadbackHackWaitCountThreshold`th wait on it by the guest
 
       public:
+        void RecordSparkingTic(uintptr_t addressSpace, u64 iova, u32 index, span<const u8> tic);
+
         std::shared_ptr<FenceCycle> cycle; //!< A fence cycle for when any host operation mutating the texture has completed, it must be waited on prior to any mutations to the backing
         std::optional<GuestTexture> guest;
         texture::Dimensions dimensions;

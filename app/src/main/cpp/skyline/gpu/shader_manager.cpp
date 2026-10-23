@@ -14,6 +14,8 @@
 #include <shader_compiler/backend/spirv/emit_spirv.h>
 #include <vulkan/vulkan_raii.hpp>
 #include "shader_manager.h"
+#include <os.h>
+#include <gpu/diagnostic/sparking_frame_capture.h>
 
 static constexpr bool DumpShaders{false};
 
@@ -127,6 +129,7 @@ namespace skyline::gpu {
     }
 
     ShaderManager::ShaderManager(const DeviceState &state, GPU &gpu, std::string_view replacementDir, std::string_view dumpDir) : gpu{gpu}, dumpPath{dumpDir} {
+        diagnostic::SparkingCapture().ConfigureShaderDump(std::filesystem::path(state.os->publicAppFilesPath) / "gpu_capture" / "sparking");
         LoadShaderReplacements(replacementDir);
 
         if constexpr (DumpShaders) {
@@ -480,6 +483,7 @@ namespace skyline::gpu {
                                                            bool viewportTransformEnabled,
                                                            const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc) {
         binary = ProcessShaderBinary(false, hash, binary);
+        diagnostic::SparkingCapture().DumpShader(hash, false, std::span<const std::uint8_t>{binary.data(), binary.size()});
 
         std::scoped_lock lock{poolMutex};
 
@@ -521,6 +525,7 @@ namespace skyline::gpu {
                                                           std::array<u32, 3> workgroupDimensions,
                                                           const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc) {
         binary = ProcessShaderBinary(false, hash, binary);
+        diagnostic::SparkingCapture().DumpShader(hash, false, std::span<const std::uint8_t>{binary.data(), binary.size()});
 
         std::scoped_lock lock{poolMutex};
 
@@ -550,6 +555,8 @@ namespace skyline::gpu {
         auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings)};
         auto spirv{ProcessShaderBinary(true, hash, span<u32>{spirvEmitted}.cast<u8>()).cast<u32>()};
 
+        diagnostic::SparkingCapture().DumpShader(hash, true,
+            std::span<const std::uint8_t>{reinterpret_cast<const std::uint8_t *>(spirv.data()), spirv.size_bytes()});
         vk::ShaderModuleCreateInfo createInfo{
             .pCode = spirv.data(),
             .codeSize = spirv.size_bytes(),

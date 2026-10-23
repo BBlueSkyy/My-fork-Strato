@@ -6,6 +6,7 @@
 #include <gpu/texture_manager.h>
 #include <gpu/buffer_manager.h>
 #include <gpu/texture/format.h>
+#include <gpu/diagnostic/sparking_frame_capture.h>
 #include "textures.h"
 
 namespace skyline::gpu::interconnect {
@@ -386,12 +387,33 @@ namespace skyline::gpu::interconnect {
             guest.mappings.assign(mappings.begin(), mappings.end());
             if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
                 LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
+                if (diagnostic::SparkingCapture().active.load(std::memory_order_acquire)) {
+                    size_t validMappings{};
+                    for (const auto &map : guest.mappings)
+                        if (map.valid() && !map.empty())
+                            ++validMappings;
+                    diagnostic::SparkingCapture().Record(fmt::format(
+                        "TIC_UNMAPPED index={} iova=0x{:X} guest_size={} width={} height={} format={} "
+                        "mapping_count={} valid_mappings={} channel_sequence={}",
+                        index, textureHeader.Iova(), guest.GetSize(),
+                        guest.dimensions.width, guest.dimensions.height,
+                        vk::to_string(guest.format->vkFormat), guest.mappings.size(),
+                        validMappings, ctx.channelCtx.channelSequenceNumber));
+                }
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
 
                 return nullTextureView.get();
             }
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
+            if (diagnostic::SparkingUploads().enabled.load(std::memory_order_relaxed) &&
+                diagnostic::IsSparkingCubeGeometry(guest.dimensions.width,guest.dimensions.height,
+                    guest.dimensions.depth,guest.layerCount,guest.mipLevelCount) &&
+                guest.format->vkFormat==vk::Format::eR16G16B16A16Sfloat) {
+                ContextLock originLock{ctx.executor.tag,*texture};
+                texture->texture->RecordSparkingTic(reinterpret_cast<uintptr_t>(ctx.channelCtx.asCtx.get()),
+                    textureHeader.Iova(),index,{reinterpret_cast<const u8 *>(&textureHeader),sizeof(textureHeader)});
+            }
         }
 
         textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber};

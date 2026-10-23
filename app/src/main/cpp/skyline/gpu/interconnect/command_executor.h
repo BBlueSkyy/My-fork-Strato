@@ -4,6 +4,7 @@
 #pragma once
 
 #include <gpu/texture/backing_promotion.h>
+#include <gpu/diagnostic/sparking_frame_capture.h>
 #include "common/common.h"
 
 #include <boost/container/stable_vector.hpp>
@@ -223,6 +224,20 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
+        // SPARKING mini-RenderDoc adapted from PR #336: bounded readbacks *after* real render-pass endings.
+        struct DiagnosticPassImage {
+            std::shared_ptr<Texture> texture;
+            bool renderTarget{};
+            bool priority{};
+            diagnostic::SparkingFocusRole role{diagnostic::SparkingFocusRole::SceneHdr};
+            std::uint64_t shaderHash{};
+        };
+        std::vector<DiagnosticPassImage> diagnosticPassImages;
+        std::vector<std::function<void()>> diagnosticReadbackCallbacks;
+        std::vector<std::function<void()>> diagnosticUploadCallbacks;
+        void TrackDiagnosticPassImages(span<TextureView *> sampled, span<TextureView *> color);
+        void QueueDiagnosticPassReadbacks();
+
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
         void RotateRecordSlot();
@@ -266,6 +281,14 @@ namespace skyline::gpu::interconnect {
         ContextTag executionTag{};
         bool captureNextExecution{};
         UsageTracker usageTracker;
+
+        // Diagnostic only: annotate a scene-color sampling pass.
+        // Called after adding the draw, while its active attachments are known.
+        void MarkDiagnosticSparkingOutput(span<TextureView *> sampled, span<TextureView *> color, std::uint64_t fragmentShaderHash);
+        std::optional<u32> BeginDiagnosticSparkingDraw(span<TextureView *> color);
+        void EndDiagnosticSparkingDraw(u32 ordinal, span<TextureView *> color);
+        void QueueSparkingScanImage(TextureView *view, const std::string &phase, u32 ordinal, bool hdrStats);
+
 
         CommandExecutor(const DeviceState &state);
 

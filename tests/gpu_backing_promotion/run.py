@@ -41,6 +41,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
         signature) for signature in (
         "void Texture::SetupGuestMappings(",
+        "void Texture::RecordSparkingTic(",
         "bool Texture::CanMaterializeGuestLayout(",
         "bool Texture::IsGuestLayoutReversible(",
         "bool Texture::CanReconcileGuestLayout(",
@@ -126,7 +127,8 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         "void CommandExecutor::HandleTextureBackingPromotion("))
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror",
                     "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS", "-Wno-unknown-pragmas", "-Wno-unused-parameter", "-fsanitize=undefined",
-                    "-fno-sanitize-recover=all", "-pthread", "-I" + str(directory),
+                    "-fno-sanitize-recover=all", "-pthread", "-DFMT_HEADER_ONLY",
+                    "-I" + str(ROOT / "app/libraries/fmt/include"), "-I" + str(directory),
                     "-I" + str(ROOT / "app/src/main/cpp/skyline"),
                     "-I" + os.environ.get("VULKAN_HPP_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp")),
                     "-I" + os.environ.get("VULKAN_HEADERS_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp/Vulkan-Headers/include")),

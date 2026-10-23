@@ -7,6 +7,7 @@
 #include <common/trace.h>
 #include <common/settings.h>
 #include "texture.h"
+#include <gpu/diagnostic/sparking_upload_provenance.h>
 #include "layout.h"
 #include "pitch_linear.h"
 #include "adreno_aliasing.h"
@@ -194,6 +195,14 @@ namespace skyline::gpu {
             mirror = alignedMirror.subspan(static_cast<size_t>(frontMapping.data() - alignedData), totalSize);
         }
 
+        if (diagnostic::SparkingUploads().enabled.load(std::memory_order_relaxed) &&
+            diagnostic::IsSparkingCubeGeometry(dimensions.width,dimensions.height,dimensions.depth,layerCount,levelCount) &&
+            guest->format->vkFormat==vk::Format::eR16G16B16A16Sfloat) {
+            sparkingCreationProof=diagnostic::SparkingUploads().CaptureCreation({mirror.data(),mirror.size()});
+            if (sparkingCreationProof)
+                sparkingCreationProof->metadata="creation_stage=mirror_created_before_texture_traps concurrent_cpu_writes=not_excluded\n";
+        }
+
         // We can't just capture `this` in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Texture> weakThis{weak_from_this()};
         trapHandle = gpu.state.process->trap.CreateTrap(mappings, [weakThis] {
@@ -295,7 +304,33 @@ namespace skyline::gpu {
         });
     }
 
+    void Texture::RecordSparkingTic(uintptr_t addressSpace, u64 iova, u32 index, span<const u8> tic) {
+        // The caller holds the texture context lock. Preserve the first TIC
+        // observed for this backing, rather than silently overwriting its origin.
+        if (!sparkingCreationProof || sparkingCreationProof->ticRecorded) return;
+        auto &origin{*sparkingCreationProof};
+        origin.addressSpace=addressSpace;
+        origin.iova=iova;
+        origin.ticRecorded=true;
+        origin.metadata+=fmt::format("origin_tic index={} address_space=0x{:X} iova=0x{:X} gpu_write_claim={} backing_generation={} raw_bytes=",
+            index,addressSpace,iova,gpuWriteSerial,backingGeneration);
+        for (auto byte:tic) origin.metadata+=fmt::format("{:02X}",byte);
+        origin.metadata+="\n";
+        origin.metadata+=diagnostic::SparkingTransfers().Snapshot(addressSpace,iova,origin.guest.size());
+    }
+
     std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl() {
+        // Record only the target class of image, and only when opt-in was
+        // enabled at GPU initialization; do not change any upload decision.
+        const bool traceCubemap{diagnostic::SparkingUploads().enabled.load(std::memory_order_relaxed) &&
+            layerCount == 6 && dimensions.depth == 1 &&
+            format->vkFormat == vk::Format::eR16G16B16A16Sfloat};
+        if (traceCubemap) {
+            sparkingUploadSyncAttempts.fetch_add(1, std::memory_order_relaxed);
+            sparkingUploadStatus.store(diagnostic::SparkingUploadStatus::SynchronizeEntered,
+                                         std::memory_order_relaxed);
+        }
+
         if (guest->dimensions != dimensions)
             throw exception("Guest and host dimensions being different is not supported currently");
 
@@ -334,6 +369,82 @@ namespace skyline::gpu {
         }
 
         auto guestLayerStride{guest->GetLayerStride()};
+        // Retain the ACTUAL upload source, never reconstruct it from potentially
+        // freed/stale guest memory at draw time. No extra uploads or GPU waits.
+        std::shared_ptr<diagnostic::SparkingUploadProof> proof;
+        if (traceCubemap && sparkingUploadProof)
+            sparkingUploadProofDiscards.fetch_add(1, std::memory_order_relaxed);
+        sparkingUploadProof.reset();
+        if (traceCubemap) {
+            // Exact precedence of rejection reasons, evaluated for every
+            // attempted synchronization of this cubemap. This avoids
+            // interpreting "proof_available=false" as a specific failure.
+            using Reason = diagnostic::SparkingUploadStatus;
+            auto reason{Reason::ProofRetained};
+            if (!stagingBuffer)
+                reason = Reason::NoStagingBuffer;
+            else if (guest->tileConfig.mode != texture::TileMode::Block)
+                reason = Reason::UnsupportedTileMode;
+            else if (!diagnostic::IsSparkingCubeGeometry(
+                         dimensions.width, dimensions.height, dimensions.depth,
+                         layerCount, levelCount) ||
+                     guest->format->vkFormat != vk::Format::eR16G16B16A16Sfloat)
+                reason = Reason::OutsideFocusedCubemap;
+            else if (mirror.empty() || !mirror.data())
+                reason = Reason::GuestBytesUnavailable;
+            else if (mirror.size() > 4ULL * 1024 * 1024)
+                reason = Reason::GuestBytesOverLimit;
+            else if (deswizzledSurfaceSize > 2ULL * 1024 * 1024)
+                reason = Reason::LinearBytesOverLimit;
+            else if (surfaceSize > 2ULL * 1024 * 1024)
+                reason = Reason::UploadBytesOverLimit;
+            else {
+                proof = diagnostic::SparkingUploads().Reserve(mirror.size() + deswizzledSurfaceSize + surfaceSize);
+                if (!proof) {
+                    reason = Reason::BudgetRejected;
+                    sparkingUploadBudgetUsedOnReject.store(diagnostic::SparkingUploads().UsedBytes(),
+                                                              std::memory_order_relaxed);
+                }
+            }
+            sparkingUploadStatus.store(reason, std::memory_order_relaxed);
+            if (proof) {
+                proof->guest.assign(mirror.data(), mirror.data() + mirror.size());
+                proof->creation=sparkingCreationProof;
+                proof->writeSerial = gpuWriteSerial;
+                proof->backingGeneration = backingGeneration;
+                proof->stagingIdentity = stagingBuffer.get();
+                proof->metadata = fmt::format(
+                    "guest_format={} host_format={} dimensions={}x{}x{} layers={} mips={} "
+                    "tile_mode={} block_height={} block_depth={} pitch={} guest_stride={} "
+                    "mirror_bytes={} base_layer={} view_mip={} view_mips={} upload_alias={} upload_alias_stale={}\n",
+                    vk::to_string(guest->format->vkFormat), vk::to_string(format->vkFormat),
+                    dimensions.width, dimensions.height, dimensions.depth, layerCount, levelCount,
+                    static_cast<u32>(guest->tileConfig.mode),
+                    guest->tileConfig.mode == texture::TileMode::Block ? guest->tileConfig.blockHeight : 0,
+                    guest->tileConfig.mode == texture::TileMode::Block ? guest->tileConfig.blockDepth : 0,
+                    guest->tileConfig.mode == texture::TileMode::Pitch ? guest->tileConfig.pitch : 0, guestLayerStride, mirror.size(),
+                    guest->baseArrayLayer, guest->viewMipBase, guest->viewMipCount,
+                    HasAliases(), aliasStale.load());
+                size_t logicalOffset{};
+                for (const auto &mapping : guest->mappings) {
+                    proof->metadata += fmt::format("mapping logical_offset={} cpu=0x{:X} bytes={} valid={}\n",
+                        logicalOffset, reinterpret_cast<uintptr_t>(mapping.data()), mapping.size(), mapping.valid());
+                    logicalOffset += mapping.size();
+                }
+                size_t guestOffset{}, linearOffset{}, hostOffset{}, mip{};
+                for (const auto &level : mipLayouts) {
+                    for (size_t layer{}; layer < layerCount; ++layer)
+                        proof->slices.push_back({mip, layer, layer * guestLayerStride + guestOffset,
+                            level.blockLinearSize, linearOffset + layer * level.linearSize,
+                            level.linearSize, hostOffset + layer * level.targetLinearSize, level.targetLinearSize});
+                    guestOffset += level.blockLinearSize;
+                    linearOffset += layerCount * level.linearSize;
+                    hostOffset += layerCount * level.targetLinearSize;
+                    ++mip;
+                }
+            }
+        }
+
         if (levelCount == 1) {
             auto outputLayer{deswizzleOutput};
             for (size_t layer{}; layer < layerCount; layer++) {
@@ -367,6 +478,9 @@ namespace skyline::gpu {
         } else if (levelCount != 0) {
             throw exception("Mipmapped textures with tiling mode '{}' aren't supported", static_cast<int>(tiling));
         }
+
+        if (proof)
+            proof->linear.assign(deswizzleOutput, deswizzleOutput + deswizzledSurfaceSize);
 
         if (!deswizzleBuffer.empty()) {
             for (const auto &level : mipLayouts) {
@@ -431,6 +545,11 @@ namespace skyline::gpu {
                 deswizzleOutput += level.linearSize * layerCount;
                 bufferData += level.targetLinearSize * layerCount;
             }
+        }
+
+        if (proof) {
+            proof->upload.assign(stagingBuffer->data(), stagingBuffer->data() + surfaceSize);
+            sparkingUploadProof = std::move(proof);
         }
 
         return stagingBuffer;
@@ -508,6 +627,18 @@ namespace skyline::gpu {
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .subresourceRange = range,
         });
+        if (diagnostic::SparkingUploads().enabled.load(std::memory_order_relaxed) &&
+            layerCount == 6 && dimensions.depth == 1 &&
+            format->vkFormat == vk::Format::eR16G16B16A16Sfloat) {
+            sparkingUploadCopyCount.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (sparkingUploadProof && sparkingUploadProof->stagingIdentity == stagingBuffer.get() &&
+            sparkingUploadProof->upload.size() == stagingBuffer->size() &&
+            std::equal(sparkingUploadProof->upload.begin(), sparkingUploadProof->upload.end(), stagingBuffer->data())) {
+            sparkingUploadProof->recorded = true;
+            sparkingUploadStatus.store(diagnostic::SparkingUploadStatus::UploadRecorded,
+                                         std::memory_order_relaxed);
+        }
     }
 
     void Texture::CopyIntoStagingBuffer(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<memory::StagingBuffer> &stagingBuffer) {
