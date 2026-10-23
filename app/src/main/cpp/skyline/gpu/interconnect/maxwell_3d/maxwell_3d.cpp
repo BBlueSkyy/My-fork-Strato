@@ -823,6 +823,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
+        // The observed UE4 menu composition uses VS 8FE6FA707E2C0FB0
+        // on 6-index quads. Never break render passes unless the extra
+        // ENABLE_UI_DRAW_STEPS marker is present during a manual capture.
+        if (diagnostic::UiSurfaceCapture().active.load(std::memory_order_acquire) &&
+            diagnostic::UiSurfaceCapture().drawStepMode.load(std::memory_order_acquire)) {
+            bool targetVertexShader{};
+            if (auto *pipeline{activeState.GetPipeline()})
+                targetVertexShader =
+                    pipeline->sourcePackedState.shaderHashes[1] == 0x8FE6FA707E2C0FB0ULL;
+            ctx.executor.CaptureUiQuadStep(activeState.GetColorAttachments(),
+                                           targetVertexShader, count, instanceCount);
+        }
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
     

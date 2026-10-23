@@ -227,6 +227,8 @@ namespace skyline::gpu::interconnect {
         std::vector<std::shared_ptr<Texture>> uiCapturePassImages;
         std::vector<std::function<void()>> uiCaptureReadbacks;
         void QueueUiCapturePassReadbacks();
+        bool uiCaptureForcedBoundary{};
+        u32 uiCaptureDrawStepOrdinal{};
 
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
@@ -271,6 +273,10 @@ namespace skyline::gpu::interconnect {
         ContextTag executionTag{};
         bool captureNextExecution{};
         UsageTracker usageTracker;
+
+        // Manual UE4 UI debug only: optional post-draw GPU image checkpoint.
+        void CaptureUiQuadStep(span<TextureView *> colorAttachments, bool matchingVertexShader,
+                               u32 indexCount, u32 instanceCount);
 
         CommandExecutor(const DeviceState &state);
 

@@ -2,12 +2,37 @@
 
 Opt-in diagnostic branch for the repeated horizontal-band displacement, left-side noisy rectangles and UI misalignment observed in Demon Slayer: The Hinokami Chronicles and other UE4 games.
 
+## Optional targeted draw-step mode (after verified capture)
+
+The October 22 focused capture successfully recorded nine physical VI-matched
+`R8G8B8A8Unorm` render-target passes. The UI's visible horizontal stripes
+were already present in the output of the first 47–48-quad composition.
+The pixels of `pass_02` match `present_source_03` exactly. Other passes
+before the UI composition were black or a full-screen overexposed effect.
+The relevant repeated UE4 menu draws use vertex shader `8FE6FA707E2C0FB0`,
+6 indices, one instance and a render target sharing the captured VI guest
+backing.
+
+To narrow the first corrupt draw in **this proven trace only**, create
+`gpu_capture/ue4_ui/ENABLE_UI_DRAW_STEPS` BEFORE `ARM_CAPTURE`.
+After returning to the game the instrumentation adds bounded, GPU-ordered
+readbacks immediately after UI quad ordinals 1, 8, 16, 32 and 47 for
+up to four distinct presentation textures. Each diagnostic checkpoint
+intentionally ends its render pass so the staging copy is ordered after
+that draw. Natural end-of-pass captures are skipped in this mode to preserve
+the limited readback budget. `pass_XX.txt` contains `ui_draw_step_ordinal`.
+
+This mode is diagnostic only. It changes render pass boundaries **while
+armed**, so it may change rendering timing or the failure itself. If the
+bug vanishes under capture, report that instead of treating it as a fix.
+Remove the marker to restore the original pass-end capture mode.
+
 ## Android steps
 
 1. Install **ARM64 DevRelease** APK from this Draft PR, not DevReldebug.
 2. Open the affected menu, keep it on screen.
 3. In Strato's public app files, open `gpu_capture/ue4_ui`.
-4. Rename `ARM_CAPTURE.rename_this_file_when_ready` to `ARM_CAPTURE`.
+4. For the next Demon Slayer test, first create empty `ENABLE_UI_DRAW_STEPS` in this same folder; then rename `ARM_CAPTURE.rename_this_file_when_ready` to `ARM_CAPTURE`.
 5. Return to the emulator for at least four presentations; polling occurs about once per 16 presentations.
 6. Wait for `pass_readbacks_done.txt` **inside capture_###** before copying the folder. It appears only after all reserved asynchronous pass readback callbacks finish. Check `requested`, `written` and `failed`. If the marker never appears, keep the `emulation.log` to diagnose stalled callbacks. `capture_complete.txt` only marks the four source-frame samples.
 7. Zip the generated `capture_###` directory and send that zip with the matching `emulation.log` and a screenshot.

@@ -175,7 +175,9 @@ namespace skyline::gpu {
                                     continue;
                                 captureDirectory = candidate;
                                 remainingFrames = diagnostic::Ue4UiCaptureState::FrameCount;
-                                session.Start(candidate.string());
+                                const bool drawSteps{fs::exists(root / "ENABLE_UI_DRAW_STEPS", ec) && !ec};
+                                ec.clear();
+                                session.Start(candidate.string(), drawSteps);
                                 std::ofstream readme(candidate / "README.txt");
                                 if (readme) {
                                     readme << "Strato UE4 UI surface mini-RenderDoc (diagnostic only)\n"
@@ -183,7 +185,9 @@ namespace skyline::gpu {
                                            << "present_source_XX.raw is a linear host GPU readback, not a PNG.\n"
                                            << "gpu_events.txt contains bounded draw, shader, sampler and TIC diagnostics.\n"
                                            << "present_index_approx is approximate due to asynchronous rendering.\n"
-                                           << "No guest memory or rendering semantics changed.\n";
+                                           << "UI draw-step mode is optional; ENABLE_UI_DRAW_STEPS must exist BEFORE ARM_CAPTURE.\n"
+                                           << "When enabled it splits selected passes for GPU-ordered intermediate snapshots.\n"
+                                           << "No guest memory or rendering semantics changed outside capture.\n";
                                 }
                                 LOGI("MINIRD_UE4_UI armed: {}", candidate.string());
                                 break;

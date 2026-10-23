@@ -417,6 +417,10 @@ namespace skyline::gpu::interconnect {
         uiCapturePassImages.clear();
         auto &cap{diagnostic::UiSurfaceCapture()};
         if (!cap.active.load(std::memory_order_acquire)) return;
+        // Draw-step mode samples only explicit post-draw RP boundaries.
+        // Normal RP-end readbacks would exhaust the budget on white/clear passes.
+        if (cap.drawStepMode.load(std::memory_order_acquire) && !uiCaptureForcedBoundary)
+            return;
         const auto interval{cap.presentIndex.load(std::memory_order_acquire)};
         if (interval >= diagnostic::Ue4UiCaptureState::FrameCount) return;
         const std::filesystem::path dir{cap.CaptureDirectory()};
@@ -432,10 +436,11 @@ namespace skyline::gpu::interconnect {
             const auto meta{fmt::format(
                 "id={} approx_present={} executor=0x{:X} submission={} render_pass={} "
                 "texture=0x{:X} width={} height={} format={} layout={} bytes={} "
-                "note=GPU_readback_after_render_pass_end\\n",
+                "ui_draw_step_ordinal={} note=GPU_readback_after_render_pass_end\\n",
                 id, interval, reinterpret_cast<uintptr_t>(this), submissionNumber,
                 renderPassIndex, reinterpret_cast<uintptr_t>(tex.get()),
-                w, h, fmtName, vk::to_string(tex->layout), tex->surfaceSize)};
+                w, h, fmtName, vk::to_string(tex->layout), tex->surfaceSize,
+                uiCaptureDrawStepOrdinal)};
             auto staging{gpu.memory.AllocateStagingBuffer(tex->surfaceSize)};
             slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
                 [tex, staging](vk::raii::CommandBuffer &cmd,
@@ -469,6 +474,34 @@ namespace skyline::gpu::interconnect {
             cap.Record(fmt::format("PASS_READBACK id={} exec=0x{:X} submission={} rp={} texture=0x{:X}",
                 id, reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
                 reinterpret_cast<uintptr_t>(tex.get())));
+        }
+    }
+
+    void CommandExecutor::CaptureUiQuadStep(span<TextureView *> colorAttachments,
+                                            bool matchingVertexShader, u32 indexCount, u32 instanceCount) {
+        auto &capture{diagnostic::UiSurfaceCapture()};
+        if (!matchingVertexShader || indexCount != 6 || instanceCount != 1 ||
+            !capture.active.load(std::memory_order_acquire) ||
+            !capture.drawStepMode.load(std::memory_order_acquire))
+            return;
+
+        for (auto *view : colorAttachments) {
+            if (!view || !view->texture || !IsUiCaptureColorImage(*view->texture))
+                continue;
+            const auto identity{reinterpret_cast<std::uintptr_t>(view->texture.get())};
+            const auto drawOrdinal{capture.ClaimUiDrawStep(identity)};
+            if (drawOrdinal) {
+                capture.Record(fmt::format(
+                    "UI_DRAW_STEP_PRE ordinal={} exec=0x{:X} submission={} rp={} target=0x{:X}",
+                    *drawOrdinal, reinterpret_cast<uintptr_t>(this), submissionNumber,
+                    renderPassIndex, identity));
+                uiCaptureForcedBoundary = true;
+                uiCaptureDrawStepOrdinal = *drawOrdinal;
+                BreakRenderPass(); // GPU-ordered readback, only while explicitly armed.
+                uiCaptureForcedBoundary = false;
+                uiCaptureDrawStepOrdinal = 0;
+            }
+            break; // One draw may bind several views of a single target.
         }
     }
 

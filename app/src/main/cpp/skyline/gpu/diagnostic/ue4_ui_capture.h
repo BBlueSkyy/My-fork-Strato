@@ -18,6 +18,7 @@ namespace skyline::gpu::diagnostic {
     class Ue4UiCaptureState {
       public:
         std::atomic<bool> active{false};
+        std::atomic<bool> drawStepMode{false};
         std::atomic<std::uint32_t> presentIndex{0};
         std::atomic<std::uint32_t> eventCount{0};
         static constexpr std::uint32_t MaxEvents{10000};
@@ -40,6 +41,9 @@ namespace skyline::gpu::diagnostic {
         std::uint32_t successfulPassSnapshots{};
         std::uint32_t failedPassSnapshots{};
         bool presentationSamplesFinished{};
+        // Only first observed UI quad sequence per physical presentation image.
+        // Diagnostic ordinals are per Texture identity and never used as guest frame IDs.
+        std::vector<std::pair<std::uintptr_t, std::uint32_t>> uiDrawCounts;
 
         // Must be called while mutex is held. This marker is different from
         // capture_complete.txt: it only appears once every reserved pass
@@ -60,7 +64,7 @@ namespace skyline::gpu::diagnostic {
         std::vector<std::pair<std::uintptr_t, std::size_t>> watchedMappings;
 
       public:
-        void Start(std::string captureDirectory) {
+        void Start(std::string captureDirectory, bool enableDrawSteps = false) {
             std::scoped_lock lock(mutex);
             path = std::move(captureDirectory);
             events.clear();
@@ -71,6 +75,8 @@ namespace skyline::gpu::diagnostic {
             successfulPassSnapshots = 0;
             failedPassSnapshots = 0;
             presentationSamplesFinished = false;
+            uiDrawCounts.clear();
+            drawStepMode.store(enableDrawSteps, std::memory_order_relaxed);
             watchedMappings.clear();
             eventCount.store(0, std::memory_order_relaxed);
             presentIndex.store(0, std::memory_order_relaxed);
@@ -93,6 +99,31 @@ namespace skyline::gpu::diagnostic {
             passBytes += bytes;
             ++pendingPassSnapshots;
             return nextPassIndex++;
+        }
+
+        std::optional<std::uint32_t> ClaimUiDrawStep(std::uintptr_t textureIdentity) {
+            if (!textureIdentity || !active.load(std::memory_order_acquire) ||
+                !drawStepMode.load(std::memory_order_acquire))
+                return std::nullopt;
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_relaxed))
+                return std::nullopt;
+            for (auto &[identity, ordinal] : uiDrawCounts) {
+                if (identity != textureIdentity)
+                    continue;
+                if (ordinal >= 48)
+                    return std::nullopt;
+                ++ordinal;
+                if (ordinal == 1 || ordinal == 8 || ordinal == 16 ||
+                    ordinal == 32 || ordinal == 47)
+                    return ordinal;
+                return std::nullopt;
+            }
+            if (uiDrawCounts.size() < 4) {
+                uiDrawCounts.emplace_back(textureIdentity, 1);
+                return 1;
+            }
+            return std::nullopt;
         }
 
         void PassSnapshotFinished(bool success) {
