@@ -21,7 +21,7 @@ namespace skyline::gpu::texture {
     size_t GetBlockLinearLayerSize(Dimensions dimensions,
                                    size_t formatBlockHeight, size_t formatBlockWidth, size_t formatBpb,
                                    size_t gobBlockHeight, size_t gobBlockDepth,
-                                   size_t levelCount, bool isMultiLayer);
+                                   size_t levelCount, bool isMultiLayer, size_t tileWidthSpacing = 0);
 
     /**
      * @note The target format is the format of the texture after it has been decoded, if bpb is 0, the target format is the same as the source format
@@ -31,7 +31,7 @@ namespace skyline::gpu::texture {
                                                         size_t formatBlockHeight, size_t formatBlockWidth, size_t formatBpb,
                                                         size_t targetFormatBlockHeight, size_t targetFormatBlockWidth, size_t targetFormatBpb,
                                                         size_t gobBlockHeight, size_t gobBlockDepth,
-                                                        size_t levelCount);
+                                                        size_t levelCount, size_t tileWidthSpacing = 0);
 
     /**
      * @brief Gets the byte offset at which a depth slice begins inside a block-linear mip level
@@ -49,7 +49,7 @@ namespace skyline::gpu::texture {
     void CopyBlockLinearToLinear(Dimensions dimensions,
                                  size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb,
                                  size_t gobBlockHeight, size_t gobBlockDepth,
-                                 u8 *blockLinear, u8 *linear);
+                                 u8 *blockLinear, u8 *linear, size_t tileWidthSpacing = 0);
 
     /**
      * @brief Copies the contents of a blocklinear texture to a pitch texture
@@ -79,7 +79,7 @@ namespace skyline::gpu::texture {
     void CopyLinearToBlockLinear(Dimensions dimensions,
                                 size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb,
                                 size_t gobBlockHeight, size_t gobBlockDepth,
-                                u8 *linear, u8 *blockLinear);
+                                u8 *linear, u8 *blockLinear, size_t tileWidthSpacing = 0);
 
     /**
      * @brief Copies the contents of a pitch texture to a blocklinear texture

@@ -201,6 +201,7 @@ namespace skyline::gpu {
                 struct {
                     u8 blockHeight; //!< The height of the blocks in GOBs
                     u8 blockDepth;  //!< The depth of the blocks in GOBs
+                    u8 tileWidthSpacing; //!< log2 horizontal GOB alignment from TIC; zero for RT/DMA
                 };
                 u32 pitch; //!< The pitch of the texture in bytes
             };
@@ -213,7 +214,8 @@ namespace skyline::gpu {
                         case TileMode::Pitch:
                             return pitch == other.pitch;
                         case TileMode::Block:
-                            return blockHeight == other.blockHeight && blockDepth == other.blockDepth;
+                            return blockHeight == other.blockHeight && blockDepth == other.blockDepth &&
+                                   tileWidthSpacing == other.tileWidthSpacing;
                     }
                 }
 
@@ -230,8 +232,9 @@ namespace skyline::gpu {
             size_t targetLinearSize; //!< The size of a linear image with this mipmapped level in bytes and using the target format, this will only differ from linearSize if the target format is supplied
             size_t blockLinearSize; //!< The size of a blocklinear image with this mipmapped level in bytes
             size_t blockHeight, blockDepth; //!< The block height and block depth set for the level
+            size_t tileWidthSpacing{}; //!< Horizontal GOB alignment for this mip, zero when inapplicable
 
-            constexpr MipLevelLayout(Dimensions dimensions, size_t linearSize, size_t targetLinearSize, size_t blockLinearSize, size_t blockHeight, size_t blockDepth) : dimensions{dimensions}, linearSize{linearSize}, targetLinearSize{targetLinearSize}, blockLinearSize{blockLinearSize}, blockHeight{blockHeight}, blockDepth{blockDepth} {}
+            constexpr MipLevelLayout(Dimensions dimensions, size_t linearSize, size_t targetLinearSize, size_t blockLinearSize, size_t blockHeight, size_t blockDepth, size_t widthSpacing = 0) : dimensions{dimensions}, linearSize{linearSize}, targetLinearSize{targetLinearSize}, blockLinearSize{blockLinearSize}, blockHeight{blockHeight}, blockDepth{blockDepth}, tileWidthSpacing{widthSpacing} {}
         };
     }
 

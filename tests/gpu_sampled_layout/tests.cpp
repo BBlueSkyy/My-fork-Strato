@@ -11,8 +11,14 @@ namespace {
     // GOB intra-address bit order: x[5], y[2:1], x[4], y[0], x[3:0].
     // Whole GOBs are ordered by Y within an X/Z block, X, block row, then Z block.
     size_t Address(size_t x, size_t y, size_t z, size_t rowBytes, size_t rows,
-                   size_t heightGobs, size_t depthGobs) {
-        const size_t widthGobs{(rowBytes + 63) / 64};
+                   size_t heightGobs, size_t depthGobs, size_t tileWidthSpacing = 0) {
+        size_t widthGobs{(rowBytes + 63) / 64};
+        // Independent guest memory address oracle from the TIC's GOB
+        // alignment. BC1 1920x1080 at spacing=3: 60 -> 64 GOB columns.
+        const size_t spacingGobs{size_t{1} << tileWidthSpacing};
+        if (tileWidthSpacing && widthGobs > spacingGobs &&
+            rows > heightGobs * 8 && depthGobs == 1)
+            widthGobs = ((widthGobs + spacingGobs - 1) / spacingGobs) * spacingGobs;
         const size_t blockRows{(rows + 8 * heightGobs - 1) / (8 * heightGobs)};
         const size_t blockBytes{512 * heightGobs * depthGobs};
         const size_t blockIndex{(z / depthGobs) * blockRows * widthGobs +
@@ -59,7 +65,8 @@ namespace {
                 for (size_t y{}; y < rows; ++y)
                     for (size_t x{}; x < rowBytes; ++x) {
                         const size_t linear{layer * packedSize + (z * rows + y) * rowBytes + x};
-                        const size_t tiled{layer * declaredStride + Address(x, y, z, rowBytes, rows, effectiveHeight, declaredDepth)};
+                        const size_t tiled{layer * declaredStride + Address(x, y, z, rowBytes, rows, effectiveHeight, declaredDepth,
+                                                   tic.tileConfig.sparseTileWidthGobsLog2)};
                         Check(tiled < source.size(), std::string(name) + ": oracle allocation");
                         expected[linear] = static_cast<u8>((x * 37 + y * 11 + z * 29 + layer * 53) % 229);
                         source[tiled] = expected[linear];
@@ -74,6 +81,8 @@ namespace {
               std::to_string(mismatch.first - actual.begin()));
         Check(guest.tileConfig.blockHeight == effectiveHeight, std::string(name) + ": effective Y");
         Check(guest.tileConfig.blockDepth == declaredDepth, std::string(name) + ": preserved Z");
+        Check(guest.tileConfig.tileWidthSpacing == tic.tileConfig.sparseTileWidthGobsLog2,
+              std::string(name) + ": horizontal TIC GOB spacing");
         Check(guest.GetLayerStride() == declaredStride, std::string(name) + ": declared layer stride");
         Check(guest.GetSize() == size_t{declaredStride} * guest.layerCount, std::string(name) + ": declared allocation");
         ++cases;
@@ -82,8 +91,19 @@ namespace {
 }
 int main() {
     try {
-        const texture::Format bc3{4, 4, 16}, rgba{1, 1, 4}, astc5x5{5, 5, 16};
+        const texture::Format bc3{4, 4, 16}, bc1{4, 4, 8}, rgba{1, 1, 4}, astc5x5{5, 5, 16};
         const texture::Format depth{1, 1, 4, vk::ImageAspectFlagBits::eDepth};
+        // Regression: the 1920px Aniplex BC1 asset has 3840 logical
+        // bytes/row but the TIC requires 4096 bytes in block-linear storage.
+        // Ignoring the spacing introduced one corrupt 16-KiB rectangle per
+        // 256-KiB span, moving 128 pixels right every 256 rows.
+        auto aniplex{Header(1920, 1080, 1, 3)};
+        aniplex.tileConfig.sparseTileWidthGobsLog2 = 3;
+        UploadCase("Aniplex 1920x1080 BC1 spacing=3", aniplex, bc1, 8, 1310720);
+        UploadCase("same BC1 without spacing unchanged", Header(1920, 1080, 1, 3), bc1, 8, 1228800);
+        auto narrow{Header(64, 32, 1, 3)};
+        narrow.tileConfig.sparseTileWidthGobsLog2 = 3;
+        UploadCase("small BC1 skips extra horizontal alignment", narrow, bc1, 1);
         UploadCase("512x128 BC3 BH16 -> BH4", Header(512, 128, 1, 4), bc3, 4, 262144);
         UploadCase("odd BC3 height rounds compressed rows up", Header(513, 129, 1, 4), bc3, 8);
         UploadCase("tiny BC3 BH16 -> BH1", Header(7, 5, 1, 4), bc3, 1);

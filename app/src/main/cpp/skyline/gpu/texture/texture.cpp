@@ -41,7 +41,7 @@ namespace skyline::gpu {
                     format->blockWidth, format->blockHeight, format->bpb, tileConfig.pitch, dimensions.depth, mipLevelCount).layerSize;
 
             case texture::TileMode::Block:
-                return static_cast<u32>(texture::GetBlockLinearLayerSize(dimensions, format->blockHeight, format->blockWidth, format->bpb, tileConfig.blockHeight, tileConfig.blockDepth, mipLevelCount, layerCount > 1));
+                return static_cast<u32>(texture::GetBlockLinearLayerSize(dimensions, format->blockHeight, format->blockWidth, format->bpb, tileConfig.blockHeight, tileConfig.blockDepth, mipLevelCount, layerCount > 1, tileConfig.tileWidthSpacing));
         }
     }
 
@@ -355,7 +355,7 @@ namespace skyline::gpu {
                         level.dimensions,
                         guest->format->blockWidth, guest->format->blockHeight, guest->format->bpb,
                         level.blockHeight, level.blockDepth,
-                        inputLevel, outputLevel + (layer * level.linearSize) // Offset into the current layer relative to the start of the current mip level
+                        inputLevel, outputLevel + (layer * level.linearSize), level.tileWidthSpacing // Read TIC GOB spacing
                     );
 
                     inputLevel += level.blockLinearSize; // Skip over the current mip level as we've deswizzled it
@@ -572,7 +572,7 @@ namespace skyline::gpu {
                         level.dimensions,
                         guest->format->blockWidth, guest->format->blockHeight, guest->format->bpb,
                         level.blockHeight, level.blockDepth,
-                        inputLevel + (layer * level.linearSize), outputLevel
+                        inputLevel + (layer * level.linearSize), outputLevel, level.tileWidthSpacing
                     );
 
                     outputLevel += level.blockLinearSize;
@@ -690,7 +690,7 @@ namespace skyline::gpu {
                   guest->format->blockHeight, guest->format->blockWidth, guest->format->bpb,
                   format->blockHeight, format->blockWidth, format->bpb,
                   guest->tileConfig.blockHeight, guest->tileConfig.blockDepth,
-                  guest->mipLevelCount
+                  guest->mipLevelCount, guest->tileConfig.tileWidthSpacing
               )
           ),
           deswizzledSurfaceSize(guest->tileConfig.mode == texture::TileMode::Pitch ? texture::PitchLinearCheckedMultiply(CalculateLevelStride(mipLayouts), layerCount) : CalculateLevelStride(mipLayouts) * layerCount),
@@ -1493,7 +1493,8 @@ namespace skyline::gpu {
                         texture::CopyBlockLinearToLinear(mip.dimensions,
                             format->blockWidth, format->blockHeight, format->bpb, mip.blockHeight, mip.blockDepth,
                             mirror.data() + layer * static_cast<size_t>(guest->layerStride) + guestOffset,
-                            initialization->data() + uploads[level - levelCount].bufferOffset + layer * mip.targetLinearSize);
+                            initialization->data() + uploads[level - levelCount].bufferOffset + layer * mip.targetLinearSize,
+                            mip.tileWidthSpacing);
                 guestOffset += mip.blockLinearSize;
             }
         }
