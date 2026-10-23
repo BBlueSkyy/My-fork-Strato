@@ -354,6 +354,9 @@ namespace skyline {
              * @brief Sets the permissions for chunks within a certain range
              * @note The permissions set here are not accurate to the actual permissions set on the chunk and are only for the guest
              */
+            bool LockRegionForCodeMemory(span<u8> memory);
+            bool UnlockRegionForCodeMemory(span<u8> memory);
+
             void SetRegionPermission(span<u8> memory, memory::Permission permission);
 
             /**
@@ -390,6 +393,10 @@ namespace skyline {
 
             // Various mapping functions for use by the guest, argument validity must be checked by the caller
             void MapCodeMemory(span<u8> memory, memory::Permission permission);
+
+            Result MapCodeMemoryAlias(int fd, span<u8> region, memory::Permission permission, bool owner);
+            Result AllocateCodeMemoryAlias(int fd, size_t size, memory::Permission permission, bool owner, u64 &address);
+            Result UnmapCodeMemoryAlias(span<u8> region, bool owner);
 
             void MapMutableCodeMemory(span<u8> memory);
 

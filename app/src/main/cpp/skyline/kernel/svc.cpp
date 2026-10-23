@@ -7,6 +7,7 @@
 #include <cstring>
 #include <kernel/types/KProcess.h>
 #include <kernel/types/KTransferMemory.h>
+#include <kernel/types/KCodeMemory.h>
 #include <common/trace.h>
 #include <vfs/npdm.h>
 #include "results.h"
@@ -1615,6 +1616,62 @@ namespace skyline::kernel::svc {
         ctx.w0 = result;
     }
 
+    void CreateCodeMemory(const DeviceState &state, SvcContext &ctx) {
+        const u64 address{ctx.x1};
+        const u64 size{ctx.x2};
+        ctx.w1 = 0;
+
+        if (!util::IsPageAligned(address)) {
+            ctx.w0 = result::InvalidAddress;
+            return;
+        }
+        if (!size || !util::IsPageAligned(size) || size > std::numeric_limits<size_t>::max()) {
+            ctx.w0 = result::InvalidSize;
+            return;
+        }
+        if (address > std::numeric_limits<u64>::max() - size ||
+            !state.process->memory.AddressSpaceContains(span<u8>{reinterpret_cast<u8 *>(address), static_cast<size_t>(size)})) {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        auto codeMemory{std::make_shared<type::KCodeMemory>(state, span<u8>{
+            reinterpret_cast<u8 *>(address), static_cast<size_t>(size)})};
+        auto initResult{codeMemory->Initialize()};
+        if (initResult != Result{}) {
+            ctx.w0 = initResult;
+            return;
+        }
+
+        ctx.w1 = state.process->InsertItem(codeMemory);
+        ctx.w0 = Result{};
+
+    }
+
+    void ControlCodeMemory(const DeviceState &state, SvcContext &ctx) {
+        const KHandle handle{ctx.w0};
+        const u32 operation{ctx.w1};
+        const u64 address{ctx.x2}, size{ctx.x3};
+        const u32 permission{ctx.w4};
+        if (!util::IsPageAligned(address)) { ctx.w0 = result::InvalidAddress; return; }
+        if (!size || !util::IsPageAligned(size)) { ctx.w0 = result::InvalidSize; return; }
+        if (address > std::numeric_limits<u64>::max() - size) { ctx.w0 = result::InvalidMemoryRegion; return; }
+        if (operation > 3) { ctx.w0 = result::InvalidEnumValue; return; }
+        // Horizon: 0=MapOwner(RW), 1=MapSlave(R/RX),
+        // 2=UnmapOwner, 3=UnmapSlave.
+        if ((operation == 0 && permission != 3) ||
+            (operation == 1 && permission != 1 && permission != 5) ||
+            ((operation == 2 || operation == 3) && permission != 0)) {
+            ctx.w0 = result::InvalidNewMemoryPermission; return;
+        }
+        std::shared_ptr<type::KCodeMemory> memory;
+        try { memory = state.process->GetHandle<type::KCodeMemory>(handle); }
+        catch (const std::exception &) { ctx.w0 = result::InvalidHandle; return; }
+        memory::Permission perm; perm.raw = permission;
+        ctx.w0 = (operation == 0 || operation == 1) ? memory->Map(address, size, perm, operation == 1)
+                                                   : memory->Unmap(address, size, operation == 3);
+    }
+
     #define SVC_NONE SvcDescriptor{} //!< A macro with a placeholder value for the SVC not being implemented or not existing
     #define SVC_STRINGIFY(name) #name
     #define SVC_ENTRY(function) SvcDescriptor{function, SVC_STRINGIFY(Svc ## function)} //!< A macro which automatically stringifies the function name as the name to prevent pointless duplication
@@ -1695,8 +1752,8 @@ namespace skyline::kernel::svc {
         SVC_NONE, // 0x48
         SVC_NONE, // 0x49
         SVC_NONE, // 0x4A
-        SVC_NONE, // 0x4B
-        SVC_NONE, // 0x4C
+        SVC_ENTRY(CreateCodeMemory), // 0x4B
+        SVC_ENTRY(ControlCodeMemory), // 0x4C
         SVC_NONE, // 0x4D
         SVC_NONE, // 0x4E
         SVC_NONE, // 0x4F
