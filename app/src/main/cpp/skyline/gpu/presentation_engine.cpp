@@ -209,8 +209,14 @@ namespace skyline::gpu {
                 if (texture->guest) {
                     if (!texture->guest->mappings.empty())
                         guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
-                    for (const auto &mapping : texture->guest->mappings)
+                    for (const auto &mapping : texture->guest->mappings) {
                         guestSize += mapping.size();
+                        // Watch actual physical spans, not a guessed contiguous range.
+                        // Direct Maxwell color-target writers may use the very same
+                        // guest backing as the VI image presented to Android.
+                        if (!mapping.empty())
+                            session.WatchMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
+                    }
                 }
                 const auto validReadback{
                     texture->layout != vk::ImageLayout::eUndefined &&

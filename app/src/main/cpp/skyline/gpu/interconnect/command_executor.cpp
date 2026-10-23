@@ -387,15 +387,28 @@ namespace skyline::gpu::interconnect {
     }
 
     static bool IsUiCaptureColorImage(const Texture &t) {
-        return t.dimensions.width >= 480 && t.dimensions.width <= 3840 &&
-            t.dimensions.height >= 270 && t.dimensions.height <= 2160 &&
-            t.dimensions.depth == 1 && t.levelCount == 1 && t.layerCount == 1 &&
-            t.sampleCount == vk::SampleCountFlagBits::e1 && t.surfaceSize &&
-            t.surfaceSize <= 12ULL * 1024 * 1024 &&
-            (t.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
-            !t.format->IsCompressed() &&
-            (t.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
-            t.layout != vk::ImageLayout::eUndefined;
+        auto &capture{diagnostic::UiSurfaceCapture()};
+        if (!capture.active.load(std::memory_order_acquire) || !t.guest)
+            return false;
+        if (!(t.dimensions.width >= 480 && t.dimensions.width <= 3840 &&
+              t.dimensions.height >= 270 && t.dimensions.height <= 2160 &&
+              t.dimensions.depth == 1 && t.levelCount == 1 && t.layerCount == 1 &&
+              t.sampleCount == vk::SampleCountFlagBits::e1 && t.surfaceSize &&
+              t.surfaceSize <= 12ULL * 1024 * 1024 &&
+              (t.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+              !t.format->IsCompressed() &&
+              (t.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+              t.layout != vk::ImageLayout::eUndefined))
+            return false;
+        // Earlier generic capture exhausted its per-frame quota on cleared
+        // 1120x632 MRTs. Reserve snapshots for actual guest VI backings:
+        // those already observed in PresentationEngine::PresentFrame.
+        for (const auto &mapping : t.guest->mappings) {
+            if (!mapping.empty() &&
+                capture.IsWatchedMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size()))
+                return true;
+        }
+        return false;
     }
 
     void CommandExecutor::QueueUiCapturePassReadbacks() {

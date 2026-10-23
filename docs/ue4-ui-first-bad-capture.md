@@ -17,11 +17,17 @@ Opt-in diagnostic branch for the repeated horizontal-band displacement, left-sid
 ## Output and investigation
 
 - `present_XX.txt`, `present_source_XX*.raw`: original VI/swapchain source color surfaces before Android presentation.
-- `pass_XX.txt`, `pass_XX*.raw`: eligible full-sized color render targets sampled with GPU-ordered copies after actual pass endings. Includes executor, submission and render-pass identity.
+- `pass_XX.txt`, `pass_XX*.raw`: GPU-ordered readbacks after pass endings for render targets whose **physical guest spans overlap the actual VI/presentation textures already observed while armed**. Includes executor, submission and render-pass identity. Intermediate color MRTs unrelated to VI no longer consume quotas.
 - `pass_readbacks_done.txt`: final async readback completion and successful/failed write counts; the capture is incomplete without this marker when pass images were requested.
 - `gpu_events.txt`: bounded RT_DIM (original vs surfaceClip-adjusted dimension/layer size), VIEWPORT, SCISSOR, PASS_TARGET, DRAW shader hashes, FERMI_BLIT, PRESENT_SOURCE, and pass snapshots.
 
 Compare successive raw images using their recorded Vulkan format and dimensions (not all formats are RGBA8). If the first corrupted pass is identified, inspect its precise sampled inputs, CPU guest mapping and shader separately; do **not** clamp, shift, crop or mutate texture/layout behavior speculatively.
+
+## October 22 diagnostic refinement
+
+The verified capture contained 15 successfully written pass snapshots, but almost all were clears or constant black/grey 1120x632 MRTs. Two other images were earlier 3D scene passes rather than the actual UI composition. The GPU event stream identified the final 1120x630 RGBA8 presentation images as actual Maxwell draw render targets **later** in the stream, but none were captured under the former first-eligible-target selection.
+
+This revision follows all mapped physical spans of the VI/presented image at each presentation, then only schedules readbacks for matching target backings. This is an opt-in diagnostic selection change, not a texture-cache or rendering behavior change. An in-flight target not yet presented or a path that draws entirely to intermediate surfaces may still be missed. If that happens, broaden the targeted diagnostic using an identified writer, not an unbounded all-pass capture.
 
 ## Runtime bounds and limits
 
