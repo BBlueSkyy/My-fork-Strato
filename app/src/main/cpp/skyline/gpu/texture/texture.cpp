@@ -15,6 +15,7 @@
 #include "image_format_policy.h"
 #include "backing_promotion.h"
 #include "view_range.h"
+#include <gpu/diagnostic/ue4_upload_provenance.h>
 #include <bit>
 #include <numeric>
 
@@ -296,6 +297,16 @@ namespace skyline::gpu {
     }
 
     std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl() {
+        // Record only the target class of image, and only when opt-in was
+        // enabled at GPU initialization; do not change any upload decision.
+        const bool traceCubemap{diagnostic::Ue4Uploads().enabled.load(std::memory_order_relaxed) &&
+            layerCount == 6 && dimensions.depth == 1 &&
+            format->vkFormat == vk::Format::eR16G16B16A16Sfloat};
+        if (traceCubemap) {
+            diagnosticUploadSyncAttempts.fetch_add(1, std::memory_order_relaxed);
+            diagnosticUploadStatus.store(diagnostic::UploadRetentionStatus::SynchronizeEntered,
+                                         std::memory_order_relaxed);
+        }
         if (guest->dimensions != dimensions)
             throw exception("Guest and host dimensions being different is not supported currently");
 
@@ -334,6 +345,76 @@ namespace skyline::gpu {
         }
 
         auto guestLayerStride{guest->GetLayerStride()};
+        // Retain the ACTUAL upload source, never reconstruct it from potentially
+        // freed/stale guest memory at draw time. No extra uploads or GPU waits.
+        std::shared_ptr<diagnostic::UploadProof> proof;
+        if (traceCubemap && diagnosticUploadProof)
+            diagnosticUploadProofDiscards.fetch_add(1, std::memory_order_relaxed);
+        diagnosticUploadProof.reset();
+        if (traceCubemap) {
+            // Exact precedence of rejection reasons, evaluated for every
+            // attempted synchronization of this cubemap. This avoids
+            // interpreting "proof_available=false" as a specific failure.
+            using Reason = diagnostic::UploadRetentionStatus;
+            auto reason{Reason::ProofRetained};
+            if (!stagingBuffer)
+                reason = Reason::NoStagingBuffer;
+            else if (guest->tileConfig.mode != texture::TileMode::Block)
+                reason = Reason::UnsupportedTileMode;
+            else if (!diagnostic::IsFocusedCubeGeometry(
+                         dimensions.width, dimensions.height, dimensions.depth,
+                         layerCount, levelCount) ||
+                     guest->format->vkFormat != vk::Format::eR16G16B16A16Sfloat)
+                reason = Reason::OutsideFocusedCubemap;
+            else if (mirror.size() > 4ULL * 1024 * 1024)
+                reason = Reason::GuestBytesOverLimit;
+            else if (deswizzledSurfaceSize > 2ULL * 1024 * 1024)
+                reason = Reason::LinearBytesOverLimit;
+            else if (surfaceSize > 2ULL * 1024 * 1024)
+                reason = Reason::UploadBytesOverLimit;
+            else {
+                proof = diagnostic::Ue4Uploads().Reserve(mirror.size() + deswizzledSurfaceSize + surfaceSize);
+                if (!proof) {
+                    reason = Reason::BudgetRejected;
+                    diagnosticUploadBudgetUsedOnReject.store(diagnostic::Ue4Uploads().UsedBytes(),
+                                                              std::memory_order_relaxed);
+                }
+            }
+            diagnosticUploadStatus.store(reason, std::memory_order_relaxed);
+            if (proof) {
+                proof->guest.assign(mirror.data(), mirror.data() + mirror.size());
+                proof->writeSerial = gpuWriteSerial;
+                proof->backingGeneration = backingGeneration;
+                proof->stagingIdentity = stagingBuffer.get();
+                proof->metadata = fmt::format(
+                    "guest_format={} host_format={} dimensions={}x{}x{} layers={} mips={} "
+                    "tile_mode={} block_height={} block_depth={} pitch={} guest_stride={} "
+                    "mirror_bytes={} base_layer={} view_mip={} view_mips={} upload_alias={} upload_alias_stale={}\n",
+                    vk::to_string(guest->format->vkFormat), vk::to_string(format->vkFormat),
+                    dimensions.width, dimensions.height, dimensions.depth, layerCount, levelCount,
+                    static_cast<u32>(guest->tileConfig.mode), guest->tileConfig.blockHeight,
+                    guest->tileConfig.blockDepth, guest->tileConfig.pitch, guestLayerStride, mirror.size(),
+                    guest->baseArrayLayer, guest->viewMipBase, guest->viewMipCount,
+                    HasAliases(), aliasStale.load());
+                size_t logicalOffset{};
+                for (const auto &mapping : guest->mappings) {
+                    proof->metadata += fmt::format("mapping logical_offset={} cpu=0x{:X} bytes={} valid={}\n",
+                        logicalOffset, reinterpret_cast<uintptr_t>(mapping.data()), mapping.size(), mapping.valid());
+                    logicalOffset += mapping.size();
+                }
+                size_t guestOffset{}, linearOffset{}, hostOffset{}, mip{};
+                for (const auto &level : mipLayouts) {
+                    for (size_t layer{}; layer < layerCount; ++layer)
+                        proof->slices.push_back({mip, layer, layer * guestLayerStride + guestOffset,
+                            level.blockLinearSize, linearOffset + layer * level.linearSize,
+                            level.linearSize, hostOffset + layer * level.targetLinearSize, level.targetLinearSize});
+                    guestOffset += level.blockLinearSize;
+                    linearOffset += layerCount * level.linearSize;
+                    hostOffset += layerCount * level.targetLinearSize;
+                    ++mip;
+                }
+            }
+        }
         if (levelCount == 1) {
             auto outputLayer{deswizzleOutput};
             for (size_t layer{}; layer < layerCount; layer++) {
@@ -368,6 +449,8 @@ namespace skyline::gpu {
             throw exception("Mipmapped textures with tiling mode '{}' aren't supported", static_cast<int>(tiling));
         }
 
+        if (proof)
+            proof->linear.assign(deswizzleOutput, deswizzleOutput + deswizzledSurfaceSize);
         if (!deswizzleBuffer.empty()) {
             for (const auto &level : mipLayouts) {
                 auto decode{[&](const u8 *decodeInput, u8 *decodeOutput, size_t decodeHeight) {
@@ -433,6 +516,10 @@ namespace skyline::gpu {
             }
         }
 
+        if (proof) {
+            proof->upload.assign(stagingBuffer->data(), stagingBuffer->data() + surfaceSize);
+            diagnosticUploadProof = std::move(proof);
+        }
         return stagingBuffer;
     }
 
@@ -495,6 +582,16 @@ namespace skyline::gpu {
         auto bufferImageCopies{GetBufferImageCopies()};
         commandBuffer.copyBufferToImage(stagingBuffer->vkBuffer, image, layout,
             vk::ArrayProxy(static_cast<u32>(bufferImageCopies.size()), bufferImageCopies.data()));
+        if (diagnostic::Ue4Uploads().enabled.load(std::memory_order_relaxed) &&
+            layerCount == 6 && dimensions.depth == 1 &&
+            format->vkFormat == vk::Format::eR16G16B16A16Sfloat) {
+            diagnosticUploadCopyCount.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (diagnosticUploadProof && diagnosticUploadProof->stagingIdentity == stagingBuffer.get()) {
+            diagnosticUploadProof->recorded = true;
+            diagnosticUploadStatus.store(diagnostic::UploadRetentionStatus::UploadRecorded,
+                                         std::memory_order_relaxed);
+        }
 
         // Make the transfer write visible to the next use without a global
         // execution wait. This dependency is scoped to this image/subresource set.
@@ -585,6 +682,27 @@ namespace skyline::gpu {
             throw exception("Mipmapped textures with tiling mode '{}' aren't supported", static_cast<int>(tiling));
         }
     }
+
+#ifdef __ANDROID__
+    std::string Texture::DiagnosticGuestOwnership() const {
+        std::unique_lock stateLock{stateMutex, std::try_to_lock};
+        if (!stateLock)
+            return "state_lock_busy=1";
+        if (!guest || guest->mappings.empty())
+            return "guest=unavailable";
+        const auto guestAddress{reinterpret_cast<std::uintptr_t>(guest->mappings.front().data())};
+        const auto state{dirtyState == DirtyState::GpuDirty ? "GpuDirty" :
+                         dirtyState == DirtyState::CpuDirty ? "CpuDirty" : "Clean"};
+        return fmt::format(
+            "guest=0x{:X} guest_span={} guest_mappings={} guest_format={} guest_mips={} "
+            "guest_layers={} dirty={} memoryFreed={} aliases={} aliasStale={} aliasReadOnly={} "
+            "gpuReadbackSerial={} pins={}",
+            guestAddress, mirror.size(), guest->mappings.size(),
+            vk::to_string(guest->format->vkFormat), guest->mipLevelCount,
+            guest->layerCount, state, memoryFreed, HasAliases(), aliasStale.load(),
+            aliasReadOnly.load(), gpuReadbackSerial, guestMemoryPins);
+    }
+#endif
 
     void Texture::FreeGuest() {
         // A read-only alias may need the guest representation again after another

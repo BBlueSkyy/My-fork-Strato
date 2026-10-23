@@ -7,6 +7,7 @@
 #include <gpu/buffer_manager.h>
 #include <gpu/texture/format.h>
 #include "textures.h"
+#include <gpu/diagnostic/ue4_frame_capture.h>
 
 namespace skyline::gpu::interconnect {
     void TexturePoolState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
@@ -386,6 +387,19 @@ namespace skyline::gpu::interconnect {
             guest.mappings.assign(mappings.begin(), mappings.end());
             if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
                 LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
+                if (diagnostic::Ue4Capture().active.load(std::memory_order_acquire)) {
+                    size_t validMappings{};
+                    for (const auto &map : guest.mappings)
+                        if (map.valid() && !map.empty())
+                            ++validMappings;
+                    diagnostic::Ue4Capture().Record(fmt::format(
+                        "TIC_UNMAPPED index={} iova=0x{:X} guest_size={} width={} height={} format={} "
+                        "mapping_count={} valid_mappings={} channel_sequence={}",
+                        index, textureHeader.Iova(), guest.GetSize(),
+                        guest.dimensions.width, guest.dimensions.height,
+                        vk::to_string(guest.format->vkFormat), guest.mappings.size(),
+                        validMappings, ctx.channelCtx.channelSequenceNumber));
+                }
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
 
@@ -396,6 +410,38 @@ namespace skyline::gpu::interconnect {
 
         textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber};
         return texture.get();
+    }
+
+    void Textures::RecordCubemapMappings(InterconnectContext &ctx, TextureView *view) {
+        auto &capture{diagnostic::Ue4Capture()};
+        if (!capture.active.load(std::memory_order_acquire) || !view || !view->texture->guest ||
+            (view->type != vk::ImageViewType::eCube && view->type != vk::ImageViewType::eCubeArray))
+            return;
+        // Inspect the TIC that produced this cached view, even if GetTexture's
+        // sequence/header fast path avoided a fresh GMMU translation this frame.
+        for (const auto &[tic, cached] : textureHeaderStore) {
+            if (cached.get() != view) continue;
+            std::array<u32, sizeof(TextureImageControl) / sizeof(u32)> words{};
+            std::memcpy(words.data(), &tic, sizeof(tic));
+            capture.Record(fmt::format("CUBE_TIC texture=0x{:X} iova=0x{:X} format_word=0x{:X} "
+                "base_layer={} depth={} mip_levels={} view_mip={} view_max_mip={} view_type={}",
+                reinterpret_cast<uintptr_t>(view->texture.get()), tic.Iova(), tic.formatWord.Raw(),
+                tic.BaseLayer(), tic.depthMinusOne + 1, tic.mipMaxLevels + 1,
+                static_cast<u32>(tic.viewConfig.mipMinLevel), static_cast<u32>(tic.viewConfig.mipMaxLevel), vk::to_string(view->type)));
+            for (size_t word{}; word < words.size(); ++word)
+                capture.Record(fmt::format("CUBE_TIC_WORD index={} value=0x{:08X}", word, words[word]));
+            // This range uses the backing's extent. Aliased view offsets are
+            // recorded separately; a differing range is evidence, not a verdict.
+            size_t offset{};
+            const auto bytes{view->texture->guest->GetSize()};
+            for (const auto &mapping : ctx.channelCtx.asCtx->gmmu.TranslateRange(tic.Iova(), bytes)) {
+                capture.Record(fmt::format("CUBE_GMMU_CURRENT texture=0x{:X} logical_offset={} "
+                    "cpu=0x{:X} bytes={} valid={}", reinterpret_cast<uintptr_t>(view->texture.get()),
+                    offset, reinterpret_cast<uintptr_t>(mapping.data()), mapping.size(), mapping.valid()));
+                offset += mapping.size();
+            }
+            break;
+        }
     }
 
     Shader::TextureType Textures::GetTextureType(InterconnectContext &ctx, u32 index) {

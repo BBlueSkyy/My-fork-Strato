@@ -7,6 +7,7 @@
 #include <jvm.h>
 #include <common/settings.h>
 #include "gpu.h"
+#include <gpu/diagnostic/ue4_upload_provenance.h>
 
 namespace skyline::gpu {
     static vk::raii::Instance CreateInstance(const DeviceState &state, const vk::raii::Context &context) {
@@ -411,6 +412,10 @@ namespace skyline::gpu {
           debugTracingBuffer(memory.AllocateBuffer(DebugTracingBufferSize)) {}
 
     void GPU::Initialise() {
+        std::error_code provenanceError;
+        diagnostic::Ue4Uploads().enabled.store(std::filesystem::exists(
+            std::filesystem::path(state.os->publicAppFilesPath) / "gpu_capture/ue4/ENABLE_UPLOAD_PROVENANCE",
+            provenanceError) && !provenanceError, std::memory_order_relaxed);
         std::string titleId{state.loader->nacp->GetSaveDataOwnerId()};
         graphicsPipelineAssembler.emplace(*this, state.os->publicAppFilesPath + "vk_graphics_pipeline_cache/" + titleId);
         shader.emplace(state, *this,
