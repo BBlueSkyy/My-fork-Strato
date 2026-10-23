@@ -157,6 +157,11 @@ namespace skyline::gpu {
             static bool waitingForWhiteLogo{};
             static bool waitingDrawSteps{};
             static std::uint32_t logoPresentCounter{};
+            static std::uint32_t logoEligibleProbes{};
+            static std::uint32_t logoSkippedProbes{};
+            static std::size_t logoBestWhite{};
+            static std::size_t logoBestSamples{};
+            static std::string logoLastSourceFormat{};
             static fs::path captureDirectory{};
             const fs::path root{fs::path(state.os->publicAppFilesPath) / "gpu_capture" / "ue4_ui"};
 
@@ -185,6 +190,11 @@ namespace skyline::gpu {
                                     waitingForWhiteLogo = true;
                                     waitingDrawSteps = drawSteps;
                                     logoPresentCounter = 0;
+                                    logoEligibleProbes = 0;
+                                    logoSkippedProbes = 0;
+                                    logoBestWhite = 0;
+                                    logoBestSamples = 0;
+                                    logoLastSourceFormat.clear();
                                 } else {
                                     remainingFrames = diagnostic::Ue4UiCaptureState::FrameCount;
                                     session.Start(candidate.string(), drawSteps);
@@ -218,53 +228,85 @@ namespace skyline::gpu {
             }
 
 
-            // Opt-in splash/logo trigger: avoid spending all four presented
-            // frames on the black boot interval. Probe the already synchronized
-            // VI source every 8 presentations, at most 320 presentations.
-            // This path adds waits/copies ONLY while the manual trigger exists.
+            // Manual, opt-in boot-logo trigger. The old 320-present window
+            // expired during the UE4 boot/loading sequence, before logos.
+            // Max 3600 presentations (~60 sec at 60 Hz, ~120 sec at 30 Hz),
+            // probing each 12th source to catch short splash screens.
+            // Outside this marker mode no extra GPU readbacks or waits occur.
             if (waitingForWhiteLogo) {
                 ++logoPresentCounter;
-                if (logoPresentCounter > 320) {
-                    LOGW("MINIRD_UE4_UI logo trigger timed out after 320 presentations");
+                if (logoPresentCounter > 3600) {
+                    LOGW("MINIRD_UE4_UI logo timeout: presents={} eligible={} skipped={} "
+                         "best_near_white={}/{} last_format={}",
+                         logoPresentCounter, logoEligibleProbes, logoSkippedProbes,
+                         logoBestWhite, logoBestSamples, logoLastSourceFormat);
                     std::ofstream timeout(captureDirectory / "logo_trigger_timeout.txt");
-                    if (timeout) timeout << "No qualifying white presentation source observed.\\n";
-                    waitingForWhiteLogo = false;
-                } else if ((logoPresentCounter % 8) == 0 &&
-                    (texture->format->vkFormat == vk::Format::eR8G8B8A8Unorm ||
-                     texture->format->vkFormat == vk::Format::eB8G8R8A8Unorm) &&
-                    texture->layout != vk::ImageLayout::eUndefined &&
-                    texture->levelCount == 1 && texture->layerCount == 1 &&
-                    texture->sampleCount == vk::SampleCountFlagBits::e1 &&
-                    texture->surfaceSize > 0 && texture->surfaceSize <= 12ULL * 1024 * 1024) {
-                    if (texture->cycle)
-                        texture->cycle->Wait();
-                    auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
-                    auto sampleCycle{gpu.scheduler.Submit(
-                        [texture, staging](vk::raii::CommandBuffer &cmd) {
-                            texture->CopyIntoStagingBuffer(cmd, staging);
-                        })};
-                    sampleCycle->AttachObjects(texture, staging);
-                    sampleCycle->Wait();
-                    // R/B order does not matter for detecting near-white pixels.
-                    const auto pixelCount{std::min<std::size_t>(
-                        static_cast<std::size_t>(texture->dimensions.width) * texture->dimensions.height,
-                        staging->size() / 4)};
-                    const auto *rgba{static_cast<const std::uint8_t *>(staging->data())};
-                    std::size_t samples{}, white{};
-                    for (std::size_t pixel{}; pixel < pixelCount; pixel += 701) {
-                        const auto offset{pixel * 4};
-                        ++samples;
-                        if (rgba[offset] >= 205 && rgba[offset + 1] >= 205 && rgba[offset + 2] >= 205)
-                            ++white;
+                    if (timeout) {
+                        timeout << "trigger=white_logo_not_seen\n"
+                                << "presentations=" << logoPresentCounter << "\n"
+                                << "eligible_probes=" << logoEligibleProbes << "\n"
+                                << "skipped_probes=" << logoSkippedProbes << "\n"
+                                << "best_near_white=" << logoBestWhite << "\n"
+                                << "best_samples=" << logoBestSamples << "\n"
+                                << "last_source_format=" << logoLastSourceFormat << "\n";
                     }
-                    // Require a substantial white area, not white animation
-                    // specks on black as observed in the previous capture.
-                    if (samples >= 100 && white * 5 >= samples) {
-                        LOGI("MINIRD_UE4_UI white logo detected: {}/{} sampled pixels, {} presented frames since arm",
-                             white, samples, logoPresentCounter);
-                        session.Start(captureDirectory.string(), waitingDrawSteps, true);
-                        remainingFrames = diagnostic::Ue4UiCaptureState::FrameCount;
-                        waitingForWhiteLogo = false;
+                    waitingForWhiteLogo = false;
+                } else if ((logoPresentCounter % 12) == 0) {
+                    logoLastSourceFormat = vk::to_string(texture->format->vkFormat);
+                    const auto format{texture->format->vkFormat};
+                    const bool supportedColor{
+                        format == vk::Format::eR8G8B8A8Unorm ||
+                        format == vk::Format::eB8G8R8A8Unorm ||
+                        format == vk::Format::eR8G8B8A8Srgb ||
+                        format == vk::Format::eB8G8R8A8Srgb
+                    };
+                    if (!supportedColor ||
+                        texture->layout == vk::ImageLayout::eUndefined ||
+                        texture->levelCount != 1 || texture->layerCount != 1 ||
+                        texture->sampleCount != vk::SampleCountFlagBits::e1 ||
+                        !texture->surfaceSize || texture->surfaceSize > 12ULL * 1024 * 1024) {
+                        ++logoSkippedProbes;
+                    } else {
+                        ++logoEligibleProbes;
+                        if (texture->cycle)
+                            texture->cycle->Wait();
+                        auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+                        auto sampleCycle{gpu.scheduler.Submit(
+                            [texture, staging](vk::raii::CommandBuffer &cmd) {
+                                texture->CopyIntoStagingBuffer(cmd, staging);
+                            })};
+                        sampleCycle->AttachObjects(texture, staging);
+                        sampleCycle->Wait();
+                        // RGBA/BGRA share identical near-white channel criteria.
+                        const auto pixelCount{std::min<std::size_t>(
+                            static_cast<std::size_t>(texture->dimensions.width) * texture->dimensions.height,
+                            staging->size() / 4)};
+                        const auto *rgba{static_cast<const std::uint8_t *>(staging->data())};
+                        std::size_t samples{}, white{};
+                        for (std::size_t pixel{}; pixel < pixelCount; pixel += 701) {
+                            const auto offset{pixel * 4};
+                            ++samples;
+                            if (rgba[offset] >= 205 && rgba[offset + 1] >= 205 && rgba[offset + 2] >= 205)
+                                ++white;
+                        }
+                        if (samples && (!logoBestSamples ||
+                            white * logoBestSamples > logoBestWhite * samples)) {
+                            logoBestWhite = white;
+                            logoBestSamples = samples;
+                        }
+                        if (logoPresentCounter % 240 == 0)
+                            LOGI("MINIRD_UE4_UI logo probe: present={} eligible={} "
+                                 "white={}/{} best={}/{} format={}",
+                                 logoPresentCounter, logoEligibleProbes, white, samples,
+                                 logoBestWhite, logoBestSamples, logoLastSourceFormat);
+                        if (samples >= 100 && white * 5 >= samples) {
+                            LOGI("MINIRD_UE4_UI white logo detected: {}/{} sampled pixels, {} "
+                                 "presentations since arm",
+                                 white, samples, logoPresentCounter);
+                            session.Start(captureDirectory.string(), waitingDrawSteps, true);
+                            remainingFrames = diagnostic::Ue4UiCaptureState::FrameCount;
+                            waitingForWhiteLogo = false;
+                        }
                     }
                 }
             }

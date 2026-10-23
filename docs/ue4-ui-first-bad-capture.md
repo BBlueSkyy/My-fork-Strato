@@ -39,7 +39,10 @@ Create `ENABLE_BOOT_LOGO_TRIGGER` alongside `ENABLE_UI_DRAW_STEPS`
 **before arming**. Then create or rename `ARM_CAPTURE` and boot the game.
 The arm is consumed immediately but the four-frame snapshot window
 starts only after the source VI image contains at least ~20% near-white
-pixels. It checks every eighth presented frame, up to 320 presents.
+pixels. It checks every twelfth presented frame, up to 3600 presents
+(about 60 seconds at 60 FPS or 120 seconds at 30 FPS).
+This is a maximum **presentation count**, not a timer; loading and FPS
+may vary. The previous 320-present cap could expire before the first logo.
 This covers the mostly white partner-logo splash sequence without
 exhausting the small capture quota during black loading screens.
 
@@ -47,6 +50,10 @@ Only in this opt-in mode, the UI checkpoint selector accepts full-screen
 indexed 3- or 6-index draws independently of the menu-specific vertex
 shader, with checkpoints after ordinals 1, 2, 4, 8 and 16 for a target.
 `logo_trigger_timeout.txt` indicates no qualifying splash was detected.
+It now contains `presentations`, `eligible_probes`, `skipped_probes`,
+`best_near_white`, `best_samples`, and `last_source_format`, to
+distinguish a late logo from an unsupported VI image format or a
+brightness threshold mismatch. The periodic probe log is likewise opt-in.
 If the game presents a white pre-logo frame first, this can begin early;
 report what it captured rather than treating the trigger as proof.
 
