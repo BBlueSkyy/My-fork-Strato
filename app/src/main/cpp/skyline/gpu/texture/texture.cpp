@@ -562,7 +562,7 @@ namespace skyline::gpu {
                 else if (guest->tileConfig.mode == texture::TileMode::Pitch)
                     texture::CopyLinearToPitchLinear(*guest, {hostBuffer, layerStride}, {guestOutput, guestLayerStride});
                 else if (guest->tileConfig.mode == texture::TileMode::Linear)
-                    std::memcpy(hostBuffer, guestOutput, layerStride);
+                    std::memcpy(guestOutput, hostBuffer, layerStride);
                 guestOutput += guestLayerStride;
                 hostBuffer += layerStride;
             }
