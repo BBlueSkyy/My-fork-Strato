@@ -27,12 +27,39 @@ armed**, so it may change rendering timing or the failure itself. If the
 bug vanishes under capture, report that instead of treating it as a fix.
 Remove the marker to restore the original pass-end capture mode.
 
+## Optional automatic boot-logo capture trigger
+
+The 2026-10-22 boot capture recorded only one UI draw-step (`pass_00`,
+all-black) and four mostly black VI frames showing tiny white fragments.
+The capture began at roughly 23.8 seconds after launch and ended before
+the first bright publisher logo from the earlier boot recording. This is
+**not** evidence that the corruption was absent from later logos.
+
+Create `ENABLE_BOOT_LOGO_TRIGGER` alongside `ENABLE_UI_DRAW_STEPS`
+**before arming**. Then create or rename `ARM_CAPTURE` and boot the game.
+The arm is consumed immediately but the four-frame snapshot window
+starts only after the source VI image contains at least ~20% near-white
+pixels. It checks every eighth presented frame, up to 320 presents.
+This covers the mostly white partner-logo splash sequence without
+exhausting the small capture quota during black loading screens.
+
+Only in this opt-in mode, the UI checkpoint selector accepts full-screen
+indexed 3- or 6-index draws independently of the menu-specific vertex
+shader, with checkpoints after ordinals 1, 2, 4, 8 and 16 for a target.
+`logo_trigger_timeout.txt` indicates no qualifying splash was detected.
+If the game presents a white pre-logo frame first, this can begin early;
+report what it captured rather than treating the trigger as proof.
+
+The trigger performs GPU readback probes and fence waits, so it can affect
+timing **while armed**. Neither the normal emulator path nor the existing
+menu-specific selector is changed.
+
 ## Android steps
 
 1. Install **ARM64 DevRelease** APK from this Draft PR, not DevReldebug.
 2. Open the affected menu, keep it on screen.
 3. In Strato's public app files, open `gpu_capture/ue4_ui`.
-4. For the next Demon Slayer test, first create empty `ENABLE_UI_DRAW_STEPS` in this same folder; then rename `ARM_CAPTURE.rename_this_file_when_ready` to `ARM_CAPTURE`.
+4. For a boot-logo capture, create empty `ENABLE_UI_DRAW_STEPS` and `ENABLE_BOOT_LOGO_TRIGGER` in this same folder **before launching the game**. Then create `ARM_CAPTURE` (or rename the existing hint file to that exact name). Restart/launch the game. For a regular menu capture, omit the logo marker.
 5. Return to the emulator for at least four presentations; polling occurs about once per 16 presentations.
 6. Wait for `pass_readbacks_done.txt` **inside capture_###** before copying the folder. It appears only after all reserved asynchronous pass readback callbacks finish. Check `requested`, `written` and `failed`. If the marker never appears, keep the `emulation.log` to diagnose stalled callbacks. `capture_complete.txt` only marks the four source-frame samples.
 7. Zip the generated `capture_###` directory and send that zip with the matching `emulation.log` and a screenshot.

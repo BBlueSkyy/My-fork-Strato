@@ -19,6 +19,7 @@ namespace skyline::gpu::diagnostic {
       public:
         std::atomic<bool> active{false};
         std::atomic<bool> drawStepMode{false};
+        std::atomic<bool> logoTriggerMode{false};
         std::atomic<std::uint32_t> presentIndex{0};
         std::atomic<std::uint32_t> eventCount{0};
         static constexpr std::uint32_t MaxEvents{10000};
@@ -64,7 +65,8 @@ namespace skyline::gpu::diagnostic {
         std::vector<std::pair<std::uintptr_t, std::size_t>> watchedMappings;
 
       public:
-        void Start(std::string captureDirectory, bool enableDrawSteps = false) {
+        void Start(std::string captureDirectory, bool enableDrawSteps = false,
+                   bool captureBootLogos = false) {
             std::scoped_lock lock(mutex);
             path = std::move(captureDirectory);
             events.clear();
@@ -77,6 +79,7 @@ namespace skyline::gpu::diagnostic {
             presentationSamplesFinished = false;
             uiDrawCounts.clear();
             drawStepMode.store(enableDrawSteps, std::memory_order_relaxed);
+            logoTriggerMode.store(captureBootLogos, std::memory_order_relaxed);
             watchedMappings.clear();
             eventCount.store(0, std::memory_order_relaxed);
             presentIndex.store(0, std::memory_order_relaxed);
@@ -114,9 +117,14 @@ namespace skyline::gpu::diagnostic {
                 if (ordinal >= 48)
                     return std::nullopt;
                 ++ordinal;
-                if (ordinal == 1 || ordinal == 8 || ordinal == 16 ||
-                    ordinal == 32 || ordinal == 47)
+                if (logoTriggerMode.load(std::memory_order_relaxed)) {
+                    if (ordinal == 1 || ordinal == 2 || ordinal == 4 ||
+                        ordinal == 8 || ordinal == 16)
+                        return ordinal;
+                } else if (ordinal == 1 || ordinal == 8 || ordinal == 16 ||
+                           ordinal == 32 || ordinal == 47) {
                     return ordinal;
+                }
                 return std::nullopt;
             }
             if (uiDrawCounts.size() < 4) {

@@ -480,7 +480,10 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::CaptureUiQuadStep(span<TextureView *> colorAttachments,
                                             bool matchingVertexShader, u32 indexCount, u32 instanceCount) {
         auto &capture{diagnostic::UiSurfaceCapture()};
-        if (!matchingVertexShader || indexCount != 6 || instanceCount != 1 ||
+        if (!matchingVertexShader || instanceCount != 1 ||
+            (capture.logoTriggerMode.load(std::memory_order_relaxed)
+                ? (indexCount != 3 && indexCount != 6)
+                : indexCount != 6) ||
             !capture.active.load(std::memory_order_acquire) ||
             !capture.drawStepMode.load(std::memory_order_acquire))
             return;

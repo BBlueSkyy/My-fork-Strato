@@ -154,10 +154,13 @@ namespace skyline::gpu {
             auto &session{diagnostic::UiSurfaceCapture()};
             static std::uint32_t pollCount{};
             static std::uint32_t remainingFrames{};
+            static bool waitingForWhiteLogo{};
+            static bool waitingDrawSteps{};
+            static std::uint32_t logoPresentCounter{};
             static fs::path captureDirectory{};
             const fs::path root{fs::path(state.os->publicAppFilesPath) / "gpu_capture" / "ue4_ui"};
 
-            if (!remainingFrames && (++pollCount % 16 == 1)) {
+            if (!remainingFrames && !waitingForWhiteLogo && (++pollCount % 16 == 1)) {
                 std::error_code ec;
                 fs::create_directories(root, ec);
                 if (!ec) {
@@ -174,10 +177,18 @@ namespace skyline::gpu {
                                 if (!fs::create_directories(candidate, ec) || ec)
                                     continue;
                                 captureDirectory = candidate;
-                                remainingFrames = diagnostic::Ue4UiCaptureState::FrameCount;
                                 const bool drawSteps{fs::exists(root / "ENABLE_UI_DRAW_STEPS", ec) && !ec};
                                 ec.clear();
-                                session.Start(candidate.string(), drawSteps);
+                                const bool logoTrigger{fs::exists(root / "ENABLE_BOOT_LOGO_TRIGGER", ec) && !ec};
+                                ec.clear();
+                                if (logoTrigger) {
+                                    waitingForWhiteLogo = true;
+                                    waitingDrawSteps = drawSteps;
+                                    logoPresentCounter = 0;
+                                } else {
+                                    remainingFrames = diagnostic::Ue4UiCaptureState::FrameCount;
+                                    session.Start(candidate.string(), drawSteps);
+                                }
                                 std::ofstream readme(candidate / "README.txt");
                                 if (readme) {
                                     readme << "Strato UE4 UI surface mini-RenderDoc (diagnostic only)\n"
@@ -186,10 +197,11 @@ namespace skyline::gpu {
                                            << "gpu_events.txt contains bounded draw, shader, sampler and TIC diagnostics.\n"
                                            << "present_index_approx is approximate due to asynchronous rendering.\n"
                                            << "UI draw-step mode is optional; ENABLE_UI_DRAW_STEPS must exist BEFORE ARM_CAPTURE.\n"
+                                           << "ENABLE_BOOT_LOGO_TRIGGER waits for a mostly white VI source before starting the 4-frame capture.\n"
                                            << "When enabled it splits selected passes for GPU-ordered intermediate snapshots.\n"
                                            << "No guest memory or rendering semantics changed outside capture.\n";
                                 }
-                                LOGI("MINIRD_UE4_UI armed: {}", candidate.string());
+                                LOGI("MINIRD_UE4_UI armed: {} logo_trigger={}", candidate.string(), logoTrigger);
                                 break;
                             }
                         }
@@ -201,6 +213,58 @@ namespace skyline::gpu {
                             if (instructions)
                                 instructions << "Open the affected UE4 menu, rename this file to ARM_CAPTURE and return to Strato.\n";
                         }
+                    }
+                }
+            }
+
+
+            // Opt-in splash/logo trigger: avoid spending all four presented
+            // frames on the black boot interval. Probe the already synchronized
+            // VI source every 8 presentations, at most 320 presentations.
+            // This path adds waits/copies ONLY while the manual trigger exists.
+            if (waitingForWhiteLogo) {
+                ++logoPresentCounter;
+                if (logoPresentCounter > 320) {
+                    LOGW("MINIRD_UE4_UI logo trigger timed out after 320 presentations");
+                    std::ofstream timeout(captureDirectory / "logo_trigger_timeout.txt");
+                    if (timeout) timeout << "No qualifying white presentation source observed.\\n";
+                    waitingForWhiteLogo = false;
+                } else if ((logoPresentCounter % 8) == 0 &&
+                    (texture->format->vkFormat == vk::Format::eR8G8B8A8Unorm ||
+                     texture->format->vkFormat == vk::Format::eB8G8R8A8Unorm) &&
+                    texture->layout != vk::ImageLayout::eUndefined &&
+                    texture->levelCount == 1 && texture->layerCount == 1 &&
+                    texture->sampleCount == vk::SampleCountFlagBits::e1 &&
+                    texture->surfaceSize > 0 && texture->surfaceSize <= 12ULL * 1024 * 1024) {
+                    if (texture->cycle)
+                        texture->cycle->Wait();
+                    auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+                    auto sampleCycle{gpu.scheduler.Submit(
+                        [texture, staging](vk::raii::CommandBuffer &cmd) {
+                            texture->CopyIntoStagingBuffer(cmd, staging);
+                        })};
+                    sampleCycle->AttachObjects(texture, staging);
+                    sampleCycle->Wait();
+                    // R/B order does not matter for detecting near-white pixels.
+                    const auto pixelCount{std::min<std::size_t>(
+                        static_cast<std::size_t>(texture->dimensions.width) * texture->dimensions.height,
+                        staging->size() / 4)};
+                    const auto *rgba{static_cast<const std::uint8_t *>(staging->data())};
+                    std::size_t samples{}, white{};
+                    for (std::size_t pixel{}; pixel < pixelCount; pixel += 701) {
+                        const auto offset{pixel * 4};
+                        ++samples;
+                        if (rgba[offset] >= 205 && rgba[offset + 1] >= 205 && rgba[offset + 2] >= 205)
+                            ++white;
+                    }
+                    // Require a substantial white area, not white animation
+                    // specks on black as observed in the previous capture.
+                    if (samples >= 100 && white * 5 >= samples) {
+                        LOGI("MINIRD_UE4_UI white logo detected: {}/{} sampled pixels, {} presented frames since arm",
+                             white, samples, logoPresentCounter);
+                        session.Start(captureDirectory.string(), waitingDrawSteps, true);
+                        remainingFrames = diagnostic::Ue4UiCaptureState::FrameCount;
+                        waitingForWhiteLogo = false;
                     }
                 }
             }

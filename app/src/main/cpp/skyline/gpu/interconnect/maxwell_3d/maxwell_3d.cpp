@@ -832,8 +832,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (auto *pipeline{activeState.GetPipeline()})
                 targetVertexShader =
                     pipeline->sourcePackedState.shaderHashes[1] == 0x8FE6FA707E2C0FB0ULL;
+            const bool logoMode{diagnostic::UiSurfaceCapture().logoTriggerMode.load(std::memory_order_relaxed)};
+            // Logos may use different VS hashes and full-screen triangles.
+            // Require the actual full-screen scissor and an indexed triangle/quad.
+            const bool eligibleLogoDraw{logoMode && indexed && (count == 3 || count == 6) &&
+                scissor.extent.width >= 480 && scissor.extent.height >= 270};
             ctx.executor.CaptureUiQuadStep(activeState.GetColorAttachments(),
-                                           targetVertexShader, count, instanceCount);
+                                           targetVertexShader || eligibleLogoDraw,
+                                           count, instanceCount);
         }
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
