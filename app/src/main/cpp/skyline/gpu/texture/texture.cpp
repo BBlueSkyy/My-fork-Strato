@@ -670,11 +670,16 @@ namespace skyline::gpu {
 #ifdef __ANDROID__
             const bool wasFreed{memoryFreed};
 #endif
+#ifndef __ANDROID__
             gpu.state.process->memory.FreeMemory(mirror);
+#endif
+            // DIAGNOSTIC ONLY: on Android retain physical guest pages, but
+            // preserve the logical eviction flag and the original GpuDirty /
+            // readback/alias policy. This isolates MADV_REMOVE from ownership.
             memoryFreed = true;
 #ifdef __ANDROID__
             if (!wasFreed)
-                TraceGuestLifetime("free-guest-pages", dirtyState, dirtyState);
+                TraceGuestLifetime("logical-free-physical-pages-retained", dirtyState, dirtyState);
 #endif
         } else {
 #ifdef __ANDROID__
