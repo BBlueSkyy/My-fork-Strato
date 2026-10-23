@@ -5,6 +5,7 @@
 #include <gpu/texture/format.h>
 #include <gpu/texture/texture.h>
 #include <gpu/texture_manager.h>
+#include <gpu/diagnostic/ue4_frame_capture.h>
 #include <soc/gm20b/gmmu.h>
 #include <soc/gm20b/channel.h>
 #include "fermi_2d.h"
@@ -150,6 +151,26 @@ namespace skyline::gpu::interconnect {
         dstTextureView->texture->MarkGpuDirty(executor.usageTracker);
 
         executor.NotifyPipelineChange();
+        if (diagnostic::Ue4Capture().active.load(std::memory_order_acquire)) {
+            auto &capture{diagnostic::Ue4Capture()};
+            const auto guestAddress{[](const GuestTexture &t) -> uintptr_t {
+                return t.mappings.empty() ? 0 : reinterpret_cast<uintptr_t>(t.mappings.front().data());
+            }};
+            capture.Record(fmt::format(
+                "FERMI2D executor=0x{:X} submission={} src_iova=0x{:X} dst_iova=0x{:X} "
+                "src_guest=0x{:X} dst_guest=0x{:X} src_texture=0x{:X} dst_texture=0x{:X} "
+                "src={}x{} dst={}x{} src_rect={},{},{},{} dst_rect={},{},{},{} filter={}",
+                reinterpret_cast<uintptr_t>(&executor), executor.submissionNumber,
+                u64{srcSurface.address}, u64{dstSurface.address},
+                guestAddress(srcGuestTexture), guestAddress(dstGuestTexture),
+                reinterpret_cast<uintptr_t>(srcTextureView->texture.get()),
+                reinterpret_cast<uintptr_t>(dstTextureView->texture.get()),
+                srcGuestTexture.dimensions.width, srcGuestTexture.dimensions.height,
+                dstGuestTexture.dimensions.width, dstGuestTexture.dimensions.height,
+                centredSrcRectX, centredSrcRectY, duDx * dstRectWidth, dvDy * dstRectHeight,
+                dstRectX, dstRectY, dstRectWidth, dstRectHeight, static_cast<u32>(filter)));
+        }
+
         executor.AddCheckpoint("Before blit");
         gpu.helperShaders.blitHelperShader.Blit(
             gpu,

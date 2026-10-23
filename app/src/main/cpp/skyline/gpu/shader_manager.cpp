@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <gpu/diagnostic/ue4_frame_capture.h>
 #include <range/v3/algorithm.hpp>
 #include <boost/functional/hash.hpp>
 #include <gpu.h>
@@ -110,6 +111,8 @@ namespace skyline::gpu {
         auto it{replacementMap.find(hash)};
         if (it != replacementMap.end()) {
             LOGI("Replacing shader with hash: 0x{:X}", hash);
+            diagnostic::Ue4Capture().RememberTargetShader(hash, spv,
+                it->second.data(), it->second.size());
             return it->second;
         }
 
@@ -123,6 +126,8 @@ namespace skyline::gpu {
             }
         }
 
+        diagnostic::Ue4Capture().RememberTargetShader(hash, spv,
+            binary.data(), binary.size_bytes());
         return binary;
     }
 

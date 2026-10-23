@@ -54,6 +54,7 @@ namespace skyline::gpu::interconnect {
         void MarkAllDirty();
 
         TextureView *GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType);
+        void RecordCubemapMappings(InterconnectContext &ctx, TextureView *view);
 
         Shader::TextureType GetTextureType(InterconnectContext &ctx, u32 index);
 

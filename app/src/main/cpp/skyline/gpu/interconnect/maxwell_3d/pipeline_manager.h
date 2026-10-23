@@ -258,6 +258,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         u32 GetTotalSampledImageCount() const;
 
+        // Read-only descriptor metadata for an explicitly armed diagnostic.
+        // Never forces descriptor updates, guest reads, or shader recompiles.
+        const DescriptorInfo &GetDiagnosticDescriptorInfo() const {
+            return descriptorInfo;
+        }
+
         bool UsesRenderArea() const {
             return usesRenderArea;
         }

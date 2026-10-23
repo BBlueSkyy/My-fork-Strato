@@ -3,6 +3,7 @@
 // Copyright © 2022 yuzu Emulator Project (https://github.com/yuzu-emu/yuzu/)
 
 #include <gpu/interconnect/command_executor.h>
+#include <gpu/diagnostic/ue4_frame_capture.h>
 #include <gpu/texture/format.h>
 #include <gpu/texture/layout.h>
 #include <soc.h>
@@ -90,6 +91,18 @@ namespace skyline::soc::gm20b::engine {
     }
 
     void MaxwellDma::DmaCopy() {
+        if (gpu::diagnostic::Ue4Capture().active.load(std::memory_order_acquire)) {
+            gpu::diagnostic::Ue4Capture().Record(fmt::format(
+                "MAXWELL_DMA executor=0x{:X} submission={} src_iova=0x{:X} dst_iova=0x{:X} "
+                "line_bytes={} lines={} src_pitch={} dst_pitch={} multiline={} remap={} src_layout={} dst_layout={}",
+                reinterpret_cast<uintptr_t>(&channelCtx.executor), channelCtx.executor.submissionNumber,
+                u64{*registers.offsetIn}, u64{*registers.offsetOut},
+                *registers.lineLengthIn, *registers.lineCount, *registers.pitchIn, *registers.pitchOut,
+                static_cast<bool>(registers.launchDma->multiLineEnable),
+                static_cast<bool>(registers.launchDma->remapEnable),
+                static_cast<u32>(registers.launchDma->srcMemoryLayout),
+                static_cast<u32>(registers.launchDma->dstMemoryLayout)));
+        }
         if (registers.launchDma->multiLineEnable) {
             if (registers.launchDma->remapEnable) [[unlikely]] {
                 const bool usesBlockLinear{
