@@ -418,6 +418,13 @@ namespace skyline::gpu {
         std::atomic<bool> ownerGpuWriteLogged{};
         std::atomic<bool> ownerFreeGuardLogged{};
         std::atomic<u8> ownerContentTraceCount{};
+        std::atomic<bool> firstEvictionObserved{};
+        std::atomic<bool> awaitingFirstGuestUse{};
+        std::atomic<bool> awaitingReadbackObservation{};
+        // Diagnostic only: first TexMan-observed use after FreeGuest, not
+        // an exhaustive trace of all CPU/DMA reads to the guest allocation.
+        void TracePostFreeObservation(const char *stage);
+        void TraceFirstGuestUseAfterFree(const char *stage);
         void TraceGuestBytes(const char *stage, const u8 *data, size_t length);
         void TraceGuestLifetime(const char *event, DirtyState previous, DirtyState next, bool requestedGpuDirty = false);
 #endif

@@ -528,6 +528,19 @@ namespace skyline::gpu {
                     matches.push_back(entry.texture);
             });
 
+#ifdef __ANDROID__
+        // A newly described texture may overlap a previously evicted backing.
+        // Observe the overlapping backing BEFORE the normal coherence/readback
+        // step, then sample the new guest mirror after that step.
+        bool hadEvictedOverlap{};
+        for (auto &overlap : matches) {
+            std::scoped_lock stateLock{overlap->stateMutex};
+            if (!overlap->memoryFreed)
+                continue;
+            hadEvictedOverlap = true;
+            overlap->TraceFirstGuestUseAfterFree("overlap-before-reconciliation");
+        }
+#endif
         for (auto &texture : matches)
             if (!separateGroup || texture->aliasGroup.load() != separateGroup)
                 texture->SynchronizeGuest(false, true);
@@ -537,6 +550,10 @@ namespace skyline::gpu {
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();
+#ifdef __ANDROID__
+        if (hadEvictedOverlap)
+            texture->TraceGuestBytes("new-texture-after-overlap", texture->mirror.data(), texture->mirror.size());
+#endif
         texture->aliasReadOnly = requestedReadOnlyAlias;
         if (separateGroup) {
             std::scoped_lock metadata{separateGroup->mutex};
