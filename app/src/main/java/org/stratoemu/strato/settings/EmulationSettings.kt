@@ -61,7 +61,6 @@ class EmulationSettings private constructor(context : Context, prefName : String
 
     // Debug
     var logLevel by sharedPreferences(context, 2, prefName = prefName) // Info by default
-    var validationLayer by sharedPreferences(context, false, prefName = prefName)
 
     /**
      * Copies all settings from the global settings to this instance.

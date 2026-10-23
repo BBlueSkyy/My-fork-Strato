@@ -185,12 +185,5 @@
             app:key="log_level"
             app:title="@string/log_level"
             app:useSimpleSummaryProvider="true" />
-        <SwitchPreferenceCompat
-            android:defaultValue="false"
-            android:summaryOff="@string/validation_layer_disabled"
-            android:summaryOn="@string/validation_layer_enabled"
-            app:key="validation_layer"
-            app:isPreferenceVisible="true"
-            app:title="@string/validation_layer" />
     </PreferenceCategory>
 </androidx.preference.PreferenceScreen>

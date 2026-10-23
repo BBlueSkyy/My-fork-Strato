@@ -186,9 +186,6 @@
     <!-- Settings - Debug -->
     <string name="debug">Debug</string>
     <string name="log_level">Log Level</string>
-    <string name="validation_layer">Enable Validation Layer</string>
-    <string name="validation_layer_enabled">The Vulkan validation layer is enabled, major slowdowns are to be expected</string>
-    <string name="validation_layer_disabled">The Vulkan validation layer is disabled</string>
     <!-- Gpu Driver Activity -->
     <string name="gpu_driver">GPU Driver</string>
     <string name="add_gpu_driver">Add a GPU driver</string>
@@ -300,7 +297,6 @@
     <string name="sirit_description">Skyline\'s shader compiler internally uses Sirit to emit SPIR-V in an efficient manner</string>
     <string name="vkhpp_description">Vulkan-Hpp provides a C++ API for Vulkan</string>
     <string name="vkma_description">Vulkan Memory Allocator provides a high-quality GPU memory allocator with UMA support</string>
-    <string name="khvkval_description">Khronos\'s Vulkan Validation Layer provides error-checking for Vulkan API calls in debug builds</string>
     <string name="oboe_description">Oboe is used for high-performance audio output</string>
     <string name="perfetto_description">Perfetto is used to profile and debug with detailed tracing</string>
     <string name="fmtlib_description">{fmt} provides a modern C++ string formatting API</string>

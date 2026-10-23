@@ -41,12 +41,6 @@
             app:summary="@string/vkma_description"
             app:title="Vulkan Memory Allocator" />
         <org.stratoemu.strato.preference.LicensePreference
-            app:libraryCopyright="Copyright (c) 2015-2019 The Khronos Group Inc.\nCopyright (c) 2015-2019 Valve Corporation\nCopyright (c) 2015-2019 LunarG, Inc."
-            app:libraryLicense="@string/apache2_license"
-            app:libraryUrl="https://github.com/KhronosGroup/Vulkan-ValidationLayers"
-            app:summary="@string/khvkval_description"
-            app:title="Khronos Vulkan Validation Layer" />
-        <org.stratoemu.strato.preference.LicensePreference
             app:libraryCopyright="Copyright 2021 The Android Open Source Project"
             app:libraryLicense="@string/apache2_license"
             app:libraryUrl="https://github.com/google/oboe"
