@@ -478,6 +478,7 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::CaptureUiQuadStep(span<TextureView *> colorAttachments,
+                                            span<TextureView *> sampledImages,
                                             bool matchingVertexShader, u32 indexCount, u32 instanceCount) {
         auto &capture{diagnostic::UiSurfaceCapture()};
         if (!matchingVertexShader || instanceCount != 1 ||
@@ -503,6 +504,84 @@ namespace skyline::gpu::interconnect {
                 BreakRenderPass(); // GPU-ordered readback, only while explicitly armed.
                 uiCaptureForcedBoundary = false;
                 uiCaptureDrawStepOrdinal = 0;
+
+                // The Oct 22 capture locates the first visible Aniplex
+                // staircase after the second, six-index draw (VS 8FE6FA70...
+                // FS FBC5329C...). Capture its one sampled input, not another
+                // screenshot of the already corrupt output.
+                if (capture.logoTriggerMode.load(std::memory_order_relaxed) &&
+                    *drawOrdinal == 2 && indexCount == 6 && sampledImages.size() == 1) {
+                    auto *inputView{sampledImages.front()};
+                    if (inputView && inputView->texture) {
+                        std::shared_ptr<Texture> source{inputView->texture};
+                        auto &t{*source};
+                        const auto eligible{t.guest && t.surfaceSize &&
+                            t.surfaceSize <= 12ULL * 1024 * 1024 &&
+                            t.levelCount == 1 && t.layerCount == 1 &&
+                            t.sampleCount == vk::SampleCountFlagBits::e1 &&
+                            (t.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+                            (t.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+                            (t.layout == vk::ImageLayout::eGeneral ||
+                             t.layout == vk::ImageLayout::eTransferSrcOptimal)};
+                        capture.Record(fmt::format(
+                            "UI_DRAW_SAMPLED_INPUT ordinal=2 src=0x{:X} target=0x{:X} "
+                            "dims={}x{} format={} size={} layout={} eligible={} mappings={}",
+                            reinterpret_cast<uintptr_t>(source.get()), identity,
+                            t.dimensions.width, t.dimensions.height,
+                            vk::to_string(t.format->vkFormat), t.surfaceSize,
+                            vk::to_string(t.layout), eligible,
+                            t.guest ? t.guest->mappings.size() : 0));
+                        if (eligible) {
+                            const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+                            const auto idOpt{capture.ReservePassSnapshot(interval, t.surfaceSize)};
+                            if (idOpt) {
+                                const auto id{*idOpt};
+                                const auto directory{std::filesystem::path(capture.CaptureDirectory())};
+                                const auto rawPath{directory / fmt::format(
+                                    "sampled_input_{:02}_{}x{}_{}.raw", id,
+                                    t.dimensions.width, t.dimensions.height,
+                                    vk::to_string(t.format->vkFormat))};
+                                const auto metaPath{directory / fmt::format("sampled_input_{:02}.txt", id)};
+                                const auto meta{fmt::format(
+                                    "id={} source_texture=0x{:X} target_texture=0x{:X} "
+                                    "draw_ordinal=2 width={} height={} format={} "
+                                    "layout={} bytes={} purpose=source_of_first_corrupt_logo_draw\\n",
+                                    id, reinterpret_cast<uintptr_t>(source.get()), identity,
+                                    t.dimensions.width, t.dimensions.height,
+                                    vk::to_string(t.format->vkFormat), vk::to_string(t.layout),
+                                    t.surfaceSize)};
+                                auto staging{gpu.memory.AllocateStagingBuffer(t.surfaceSize)};
+                                slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                                    [source, staging](vk::raii::CommandBuffer &cmd,
+                                                      const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                                        cycle->AttachObjects(source, staging);
+                                        source->CopyIntoStagingBuffer(cmd, staging);
+                                    });
+                                uiCaptureReadbacks.emplace_back([staging, rawPath, metaPath, meta, id] {
+                                    std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                                    if (raw)
+                                        raw.write(reinterpret_cast<const char *>(staging->data()),
+                                                  static_cast<std::streamsize>(staging->size()));
+                                    raw.close();
+                                    const bool rawOk{raw.good()};
+                                    std::ofstream metadata(metaPath, std::ios::trunc);
+                                    if (metadata) metadata << meta;
+                                    metadata.close();
+                                    const bool ok{rawOk && metadata.good()};
+                                    if (ok)
+                                        LOGI("MINIRD_UE4_UI wrote sampled input {}: {}", id, rawPath.string());
+                                    else
+                                        LOGE("MINIRD_UE4_UI sampled input {} incomplete raw={} meta={}",
+                                             id, rawOk, metadata.good());
+                                    diagnostic::UiSurfaceCapture().PassSnapshotFinished(ok);
+                                });
+                                capture.Record(fmt::format(
+                                    "UI_SAMPLED_INPUT_READBACK id={} src=0x{:X} target=0x{:X}",
+                                    id, reinterpret_cast<uintptr_t>(source.get()), identity));
+                            }
+                        }
+                    }
+                }
             }
             break; // One draw may bind several views of a single target.
         }

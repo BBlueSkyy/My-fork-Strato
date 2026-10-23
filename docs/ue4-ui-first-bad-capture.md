@@ -61,6 +61,33 @@ The trigger performs GPU readback probes and fence waits, so it can affect
 timing **while armed**. Neither the normal emulator path nor the existing
 menu-specific selector is changed.
 
+## Targeted capture of the first corrupted logo draw (Oct 22 follow-up)
+
+The successful bright-logo capture contains six draw-step readbacks and four
+presented images. It proves the Aniplex staircase first *appears in the
+checkpoint series* after a six-index draw, whose vertex shader hash is
+`8FE6FA707E2C0FB0` and fragment shader hash is
+`FBC5329C218C3BCF`. The preceding full-screen triangle uses
+`60E53DDA904B9EFC / 2E91D34350C5100C`. Across three presentation
+textures, the second-draw output and final VI bytes are identical.
+
+The staircase borders follow x = 0,75,149,224 and y = 149,299,449,599
+in the 1120x630 capture. This regularly spaced pattern is a useful
+geometry/UV/addressing clue, not proof of the underlying mechanism.
+
+With BOTH `ENABLE_BOOT_LOGO_TRIGGER` and `ENABLE_UI_DRAW_STEPS`
+the diagnostic now also attempts one bounded GPU readback of the **single
+sampled texture** used by each second draw. This is after the draw and
+its forced render-pass boundary, while the resource is still live.
+Look for `sampled_input_XX.raw`, `sampled_input_XX.txt`, and
+`UI_DRAW_SAMPLED_INPUT` in `gpu_events.txt`.
+To avoid an invalid Vulkan image-copy layout, it only reads eligible
+GENERAL/TRANSFER_SRC_OPTIMAL images with TRANSFER_SRC usage. Unsupported
+layouts are recorded but not copied. The source copy counts against the
+existing 20-snapshot/96MiB budget and uses the same completion marker.
+The source may be compressed or have a different size; use its metadata
+rather than assuming 1120x630 RGBA8.
+
 ## Android steps
 
 1. Install **ARM64 DevRelease** APK from this Draft PR, not DevReldebug.

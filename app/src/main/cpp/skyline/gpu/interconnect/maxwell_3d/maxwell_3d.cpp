@@ -838,6 +838,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             const bool eligibleLogoDraw{logoMode && indexed && (count == 3 || count == 6) &&
                 scissor.extent.width >= 480 && scissor.extent.height >= 270};
             ctx.executor.CaptureUiQuadStep(activeState.GetColorAttachments(),
+                                           activeDescriptorSetSampledImages,
                                            targetVertexShader || eligibleLogoDraw,
                                            count, instanceCount);
         }

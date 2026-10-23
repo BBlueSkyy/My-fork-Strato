@@ -275,7 +275,8 @@ namespace skyline::gpu::interconnect {
         UsageTracker usageTracker;
 
         // Manual UE4 UI debug only: optional post-draw GPU image checkpoint.
-        void CaptureUiQuadStep(span<TextureView *> colorAttachments, bool matchingVertexShader,
+        void CaptureUiQuadStep(span<TextureView *> colorAttachments, span<TextureView *> sampledImages,
+                               bool matchingVertexShader,
                                u32 indexCount, u32 instanceCount);
 
         CommandExecutor(const DeviceState &state);
