@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <fstream>
+#include <cstring>
 #include <asm-generic/unistd.h>
 #include <fcntl.h>
 #include "memory.h"
@@ -842,6 +843,26 @@ namespace skyline::kernel {
             LOGE("Failed to free memory: {}", strerror(errno));
         }
     }
+
+#ifdef __ANDROID__
+    void MemoryManager::ZeroFreeGuestPagesDiagnostic(span<u8> memory) {
+        // Use the same address translation and interior page boundaries as
+        // FreeMemory(). This is a controlled experiment, not a replacement
+        // for MADV_REMOVE in the ordinary texture memory manager.
+        memory = GetHostSpan(memory);
+        u8 *alignedStart{util::AlignUp(memory.data(), constant::PageSize)};
+        u8 *alignedEnd{util::AlignDown(memory.end().base(), constant::PageSize)};
+
+        if (alignedStart >= alignedEnd)
+            return;
+
+        const size_t alignedSize{static_cast<size_t>(alignedEnd - alignedStart)};
+        if (mprotect(alignedStart, alignedSize, PROT_READ | PROT_WRITE) == -1) [[unlikely]]
+            throw exception("Failed to reprotect FreeGuest zero-fill diagnostic pages: {}", strerror(errno));
+
+        std::memset(alignedStart, 0, alignedSize);
+    }
+#endif
 
     void MemoryManager::SvcMapMemory(span<u8> source, span<u8> destination) {
         std::unique_lock lock{mutex};

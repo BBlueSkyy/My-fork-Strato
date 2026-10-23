@@ -418,6 +418,14 @@ namespace skyline {
              */
             void FreeMemory(span<u8> memory);
 
+#ifdef __ANDROID__
+            /**
+             * Diagnostic only: zero exactly the interior, page-aligned guest
+             * range FreeMemory() would pass to MADV_REMOVE. Not for production.
+             */
+            void ZeroFreeGuestPagesDiagnostic(span<u8> memory);
+#endif
+
             /**
              * Implements the memory manager side functionality of svcMapMemory
              * @note Argument validity must be checked by the caller
