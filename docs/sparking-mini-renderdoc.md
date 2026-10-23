@@ -221,3 +221,33 @@ mutex per traced DMA/I2M command and creation-byte copies; FPS is unmeasured.
 Install the updated **DevRelease** APK and fully restart with the marker present
 before starting the game. Arm `ARM_CAPTURE` in gameplay as before and send the
 new capture folder plus its matching emulation log. No new marker is required.
+
+
+### Phase 5 — bounded last-issued transfer candidate per virtual page
+
+With the same startup marker, DMA/I2M hooks keep a second, lazy fixed-size
+last-candidate index across ring wraparound. It has 65,536 slots (4-way
+set-associative), with 64 KiB IOVA pages, and retains the latest event
+metadata for each occupied page. For the selected cube, the existing provenance
+text gains last_writer_pages, per-page last_writer_page lines with sequence,
+source/destination/envelope/register words, and eviction/truncation counters.
+The original 4,096-event ring is unchanged.
+
+No command scans more than 256 pages (first 128 and last 128 for larger spans),
+and reports contain at most 64 pages. This adds an approximately 10 MiB lazy
+CPU allocation only when opt-in recording is enabled, plus bounded work per
+traced transfer; it does not extend the 32 MiB retained upload-payload budget.
+No new Vulkan operations, guest writes, GPU synchronization, GMMU changes or
+shader changes. The feature does not run without the startup marker.
+
+Limitations: events are recorded when issued, before copy completion. The
+index uses conservative virtual destination page envelopes, which may contain
+pitch holes and may collide with unrelated allocations. It cannot prove which
+instruction wrote a byte. Direct CPU writes, physical aliases, GMMU remaps,
+other engines and overwritten or skipped pages remain unobserved. An absent
+entry is not exculpatory. Confirm any candidate against register geometry,
+physical mappings and completion semantics before implementing any fix.
+
+Test: focused production-hook extraction in tests/gpu_sparking_scan/transfers.cpp,
+including ring wraparound, address-space separation and oversized envelopes.
+Still requires Moto G100 validation; keep this PR Draft and do not merge.

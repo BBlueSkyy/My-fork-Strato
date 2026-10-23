@@ -55,4 +55,32 @@ int main() {
     space=reinterpret_cast<std::uintptr_t>(i2m.channelCtx.asCtx.get());
     auto report=SparkingTransfers().Snapshot(space,200,1);
     assert(report.find("kind=I2M")!=std::string::npos && report.find("envelope_bytes=96")!=std::string::npos);
+    // The last virtual-page writer candidate survives the 4096-event ring.
+    SparkingTransferTrace persistent;
+    SparkingTransferTrace::Event early{};
+    early.kind="DMA";early.addressSpace=0x1010;
+    early.destination=0x5622C0000ULL;early.source=0xABC000;early.bytes=1081344;
+    persistent.Record(early);
+    for (int i=0;i<50000;++i) {
+        early.destination=0x400000000ULL+static_cast<u64>(i%32)*65536;
+        early.bytes=32;
+        persistent.Record(early);
+    }
+    auto origin=persistent.Snapshot(0x1010,0x5622C0000ULL,1081344);
+    assert(origin.find("transfer_matches=0")!=std::string::npos);
+    assert(origin.find("last_writer_page=0x5622c0000 seq=1 kind=DMA")!=std::string::npos);
+    assert(origin.find("last_writer_page=0x5623c0000 seq=1 kind=DMA")!=std::string::npos);
+    early.addressSpace=0x2020;early.destination=0x5622C0000ULL;
+    persistent.Record(early);
+    assert(persistent.Snapshot(0x1010,0x5622C0000ULL,8).find(
+        "last_writer_page=0x5622c0000 seq=1 kind=DMA")!=std::string::npos);
+    persistent.Record({"I2M",0x1010,4,0x5622C0000ULL,4});
+    assert(persistent.Snapshot(0x1010,0x5622C0000ULL,8).find(
+        "last_writer_page=0x5622c0000 seq=50003 kind=I2M")!=std::string::npos);
+    // Oversized or malformed envelopes cannot cause unbounded page scanning.
+    SparkingTransferTrace capped;
+    capped.Record({"DMA",0x1010,0,0x5622C0000ULL,UINT64_MAX});
+    assert(capped.Snapshot(0x1010,0x5622C0000ULL,8).find(
+        "capped_commands=1")!=std::string::npos);
+
 }

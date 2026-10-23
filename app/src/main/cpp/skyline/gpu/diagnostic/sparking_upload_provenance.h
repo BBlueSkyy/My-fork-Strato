@@ -36,9 +36,17 @@ namespace skyline::gpu::diagnostic {
         return SparkingSaturatingMultiply(SparkingSaturatingMultiply(align(width,64),align(height,8*bh)),align(depth,bd));
     }
 
+    // Opt-in, fixed-size set-associative virtual-page trace. A page record retains
+    // the last issued DMA/I2M candidate even after the command ring wraps. Neither
+    // virtual overlap nor issue order proves that guest bytes were actually written.
     class SparkingTransferTrace {
       public:
         static constexpr size_t Capacity{4096};
+        static constexpr std::uint64_t PageBytes{64ULL * 1024};
+        static constexpr size_t PageSlots{65536};
+        static constexpr size_t PageWays{4};
+        static constexpr size_t MaxPagesPerCommand{256};
+        static constexpr size_t MaxReportPages{64};
         struct Event {
             const char *kind{};
             std::uintptr_t addressSpace{};
@@ -47,15 +55,65 @@ namespace skyline::gpu::diagnostic {
             size_t wordCount{};
         };
       private:
+        struct LastPage {
+            std::uintptr_t space{};
+            std::uint64_t page{};
+            Event event{};
+        };
         std::mutex mutex;
-        std::vector<Event> events; // Allocated only after the opt-in caller records an event.
-        std::uint64_t sequence{};
+        std::vector<Event> events;
+        std::vector<LastPage> pages; // Lazy: allocated only for enabled DMA/I2M tracing.
+        std::uint64_t sequence{}, pageEvictions{}, cappedCommands{}, omittedPages{};
+
+        static size_t Bucket(std::uintptr_t space, std::uint64_t page) {
+            std::uint64_t h{(static_cast<std::uint64_t>(space) >> 4) ^
+                            (page * 0x9e3779b97f4a7c15ULL)};
+            h=(h^(h>>30))*0xbf58476d1ce4e5b9ULL;
+            h=(h^(h>>27))*0x94d049bb133111ebULL;
+            return static_cast<size_t>((h ^ (h>>31)) & (PageSlots / PageWays - 1)) * PageWays;
+        }
+        void RecordPage(const Event &e, std::uint64_t page) {
+            const auto bucket{Bucket(e.addressSpace,page)};
+            size_t choice{bucket};
+            for (size_t i=0;i<PageWays;++i) {
+                const auto &slot{pages[bucket+i]};
+                if (slot.event.sequence && slot.space==e.addressSpace && slot.page==page) {
+                    choice=bucket+i;break;
+                }
+                if (!slot.event.sequence) {
+                    choice=bucket+i;break;
+                }
+                if (slot.event.sequence < pages[choice].event.sequence) choice=bucket+i;
+            }
+            auto &slot{pages[choice]};
+            if (slot.event.sequence && (slot.space!=e.addressSpace || slot.page!=page))
+                ++pageEvictions;
+            slot={e.addressSpace,page,e};
+        }
       public:
         void Record(Event event) {
             std::scoped_lock lock{mutex};
             if (events.empty()) events.resize(Capacity);
+            if (pages.empty()) pages.resize(PageSlots);
             event.sequence=++sequence;
             events[(sequence-1)%Capacity]=event;
+            if (!event.bytes) return;
+            const auto first{event.destination/PageBytes};
+            const auto end{event.bytes-1 > std::numeric_limits<std::uint64_t>::max()-event.destination ?
+                std::numeric_limits<std::uint64_t>::max() : event.destination+event.bytes-1};
+            const auto last{end/PageBytes};
+            const auto count{last-first+1};
+            if (count<=MaxPagesPerCommand) {
+                for (auto p=first;p<=last;++p) RecordPage(event,p);
+            } else {
+                ++cappedCommands;
+                omittedPages+=count-MaxPagesPerCommand;
+                // Preserve both ends of oversized envelopes; report middle-page omissions.
+                for (size_t i=0;i<MaxPagesPerCommand/2;++i) {
+                    RecordPage(event,first+i);
+                    RecordPage(event,last-i);
+                }
+            }
         }
         std::string Snapshot(std::uintptr_t space,std::uint64_t address,std::uint64_t bytes) {
             std::scoped_lock lock{mutex};
@@ -64,20 +122,58 @@ namespace skyline::gpu::diagnostic {
             out << "transfer_history last_seq=" << sequence << " overwritten=" << first-1
                 << " matching=conservative_iova_envelope command_completion=unverified"
                    " physical_aliases_and_remaps=unverified cpu_writes=not_observed\n";
-            size_t matches{}, emitted{};
-            for (auto serial=sequence; serial && serial>=first; --serial) {
+            size_t matches{},emitted{};
+            for (auto serial=sequence;serial && serial>=first;--serial) {
                 const auto &e=events[(serial-1)%Capacity];
                 if (e.addressSpace!=space || !bytes || !e.bytes ||
-                    !(e.destination<=address ? address-e.destination<e.bytes : e.destination-address<bytes)) continue;
+                    !(e.destination<=address ? address-e.destination<e.bytes:e.destination-address<bytes)) continue;
                 ++matches;
                 if (emitted++>=128) continue;
                 out << "transfer seq=" << e.sequence << " kind=" << e.kind
                     << " source=0x" << std::hex << e.source << " destination=0x" << e.destination
                     << std::dec << " envelope_bytes=" << e.bytes << " raw_words=";
-                for (size_t i=0;i<std::min(e.wordCount,e.words.size());++i) out << std::hex << e.words[i] << ',';
+                for (size_t i=0;i<std::min(e.wordCount,e.words.size());++i)
+                    out << std::hex << e.words[i] << ',';
                 out << std::dec << '\n';
             }
-            out << "transfer_matches=" << matches << " omitted=" << (matches>128 ? matches-128 : 0) << '\n';
+            out << "transfer_matches=" << matches << " omitted=" << (matches>128 ? matches-128:0) << '\n';
+            out << "last_writer_pages granularity_bytes=" << PageBytes << " slots=" << PageSlots
+                << " ways=" << PageWays << " evictions=" << pageEvictions
+                << " capped_commands=" << cappedCommands << " skipped_pages=" << omittedPages
+                << " kind=last_issued_transfer_candidate precision=coarse_virtual_iova"
+                   " physical_aliases_and_remaps=unverified completion=unverified cpu_writes=unobserved\n";
+            if (bytes) {
+                const auto start{address/PageBytes};
+                const auto end{(bytes-1>std::numeric_limits<std::uint64_t>::max()-address ?
+                    std::numeric_limits<std::uint64_t>::max():address+bytes-1)/PageBytes};
+                const auto count{end-start+1};
+                for (size_t i=0;i<std::min<std::uint64_t>(count,MaxReportPages);++i) {
+                    const auto page{start+i};
+                    const LastPage *found{};
+                    if (!pages.empty()) {
+                        const auto bucket{Bucket(space,page)};
+                        for (size_t way=0;way<PageWays;++way) {
+                            const auto &slot{pages[bucket+way]};
+                            if (slot.event.sequence && slot.space==space && slot.page==page) {
+                                found=&slot;break;
+                            }
+                        }
+                    }
+                    out << "last_writer_page=0x" << std::hex << page*PageBytes << std::dec;
+                    if (found) {
+                        const auto &e{found->event};
+                        out << " seq=" << e.sequence << " kind=" << e.kind << " source=0x"
+                            << std::hex << e.source << " destination=0x" << e.destination
+                            << std::dec << " envelope_bytes=" << e.bytes << " raw_words=";
+                        for (size_t j=0;j<std::min(e.wordCount,e.words.size());++j)
+                            out << std::hex << e.words[j] << ',';
+                        out << std::dec;
+                    } else out << " status=not_seen_or_evicted";
+                    out << '\n';
+                }
+                if (count>MaxReportPages)
+                    out << "last_writer_pages_omitted=" << count-MaxReportPages << '\n';
+            }
             return out.str();
         }
     };
