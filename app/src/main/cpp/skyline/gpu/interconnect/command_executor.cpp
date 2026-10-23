@@ -470,6 +470,35 @@ namespace skyline::gpu::interconnect {
             view->range.baseMipLevel, view->range.levelCount, view->range.baseArrayLayer, view->range.layerCount)};
         AttachTexture(view); // Reattach if AddSubpass auto-submitted the writer's execution.
         auto staging{gpu.memory.AllocateStagingBuffer(bytes)};
+        using ProofResult = std::pair<std::shared_ptr<diagnostic::SparkingUploadProof>, std::string>;
+        const bool provenance{phase.starts_with("input_") &&
+            diagnostic::IsSparkingCubeGeometry(texture->dimensions.width, texture->dimensions.height,
+                texture->dimensions.depth, texture->layerCount, texture->levelCount) &&
+            texture->format->vkFormat == vk::Format::eR16G16B16A16Sfloat};
+        auto proofResult{provenance ? std::make_shared<ProofResult>() : nullptr};
+        if (proofResult) {
+            // Run on the preparation thread after host uploads, while texture locks
+            // are held. Never reconstruct guest bytes during the later GPU callback.
+            diagnosticUploadCallbacks.emplace_back([texture, proofResult] {
+                proofResult->first = texture->sparkingUploadProof;
+                std::scoped_lock stateLock{texture->stateMutex};
+                proofResult->second = fmt::format(
+                    "readback_guest_format={} readback_host_format={} current_write_claim_serial={} current_backing_generation={} "
+                    "ever_gpu_writer={} dirty_state={} memory_freed={} alias={} alias_stale={} "
+                    "alias_read_only={} alias_retired={} provenance_enabled={} proof_available={} "
+                    "proof_reason={} sync_attempts={} copy_buffer_to_image_count={} proof_discard_count={} "
+                    "budget_used_on_reject={} budget_used_now={} budget_limit={}\n",
+                    texture->guest ? vk::to_string(texture->guest->format->vkFormat) : "none",
+                    vk::to_string(texture->format->vkFormat), texture->gpuWriteSerial, texture->backingGeneration,
+                    texture->everUsedAsGpuWrite, static_cast<u32>(texture->dirtyState), texture->memoryFreed,
+                    texture->HasAliases(), texture->aliasStale.load(), texture->aliasReadOnly.load(),
+                    texture->aliasRetired.load(), diagnostic::SparkingUploads().enabled.load(),
+                    static_cast<bool>(proofResult->first), diagnostic::SparkingUploadStatusName(texture->sparkingUploadStatus.load()),
+                    texture->sparkingUploadSyncAttempts.load(), texture->sparkingUploadCopyCount.load(),
+                    texture->sparkingUploadProofDiscards.load(), texture->sparkingUploadBudgetUsedOnReject.load(),
+                    diagnostic::SparkingUploads().UsedBytes(), diagnostic::SparkingUploadProvenance::MaxBytes);
+            });
+        }
         // Ends the current render pass, then copies in this executor's ordered stream.
         // No submit, CPU readback wait or device-idle is introduced here.
         AddOutsideRpCommand([texture, staging](vk::raii::CommandBuffer &commands,
@@ -490,7 +519,7 @@ namespace skyline::gpu::interconnect {
                     .subresourceRange = {texture->format->vkAspect, 0, texture->levelCount, 0, texture->layerCount},
                 });
         });
-        diagnosticReadbackCallbacks.emplace_back([staging, directory, stem, meta, bytes, ordinal, hdrStats] {
+        diagnosticReadbackCallbacks.emplace_back([staging, directory, stem, meta, bytes, ordinal, hdrStats, proofResult] {
             std::ofstream raw(directory / (stem + ".raw"), std::ios::binary | std::ios::trunc);
             raw.write(reinterpret_cast<const char *>(staging->data()), static_cast<std::streamsize>(bytes));
             if (!raw) { LOGE("MINIRD_SPARKING_DRAW failed to write {}", stem); return; }
@@ -502,6 +531,17 @@ namespace skyline::gpu::interconnect {
                 // The selected executor's waiter serializes these callbacks.
                 std::ofstream csv(directory / "hdr_draw_stats.csv", std::ios::app);
                 csv << ordinal << ',' << stem << ',' << stats.nanPixels << ',' << stats.infPixels << '\n';
+            }
+            if (proofResult) {
+                const auto prefix{directory / (stem + "_provenance")};
+                if (const auto &proof{proofResult->first}) {
+                    if (!proof->Write(prefix, std::span<const std::uint8_t>{staging->data(), static_cast<size_t>(bytes)},
+                                      proofResult->second))
+                        LOGE("MINIRD_SPARKING_PROVENANCE write failed: {}", prefix.string());
+                } else {
+                    std::ofstream missing(prefix.string() + ".txt");
+                    missing << proofResult->second << "No retained upload proof; this does not identify the corrupting stage.\n";
+                }
             }
             LOGI("MINIRD_SPARKING_DRAW wrote {}", stem);
         });
@@ -1031,6 +1071,8 @@ namespace skyline::gpu::interconnect {
             }
         }
 
+        for (auto &prepare : diagnosticUploadCallbacks) prepare();
+        diagnosticUploadCallbacks.clear();
         RotateRecordSlot();
     }
 

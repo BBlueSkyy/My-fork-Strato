@@ -20,6 +20,16 @@ struct Texture {
     u32 levelCount{1},layerCount{1}; vk::SampleCountFlagBits sampleCount{vk::SampleCountFlagBits::e1};
     size_t surfaceSize{856*480*4}; Format storage; Format *format{&storage};
     vk::ImageLayout layout{vk::ImageLayout::eGeneral}; vk::ImageUsageFlags usage{vk::ImageUsageFlagBits::eTransferSrc};
+    struct Guest { Format *format{}; }; std::optional<Guest> guest;
+    std::shared_ptr<diagnostic::SparkingUploadProof> sparkingUploadProof;
+    std::recursive_mutex stateMutex;
+    std::uint64_t gpuWriteSerial{},backingGeneration{1}; bool everUsedAsGpuWrite{},memoryFreed{};
+    enum class DirtyState { Clean }; DirtyState dirtyState{DirtyState::Clean};
+    std::atomic<bool> aliasStale{},aliasReadOnly{},aliasRetired{};
+    bool HasAliases() const { return false; }
+    std::atomic<diagnostic::SparkingUploadStatus> sparkingUploadStatus{};
+    std::atomic<u32> sparkingUploadSyncAttempts{},sparkingUploadCopyCount{},sparkingUploadProofDiscards{};
+    std::atomic<size_t> sparkingUploadBudgetUsedOnReject{};
     vk::Image GetBacking() {return {};}
     void CopyIntoStagingBuffer(vk::raii::CommandBuffer&,const std::shared_ptr<Staging>&) {}
 };
@@ -30,6 +40,7 @@ struct CommandExecutor {
     GPU gpu; size_t submissionNumber{7}; u32 renderPassIndex{1}; unsigned attaches{};
     std::vector<std::function<void(vk::raii::CommandBuffer&,const std::shared_ptr<FenceCycle>&,GPU&)>> commands;
     std::vector<std::function<void()>> diagnosticReadbackCallbacks;
+    std::vector<std::function<void()>> diagnosticUploadCallbacks;
     void AttachTexture(TextureView*) {++attaches;}
     void AddOutsideRpCommand(std::function<void(vk::raii::CommandBuffer&,const std::shared_ptr<FenceCycle>&,GPU&)>&& f) {commands.push_back(std::move(f));}
     std::optional<u32> BeginDiagnosticSparkingDraw(span<TextureView*> color);
@@ -87,6 +98,31 @@ int main() {
     maxwell.activeDescriptorSetSampledImages={&in,&skipped};
     ordinal=maxwell.BeginSparkingHdrDraw(3,1,true,{{0,0},{856,480}});
     assert(ordinal==2 && executor.commands.size()==3); // no duplicate input allocation
+    auto cube=std::make_shared<Texture>();
+    cube->storage.vkFormat=vk::Format::eR16G16B16A16Sfloat;
+    cube->dimensions.width=cube->dimensions.height=128;
+    cube->levelCount=8;cube->layerCount=6;cube->surfaceSize=1048560;
+    TextureView cubeView{cube,&cube->storage};
+    maxwell.activeDescriptorSetSampledImages={&cubeView};
+    auto callbackStart=executor.diagnosticReadbackCallbacks.size();
+    assert(maxwell.BeginSparkingHdrDraw(3,1,true,{{0,0},{856,480}})==3);
+    assert(executor.diagnosticUploadCallbacks.size()==1);
+    // Upload proof appears only during submission preparation, after queuing the readback.
+    diagnostic::SparkingUploads().enabled=true;
+    cube->sparkingUploadProof=diagnostic::SparkingUploads().Reserve(cube->surfaceSize+12);
+    assert(cube->sparkingUploadProof);
+    auto &proof=*cube->sparkingUploadProof;
+    proof.guest.assign(4,0);proof.linear.assign(8,0);proof.upload.assign(cube->surfaceSize,0);
+    proof.slices.push_back({0,0,0,4,0,8,0,8});proof.recorded=true;
+    for(auto &prepare:executor.diagnosticUploadCallbacks)prepare();
+    executor.diagnosticUploadCallbacks.clear();
+    for(auto i=callbackStart;i<executor.diagnosticReadbackCallbacks.size();++i)
+        executor.diagnosticReadbackCallbacks[i]();
+    std::ifstream provenance(root/"capture_001/hdr_draw_003_input_0_provenance.txt");
+    const std::string proofText{std::istreambuf_iterator<char>(provenance),{}};
+    assert(proofText.find("proof_available=true")!=std::string::npos);
+    assert(proofText.find("equal=1")!=std::string::npos);
+    assert(std::filesystem::file_size(root/"capture_001/hdr_draw_003_input_0_provenance_upload.raw")==cube->surfaceSize);
     diagnostic::SparkingCapture().Finish();
     assert(!executor.BeginDiagnosticSparkingDraw(maxwell.activeState.GetColorAttachments()));
     std::filesystem::remove(root/"ENABLE_HDR_DRAW_SCAN");

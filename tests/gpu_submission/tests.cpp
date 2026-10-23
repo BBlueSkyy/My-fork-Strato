@@ -155,6 +155,7 @@ struct CommandExecutor {
     std::shared_ptr<FenceCycle> cycle;
     std::vector<std::shared_ptr<Texture>> attachedTextures, preserveAttachedTextures;
     std::vector<BufferView> attachedBuffers, preserveAttachedBuffers;
+    std::vector<std::function<void()>> diagnosticUploadCallbacks;
     void FinishRenderPass() {}
     void RotateRecordSlot() {}
     void SubmitInternal();

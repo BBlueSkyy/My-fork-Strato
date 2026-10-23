@@ -121,3 +121,61 @@ opt-in/default behavior, target/executor selection, quotas/reset, packed HDR
 nonfinite decoding and production helper metadata/readback scheduling. The
 facade does not execute Vulkan commands or validate a real GPU render-pass split.
 No test was added to APK workflows.
+
+
+## Phase 4 — first-draw cubemap upload provenance
+
+The phase-3 device capture contains all 192 draw snapshots. Its baseline has
+zero NaNs, then draw 1 (fragment hash `87D698D84285F36B`) has 22 NaN pixels.
+The first-use sampled input 14 is an FP16 HDR cubemap, 128x128, six faces and
+eight mips, already containing NaNs in over 89% of texels. Its captured SPIR-V
+samples that cube and the sampled RGB feeds the color-output calculation.
+This identifies a corrupt sampled input, not the stage that corrupted it or
+proof that this input explains every visual defect in the game.
+
+The existing **ENABLE_HDR_DRAW_SCAN** startup marker now also enables retention
+of the actual CPU upload path for this cubemap geometry. No new marker is needed:
+install this updated APK, fully restart with the marker present, enter gameplay
+and arm **ARM_CAPTURE** as before. Send the new capture folder and matching log.
+
+For the captured cubemap input, `*_provenance_guest.raw`, `*_provenance_linear.raw`
+and `*_provenance_upload.raw` retain respectively the guest mirror, bytes directly
+after deswizzling, and actual staging source before the Vulkan upload. The
+`*_provenance.txt` report includes mappings, format/tile configuration/stride,
+48 face/mip offsets, CRC32 and first differing byte against the already captured
+GPU readback. Linear/upload data uses mip-major packing across all six faces;
+guest bytes retain the game's layer stride and padding.
+
+Proof retention is enabled before game loading and bounded to **32 MiB of live
+CPU payload**. Each candidate is bounded to 4 MiB guest and 2 MiB per linear/upload
+stage. The sampled proof is chosen after attached textures perform pending host
+uploads and before the record slot is published, while texture locks are held.
+No guest data is reconstructed or read at the later readback callback. A matching
+staging identity and byte comparison mark that the upload copy was recorded.
+Source CPU snapshots are sequential, not an atomic snapshot against concurrent
+guest writes. Retained copies do not modify the original source buffers.
+
+Missing proof is reported explicitly (disabled, not observed, unsupported layout,
+format/geometry mismatch, unavailable/oversized guest bytes, or budget rejection).
+The report also includes sync/copy/discard counts, backing generation, GPU-writer
+history and alias/retirement state. Write serials are **CPU write claims**, not
+GPU-completion identifiers: equal serials do not rule out a pending writer, and
+unequal upload/readback bytes alone do not prove a Vulkan fault. Image writers,
+alias reconciliation or backing promotion may legitimately occur after upload.
+If the cube is produced only on the GPU, this CPU-upload proof may be absent.
+
+This adapts the existing Cosmic Shake upload-retention diagnostic to the Sparking
+cube; it is not a texture-layout or rendering correction. It reuses the existing
+input readback: no new GPU readback, upload, fence wait, or device-idle call is
+introduced. With the marker absent the CPU payload is not retained. No workflow,
+shader-compiler submodule, BufferManager or GMMU changes were made.
+
+Validation: focused ASan/UBSan policy/proof comparison and extracted helper tests;
+existing mapping and submission regressions; complete production upload/deswizzle
+methods exercised on a synthetic 128x128 FP16 cubemap under Vulkan/UBSan with
+48 face/mip slices, matching guest/linear/staging/readback bytes and zero Vulkan
+validation errors (both image-format-list settings). The host Vulkan fixture
+uses allocator/scheduler facades and llvmpipe; it does not replace the Android
+build or Moto G100 validation. The previously documented broad alias-suite
+baseline failure remains outside this focused check. Tests remain opt-in and
+were not added to APK workflows.

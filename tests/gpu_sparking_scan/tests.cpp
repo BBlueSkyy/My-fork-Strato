@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include "gpu/diagnostic/sparking_frame_capture.h"
+#include "gpu/diagnostic/sparking_upload_provenance.h"
 #include <cassert>
 #include <filesystem>
 #include <fstream>
@@ -36,6 +37,28 @@ int main() {
     assert(!session.ClaimHdrDraw(0x1234));
     assert(session.ReservePassSnapshot(0,32,SparkingFocusRole::SceneHdr));
     session.Finish();
+    assert(IsSparkingCubeGeometry(128,128,1,6,8));
+    assert(!IsSparkingCubeGeometry(64,64,1,6,8));
+    auto &uploads=SparkingUploads();
+    uploads.enabled=false;
+    assert(!uploads.Reserve(32));
+    uploads.enabled=true;
+    {
+        auto proof=uploads.Reserve(SparkingUploadProvenance::MaxBytes);
+        assert(proof && !uploads.Reserve(1));
+    }
+    assert(uploads.UsedBytes()==0);
+    auto proof=uploads.Reserve(12);
+    proof->guest={1,2,3,4};proof->linear={1,2,3,4};proof->upload={1,2,3,4};
+    proof->slices.push_back({0,0,0,4,0,4,0,4});
+    std::array<std::uint8_t,4> changed{1,2,9,4};
+    assert(SparkingUploadProof::FirstDifference(proof->upload,changed)==2);
+    assert(SparkingUploadProof::Crc(proof->upload)!=SparkingUploadProof::Crc(changed));
+    assert(proof->Write(root/"proof",changed,"fixture\n"));
+    std::ifstream report(root/"proof.txt");
+    const std::string contents{std::istreambuf_iterator<char>(report),{}};
+    assert(contents.find("equal=0 first_difference=2")!=std::string::npos);
+    proof.reset();assert(uploads.UsedBytes()==0);
     auto stats=SparkingHdrStats::Decode({0,0,0,0});
     assert(stats.nanPixels==0 && stats.infPixels==0);
     // Red 11-bit NaN: exponent=31 and nonzero mantissa. Green infinity.

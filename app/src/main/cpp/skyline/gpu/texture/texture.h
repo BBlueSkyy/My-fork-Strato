@@ -4,6 +4,7 @@
 #pragma once
 
 #include "alias_group.h"
+#include <gpu/diagnostic/sparking_upload_provenance.h>
 
 #include <range/v3/view.hpp>
 #include <range/v3/algorithm.hpp>
@@ -400,6 +401,14 @@ namespace skyline::gpu {
         BackingType backing; //!< The Vulkan image that backs this texture, it is nullable
         vk::ImageType backingImageType; //!< Immutable image type supplied at allocation/wrapping.
 
+        std::shared_ptr<diagnostic::SparkingUploadProof> sparkingUploadProof;
+        // All fields remain untouched with ENABLE_HDR_DRAW_SCAN off.
+        // Atomics make metadata inspection safe across executor threads.
+        std::atomic<diagnostic::SparkingUploadStatus> sparkingUploadStatus{};
+        std::atomic<u32> sparkingUploadSyncAttempts{};
+        std::atomic<u32> sparkingUploadCopyCount{};
+        std::atomic<u32> sparkingUploadProofDiscards{};
+        std::atomic<size_t> sparkingUploadBudgetUsedOnReject{};
         span<u8> mirror{}; //!< A contiguous mirror of all the guest mappings to allow linear access on the CPU
         span<u8> alignedMirror{}; //!< The mirror mapping aligned to page size to reflect the full mapping
         std::optional<TrapHandle> trapHandle{}; //!< The handle of the traps for the guest mappings

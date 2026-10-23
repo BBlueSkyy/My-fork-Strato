@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "sparking_upload_provenance.h"
 // One-shot diagnostic only. This is a small, bounded trace, not the RenderDoc API.
 // No guest data or guest GPU command is modified.
 #include <array>
@@ -164,6 +165,7 @@ namespace skyline::gpu::diagnostic {
             std::scoped_lock lock(mutex);
             std::error_code ec;
             shaderDumpEnabled = std::filesystem::exists(root / "ENABLE_HDR_DRAW_SCAN", ec) && !ec;
+            SparkingUploads().enabled.store(shaderDumpEnabled.load(std::memory_order_relaxed), std::memory_order_relaxed);
             shaderDirectory = root / "scan_shaders";
             if (shaderDumpEnabled) std::filesystem::create_directories(shaderDirectory, ec);
             if (ec) shaderDumpEnabled = false;
