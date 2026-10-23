@@ -358,6 +358,7 @@ namespace skyline::gpu {
             dirtyState=DirtyState::CpuDirty;
         }
         void SetupGuestMappings();
+        void RecordSparkingTic(uintptr_t addressSpace, u64 iova, u32 index, span<const u8> tic);
         ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
         BackingType backing;
         vk::ImageType backingImageType{vk::ImageType::e2D};
@@ -384,7 +385,7 @@ namespace skyline::gpu {
         std::atomic<bool> aliasRetired{};
         std::atomic<bool> aliasReadOnly{};
         u64 gpuWriteSerial{},gpuReadbackSerial{};
-        std::shared_ptr<diagnostic::SparkingUploadProof> sparkingUploadProof;
+        std::shared_ptr<diagnostic::SparkingUploadProof> sparkingUploadProof, sparkingCreationProof;
         // All fields remain untouched with ENABLE_HDR_DRAW_SCAN off.
         // Atomics make metadata inspection safe across executor threads.
         std::atomic<diagnostic::SparkingUploadStatus> sparkingUploadStatus{};
@@ -1242,9 +1243,18 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         texture->mirror=guest;
         texture->guest->mappings={texture->mirror};
         diagnostic::SparkingUploads().enabled=true;
+        texture->SetupGuestMappings();
+        const auto creation=texture->sparkingCreationProof;
+        assert(creation && creation->guest==guest);
+        std::array<u8,32> tic{};tic[0]=0x42;
+        texture->RecordSparkingTic(1,0x10000,7,tic);
+        assert(creation->metadata.find("index=7")!=std::string::npos);
+        texture->RecordSparkingTic(1,0x20000,9,tic);
+        assert(creation->iova==0x10000); // Keep the first observation.
         auto staging{texture->SynchronizeHostImpl()};
         auto proof{texture->sparkingUploadProof};
         assert(proof && !proof->recorded.load() && proof->slices.size()==48);
+        assert(proof->creation==creation);
         assert(proof->guest==guest && proof->linear==expected && proof->upload==expected);
         auto cycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
             texture->CopyFromStagingBuffer(commands,staging);

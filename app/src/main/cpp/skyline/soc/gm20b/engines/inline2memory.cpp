@@ -2,6 +2,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu/texture/layout.h>
+#include <gpu/diagnostic/sparking_upload_provenance.h>
 #include <soc/gm20b/channel.h>
 #include "inline2memory.h"
 
@@ -20,6 +21,21 @@ namespace skyline::soc::gm20b::engine {
         if (state.launchDma.completion == RegisterState::DmaCompletionType::ReleaseSemaphore)
             throw exception("Semaphore release on I2M completion is not supported!");
 
+        if (gpu::diagnostic::SparkingUploads().enabled.load(std::memory_order_relaxed)) {
+            using namespace gpu::diagnostic;
+            SparkingTransferTrace::Event event{};
+            event.kind="I2M";
+            event.addressSpace=reinterpret_cast<uintptr_t>(channelCtx.asCtx.get());
+            event.destination=u64{state.offsetOut};
+            event.bytes=state.launchDma.layout==RegisterState::DmaDstMemoryLayout::Pitch ?
+                SparkingPitchExtent(state.lineLengthIn,state.lineCount,state.pitchOut) :
+                SparkingBlockExtent(state.dstWidth,state.dstHeight,state.dstDepth,
+                    1ULL<<state.dstBlockSize.height,1ULL<<state.dstBlockSize.depth);
+            // First 13 I2M words, excluding the loadInlineData register.
+            std::memcpy(event.words.data(),&state,13*4);
+            event.wordCount=13;
+            SparkingTransfers().Record(event);
+        }
         LOGD("range: 0x{:X} -> 0x{:X}", u64{state.offsetOut}, u64{state.offsetOut} + buffer.size() * 0x4);
         if (state.launchDma.layout == RegisterState::DmaDstMemoryLayout::Pitch) {
             channelCtx.channelSequenceNumber++;

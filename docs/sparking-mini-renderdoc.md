@@ -179,3 +179,45 @@ uses allocator/scheduler facades and llvmpipe; it does not replace the Android
 build or Moto G100 validation. The previously documented broad alias-suite
 baseline failure remains outside this focused check. Tests remain opt-in and
 were not added to APK workflows.
+
+### Cubemap origin before the retained upload
+
+With the same startup `ENABLE_HDR_DRAW_SCAN` marker, the focused 128x128,
+6-face, 8-mip FP16 cube also retains its mirror bytes immediately after mirror
+creation, before installing that texture's traps. The bytes count against the
+existing 32 MiB live CPU payload budget (at most 4 MiB per creation snapshot).
+The existing input proof writes `*_provenance_creation_guest.raw` and reports
+creation/upload guest CRCs, byte equality and the first differing byte. These
+are sequential CPU observations; concurrent guest writes are not excluded.
+Creation means creation of this texture's mirror, not allocation of guest memory
+or the first write to that physical region. A missing creation proof is not
+proof that the original bytes were valid.
+
+The first focused TIC observed for that backing records its raw 32 bytes,
+index, GPU virtual address, address-space identity, backing generation and GPU
+write claim. A pre-capture ring retains the latest 4096 DMA/I2M commands; only
+up to 128 most recent commands whose destination envelopes overlap that TIC's
+range in the same address space are included in its origin metadata. The
+report explicitly counts overwritten history and omitted matches. It snapshots
+history when the first TIC is associated with the backing, not at GPU completion.
+
+`raw_words` are hexadecimal, in these orders:
+
+- DMA: launch, line length, line count, source pitch, destination pitch, remap,
+  constant A, constant B, six source-surface words, six destination-surface words.
+- I2M: the first 13 words of `Inline2MemoryBackend::RegisterState`, ending with
+  launch configuration, excluding `loadInlineData`. The inline payload is not retained.
+
+The destination envelope includes pitch gaps or the declared tiled allocation;
+it is a candidate overlap, not an exact written-byte set. Address-space matches
+are virtual: physical aliases, intervening GMMU remaps, direct CPU writes,
+other engines, failed/skipped operations and command completion remain unproven.
+No matching event does **not** rule out earlier writes. No extra guest-memory
+read through trapped mappings, GPU copy, readback, explicit submission or wait is
+added. The ring stores register metadata only and allocates lazily while the
+startup marker is enabled. When enabled it adds bounded CPU bookkeeping, a
+mutex per traced DMA/I2M command and creation-byte copies; FPS is unmeasured.
+
+Install the updated **DevRelease** APK and fully restart with the marker present
+before starting the game. Arm `ARM_CAPTURE` in gameplay as before and send the
+new capture folder plus its matching emulation log. No new marker is required.

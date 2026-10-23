@@ -4,6 +4,7 @@
 
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/diagnostic/sparking_frame_capture.h>
+#include <gpu/diagnostic/sparking_upload_provenance.h>
 #include <gpu/texture/format.h>
 #include <gpu/texture/layout.h>
 #include <soc.h>
@@ -91,6 +92,33 @@ namespace skyline::soc::gm20b::engine {
     }
 
     void MaxwellDma::DmaCopy() {
+        if (gpu::diagnostic::SparkingUploads().enabled.load(std::memory_order_relaxed)) {
+            using namespace gpu::diagnostic;
+            SparkingTransferTrace::Event event{};
+            event.kind="DMA";
+            event.addressSpace=reinterpret_cast<uintptr_t>(channelCtx.asCtx.get());
+            event.source=u64{*registers.offsetIn};event.destination=u64{*registers.offsetOut};
+            u64 lineBytes=*registers.lineLengthIn;
+            if (registers.launchDma->remapEnable)
+                lineBytes=SparkingSaturatingMultiply(lineBytes,
+                    registers.remapComponents->NumDstComponents()*registers.remapComponents->ComponentSize());
+            if (!registers.launchDma->multiLineEnable) event.bytes=lineBytes;
+            else if (registers.launchDma->dstMemoryLayout==Registers::LaunchDma::MemoryLayout::Pitch)
+                event.bytes=SparkingPitchExtent(lineBytes,*registers.lineCount,*registers.pitchOut);
+            else event.bytes=SparkingBlockExtent(registers.dstSurface->width,registers.dstSurface->height,
+                registers.dstSurface->depth,1ULL<<registers.dstSurface->blockSize.heightLog2,
+                1ULL<<registers.dstSurface->blockSize.depthLog2);
+            static_assert(sizeof(*registers.launchDma)==4 && sizeof(*registers.remapComponents)==4);
+            std::memcpy(&event.words[0],&*registers.launchDma,4);
+            event.words[1]=*registers.lineLengthIn;event.words[2]=*registers.lineCount;
+            event.words[3]=*registers.pitchIn;event.words[4]=*registers.pitchOut;
+            std::memcpy(&event.words[5],&*registers.remapComponents,4);
+            event.words[6]=*registers.remapConstA;event.words[7]=*registers.remapConstB;
+            std::memcpy(&event.words[8],&*registers.srcSurface,24);
+            std::memcpy(&event.words[14],&*registers.dstSurface,24);
+            event.wordCount=20;
+            SparkingTransfers().Record(event);
+        }
         if (gpu::diagnostic::SparkingCapture().active.load(std::memory_order_acquire)) {
             gpu::diagnostic::SparkingCapture().Record(fmt::format(
                 "MAXWELL_DMA executor=0x{:X} submission={} src_iova=0x{:X} dst_iova=0x{:X} "

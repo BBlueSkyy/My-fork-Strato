@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include <algorithm>
+#include <array>
+#include <limits>
+#include <mutex>
+#include <sstream>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -11,6 +15,77 @@
 #include <vector>
 
 namespace skyline::gpu::diagnostic {
+    // Diagnostic destination envelopes, not a claim that every byte was written.
+    // Saturation keeps malformed/large register values from wrapping ranges.
+    constexpr std::uint64_t SparkingSaturatingAdd(std::uint64_t a, std::uint64_t b) {
+        return b > std::numeric_limits<std::uint64_t>::max() - a ?
+            std::numeric_limits<std::uint64_t>::max() : a + b;
+    }
+    constexpr std::uint64_t SparkingSaturatingMultiply(std::uint64_t a, std::uint64_t b) {
+        return a && b > std::numeric_limits<std::uint64_t>::max() / a ?
+            std::numeric_limits<std::uint64_t>::max() : a * b;
+    }
+    constexpr std::uint64_t SparkingPitchExtent(std::uint64_t line, std::uint64_t count, std::uint64_t pitch) {
+        return count ? SparkingSaturatingAdd(SparkingSaturatingMultiply(count - 1, pitch), line) : 0;
+    }
+    constexpr std::uint64_t SparkingBlockExtent(std::uint64_t width, std::uint64_t height,
+                                               std::uint64_t depth, std::uint64_t bh, std::uint64_t bd) {
+        const auto align=[](std::uint64_t n,std::uint64_t a) {
+            return a ? SparkingSaturatingMultiply(n / a + (n % a != 0), a) : 0;
+        };
+        return SparkingSaturatingMultiply(SparkingSaturatingMultiply(align(width,64),align(height,8*bh)),align(depth,bd));
+    }
+
+    class SparkingTransferTrace {
+      public:
+        static constexpr size_t Capacity{4096};
+        struct Event {
+            const char *kind{};
+            std::uintptr_t addressSpace{};
+            std::uint64_t source{}, destination{}, bytes{}, sequence{};
+            std::array<std::uint32_t,20> words{};
+            size_t wordCount{};
+        };
+      private:
+        std::mutex mutex;
+        std::vector<Event> events; // Allocated only after the opt-in caller records an event.
+        std::uint64_t sequence{};
+      public:
+        void Record(Event event) {
+            std::scoped_lock lock{mutex};
+            if (events.empty()) events.resize(Capacity);
+            event.sequence=++sequence;
+            events[(sequence-1)%Capacity]=event;
+        }
+        std::string Snapshot(std::uintptr_t space,std::uint64_t address,std::uint64_t bytes) {
+            std::scoped_lock lock{mutex};
+            std::ostringstream out;
+            const auto first=sequence > Capacity ? sequence-Capacity+1 : 1;
+            out << "transfer_history last_seq=" << sequence << " overwritten=" << first-1
+                << " matching=conservative_iova_envelope command_completion=unverified"
+                   " physical_aliases_and_remaps=unverified cpu_writes=not_observed\n";
+            size_t matches{}, emitted{};
+            for (auto serial=sequence; serial && serial>=first; --serial) {
+                const auto &e=events[(serial-1)%Capacity];
+                if (e.addressSpace!=space || !bytes || !e.bytes ||
+                    !(e.destination<=address ? address-e.destination<e.bytes : e.destination-address<bytes)) continue;
+                ++matches;
+                if (emitted++>=128) continue;
+                out << "transfer seq=" << e.sequence << " kind=" << e.kind
+                    << " source=0x" << std::hex << e.source << " destination=0x" << e.destination
+                    << std::dec << " envelope_bytes=" << e.bytes << " raw_words=";
+                for (size_t i=0;i<std::min(e.wordCount,e.words.size());++i) out << std::hex << e.words[i] << ',';
+                out << std::dec << '\n';
+            }
+            out << "transfer_matches=" << matches << " omitted=" << (matches>128 ? matches-128 : 0) << '\n';
+            return out.str();
+        }
+    };
+    inline SparkingTransferTrace &SparkingTransfers() {
+        static SparkingTransferTrace transfers;
+        return transfers;
+    }
+
     // Why the actual cubemap upload did not leave a retained proof.
     // A missing proof alone must never be interpreted as evidence that
     // Vulkan or guest memory was valid or invalid.
@@ -58,6 +133,10 @@ namespace skyline::gpu::diagnostic {
         std::shared_ptr<std::atomic<size_t>> budget;
         size_t charge{};
         std::vector<std::uint8_t> guest, linear, upload;
+        std::shared_ptr<SparkingUploadProof> creation;
+        std::uintptr_t addressSpace{};
+        std::uint64_t iova{};
+        bool ticRecorded{};
         std::string metadata;
         const void *stagingIdentity{};
         std::uint64_t writeSerial{}, backingGeneration{};
@@ -89,6 +168,15 @@ namespace skyline::gpu::diagnostic {
             if (!blob("_guest.raw", guest) || !blob("_linear.raw", linear) || !blob("_upload.raw", upload))
                 return false;
             std::ofstream out(prefix.string() + ".txt");
+            if (creation) {
+                if (!blob("_creation_guest.raw", creation->guest)) return false;
+                out << creation->metadata
+                    << "creation_guest_bytes=" << creation->guest.size()
+                    << " creation_guest_crc32=" << Crc(creation->guest)
+                    << " upload_guest_crc32=" << Crc(guest)
+                    << " creation_upload_guest_equal=" << (creation->guest==guest)
+                    << " creation_upload_first_difference=" << FirstDifference(creation->guest,guest) << '\n';
+            } else out << "creation_proof=unavailable\n";
             out << metadata << current << "recorded=" << recorded.load(std::memory_order_relaxed) << " upload_write_serial=" << writeSerial
                 << " upload_backing_generation=" << backingGeneration << '\n';
             for (const auto &s : slices) {
@@ -122,6 +210,12 @@ namespace skyline::gpu::diagnostic {
         std::atomic<bool> enabled{false};
         static constexpr size_t MaxBytes{32ULL * 1024 * 1024};
         size_t UsedBytes() const { return bytes->load(std::memory_order_relaxed); }
+        std::shared_ptr<SparkingUploadProof> CaptureCreation(std::span<const std::uint8_t> memory) {
+            if (memory.empty() || memory.size()>4ULL*1024*1024) return {};
+            auto proof=Reserve(memory.size());
+            if (proof) proof->guest.assign(memory.begin(),memory.end());
+            return proof;
+        }
         std::shared_ptr<SparkingUploadProof> Reserve(size_t count) {
             if (!enabled.load(std::memory_order_relaxed) || !count || count > MaxBytes) return {};
             auto proof{std::make_shared<SparkingUploadProof>()};

@@ -401,7 +401,7 @@ namespace skyline::gpu {
         BackingType backing; //!< The Vulkan image that backs this texture, it is nullable
         vk::ImageType backingImageType; //!< Immutable image type supplied at allocation/wrapping.
 
-        std::shared_ptr<diagnostic::SparkingUploadProof> sparkingUploadProof;
+        std::shared_ptr<diagnostic::SparkingUploadProof> sparkingUploadProof, sparkingCreationProof;
         // All fields remain untouched with ENABLE_HDR_DRAW_SCAN off.
         // Atomics make metadata inspection safe across executor threads.
         std::atomic<diagnostic::SparkingUploadStatus> sparkingUploadStatus{};
@@ -523,6 +523,8 @@ namespace skyline::gpu {
         std::chrono::nanoseconds accumulatedGuestWaitTime{}; //!< Amount of time the texture has been waited on for since the `SkipReadbackHackWaitCountThreshold`th wait on it by the guest
 
       public:
+        void RecordSparkingTic(uintptr_t addressSpace, u64 iova, u32 index, span<const u8> tic);
+
         std::shared_ptr<FenceCycle> cycle; //!< A fence cycle for when any host operation mutating the texture has completed, it must be waited on prior to any mutations to the backing
         std::optional<GuestTexture> guest;
         texture::Dimensions dimensions;

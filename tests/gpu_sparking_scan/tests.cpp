@@ -59,6 +59,39 @@ int main() {
     const std::string contents{std::istreambuf_iterator<char>(report),{}};
     assert(contents.find("equal=0 first_difference=2")!=std::string::npos);
     proof.reset();assert(uploads.UsedBytes()==0);
+    // Retain creation bytes independently from later writes and the upload.
+    std::array<std::uint8_t,4> original{0,126,0,60};
+    auto creation=uploads.CaptureCreation(original);
+    assert(creation && creation->guest[0]==0);
+    original[0]=42;
+    assert(creation->guest[0]==0);
+    proof=uploads.Reserve(12);
+    proof->guest={42,126,0,60};proof->linear=proof->guest;proof->upload=proof->guest;
+    proof->creation=creation;
+    assert(proof->Write(root/"origin",proof->upload,"fixture\n"));
+    std::ifstream originRaw(root/"origin_creation_guest.raw",std::ios::binary);
+    assert(originRaw.get()==0);
+    proof.reset();creation.reset();assert(uploads.UsedBytes()==0);
+
+    // Only the same address space and overlapping destination envelopes match.
+    SparkingTransferTrace history;
+    SparkingTransferTrace::Event event{};
+    event.addressSpace=1;event.destination=100;event.bytes=20;event.kind="DMA";
+    history.Record(event);
+    assert(history.Snapshot(1,110,4).find("transfer seq=1")!=std::string::npos);
+    assert(history.Snapshot(2,110,4).find("transfer seq=")==std::string::npos);
+    assert(history.Snapshot(1,120,4).find("transfer seq=")==std::string::npos);
+    event.destination=~std::uint64_t{0}-3;event.bytes=8;
+    history.Record(event);
+    assert(history.Snapshot(1,~std::uint64_t{0}-1,1).find("transfer seq=2")!=std::string::npos);
+    for (size_t i=0;i<SparkingTransferTrace::Capacity;++i) history.Record(event);
+    auto truncated=history.Snapshot(1,100,20);
+    assert(truncated.find("overwritten=2")!=std::string::npos);
+    assert(truncated.find("transfer seq=")==std::string::npos);
+    assert(SparkingPitchExtent(16,3,32)==80);
+    assert(SparkingPitchExtent(16,0,32)==0);
+    assert(SparkingBlockExtent(1024,128,1,16,1)==131072);
+    assert(SparkingPitchExtent(~std::uint64_t{0},2,32)==~std::uint64_t{0});
     auto stats=SparkingHdrStats::Decode({0,0,0,0});
     assert(stats.nanPixels==0 && stats.infPixels==0);
     // Red 11-bit NaN: exponent=31 and nonzero mantissa. Green infinity.

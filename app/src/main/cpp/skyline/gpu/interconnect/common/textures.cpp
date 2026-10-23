@@ -405,6 +405,14 @@ namespace skyline::gpu::interconnect {
                 return nullTextureView.get();
             }
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
+            if (diagnostic::SparkingUploads().enabled.load(std::memory_order_relaxed) &&
+                diagnostic::IsSparkingCubeGeometry(guest.dimensions.width,guest.dimensions.height,
+                    guest.dimensions.depth,guest.layerCount,guest.mipLevelCount) &&
+                guest.format->vkFormat==vk::Format::eR16G16B16A16Sfloat) {
+                ContextLock originLock{ctx.executor.tag,*texture};
+                texture->texture->RecordSparkingTic(reinterpret_cast<uintptr_t>(ctx.channelCtx.asCtx.get()),
+                    textureHeader.Iova(),index,{reinterpret_cast<const u8 *>(&textureHeader),sizeof(textureHeader)});
+            }
         }
 
         textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber};

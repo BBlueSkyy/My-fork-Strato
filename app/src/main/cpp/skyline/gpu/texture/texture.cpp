@@ -195,6 +195,14 @@ namespace skyline::gpu {
             mirror = alignedMirror.subspan(static_cast<size_t>(frontMapping.data() - alignedData), totalSize);
         }
 
+        if (diagnostic::SparkingUploads().enabled.load(std::memory_order_relaxed) &&
+            diagnostic::IsSparkingCubeGeometry(dimensions.width,dimensions.height,dimensions.depth,layerCount,levelCount) &&
+            guest->format->vkFormat==vk::Format::eR16G16B16A16Sfloat) {
+            sparkingCreationProof=diagnostic::SparkingUploads().CaptureCreation({mirror.data(),mirror.size()});
+            if (sparkingCreationProof)
+                sparkingCreationProof->metadata="creation_stage=mirror_created_before_texture_traps concurrent_cpu_writes=not_excluded\n";
+        }
+
         // We can't just capture `this` in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Texture> weakThis{weak_from_this()};
         trapHandle = gpu.state.process->trap.CreateTrap(mappings, [weakThis] {
@@ -296,6 +304,21 @@ namespace skyline::gpu {
         });
     }
 
+    void Texture::RecordSparkingTic(uintptr_t addressSpace, u64 iova, u32 index, span<const u8> tic) {
+        // The caller holds the texture context lock. Preserve the first TIC
+        // observed for this backing, rather than silently overwriting its origin.
+        if (!sparkingCreationProof || sparkingCreationProof->ticRecorded) return;
+        auto &origin{*sparkingCreationProof};
+        origin.addressSpace=addressSpace;
+        origin.iova=iova;
+        origin.ticRecorded=true;
+        origin.metadata+=fmt::format("origin_tic index={} address_space=0x{:X} iova=0x{:X} gpu_write_claim={} backing_generation={} raw_bytes=",
+            index,addressSpace,iova,gpuWriteSerial,backingGeneration);
+        for (auto byte:tic) origin.metadata+=fmt::format("{:02X}",byte);
+        origin.metadata+="\n";
+        origin.metadata+=diagnostic::SparkingTransfers().Snapshot(addressSpace,iova,origin.guest.size());
+    }
+
     std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl() {
         // Record only the target class of image, and only when opt-in was
         // enabled at GPU initialization; do not change any upload decision.
@@ -386,6 +409,7 @@ namespace skyline::gpu {
             sparkingUploadStatus.store(reason, std::memory_order_relaxed);
             if (proof) {
                 proof->guest.assign(mirror.data(), mirror.data() + mirror.size());
+                proof->creation=sparkingCreationProof;
                 proof->writeSerial = gpuWriteSerial;
                 proof->backingGeneration = backingGeneration;
                 proof->stagingIdentity = stagingBuffer.get();
