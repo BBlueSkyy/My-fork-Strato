@@ -74,11 +74,13 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     header = (GPU / "texture/texture.h").read_text()
     (directory / "layout.inc").write_text(function(header, "struct MipLevelLayout") + ";\n" +
         "\n".join(function(layout, signature) for signature in (
+            "size_t GetBlockLinearWidthGobs(",
             "template<typename Type>\n    constexpr Type CalculateBlockGobs(",
             "std::vector<MipLevelLayout> GetBlockLinearMipLayout(",
             "template<bool BlockLinearToPitch>\n    void CopyBlockLinearInternal(",
             "void CopyBlockLinearToLinear(Dimensions dimensions",
-            "void CopyLinearToBlockLinear(Dimensions dimensions")))
+            "void CopyLinearToBlockLinear(Dimensions dimensions")).replace(
+                "size_t tileWidthSpacing)", "size_t tileWidthSpacing = 0)"))
     (directory / "guest_copy.inc").write_text("namespace texture {\n" +
         "\n".join(function(layout, signature) for signature in (
             "void CopyBlockLinearToLinear(const GuestTexture &",
@@ -111,7 +113,8 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "extent.inc").write_text("return " + manager[start:end].strip() + ";")
     start = manager.index("if (matchGuestTexture.format->IsCompatible")
     end = manager.index(") {", start)
-    (directory / "match.inc").write_text("return " + manager[start + 3:end + 1] + ";")
+    (directory / "match.inc").write_text(manager[manager.index("const bool sameTileLayout"):start] +
+                                         "return " + manager[start + 3:end + 1] + ";")
     (directory / "selection.inc").write_text(function(manager, "else if (fullMatch)"))
     (directory / "request_range.inc").write_text(function(manager, "const vk::ImageSubresourceRange requestedRange") + ";")
     (directory / "request_validation.inc").write_text(function(manager, "if (!texture::SubresourceRangeFits("))

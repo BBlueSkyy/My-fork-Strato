@@ -44,6 +44,7 @@ namespace skyline {
 #include "tile.inc"
             struct Dimensions {
                 u32 width, height, depth;
+                explicit operator bool() const { return width && height && depth; }
                 auto operator<=>(const Dimensions &) const = default;
             };
             struct Format {

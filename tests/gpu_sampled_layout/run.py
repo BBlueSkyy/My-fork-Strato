@@ -35,12 +35,16 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
     constants = layout[layout.index("    constexpr size_t SectorWidth"):layout.index("    size_t GetBlockLinearLayerSize")]
     (build / "layout.inc").write_text("namespace skyline::gpu::texture {\n" + constants + function(metadata, "struct MipLevelLayout") + ";\n" + "\n".join(
         function(layout, signature) for signature in (
+            "size_t GetBlockLinearWidthGobs(",
             "template<typename Type>",
             "size_t GetBlockLinearLayerSize(Dimensions dimensions, size_t formatBlockHeight",
             "std::vector<MipLevelLayout> GetBlockLinearMipLayout(",
+            "std::optional<size_t> GetBlockLinearDepthSliceOffset(",
             "template<bool BlockLinearToPitch>",
             "void CopyBlockLinearToLinear(Dimensions dimensions",
-            "void CopyBlockLinearToLinear(const GuestTexture &guest")) + "\n}\n")
+            "void CopyBlockLinearToLinear(const GuestTexture &guest",
+            "void CopyLinearToBlockLinear(Dimensions dimensions",
+            "void CopyLinearToBlockLinear(const GuestTexture &guest")) + "\n}\n")
     start = textures.index("            constexpr size_t CubeFaceCount", textures.index("TextureView *Textures::GetTexture("))
     end = textures.index("            auto mappings{", start)
     # This is the unchanged complete production dimensions/type/tiling setup.
@@ -51,7 +55,7 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
     first_if = function(manager[start:], "if (matchGuestTexture.format->IsCompatible")
     following = manager[start + len(first_if):]
     selection = first_if + " " + function(following, "else")
-    (build / "alias-selection.inc").write_text(selection)
+    (build / "alias-selection.inc").write_text(manager[manager.index("const bool sameTileLayout"):start] + selection)
     (build / "alias-registration.inc").write_text(function(manager, "if (unrepresentableMatch || separateGroup)"))
     (build / "alias-methods.inc").write_text("\n".join(function(texture, signature) for signature in (
         "bool Texture::CanMaterializeGuestLayout(", "bool Texture::IsGuestLayoutReversible(",

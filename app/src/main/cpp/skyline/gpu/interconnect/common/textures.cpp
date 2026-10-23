@@ -362,6 +362,7 @@ namespace skyline::gpu::interconnect {
                     .mode = texture::TileMode::Block,
                     .blockHeight = static_cast<u8>(1U << textureHeader.tileConfig.tileHeightGobsLog2),
                     .blockDepth = static_cast<u8>(1U << textureHeader.tileConfig.tileDepthGobsLog2),
+                    .tileWidthSpacing = static_cast<u8>(textureHeader.tileConfig.sparseTileWidthGobsLog2),
                 };
             } else {
                 throw exception("Unsupported TIC Header Type: {}", static_cast<u32>(textureHeader.headerType));
