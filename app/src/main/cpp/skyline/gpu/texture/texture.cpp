@@ -51,6 +51,37 @@ namespace skyline::gpu {
              aliasStale.load(), aliasReadOnly.load(), gpuWriteSerial, gpuReadbackSerial, guestMemoryPins);
     }
 
+    void Texture::TracePostFreeObservation(const char *stage) {
+        if (!guest || mirror.empty())
+            return;
+        static std::atomic<u32> recorded{};
+        if (recorded.fetch_add(1, std::memory_order_relaxed) >= 2600)
+            return;
+        constexpr u64 Prime{1099511628211ULL};
+        u64 hash{14695981039346656037ULL};
+        const u8 *data{mirror.data()};
+        const size_t length{mirror.size()};
+        const size_t width{std::min<size_t>(64, length)};
+        for (size_t sample{}; sample < 8; ++sample) {
+            const size_t offset{((length - width) * sample) / 7};
+            for (size_t i{}; i < width; ++i)
+                hash = (hash ^ data[offset + i]) * Prime;
+        }
+        const auto first{guest->mappings.empty() ? nullptr : guest->mappings.front().data()};
+        LOGI("TEX_REUSE stage={} tex={} guest={} mirror={} bytes={} {}x{} fmt={} hash=0x{:016X} state={} memoryFreed={} actualGpuWrite={} gpuSerial={} readbackSerial={} aliases={}",
+             stage, fmt::ptr(this), fmt::ptr(first), fmt::ptr(mirror.data()), length,
+             guest->dimensions.width, guest->dimensions.height, vk::to_string(guest->format->vkFormat), hash,
+             dirtyState == DirtyState::GpuDirty ? "GpuDirty" : dirtyState == DirtyState::CpuDirty ? "CpuDirty" : "Clean",
+             memoryFreed, everUsedAsGpuWrite, gpuWriteSerial, gpuReadbackSerial, HasAliases());
+    }
+
+    void Texture::TraceFirstGuestUseAfterFree(const char *stage) {
+        if (awaitingFirstGuestUse.exchange(false, std::memory_order_relaxed)) {
+            TracePostFreeObservation(stage);
+            awaitingReadbackObservation.store(true, std::memory_order_relaxed);
+        }
+    }
+
     void Texture::TraceGuestBytes(const char *stage, const u8 *data, size_t length) {
         if (!guest || !data || length == 0 ||
             guest->dimensions.width < 128 || guest->dimensions.height < 128 ||
@@ -296,6 +327,9 @@ namespace skyline::gpu {
             std::unique_lock stateLock{texture->stateMutex, std::try_to_lock};
             if (!stateLock)
                 return false;
+#ifdef __ANDROID__
+            texture->TraceFirstGuestUseAfterFree("cpu-read-trap-before-readback");
+#endif
 
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty)
                 return true; // If state is already CPU dirty/Clean we don't need to do anything
@@ -325,6 +359,9 @@ namespace skyline::gpu {
             std::unique_lock stateLock{texture->stateMutex, std::try_to_lock};
             if (!stateLock)
                 return false;
+#ifdef __ANDROID__
+            texture->TraceFirstGuestUseAfterFree("cpu-write-trap-before-readback");
+#endif
 
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty) {
 #ifdef __ANDROID__
@@ -368,6 +405,9 @@ namespace skyline::gpu {
             throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
         auto pointer{mirror.data()};
 
+#ifdef __ANDROID__
+        TraceFirstGuestUseAfterFree("texture-upload-before-guest-read");
+#endif
         WaitOnBacking();
 
         u8 *bufferData;
@@ -678,8 +718,15 @@ namespace skyline::gpu {
             // readback/alias policy. This isolates MADV_REMOVE from ownership.
             memoryFreed = true;
 #ifdef __ANDROID__
-            if (!wasFreed)
+            if (!wasFreed) {
+                if (!firstEvictionObserved.exchange(true, std::memory_order_relaxed)) {
+                    // Observe the actual guest bytes immediately after logical eviction.
+                    // 389 retains old bytes; 390 zeroes them before this point.
+                    awaitingFirstGuestUse.store(true, std::memory_order_relaxed);
+                    TracePostFreeObservation("immediately-after-free");
+                }
                 TraceGuestLifetime("logical-free-physical-pages-retained", dirtyState, dirtyState);
+            }
 #endif
         } else {
 #ifdef __ANDROID__
@@ -1445,6 +1492,9 @@ namespace skyline::gpu {
         if (!guest)
             return;
 
+#ifdef __ANDROID__
+        TraceFirstGuestUseAfterFree("synchronize-guest-before-readback");
+#endif
         TRACE_EVENT("gpu", "Texture::SynchronizeGuest");
 
         {
@@ -1472,6 +1522,8 @@ namespace skyline::gpu {
             // If the texture has differing formats on the guest and host, we don't support converting back in that case as it may involve recompression of a decompressed texture
 #ifdef __ANDROID__
             TraceGuestLifetime("guest-readback-unavailable", dirtyState, dirtyState);
+            if (awaitingReadbackObservation.exchange(false, std::memory_order_relaxed))
+                TracePostFreeObservation("readback-unavailable-after-reuse");
 #endif
             return;
         }
@@ -1506,6 +1558,8 @@ namespace skyline::gpu {
             }
 #ifdef __ANDROID__
             TraceGuestLifetime("guest-readback-complete", DirtyState::GpuDirty, dirtyState);
+            if (awaitingReadbackObservation.exchange(false, std::memory_order_relaxed))
+                TracePostFreeObservation("after-successful-readback");
 #endif
         }
         if (auto group{aliasGroup.load()}) {
