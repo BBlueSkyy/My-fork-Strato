@@ -35,7 +35,7 @@ even though the **visible width stays 1920px**.
 This change carries the TIC spacing through `GuestTexture`, layer and
 mipmap size calculations, and reversible swizzling. It skips the
 additional physical GOB columns, preserving the logical width and all
-existing zero-spacing layouts.
+existing zero-spacing single-level layouts.
 
 Following yuzu, the extra spacing applies only when the image width is
 larger than the requested alignment, its height spans more than one
@@ -50,7 +50,45 @@ Small textures retain the ordinary 64-byte GOB row alignment.
 - Native sampled-layout oracle includes BC1 1920x1080 with and without
   spacing and a small-size fallback.
 - The actual Aniplex TIC field value was **not present in the capture**.
-  This PR is intentionally Draft until a Release APK verifies the logo
-  in-game. If the game still renders incorrectly, record the raw TIC
-  value before drawing further conclusions.
+  The user subsequently confirmed that the original Release correction fixes
+  graphics in several games. The audit follow-up below still needs device testing.
 - PR #386 mini-RenderDoc remains separate and is not merged.
+
+## Audit follow-up, 2026-10-23
+
+The working 60-to-64-column correction is retained. Reference comparison used
+[Eden/Yuzu layout helpers](https://github.com/eden-emulator/mirror/blob/master/src/video_core/texture_cache/util.cpp),
+[archived Yuzu helpers](https://source.hodakov.me/hdkv/yuzu/src/commit/64e16a16291e10a8b9719bfd60ff9ce4417c7d32/src/video_core/texture_cache/util.cpp), and
+Ryujinx's [SizeCalculator](https://github.com/fifv/ryujinx-mirror/blob/mirror/master/src/Ryujinx.Graphics.Texture/SizeCalculator.cs)
+and [LayoutConverter](https://github.com/fifv/ryujinx-mirror/blob/mirror/master/src/Ryujinx.Graphics.Texture/LayoutConverter.cs).
+The horizontal alignment and declared Y/Z eligibility follow Ryujinx's size
+and copy paths; Yuzu/Eden independently include spacing in layer-end alignment.
+This is a semantic adaptation; it does not copy their texture caches or decoders.
+
+| Proven divergence | Minimal correction |
+| --- | --- |
+| Layer-end alignment omitted the X factor. BC1 1920x1080, BH8, spacing3, eight mips needs 1,900,544 bytes per array layer. | Include `2^spacing` in layer alignment. |
+| Repeatedly ceil-halving GOB counts gives wrong odd BC/ASTC mip offsets. | Halve pixel dimensions first, then ceil to compression blocks and GOBs. This also repairs the pre-existing zero-spacing odd-mip defect. |
+| Reducing Z blocks enabled spacing in mips whose depth is below the declared Z block. | Keep declared Y/Z thresholds, store only effective spacing per mip. |
+| Materialization, mip-growth and mip-alias calculations defaulted to spacing zero. | Forward the stored spacing at those call sites. |
+| A 960x270x4 RGBA8 volume with BH8/BD1, spacing3 advances Z planes by 1,310,720 bytes, but the slice helper used 1,228,800. | Use padded physical width for offsets and require matching parent/child ROB width. |
+| Raw spacing equality split physically identical RT/TIC backings; changed spacing could also bypass alias reconciliation. | Compare physical widths at every mip for reuse; reconcile distinct supported encodings through the existing alias group. |
+
+Focused validation: 20 independent address-oracle upload/readback cases, including
+BC1, odd BC3/ASTC and 3D planes, preserve visible bytes and untouched padding;
+four literal mip/array layout vectors; padded/unpadded slice origins; and actual
+exact-overlap alias routing/lifecycle. ASan/UBSan passed. The complete layout
+translation unit also passed host syntax compilation with the existing NVDEC
+platform facade. Backing-promotion fixture declarations were synchronized;
+the broader Vulkan suite was not run (its headers/runtime are unavailable here).
+
+No per-pixel spacing checks, staging copies, logging or global synchronization
+were added. Equal configurations retain the cheap equality path; zero-spacing
+width calculation returns immediately. Equivalent RT/TIC encodings share a
+backing instead of adding uploads/readbacks. These are code-level performance
+observations, not an ARM64 FPS measurement.
+
+**Draft / merge blocker:** the follow-up changes alias reuse and odd mip offsets,
+so its ARM64 Release APK still needs Android rendering and performance acceptance.
+No Android SDK/NDK build or device run was available locally. PR/master workflows
+remain ARM64 Release only; Actions was not watched.

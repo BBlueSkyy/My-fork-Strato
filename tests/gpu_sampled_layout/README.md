@@ -45,3 +45,11 @@ submission`.
 This synthetic regression establishes a generic sampled-layout defect. The
 captured Naruto draw has no actual TIC dump confirming this oversized Y mode,
 so the test does not establish that the change fixes Naruto on a device.
+
+TIC width-spacing coverage additionally verifies BC1 1920x1080 (60-to-64 GOB
+columns), odd BC3/ASTC and 3D planes against the address oracle in both copy
+directions, including untouched padding. Four literal mip/array vectors check
+pixel-first compression rounding, declared-Z eligibility and layer-end X
+alignment. Slice-origin controls distinguish padded and unpadded plane strides.
+The alias fixture verifies that physically identical RT/TIC spacing reuses its
+backing and that different encodings enter coherent alias reconciliation.

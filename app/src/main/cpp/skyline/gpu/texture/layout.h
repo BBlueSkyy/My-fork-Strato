@@ -7,6 +7,10 @@
 #include "texture.h"
 
 namespace skyline::gpu::texture {
+    // Physical GOB columns; eligibility uses the TIC's declared Y/Z block size.
+    size_t GetBlockLinearWidthGobs(Dimensions dimensions,
+                                  size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb,
+                                  size_t gobBlockHeight, size_t gobBlockDepth, size_t tileWidthSpacing);
     /**
      * @return The size of a layer of the specified non-mipmapped block-slinear surface in bytes
      */
@@ -41,7 +45,7 @@ namespace skyline::gpu::texture {
     std::optional<size_t> GetBlockLinearDepthSliceOffset(Dimensions dimensions,
                                                          size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb,
                                                          size_t gobBlockHeight, size_t gobBlockDepth,
-                                                         size_t slice);
+                                                         size_t slice, size_t tileWidthSpacing = 0);
 
     /**
      * @brief Copies the contents of a blocklinear texture to a linear output buffer

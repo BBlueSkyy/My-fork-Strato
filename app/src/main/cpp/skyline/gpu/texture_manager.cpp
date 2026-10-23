@@ -83,12 +83,37 @@ namespace skyline::gpu {
                     exactAliases.push_back(hostMapping->texture);
                 auto &matchGuestTexture{*hostMapping->texture->guest};
 
+                const bool sameTileLayout{[&] {
+                    if (matchGuestTexture.tileConfig == guestTexture.tileConfig)
+                        return true;
+                    if (matchGuestTexture.tileConfig.mode != texture::TileMode::Block || guestTexture.tileConfig.mode != texture::TileMode::Block ||
+                        matchGuestTexture.tileConfig.blockHeight != guestTexture.tileConfig.blockHeight ||
+                        matchGuestTexture.tileConfig.blockDepth != guestTexture.tileConfig.blockDepth ||
+                        matchGuestTexture.dimensions != guestTexture.dimensions || matchGuestTexture.mipLevelCount != guestTexture.mipLevelCount ||
+                        !matchGuestTexture.format->IsCompatible(*guestTexture.format))
+                        return false;
+                    // Different TIC spacing can encode exactly the same bytes (e.g.
+                    // an already-aligned RT). Keep sharing its authoritative backing.
+                    auto dimensions{guestTexture.dimensions};
+                    for (u32 level{}; level < guestTexture.mipLevelCount; ++level) {
+                        auto width{[&](const GuestTexture &value) {
+                            return texture::GetBlockLinearWidthGobs(dimensions,
+                                value.format->blockWidth, value.format->blockHeight, value.format->bpb,
+                                value.tileConfig.blockHeight, value.tileConfig.blockDepth, value.tileConfig.tileWidthSpacing);
+                        }};
+                        if (width(matchGuestTexture) != width(guestTexture)) return false;
+                        dimensions.width = std::max(dimensions.width / 2, 1U);
+                        dimensions.height = std::max(dimensions.height / 2, 1U);
+                        dimensions.depth = std::max(dimensions.depth / 2, 1U);
+                    }
+                    return true;
+                }()};
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
                     (matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                        matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
                        matchGuestTexture.dimensions.depth == guestTexture.dimensions.depth)
                     && matchGuestTexture.GetImageType() == guestTexture.GetImageType()
-                    && matchGuestTexture.tileConfig == guestTexture.tileConfig
+                    && sameTileLayout
                     && (guestTexture.GetViewLayerCount() == 1 || matchGuestTexture.GetLayerStride() == requestedStride)
                     && (hostMapping->texture->ViewRangeFits(guestTexture.viewType, requestedRange) ||
                         (hostMapping->texture->ViewRangeFits(guestTexture.viewType, requestedRange, guestTexture.mipLevelCount) &&
@@ -100,13 +125,14 @@ namespace skyline::gpu {
                     // aliases are handled by the representable view paths below.
                     fullMatch = hostMapping->texture;
                 } else {
-                    // Sampled TICs may auto-size Y while the render target keeps
-                    // its declared block height. These are distinct encodings
+                    // Sampled TICs may auto-size Y or pad X while the render target
+                    // keeps its declared layout. These are distinct encodings
                     // of the same allocation and must share writer history.
-                    const bool sampledYLayoutAlias{
+                    const bool sampledLayoutAlias{
                         matchGuestTexture.tileConfig.mode == texture::TileMode::Block && guestTexture.tileConfig.mode == texture::TileMode::Block &&
                         matchGuestTexture.tileConfig.blockDepth == 1 && guestTexture.tileConfig.blockDepth == 1 &&
-                        matchGuestTexture.tileConfig.blockHeight != guestTexture.tileConfig.blockHeight &&
+                        (matchGuestTexture.tileConfig.blockHeight != guestTexture.tileConfig.blockHeight ||
+                         matchGuestTexture.tileConfig.tileWidthSpacing != guestTexture.tileConfig.tileWidthSpacing) &&
                         matchGuestTexture.dimensions == guestTexture.dimensions &&
                         matchGuestTexture.dimensions.depth == 1 &&
                         matchGuestTexture.format->vkAspect == vk::ImageAspectFlagBits::eColor &&
@@ -116,7 +142,7 @@ namespace skyline::gpu {
                         matchGuestTexture.layerCount == guestTexture.layerCount && matchGuestTexture.GetLayerStride() == requestedStride
                     };
                     if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                        (sampledYLayoutAlias || (matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                        (sampledLayoutAlias || (sameTileLayout &&
                          ((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                           matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
                           matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()) || matchGuestTexture.viewMipBase > 0)))) {
@@ -156,7 +182,13 @@ namespace skyline::gpu {
                         if (mipLevel.dimensions.width == guestTexture.dimensions.width &&
                             mipLevel.dimensions.height == guestTexture.dimensions.height &&
                             mipLevel.blockHeight == guestTexture.tileConfig.blockHeight &&
-                            mipLevel.blockDepth == guestTexture.tileConfig.blockDepth) {
+                            mipLevel.blockDepth == guestTexture.tileConfig.blockDepth &&
+                            texture::GetBlockLinearWidthGobs(mipLevel.dimensions,
+                                matchGuestTexture.format->blockWidth, matchGuestTexture.format->blockHeight, matchGuestTexture.format->bpb,
+                                mipLevel.blockHeight, mipLevel.blockDepth, mipLevel.tileWidthSpacing) ==
+                            texture::GetBlockLinearWidthGobs(guestTexture.dimensions,
+                                guestTexture.format->blockWidth, guestTexture.format->blockHeight, guestTexture.format->bpb,
+                                guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth, guestTexture.tileConfig.tileWidthSpacing)) {
                             const u32 viewLayerCount{guestTexture.GetViewLayerCount()};
                             for (u32 slice{}; slice < mipLevel.dimensions.depth; ++slice) {
                                 auto sliceOffset{texture::GetBlockLinearDepthSliceOffset(
@@ -166,7 +198,7 @@ namespace skyline::gpu {
                                     matchGuestTexture.format->bpb,
                                     mipLevel.blockHeight,
                                     mipLevel.blockDepth,
-                                    slice
+                                    slice, mipLevel.tileWidthSpacing
                                 )};
                                 if (sliceOffset && levelMemOffset + *sliceOffset == memOffset &&
                                     viewLayerCount && viewLayerCount <= mipLevel.dimensions.depth - slice) {
@@ -208,7 +240,8 @@ namespace skyline::gpu {
                             guestTexture.dimensions,
                             guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
                             guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
-                            guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth, 1)};
+                            guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth, 1,
+                            guestTexture.tileConfig.tileWidthSpacing)};
                         if (!requestedLayouts.empty())
                             requestedMipLayout = requestedLayouts.front();
                     }
@@ -380,7 +413,7 @@ namespace skyline::gpu {
                 guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
                 guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
                 guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
-                guestTexture.mipLevelCount
+                guestTexture.mipLevelCount, guestTexture.tileConfig.tileWidthSpacing
             )};
 
             auto getGuestOffset{[&](const u8 *address) -> std::optional<size_t> {
@@ -435,7 +468,13 @@ namespace skyline::gpu {
                     if (sourceGuest.dimensions.width == mip.dimensions.width &&
                         sourceGuest.dimensions.height == mip.dimensions.height &&
                         sourceGuest.tileConfig.blockHeight == mip.blockHeight &&
-                        sourceGuest.tileConfig.blockDepth == mip.blockDepth) {
+                        sourceGuest.tileConfig.blockDepth == mip.blockDepth &&
+                        texture::GetBlockLinearWidthGobs(mip.dimensions,
+                            guestTexture.format->blockWidth, guestTexture.format->blockHeight, guestTexture.format->bpb,
+                            mip.blockHeight, mip.blockDepth, mip.tileWidthSpacing) ==
+                        texture::GetBlockLinearWidthGobs(sourceGuest.dimensions,
+                            sourceGuest.format->blockWidth, sourceGuest.format->blockHeight, sourceGuest.format->bpb,
+                            sourceGuest.tileConfig.blockHeight, sourceGuest.tileConfig.blockDepth, sourceGuest.tileConfig.tileWidthSpacing)) {
                         for (u32 slice{}; slice < mip.dimensions.depth; ++slice) {
                             auto sliceOffset{texture::GetBlockLinearDepthSliceOffset(
                                 mip.dimensions,
@@ -444,7 +483,7 @@ namespace skyline::gpu {
                                 guestTexture.format->bpb,
                                 mip.blockHeight,
                                 mip.blockDepth,
-                                slice
+                                slice, mip.tileWidthSpacing
                             )};
 
                             if (sliceOffset && levelOffset + *sliceOffset == *sourceOffset) {

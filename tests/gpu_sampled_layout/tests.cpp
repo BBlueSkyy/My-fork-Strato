@@ -79,6 +79,11 @@ namespace {
         const auto mismatch{std::mismatch(actual.begin(), actual.end(), expected.begin())};
         Check(mismatch.first == actual.end(), std::string(name) + ": packed upload differs at byte " +
               std::to_string(mismatch.first - actual.begin()));
+        std::vector<u8> written(source.size(), 0xEA);
+        for (size_t layer{}; layer < guest.layerCount; ++layer)
+            texture::CopyLinearToBlockLinear(guest, actual.data() + layer * packedSize,
+                                            written.data() + layer * guest.GetLayerStride());
+        Check(written == source, std::string(name) + ": readback changed pixels or padding");
         Check(guest.tileConfig.blockHeight == effectiveHeight, std::string(name) + ": effective Y");
         Check(guest.tileConfig.blockDepth == declaredDepth, std::string(name) + ": preserved Z");
         Check(guest.tileConfig.tileWidthSpacing == tic.tileConfig.sparseTileWidthGobsLog2,
@@ -101,6 +106,18 @@ int main() {
         aniplex.tileConfig.sparseTileWidthGobsLog2 = 3;
         UploadCase("Aniplex 1920x1080 BC1 spacing=3", aniplex, bc1, 8, 1310720);
         UploadCase("same BC1 without spacing unchanged", Header(1920, 1080, 1, 3), bc1, 8, 1228800);
+        auto wideBc3{Header(513, 257, 1, 3)};
+        wideBc3.tileConfig.sparseTileWidthGobsLog2 = 3;
+        UploadCase("odd BC3 spacing upload/readback", wideBc3, bc3, 8, 327680);
+        auto wideAstc{Header(1001, 401, 1, 2)};
+        wideAstc.tileConfig.sparseTileWidthGobsLog2 = 3;
+        UploadCase("odd ASTC spacing upload/readback", wideAstc, astc5x5, 4, 344064);
+        auto volume{Header(960, 270, 4, 3, TextureImageControl::TextureType::e3D)};
+        volume.tileConfig.sparseTileWidthGobsLog2 = 3;
+        UploadCase("3D spaced planes upload/readback", volume, rgba, 8, 5242880);
+        Check(texture::GetBlockLinearDepthSliceOffset({960,270,4}, 1,1,4, 8,1,1,3) == 1310720 &&
+              texture::GetBlockLinearDepthSliceOffset({960,270,4}, 1,1,4, 8,1,1,0) == 1228800,
+              "3D slice origin ignored padded physical width");
         auto narrow{Header(64, 32, 1, 3)};
         narrow.tileConfig.sparseTileWidthGobsLog2 = 3;
         UploadCase("small BC1 skips extra horizontal alignment", narrow, bc1, 1);
@@ -118,6 +135,31 @@ int main() {
         UploadCase("already small BH remains small", Header(512, 128, 1, 1), bc3, 2);
         UploadCase("height requires declared BH", Header(128, 512, 1, 4), bc3, 16);
         UploadCase("e2DNoMipmap overrides header mip count", Header(512, 128, 1, 4, TextureImageControl::TextureType::e2DNoMipmap, 0, 4), bc3, 4);
+        // Literal offsets/strides independently calculated from Ryujinx's
+        // SizeCalculator: floor pixel mips before compression-block rounding.
+        struct MipCase {
+            texture::Dimensions dimensions;
+            const texture::Format *format;
+            size_t height, depth, spacing;
+            std::vector<size_t> sizes, effectiveSpacing;
+            size_t layerStride;
+        };
+        for (const auto &test : std::vector<MipCase>{
+                {{1920,1080,1}, &bc1, 8,1,3, {1310720,393216,131072,32768,8192,2048,512,512}, {3,3,3,0,0,0,0,0}, 1900544},
+                {{513,257,1}, &bc3, 8,1,3, {327680,32768,8192,2048}, {3,0,0,0}, 393216},
+                {{131,83,1}, &astc5x5, 4,1,3, {14336,4096,1024,512,512}, {0,0,0,0,0}, 32768},
+                {{528,128,8}, &rgba, 2,4,3, {2621440,393216,36864,5120}, {3,3,0,0}, 3080192}}) {
+            const auto &f{*test.format};
+            const auto levels{texture::GetBlockLinearMipLayout(test.dimensions, f.blockHeight,f.blockWidth,f.bpb,
+                f.blockHeight,f.blockWidth,f.bpb, test.height,test.depth,test.sizes.size(),test.spacing)};
+            for (size_t i{}; i < levels.size(); ++i) {
+                Check(levels[i].blockLinearSize == test.sizes[i], "physical mip size mismatch at level " + std::to_string(i));
+                Check(levels[i].tileWidthSpacing == test.effectiveSpacing[i], "mip spacing eligibility mismatch");
+            }
+            Check(texture::GetBlockLinearLayerSize(test.dimensions, f.blockHeight,f.blockWidth,f.bpb,
+                test.height,test.depth,test.sizes.size(),true,test.spacing) == test.layerStride,
+                "array layer stride omits tile-width alignment");
+        }
         auto arrayBase{Header(512, 128, 3, 4, TextureImageControl::TextureType::e2DArray)};
         arrayBase.viewLayerBase_0_2 = 1;
         auto based{Construct(arrayBase, bc3)};
@@ -143,7 +185,7 @@ int main() {
         raw[offset] = 0x7B;
         texture::CopyBlockLinearToLinear(explicitLayout, raw.data(), linear.data());
         Check(linear[64] == 0x7B, "low-level explicit BH addressing changed");
-        std::cout << "PASS: " << cases << " oracle uploads; mipmapped/pitch/explicit render-target-DMA layout controls\n";
+        std::cout << "PASS: " << cases << " oracle upload/readbacks; four mip/array layouts; spaced 3D offsets; pitch/RT/DMA controls\n";
     } catch (const std::exception &error) {
         std::cerr << "FAIL: " << error.what() << '\n';
         return 1;

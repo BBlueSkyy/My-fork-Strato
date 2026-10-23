@@ -861,7 +861,7 @@ namespace skyline::gpu {
                 auto layouts{texture::GetBlockLinearMipLayout(value.dimensions,
                     value.format->blockHeight, value.format->blockWidth, value.format->bpb,
                     value.format->blockHeight, value.format->blockWidth, value.format->bpb,
-                    value.tileConfig.blockHeight, value.tileConfig.blockDepth, value.mipLevelCount)};
+                    value.tileConfig.blockHeight, value.tileConfig.blockDepth, value.mipLevelCount, value.tileConfig.tileWidthSpacing)};
                 size_t uploadOffset{};
                 const auto uploadAlignment{std::lcm<size_t>(4, value.format->bpb)};
                 for (const auto &level : layouts) {
@@ -1396,7 +1396,7 @@ namespace skyline::gpu {
         auto layouts{texture::GetBlockLinearMipLayout(dimensions,
             format->blockHeight, format->blockWidth, format->bpb,
             format->blockHeight, format->blockWidth, format->bpb,
-            guest->tileConfig.blockHeight, guest->tileConfig.blockDepth, levels)};
+            guest->tileConfig.blockHeight, guest->tileConfig.blockDepth, levels, guest->tileConfig.tileWidthSpacing)};
         size_t guestSize{};
         for (size_t level{}; level < layouts.size(); ++level) {
             const auto &next{layouts[level]};
@@ -1471,7 +1471,7 @@ namespace skyline::gpu {
             nextLayouts = texture::GetBlockLinearMipLayout(dimensions,
                 format->blockHeight, format->blockWidth, format->bpb,
                 format->blockHeight, format->blockWidth, format->bpb,
-                guest->tileConfig.blockHeight, guest->tileConfig.blockDepth, nextLevels);
+                guest->tileConfig.blockHeight, guest->tileConfig.blockDepth, nextLevels, guest->tileConfig.tileWidthSpacing);
             nextSurfaceSize = CalculateTargetLevelStride(nextLayouts) * layerCount;
             size_t stagingSize{};
             const auto alignment{std::lcm<size_t>(4, format->bpb)};

@@ -300,7 +300,7 @@ namespace skyline::gpu {
         vk::ImageAspectFlags aspect{vk::ImageAspectFlagBits::eColor};
         vk::ComponentMapping swizzle{};
         struct TileConfig {
-            texture::TileMode mode{texture::TileMode::Block}; size_t blockHeight{1}, blockDepth{1}; u32 pitch{};
+            texture::TileMode mode{texture::TileMode::Block}; size_t blockHeight{1}, blockDepth{1}, tileWidthSpacing{}; u32 pitch{};
             bool operator==(const TileConfig &) const = default;
         } tileConfig;
         using Mappings = std::vector<span<u8>>;
