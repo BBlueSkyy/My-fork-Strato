@@ -255,6 +255,8 @@ namespace skyline::gpu {
                 if (!aliasLock) return false; // trapMutex must never wait on an alias operation.
             }
             texture->SynchronizeGuest(false, true); // We can skip trapping since the caller will do it
+            if (texture->dirtyState == DirtyState::GpuDirty)
+                throw exception("Cannot restore GPU-dirty texture guest memory for a CPU read");
             return true;
         }, [weakThis] {
             TRACE_EVENT("gpu", "Texture::WriteTrap");
@@ -291,6 +293,8 @@ namespace skyline::gpu {
                 if (!aliasLock) return false;
             }
             texture->SynchronizeGuest(true, true); // We need to assume the texture is dirty since we don't know what the guest is writing
+            if (texture->dirtyState == DirtyState::GpuDirty)
+                throw exception("Cannot restore GPU-dirty texture guest memory for a CPU write");
             return true;
         });
     }
@@ -1313,26 +1317,36 @@ namespace skyline::gpu {
 
         TRACE_EVENT("gpu", "Texture::SynchronizeGuest");
 
-        {
-            std::scoped_lock lock{stateMutex};
-            if (cpuDirty && dirtyState == DirtyState::Clean) {
-                dirtyState = DirtyState::CpuDirty;
-                if (!skipTrap)
-                    gpu.state.process->trap.DeleteTrap(*trapHandle);
-                return;
-            } else if (dirtyState != DirtyState::GpuDirty) {
-                return;
-            }
+        // Keep the guest invalid until its bytes have been restored. Trap
+        // callbacks try-lock stateMutex and retry outside trapMutex, so they
+        // cannot release CPU access (including the readback hack) mid-copy.
+        std::scoped_lock stateLock{stateMutex};
+        if (cpuDirty && dirtyState == DirtyState::Clean) {
+            dirtyState = DirtyState::CpuDirty;
+            if (!skipTrap)
+                gpu.state.process->trap.DeleteTrap(*trapHandle);
+            return;
+        } else if (dirtyState != DirtyState::GpuDirty) {
+            return;
+        }
 
-            if (!alias) {
-                dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
-                memoryFreed = false;
-            } // Group writer remains authoritative until the encoded readback succeeds.
+        // Attachment synchronization can mark a sampled-only converted image
+        // GpuDirty, even though no GPU write occurred. FreeGuest preserves its
+        // original guest bytes because the formats differ; no encoding is needed.
+        if (!alias && format != guest->format && !everUsedAsGpuWrite && !memoryFreed) {
+            dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
+            if (!skipTrap) {
+                if (cpuDirty)
+                    gpu.state.process->trap.DeleteTrap(*trapHandle);
+                else
+                    gpu.state.process->trap.TrapRegions(*trapHandle, true);
+            }
+            return;
         }
 
         if (layout == vk::ImageLayout::eUndefined || format != guest->format)
-            // If the state of the host texture is undefined then so can the guest
-            // If the texture has differing formats on the guest and host, we don't support converting back in that case as it may involve recompression of a decompressed texture
+            // We cannot encode these host contents. Preserve GPU ownership and
+            // the eviction flag; trap callbacks must not expose invalid bytes.
             return;
 
         WaitOnBacking();
@@ -1356,14 +1370,11 @@ namespace skyline::gpu {
             throw exception("Host -> Guest synchronization of images tiled as '{}' isn't implemented", vk::to_string(tiling));
         }
 
-        {
-            std::scoped_lock lock{stateMutex};
-            gpuReadbackSerial = gpuWriteSerial;
-            if (alias) {
-                dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
-                memoryFreed = false;
-            }
-        }
+        // Publish validity only after a successful fence wait and guest copy.
+        // Early returns and exceptions leave the GPU writer authoritative.
+        gpuReadbackSerial = gpuWriteSerial;
+        dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
+        memoryFreed = false;
         if (auto group{aliasGroup.load()}) {
             std::scoped_lock metadata{group->mutex};
             if (group->writerIdentity == this)
