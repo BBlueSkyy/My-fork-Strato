@@ -44,7 +44,10 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
             "void CopyBlockLinearToLinear(Dimensions dimensions",
             "void CopyBlockLinearToLinear(const GuestTexture &guest",
             "void CopyLinearToBlockLinear(Dimensions dimensions",
-            "void CopyLinearToBlockLinear(const GuestTexture &guest")) + "\n}\n")
+            "void CopyLinearToBlockLinear(const GuestTexture &guest",
+            "void CopyPitchLinearToLinear(",
+            "void CopyLinearToPitchLinear(")) + "\n}\n")
+    (build / "copy-to-guest.inc").write_text(function(texture, "void Texture::CopyToGuest("))
     start = textures.index("            constexpr size_t CubeFaceCount", textures.index("TextureView *Textures::GetTexture("))
     end = textures.index("            auto mappings{", start)
     # This is the unchanged complete production dimensions/type/tiling setup.
@@ -80,4 +83,10 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
                     "-I" + str(ROOT / "app/src/main/cpp/skyline"),
                     str(ROOT / "tests/gpu_sampled_layout/alias_tests.cpp"), "-o", str(build / "alias-tests")], check=True)
     subprocess.run([str(build / "alias-tests")], check=True,
+                   env={**os.environ, "ASAN_OPTIONS": "detect_leaks=0"})
+    subprocess.run([os.environ.get("CXX", "g++"), *flags, "-I" + str(build),
+                    "-I" + str(ROOT / "app/src/main/cpp/skyline"),
+                    str(ROOT / "tests/gpu_sampled_layout/copy_to_guest_tests.cpp"),
+                    "-o", str(build / "copy-to-guest-tests")], check=True)
+    subprocess.run([str(build / "copy-to-guest-tests")], check=True,
                    env={**os.environ, "ASAN_OPTIONS": "detect_leaks=0"})
