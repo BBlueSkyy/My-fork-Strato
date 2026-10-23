@@ -411,6 +411,23 @@ namespace skyline::gpu {
             GpuDirty, //!< The GPU texture has been modified but the CPU mappings have not been updated
         } dirtyState{DirtyState::CpuDirty}; //!< The state of the CPU mappings with respect to the GPU texture
         bool memoryFreed{}; //!< If the guest backing memory has been freed
+#ifdef __ANDROID__
+        // Diagnostics only: per-texture bounded logging, never changes ownership.
+        std::atomic<u8> ownerTraceCount{};
+        std::atomic<bool> ownerPolicyLogged{};
+        std::atomic<bool> ownerGpuWriteLogged{};
+        std::atomic<bool> ownerFreeGuardLogged{};
+        std::atomic<u8> ownerContentTraceCount{};
+        std::atomic<bool> firstEvictionObserved{};
+        std::atomic<bool> awaitingFirstGuestUse{};
+        std::atomic<bool> awaitingReadbackObservation{};
+        // Diagnostic only: first TexMan-observed use after FreeGuest, not
+        // an exhaustive trace of all CPU/DMA reads to the guest allocation.
+        void TracePostFreeObservation(const char *stage);
+        void TraceFirstGuestUseAfterFree(const char *stage);
+        void TraceGuestBytes(const char *stage, const u8 *data, size_t length);
+        void TraceGuestLifetime(const char *event, DirtyState previous, DirtyState next, bool requestedGpuDirty = false);
+#endif
         mutable std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
         texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup{};
         std::atomic<bool> aliasStale{};
