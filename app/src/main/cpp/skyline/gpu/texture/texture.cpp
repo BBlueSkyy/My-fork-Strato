@@ -17,8 +17,67 @@
 #include "view_range.h"
 #include <bit>
 #include <numeric>
+#include <atomic>
 
 namespace skyline::gpu {
+#ifdef __ANDROID__
+    void Texture::TraceGuestLifetime(const char *event, DirtyState previous, DirtyState next, bool requestedGpuDirty) {
+        // This instrumentation belongs to a diagnostic APK only. Keep the
+        // sample bounded and restrict it to useful 2D/3D texture sizes.
+        if (!guest || guest->dimensions.width < 128 || guest->dimensions.height < 128)
+            return;
+        if (ownerTraceCount.fetch_add(1, std::memory_order_relaxed) >= 10)
+            return;
+        static std::atomic<u32> totalEvents{};
+        if (totalEvents.fetch_add(1, std::memory_order_relaxed) >= 6000)
+            return;
+
+        const auto stateName{[](DirtyState state) -> const char * {
+            switch (state) {
+                case DirtyState::Clean: return "Clean";
+                case DirtyState::CpuDirty: return "CpuDirty";
+                case DirtyState::GpuDirty: return "GpuDirty";
+            }
+            return "Unknown";
+        }};
+        const auto first{guest->mappings.empty() ? nullptr : guest->mappings.front().data()};
+        LOGI("TEX_OWNER event={} tex={} guest={} {}x{}x{} fmt={} mip={} layers={} mapped={} state={}->{} requestedGpuDirty={} actualGpuWrite={} freeOption={} memoryFreed={} aliases={} stale={} readOnly={} gpuSerial={} readbackSerial={} pins={}",
+             event, fmt::ptr(this), fmt::ptr(first),
+             guest->dimensions.width, guest->dimensions.height, guest->dimensions.depth,
+             vk::to_string(guest->format->vkFormat), guest->mipLevelCount, guest->layerCount,
+             mirror.size(), stateName(previous), stateName(next),
+             requestedGpuDirty, everUsedAsGpuWrite,
+             *gpu.state.settings->freeGuestTextureMemory, memoryFreed, HasAliases(),
+             aliasStale.load(), aliasReadOnly.load(), gpuWriteSerial, gpuReadbackSerial, guestMemoryPins);
+    }
+
+    void Texture::TraceGuestBytes(const char *stage, const u8 *data, size_t length) {
+        if (!guest || !data || length == 0 ||
+            guest->dimensions.width < 128 || guest->dimensions.height < 128 ||
+            ownerContentTraceCount.fetch_add(1, std::memory_order_relaxed) >= 2)
+            return;
+        static std::atomic<u32> fingerprints{};
+        if (fingerprints.fetch_add(1, std::memory_order_relaxed) >= 4000)
+            return;
+
+        // Fixed-cost sampling: 8 windows of up to 64 bytes across the mapping.
+        // Fingerprints distinguish changed input/output contents without
+        // dumping textures or copying entire guest allocations into a log.
+        constexpr u64 Prime{1099511628211ULL};
+        u64 hash{14695981039346656037ULL};
+        const size_t window{std::min<size_t>(64, length)};
+        for (size_t sample{}; sample < 8; ++sample) {
+            const size_t offset{((length - window) * sample) / 7};
+            for (size_t i{}; i < window; ++i)
+                hash = (hash ^ data[offset + i]) * Prime;
+        }
+        LOGI("TEX_OWNER bytes={} tex={} guest={} {}x{} fmt={} length={} sampledHash=0x{:016X}",
+             stage, fmt::ptr(this), fmt::ptr(guest->mappings.empty() ? nullptr : guest->mappings.front().data()),
+             guest->dimensions.width, guest->dimensions.height,
+             vk::to_string(guest->format->vkFormat), length, hash);
+    }
+#endif
+
     u32 GuestTexture::GetLayerStride() {
         if (layerStride) {
             if (tileConfig.mode == texture::TileMode::Pitch && layerStride < CalculateLayerSize())
@@ -268,7 +327,13 @@ namespace skyline::gpu {
                 return false;
 
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty) {
+#ifdef __ANDROID__
+                const auto previousState{texture->dirtyState};
+#endif
                 texture->dirtyState = DirtyState::CpuDirty;
+#ifdef __ANDROID__
+                texture->TraceGuestLifetime("guest-cpu-write", previousState, texture->dirtyState);
+#endif
                 return true; // If the texture is already CPU dirty or we can transition it to being CPU dirty then we don't need to do anything
             }
 
@@ -324,6 +389,10 @@ namespace skyline::gpu {
             }
         }()};
 
+#ifdef __ANDROID__
+        const u8 *uploadStart{bufferData};
+        TraceGuestBytes("guest-before-upload", mirror.data(), mirror.size());
+#endif
         std::vector<u8> deswizzleBuffer;
         u8 *deswizzleOutput;
         if (guest->format != format) {
@@ -433,6 +502,10 @@ namespace skyline::gpu {
             }
         }
 
+
+#ifdef __ANDROID__
+        TraceGuestBytes("staging-after-deswizzle", uploadStart, surfaceSize);
+#endif
         return stagingBuffer;
     }
 
@@ -594,8 +667,20 @@ namespace skyline::gpu {
             return;
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
         if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
+#ifdef __ANDROID__
+            const bool wasFreed{memoryFreed};
+#endif
             gpu.state.process->memory.FreeMemory(mirror);
             memoryFreed = true;
+#ifdef __ANDROID__
+            if (!wasFreed)
+                TraceGuestLifetime("free-guest-pages", dirtyState, dirtyState);
+#endif
+        } else {
+#ifdef __ANDROID__
+            if (!ownerFreeGuardLogged.exchange(true, std::memory_order_relaxed))
+                TraceGuestLifetime("free-guest-guarded", dirtyState, dirtyState);
+#endif
         }
     }
 
@@ -1143,6 +1228,12 @@ namespace skyline::gpu {
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+#ifdef __ANDROID__
+        if (!ownerGpuWriteLogged.exchange(true, std::memory_order_relaxed)) {
+            std::scoped_lock stateLock{stateMutex};
+            TraceGuestLifetime("real-gpu-write", dirtyState, dirtyState);
+        }
+#endif
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};
@@ -1178,15 +1269,28 @@ namespace skyline::gpu {
         // With Free Guest Texture Memory disabled, generic executor attachment
         // synchronization must not invent GPU ownership for sampled-only images.
         // RT and storage paths call RecordGpuWrite before submission.
+#ifdef __ANDROID__
+        const bool requestedGpuDirty{gpuDirty};
+#endif
         if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
             gpuDirty = false;
 
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
         {
             std::scoped_lock lock{stateMutex};
+#ifdef __ANDROID__
+            if (!everUsedAsGpuWrite && !ownerPolicyLogged.exchange(true, std::memory_order_relaxed))
+                TraceGuestLifetime("host-attachment-policy", dirtyState, dirtyState, requestedGpuDirty);
+#endif
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 // If a texture is Clean then we can just transition it to being GPU dirty and retrap it
+#ifdef __ANDROID__
+                const auto previousState{dirtyState};
+#endif
                 dirtyState = DirtyState::GpuDirty;
+#ifdef __ANDROID__
+                TraceGuestLifetime("host-clean-to-gpu", previousState, dirtyState, requestedGpuDirty);
+#endif
                 gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
@@ -1194,7 +1298,13 @@ namespace skyline::gpu {
                 return; // If the texture has not been modified on the CPU, there is no need to synchronize it
             }
 
+#ifdef __ANDROID__
+            const auto previousState{dirtyState};
+#endif
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
+#ifdef __ANDROID__
+            TraceGuestLifetime("host-upload", previousState, dirtyState, requestedGpuDirty);
+#endif
             gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
@@ -1258,6 +1368,9 @@ namespace skyline::gpu {
         // including sampled/read-only resources. Alias writer ownership is
         // established by RecordGpuWrite at the actual RT/storage write sites;
         // attachment synchronization itself is not evidence of a GPU write.
+#ifdef __ANDROID__
+        const bool requestedGpuDirty{gpuDirty};
+#endif
         if (HasAliases()) gpuDirty = false;
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
@@ -1270,8 +1383,18 @@ namespace skyline::gpu {
 
         {
             std::scoped_lock lock{stateMutex};
+#ifdef __ANDROID__
+            if (!everUsedAsGpuWrite && !ownerPolicyLogged.exchange(true, std::memory_order_relaxed))
+                TraceGuestLifetime("inline-attachment-policy", dirtyState, dirtyState, requestedGpuDirty);
+#endif
             if (gpuDirty && dirtyState == DirtyState::Clean) {
+#ifdef __ANDROID__
+                const auto previousState{dirtyState};
+#endif
                 dirtyState = DirtyState::GpuDirty;
+#ifdef __ANDROID__
+                TraceGuestLifetime("inline-clean-to-gpu", previousState, dirtyState, requestedGpuDirty);
+#endif
                 gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
@@ -1279,7 +1402,13 @@ namespace skyline::gpu {
                 return;
             }
 
+#ifdef __ANDROID__
+            const auto previousState{dirtyState};
+#endif
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
+#ifdef __ANDROID__
+            TraceGuestLifetime("inline-upload", previousState, dirtyState, requestedGpuDirty);
+#endif
             gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
@@ -1324,16 +1453,23 @@ namespace skyline::gpu {
                 return;
             }
 
+#ifdef __ANDROID__
+            TraceGuestLifetime("guest-readback-begin", dirtyState, cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean);
+#endif
             if (!alias) {
                 dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
                 memoryFreed = false;
             } // Group writer remains authoritative until the encoded readback succeeds.
         }
 
-        if (layout == vk::ImageLayout::eUndefined || format != guest->format)
+        if (layout == vk::ImageLayout::eUndefined || format != guest->format) {
             // If the state of the host texture is undefined then so can the guest
             // If the texture has differing formats on the guest and host, we don't support converting back in that case as it may involve recompression of a decompressed texture
+#ifdef __ANDROID__
+            TraceGuestLifetime("guest-readback-unavailable", dirtyState, dirtyState);
+#endif
             return;
+        }
 
         WaitOnBacking();
 
@@ -1363,6 +1499,9 @@ namespace skyline::gpu {
                 dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
                 memoryFreed = false;
             }
+#ifdef __ANDROID__
+            TraceGuestLifetime("guest-readback-complete", DirtyState::GpuDirty, dirtyState);
+#endif
         }
         if (auto group{aliasGroup.load()}) {
             std::scoped_lock metadata{group->mutex};
