@@ -900,6 +900,18 @@ namespace skyline::gpu::interconnect {
             texture->layerCount, texture->levelCount, byteCount,
             vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout))};
         std::string metadata{meta};
+        metadata += fmt::format(
+            "guest_mapped={} guest_format={} guest_tile_mode={} guest_bytes={} "
+            "gpu_write_serial={} gpu_readback_serial={} backing_generation={} "
+            "ever_gpu_writer={} guest_freed={} aliases={} overlaps={} alias_stale={}\\n",
+            static_cast<bool>(texture->guest),
+            texture->guest ? vk::to_string(texture->guest->format->vkFormat) : "none",
+            texture->guest ? static_cast<u32>(texture->guest->tileConfig.mode) : 0,
+            texture->guest ? texture->guest->GetSize() : 0,
+            texture->gpuWriteSerial, texture->gpuReadbackSerial, texture->backingGeneration,
+            texture->everUsedAsGpuWrite, texture->memoryFreed, texture->HasAliases(),
+            texture->HasOverlaps(), texture->aliasStale.load());
+        
         for (const auto &copy : copies) {
             metadata += fmt::format(
                 "mip={} offset={} extent={}x{}x{} base_layer={} layer_count={}\n",
