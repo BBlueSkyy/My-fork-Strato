@@ -103,6 +103,7 @@ namespace skyline::applet::swkbd {
     }
 
     Result SoftwareKeyboardApplet::Start() {
+        LOGI("SWKBDTrace Start: mode={}", static_cast<u32>(mode));
         if (mode == service::applet::LibraryAppletMode::PartialForeground ||
             mode == service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay)
             return StartInline();
@@ -164,6 +165,7 @@ namespace skyline::applet::swkbd {
             std::scoped_lock lock{normalMutex};
             normalSessionId = sessionId;
         }
+        LOGI("SWKBDTrace dispatch normal frontend Show");
         if (!state.jvm->ShowSoftwareKeyboard(sessionId, CopyFrontendConfig(), initialText, false)) {
             NormalAction action;
             {
@@ -370,6 +372,8 @@ namespace skyline::applet::swkbd {
         }
 
         const u64 flags{ReadInlineValue<u64>(calc, 0x8)};
+        if (flags & (InlineFlagInitialize | InlineFlagAppear | InlineFlagDisappear))
+            LOGI("SWKBDTrace inline Calc: size=0x{:X}, flags=0x{:X}, state={}", calcArgSize, flags, static_cast<u32>(inlineState));
         const size_t cursorOffset{newLayout ? 0x8CU : 0x1CU};
         const size_t inputTextOffset{extendedInputLayout ? 0x90U : 0x68U};
         const size_t utf8Offset{extendedInputLayout ? 0x484U : 0x45CU};
@@ -468,6 +472,7 @@ namespace skyline::applet::swkbd {
 
         switch (action.type) {
             case InlineFrontendActionType::Show: {
+                LOGI("SWKBDTrace dispatch inline frontend Show");
                 if (!state.jvm->ShowSoftwareKeyboard(*sessionId, action.config, action.text, true)) {
                     std::scoped_lock lock{inlineMutex};
                     if (inlineSessionId == sessionId && inlineState == InlineState::Appearing) {
