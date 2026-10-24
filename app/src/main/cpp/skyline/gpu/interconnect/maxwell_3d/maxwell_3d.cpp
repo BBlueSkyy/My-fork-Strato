@@ -236,10 +236,22 @@ namespace skyline::gpu::interconnect::maxwell3d {
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
 
 
+         // Cached attachments and quick-bind descriptors can bypass AttachTexture.
+         // Retry here, before storage write claims or draw index conversion.
+         const auto requireCoherence{[&](span<TextureView *> views) {
+             for (auto view : views)
+                 if (view && view->texture->HasOverlaps())
+                     view->texture->RequireAliasCoherence(ctx.executor.tag);
+         }};
+         requireCoherence(activeState.GetColorAttachments());
+         if (auto depth{activeState.GetDepthAttachment()}; depth && depth->texture->HasOverlaps())
+             depth->texture->RequireAliasCoherence(ctx.executor.tag);
+
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
              if (activeDescriptorPipeline &&
                  ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline)) &&
                  constantBuffers.quickBindEnabled) {
+                 requireCoherence(activeDescriptorSetSampledImages);
                  if (activeDescriptorPipeline != pipeline)
                      pipeline->InheritDescriptorBufferViews(*activeDescriptorPipeline);
                  // If bindings between the old and new pipelines are the same we can reuse the descriptor sets given that quick bind is enabled (meaning that no buffer updates or calls to non-graphics engines have occurred that could invalidate them)

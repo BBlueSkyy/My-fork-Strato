@@ -58,6 +58,7 @@ with tempfile.TemporaryDirectory(prefix="strato-overlap-authority-") as director
         "void Texture::RecordGpuWrite(",
         "void Texture::ValidateAliasWrites(",
         "void Texture::MarkGpuDirty(",
+        "bool Texture::ValidateRenderPassUsage(",
         "void Texture::UpdateRenderPassUsage(",
         "bool Texture::ViewFormatAdmitted(",
         "bool Texture::ViewRangeFits(",
@@ -131,6 +132,9 @@ with tempfile.TemporaryDirectory(prefix="strato-overlap-authority-") as director
     (directory / "unrepresentable.inc").write_text(function(manager, "if (unrepresentableMatch || separateGroup)"))
     executor = (GPU / "interconnect/command_executor.cpp").read_text()
     (directory / "alias_retry.inc").write_text(function(executor,"void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &"))
+    maxwell = (GPU / "interconnect/maxwell_3d/maxwell_3d.cpp").read_text()
+    (directory / "prepare_coherence.inc").write_text(function(maxwell,"const auto requireCoherence{") + ";")
+    (directory / "executor_pass.inc").write_text(function(executor,"bool CommandExecutor::CreateRenderPassWithSubpass("))
     (directory / "attach.inc").write_text(function(executor,"bool CommandExecutor::AttachTexture("))
     (directory / "retry.inc").write_text(function(executor,
         "void CommandExecutor::HandleTextureBackingPromotion("))

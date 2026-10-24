@@ -17,4 +17,36 @@ def prepare(root, directory):
     # Renamed main no longer has the language's implicit return.
     end = base.rfind('}')
     base = base[:end] + '    return 0;\n' + base[end:]
+    base = base.replace('        void UpdateRenderPassUsage(', '        bool ValidateRenderPassUsage(u32, texture::RenderPassUsage);\n        void UpdateRenderPassUsage(')
+    base = base.replace('    using std::span<T>::span;', '    using std::span<T>::span;\n    span(T &value) : std::span<T>(&value,1) {}')
+    facade = r'''namespace ranges {
+        using std::ranges::all_of; using std::ranges::transform;
+        namespace views { template<class A,class B> auto concat(A a,B b) {
+            std::vector<TextureView *> out(a.begin(),a.end()); out.insert(out.end(),b.begin(),b.end()); return out;
+        } }
+    }
+    namespace node {
+        struct RenderPassEndNode {};
+        struct RenderPassNode {
+            vk::Rect2D renderArea;
+            template<class... A> void AddSubpass(A&&...) {}
+            void UpdateDependency(vk::PipelineStageFlags,vk::PipelineStageFlags) {}
+        };
+    }
+'''
+    base = base.replace('    namespace interconnect {', '    namespace interconnect {\n'+facade,1)
+    base = base.replace('            ContextTag tag{1};', r'''            int gpu{};
+            using Nodes=std::list<std::variant<node::RenderPassNode,node::RenderPassEndNode>>;
+            struct Slot { Nodes nodes,pendingPostRenderPassNodes; } localSlot;
+            Slot *slot{&localSlot};
+            node::RenderPassNode *renderPass{};
+            Nodes::iterator renderPassIt;
+            std::vector<vk::ImageView> lastSubpassColorAttachments,lastSubpassInputAttachments;
+            vk::ImageView lastSubpassDepthStencilAttachment{};
+            u32 renderPassIndex{},subpassCount{};
+            std::vector<std::function<void()>> subpassBoundaryCallbacks;
+            static bool ViewsEqual(vk::ImageView a,TextureView *b) { return a==(b ? b->GetView() : vk::ImageView{}); }
+            bool CreateRenderPassWithSubpass(vk::Rect2D,span<TextureView *>,span<TextureView *>,span<TextureView *>,TextureView *,bool,vk::PipelineStageFlags,vk::PipelineStageFlags);
+            ContextTag tag{1};''')
+    base = base.replace('        #include "attach.inc"', '        #include "attach.inc"\n        #include "executor_pass.inc"')
     (directory / 'backing_harness.inc').write_text(base)

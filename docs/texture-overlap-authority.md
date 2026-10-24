@@ -104,3 +104,53 @@ option's state, resource mappings or which upload first consumed invalid bytes.
 The correction's visual effect must still be tested on device; it does not
 establish that all corruption or the lack of confirmed controllable gameplay
 has been resolved.
+
+## Integration follow-up: cached descriptors and HDR investigation
+
+The log from 2026-10-24 identifies Turnip Adreno 650, Vulkan 1.3.280, driver
+24.0.99 and BCn support. It contains Shader Compiler STUBBED warnings and
+recoverable OUT_OF_POOL_MEMORY reports, without a shader hash, resource binding,
+value dump or failing draw connecting them to the corrupted image.
+
+Inspection across #392 and #393 found:
+
+| Path | Finding |
+| --- | --- |
+| TIC/header cache → ordinary binding | GetTexture can return a cached view; GetTextureBinding/GetImageBinding still call AttachTexture, which checks alias/partial coherence. A cache hit alone is not a bypass. |
+| Retained Vulkan descriptors | PrepareDraw can reuse the descriptor set without GetTextureBinding or AttachTexture, including unchanged bindings during partial quick bind. After B writes overlapping texels, cached A can remain the old VkImage despite overlapStale. |
+| Cached color/depth state | Its refresh is also conditional; checking current attachments during preparation covers their reuse. |
+| Descriptor allocation | AllocateSet handles pool exhaustion/fragmentation by resetting only unreferenced pools or allocating another pool, and returns a set only on success. The log alone does not demonstrate invalid descriptors. |
+| Constant buffers/samplers | Their decoding and bindings are unchanged by #393. Buffer reads already have a submit/retry boundary for pending GPU writes. No value-level divergence for the HDR shaders was demonstrated. |
+| Framebuffer/formats/layouts | Creation/view validation and framebuffer-cache code are unchanged. A correct layout/barrier cannot repair stale contents in a distinct overlapping image. No separate format/transition defect was established here. |
+| Executor/scheduler | Submission dependency ordering is retained. The missing check concerned consumers that bypassed attachment preparation, before any fence or barrier could restore their backing. |
+| Shader Compiler | No compiler/submodule change is introduced by #393 and no miscompile was demonstrated. STUBBED does not identify a causal instruction or shader. No compiler change is justified. |
+
+A Vulkan fixture retains sampled A, writes green through partially overlapping B,
+and confirms that A's VkImage still contains the old red bytes. The complete
+production CreateRenderPassWithSubpass accepted this cached reference before the
+fix (RED: no reconciliation request). Thus the integration of #393's partial
+stale flag was incomplete, independently of Free Guest Texture Memory. The
+similar exact-alias cache problem predates this change; this follow-up limits
+new guards to tracked partial components.
+
+PrepareDraw now checks actual color/depth attachments and retained sampled
+bindings in the reuse branch, including partial quick bind. It uses the existing
+reconciliation request. Checks occur before descriptor updates can claim storage
+writes and before Draw converts quad indices; placing a throwing guard at the
+later AddSubpass boundary would be unsafe. Coherent reuse takes no new GPU wait,
+submission or lock. A stale old binding that a partial update would remove can
+cause conservative reconciliation; no Android FPS claim is made.
+
+The focused test compiles the exact preparation guard and complete production
+render-pass method, with host facades for Android pipeline/state builders and
+render-pass node bookkeeping. It verifies masked composite bytes using real
+Vulkan readback, cached sampled/RT retry before nodes, and stable reuse without
+extra submissions. It does not execute a complete Maxwell draw or shader sampling.
+
+The prior observations for EA18B70958415FF3 (first abnormal HDR values) and
+1B8CB95A440E18C1 (first NaNs) remain relevant consumers to check on device. The
+current log does not map either hash to a stale A/B pair, sampler, constant-buffer
+value, or recorded descriptor. Their prior SPIR-V/input binaries were not
+available in this checkout, and searching those hashes did not recover them.
+No OpUndef investigation was repeated. This proves a stale-consumer path, not
+that it caused those shader values or all of the recorded visual regression.

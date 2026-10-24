@@ -301,6 +301,60 @@ namespace skyline::gpu {
         std::puts("PASS: fragmented mappings and later-segment intersection");
     }
 
+    void PrepareCachedBindings(interconnect::CommandExecutor &executor,span<TextureView *> views) {
+        struct { interconnect::CommandExecutor &executor; } ctx{executor};
+        // Exact early-preparation guard from production PrepareDraw. Android
+        // pipeline/state-builder boundaries are not reproduced by this facade.
+        #include "prepare_coherence.inc"
+        requireCoherence(views);
+    }
+
+    void CheckCachedDescriptorReuse(const vk::raii::Device &device,const vk::raii::PhysicalDevice &physical,u32 family) {
+        SharedGuestMemory arena;
+        GPU gpu{device,physical,family,true}; TextureManager manager{gpu};
+        auto a{manager.FindOrCreate(Describe(arena.guest+page))}; WriteAliasRenderTarget(a->texture,{1,0,0,1});
+        auto b{manager.FindOrCreate(Describe(arena.guest+2*page))}; AliasRead(b->texture);
+        AliasRead(a->texture);
+        // A's already bound descriptor survives B's subsequent RT write. Quick
+        // bind neither fetches the TIC nor calls AttachTexture again.
+        WriteAliasRenderTarget(b->texture,{0,1,0,1},false);
+        assert(a->texture->overlapStale);
+        CheckColor(DownloadEncoded(a->texture).data(),textureBytes,oldColor);
+        interconnect::CommandExecutor executor;
+        std::array<TextureView *,1> sampled{a.get()};
+        bool retry{};
+        try { PrepareCachedBindings(executor,sampled); executor.CreateRenderPassWithSubpass({{0,0},{64,32}},sampled,{}, {},nullptr,false,{},{}); }
+        catch (const TextureAliasReconciliationRequest &request) {
+            retry=true;
+            assert(executor.localSlot.nodes.empty()); // Reject before publishing this draw.
+            executor.HandleTextureBackingPromotion(request);
+        }
+        assert(retry); // Cached descriptors must not consume the old VkImage.
+        AliasRead(a->texture);
+        const auto bytes{DownloadEncoded(a->texture)};
+        CheckColor(bytes.data(),page,oldColor); CheckColor(bytes.data()+page,page,newColor);
+        executor.CreateRenderPassWithSubpass({{0,0},{64,32}},sampled,{}, {},nullptr,false,{},{});
+        const auto submissions{gpu.scheduler.submissions};
+        PrepareCachedBindings(executor,sampled);
+        executor.CreateRenderPassWithSubpass({{0,0},{64,32}},sampled,{}, {},nullptr,false,{},{});
+        assert(gpu.scheduler.submissions==submissions); // Coherent reuse never submits.
+        WriteAliasRenderTarget(a->texture,{1,0,1,1});
+        assert(b->texture->overlapStale);
+        std::array<TextureView *,1> outputs{b.get()};
+        const auto nodes{executor.localSlot.nodes.size()};
+        retry=false;
+        try { PrepareCachedBindings(executor,outputs); executor.CreateRenderPassWithSubpass({{0,0},{64,32}},{},{},outputs,nullptr,false,{},{}); }
+        catch (const TextureAliasReconciliationRequest &request) {
+            retry=true; assert(executor.localSlot.nodes.size()==nodes);
+            executor.HandleTextureBackingPromotion(request);
+        }
+        assert(retry); AliasRead(b->texture);
+        const auto target{DownloadEncoded(b->texture)};
+        CheckColor(target.data(),page,pendingColor); CheckColor(target.data()+page,page,newColor);
+        CheckGuards(arena); gpu.scheduler.Complete(); assert(!validationErrors);
+        std::puts("PASS: production early preparation rejects stale cached descriptor/RT before nodes; coherent reuse never submits");
+    }
+
     void CheckEvictedSampledOverlap(const vk::raii::Device &device,const vk::raii::PhysicalDevice &physical,u32 family) {
         for (bool context : {false,true}) {
         SharedGuestMemory arena;
@@ -492,6 +546,7 @@ int main() {
     CheckExecutorRetry(device,physical,family);
     CheckExactPeers(device,physical,family);
     CheckFragmentedMappings(device,physical,family);
+    CheckCachedDescriptorReuse(device,physical,family);
     CheckEvictedSampledOverlap(device,physical,family);
     CheckLateExactAlias(device,physical,family);
     CheckFullySupersededAndLayers(device,physical,family);

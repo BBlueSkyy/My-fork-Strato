@@ -61,6 +61,8 @@ São conferidos os bytes completos e páginas sentinela, o backing reutilizado,
 a ordem dos callbacks e as contagens de submissões/alocações. A cobertura inclui:
 
 - trap antes/depois do reuso, A Clean/GpuDirty, B pendente/já Clean e traps read/write;
+- referências sampled/RT cacheadas: guard de PrepareDraw e método completo de
+  render pass de produção, com facades do pipeline e dos nós;
 - A→B→A com escrita parcial, preservando a interseção e as regiões exclusivas;
 - texels versus padding, múltiplas camadas e mappings fragmentados;
 - escritores inteiramente supersedidos sem readbacks antigos desnecessários;
