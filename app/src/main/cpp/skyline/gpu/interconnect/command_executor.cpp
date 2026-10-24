@@ -879,10 +879,28 @@ namespace skyline::gpu::interconnect {
         const auto copiesNative{texture->GetBufferImageCopies()};
         std::vector<vk::BufferImageCopy> copies{copiesNative.begin(), copiesNative.end()};
         const auto byteCount{texture->surfaceSize};
+        // Guest mirror snapshot, taken at draw preparation. It is not
+        // a retained copy of the last actual upload; report that distinction.
+        std::vector<u8> guestSnapshot;
+        std::string guestSnapshotState{"no_guest"};
+        if (texture->guest) {
+            const auto guestBytes{texture->guest->GetSize()};
+            if (texture->memoryFreed) {
+                guestSnapshotState = "guest_freed";
+            } else if (!guestBytes || guestBytes > 2 * 1024 * 1024 ||
+                       texture->mirror.size() < guestBytes) {
+                guestSnapshotState = "missing_or_short_mirror";
+            } else {
+                guestSnapshot.assign(texture->mirror.begin(),
+                                     texture->mirror.begin() + guestBytes);
+                guestSnapshotState = "guest_mirror_at_draw_preparation";
+            }
+        }
         auto staging{gpu.memory.AllocateStagingBuffer(byteCount)};
         const auto directory{std::filesystem::path(state.os->publicAppFilesPath) /
                              "gpu_capture" / "hdr_cube_pr393"};
         const auto rawPath{directory / "cubemap_pre_draw1_rgba16f.raw"};
+        const auto guestRawPath{directory / "cubemap_guest_blocklinear_pre_draw1.raw"};
         const auto detailsPath{directory / "cubemap_pre_draw1.txt"};
         const auto statsPath{directory / "cubemap_pre_draw1_stats.csv"};
         const auto meta{fmt::format(
@@ -901,6 +919,32 @@ namespace skyline::gpu::interconnect {
             texture->layerCount, texture->levelCount, byteCount,
             vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout))};
         std::string metadata{meta};
+        metadata += fmt::format(
+            "guest_snapshot_state={} guest_snapshot_bytes={} source=guest_mirror_at_draw_preparation\n"
+            "effective_view_swizzle_r={} g={} b={} a={}\n",
+            guestSnapshotState, guestSnapshot.size(),
+            static_cast<u32>(view->mapping.r), static_cast<u32>(view->mapping.g),
+            static_cast<u32>(view->mapping.b), static_cast<u32>(view->mapping.a));
+        if (texture->guest) {
+            const auto &g{*texture->guest};
+            metadata += fmt::format(
+                "guest_layer_stride={} guest_mapping_count={} guest_tile_width_spacing={} "
+                "guest_base_layer={} guest_view_mip_base={} guest_view_mip_count={}\n",
+                texture->guest->GetLayerStride(), g.mappings.size(),
+                static_cast<u32>(g.tileConfig.tileWidthSpacing), g.baseArrayLayer,
+                g.viewMipBase, g.viewMipCount);
+            size_t guestOffset{};
+            for (size_t i{}; i < texture->mipLayouts.size(); ++i) {
+                const auto &m{texture->mipLayouts[i]};
+                metadata += fmt::format(
+                    "guest_mip={} offset_per_layer={} bytes_per_layer={} linear_bytes={} "
+                    "dimensions={}x{}x{} block_height={} block_depth={} tile_width_spacing={}\n",
+                    i, guestOffset, m.blockLinearSize, m.linearSize,
+                    m.dimensions.width, m.dimensions.height, m.dimensions.depth,
+                    m.blockHeight, m.blockDepth, m.tileWidthSpacing);
+                guestOffset += m.blockLinearSize;
+            }
+        }
         metadata += fmt::format(
             "guest_mapped={} guest_format={} guest_tile_mode={} guest_bytes={} "
             "gpu_write_serial={} gpu_readback_serial={} backing_generation={} "
@@ -936,7 +980,8 @@ namespace skyline::gpu::interconnect {
              byteCount, submissionNumber);
 
         pendingHdrCubemapReadbacks.emplace_back(
-            [staging, copies = std::move(copies), rawPath, detailsPath, statsPath,
+            [staging, copies = std::move(copies), rawPath, guestRawPath, detailsPath, statsPath,
+             guestSnapshot = std::move(guestSnapshot), guestSnapshotState,
              metadata = std::move(metadata), shaderHash]() {
                 std::error_code error;
                 std::filesystem::create_directories(rawPath.parent_path(), error);
@@ -961,6 +1006,23 @@ namespace skyline::gpu::interconnect {
                     return;
                 }
 
+                if (!guestSnapshot.empty()) {
+                    std::ofstream guest{guestRawPath, std::ios::binary | std::ios::trunc};
+                    if (!guest) {
+                        LOGE("HDR_CUBE_GUEST_FILE_ERROR open={}", guestRawPath.string());
+                    } else {
+                        guest.write(reinterpret_cast<const char *>(guestSnapshot.data()),
+                                    static_cast<std::streamsize>(guestSnapshot.size()));
+                        guest.close();
+                        if (!guest)
+                            LOGE("HDR_CUBE_GUEST_FILE_ERROR write={}", guestRawPath.string());
+                        else
+                            LOGI("HDR_CUBE_GUEST_DONE bytes={} status={} path={}",
+                                 guestSnapshot.size(), guestSnapshotState, guestRawPath.string());
+                    }
+                } else {
+                    LOGW("HDR_CUBE_GUEST_SKIP status={}", guestSnapshotState);
+                }
                 std::ofstream details{detailsPath, std::ios::trunc};
                 if (details) details << metadata;
 
