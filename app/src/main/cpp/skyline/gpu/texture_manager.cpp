@@ -542,7 +542,7 @@ namespace skyline::gpu {
                                originLookups.fetch_add(1, std::memory_order_relaxed) < 12};
         if (originTrace) {
             LOGI("HDR_ORIGIN_FIND guest_ptr={} guest_bytes={} matched_sources={} separate_alias_group={}",
-                 fmt::ptr(guestMapping.data()), guestTexture.GetSize(), matches.size(),
+                 fmt::ptr(guestMapping.data()), guestMapping.size(), matches.size(),
                  static_cast<bool>(separateGroup));
         }
         for (auto &texture : matches) {
