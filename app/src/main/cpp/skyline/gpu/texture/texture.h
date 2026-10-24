@@ -18,6 +18,7 @@
 namespace skyline::gpu {
     namespace interconnect {
         class CommandExecutor;
+        namespace maxwell3d { class Maxwell3D; }
     }
     namespace texture {
         enum class RenderPassUsage : u8 {
@@ -391,6 +392,7 @@ namespace skyline::gpu {
      */
     class Texture : public std::enable_shared_from_this<Texture> {
         friend class interconnect::CommandExecutor;
+        friend class interconnect::maxwell3d::Maxwell3D;
         friend class PresentationEngine;
         friend class TextureManager;
 
