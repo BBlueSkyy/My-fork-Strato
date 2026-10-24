@@ -14,6 +14,7 @@
 #include <common/settings.h>
 #include <loader/loader.h>
 #include <gpu.h>
+#include <os.h>
 #include <dlfcn.h>
 #include "command_executor.h"
 #include <nce.h>
@@ -985,8 +986,8 @@ namespace skyline::gpu::interconnect {
                             for (u32 channel{}; channel < 3; ++channel) {
                                 const auto *src{data + begin + pixel * 8 + channel * 2};
                                 const u16 half{static_cast<u16>(src[0] | (u16(src[1]) << 8))};
-                                const u32 exponent{(half >> 10) & 0x1F};
-                                const u32 mantissa{half & 0x3FF};
+                                const u32 exponent{static_cast<u32>((half >> 10) & 0x1F)};
+                                const u32 mantissa{static_cast<u32>(half & 0x3FF)};
                                 if (exponent == 31) {
                                     if (mantissa) ++nan;
                                     else ++inf;
