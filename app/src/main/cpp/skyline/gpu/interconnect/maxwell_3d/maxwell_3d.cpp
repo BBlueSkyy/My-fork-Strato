@@ -782,6 +782,33 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
 
         constantBuffers.ResetQuickBind();
+
+        // One-shot GPU-order readback of the *resolved* cubemap used by the
+        // first anomalous HDR fragment shader. Do not reread TIC/TSC.
+        if (auto *pipeline{activeState.GetPipeline()};
+            pipeline && pipeline->sourcePackedState.shaderHashes[5] == 0xEA18B70958415FF3ULL) {
+            bool hdrTarget{};
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->format->vkFormat == vk::Format::eB10G11R11UfloatPack32) {
+                    hdrTarget = true;
+                    break;
+                }
+            }
+            if (hdrTarget) {
+                for (size_t slot{}; slot < activeDescriptorSetSampledImages.size(); ++slot) {
+                    auto *view{activeDescriptorSetSampledImages[slot]};
+                    if (view && view->type == vk::ImageViewType::eCube &&
+                        view->format->vkFormat == vk::Format::eR16G16B16A16Sfloat &&
+                        view->range.baseMipLevel == 0 && view->range.levelCount == 8 &&
+                        view->range.baseArrayLayer == 0 && view->range.layerCount == 6) {
+                        ctx.executor.QueueHdrCubemapPreDraw(view, 0xEA18B70958415FF3ULL,
+                                                              static_cast<u32>(slot));
+                        break;
+                    }
+                }
+            }
+        }
+
         ctx.executor.AddCheckpoint("Before draw");
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
