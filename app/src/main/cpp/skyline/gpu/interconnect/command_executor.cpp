@@ -915,7 +915,7 @@ namespace skyline::gpu::interconnect {
             texture->layerCount, texture->levelCount, byteCount,
             vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout))};
         std::string metadata{meta};
-        metadata += fmt::format("origin_candidate_id={} origin_log_prefix=HDR_ORIGIN\\n",
+        metadata += fmt::format("origin_candidate_id={} origin_log_prefix=HDR_ORIGIN\n",
                                 texture->hdrCubeOriginId);
         metadata += fmt::format(
             "guest_snapshot_state={} guest_snapshot_bytes={} source=guest_mirror_at_draw_preparation\n"
