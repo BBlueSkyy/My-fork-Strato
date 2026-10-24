@@ -4,7 +4,7 @@ name: PR Build
 on:
   pull_request:
     types: [ opened, synchronize, reopened ]
-    branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture ]
+    branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture, fix/texture-guest-readback-publication ]
 
 # Only allow the latest build to run for a given PR, and cancel any previous builds
 concurrency:
