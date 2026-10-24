@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu.h>
+#include <os.h>
 #include <kernel/memory.h>
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
@@ -17,6 +18,10 @@
 #include "view_range.h"
 #include <bit>
 #include <numeric>
+#include <atomic>
+#include <filesystem>
+#include <fstream>
+#include <limits>
 
 namespace skyline::gpu {
     u32 GuestTexture::GetLayerStride() {
@@ -163,6 +168,68 @@ namespace skyline::gpu {
         return texture.TryLock();
     }
 
+    void Texture::CaptureHdrCubeOrigin(const char *stage) {
+        if (!guest || guest->viewType != vk::ImageViewType::eCube ||
+            guest->format->vkFormat != vk::Format::eR16G16B16A16Sfloat ||
+            guest->dimensions.width != 128 || guest->dimensions.height != 128 ||
+            guest->layerCount != 6 || guest->mipLevelCount != 8 ||
+            guest->mappings.size() != 1)
+            return;
+
+        // Count only matching cubemaps. Avoid unlimited dumps/logs in long boots.
+        if (!hdrCubeOriginId) {
+            static std::atomic<u32> nextCandidate{};
+            const auto next{nextCandidate.fetch_add(1, std::memory_order_relaxed) + 1};
+            hdrCubeOriginId = next <= 12 ? next : std::numeric_limits<u32>::max();
+        }
+        if (hdrCubeOriginId > 12)
+            return;
+
+        const auto count{guest->GetSize()};
+        if (memoryFreed || !count || count > 2 * 1024 * 1024 || mirror.size() < count) {
+            LOGW("HDR_ORIGIN_SKIP id={} stage={} freed={} guest_bytes={} mirror_bytes={}",
+                 hdrCubeOriginId, stage, memoryFreed, count, mirror.size());
+            return;
+        }
+
+        const auto directory{std::filesystem::path(gpu.state.os->publicAppFilesPath) /
+                             "gpu_capture" / "hdr_cube_pr392_baseline" / "origin"};
+        std::error_code error;
+        std::filesystem::create_directories(directory, error);
+        if (error) {
+            LOGE("HDR_ORIGIN_FILE_ERROR stage={} mkdir={} reason={}",
+                 stage, directory.string(), error.message());
+            return;
+        }
+
+        const auto filename{fmt::format("candidate_{:02}_{}_guest.raw", hdrCubeOriginId, stage)};
+        const auto path{directory / filename};
+        const auto *data{mirror.data()};
+        u64 hash{14695981039346656037ULL};
+        u64 nanPattern{};
+        for (size_t i{}; i < count; ++i) {
+            hash = (hash ^ static_cast<u64>(data[i])) * 1099511628211ULL;
+            if ((i & 1) && data[i] == 0x7e && data[i - 1] == 0x00)
+                ++nanPattern;
+        }
+        std::ofstream out{path, std::ios::binary | std::ios::trunc};
+        if (!out) {
+            LOGE("HDR_ORIGIN_FILE_ERROR stage={} open={}", stage, path.string());
+            return;
+        }
+        out.write(reinterpret_cast<const char *>(data), static_cast<std::streamsize>(count));
+        out.close();
+        if (!out) {
+            LOGE("HDR_ORIGIN_FILE_ERROR stage={} write={}", stage, path.string());
+            return;
+        }
+        LOGI("HDR_ORIGIN id={} stage={} texture={} guest_ptr={} guest_bytes={} hash={:016X} raw_7e00={} "
+             "gpu_write_serial={} gpu_readback_serial={} guest_freed={} alias_stale={} path={}",
+             hdrCubeOriginId, stage, fmt::ptr(this), fmt::ptr(guest->mappings.front().data()),
+             count, hash, nanPattern, gpuWriteSerial, gpuReadbackSerial,
+             memoryFreed, aliasStale.load(), path.string());
+    }
+
     void Texture::SetupGuestMappings() {
         auto &mappings{guest->mappings};
         if (mappings.size() == 1) {
@@ -193,6 +260,8 @@ namespace skyline::gpu {
             alignedMirror = gpu.state.process->memory.CreateMirrors(alignedMappings);
             mirror = alignedMirror.subspan(static_cast<size_t>(frontMapping.data() - alignedData), totalSize);
         }
+
+        CaptureHdrCubeOrigin("created");
 
         // We can't just capture `this` in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Texture> weakThis{weak_from_this()};
@@ -307,7 +376,20 @@ namespace skyline::gpu {
             throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
         auto pointer{mirror.data()};
 
+        // This is the guest -> Vulkan upload path. Sample both sides of
+        // WaitOnBacking to distinguish guest changes caused by alias reconciliation.
+        const bool traceUpload{hdrCubeOriginId > 0 && hdrCubeOriginId <= 12 &&
+                               hdrCubeOriginUploads < 2};
+        if (traceUpload) {
+            ++hdrCubeOriginUploads;
+            const auto phase{fmt::format("upload{:02}_before_wait", hdrCubeOriginUploads)};
+            CaptureHdrCubeOrigin(phase.c_str());
+        }
         WaitOnBacking();
+        if (traceUpload) {
+            const auto phase{fmt::format("upload{:02}_after_wait", hdrCubeOriginUploads)};
+            CaptureHdrCubeOrigin(phase.c_str());
+        }
 
         u8 *bufferData;
         auto stagingBuffer{[&]() -> std::shared_ptr<memory::StagingBuffer> {
