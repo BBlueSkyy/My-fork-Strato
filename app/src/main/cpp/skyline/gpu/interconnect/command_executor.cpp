@@ -2,6 +2,11 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <chrono>
+#include <cmath>
+#include <bit>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <condition_variable>
 #include <mutex>
 #include <range/v3/view.hpp>
@@ -787,6 +792,12 @@ namespace skyline::gpu::interconnect {
             submissionNumber++;
         }
 
+        // The callback must follow the existing waiter-thread cycle wait,
+        // regardless of DMI; a submit callback can run before GPU completion.
+        for (auto &callback : pendingHdrCubemapReadbacks)
+            waiterThread.Queue(nullptr, std::move(callback));
+        pendingHdrCubemapReadbacks.clear();
+
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission
             for (auto &actionCb : pendingDeferredActions)
@@ -834,6 +845,163 @@ namespace skyline::gpu::interconnect {
         }
         if (request.target)
             request.target->ReconcileAliases();
+    }
+
+
+    void CommandExecutor::QueueHdrCubemapPreDraw(TextureView *view, u64 shaderHash, u32 sampledSlot) {
+        if (hdrCubemapCaptureQueued || !view || !view->texture)
+            return;
+        const std::shared_ptr<Texture> texture{view->texture};
+        if (view->type != vk::ImageViewType::eCube ||
+            view->format->vkFormat != vk::Format::eR16G16B16A16Sfloat ||
+            view->range.baseMipLevel != 0 || view->range.levelCount != 8 ||
+            view->range.baseArrayLayer != 0 || view->range.layerCount != 6 ||
+            texture->dimensions.width != 128 || texture->dimensions.height != 128 ||
+            texture->levelCount != 8 || texture->layerCount != 6 ||
+            texture->format->vkFormat != vk::Format::eR16G16B16A16Sfloat)
+            return;
+
+        if (texture->layout == vk::ImageLayout::eUndefined ||
+            !(texture->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+            texture->sampleCount != vk::SampleCountFlagBits::e1 ||
+            texture->surfaceSize == 0 || texture->surfaceSize > 2 * 1024 * 1024) {
+            LOGW("HDR_CUBE_SKIP reason=unsafe_copy layout={} usage={} sample_count={} size={}",
+                 vk::to_string(texture->layout), vk::to_string(texture->usage),
+                 static_cast<u32>(texture->sampleCount), texture->surfaceSize);
+            hdrCubemapCaptureQueued = true;
+            return;
+        }
+
+        // This is the actual TextureView populated by SyncDescriptors for
+        // the draw. Neither guest TIC/TSC nor cache header values are reread.
+        const auto vkView{view->GetView()};
+        const auto copiesNative{texture->GetBufferImageCopies()};
+        std::vector<vk::BufferImageCopy> copies{copiesNative.begin(), copiesNative.end()};
+        const auto byteCount{texture->surfaceSize};
+        auto staging{gpu.memory.AllocateStagingBuffer(byteCount)};
+        const auto directory{std::filesystem::path(state.os->publicAppFilesPath) /
+                             "gpu_capture" / "hdr_cube_pr393"};
+        const auto rawPath{directory / "cubemap_pre_draw1_rgba16f.raw"};
+        const auto detailsPath{directory / "cubemap_pre_draw1.txt"};
+        const auto statsPath{directory / "cubemap_pre_draw1_stats.csv"};
+        const auto meta{fmt::format(
+            "source=actual_SyncDescriptors_TextureView\n"
+            "fragment_shader={:016X}\n"
+            "sampled_slot={}\n"
+            "vk_image_view=0x{:X}\n"
+            "texture={}\n"
+            "width={} height={} layers={} mips={} byte_size={}\n"
+            "format={} layout={}\n"
+            "readback=GPU_ordered_before_draw_fence_completed\n"
+            "packing=mip_major_all_six_layers_RGBA16F_little_endian\n",
+            shaderHash, sampledSlot,
+            std::bit_cast<u64>(static_cast<VkImageView>(vkView)),
+            fmt::ptr(texture.get()), texture->dimensions.width, texture->dimensions.height,
+            texture->layerCount, texture->levelCount, byteCount,
+            vk::to_string(texture->format->vkFormat), vk::to_string(texture->layout))};
+        std::string metadata{meta};
+        for (const auto &copy : copies) {
+            metadata += fmt::format(
+                "mip={} offset={} extent={}x{}x{} base_layer={} layer_count={}\n",
+                copy.imageSubresource.mipLevel, copy.bufferOffset,
+                copy.imageExtent.width, copy.imageExtent.height, copy.imageExtent.depth,
+                copy.imageSubresource.baseArrayLayer, copy.imageSubresource.layerCount);
+        }
+
+        // Prior pass is closed, then this copy is ordered before the next draw
+        // in the same executor. The existing Texture copy helper provides the
+        // Vulkan image-write -> transfer-read and transfer-write -> host barriers.
+        AddOutsideRpCommand([texture, staging](vk::raii::CommandBuffer &commands,
+                                                 const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+            cycle->AttachObjects(texture, staging);
+            texture->CopyIntoStagingBuffer(commands, staging);
+        });
+        hdrCubemapCaptureQueued = true;
+        LOGI("HDR_CUBE_QUEUED hash={:016X} slot={} texture={} vk_view=0x{:X} bytes={} submission={}",
+             shaderHash, sampledSlot, fmt::ptr(texture.get()),
+             std::bit_cast<u64>(static_cast<VkImageView>(vkView)),
+             byteCount, submissionNumber);
+
+        pendingHdrCubemapReadbacks.emplace_back(
+            [staging, copies = std::move(copies), rawPath, detailsPath, statsPath,
+             metadata = std::move(metadata), shaderHash]() {
+                std::error_code error;
+                std::filesystem::create_directories(rawPath.parent_path(), error);
+                if (error) {
+                    LOGE("HDR_CUBE_FILE_ERROR mkdir={} reason={}",
+                         rawPath.parent_path().string(), error.message());
+                    return;
+                }
+
+                // The GPU fence was awaited by ExecutionWaiterThread before
+                // this callback. Do not read staging or write files earlier.
+                std::ofstream raw{rawPath, std::ios::binary | std::ios::trunc};
+                if (!raw) {
+                    LOGE("HDR_CUBE_FILE_ERROR open={}", rawPath.string());
+                    return;
+                }
+                raw.write(reinterpret_cast<const char *>(staging->data()),
+                          static_cast<std::streamsize>(staging->size()));
+                raw.close();
+                if (!raw) {
+                    LOGE("HDR_CUBE_FILE_ERROR write={}", rawPath.string());
+                    return;
+                }
+
+                std::ofstream details{detailsPath, std::ios::trunc};
+                if (details) details << metadata;
+
+                std::ofstream stats{statsPath, std::ios::trunc};
+                if (stats) stats << "mip,face,texels,nan_rgb,inf_rgb,gt1000_rgb,max_abs_rgb\n";
+                u64 totalNan{}, totalInf{}, totalHigh{};
+                const auto *data{static_cast<const u8 *>(staging->data())};
+                const size_t size{staging->size()};
+                for (const auto &copy : copies) {
+                    const size_t pixels{static_cast<size_t>(copy.imageExtent.width) *
+                                        copy.imageExtent.height * copy.imageExtent.depth};
+                    const size_t faceBytes{pixels * 8};
+                    for (u32 face{}; face < copy.imageSubresource.layerCount; ++face) {
+                        const size_t begin{static_cast<size_t>(copy.bufferOffset) + face * faceBytes};
+                        if (begin > size || faceBytes > size - begin) {
+                            LOGW("HDR_CUBE_STATS_SKIP mip={} face={} offset={} size={}",
+                                 copy.imageSubresource.mipLevel, face, begin, faceBytes);
+                            continue;
+                        }
+                        u64 nan{}, inf{}, high{};
+                        float maxAbs{};
+                        for (size_t pixel{}; pixel < pixels; ++pixel)
+                            for (u32 channel{}; channel < 3; ++channel) {
+                                const auto *src{data + begin + pixel * 8 + channel * 2};
+                                const u16 half{static_cast<u16>(src[0] | (u16(src[1]) << 8))};
+                                const u32 exponent{(half >> 10) & 0x1F};
+                                const u32 mantissa{half & 0x3FF};
+                                if (exponent == 31) {
+                                    if (mantissa) ++nan;
+                                    else ++inf;
+                                    continue;
+                                }
+                                const float magnitude{exponent == 0
+                                    ? std::ldexp(static_cast<float>(mantissa), -24)
+                                    : std::ldexp(static_cast<float>(mantissa + 1024), int(exponent) - 25)};
+                                maxAbs = std::max(maxAbs, magnitude);
+                                if (!(half & 0x8000) && magnitude > 1000.0f) ++high;
+                            }
+                        totalNan += nan;
+                        totalInf += inf;
+                        totalHigh += high;
+                        const auto mip{copy.imageSubresource.mipLevel};
+                        const auto layer{copy.imageSubresource.baseArrayLayer + face};
+                        if (stats)
+                            stats << mip << ',' << layer << ',' << pixels << ',' << nan << ','
+                                  << inf << ',' << high << ',' << maxAbs << '\n';
+                        LOGI("HDR_CUBE_FACE mip={} face={} nan_rgb={} inf_rgb={} over1000_rgb={} max_abs={}",
+                             mip, layer, nan, inf, high, maxAbs);
+                    }
+                }
+                LOGI("HDR_CUBE_DONE hash={:016X} bytes={} nan_rgb={} inf_rgb={} over1000_rgb={} raw={} metadata={} stats={}",
+                     shaderHash, staging->size(), totalNan, totalInf, totalHigh,
+                     rawPath.string(), detailsPath.string(), statsPath.string());
+            });
     }
 
     void CommandExecutor::AddDeferredAction(std::function<void()> &&callback) {
