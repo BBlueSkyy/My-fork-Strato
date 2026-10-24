@@ -3,6 +3,9 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <cmath>
+#include <bit>
+#include <map>
+#include <string>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -223,7 +226,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return scissor;
     }
 
-     void Maxwell3D::PrepareDraw(StateUpdateBuilder &builder,
+     namespace { void CaptureHdrTrace(const Maxwell3D *, Pipeline *, DescriptorUpdateInfo *, bool, ConstantBufferSet &, span<TextureView *>, span<TextureView *>, TextureView *, CommandExecutor &); }
+
+    void Maxwell3D::PrepareDraw(StateUpdateBuilder &builder,
                                  engine::DrawTopology topology, bool indexed, bool estimateIndexBufferSize, u32 firstIndex, u32 count,
                                  vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
          Pipeline *oldPipeline{activeState.GetPipeline()};
@@ -236,10 +241,23 @@ namespace skyline::gpu::interconnect::maxwell3d {
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
 
 
+         // Cached attachments and quick-bind descriptors can bypass AttachTexture.
+         // Retry here, before storage write claims or draw index conversion.
+         const auto requireCoherence{[&](span<TextureView *> views) {
+             for (auto view : views)
+                 if (view && view->texture->HasOverlaps())
+                     view->texture->RequireAliasCoherence(ctx.executor.tag);
+         }};
+         requireCoherence(activeState.GetColorAttachments());
+         if (auto depth{activeState.GetDepthAttachment()}; depth && depth->texture->HasOverlaps())
+             depth->texture->RequireAliasCoherence(ctx.executor.tag);
+
+         bool hdrFullRefresh{};
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
              if (activeDescriptorPipeline &&
                  ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline)) &&
                  constantBuffers.quickBindEnabled) {
+                 requireCoherence(activeDescriptorSetSampledImages);
                  if (activeDescriptorPipeline != pipeline)
                      pipeline->InheritDescriptorBufferViews(*activeDescriptorPipeline);
                  // If bindings between the old and new pipelines are the same we can reuse the descriptor sets given that quick bind is enabled (meaning that no buffer updates or calls to non-graphics engines have occurred that could invalidate them)
@@ -252,6 +270,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                      return nullptr;
              } else {
                  // If bindings have changed or quick bind is disabled, perform a full descriptor update
+                 hdrFullRefresh = true;
                  return pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
                                                   activeDescriptorSetSampledImages,
                                                   srcStageMask, dstStageMask);
@@ -284,6 +303,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
              }
          }
 
+         CaptureHdrTrace(this, pipeline, descUpdateInfo, hdrFullRefresh, constantBuffers.boundConstantBuffers, activeDescriptorSetSampledImages, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), ctx.executor);
+
          if (pipeline->UsesRenderArea()) {
              const auto &surfaceClip{clearEngineRegisters.surfaceClip};
              builder.SetRenderArea(
@@ -295,6 +316,115 @@ namespace skyline::gpu::interconnect::maxwell3d {
                      0.0f,
                  });
          }
+    }
+
+
+    namespace {
+        struct HdrOffsetRange { u8 bank; u16 first, last; };
+        // PR #379: constant-index OpAccessChain in the two fragment SPIR-V
+        // programs; CBUF6 has dynamic indices and is NOT included.
+        constexpr HdrOffsetRange HdrDraw1[] = {{0,1296,1296}, {2,400,400}, {2,472,472}, {2,1408,1408}, {2,1432,1432}, {3,508,508}, {3,704,764}, {3,1040,1068}, {3,1120,1128}, {3,2064,2068}, {3,2088,2092}, {3,2104,2124}, {3,2160,2164}, {3,2268,2268}, {3,2292,2292}, {3,2512,2520}, {3,2940,2940}, {3,2992,3000}, {3,3128,3132}, {3,3140,3140}, {3,3620,3620}, {4,76,76}, {4,320,324}, {4,380,380}, {4,412,412}, {5,0,0}, {5,8,8}, {5,16,24}, {5,32,32}, {5,48,56}, {5,64,72}, {5,80,88}, {5,96,96}, {5,104,108}, {5,1280,1284}, {5,2048,2048}, {7,112,120}, {7,192,200}, {7,260,260}, {7,268,268}, {7,280,280}, {7,288,300}, {7,308,316}, {7,324,328}};
+        constexpr HdrOffsetRange HdrDraw7[] = {{0,1296,1296}, {2,512,512}, {2,1464,1464}, {3,508,508}, {3,704,764}, {3,1040,1068}, {3,1120,1128}, {3,2064,2068}, {3,2088,2092}, {3,2104,2124}, {3,2160,2164}, {3,2280,2280}, {3,2292,2292}, {3,2512,2520}, {3,2940,2940}, {3,2992,3000}, {3,3128,3132}, {3,3140,3140}, {3,3620,3620}, {4,96,104}, {4,112,120}, {4,128,136}, {4,144,152}, {4,320,324}, {4,380,380}, {4,412,412}, {5,0,0}, {5,8,8}, {5,16,24}, {5,32,32}, {5,48,56}, {5,64,72}, {5,80,88}, {5,96,96}, {5,104,108}, {5,1280,1284}, {5,2048,2048}, {7,16,20}, {7,32,36}, {7,48,56}, {7,64,72}, {7,80,88}, {7,96,104}, {7,128,136}, {7,192,200}, {7,208,216}, {7,240,248}, {7,256,264}, {7,288,296}, {7,368,376}, {7,468,476}, {7,520,540}, {7,548,556}, {7,564,576}, {7,584,588}, {7,596,596}, {7,608,608}, {7,616,616}, {7,624,636}, {7,644,656}};
+
+        void CaptureHdrTrace(const Maxwell3D *owner, Pipeline *pipeline, DescriptorUpdateInfo *update, bool full,
+                             ConstantBufferSet &buffers, span<TextureView *> sampled,
+                             span<TextureView *> targets, TextureView *depth, CommandExecutor &executor) {
+            struct ImageRecord {
+                vk::DescriptorImageInfo info;
+                u32 generation;
+                bool full;
+            };
+            struct Shadow {
+                const Maxwell3D *owner{};
+                std::map<std::pair<u32,u32>, ImageRecord> images;
+                u32 generation{};
+                std::array<u32,2> captures{};
+            };
+            // GPU command execution is serial per thread. Do not combine
+            // shadow state from two different Maxwell3D/engine instances.
+            static thread_local Shadow shadow;
+            if (shadow.owner != owner) { shadow = Shadow{}; shadow.owner = owner; }
+            if (full) shadow.images.clear();
+            if (update) {
+                ++shadow.generation;
+                for (const auto &w : update->writes) {
+                    if (!w.pImageInfo ||
+                        (w.descriptorType != vk::DescriptorType::eCombinedImageSampler &&
+                         w.descriptorType != vk::DescriptorType::eStorageImage &&
+                         w.descriptorType != vk::DescriptorType::eSampledImage &&
+                         w.descriptorType != vk::DescriptorType::eSampler))
+                        continue;
+                    for (u32 i{}; i < w.descriptorCount; ++i)
+                        shadow.images[{w.dstBinding, w.dstArrayElement+i}] =
+                            ImageRecord{w.pImageInfo[i], shadow.generation, full};
+                }
+            }
+            const u64 hash{pipeline->sourcePackedState.shaderHashes[5]};
+            const int focus{hash == 0xEA18B70958415FF3ULL ? 0 :
+                            hash == 0x1B8CB95A440E18C1ULL ? 1 : -1};
+            if (focus < 0 || shadow.captures[focus] >= 2) return;
+            // The recovered PR #379 anomaly was in this floating-point HDR
+            // attachment. Ignore uses of the same shader in unrelated passes.
+            bool hdrTarget{};
+            for (auto *rt : targets)
+                if (rt && rt->format->vkFormat == vk::Format::eB10G11R11UfloatPack32)
+                    hdrTarget = true;
+            if (!hdrTarget) return;
+            auto ranges{focus == 0 ? std::span<const HdrOffsetRange>(HdrDraw1)
+                                   : std::span<const HdrOffsetRange>(HdrDraw7)};
+            std::vector<std::string> cbufLogs;
+            cbufLogs.reserve(ranges.size());
+            for (auto const &r : ranges) {
+                auto &cbuf{buffers[4][r.bank]};
+                if (!cbuf.view || static_cast<size_t>(r.last) + 4 > cbuf.view.size) {
+                    cbufLogs.push_back(fmt::format("HDR_CBUF hash={:016X} bank={} offsets={}-{} missing=1",
+                                                    hash,r.bank,r.first,r.last));
+                    continue;
+                }
+                std::string vals;
+                for (u32 offset{r.first}; offset <= r.last; offset += 4)
+                    vals += fmt::format("{}{:08X}", vals.empty() ? "" : ",",
+                                        cbuf.ReadForShaderCompile<u32>(executor,offset));
+                cbufLogs.push_back(fmt::format("HDR_CBUF hash={:016X} bank={} start={} u32={}",
+                                                hash,r.bank,r.first,vals));
+            }
+            auto n{++shadow.captures[focus]};
+            LOGI("HDR_FOCUS_BEGIN hash={:016X} occurrence={} mode={} source=vk_descriptor_writes",
+                 hash,n,full ? "full" : update ? "partial" : "reused");
+            for (auto const &[location,entry] : shadow.images) {
+                auto &v{entry.info};
+                LOGI("HDR_BIND hash={:016X} binding={} element={} vk_view=0x{:X} vk_sampler=0x{:X} layout={} written_at={} write_type={}",
+                     hash,location.first,location.second,
+                     std::bit_cast<u64>(static_cast<VkImageView>(v.imageView)),
+                     std::bit_cast<u64>(static_cast<VkSampler>(v.sampler)),
+                     static_cast<u32>(v.imageLayout),entry.generation,
+                     entry.full ? "full" : "partial");
+            }
+            for (size_t i{};i<sampled.size();++i) {
+                auto *view{sampled[i]};
+                if (!view) continue;
+                LOGI("HDR_SAMPLED hash={:016X} slot={} view={} type={} format={} mip={} levels={} layer={} layers={}",
+                     hash,i,fmt::ptr(view),static_cast<u32>(view->type),
+                     static_cast<u32>(view->format->vkFormat),view->range.baseMipLevel,
+                     view->range.levelCount,view->range.baseArrayLayer,view->range.layerCount);
+            }
+            for (size_t i{}; i < targets.size(); ++i) {
+                auto *view{targets[i]};
+                if (view)
+                    LOGI("HDR_TARGET hash={:016X} slot={} texture={} format={} mip={} layer={}",
+                         hash,i,fmt::ptr(view->texture.get()),
+                         static_cast<u32>(view->format->vkFormat),
+                         view->range.baseMipLevel,view->range.baseArrayLayer);
+            }
+            if (depth)
+                LOGI("HDR_DEPTH hash={:016X} texture={} format={} mip={} layer={}",
+                     hash,fmt::ptr(depth->texture.get()),
+                     static_cast<u32>(depth->format->vkFormat),
+                     depth->range.baseMipLevel,depth->range.baseArrayLayer);
+            for (auto const &line : cbufLogs) LOGI("{}",line);
+            LOGI("HDR_CBUF_DYNAMIC hash={:016X} bank=6 dynamic_index=unresolved",hash);
+            LOGI("HDR_FOCUS_END hash={:016X} occurrence={}",hash,n);
+        }
     }
 
     void Maxwell3D::LoadConstantBuffer(span<u32> data, u32 offset) {
@@ -782,6 +912,33 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
 
         constantBuffers.ResetQuickBind();
+
+        // One-shot GPU-order readback of the *resolved* cubemap used by the
+        // first anomalous HDR fragment shader. Do not reread TIC/TSC.
+        if (auto *pipeline{activeState.GetPipeline()};
+            pipeline && pipeline->sourcePackedState.shaderHashes[5] == 0xEA18B70958415FF3ULL) {
+            bool hdrTarget{};
+            for (auto *target : activeState.GetColorAttachments()) {
+                if (target && target->format->vkFormat == vk::Format::eB10G11R11UfloatPack32) {
+                    hdrTarget = true;
+                    break;
+                }
+            }
+            if (hdrTarget) {
+                for (size_t slot{}; slot < activeDescriptorSetSampledImages.size(); ++slot) {
+                    auto *view{activeDescriptorSetSampledImages[slot]};
+                    if (view && view->type == vk::ImageViewType::eCube &&
+                        view->format->vkFormat == vk::Format::eR16G16B16A16Sfloat &&
+                        view->range.baseMipLevel == 0 && view->range.levelCount == 8 &&
+                        view->range.baseArrayLayer == 0 && view->range.layerCount == 6) {
+                        ctx.executor.QueueHdrCubemapPreDraw(view, 0xEA18B70958415FF3ULL,
+                                                              static_cast<u32>(slot));
+                        break;
+                    }
+                }
+            }
+        }
+
         ctx.executor.AddCheckpoint("Before draw");
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);

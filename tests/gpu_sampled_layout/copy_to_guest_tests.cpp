@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Exact production CopyToGuest and tiling helpers; no Vulkan I/O is involved.
 #include "host_types.h"
+#include <gpu/texture/overlap_group.h>
 namespace skyline::gpu {
     class Texture {
       public:
@@ -10,7 +11,10 @@ namespace skyline::gpu {
         size_t layerStride;
         std::vector<texture::MipLevelLayout> mipLayouts;
         vk::ImageTiling tiling{vk::ImageTiling::eOptimal};
+        bool HasOverlaps() const { return false; } // Native no-overlap encoder regression.
+        std::shared_ptr<texture::OverlapState> overlapState{};
         void CopyToGuest(u8 *hostBuffer);
+        void EncodeGuest(u8 *,u8 *, GuestTexture * = nullptr, const std::vector<texture::MipLevelLayout> * = nullptr);
     };
 #include "copy-to-guest.inc"
 }

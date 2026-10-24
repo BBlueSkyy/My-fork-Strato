@@ -198,9 +198,14 @@ namespace skyline::gpu {
         std::weak_ptr<Texture> weakThis{weak_from_this()};
         trapHandle = gpu.state.process->trap.CreateTrap(mappings, [weakThis] {
             auto texture{weakThis.lock()};
-            if (!texture || texture->aliasStale.load())
+            if (!texture || (!texture->HasOverlaps() && texture->aliasStale.load()))
                 return;
 
+            if (texture->HasOverlaps()) {
+                auto group{texture->overlapState->group.load()};
+                std::scoped_lock operation{group->operationMutex};
+                if (!texture->HasPendingOverlapWrite()) return;
+            }
             std::unique_lock stateLock{texture->stateMutex};
             if (texture->dirtyState == DirtyState::GpuDirty) {
                 stateLock.unlock(); // If the lock isn't unlocked, a deadlock from threads waiting on the other lock can occur
@@ -238,24 +243,29 @@ namespace skyline::gpu {
             if (!stateLock)
                 return false;
 
-            if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty)
+            if ((!texture->HasOverlaps() && texture->aliasStale.load()) || texture->dirtyState != DirtyState::GpuDirty)
                 return true; // If state is already CPU dirty/Clean we don't need to do anything
 
             std::unique_lock lock{*texture, std::try_to_lock};
             if (!lock)
                 return false;
 
-            if (texture->cycle)
-                return false;
-
             auto group{texture->aliasGroup.load()};
+            std::unique_lock<std::recursive_mutex> overlapLock;
+            if (texture->HasOverlaps()) {
+                overlapLock = std::unique_lock{texture->overlapState->group.load()->operationMutex, std::try_to_lock};
+                if (!overlapLock) return false;
+                if (!texture->HasPendingOverlapWrite()) return true;
+                group.reset(); // Range ownership supersedes whole-mapping alias authority.
+            }
+            if (texture->cycle) return false;
             std::unique_lock<std::recursive_mutex> aliasLock;
             if (group) {
                 aliasLock = std::unique_lock{group->operationMutex, std::try_to_lock};
                 if (!aliasLock) return false; // trapMutex must never wait on an alias operation.
             }
             texture->SynchronizeGuest(false, true); // We can skip trapping since the caller will do it
-            if (texture->dirtyState == DirtyState::GpuDirty)
+            if (texture->dirtyState == DirtyState::GpuDirty && (!texture->HasOverlaps() || texture->HasPendingOverlapWrite()))
                 throw exception("Cannot restore GPU-dirty texture guest memory for a CPU read");
             return true;
         }, [weakThis] {
@@ -269,12 +279,12 @@ namespace skyline::gpu {
             if (!stateLock)
                 return false;
 
-            if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty) {
+            if ((!texture->HasOverlaps() && texture->aliasStale.load()) || texture->dirtyState != DirtyState::GpuDirty) {
                 texture->dirtyState = DirtyState::CpuDirty;
                 return true; // If the texture is already CPU dirty or we can transition it to being CPU dirty then we don't need to do anything
             }
 
-            if (!texture->HasAliases() && texture->accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *texture->gpu.state.settings->enableFastGpuReadbackHack && !texture->memoryFreed) {
+            if (!texture->HasAliases() && !texture->HasOverlaps() && texture->accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *texture->gpu.state.settings->enableFastGpuReadbackHack && !texture->memoryFreed) {
                 texture->dirtyState = DirtyState::Clean;
                 return true;
             }
@@ -283,17 +293,25 @@ namespace skyline::gpu {
             if (!lock)
                 return false;
 
-            if (texture->cycle)
-                return false;
-
             auto group{texture->aliasGroup.load()};
+            std::unique_lock<std::recursive_mutex> overlapLock;
+            if (texture->HasOverlaps()) {
+                overlapLock = std::unique_lock{texture->overlapState->group.load()->operationMutex, std::try_to_lock};
+                if (!overlapLock) return false;
+                if (!texture->HasPendingOverlapWrite()) {
+                    texture->dirtyState = DirtyState::CpuDirty;
+                    return true;
+                }
+                group.reset(); // Range ownership supersedes whole-mapping alias authority.
+            }
+            if (texture->cycle) return false;
             std::unique_lock<std::recursive_mutex> aliasLock;
             if (group) {
                 aliasLock = std::unique_lock{group->operationMutex, std::try_to_lock};
                 if (!aliasLock) return false;
             }
             texture->SynchronizeGuest(true, true); // We need to assume the texture is dirty since we don't know what the guest is writing
-            if (texture->dirtyState == DirtyState::GpuDirty)
+            if (texture->dirtyState == DirtyState::GpuDirty && (!texture->HasOverlaps() || texture->HasPendingOverlapWrite()))
                 throw exception("Cannot restore GPU-dirty texture guest memory for a CPU write");
             return true;
         });
@@ -549,43 +567,78 @@ namespace skyline::gpu {
         }, {});
     }
 
-    void Texture::CopyToGuest(u8 *hostBuffer) {
-        if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
-            throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
-        auto guestOutput{mirror.data()};
+    bool Texture::HasPendingOverlapWrite() const {
+        if (!HasOverlaps()) return false;
+        auto group{overlapState->group.load()};
+        std::scoped_lock operation{group->operationMutex};
+        bool pending{};
+        for (const auto &range : overlapState->ranges)
+            group->ForEach(range, [&](auto, auto, const auto &region) {
+                pending |= region.identity == this && !region.guestValid;
+            });
+        return pending;
+    }
 
-        auto guestLayerStride{guest->GetLayerStride()};
-        if (levelCount == 1) {
-            for (size_t layer{}; layer < layerCount; layer++) {
-                if (guest->tileConfig.mode == texture::TileMode::Block)
-                    texture::CopyLinearToBlockLinear(*guest, hostBuffer, guestOutput);
-                else if (guest->tileConfig.mode == texture::TileMode::Pitch)
-                    texture::CopyLinearToPitchLinear(*guest, {hostBuffer, layerStride}, {guestOutput, guestLayerStride});
-                else if (guest->tileConfig.mode == texture::TileMode::Linear)
-                    std::memcpy(guestOutput, hostBuffer, layerStride);
+    void Texture::CopyToGuest(u8 *hostBuffer) {
+        if (!HasOverlaps()) {
+            EncodeGuest(hostBuffer, mirror.data());
+            return;
+        }
+        auto group{overlapState->group.load()};
+        std::scoped_lock operation{group->operationMutex};
+        group->encoding.resize(overlapState->encodingSize);
+        EncodeGuest(hostBuffer, group->encoding.data());
+        // Encode into private scratch first. Padding and superseded bytes in
+        // shared guest memory must never be touched, even temporarily.
+        for (const auto &range : overlapState->ranges)
+            group->ForEach(range, [&](uintptr_t begin, uintptr_t end, const auto &region) {
+                if (region.identity == this) {
+                    const auto offset{range.offset + (begin - range.begin)};
+                    std::memcpy(mirror.data() + offset, group->encoding.data() + offset, end - begin);
+                }
+            });
+    }
+
+    void Texture::EncodeGuest(u8 *hostBuffer, u8 *guestOutput, GuestTexture *pGuest, const std::vector<texture::MipLevelLayout> *pLevels) {
+        auto &encodingGuest{pGuest ? *pGuest : *guest};
+        const auto &encodingLevels{pLevels ? *pLevels : mipLayouts};
+        const auto levels{encodingGuest.mipLevelCount}, layers{encodingGuest.layerCount};
+        if (encodingGuest.tileConfig.mode == texture::TileMode::Pitch && mirror.size() < encodingGuest.GetSize())
+            throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
+
+        auto guestLayerStride{encodingGuest.GetLayerStride()};
+        const auto inputLayerStride{encodingGuest.format->GetSize(encodingGuest.dimensions)};
+        if (levels == 1) {
+            for (size_t layer{}; layer < layers; layer++) {
+                if (encodingGuest.tileConfig.mode == texture::TileMode::Block)
+                    texture::CopyLinearToBlockLinear(encodingGuest, hostBuffer, guestOutput);
+                else if (encodingGuest.tileConfig.mode == texture::TileMode::Pitch)
+                    texture::CopyLinearToPitchLinear(encodingGuest, {hostBuffer, inputLayerStride}, {guestOutput, guestLayerStride});
+                else if (encodingGuest.tileConfig.mode == texture::TileMode::Linear)
+                    std::memcpy(guestOutput, hostBuffer, inputLayerStride);
                 guestOutput += guestLayerStride;
-                hostBuffer += layerStride;
+                hostBuffer += inputLayerStride;
             }
-        } else if (levelCount > 1 && guest->tileConfig.mode == texture::TileMode::Block) {
+        } else if (levels > 1 && encodingGuest.tileConfig.mode == texture::TileMode::Block) {
             // We need to copy into the Tegra X1 layout holds all mip levels for a given layer while the input buffer has all layers for a given mip level
             // Note: See SynchronizeHostImpl for additional comments
-            for (size_t layer{}; layer < layerCount; layer++) {
+            for (size_t layer{}; layer < layers; layer++) {
                 auto outputLevel{guestOutput}, inputLevel{hostBuffer};
-                for (const auto &level : mipLayouts) {
+                for (const auto &level : encodingLevels) {
                     texture::CopyLinearToBlockLinear(
                         level.dimensions,
-                        guest->format->blockWidth, guest->format->blockHeight, guest->format->bpb,
+                        encodingGuest.format->blockWidth, encodingGuest.format->blockHeight, encodingGuest.format->bpb,
                         level.blockHeight, level.blockDepth,
                         inputLevel + (layer * level.linearSize), outputLevel, level.tileWidthSpacing
                     );
 
                     outputLevel += level.blockLinearSize;
-                    inputLevel += layerCount * level.linearSize;
+                    inputLevel += layers * level.linearSize;
                 }
 
                 guestOutput += guestLayerStride;
             }
-        } else if (levelCount != 0) {
+        } else if (levels != 0) {
             throw exception("Mipmapped textures with tiling mode '{}' aren't supported", static_cast<int>(tiling));
         }
     }
@@ -594,8 +647,8 @@ namespace skyline::gpu {
         // A read-only alias may need the guest representation again after another
         // alias becomes the writer. Preserve those bytes without changing the
         // global Free Guest Texture Memory policy for ordinary textures.
-        if (aliasReadOnly.load())
-            return;
+        if (aliasReadOnly.load() || HasOverlaps())
+            return; // A discard could destroy another member's authoritative bytes/padding.
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
         if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
             gpu.state.process->memory.FreeMemory(mirror);
@@ -844,6 +897,171 @@ namespace skyline::gpu {
         }
     }
 
+    std::shared_ptr<texture::OverlapState> Texture::BuildOverlapState(u32 levels) {
+        if (!guest || !guest->format || !guest->format->bpb)
+            throw exception("Cannot register an overlapping texture without a guest encoding");
+        auto state{std::make_shared<texture::OverlapState>()};
+        auto encodingGuest{*guest};
+        auto encodingLevels{mipLayouts};
+        if (levels) {
+            encodingGuest.mipLevelCount = levels;
+            encodingLevels = texture::GetBlockLinearMipLayout(encodingGuest.dimensions,
+                encodingGuest.format->blockHeight, encodingGuest.format->blockWidth, encodingGuest.format->bpb,
+                encodingGuest.format->blockHeight, encodingGuest.format->blockWidth, encodingGuest.format->bpb,
+                encodingGuest.tileConfig.blockHeight, encodingGuest.tileConfig.blockDepth, levels, encodingGuest.tileConfig.tileWidthSpacing);
+        }
+        const auto encodedSize{std::max<size_t>(mirror.size(), encodingGuest.GetSize())};
+        state->encodingSize = encodedSize;
+        std::vector<u8> encoding(encodedSize);
+        // This bitmap enumerates the existing encoder's write footprint once.
+        // It is metadata only: no synthesized bytes are written to guest memory.
+        std::vector<u8> texels(CalculateLevelStride(encodingLevels) * encodingGuest.layerCount, 0xFF);
+        EncodeGuest(texels.data(), encoding.data(), &encodingGuest, &encodingLevels);
+        for (size_t offset{mirror.size()}; offset < encodedSize; ++offset)
+            if (encoding[offset])
+                throw exception("Overlapping texture texels exceed their guest mappings");
+        size_t base{};
+        for (const auto &mapping : guest->mappings) {
+            for (size_t offset{}; offset < mapping.size();) {
+                if (!encoding[base + offset]) { ++offset; continue; }
+                const auto begin{offset};
+                while (offset < mapping.size() && encoding[base + offset]) ++offset;
+                const auto address{reinterpret_cast<uintptr_t>(mapping.data())};
+                state->ranges.push_back({address + begin, address + offset, base + begin});
+            }
+            base += mapping.size();
+        }
+        std::sort(state->ranges.begin(), state->ranges.end(), [](const auto &a, const auto &b) { return a.begin < b.begin; });
+        for (size_t i{1}; i < state->ranges.size(); ++i)
+            if (state->ranges[i - 1].end > state->ranges[i].begin)
+                throw exception("Overlapping texels within one guest texture cannot be encoded losslessly");
+        return state;
+    }
+
+    void Texture::RegisterOverlaps(std::vector<std::shared_ptr<Texture>> textures) {
+        if (textures.empty()) return;
+        // Called with channelLock, after submitting/unlocking the interrupted
+        // executor. Include exact peers so one physical byte has one ledger.
+        for (size_t i{}; i < textures.size(); ++i) {
+            const auto add{[&](const auto &members) {
+                for (const auto &weak : members)
+                    if (auto member{weak.lock()}; member && std::find(textures.begin(), textures.end(), member) == textures.end())
+                        textures.push_back(std::move(member));
+            }};
+            if (auto exact{textures[i]->aliasGroup.load()}) {
+                std::scoped_lock metadata{exact->mutex};
+                add(exact->members);
+            }
+            if (textures[i]->HasOverlaps()) {
+                auto group{textures[i]->overlapState->group.load()};
+                std::scoped_lock operation{group->operationMutex};
+                add(group->members);
+            }
+        }
+        std::sort(textures.begin(), textures.end(), [](const auto &a, const auto &b) { return std::less<Texture *>{}(a.get(), b.get()); });
+        textures.erase(std::unique(textures.begin(), textures.end()), textures.end());
+        std::vector<std::unique_lock<Texture>> locks;
+        for (const auto &texture : textures) locks.emplace_back(*texture);
+        std::vector<std::unique_lock<std::recursive_mutex>> states;
+        for (const auto &texture : textures) states.emplace_back(texture->stateMutex);
+        std::vector<std::shared_ptr<texture::OverlapGroup>> previous;
+        for (const auto &texture : textures)
+            if (texture->HasOverlaps()) {
+                const auto group{texture->overlapState->group.load()};
+                if (std::find(previous.begin(), previous.end(), group) == previous.end()) previous.push_back(group);
+            }
+        std::sort(previous.begin(), previous.end());
+        std::vector<std::unique_lock<std::recursive_mutex>> operations;
+        for (const auto &group : previous) operations.emplace_back(group->operationMutex);
+        auto group{std::make_shared<texture::OverlapGroup>()};
+        std::vector<std::shared_ptr<texture::OverlapState>> members;
+        members.reserve(textures.size()); group->members.reserve(textures.size());
+        for (const auto &texture : textures) {
+            if (!texture->aliasStale.load() && texture->dirtyState == DirtyState::GpuDirty && texture->everUsedAsGpuWrite && texture->format != texture->guest->format)
+                throw exception("Cannot preserve a GPU-written converted overlap losslessly");
+            members.push_back(texture->HasOverlaps() ? texture->overlapState : texture->BuildOverlapState());
+            group->members.emplace_back(texture);
+        }
+        // Preserve existing ownership (including already-Clean writers); adding
+        // an old cached representation must never resurrect its superseded bytes.
+        for (const auto &old : previous)
+            for (const auto &[begin, region] : old->regions) {
+                if (auto owner{region.owner.lock()})
+                    group->Claim({begin, region.end, 0}, owner, region.serial, region.guestValid, true);
+                else if (!region.guestValid)
+                    throw exception("An overlapping writer disappeared before guest publication");
+            }
+        for (size_t i{}; i < textures.size(); ++i) {
+            auto &texture{textures[i]};
+            if (texture->HasOverlaps() || texture->aliasStale.load() || texture->dirtyState == DirtyState::CpuDirty || (!texture->gpuWriteSerial && !texture->memoryFreed))
+                continue;
+            // FreeGuest may have evicted a sampled-only upload before this
+            // component existed. Its backing still owns the missing bytes even
+            // without a GPU-write serial. Serial zero is recovery history only;
+            // it cannot replace a newer writer's interval authority.
+            for (const auto &range : members[i]->ranges)
+                group->Claim(range, texture, texture->gpuWriteSerial, texture->dirtyState != DirtyState::GpuDirty, true);
+        }
+        for (const auto &old : previous)
+            if (old->encoding.capacity() > group->encoding.capacity()) group->encoding = std::move(old->encoding);
+        // Publish only after every allocation and validation succeeds.
+        for (size_t i{}; i < textures.size(); ++i) {
+            const auto &texture{textures[i]};
+            if (!texture->HasOverlaps()) {
+                bool stale{texture->aliasStale.load()};
+                for (const auto &range : members[i]->ranges)
+                    group->ForEach(range, [&](auto, auto, const auto &region) {
+                        if (region.identity != texture.get() &&
+                            (!region.guestValid || (texture->dirtyState != DirtyState::CpuDirty && region.serial > texture->gpuWriteSerial))) stale = true;
+                    });
+                texture->overlapState = members[i];
+                texture->overlapStale = stale;
+            }
+            members[i]->group.store(group);
+            texture->overlapTracked.store(true, std::memory_order_release);
+        }
+    }
+
+    void Texture::ReconcileOverlaps(const std::vector<texture::GuestByteRange> *required) {
+        if (!HasOverlaps() || (!required && !overlapStale.load() && !aliasStale.load())) return;
+        const auto group{overlapState->group.load()};
+        const auto &footprint{required ? *required : overlapState->ranges};
+        std::vector<std::shared_ptr<Texture>> sources;
+        {
+            std::scoped_lock operation{group->operationMutex};
+            for (const auto &range : footprint)
+                group->ForEach(range, [&](auto, auto, const auto &region) {
+                    if (!region.guestValid) {
+                        auto owner{region.owner.lock()};
+                        if (!owner) throw exception("Overlapping GPU writer has no live backing");
+                        if (std::find(sources.begin(), sources.end(), owner) == sources.end()) sources.push_back(std::move(owner));
+                    }
+                });
+        }
+        auto resources{sources};
+        if (std::find(resources.begin(), resources.end(), shared_from_this()) == resources.end()) resources.push_back(shared_from_this());
+        std::sort(resources.begin(), resources.end(), [](const auto &a, const auto &b) { return std::less<Texture *>{}(a.get(), b.get()); });
+        // The normal retry holds no resource locks here. Mip growth has already
+        // submitted the executor and holds only its recursive target lock.
+        // channelLock prevents new GPU owners/registration; CPU traps can only
+        // make the pending sources valid. Do not lock unrelated group members.
+        std::vector<std::unique_lock<Texture>> locks;
+        for (const auto &resource : resources) locks.emplace_back(*resource);
+        std::scoped_lock operation{group->operationMutex};
+        for (const auto &source : sources) source->SynchronizeGuest(false, true);
+        for (const auto &range : footprint)
+            group->ForEach(range, [&](auto, auto, const auto &region) {
+                if (!region.guestValid) throw exception("Overlapping texels have no successful guest encoding");
+            });
+        std::scoped_lock stateLock{stateMutex};
+        dirtyState = DirtyState::CpuDirty;
+        memoryFreed = false;
+        overlapStale = false;
+        aliasStale = false;
+        // Upload remains lazy; failure leaves CpuDirty for retry. Ownership of
+        // the intersection remains with its writer until an actual new write.
+    }
+
     bool Texture::CanMaterializeGuestLayout(const GuestTexture &value) {
         if (!value.format || !value.format->bpb || value.format->vkAspect != vk::ImageAspectFlagBits::eColor ||
             value.baseArrayLayer || !value.layerCount || !value.dimensions.width || !value.dimensions.height ||
@@ -935,6 +1153,15 @@ namespace skyline::gpu {
                         textures.push_back(std::move(member));
             }
         }
+        // Partial components retain authority per byte, even after an exact
+        // candidate is fully superseded. Restore its native footprint through
+        // the current owners before taking registration's resource locks. A
+        // superseded image need not (and must not pretend to) complete readback.
+        // This runs only at the existing submit/retry boundary with channelLock.
+        for (const auto &texture : textures)
+            if (texture->HasOverlaps() && !texture->aliasRetired.load() &&
+                texture->guest && texture->format == texture->guest->format)
+                texture->ReconcileOverlaps(&texture->overlapState->ranges);
         std::sort(textures.begin(), textures.end(), [](const auto &a, const auto &b) { return std::less<Texture *>{}(a.get(), b.get()); });
         textures.erase(std::unique(textures.begin(), textures.end()), textures.end());
         // Registration runs after executor submission releases its resource locks.
@@ -1067,7 +1294,7 @@ namespace skyline::gpu {
     void Texture::RequireAliasCoherence(ContextTag context) {
         if (aliasRetired.load())
             throw exception("Retired texture alias must be resolved through the texture manager");
-        if (!aliasStale.load()) return;
+        if (!aliasStale.load() && !overlapStale.load()) return;
         // Caller may already own this Texture through the executor. Never take
         // another Texture's lock here; unwind and release all executor locks first.
         (void)context;
@@ -1077,6 +1304,7 @@ namespace skyline::gpu {
     void Texture::ReconcileAliases() {
         if (aliasRetired.load())
             throw exception("Cannot reconcile a retired non-reversible texture alias");
+        if (HasOverlaps()) { ReconcileOverlaps(); return; }
         auto group{aliasGroup.load()};
         if (!group || !aliasStale.load()) return;
         std::shared_ptr<Texture> writer;
@@ -1115,6 +1343,11 @@ namespace skyline::gpu {
             if (owner->aliasReadOnly.load())
                 throw exception("A materialized read-only texture alias cannot be used as a render target");
             auto group{owner->aliasGroup.load()};
+            if (owner->HasOverlaps())
+                for (size_t j{}; j < i; ++j)
+                    if (writers[j] && writers[j]->texture.get() != owner && writers[j]->texture->HasOverlaps() &&
+                        texture::RangesIntersect(owner->overlapState->ranges, writers[j]->texture->overlapState->ranges))
+                        throw exception("Concurrent writes through partially overlapping textures cannot be ordered");
             if (!group) continue;
             for (size_t j{}; j < i; ++j)
                 if (writers[j] && writers[j]->texture.get() != owner && writers[j]->texture->aliasGroup.load() == group)
@@ -1143,10 +1376,37 @@ namespace skyline::gpu {
             throw exception("Cannot write through a retired non-reversible texture alias");
         auto alias{aliasGroup.load()};
         std::unique_lock<std::recursive_mutex> aliasLock;
-        if (alias) aliasLock = std::unique_lock{alias->operationMutex};
+        if (alias && !HasOverlaps()) aliasLock = std::unique_lock{alias->operationMutex};
         if (!guest) return;
+        std::shared_ptr<texture::OverlapGroup> overlap;
+        std::unique_lock<std::recursive_mutex> overlapLock;
+        if (HasOverlaps()) {
+            if (format != guest->format)
+                throw exception("Cannot write a host-converted partially overlapping texture losslessly");
+            overlap = overlapState->group.load();
+            overlapLock = std::unique_lock{overlap->operationMutex};
+            // CPU writes can invalidate an attached image before the write site.
+            std::scoped_lock stateLock{stateMutex};
+            SynchronizeHost(false);
+        }
+        if (overlap)
+            for (const auto &range : overlapState->ranges) overlap->Prepare(range);
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+        if (overlap) {
+            // Boundary allocation was completed above; updating existing
+            // ownership nodes does not copy the component's ledger per draw.
+            for (const auto &range : overlapState->ranges)
+                overlap->Claim(range, shared_from_this(), gpuWriteSerial, false);
+            for (const auto &weak : overlap->members)
+                if (auto member{weak.lock()}; member && member.get() != this &&
+                    texture::RangesIntersect(overlapState->ranges, member->overlapState->ranges))
+                    member->overlapStale = true;
+            overlapStale = false;
+            std::scoped_lock stateLock{stateMutex};
+            dirtyState = DirtyState::GpuDirty;
+            gpu.state.process->trap.TrapRegions(*trapHandle, false);
+        }
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};
@@ -1175,7 +1435,7 @@ namespace skyline::gpu {
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
         auto alias{aliasGroup.load()};
         std::unique_lock<std::recursive_mutex> aliasLock;
-        if (alias) aliasLock = std::unique_lock{alias->operationMutex};
+        if (alias && !HasOverlaps()) aliasLock = std::unique_lock{alias->operationMutex};
         if (!guest)
             return;
 
@@ -1208,7 +1468,7 @@ namespace skyline::gpu {
             auto stagingBuffer{SynchronizeHostImpl()};
             if (stagingBuffer) {
                 if (cycle) cycle->WaitSubmit();
-                if (alias) {
+                if (alias || HasOverlaps()) {
                     auto commandBuffer{gpu.scheduler.AllocateCommandBuffer()};
                     auto uploadCycle{commandBuffer.GetFenceCycle()};
                     const auto previousLayout{layout};
@@ -1239,7 +1499,7 @@ namespace skyline::gpu {
                 }
             }
         } catch (...) {
-            if (alias) {
+            if (alias || HasOverlaps()) {
                 std::scoped_lock lock{stateMutex};
                 dirtyState = DirtyState::CpuDirty;
             }
@@ -1262,7 +1522,7 @@ namespace skyline::gpu {
         // including sampled/read-only resources. Alias writer ownership is
         // established by RecordGpuWrite at the actual RT/storage write sites;
         // attachment synchronization itself is not evidence of a GPU write.
-        if (HasAliases()) gpuDirty = false;
+        if (HasAliases() || HasOverlaps()) gpuDirty = false;
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
 
@@ -1287,12 +1547,20 @@ namespace skyline::gpu {
             gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
-        auto stagingBuffer{SynchronizeHostImpl()};
-        if (stagingBuffer) {
-            CopyFromStagingBuffer(commandBuffer, stagingBuffer);
-            pCycle->AttachObjects(stagingBuffer, shared_from_this());
-            pCycle->ChainCycle(cycle);
-            cycle = pCycle;
+        try {
+            auto stagingBuffer{SynchronizeHostImpl()};
+            if (stagingBuffer) {
+                CopyFromStagingBuffer(commandBuffer, stagingBuffer);
+                pCycle->AttachObjects(stagingBuffer, shared_from_this());
+                pCycle->ChainCycle(cycle);
+                cycle = pCycle;
+            }
+        } catch (...) {
+            if (HasOverlaps()) {
+                std::scoped_lock lock{stateMutex};
+                dirtyState = DirtyState::CpuDirty;
+            }
+            throw;
         }
 
         {
@@ -1310,24 +1578,42 @@ namespace skyline::gpu {
             return;
         auto alias{aliasGroup.load()};
         std::unique_lock<std::recursive_mutex> aliasLock;
-        if (alias) aliasLock = std::unique_lock{alias->operationMutex};
-        if (aliasStale.load()) return; // A superseded GPU image must never overwrite newer guest bytes.
+        if (alias && !HasOverlaps()) aliasLock = std::unique_lock{alias->operationMutex};
+        if (!HasOverlaps() && aliasStale.load()) return; // Partial components publish only still-owned ranges.
         if (!guest)
             return;
 
         TRACE_EVENT("gpu", "Texture::SynchronizeGuest");
 
+        std::shared_ptr<texture::OverlapGroup> overlap;
+        std::unique_lock<std::recursive_mutex> overlapLock;
+        if (HasOverlaps()) {
+            overlap = overlapState->group.load();
+            overlapLock = std::unique_lock{overlap->operationMutex};
+        }
         // Keep the guest invalid until its bytes have been restored. Trap
         // callbacks try-lock stateMutex and retry outside trapMutex, so they
         // cannot release CPU access (including the readback hack) mid-copy.
         std::scoped_lock stateLock{stateMutex};
         if (cpuDirty && dirtyState == DirtyState::Clean) {
             dirtyState = DirtyState::CpuDirty;
-            if (!skipTrap)
-                gpu.state.process->trap.DeleteTrap(*trapHandle);
+            if (!skipTrap) {
+                if (overlap) gpu.state.process->trap.RemoveTrap(*trapHandle);
+                else gpu.state.process->trap.DeleteTrap(*trapHandle);
+            }
             return;
         } else if (dirtyState != DirtyState::GpuDirty) {
             return;
+        }
+
+        if (overlap && !HasPendingOverlapWrite()) {
+            if (cpuDirty) {
+                dirtyState = DirtyState::CpuDirty; // Nothing owned remains on this image.
+                if (!skipTrap) gpu.state.process->trap.RemoveTrap(*trapHandle);
+            } else if (!skipTrap) {
+                gpu.state.process->trap.TrapRegions(*trapHandle, true);
+            }
+            return; // No GPU copy or fabricated readback serial.
         }
 
         // Attachment synchronization can mark a sampled-only converted image
@@ -1336,10 +1622,12 @@ namespace skyline::gpu {
         if (!alias && format != guest->format && !everUsedAsGpuWrite && !memoryFreed) {
             dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
             if (!skipTrap) {
-                if (cpuDirty)
-                    gpu.state.process->trap.DeleteTrap(*trapHandle);
-                else
+                if (cpuDirty) {
+                    if (overlap) gpu.state.process->trap.RemoveTrap(*trapHandle);
+                    else gpu.state.process->trap.DeleteTrap(*trapHandle);
+                } else {
                     gpu.state.process->trap.TrapRegions(*trapHandle, true);
+                }
             }
             return;
         }
@@ -1373,6 +1661,7 @@ namespace skyline::gpu {
         // Publish validity only after a successful fence wait and guest copy.
         // Early returns and exceptions leave the GPU writer authoritative.
         gpuReadbackSerial = gpuWriteSerial;
+        if (overlap) overlap->Published(this);
         dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
         memoryFreed = false;
         if (auto group{aliasGroup.load()}) {
@@ -1381,10 +1670,12 @@ namespace skyline::gpu {
                 group->guestGeneration = group->generation;
         }
         if (!skipTrap) {
-            if (cpuDirty)
-                gpu.state.process->trap.DeleteTrap(*trapHandle);
-            else
-                gpu.state.process->trap.TrapRegions(*trapHandle, true); // Trap any future CPU writes to this texture
+            if (cpuDirty) {
+                if (overlap) gpu.state.process->trap.RemoveTrap(*trapHandle);
+                else gpu.state.process->trap.DeleteTrap(*trapHandle);
+            } else {
+                gpu.state.process->trap.TrapRegions(*trapHandle, true);
+            } // Trap any future CPU writes to this texture
         }
     }
 
@@ -1440,6 +1731,11 @@ namespace skyline::gpu {
         const bool grow{nextLevels != levelCount};
         const bool admitFormat{!ViewFormatAdmitted(requested)};
         if (!grow && !admitFormat) return;
+        std::shared_ptr<texture::OverlapState> grownOverlap;
+        if (grow && HasOverlaps()) {
+            grownOverlap = BuildOverlapState(nextLevels);
+            ReconcileOverlaps(&grownOverlap->ranges);
+        }
         std::scoped_lock stateLock{stateMutex};
         if (grow && !CanGrowMipLevels(nextLevels))
             throw exception("Cannot preserve this texture's guest mip layout while growing its backing");
@@ -1560,6 +1856,11 @@ namespace skyline::gpu {
             mipLayouts = std::move(nextLayouts);
             surfaceSize = deswizzledSurfaceSize = nextSurfaceSize; // Native-format growth only.
             downloadStagingBuffer.reset();
+            if (grownOverlap) {
+                std::scoped_lock operation{overlapState->group.load()->operationMutex};
+                overlapState->ranges.swap(grownOverlap->ranges);
+                overlapState->encodingSize = grownOverlap->encodingSize;
+            }
         }
         ++backingGeneration;
         cycle = std::move(copyCycle);
