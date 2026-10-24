@@ -363,6 +363,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
             const int focus{hash == 0xEA18B70958415FF3ULL ? 0 :
                             hash == 0x1B8CB95A440E18C1ULL ? 1 : -1};
             if (focus < 0 || shadow.captures[focus] >= 2) return;
+            // The recovered PR #379 anomaly was in this floating-point HDR
+            // attachment. Ignore uses of the same shader in unrelated passes.
+            bool hdrTarget{};
+            for (auto *rt : targets)
+                if (rt && rt->format->vkFormat == vk::Format::eB10G11R11UfloatPack32)
+                    hdrTarget = true;
+            if (!hdrTarget) return;
             auto ranges{focus == 0 ? std::span<const HdrOffsetRange>(HdrDraw1)
                                    : std::span<const HdrOffsetRange>(HdrDraw7)};
             std::vector<std::string> cbufLogs;
