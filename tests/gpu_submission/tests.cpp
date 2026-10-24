@@ -113,6 +113,7 @@ struct Texture : std::enable_shared_from_this<Texture> {
     Texture(std::shared_ptr<FenceCycle> cycle, bool staged, std::function<void()> onSync)
         : cycle{std::move(cycle)}, staged{staged}, onSync{std::move(onSync)} {}
     bool HasAliases() const { return false; }
+    bool HasOverlaps() const { return false; }
     void FreeGuest() {}
     std::shared_ptr<int> SynchronizeHostImpl() { onSync(); return staged ? std::make_shared<int>(0) : nullptr; }
     void CopyFromStagingBuffer(int, const std::shared_ptr<int> &) {}

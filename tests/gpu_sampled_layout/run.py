@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
             "void CopyLinearToBlockLinear(const GuestTexture &guest",
             "void CopyPitchLinearToLinear(",
             "void CopyLinearToPitchLinear(")) + "\n}\n")
-    (build / "copy-to-guest.inc").write_text(function(texture, "void Texture::CopyToGuest("))
+    (build / "copy-to-guest.inc").write_text(function(texture, "void Texture::CopyToGuest(") + "\n" + function(texture, "void Texture::EncodeGuest("))
     start = textures.index("            constexpr size_t CubeFaceCount", textures.index("TextureView *Textures::GetTexture("))
     end = textures.index("            auto mappings{", start)
     # This is the unchanged complete production dimensions/type/tiling setup.

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "alias_group.h"
+#include "overlap_group.h"
 
 #include <range/v3/view.hpp>
 #include <range/v3/algorithm.hpp>
@@ -414,6 +415,15 @@ namespace skyline::gpu {
         mutable std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
         texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup{};
         std::atomic<bool> aliasStale{};
+        // Publish once after overlapState is initialized; the common path tests
+        // this bool without an atomic shared_ptr load or another mutex.
+        std::atomic<bool> overlapTracked{};
+        std::atomic<bool> overlapStale{};
+        std::shared_ptr<texture::OverlapState> overlapState;
+        bool HasOverlaps() const { return overlapTracked.load(std::memory_order_acquire); }
+        std::shared_ptr<texture::OverlapState> BuildOverlapState(u32 levels = 0);
+        static void RegisterOverlaps(std::vector<std::shared_ptr<Texture>> textures);
+        void ReconcileOverlaps(const std::vector<texture::GuestByteRange> *required = nullptr);
         std::atomic<bool> aliasRetired{}; //!< Obsolete non-reversible representations cannot reclaim writer ownership.
         std::atomic<bool> aliasReadOnly{}; //!< Materializable aliases without a lossless GPU -> guest path may only be sampled/read.
         u64 gpuWriteSerial{};
@@ -426,6 +436,7 @@ namespace skyline::gpu {
         void RequireAliasCoherence(ContextTag context);
         void ReconcileAliases(); // Called outside executor/resource locks.
         void RecordGpuWrite();
+        bool HasPendingOverlapWrite() const;
         static void ValidateAliasWrites(span<TextureView *> writers);
         std::shared_ptr<void> PinGuestMemory();
 
@@ -493,6 +504,7 @@ namespace skyline::gpu {
          * @note The host buffer must be contain the entire image
          */
         void CopyToGuest(u8 *hostBuffer);
+        void EncodeGuest(u8 *hostBuffer, u8 *guestOutput, GuestTexture *layout = nullptr, const std::vector<texture::MipLevelLayout> *levels = nullptr);
 
         /**
          * @brief Frees the guest side copy of the texture

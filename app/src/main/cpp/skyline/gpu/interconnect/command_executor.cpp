@@ -490,7 +490,7 @@ namespace skyline::gpu::interconnect {
             //    preserveAttachedTextures.emplace_back(view->texture);
         }
 
-        if (view->texture->HasAliases())
+        if (view->texture->HasAliases() || view->texture->HasOverlaps())
             view->texture->SynchronizeHost(false); // Initialize before claiming a GPU write, once per generation.
         return didLock;
     }
@@ -828,8 +828,10 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {
         Submit();
-        if (!request.registration.empty())
-            Texture::RegisterAliases(request.registration, request.registrationLayout.get());
+        if (!request.registration.empty()) {
+            if (request.partialOverlap) Texture::RegisterOverlaps(request.registration);
+            else Texture::RegisterAliases(request.registration, request.registrationLayout.get());
+        }
         if (request.target)
             request.target->ReconcileAliases();
     }

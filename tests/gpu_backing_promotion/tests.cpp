@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <gpu/texture/backing_promotion.h>
+#include <gpu/texture/overlap_group.h>
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
 #include <gpu/texture/pitch_linear.h>
@@ -186,6 +187,7 @@ namespace skyline::gpu {
         std::vector<std::shared_ptr<FenceCycle>> cycles;
         bool failRecording{};
         unsigned submissions{};
+        bool deferSubmission{};
         struct Active {
             std::shared_ptr<FenceCycle> cycle;
             std::shared_ptr<FenceCycle> GetFenceCycle() { return cycle; }
@@ -204,6 +206,7 @@ namespace skyline::gpu {
             return {cycle};
         }
         void SubmitCommandBuffer(const vk::raii::CommandBuffer &commands, std::shared_ptr<FenceCycle> cycle) {
+            if (deferSubmission) return;
             queue.submit(vk::SubmitInfo{.commandBufferCount = 1, .pCommandBuffers = &*commands}, *cycle->fence);
             cycle->submitted = true;
             ++submissions;
@@ -216,7 +219,16 @@ namespace skyline::gpu {
             SubmitCommandBuffer(*buffer, buffer.cycle);
             return buffer.cycle;
         }
-        void Complete() { for (auto &cycle : cycles) cycle->Wait(true); }
+        void FlushPending() {
+            deferSubmission=false;
+            for (auto &cycle : cycles)
+                if (!cycle->submitted && !cycle->cancelled) SubmitCommandBuffer(cycle->commands,cycle);
+        }
+        void Complete() {
+            for (auto &cycle : cycles)
+                if (cycle->submitted) cycle->Wait(true);
+                else cycle->Cancel(); // Unused host-test buffers were never submitted.
+        }
         ~Scheduler() { Complete(); }
     };
 
@@ -257,6 +269,7 @@ namespace skyline::gpu {
                     return static_cast<int>(callbacks.size()-1);
                 }
                 void TrapRegions(int,bool) { std::scoped_lock lock{mutex}; ++changes; }
+                void RemoveTrap(int) { ++changes; }
                 void DeleteTrap(int) { std::scoped_lock lock{mutex}; ++changes; }
             } trap;
         };
@@ -313,8 +326,8 @@ namespace skyline::gpu {
             if (viewType==vk::ImageViewType::e1D || viewType==vk::ImageViewType::e1DArray) return vk::ImageType::e1D;
             return vk::ImageType::e2D;
         }
-        u32 GetLayerStride() { return layerStride; }
-        size_t GetSize() {
+        u32 GetLayerStride() const { return layerStride; }
+        size_t GetSize() const {
             if (tileConfig.mode == texture::TileMode::Pitch)
                 return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), layerCount, baseArrayLayer);
             return GetLayerStride() * (layerCount - baseArrayLayer);
@@ -356,7 +369,7 @@ namespace skyline::gpu {
             dirtyState=DirtyState::CpuDirty;
         }
         void SetupGuestMappings();
-        ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
+        ~Texture() { if(HasAliases() || HasOverlaps()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
         BackingType backing;
         vk::ImageType backingImageType{vk::ImageType::e2D};
         vk::Extent3D dimensions{20, 12, 1};
@@ -379,6 +392,12 @@ namespace skyline::gpu {
         mutable std::recursive_mutex stateMutex;
         std::atomic<std::shared_ptr<texture::AliasGroup>> aliasGroup{};
         std::atomic<bool> aliasStale{};
+        std::atomic<bool> overlapTracked{}, overlapStale{};
+        std::shared_ptr<texture::OverlapState> overlapState;
+        bool HasOverlaps() const { return overlapTracked.load(std::memory_order_acquire); }
+        std::shared_ptr<texture::OverlapState> BuildOverlapState(u32 levels = 0);
+        static void RegisterOverlaps(std::vector<std::shared_ptr<Texture>>);
+        void ReconcileOverlaps(const std::vector<texture::GuestByteRange> *required = nullptr);
         std::atomic<bool> aliasRetired{};
         std::atomic<bool> aliasReadOnly{};
         u64 gpuWriteSerial{},gpuReadbackSerial{};
@@ -396,6 +415,7 @@ namespace skyline::gpu {
         void RequireAliasCoherence(ContextTag);
         void ReconcileAliases();
         void RecordGpuWrite();
+        bool HasPendingOverlapWrite() const;
         void SynchronizeGuest(bool, bool);
         std::optional<int> trapHandle{777};
         u32 guestMemoryPins{};
@@ -454,6 +474,7 @@ namespace skyline::gpu {
         std::shared_ptr<memory::StagingBuffer> SynchronizeHostImpl();
         void CopyIntoStagingBuffer(const vk::raii::CommandBuffer &, const std::shared_ptr<memory::StagingBuffer> &);
         void CopyToGuest(u8 *);
+        void EncodeGuest(u8 *,u8 *, GuestTexture * = nullptr, const std::vector<texture::MipLevelLayout> * = nullptr);
         void TransitionLayout(vk::ImageLayout);
 
         void FreeGuest();
@@ -539,7 +560,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             UsageTracker usageTracker;
             bool AttachTexture(TextureView *);
             unsigned submissions{};
-            void Submit() { ++submissions; }
+            std::function<void()> onSubmit;
+            void Submit() { ++submissions; if (onSubmit) onSubmit(); }
             void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &);
             void HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &);
         };
@@ -1073,14 +1095,18 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
                 bytes.data(),encoded.data()+layer*texture->guest->layerStride);
     }
 
-    void WriteAliasRenderTarget(const std::shared_ptr<Texture> &texture, std::array<float,4> color) {
-        AliasRead(texture);
+    void WriteAliasRenderTarget(const std::shared_ptr<Texture> &texture, std::array<float,4> color, bool prepare = true,
+                                std::optional<vk::Rect2D> clearRect = {}) {
+        if (prepare) AliasRead(texture);
         std::scoped_lock lock{*texture};
         auto &gpu{texture->gpu};
-        auto view{texture->GetView(vk::ImageViewType::e2DArray,
-            {vk::ImageAspectFlagBits::eColor,0,1,0,texture->layerCount},texture->format,{},0)};
+        const vk::ImageSubresourceRange viewRange{vk::ImageAspectFlagBits::eColor,0,1,0,texture->layerCount};
+        // A full overwrite can use its already-prepared backing without reading
+        // old texels. Constructing the view here does not consult guest memory.
+        auto view{prepare ? texture->GetView(vk::ImageViewType::e2DArray,viewRange,texture->format,{},0) :
+            std::make_shared<TextureView>(texture,vk::ImageViewType::e2DArray,viewRange,texture->format,vk::ComponentMapping{})};
         const vk::AttachmentDescription attachment{.format=texture->format->vkFormat,.samples=vk::SampleCountFlagBits::e1,
-            .loadOp=vk::AttachmentLoadOp::eClear,.storeOp=vk::AttachmentStoreOp::eStore,
+            .loadOp=clearRect ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear,.storeOp=vk::AttachmentStoreOp::eStore,
             .initialLayout=vk::ImageLayout::eGeneral,.finalLayout=vk::ImageLayout::eGeneral};
         const vk::AttachmentReference reference{.attachment=0,.layout=vk::ImageLayout::eGeneral};
         const vk::SubpassDescription subpass{.pipelineBindPoint=vk::PipelineBindPoint::eGraphics,
@@ -1112,6 +1138,12 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             commands.beginRenderPass(vk::RenderPassBeginInfo{.renderPass=*resources->pass,.framebuffer=*resources->framebuffer,
                 .renderArea={{0,0},{texture->dimensions.width,texture->dimensions.height}},.clearValueCount=1,.pClearValues=&clear},
                 vk::SubpassContents::eInline);
+            if (clearRect) {
+                const vk::ClearAttachment clearAttachment{.aspectMask=vk::ImageAspectFlagBits::eColor,
+                    .colorAttachment=0,.clearValue=clear};
+                const vk::ClearRect rect{.rect=*clearRect,.baseArrayLayer=0,.layerCount=texture->layerCount};
+                commands.clearAttachments(clearAttachment,rect);
+            }
             commands.endRenderPass();
         });
         texture->cycle->AttachObjects(resources,texture);
@@ -1415,7 +1447,9 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         if (authoritative && !writerReadBack) {
             assert(rejected && !next && bytes==before);
             assert(!old->texture->aliasStale && !old->texture->replaced);
-            assert(old->texture->dirtyState==(skippedReadback && !alreadyGrouped ? Texture::DirtyState::Clean : Texture::DirtyState::GpuDirty));
+            // #392 keeps an actual GPU writer dirty when encoding is unavailable.
+            // The retained-guest Clean exception applies only to never-written images.
+            assert(old->texture->dirtyState==Texture::DirtyState::GpuDirty);
         } else {
             assert(!rejected && next && registrations==static_cast<unsigned>(executorContext) && bytes==expected);
             assert(old->texture->aliasStale && old->texture->replaced);
@@ -1457,9 +1491,9 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         EncodeAliasBase(old->texture,expected,{255,0,255,255});
         if (readBack) { std::scoped_lock lock{*old->texture}; old->texture->SynchronizeGuest(false,true); }
         NativeFormat converted{*old->texture->format}; old->texture->format=&converted;
-        if (!readBack) { // Clean from a skipped conversion is not preservation.
+        if (!readBack) { // #392 does not publish Clean for an unencodable real writer.
             std::scoped_lock lock{*old->texture}; old->texture->SynchronizeGuest(false,true);
-            assert(old->texture->dirtyState==Texture::DirtyState::Clean && bytes!=expected);
+            assert(old->texture->dirtyState==Texture::DirtyState::GpuDirty && bytes!=expected);
         }
         auto requested{descriptor}; requested.layerStride=180224; requested.layerCount=3;
         std::shared_ptr<TextureView> next;
@@ -1721,7 +1755,11 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(writer->memoryFreed && writer->dirtyState == Texture::DirtyState::GpuDirty);
         assert(bytes != expected); // Fake FreeMemory removes the guest bridge.
 
-        Texture::RegisterAliases({writer, alternate});
+        // FreeMemory discards padding too; only actual GPU texels can be restored.
+        // Use the same eligible-first reference order as FindOrCreate.
+        expected = bytes;
+        EncodeAliasBase(writer, expected, {0,0,255,255});
+        Texture::RegisterAliases({alternate, writer});
         auto group{writer->aliasGroup.load()};
         assert(group && alternate->aliasGroup.load() == group);
         assert(!writer->memoryFreed && writer->gpuReadbackSerial == writer->gpuWriteSerial);

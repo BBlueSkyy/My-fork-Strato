@@ -10,7 +10,7 @@
 #include <optional>
 #include <stdexcept>
 #include <variant>
-#include <gpu/texture/alias_group.h>
+#include <gpu/texture/overlap_group.h>
 #define TRACE_EVENT(...) ((void)0)
 namespace vk {
 enum class ImageLayout { eUndefined, eGeneral };
@@ -41,6 +41,7 @@ struct FenceCycle {
 struct Trap {
     std::mutex mutex;
     unsigned deletes{}, retraps{};
+    void RemoveTrap(int) { throw std::logic_error("Partial path uses real traps in the overlap suite"); }
     void DeleteTrap(int) { std::scoped_lock lock{mutex}; ++deletes; }
     void TrapRegions(int, bool writeOnly) { std::scoped_lock lock{mutex}; Check(writeOnly, "unexpected read trap rearm"); ++retraps; }
 };
@@ -93,6 +94,9 @@ public:
     void lock() { resourceMutex.lock(); }
     bool try_lock() { return resourceMutex.try_lock(); }
     void unlock() { resourceMutex.unlock(); }
+    std::shared_ptr<texture::OverlapState> overlapState;
+    bool HasPendingOverlapWrite() const { return false; }
+    bool HasOverlaps() const { return false; } // This suite covers the unchanged ungrouped/exact-alias paths.
     bool HasAliases() const { return bool(aliasGroup.load()); }
     void WaitOnBacking() {}
     void WaitOnFence() { gpu.io.Fail(Failure::PriorFence); }
