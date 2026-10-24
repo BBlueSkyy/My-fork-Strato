@@ -3,6 +3,7 @@
 
 #include <common/trace.h>
 #include <gpu.h>
+#include <atomic>
 #include "texture/layout.h"
 #include "texture_manager.h"
 #include "texture/backing_promotion.h"
@@ -528,9 +529,38 @@ namespace skyline::gpu {
                     matches.push_back(entry.texture);
             });
 
-        for (auto &texture : matches)
-            if (!separateGroup || texture->aliasGroup.load() != separateGroup)
+        // #394: trace potential pre-creation writers of the precise HDR cube,
+        // without reading guest pointers or changing reconciliation behavior.
+        const bool originTarget{
+            guestTexture.viewType == vk::ImageViewType::eCube &&
+            guestTexture.format->vkFormat == vk::Format::eR16G16B16A16Sfloat &&
+            guestTexture.dimensions.width == 128 && guestTexture.dimensions.height == 128 &&
+            guestTexture.layerCount == 6 && guestTexture.mipLevelCount == 8 &&
+            guestTexture.mappings.size() == 1};
+        static std::atomic<u32> originLookups{};
+        const bool originTrace{originTarget &&
+                               originLookups.fetch_add(1, std::memory_order_relaxed) < 12};
+        if (originTrace) {
+            LOGI("HDR_ORIGIN_FIND guest_ptr={} guest_bytes={} matched_sources={} separate_alias_group={}",
+                 fmt::ptr(guestMapping.data()), guestTexture.GetSize(), matches.size(),
+                 static_cast<bool>(separateGroup));
+        }
+        for (auto &texture : matches) {
+            const bool willSync{!separateGroup || texture->aliasGroup.load() != separateGroup};
+            if (originTrace)
+                LOGI("HDR_ORIGIN_SOURCE action={} source={} gpu_writer={} gpu_serial={} "
+                     "readback_serial={} alias_stale={} guest_freed={} dirty_state={}",
+                     willSync ? "sync_guest" : "group_skip", fmt::ptr(texture.get()),
+                     texture->everUsedAsGpuWrite, texture->gpuWriteSerial,
+                     texture->gpuReadbackSerial, texture->aliasStale.load(),
+                     texture->memoryFreed, static_cast<u32>(texture->dirtyState));
+            if (willSync)
                 texture->SynchronizeGuest(false, true);
+            if (originTrace && willSync)
+                LOGI("HDR_ORIGIN_SOURCE_AFTER source={} readback_serial={} guest_freed={} dirty_state={}",
+                     fmt::ptr(texture.get()), texture->gpuReadbackSerial,
+                     texture->memoryFreed, static_cast<u32>(texture->dirtyState));
+        }
 
         // Create a texture as we cannot find one that matches
 
