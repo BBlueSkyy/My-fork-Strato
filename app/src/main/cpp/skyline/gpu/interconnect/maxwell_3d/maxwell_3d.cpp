@@ -226,7 +226,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return scissor;
     }
 
-     namespace { void CaptureHdrTrace(Pipeline *, DescriptorUpdateInfo *, bool, ConstantBufferSet &, span<TextureView *>, CommandExecutor &); }
+     namespace { void CaptureHdrTrace(const Maxwell3D *, Pipeline *, DescriptorUpdateInfo *, bool, ConstantBufferSet &, span<TextureView *>, span<TextureView *>, TextureView *, CommandExecutor &); }
 
     void Maxwell3D::PrepareDraw(StateUpdateBuilder &builder,
                                  engine::DrawTopology topology, bool indexed, bool estimateIndexBufferSize, u32 firstIndex, u32 count,
@@ -303,7 +303,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
              }
          }
 
-         CaptureHdrTrace(pipeline, descUpdateInfo, hdrFullRefresh, constantBuffers.boundConstantBuffers, activeDescriptorSetSampledImages, ctx.executor);
+         CaptureHdrTrace(this, pipeline, descUpdateInfo, hdrFullRefresh, constantBuffers.boundConstantBuffers, activeDescriptorSetSampledImages, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), ctx.executor);
 
          if (pipeline->UsesRenderArea()) {
              const auto &surfaceClip{clearEngineRegisters.surfaceClip};
@@ -326,16 +326,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
         constexpr HdrOffsetRange HdrDraw1[] = {{0,1296,1296}, {2,400,400}, {2,472,472}, {2,1408,1408}, {2,1432,1432}, {3,508,508}, {3,704,764}, {3,1040,1068}, {3,1120,1128}, {3,2064,2068}, {3,2088,2092}, {3,2104,2124}, {3,2160,2164}, {3,2268,2268}, {3,2292,2292}, {3,2512,2520}, {3,2940,2940}, {3,2992,3000}, {3,3128,3132}, {3,3140,3140}, {3,3620,3620}, {4,76,76}, {4,320,324}, {4,380,380}, {4,412,412}, {5,0,0}, {5,8,8}, {5,16,24}, {5,32,32}, {5,48,56}, {5,64,72}, {5,80,88}, {5,96,96}, {5,104,108}, {5,1280,1284}, {5,2048,2048}, {7,112,120}, {7,192,200}, {7,260,260}, {7,268,268}, {7,280,280}, {7,288,300}, {7,308,316}, {7,324,328}};
         constexpr HdrOffsetRange HdrDraw7[] = {{0,1296,1296}, {2,512,512}, {2,1464,1464}, {3,508,508}, {3,704,764}, {3,1040,1068}, {3,1120,1128}, {3,2064,2068}, {3,2088,2092}, {3,2104,2124}, {3,2160,2164}, {3,2280,2280}, {3,2292,2292}, {3,2512,2520}, {3,2940,2940}, {3,2992,3000}, {3,3128,3132}, {3,3140,3140}, {3,3620,3620}, {4,96,104}, {4,112,120}, {4,128,136}, {4,144,152}, {4,320,324}, {4,380,380}, {4,412,412}, {5,0,0}, {5,8,8}, {5,16,24}, {5,32,32}, {5,48,56}, {5,64,72}, {5,80,88}, {5,96,96}, {5,104,108}, {5,1280,1284}, {5,2048,2048}, {7,16,20}, {7,32,36}, {7,48,56}, {7,64,72}, {7,80,88}, {7,96,104}, {7,128,136}, {7,192,200}, {7,208,216}, {7,240,248}, {7,256,264}, {7,288,296}, {7,368,376}, {7,468,476}, {7,520,540}, {7,548,556}, {7,564,576}, {7,584,588}, {7,596,596}, {7,608,608}, {7,616,616}, {7,624,636}, {7,644,656}};
 
-        void CaptureHdrTrace(Pipeline *pipeline, DescriptorUpdateInfo *update, bool full,
+        void CaptureHdrTrace(const Maxwell3D *owner, Pipeline *pipeline, DescriptorUpdateInfo *update, bool full,
                              ConstantBufferSet &buffers, span<TextureView *> sampled,
-                             CommandExecutor &executor) {
+                             span<TextureView *> targets, TextureView *depth, CommandExecutor &executor) {
             struct ImageRecord {
                 vk::DescriptorImageInfo info;
                 u32 generation;
                 bool full;
             };
             struct Shadow {
-                Pipeline *last{};
+                const Maxwell3D *owner{};
                 std::map<std::pair<u32,u32>, ImageRecord> images;
                 u32 generation{};
                 std::array<u32,2> captures{};
@@ -343,6 +343,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             // GPU command execution is serial per thread. Do not combine
             // shadow state from two different Maxwell3D/engine instances.
             static thread_local Shadow shadow;
+            if (shadow.owner != owner) { shadow = Shadow{}; shadow.owner = owner; }
             if (full) shadow.images.clear();
             if (update) {
                 ++shadow.generation;
@@ -400,6 +401,19 @@ namespace skyline::gpu::interconnect::maxwell3d {
                      static_cast<u32>(view->format->vkFormat),view->range.baseMipLevel,
                      view->range.levelCount,view->range.baseArrayLayer,view->range.layerCount);
             }
+            for (size_t i{}; i < targets.size(); ++i) {
+                auto *view{targets[i]};
+                if (view)
+                    LOGI("HDR_TARGET hash={:016X} slot={} texture={} format={} mip={} layer={}",
+                         hash,i,fmt::ptr(view->texture.get()),
+                         static_cast<u32>(view->format->vkFormat),
+                         view->range.baseMipLevel,view->range.baseArrayLayer);
+            }
+            if (depth)
+                LOGI("HDR_DEPTH hash={:016X} texture={} format={} mip={} layer={}",
+                     hash,fmt::ptr(depth->texture.get()),
+                     static_cast<u32>(depth->format->vkFormat),
+                     depth->range.baseMipLevel,depth->range.baseArrayLayer);
             for (auto const &line : cbufLogs) LOGI("{}",line);
             LOGI("HDR_CBUF_DYNAMIC hash={:016X} bank=6 dynamic_index=unresolved",hash);
             LOGI("HDR_FOCUS_END hash={:016X} occurrence={}",hash,n);
