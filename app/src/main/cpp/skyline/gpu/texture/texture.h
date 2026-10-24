@@ -411,6 +411,10 @@ namespace skyline::gpu {
             GpuDirty, //!< The GPU texture has been modified but the CPU mappings have not been updated
         } dirtyState{DirtyState::CpuDirty}; //!< The state of the CPU mappings with respect to the GPU texture
         bool memoryFreed{}; //!< If the guest backing memory has been freed
+        // #394 diagnostic: limited early-origin snapshots of matching HDR cubemaps.
+        u32 hdrCubeOriginId{};
+        u32 hdrCubeOriginUploads{};
+        void CaptureHdrCubeOrigin(const char *stage);
         mutable std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
         texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup{};
         std::atomic<bool> aliasStale{};
