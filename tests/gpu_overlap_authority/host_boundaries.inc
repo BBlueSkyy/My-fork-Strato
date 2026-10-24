@@ -2,6 +2,7 @@
 // are used. Observers record which production callback actually executes.
 struct Memory {
     unsigned discards{};
+    bool allowEviction{};
     std::vector<std::pair<void *, size_t>> mirrors;
     ~Memory() { for (auto [address, size] : mirrors) assert(!munmap(address, size)); }
     span<u8> CreateMirror(span<u8> mapping) {
@@ -27,7 +28,11 @@ struct Memory {
         }
         mirrors.emplace_back(base,total); return {base,total};
     }
-    void FreeMemory(span<u8>) { ++discards; throw std::runtime_error("Guest eviction must remain disabled"); }
+    void FreeMemory(span<u8> bytes) {
+        ++discards;
+        if (!allowEviction) throw std::runtime_error("Guest eviction must remain disabled");
+        assert(!madvise(bytes.data(),bytes.size(),MADV_REMOVE));
+    }
 } memory;
 struct Trap {
     std::recursive_mutex mutex; // Retained for unexecuted base-harness test declarations.

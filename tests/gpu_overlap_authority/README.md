@@ -70,4 +70,6 @@ a ordem dos callbacks e as contagens de submissões/alocações. A cobertura inc
 - readback/upload com falha e retry, callback sob contenção sem bloquear;
 - crescimento de mips que passa a alcançar bytes escritos por B;
 - rearmamento de traps, store CPU, supressão de descarte de bytes compartilhados;
+- primeiro overlap após descarte prévio de uma textura só amostrada, com
+  Vulkan real e MADV_REMOVE, falha de readback/retry e reuso estável;
 - reusos estáveis sem submissões ou alocações extras.

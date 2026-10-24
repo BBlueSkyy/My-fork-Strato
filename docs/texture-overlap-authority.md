@@ -81,3 +81,26 @@ state on unavailable encoding, the manager's eligible-first alias registration,
 and the fact that discarded padding cannot be recovered from GPU texels. Unused
 test command buffers are cancelled at cleanup rather than waited as submitted.
 These changes do not alter production exact-only policy.
+
+## Follow-up: pre-registration sampled eviction
+
+A sampled-only native image can be GpuDirty with `memoryFreed=true` and write
+serial zero: generic attachment uploaded it and FreeGuest discarded its guest
+pages before any overlap component existed. The initial #393 registration
+ignored every zero-serial image. Unlike #392's FindOrCreate fallback readback,
+it therefore let a new partially overlapping image upload discarded bytes.
+
+Registration now retains an evicted backing as zero-serial recovery history.
+Actual newer writers still win by serial; no write or readback serial is
+fabricated. Reconstruction uses the existing masked publication/retry path.
+The targeted test failed before this change and passes with real Vulkan and
+`MADV_REMOVE`, including context/non-context creation, readback failure/retry,
+exclusive bytes, later GPU writes and steady reuse without new submissions.
+There is no added work for non-evicted images or the no-overlap path.
+
+This establishes that specific regression when Free Guest Texture Memory is on.
+The supplied SpongeBob video shows severe corruption but cannot establish the
+option's state, resource mappings or which upload first consumed invalid bytes.
+The correction's visual effect must still be tested on device; it does not
+establish that all corruption or the lack of confirmed controllable gameplay
+has been resolved.

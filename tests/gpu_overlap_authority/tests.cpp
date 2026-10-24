@@ -301,6 +301,52 @@ namespace skyline::gpu {
         std::puts("PASS: fragmented mappings and later-segment intersection");
     }
 
+    void CheckEvictedSampledOverlap(const vk::raii::Device &device,const vk::raii::PhysicalDevice &physical,u32 family) {
+        for (bool context : {false,true}) {
+        SharedGuestMemory arena;
+        GPU gpu{device,physical,family,true}; TextureManager manager{gpu};
+        for (size_t i{};i<textureBytes;++i) arena.observer[page+i]=oldColor[i%4];
+        auto a{manager.FindOrCreate(Describe(arena.guest+page))};
+        *gpu.state.settings->freeGuestTextureMemory=true;
+        gpu.state.process->memory.allowEviction=true;
+        a->texture->SynchronizeHost(true); // Sampled upload, no actual GPU writer.
+        assert(a->texture->memoryFreed && !a->texture->gpuWriteSerial);
+        assert(gpu.state.process->memory.discards==1);
+        interconnect::CommandExecutor executor;
+        std::shared_ptr<TextureView> b;
+        bool failReadback{};
+        auto lookup{[&] {
+            texture::RetryBackingPromotion([&] { b=manager.FindOrCreate(Describe(arena.guest+2*page),context ? 1 : 0); },
+                [&](const auto &request) {
+                    gpu.scheduler.failRecording=failReadback;
+                    executor.HandleTextureBackingPromotion(request);
+                });
+        }};
+        if (context) {
+            failReadback=true;
+            bool failed{}; try { lookup(); } catch (const std::bad_alloc &) { failed=true; }
+            failReadback=false; gpu.scheduler.failRecording=false;
+            assert(failed && !b && a->texture->memoryFreed && a->texture->HasPendingOverlapWrite());
+        }
+        lookup(); AliasRead(b->texture);
+        const auto bytes{DownloadEncoded(b->texture)};
+        CheckColor(bytes.data(),page,oldColor);
+        for (size_t i{page};i<textureBytes;++i) assert(bytes[i]==0x2D);
+        CheckColor(arena.observer+page,textureBytes,oldColor);
+        assert(!a->texture->memoryFreed && gpu.state.process->memory.discards==1);
+        const auto submissions{gpu.scheduler.submissions};
+        AliasRead(b->texture); AliasRead(b->texture);
+        assert(gpu.scheduler.submissions==submissions && !a->texture->gpuWriteSerial);
+        WriteAliasRenderTarget(b->texture,{0,1,0,1});
+        AliasRead(a->texture);
+        const auto composite{DownloadEncoded(a->texture)};
+        CheckColor(composite.data(),page,oldColor);
+        CheckColor(composite.data()+page,page,newColor);
+        CheckGuards(arena); gpu.scheduler.Complete(); assert(!validationErrors);
+        }
+        std::puts("PASS: first partial overlap restores previously evicted sampled-only backing");
+    }
+
     void CheckLateExactAlias(const vk::raii::Device &device,const vk::raii::PhysicalDevice &physical,u32 family) {
         for (bool clean : {false,true}) for (bool context : {false,true}) {
             SharedGuestMemory arena;
@@ -446,6 +492,7 @@ int main() {
     CheckExecutorRetry(device,physical,family);
     CheckExactPeers(device,physical,family);
     CheckFragmentedMappings(device,physical,family);
+    CheckEvictedSampledOverlap(device,physical,family);
     CheckLateExactAlias(device,physical,family);
     CheckFullySupersededAndLayers(device,physical,family);
     CheckMipGrowthDependencies(device,physical,family);

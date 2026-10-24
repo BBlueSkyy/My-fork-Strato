@@ -993,8 +993,12 @@ namespace skyline::gpu {
             }
         for (size_t i{}; i < textures.size(); ++i) {
             auto &texture{textures[i]};
-            if (texture->HasOverlaps() || texture->aliasStale.load() || texture->dirtyState == DirtyState::CpuDirty || !texture->gpuWriteSerial)
+            if (texture->HasOverlaps() || texture->aliasStale.load() || texture->dirtyState == DirtyState::CpuDirty || (!texture->gpuWriteSerial && !texture->memoryFreed))
                 continue;
+            // FreeGuest may have evicted a sampled-only upload before this
+            // component existed. Its backing still owns the missing bytes even
+            // without a GPU-write serial. Serial zero is recovery history only;
+            // it cannot replace a newer writer's interval authority.
             for (const auto &range : members[i]->ranges)
                 group->Claim(range, texture, texture->gpuWriteSerial, texture->dirtyState != DirtyState::GpuDirty, true);
         }
