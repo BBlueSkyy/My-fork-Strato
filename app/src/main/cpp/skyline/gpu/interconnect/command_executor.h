@@ -223,6 +223,10 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
+        // Diagnostic only: single ordered cubemap readback for HDR draw 1.
+        std::vector<std::function<void()>> pendingHdrCubemapReadbacks;
+        bool hdrCubemapCaptureQueued{};
+
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
         void RotateRecordSlot();
@@ -442,6 +446,10 @@ namespace skyline::gpu::interconnect {
          * @brief Adds an action to be executed upon current cycle completion (if DMI is on, otherwise after submission)
          */
         void AddDeferredAction(std::function<void()> &&callback);
+
+        // Records the Vulkan cubemap already resolved by SyncDescriptors;
+        // no TIC/TSC reread, no guest writeback and no additional draw probes.
+        void QueueHdrCubemapPreDraw(TextureView *view, u64 shaderHash, u32 sampledSlot);
 
         /**
          * @brief Locks all preserve attached buffers/textures
