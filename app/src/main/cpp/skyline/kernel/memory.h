@@ -351,6 +351,17 @@ namespace skyline {
             void UnlockRegionForIpc(span<u8> memory);
 
             /**
+             * @brief Atomically validate a RW Heap range and borrow it for CodeMemory.
+             * @return False without changing anything if validation/mprotect fails.
+             */
+            bool LockRegionForCodeMemory(span<u8> memory);
+
+            /**
+             * @brief Restore a CodeMemory source range when its backing object closes.
+             */
+            bool UnlockRegionForCodeMemory(span<u8> memory);
+
+            /**
              * @brief Sets the permissions for chunks within a certain range
              * @note The permissions set here are not accurate to the actual permissions set on the chunk and are only for the guest
              */
@@ -375,6 +386,9 @@ namespace skyline {
              */
             bool IsRangeMapped(span<u8> region);
 
+            /** Copy a readable guest range while holding the VMM mapping lock. */
+            bool ReadMemoryIfReadable(u64 address, void *output, size_t size);
+
             /**
              * @brief Atomically validates that the entire range is currently Unmapped (Free) and, if so,
              * maps it as Heap-backed physical memory (mirrors MapHeapMemory's ChunkDescriptor)
@@ -390,6 +404,11 @@ namespace skyline {
 
             // Various mapping functions for use by the guest, argument validity must be checked by the caller
             void MapCodeMemory(span<u8> memory, memory::Permission permission);
+
+            /** Atomically map shared CodeMemory pages into a free alias-code range. */
+            Result MapCodeMemoryAlias(int fd, span<u8> memory, memory::Permission permission, bool owner);
+            Result AllocateCodeMemoryAlias(int fd, size_t size, memory::Permission permission, bool owner, u64 &address);
+            Result UnmapCodeMemoryAlias(span<u8> memory, bool owner);
 
             void MapMutableCodeMemory(span<u8> memory);
 

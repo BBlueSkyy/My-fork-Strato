@@ -4,12 +4,16 @@
 #include <os.h>
 #include <nce.h>
 #include <atomic>
+#include <array>
 #include <cstring>
+#include <limits>
 #include <kernel/types/KProcess.h>
 #include <kernel/types/KTransferMemory.h>
+#include <kernel/types/KCodeMemory.h>
 #include <common/trace.h>
 #include <vfs/npdm.h>
 #include "results.h"
+#include "ipc.h"
 #include "svc.h"
 
 namespace skyline::kernel::svc {
@@ -996,7 +1000,109 @@ namespace skyline::kernel::svc {
         ctx.w0 = Result{};
     }
 
+    namespace {
+        // Capture only anomalous IFile::Write-shaped domain IPC *as the guest
+        // enters* svcSendSyncRequest, before the HLE parser, buffer locks or
+        // response serialization can modify the TLS command buffer. This is
+        // diagnostic-only and never reads guest stack frames or file contents.
+        void TraceRawDomainWriteAtSvc(const DeviceState &state, const SvcContext &ctx) {
+            if (!state.process->is64bit() || !state.thread || !state.thread->tlsRegion)
+                return;
+
+            std::array<u8, constant::TlsIpcSize> tls{};
+            std::memcpy(tls.data(), state.thread->tlsRegion, tls.size());
+            const auto copyAt = [&](size_t offset, auto &object) {
+                if (offset > tls.size() || sizeof(object) > tls.size() - offset)
+                    return false;
+                std::memcpy(&object, tls.data() + offset, sizeof(object));
+                return true;
+            };
+
+            ipc::CommandHeader header{};
+            if (!copyAt(0, header) ||
+                (header.type != ipc::CommandType::Request && header.type != ipc::CommandType::RequestWithContext))
+                return;
+
+            size_t cursor{sizeof(header)};
+            if (header.handleDesc) {
+                ipc::HandleDescriptor handles{};
+                if (!copyAt(cursor, handles)) return;
+                cursor += sizeof(handles);
+                if (handles.sendPid) cursor += sizeof(u64);
+                cursor += sizeof(KHandle) * (static_cast<size_t>(handles.copyCount) + handles.moveCount);
+            }
+            cursor += static_cast<size_t>(header.xNo) * sizeof(ipc::BufferDescriptorX);
+            cursor += static_cast<size_t>(header.aNo + header.bNo + header.wNo) * sizeof(ipc::BufferDescriptorABW);
+            if (cursor > tls.size()) return;
+
+            // rawSize is measured from the end of the descriptors and includes
+            // the aligned domain header, CMIF header and command arguments.
+            const auto rawEnd{cursor + static_cast<size_t>(header.rawSize) * sizeof(u32)};
+            if (rawEnd > tls.size()) return;
+            cursor = util::AlignUp(cursor, constant::IpcPaddingSum);
+            const auto domainOffset{cursor};
+            ipc::DomainHeaderRequest domain{};
+            if (!copyAt(cursor, domain) || domain.command != ipc::DomainCommand::SendMessage ||
+                domain.payloadSz != sizeof(ipc::PayloadHeader) + 0x18)
+                return;
+
+            cursor += sizeof(domain);
+            const auto cmifOffset{cursor};
+            ipc::PayloadHeader cmif{};
+            if (!copyAt(cursor, cmif) || cmif.magic != util::MakeMagic<u32>("SFCI") || cmif.value != 1)
+                return;
+            cursor += sizeof(cmif);
+            const auto argOffset{cursor};
+            struct FileWriteArguments {
+                u32 option;
+                u32 reserved;
+                i64 offset;
+                i64 size;
+            };
+            static_assert(sizeof(FileWriteArguments) == 0x18);
+            FileWriteArguments args{};
+            if (cursor + sizeof(args) > rawEnd || !copyAt(cursor, args) || !(args.option & ~1U))
+                return;
+
+            // Multiple services have command 1. We intentionally call this a
+            // Write-shaped request until IFile::Write confirms the identity.
+            LOGW("FSP_SVC_DIAG: pre-dispatch TLS: handle=0x{:X}, thread={}, domain_tls=0x{:X}, cmif_tls=0x{:X}, args_tls=0x{:X}, raw_words={}, domain_object=0x{:X}, payload_size=0x{:X}, descriptors X/A/B/W={}/{}/{}/{}",
+                 static_cast<KHandle>(ctx.x0), state.thread->id, domainOffset, cmifOffset, argOffset,
+                 static_cast<u32>(header.rawSize), domain.objectId, domain.payloadSz,
+                 static_cast<u32>(header.xNo), static_cast<u32>(header.aNo),
+                 static_cast<u32>(header.bNo), static_cast<u32>(header.wNo));
+            LOGW("FSP_SVC_DIAG: pre-dispatch raw file-write-shaped args: option=0x{:08X}, reserved=0x{:08X}, offset={}, size={}",
+                 args.option, args.reserved, args.offset, args.size);
+            const auto &call{static_cast<const type::KNceThread &>(*state.thread).ctx.svcCallsite};
+            LOGW("FSP_SVC_DIAG: guest SVC callsite: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}, FP=0x{:X}",
+                 call.pc, call.lr, call.sp, call.fp);
+
+            // At this point we are still before SchedulerScopedLock and
+            // IpcBufferLockGuard. Previous attempts to walk and symbolize the
+            // guest stack from IFile::Write blocked the diagnostic itself.
+            // Read only the first frame record (FP chain + saved LR), without
+            // symbolization, mutation or recursive traversal.
+            if (call.fp && !(call.fp & 0xF)) {
+                std::array<u64, 2> frame{};
+                bool readable{};
+                try {
+                    readable = state.process->memory.ReadMemoryIfReadable(call.fp, frame.data(), sizeof(frame));
+                } catch (const signal::SignalException &) {
+                    readable = false;
+                }
+                if (readable)
+                    LOGW("FSP_SVC_DIAG: guest immediate frame: fp=0x{:X}, caller_fp=0x{:X}, caller_lr=0x{:X}",
+                         call.fp, frame[0], frame[1]);
+                else
+                    LOGW("FSP_SVC_DIAG: guest immediate frame unavailable at FP=0x{:X}", call.fp);
+            } else {
+                LOGW("FSP_SVC_DIAG: guest frame pointer null or unaligned FP=0x{:X}", call.fp);
+            }
+        }
+    }
+
     void SendSyncRequest(const DeviceState &state, SvcContext &ctx) {
+        TraceRawDomainWriteAtSvc(state, ctx);
         SchedulerScopedLock schedulerLock(state);
         state.os->serviceManager.SyncRequestHandler(static_cast<KHandle>(ctx.x0));
         ctx.w0 = Result{};
@@ -1020,19 +1126,38 @@ namespace skyline::kernel::svc {
         }
 
         LOGE("Guest svcBreak: reason=0x{:X}, arg=0x{:X}, size=0x{:X}", reason, ctx.x1, ctx.x2);
+        // Validate read permission, including every crossed chunk. Mapped
+        // CodeMemory/TransferMemory source pages can have permission None.
+        const auto readGuest = [&](u64 address, void *out, size_t size) {
+            try {
+                return state.process->memory.ReadMemoryIfReadable(address, out, size);
+            } catch (const signal::SignalException &) {
+                return false;
+            }
+        };
+        if (ctx.x1 && ctx.x2 == sizeof(u32)) {
+            u32 payload{};
+            if (readGuest(ctx.x1, &payload, sizeof(payload))) {
+                const Result result{payload};
+                LOGE("Guest svcBreak 4-byte payload: 0x{:08X} (module {}, description {})",
+                     payload, static_cast<u32>(result.module), static_cast<u32>(result.id));
+            } else {
+                LOGE("Guest svcBreak payload is not readable");
+            }
+        }
         if (!state.process->is64bit()) {
             const auto &guest{static_cast<const type::KJit32Thread &>(*state.thread).ctx};
             LOGE("Guest AArch32 break location: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}",
                  guest.pc, guest.lr, guest.sp);
 
-            if (ctx.x1 && ctx.x2 == sizeof(u32)) {
-                auto region{span<u8>{reinterpret_cast<u8 *>(ctx.x1), sizeof(u32)}};
-                if (state.process->memory.AddressSpaceContains(region) && state.process->memory.IsRangeMapped(region)) {
-                    u32 payload{};
-                    std::memcpy(&payload, state.process->memory.TranslateVirtualPointer<const u8 *>(ctx.x1), sizeof(payload));
-                    LOGE("Guest svcBreak 4-byte payload: 0x{:08X}", payload);
-                }
-            }
+        } else {
+            const auto &call{static_cast<const type::KNceThread &>(*state.thread).ctx.svcCallsite};
+            LOGE("Guest ARM64 break location: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}, FP=0x{:X}",
+                 call.pc, call.lr, call.sp, call.fp);
+            // Avoid synchronous guest stack walking and symbolization during a
+            // fatal SVC. Previous runs stopped before the original guest
+            // termination sequence could finish. Keep raw caller registers.
+            LOGE("Guest ARM64 break: frame walking suppressed (diagnostic safety)");
         }
         if (state.thread->id)
             state.process->Kill(false);
@@ -1615,6 +1740,61 @@ namespace skyline::kernel::svc {
         ctx.w0 = result;
     }
 
+    void CreateCodeMemory(const DeviceState &state, SvcContext &ctx) {
+        const u64 address{ctx.x1};
+        const u64 size{ctx.x2};
+        ctx.w1 = 0;
+
+        LOGW("JIT_DIAG: svcCreateCodeMemory address=0x{:X}, size=0x{:X}", address, size);
+        if (!util::IsPageAligned(address)) {
+            ctx.w0 = result::InvalidAddress;
+            return;
+        }
+        if (!size || !util::IsPageAligned(size) || size > std::numeric_limits<size_t>::max()) {
+            ctx.w0 = result::InvalidSize;
+            return;
+        }
+        if (address > std::numeric_limits<u64>::max() - size ||
+            !state.process->memory.AddressSpaceContains(span<u8>{reinterpret_cast<u8 *>(address), static_cast<size_t>(size)})) {
+            ctx.w0 = result::InvalidCurrentMemory;
+            return;
+        }
+
+        auto codeMemory{std::make_shared<type::KCodeMemory>(state, span<u8>{
+            reinterpret_cast<u8 *>(address), static_cast<size_t>(size)})};
+        auto initResult{codeMemory->Initialize()};
+        if (initResult != Result{}) {
+            ctx.w0 = initResult;
+            return;
+        }
+
+        ctx.w1 = state.process->InsertItem(codeMemory);
+        ctx.w0 = Result{};
+        LOGW("JIT_DIAG: svcCreateCodeMemory initialized real object handle=0x{:X}, size=0x{:X}", ctx.w1, size);
+    }
+
+    void ControlCodeMemory(const DeviceState &state, SvcContext &ctx) {
+        const KHandle handle{ctx.w0};
+        const u32 operation{ctx.w1};
+        const u64 address{ctx.x2}, size{ctx.x3};
+        const u32 permission{ctx.w4};
+        if (!util::IsPageAligned(address)) { ctx.w0 = result::InvalidAddress; return; }
+        if (!size || !util::IsPageAligned(size)) { ctx.w0 = result::InvalidSize; return; }
+        if (address > std::numeric_limits<u64>::max() - size) { ctx.w0 = result::InvalidMemoryRegion; return; }
+        if (operation > 3) { ctx.w0 = result::InvalidEnumValue; return; }
+        if ((operation == 0 && permission != 3) ||
+            (operation == 2 && permission != 1 && permission != 5) ||
+            ((operation == 1 || operation == 3) && permission != 0)) {
+            ctx.w0 = result::InvalidNewMemoryPermission; return;
+        }
+        std::shared_ptr<type::KCodeMemory> memory;
+        try { memory = state.process->GetHandle<type::KCodeMemory>(handle); }
+        catch (const std::exception &) { ctx.w0 = result::InvalidHandle; return; }
+        memory::Permission perm; perm.raw = permission;
+        ctx.w0 = (operation == 0 || operation == 2) ? memory->Map(address, size, perm, operation == 2)
+                                                   : memory->Unmap(address, size, operation == 3);
+    }
+
     #define SVC_NONE SvcDescriptor{} //!< A macro with a placeholder value for the SVC not being implemented or not existing
     #define SVC_STRINGIFY(name) #name
     #define SVC_ENTRY(function) SvcDescriptor{function, SVC_STRINGIFY(Svc ## function)} //!< A macro which automatically stringifies the function name as the name to prevent pointless duplication
@@ -1695,8 +1875,8 @@ namespace skyline::kernel::svc {
         SVC_NONE, // 0x48
         SVC_NONE, // 0x49
         SVC_NONE, // 0x4A
-        SVC_NONE, // 0x4B
-        SVC_NONE, // 0x4C
+        SVC_ENTRY(CreateCodeMemory), // 0x4B
+        SVC_ENTRY(ControlCodeMemory), // 0x4C
         SVC_NONE, // 0x4D
         SVC_NONE, // 0x4E
         SVC_NONE, // 0x4F

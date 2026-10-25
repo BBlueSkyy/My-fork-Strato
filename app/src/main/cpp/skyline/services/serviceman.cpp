@@ -68,6 +68,7 @@
 #include "psm/IPsmServer.h"
 #include "ntc/IEnsureNetworkClockAvailabilityService.h"
 #include "ngc/INgcServiceForApplication.h"
+#include "jit/IJitService.h"
 #include "serviceman.h"
 
 #define SERVICE_CASE(class, name, ...) \
@@ -180,6 +181,7 @@ namespace skyline::service {
             SERVICE_CASE(psm::IPsmServer, "psm")
             SERVICE_CASE(ntc::IEnsureNetworkClockAvailabilityService, "ntc")
             SERVICE_CASE(ngc::INgcServiceForApplication, "ngc:u")
+            SERVICE_CASE(jit::IJitService, "jit:u")
             default:
                 std::string_view nameString(span(reinterpret_cast<char *>(&name), sizeof(name)).as_string(true));
                 throw std::out_of_range(fmt::format("CreateService called with an unknown service name: {}", nameString));
