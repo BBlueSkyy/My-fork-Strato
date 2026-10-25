@@ -949,8 +949,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                             }, ctx.gpu.traits.quirks.needsIndividualTextureBindingWrites);
         }
 
-        CommitStorageImageWrites(ctx, storageWriters);
-        return ctx.executor.allocator->EmplaceUntracked<DescriptorUpdateInfo>(DescriptorUpdateInfo{
+        auto *updateInfo = ctx.executor.allocator->EmplaceUntracked<DescriptorUpdateInfo>(DescriptorUpdateInfo{
             .writes = writes.first(writeIdx),
             .bufferDescs = bufferDescs.first(bufferIdx),
             .bufferDescDynamicBindings = bufferDescDynamicBindings.first(bufferIdx),
@@ -959,6 +958,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             .bindPoint = vk::PipelineBindPoint::eGraphics,
             .descriptorSetIndex = 0,
         });
+        CommitStorageImageWrites(ctx, storageWriters);
+        return updateInfo;
     }
 
     DescriptorUpdateInfo *Pipeline::SyncDescriptorsQuickBind(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, ConstantBuffers::QuickBind quickBind, span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
@@ -1076,9 +1077,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (!writeIdx)
             return nullptr;
 
-        CommitStorageImageWrites(ctx, storageWriters);
 
-        return ctx.executor.allocator->EmplaceUntracked<DescriptorUpdateInfo>(DescriptorUpdateInfo{
+        auto *updateInfo = ctx.executor.allocator->EmplaceUntracked<DescriptorUpdateInfo>(DescriptorUpdateInfo{
             .copies = descriptorInfo.copyDescs,
             .writes = writes.first(writeIdx),
             .bufferDescs = bufferDescs.first(bufferIdx),
@@ -1088,6 +1088,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             .bindPoint = vk::PipelineBindPoint::eGraphics,
             .descriptorSetIndex = 0,
         });
+        CommitStorageImageWrites(ctx, storageWriters);
+        return updateInfo;
     }
 
     PipelineManager::PipelineManager(GPU &gpu, JvmManager &jvm) {
