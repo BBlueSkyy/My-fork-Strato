@@ -592,15 +592,60 @@ namespace skyline::gpu {
 
     void Texture::FreeGuest() {
         // A read-only alias may need the guest representation again after another
-        // alias becomes the writer. Preserve those bytes without changing the
-        // global Free Guest Texture Memory policy for ordinary textures.
-        if (aliasReadOnly.load())
+        // alias becomes the writer. Already discarded bytes remain invalid until
+        // SynchronizeGuest succeeds, even if a later discard would fail.
+        if (memoryFreed || aliasReadOnly.load())
             return;
-        // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
-        if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
-            gpu.state.process->memory.FreeMemory(mirror);
-            memoryFreed = true;
+        if (guestMemoryPins || !*gpu.state.settings->freeGuestTextureMemory || guest->format != format ||
+            (accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack))
+            return;
+
+        // Repeated guest ranges cannot be independently reconstructed from
+        // distinct image layers after their shared physical bytes are removed.
+        for (size_t i{}; i < guest->mappings.size(); ++i) {
+            const auto &first{guest->mappings[i]};
+            const auto firstStart{reinterpret_cast<uintptr_t>(first.data())};
+            for (size_t j{i + 1}; j < guest->mappings.size(); ++j) {
+                const auto &second{guest->mappings[j]};
+                const auto secondStart{reinterpret_cast<uintptr_t>(second.data())};
+                if (firstStart <= secondStart ? secondStart - firstStart < first.size() : firstStart - secondStart < second.size())
+                    return;
+            }
         }
+
+        // Packed depth/stencil aspects and unused depth/stencil format bytes do
+        // not have a lossless guest encoding in the current readback path.
+        if (format->vkAspect != vk::ImageAspectFlagBits::eColor &&
+            format->vkFormat != vk::Format::eD16Unorm && format->vkFormat != vk::Format::eD32Sfloat)
+            return;
+
+        // MADV_REMOVE discards whole pages, including padding. CopyToGuest only
+        // reconstructs image bytes, so retain layouts containing row, GOB, mip,
+        // layer or mapping-end padding rather than losing unrelated guest data.
+        if (!layerCount || guest->baseArrayLayer || guest->layerCount != layerCount ||
+            guest->mipLevelCount != levelCount || guest->dimensions != dimensions)
+            return;
+        const size_t guestLayerStride{guest->GetLayerStride()};
+        if (mirror.size() % layerCount || mirror.size() / layerCount != guestLayerStride)
+            return;
+        if (levelCount == 1) {
+            if (layerStride != guestLayerStride || guest->CalculateLayerSize() != guestLayerStride)
+                return;
+        } else {
+            if (!levelCount || guest->tileConfig.mode != texture::TileMode::Block || mipLayouts.size() != levelCount)
+                return;
+            size_t restoredLayerBytes{};
+            for (const auto &level : mipLayouts) {
+                if (level.linearSize != level.blockLinearSize ||
+                    level.blockLinearSize > guestLayerStride - restoredLayerBytes)
+                    return;
+                restoredLayerBytes += level.blockLinearSize;
+            }
+            if (restoredLayerBytes != guestLayerStride)
+                return;
+        }
+
+        memoryFreed = gpu.state.process->memory.FreeHostMemory(mirror);
     }
 
     Texture::Texture(GPU &gpu, BackingType &&backing, texture::Dimensions dimensions, texture::Format format, vk::ImageLayout layout, vk::ImageTiling tiling, vk::ImageCreateFlags flags, vk::ImageUsageFlags usage, u32 levelCount, u32 layerCount, vk::SampleCountFlagBits sampleCount, vk::ImageType imageType)
