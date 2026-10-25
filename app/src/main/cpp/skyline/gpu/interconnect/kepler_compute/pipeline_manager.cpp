@@ -262,8 +262,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         if (!writeIdx)
             return nullptr;
 
-        CommitStorageImageWrites(ctx, storageWriters);
-        return ctx.executor.allocator->EmplaceUntracked<DescriptorUpdateInfo>(DescriptorUpdateInfo{
+        auto *updateInfo = ctx.executor.allocator->EmplaceUntracked<DescriptorUpdateInfo>(DescriptorUpdateInfo{
             .writes = writes.first(writeIdx),
             .bufferDescs = bufferDescs.first(bufferIdx),
             .bufferDescDynamicBindings = bufferDescDynamicBindings.first(bufferIdx),
@@ -272,5 +271,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             .bindPoint = vk::PipelineBindPoint::eCompute,
             .descriptorSetIndex = 0,
         });
+        CommitStorageImageWrites(ctx, storageWriters);
+        return updateInfo;
     }
 }
