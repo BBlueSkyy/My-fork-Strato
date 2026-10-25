@@ -10,11 +10,44 @@
 #include "jvm.h"
 #include "kernel/types/KProcess.h"
 #include "kernel/svc.h"
+#include "kernel/guest_caller_trace.h"
+#include "loader/loader.h"
 #include "nce/guest.h"
 #include "nce/instructions.h"
 #include "nce.h"
 
 namespace skyline::nce {
+    namespace {
+        struct GuestCodeLocation {
+            std::string_view module{"<unknown>"};
+            std::string_view symbol{};
+        };
+
+        GuestCodeLocation ResolveGuestCodeLocation(const DeviceState &state, u64 guestPc) {
+            if (!guestPc || !state.process || !state.loader)
+                return {};
+
+            const auto hostPc{state.process->memory.TranslateVirtualPointer<u8 *>(guestPc)};
+            const auto symbol{state.loader->ResolveSymbol64(hostPc)};
+            return {
+                .module = symbol.executableName.empty() ? std::string_view{"<unknown>"} : symbol.executableName,
+                .symbol = symbol.name ? std::string_view{symbol.name} : std::string_view{},
+            };
+        }
+
+        void LogGuestCallerPoint(const DeviceState &state, const ThreadContext &ctx, size_t threadId, u32 sequence,
+                                 u16 svcId, const char *svcName, const char *phase) {
+            const auto location{ResolveGuestCodeLocation(state, ctx.diagnosticGuestPc)};
+            LOGI("[SWKBD-CALLER] gen={} seq={} {} thread={} svc=0x{:X} {} pc=0x{:X} module={} symbol={} returnPc=0x{:X} sp=0x{:X} fp=0x{:X} "
+                 "x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X} x5=0x{:X}",
+                 kernel::diagnostic::CurrentGuestCallerGeneration(), sequence, phase,
+                 threadId, svcId, svcName ? svcName : "<unimplemented>",
+                 ctx.diagnosticGuestPc, location.module, location.symbol, ctx.diagnosticGuestLr,
+                 ctx.diagnosticGuestSp, ctx.diagnosticGuestFp,
+                 ctx.gpr.x0, ctx.gpr.x1, ctx.gpr.x2, ctx.gpr.x3, ctx.gpr.x4, ctx.gpr.x5);
+        }
+    }
+
     NCE::ExitException::ExitException(bool killAllThreads) : killAllThreads(killAllThreads) {}
 
     const char *NCE::ExitException::what() const noexcept {
@@ -29,8 +62,28 @@ namespace skyline::nce {
         try {
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
+                const size_t svcThreadId{state.thread->id};
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
+                const u32 callerSequence{kernel::diagnostic::BeginGuestCallerSvc(svcThreadId)};
+                if (callerSequence)
+                    LogGuestCallerPoint(state, *ctx, svcThreadId, callerSequence, svcId, svc.name, "begin");
+
                 (svc.function)(state, svcContext);
+
+                if (callerSequence) {
+                    LogGuestCallerPoint(state, *ctx, svcThreadId, callerSequence, svcId, svc.name, "end");
+                    kernel::diagnostic::FinishGuestCallerSvc(svcThreadId, callerSequence);
+                }
+
+                if (svcId == 0x21 && kernel::diagnostic::ConsumeGuestCallerReturnPoint(svcThreadId)) {
+                    const auto location{ResolveGuestCodeLocation(state, ctx->diagnosticGuestPc)};
+                    LOGI("[SWKBD-CALLER] gen={} cmd2460-return thread={} pc=0x{:X} module={} symbol={} returnPc=0x{:X} "
+                         "sp=0x{:X} fp=0x{:X} resultX0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X}",
+                         kernel::diagnostic::CurrentGuestCallerGeneration(), svcThreadId,
+                         ctx->diagnosticGuestPc, location.module, location.symbol, ctx->diagnosticGuestLr,
+                         ctx->diagnosticGuestSp, ctx->diagnosticGuestFp,
+                         ctx->gpr.x0, ctx->gpr.x1, ctx->gpr.x2, ctx->gpr.x3);
+                }
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
             }
@@ -239,7 +292,7 @@ namespace skyline::nce {
         });
     }
 
-    constexpr size_t TrampolineSize{18}; // Size of the main SVC trampoline function in u32 units
+    constexpr size_t TrampolineSize{25}; // Size of the main SVC trampoline function in u32 units
 
     /**
      * @brief Writes a trampoline to the given target address that saves the current context and calls the given function
@@ -254,8 +307,17 @@ namespace skyline::nce {
         *code++ = 0xF9415022; // LDR X2, [X1, #0x2A0] (ThreadContext::hostTpidrEl0)
         *code++ = 0xD51BD042; // MSR TPIDR_EL0, X2
 
-        /* Replace guest stack with host stack */
+        /* Snapshot the guest SVC callsite before replacing the guest stack */
         *code++ = 0x910003E2; // MOV X2, SP
+        *code++ = 0x91004044; // ADD X4, X2, #16 (guest SP before the per-SVC LR push)
+        *code++ = 0xF9016C24; // STR X4, [X1, #0x2D8] (ThreadContext::diagnosticGuestSp)
+        *code++ = 0xF9400044; // LDR X4, [X2] (return PC saved by the per-SVC trampoline)
+        *code++ = 0xF9017024; // STR X4, [X1, #0x2E0] (ThreadContext::diagnosticGuestLr)
+        *code++ = 0xD1001084; // SUB X4, X4, #4 (original SVC instruction address)
+        *code++ = 0xF9017424; // STR X4, [X1, #0x2E8] (ThreadContext::diagnosticGuestPc)
+        *code++ = 0xF901783D; // STR X29, [X1, #0x2F0] (ThreadContext::diagnosticGuestFp)
+
+        /* Replace guest stack with host stack */
         *code++ = 0xF9415423; // LDR X3, [X1, #0x2A8] (ThreadContext::hostSp)
         *code++ = 0x9100007F; // MOV SP, X3
 

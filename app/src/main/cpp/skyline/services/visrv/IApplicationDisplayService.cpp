@@ -4,6 +4,7 @@
 
 #include <gpu.h>
 #include <kernel/types/KProcess.h>
+#include <kernel/guest_caller_trace.h>
 #include <services/am/applet/IApplet.h>
 #include <services/serviceman.h>
 #include <services/hosbinder/IHOSBinderDriver.h>
@@ -172,6 +173,13 @@ namespace skyline::service::visrv {
 
         response.Push<i64>(static_cast<i64>(layout.requiredSize));
         response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
+
+        if (state.thread) {
+            const auto generation{kernel::diagnostic::ArmGuestCallerTrace(state.thread->id)};
+            if (generation)
+                LOGI("[SWKBD-CALLER] arm gen={} after cmd2460 thread={} size=0x{:X} alignment=0x{:X} dimensions={}x{}",
+                     generation, state.thread->id, layout.requiredSize, IndirectLayerAlignment, width, height);
+        }
 
         return {};
     }

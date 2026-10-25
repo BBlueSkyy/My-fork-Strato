@@ -88,7 +88,19 @@ namespace skyline {
             u32 nzcv;
             const DeviceState *state;
             u64 magic{constant::SkyTlsMagic};
+
+            // Diagnostic-only guest callsite snapshot populated by the shared NCE SVC trampoline.
+            // Appending these fields preserves every existing ThreadContext offset.
+            u64 diagnosticGuestSp{};
+            u64 diagnosticGuestLr{};
+            u64 diagnosticGuestPc{};
+            u64 diagnosticGuestFp{};
         };
+
+        static_assert(offsetof(ThreadContext, diagnosticGuestSp) == 0x2D8);
+        static_assert(offsetof(ThreadContext, diagnosticGuestLr) == 0x2E0);
+        static_assert(offsetof(ThreadContext, diagnosticGuestPc) == 0x2E8);
+        static_assert(offsetof(ThreadContext, diagnosticGuestFp) == 0x2F0);
 
         namespace guest {
             constexpr size_t SaveCtxSize{38}; //!< The size of the SaveCtx function in 32-bit ARMv8 instructions

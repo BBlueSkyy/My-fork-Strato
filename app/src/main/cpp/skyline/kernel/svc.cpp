@@ -10,6 +10,7 @@
 #include <common/trace.h>
 #include <vfs/npdm.h>
 #include "results.h"
+#include "guest_caller_trace.h"
 #include "svc.h"
 
 namespace skyline::kernel::svc {
@@ -997,8 +998,12 @@ namespace skyline::kernel::svc {
     }
 
     void SendSyncRequest(const DeviceState &state, SvcContext &ctx) {
+        const size_t callerThreadId{state.thread->id};
         SchedulerScopedLock schedulerLock(state);
         state.os->serviceManager.SyncRequestHandler(static_cast<KHandle>(ctx.x0));
+        if (diagnostic::ActivateGuestCallerTraceAfterCmd2460(callerThreadId))
+            LOGI("[SWKBD-CALLER] send-sync-return gen={} thread={} handle=0x{:X}",
+                 diagnostic::CurrentGuestCallerGeneration(), callerThreadId, static_cast<KHandle>(ctx.x0));
         ctx.w0 = Result{};
     }
 
