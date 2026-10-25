@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <cxxabi.h>
+#include <algorithm>
 #include <unistd.h>
 #include <common/signal.h>
 #include <common/trace.h>
@@ -12,6 +13,93 @@
 #include "KThread.h"
 
 namespace skyline::kernel::type {
+    namespace {
+        const char *DiagnosticActivityTypeName(DiagnosticActivityType type) {
+            switch (type) {
+                case DiagnosticActivityType::SvcExit: return "svc-exit";
+                case DiagnosticActivityType::IpcExit: return "ipc-exit";
+                case DiagnosticActivityType::WaitSyncBegin: return "wait-sync-begin";
+                case DiagnosticActivityType::WaitSyncEnd: return "wait-sync-end";
+                case DiagnosticActivityType::CondvarWaitBegin: return "condvar-wait-begin";
+                case DiagnosticActivityType::CondvarWaitEnd: return "condvar-wait-end";
+                case DiagnosticActivityType::CondvarSignal: return "condvar-signal";
+                case DiagnosticActivityType::SyncSignal: return "sync-signal";
+                case DiagnosticActivityType::SyncWake: return "sync-wake";
+                default: return "unknown";
+            }
+        }
+    }
+
+    void KThread::RecordDiagnosticActivity(DiagnosticActivityType activityType, u32 activityId, u32 activityValue,
+                                           u64 activityArg0, u64 activityArg1, const char *activityName) {
+        if (priority.load(std::memory_order_relaxed) != 44)
+            return;
+
+        const u64 sequence{diagnosticActivitySequence.fetch_add(1, std::memory_order_relaxed) + 1};
+        auto &slot{diagnosticActivities[(sequence - 1) % DiagnosticActivityCount]};
+
+        slot.sequence.store((sequence << 1) | 1, std::memory_order_release);
+        slot.tick.store(util::GetTimeTicks(), std::memory_order_relaxed);
+        slot.type.store(static_cast<u32>(activityType), std::memory_order_relaxed);
+        slot.id.store(activityId, std::memory_order_relaxed);
+        slot.value.store(activityValue, std::memory_order_relaxed);
+        slot.arg0.store(activityArg0, std::memory_order_relaxed);
+        slot.arg1.store(activityArg1, std::memory_order_relaxed);
+        slot.name.store(activityName, std::memory_order_relaxed);
+        slot.sequence.store(sequence << 1, std::memory_order_release);
+    }
+
+    void KThread::LogDiagnosticActivities(const char *reason) const {
+        struct Snapshot {
+            u64 sequence;
+            u64 tick;
+            DiagnosticActivityType type;
+            u32 id;
+            u32 value;
+            u64 arg0;
+            u64 arg1;
+            const char *name;
+        };
+
+        std::array<Snapshot, DiagnosticActivityCount> snapshots{};
+        size_t count{};
+
+        for (const auto &slot : diagnosticActivities) {
+            const u64 before{slot.sequence.load(std::memory_order_acquire)};
+            if (!before || (before & 1))
+                continue;
+
+            Snapshot snapshot{
+                .sequence = before >> 1,
+                .tick = slot.tick.load(std::memory_order_relaxed),
+                .type = static_cast<DiagnosticActivityType>(slot.type.load(std::memory_order_relaxed)),
+                .id = slot.id.load(std::memory_order_relaxed),
+                .value = slot.value.load(std::memory_order_relaxed),
+                .arg0 = slot.arg0.load(std::memory_order_relaxed),
+                .arg1 = slot.arg1.load(std::memory_order_relaxed),
+                .name = slot.name.load(std::memory_order_relaxed),
+            };
+
+            const u64 after{slot.sequence.load(std::memory_order_acquire)};
+            if (before != after || (after & 1))
+                continue;
+
+            snapshots[count++] = snapshot;
+        }
+
+        std::sort(snapshots.begin(), snapshots.begin() + count, [](const auto &lhs, const auto &rhs) {
+            return lhs.sequence < rhs.sequence;
+        });
+
+        LOGI("[THREAD-ACT] T{} reason={} entries={}", id, reason ? reason : "<none>", count);
+        for (size_t i{}; i < count; i++) {
+            const auto &entry{snapshots[i]};
+            LOGI("[THREAD-ACT] T{} seq={} tick={} type={} id=0x{:X} value=0x{:X} arg0=0x{:X} arg1=0x{:X} name={}",
+                 id, entry.sequence, entry.tick, DiagnosticActivityTypeName(entry.type), entry.id, entry.value,
+                 entry.arg0, entry.arg1, entry.name ? entry.name : "<none>");
+        }
+    }
+
     KThread::KThread(const DeviceState &state, KHandle handle, KProcess &process, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore)
         : handle(handle),
           process(process),
@@ -51,6 +139,9 @@ namespace skyline::kernel::type {
 
         state.thread = shared_from_this();
 
+        LOGI("[THREAD-DIAG] T{} host entrypoint started core={} ideal={} entry={} stack={} tls={}",
+             id, coreId, idealCore, entry, fmt::ptr(stackTop), fmt::ptr(tlsRegion));
+
         if (setjmp(originalCtx)) { // Returns 1 if it's returning from guest, 0 otherwise
             state.scheduler->RemoveThread();
 
@@ -84,6 +175,7 @@ namespace skyline::kernel::type {
 
         // Initialize execution-mode-specific stuff
         Init();
+        LOGI("[THREAD-DIAG] T{} Init complete core={} YieldPending={}", id, coreId, Scheduler::YieldPending);
 
         {
             std::scoped_lock lock{statusMutex};
@@ -92,9 +184,15 @@ namespace skyline::kernel::type {
         }
 
         try {
-            if (!Scheduler::YieldPending)
+            if (!Scheduler::YieldPending) {
+                LOGI("[THREAD-DIAG] T{} initial WaitSchedule begin core={}", id, coreId);
                 state.scheduler->WaitSchedule();
+                LOGI("[THREAD-DIAG] T{} initial WaitSchedule returned core={}", id, coreId);
+            } else {
+                LOGI("[THREAD-DIAG] T{} initial WaitSchedule skipped: YieldPending=true", id);
+            }
 
+            bool firstGuestRun{true};
             while (!killed) {
                 while (Scheduler::YieldPending && !killed) [[unlikely]] {
                     // If there is a yield pending on us after thread creation
@@ -104,6 +202,10 @@ namespace skyline::kernel::type {
                 }
 
                 TRACE_EVENT("guest", "Guest");
+                if (firstGuestRun) {
+                    LOGI("[THREAD-DIAG] T{} first guest Run dispatch core={} entry={}", id, coreId, entry);
+                    firstGuestRun = false;
+                }
                 // Run the guest code
                 Run();
             }
@@ -143,11 +245,17 @@ namespace skyline::kernel::type {
     void KThread::Start(bool self) {
         std::unique_lock lock(statusMutex);
         if (!running) {
+            LOGI("[THREAD-DIAG] T{} Start begin handle=0x{:X} entry={} ideal={} core={} priority={} base={} affinity=0x{:X} self={}",
+                 id, handle, entry, idealCore, coreId,
+                 priority.load(std::memory_order_relaxed),
+                 basePriority.load(std::memory_order_relaxed),
+                 affinityMask.to_ullong(), self);
             {
                 std::scoped_lock migrationLock{coreMigrationMutex};
                 auto thisShared{shared_from_this()};
                 coreId = state.scheduler->GetOptimalCoreForThread(thisShared).id;
                 state.scheduler->InsertThread(thisShared);
+                LOGI("[THREAD-DIAG] T{} Start inserted core={}", id, coreId);
             }
 
             running = true;
@@ -158,6 +266,7 @@ namespace skyline::kernel::type {
                 ThreadEntrypoint();
             } else {
                 thread = std::thread(&KThread::ThreadEntrypoint, this);
+                LOGI("[THREAD-DIAG] T{} host std::thread created", id);
             }
         }
     }
@@ -179,14 +288,19 @@ namespace skyline::kernel::type {
     void KThread::SendSignal(int signal) {
         std::unique_lock lock(statusMutex);
         statusCondition.wait(lock, [this]() { return ready || killed; });
-        if (!killed && running)
+        if (!killed && running) {
+            LOGI("[THREAD-DIAG] T{} SendSignal signal={} core={} priority={} pendingYield={} forceYield={}",
+                 id, signal, coreId, priority.load(), pendingYield, forceYield);
             pthread_kill(pthread, signal);
+        }
     }
 
     void KThread::ArmPreemptionTimer(std::chrono::nanoseconds timeToFire) {
         std::unique_lock lock(statusMutex);
         statusCondition.wait(lock, [this]() { return ready || killed; });
         if (!killed && running) {
+            LOGI("[THREAD-DIAG] T{} ArmPreemptionTimer core={} priority={} duration_ns={}",
+                 id, coreId, priority.load(), timeToFire.count());
             struct itimerspec spec{.it_value = {
                 .tv_nsec = std::min(static_cast<i64>(timeToFire.count()), constant::NsInSecond),
                 .tv_sec = std::max(std::chrono::duration_cast<std::chrono::seconds>(timeToFire).count() - 1, 0LL),
@@ -203,6 +317,7 @@ namespace skyline::kernel::type {
         std::unique_lock lock(statusMutex);
         statusCondition.wait(lock, [this]() { return ready || killed; });
         if (!killed && running) {
+            LOGI("[THREAD-DIAG] T{} DisarmPreemptionTimer core={} priority={}", id, coreId, priority.load());
             struct itimerspec spec{};
             timer_settime(preemptionTimer, 0, &spec, nullptr);
             isPreempted = false;
@@ -268,6 +383,8 @@ namespace skyline::kernel::type {
     }
 
     void KNceThread::Run() {
+        LOGI("[THREAD-DIAG] T{} entering KNceThread::Run core={} entry={} argument=0x{:X} handle=0x{:X}",
+             id, coreId, entry, entryArgument, handle);
         asm volatile(
             "MRS X0, TPIDR_EL0\n\t" // Retrieve current (host) TLS
             "MSR TPIDR_EL0, %x0\n\t" // Set TLS to ThreadContext

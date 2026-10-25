@@ -3,6 +3,7 @@
 
 #include <cxxabi.h>
 #include <common/trace.h>
+#include <kernel/types/KThread.h>
 #include "base_service.h"
 
 namespace skyline::service {
@@ -33,6 +34,12 @@ namespace skyline::service {
         TRACE_EVENT("service", perfetto::StaticString{function.name});
         try {
             auto result{function(session, request, response)};
+            if (state.thread) {
+                state.thread->RecordDiagnosticActivity(type::DiagnosticActivityType::IpcExit,
+                                                       functionId, result.raw,
+                                                       request.isTipc ? 1 : 0, 0,
+                                                       function.name);
+            }
             if (result.raw)
                 LOGD("{} returned 0x{:X}", function.name, result.raw);
             return result;

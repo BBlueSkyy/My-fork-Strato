@@ -28,9 +28,19 @@ namespace skyline::nce {
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
+                if (state.thread && state.thread->id == 15)
+                    LOGI("[THREAD-DIAG] T15 SVC enter id=0x{:X} name={}", svcId, svc.name);
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
                 (svc.function)(state, svcContext);
+                if (state.thread) {
+                    state.thread->RecordDiagnosticActivity(kernel::type::DiagnosticActivityType::SvcExit,
+                                                           svcId, svcContext.w0,
+                                                           kernel::Scheduler::YieldPending ? 1 : 0,
+                                                           state.thread->coreId, svc.name);
+                }
+                if (state.thread && state.thread->id == 15)
+                    LOGI("[THREAD-DIAG] T15 SVC exit id=0x{:X} name={} YieldPending={}", svcId, svc.name, kernel::Scheduler::YieldPending);
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
             }
