@@ -386,7 +386,9 @@ namespace skyline::gpu {
         vk::PipelineStageFlags pendingStageMask{}, readStageMask{};
         std::recursive_mutex mutex;
         void lock() { mutex.lock(); }
-        void unlock() { mutex.unlock(); }
+        std::atomic<ContextTag> tag{}, pendingGpuWriteTag{};
+        bool LockWithTag(ContextTag value) { if (value && tag == value) return false; mutex.lock(); tag = value; return true; }
+        void unlock();
         bool try_lock() { return mutex.try_lock(); }
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const Guest &) const;
@@ -482,7 +484,12 @@ namespace skyline::gpu {
         #include "view_api.inc"
         bool LockWithTag(ContextTag) { return false; } // Executor tag/resource-lock host boundary.
     };
-    struct ContextLock { ContextLock(ContextTag, Texture &) {} };
+    template<class T> struct ContextLock {
+        T &resource; bool owned;
+        ContextLock(ContextTag tag, T &resource) : resource{resource}, owned{resource.LockWithTag(tag)} {}
+        ContextLock(ContextLock &&other) : resource{other.resource}, owned{std::exchange(other.owned, false)} {}
+        ~ContextLock() { if (owned) resource.unlock(); }
+    };
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
     #include "manager_class.inc"
     namespace texture {
@@ -539,7 +546,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             UsageTracker usageTracker;
             bool AttachTexture(TextureView *);
             unsigned submissions{};
-            void Submit() { ++submissions; }
+            std::function<void()> onSubmit;
+            void Submit() { ++submissions; if (onSubmit) onSubmit(); }
             void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &);
             void HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &);
         };
@@ -1829,6 +1837,86 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         texture->dirtyState = Texture::DirtyState::CpuDirty;
     }
 
+    // Geometry/oracle from #393: 64x32 RGBA8, 8192-byte images shifted by
+    // 4096 physical bytes. This also retains the known live-reuse gap explicitly.
+    GuestTexture PartialDescriptor(u8 *address) {
+        GuestTexture value;
+        value.format = format::R8G8B8A8Unorm; value.dimensions = vk::Extent3D{64,32,1};
+        value.viewType = vk::ImageViewType::e2D;
+        value.layerCount = value.mipLevelCount = value.viewMipCount = 1;
+        value.layerStride = 8192; value.tileConfig = {.mode=texture::TileMode::Block,.blockHeight=1,.blockDepth=1};
+        value.mappings = {{address,8192}};
+        return value;
+    }
+    std::vector<u8> DownloadPartial(const std::shared_ptr<Texture> &texture) {
+        auto staging{texture->gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+        if (texture->cycle) texture->cycle->WaitSubmit();
+        auto cycle{texture->gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
+            texture->CopyIntoStagingBuffer(commands,staging);
+        })};
+        cycle->AttachObjects(staging,texture); cycle->Wait(true);
+        std::vector<u8> encoded(8192);
+        texture::CopyLinearToBlockLinear(texture->dimensions,1,1,4,1,1,staging->data(),encoded.data());
+        return encoded;
+    }
+    void CheckPendingMaterialization(GPU &gpu, bool eviction) {
+        TextureManager manager{gpu}; std::vector<u8> bytes(5*4096,0x2D);
+        auto a{manager.FindOrCreate(PartialDescriptor(bytes.data()+4096))}; AliasRead(a->texture);
+        *gpu.state.settings->freeGuestTextureMemory = eviction;
+        const auto descriptorB{PartialDescriptor(bytes.data()+8192)};
+        const ContextTag owner{77};
+        a->texture->LockWithTag(owner);
+        a->texture->RecordGpuWrite();
+        assert(a->texture->pendingGpuWriteTag.load()==owner);
+        a->texture->SynchronizeHost(true);
+        auto commands{gpu.scheduler.AllocateCommandBuffer()}; const auto writerCycle{commands.GetFenceCycle()};
+        commands->begin(vk::CommandBufferBeginInfo{});
+        const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor,0,1,0,1};
+        commands->pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,vk::PipelineStageFlagBits::eTransfer,{},
+            vk::MemoryBarrier{.srcAccessMask=vk::AccessFlagBits::eMemoryRead|vk::AccessFlagBits::eMemoryWrite,
+                              .dstAccessMask=vk::AccessFlagBits::eTransferWrite},{},{});
+        commands->clearColorImage(a->texture->GetBacking(),vk::ImageLayout::eGeneral,vk::ClearColorValue{std::array<float,4>{0,1,0,1}},range);
+        commands->pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eAllCommands,{},
+            vk::MemoryBarrier{.srcAccessMask=vk::AccessFlagBits::eTransferWrite,
+                              .dstAccessMask=vk::AccessFlagBits::eMemoryRead|vk::AccessFlagBits::eMemoryWrite},{},{});
+        commands->end();
+        interconnect::CommandExecutor executor;
+        executor.onSubmit = [&] {
+            a->texture->unlock();
+            gpu.scheduler.SubmitCommandBuffer(*commands,writerCycle);
+            a->texture->cycle=writerCycle;
+        };
+        bool retry{}; std::shared_ptr<TextureView> b;
+        try { b=manager.FindOrCreate(descriptorB,owner); }
+        catch (const TextureAliasReconciliationRequest &request) {
+            retry=true; assert(!b && !writerCycle->submitted);
+            executor.HandleTextureBackingPromotion(request);
+        }
+        assert(retry && executor.submissions==1 && !a->texture->pendingGpuWriteTag.load());
+        b=manager.FindOrCreate(descriptorB,owner); AliasRead(b->texture);
+        const auto encoded{DownloadPartial(b->texture)};
+        const std::array<u8,4> green{0,255,0,255};
+        for(size_t i{};i<4096;++i) assert(encoded[i]==green[i%4]);
+        for(size_t i{4096};i<8192;++i) assert(encoded[i]==0x2D);
+        assert(!a->texture->memoryFreed);
+        *gpu.state.settings->freeGuestTextureMemory=false;
+        gpu.scheduler.Complete(); assert(!validationErrors);
+        std::printf("PASS: production FindOrCreate rejects unsubmitted overlapping writer, then materializes current Vulkan bytes (FreeGuest=%s)\n",eviction ? "ON" : "OFF");
+    }
+    void ProbeLivePartialReuse(GPU &gpu) {
+        TextureManager manager{gpu}; std::vector<u8> bytes(5*4096,0x2D);
+        const auto da{PartialDescriptor(bytes.data()+4096)}, db{PartialDescriptor(bytes.data()+8192)};
+        auto a{manager.FindOrCreate(da)}; WriteAliasRenderTarget(a->texture,{1,0,0,1});
+        auto b{manager.FindOrCreate(db)}; WriteAliasRenderTarget(b->texture,{0,1,0,1});
+        auto reused{manager.FindOrCreate(da)}; assert(reused->texture==a->texture); AliasRead(reused->texture);
+        const auto encoded{DownloadPartial(reused->texture)};
+        size_t stale{}; const std::array<u8,4> green{0,255,0,255};
+        for(size_t i{4096};i<8192;i+=4)
+            if (!std::equal(green.begin(),green.end(),encoded.begin()+i)) ++stale;
+        std::printf("AUTHORITY PROBE (#393 A->B->reuse A): %zu / 1024 stale intersection texels; persistent authority remains pending\n",stale);
+        gpu.scheduler.Complete(); assert(!validationErrors);
+    }
+
     void CheckLogicalExtent() {
         struct Guest {
             struct { u32 width, height, depth{1}; } dimensions;
@@ -1873,6 +1961,9 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_AUTHORITY_PROBE")) { ProbeLivePartialReuse(gpu); continue; }
+            CheckPendingMaterialization(gpu,false);
+            CheckPendingMaterialization(gpu,true);
             if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
                 CheckManagerOverlapLookup(gpu);
                 continue;
@@ -1906,6 +1997,7 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if (std::getenv("TEXMAN_AUTHORITY_PROBE")) return 0;
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;

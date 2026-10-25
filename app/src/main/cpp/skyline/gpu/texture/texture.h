@@ -418,6 +418,7 @@ namespace skyline::gpu {
         std::atomic<bool> aliasReadOnly{}; //!< Materializable aliases without a lossless GPU -> guest path may only be sampled/read.
         u64 gpuWriteSerial{};
         u64 gpuReadbackSerial{}; //!< Updated only after successful guest encoding.
+        std::atomic<ContextTag> pendingGpuWriteTag{}; //!< A write prepared while this executor owns the resource; cleared on unlock.
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const GuestTexture &requested) const;
         static bool CanMaterializeGuestLayout(const GuestTexture &value);

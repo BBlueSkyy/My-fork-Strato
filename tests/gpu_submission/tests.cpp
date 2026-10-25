@@ -177,6 +177,7 @@ struct Texture : std::enable_shared_from_this<Texture> {
     bool guest{true}, everUsedAsGpuWrite{true};
     int layout{};
     std::atomic<bool> aliasReadOnly{};
+    std::atomic<unsigned> pendingGpuWriteTag{};
     std::mutex stateMutex;
     enum class DirtyState { CpuDirty, GpuDirty, Clean } dirtyState{DirtyState::CpuDirty};
     std::shared_ptr<int> trapHandle{std::make_shared<int>(0)};

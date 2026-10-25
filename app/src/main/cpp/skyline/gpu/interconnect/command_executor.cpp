@@ -727,6 +727,7 @@ namespace skyline::gpu::interconnect {
                 if (texture->cycle != previousCycle)
                     cycle->ChainCycle(texture->cycle);
                 texture->cycle = cycle;
+                texture->pendingGpuWriteTag.store({}, std::memory_order_relaxed);
                 texture->UpdateRenderPassUsage(0, texture::RenderPassUsage::None);
             }
 
@@ -828,6 +829,7 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {
         Submit();
+        TextureManager::SynchronizeGuestOverlaps(request.overlapReadbacks);
         if (!request.registration.empty())
             Texture::RegisterAliases(request.registration, request.registrationLayout.get());
         if (request.target)

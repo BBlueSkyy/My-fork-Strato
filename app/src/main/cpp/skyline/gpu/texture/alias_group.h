@@ -52,5 +52,6 @@ namespace skyline::gpu {
         std::vector<std::shared_ptr<Texture>> registration;
         std::vector<std::shared_ptr<void>> guestMemoryLeases{};
         std::shared_ptr<GuestTexture> registrationLayout{};
+        std::vector<std::shared_ptr<Texture>> overlapReadbacks{};
     };
 }

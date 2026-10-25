@@ -60,6 +60,7 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
     (build / "alias-methods.inc").write_text("\n".join(function(texture, signature) for signature in (
         "bool Texture::CanMaterializeGuestLayout(", "bool Texture::IsGuestLayoutReversible(",
         "bool Texture::CanReconcileGuestLayout(", "std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(",
+        "void Texture::unlock(",
         "void Texture::RequireAliasCoherence(", "void Texture::ReconcileAliases(",
         "void Texture::RecordGpuWrite(", "std::shared_ptr<void> Texture::PinGuestMemory(")))
     executor = (GPU / "interconnect/command_executor.cpp").read_text()
