@@ -147,6 +147,32 @@ namespace skyline {
         }
 
         /**
+         * @brief Checks the entire range for sparse mappings under one lock.
+         * @note Failure path only: null translated spans alone cannot distinguish sparse pages from holes.
+         */
+        bool IsFullySparseRange(VaType virt, VaType size) {
+            if (!size || virt >= AddressSpaceSize || size > AddressSpaceSize - virt)
+                return false;
+
+            std::shared_lock lock{this->blockMutex};
+            auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [](auto address, const auto &block) {
+                return address < block.virt;
+            })};
+            if (successor == this->blocks.begin())
+                return false;
+            auto block{std::prev(successor)};
+            const auto end{virt + size};
+            while (block != this->blocks.end()) {
+                if (!block->phys || !block->extraInfo.sparseMapped)
+                    return false;
+                if (successor == this->blocks.end() || successor->virt >= end)
+                    return true;
+                block = successor++;
+            }
+            return false;
+        }
+
+        /**
          * @brief Translates a region in the VA space to a corresponding set of regions in the PA space
          */
         TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}) {
