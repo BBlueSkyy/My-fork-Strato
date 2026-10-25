@@ -89,7 +89,10 @@ namespace skyline::gpu {
             if (!stateLock)
                 return false;
 
-            if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty) {
+            if (buffer->AllCpuBackingWritesBlocked())
+                return false;
+
+            if (buffer->dirtyState != DirtyState::GpuDirty) {
                 buffer->dirtyState = DirtyState::CpuDirty;
                 return true;
             }
