@@ -310,6 +310,21 @@ namespace {
         request.inputBuf.emplace_back(path);
         ipc::IpcResponse response;
         Check(!filesystem.OpenFile(session, request, response), "guest path with repeated separators did not open a file inside the root");
+
+        // libnx appends '/' to the current directory, then adds another '/'
+        // before a relative filename. A homebrew must still be able to open
+        // companion assets using a path such as /bundle//asset.dat.
+        Check(!backing->CreateDirectory("bundle", false), "homebrew directory fixture failed");
+        Check(!backing->CreateFile("bundle/asset.dat", 2), "homebrew asset fixture failed");
+        std::array<u8, 18> relativeAsset{'/', 'b', 'u', 'n', 'd', 'l', 'e', '/', '/',
+                                          'a', 's', 's', 'e', 't', '.', 'd', 'a', 't'};
+        std::array<u8, 19> terminatedAsset{};
+        std::copy(relativeAsset.begin(), relativeAsset.end(), terminatedAsset.begin());
+        auto assetRequest{RequestWith(vfs::Backing::Mode{true, false, false})};
+        assetRequest.inputBuf.emplace_back(terminatedAsset);
+        ipc::IpcResponse assetResponse;
+        Check(!filesystem.OpenFile(session, assetRequest, assetResponse),
+              "libnx-style relative homebrew asset path did not open");
     }
 
     void TestStorageServiceBoundsAndPermissions() {

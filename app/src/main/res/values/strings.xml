@@ -371,4 +371,10 @@
     <string name="add_content">Add content</string>
     <string name="content_type_icon">Content type icon</string>
     <string name="delete_content">Delete content</string>
+
+    <!-- Homebrew installation into the emulated SD card -->
+    <string name="install_homebrew">Install homebrew folder</string>
+    <string name="homebrew_installing">Installing homebrew and companion files…</string>
+    <string name="homebrew_installed">Homebrew installed: %1$s (%2$d files)</string>
+    <string name="homebrew_install_failed">Homebrew install failed: %1$s</string>
 </resources>

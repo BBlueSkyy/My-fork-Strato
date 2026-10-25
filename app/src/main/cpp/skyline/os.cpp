@@ -9,6 +9,7 @@
 #include "kernel/types/KProcess.h"
 #include "vfs/os_backing.h"
 #include "loader/nro.h"
+#include "loader/nro_launch_path.h"
 #include "loader/nso.h"
 #include "loader/nca.h"
 #include "loader/nsp.h"
@@ -31,16 +32,8 @@ namespace {
         if (length <= 0)
             return std::nullopt;
 
-        std::string hostPath{hostPathBuffer.data(), static_cast<size_t>(length)};
-        std::string sdmcRoot{publicAppFilesPath};
-        if (sdmcRoot.empty() || sdmcRoot.back() != '/')
-            sdmcRoot.push_back('/');
-        sdmcRoot += "switch/sdmc/";
-
-        if (hostPath.size() <= sdmcRoot.size() || hostPath.compare(0, sdmcRoot.size(), sdmcRoot) != 0)
-            return std::nullopt;
-
-        return "sdmc:/" + hostPath.substr(sdmcRoot.size());
+        return skyline::loader::homebrew::ResolveGuestNroPath(
+            std::string_view(hostPathBuffer.data(), static_cast<size_t>(length)), publicAppFilesPath);
     }
 }
 
@@ -163,7 +156,7 @@ namespace skyline::kernel {
                 if (launchPath)
                     LOGI("NRO launch path: {}", *launchPath);
                 else
-                    LOGW("NRO is outside the emulated SD card; Homebrew ABI argv[0] will be omitted");
+                    LOGW("NRO is not in the emulated SD card or has an unsupported path; argv[0]/working directory unavailable. Import the whole homebrew folder through Install Homebrew.");
                 return std::make_shared<loader::NroLoader>(std::move(file), std::move(launchPath));
             }
             case loader::RomFormat::NSO:

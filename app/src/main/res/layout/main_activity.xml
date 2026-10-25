@@ -40,11 +40,25 @@
                     android:padding="5dp"
                     android:visibility="invisible"
                     app:layout_constraintBottom_toBottomOf="@id/sub_text"
-                    app:layout_constraintEnd_toStartOf="@id/log_icon"
+                    app:layout_constraintEnd_toStartOf="@id/install_homebrew_icon"
                     app:layout_constraintTop_toTopOf="@id/title_text"
                     app:srcCompat="@drawable/ic_refresh"
                     app:tint="?attr/colorOnBackground"
                     tools:visibility="visible" />
+
+                <ImageView
+                    android:id="@+id/install_homebrew_icon"
+                    android:layout_width="30dp"
+                    android:layout_height="30dp"
+                    android:layout_marginEnd="4dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/install_homebrew"
+                    android:padding="5dp"
+                    app:layout_constraintBottom_toBottomOf="@id/sub_text"
+                    app:layout_constraintEnd_toStartOf="@id/log_icon"
+                    app:layout_constraintTop_toTopOf="@id/title_text"
+                    app:srcCompat="@android:drawable/ic_menu_add"
+                    app:tint="?attr/colorOnBackground" />
 
                 <ImageView
                     android:id="@+id/log_icon"
