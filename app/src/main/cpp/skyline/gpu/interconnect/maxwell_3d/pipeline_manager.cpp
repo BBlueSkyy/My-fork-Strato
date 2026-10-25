@@ -805,6 +805,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
+        DeferredStorageImageWrites storageWriters;
 
         u32 writeIdx{};
         auto writes{ctx.executor.allocator->AllocateUntracked<vk::WriteDescriptorSet>(descriptorInfo.totalWriteDescCount)};
@@ -944,10 +945,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
                             [&](const DescriptorInfo::StageDescriptorInfo::StorageImageDesc &desc, size_t arrayIdx) {               
                                 BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers[i], desc, arrayIdx)};
                                 LOGD("StorageImage: idx={} format={}", static_cast<u32>(handle.textureIndex), static_cast<u32>(desc.format));
-                                return GetImageBinding(ctx, desc, textures, handle, stage.stage, srcStageMask, dstStageMask).first;
+                                return GetImageBinding(ctx, desc, textures, handle, stage.stage, srcStageMask, dstStageMask, storageWriters).first;
                             }, ctx.gpu.traits.quirks.needsIndividualTextureBindingWrites);
         }
 
+        CommitStorageImageWrites(ctx, storageWriters);
         return ctx.executor.allocator->EmplaceUntracked<DescriptorUpdateInfo>(DescriptorUpdateInfo{
             .writes = writes.first(writeIdx),
             .bufferDescs = bufferDescs.first(bufferIdx),
@@ -961,6 +963,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     DescriptorUpdateInfo *Pipeline::SyncDescriptorsQuickBind(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, ConstantBuffers::QuickBind quickBind, span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
+        DeferredStorageImageWrites storageWriters;
 
         size_t stageIndex{static_cast<size_t>(quickBind.stage)};
         const auto &stageDescInfo{descriptorInfo.stages[stageIndex]};
@@ -1067,11 +1070,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                       BindlessHandle handle{ReadBindlessHandle(ctx, stageConstantBuffers, desc, arrayIdx)};
                                                       return GetImageBinding(ctx, desc, textures, handle,
                                                                              stageDescInfo.stage,
-                                                                             srcStageMask, dstStageMask).first;
+                                                                             srcStageMask, dstStageMask, storageWriters).first;
                                                   });
 
         if (!writeIdx)
             return nullptr;
+
+        CommitStorageImageWrites(ctx, storageWriters);
 
         return ctx.executor.allocator->EmplaceUntracked<DescriptorUpdateInfo>(DescriptorUpdateInfo{
             .copies = descriptorInfo.copyDescs,
