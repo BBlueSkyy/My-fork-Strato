@@ -16,6 +16,7 @@
 #include "backing_promotion.h"
 #include "view_range.h"
 #include <bit>
+#include <cmath>
 #include <numeric>
 
 namespace skyline::gpu {
@@ -1591,7 +1592,7 @@ namespace skyline::gpu {
         return std::make_shared<TextureView>(shared_from_this(), type, range, pFormat, mapping);
     }
 
-    void Texture::CopyFrom(std::shared_ptr<Texture> source, vk::Semaphore waitSemaphore, vk::Semaphore signalSemaphore, texture::Format srcFormat, const vk::ImageSubresourceRange &subresource) {
+    void Texture::CopyFrom(std::shared_ptr<Texture> source, vk::Semaphore waitSemaphore, vk::Semaphore signalSemaphore, texture::Format srcFormat, const vk::ImageSubresourceRange &subresource, float balancedFullscreenCurve) {
         if (cycle)
             cycle->WaitSubmit();
         if (source->cycle)
@@ -1607,6 +1608,17 @@ namespace skyline::gpu {
             throw exception("Cannot copy from image with different dimensions");
 
         TRACE_EVENT("gpu", "Texture::CopyFrom");
+
+        // This is used only for the final presentation copy. Image blits
+        // require format support, so unsupported drivers retain exact copies.
+        const bool warpedBlit = balancedFullscreenCurve > 0.0f && dimensions.width >= 16 &&
+            dimensions.depth == 1 && subresource.baseMipLevel == 0 &&
+            subresource.levelCount == 1 && subresource.baseArrayLayer == 0 &&
+            subresource.layerCount == 1 &&
+            bool(gpu.vkPhysicalDevice.getFormatProperties(source->format->vkFormat).optimalTilingFeatures &
+                 vk::FormatFeatureFlagBits::eBlitSrc) &&
+            bool(gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat).optimalTilingFeatures &
+                 vk::FormatFeatureFlagBits::eBlitDst);
 
         auto submitFunc{[&](vk::Semaphore extraWaitSemaphore){
             boost::container::small_vector<vk::Semaphore, 2> waitSemaphores;
@@ -1655,7 +1667,44 @@ namespace skyline::gpu {
                     .layerCount = subresource.layerCount == VK_REMAINING_ARRAY_LAYERS ? layerCount - subresource.baseArrayLayer : subresource.layerCount,
                     };
                 for (; subresourceLayers.mipLevel < (subresource.levelCount == VK_REMAINING_MIP_LEVELS ? levelCount - subresource.baseMipLevel : subresource.levelCount); subresourceLayers.mipLevel++) {
-                    if (srcFormat != format) {
+                    if (warpedBlit) {
+                        // Keep all source pixels and preserve the full vertical
+                        // field of view. The central area stretches less while
+                        // peripheral areas absorb the extra screen width.
+                        // All segments are recorded in one Vulkan blit command.
+                        constexpr int SegmentCount = 8;
+                        // Calculated from the device ratio. On a 21:9 display
+                        // this is about 0.83, leaving the center close to 16:9.
+                        const float curve = std::clamp(balancedFullscreenCurve, 0.0f, 0.9f);
+                        std::array<vk::ImageBlit, SegmentCount> regions{};
+                        auto warpedX = [&](int i) -> i32 {
+                            const float x = static_cast<float>(i) / SegmentCount;
+                            const float t = x - 0.5f;
+                            const float mapped = x + curve * (t * t * t - 0.25f * t);
+                            return static_cast<i32>(std::lround(mapped * dimensions.width));
+                        };
+                        for (int i = 0; i < SegmentCount; i++) {
+                            const i32 srcLeft = static_cast<i32>(static_cast<u64>(dimensions.width) * i / SegmentCount);
+                            const i32 srcRight = static_cast<i32>(static_cast<u64>(dimensions.width) * (i + 1) / SegmentCount);
+                            const i32 dstLeft = warpedX(i);
+                            const i32 dstRight = warpedX(i + 1);
+                            regions[i] = vk::ImageBlit{
+                                .srcSubresource = subresourceLayers,
+                                .srcOffsets = std::array<vk::Offset3D, 2>{
+                                    vk::Offset3D{srcLeft, 0, 0},
+                                    vk::Offset3D{srcRight, static_cast<i32>(dimensions.height), 1}
+                                },
+                                .dstSubresource = subresourceLayers,
+                                .dstOffsets = std::array<vk::Offset3D, 2>{
+                                    vk::Offset3D{dstLeft, 0, 0},
+                                    vk::Offset3D{dstRight, static_cast<i32>(dimensions.height), 1}
+                                }
+                            };
+                        }
+                        commandBuffer.blitImage(sourceBacking, vk::ImageLayout::eTransferSrcOptimal,
+                                                destinationBacking, vk::ImageLayout::eTransferDstOptimal,
+                                                regions, vk::Filter::eLinear);
+                    } else if (srcFormat != format) {
                         commandBuffer.blitImage(sourceBacking, vk::ImageLayout::eTransferSrcOptimal, destinationBacking, vk::ImageLayout::eTransferDstOptimal, vk::ImageBlit{
                                 .srcSubresource = subresourceLayers,
                                 .srcOffsets = std::array<vk::Offset3D, 2>{

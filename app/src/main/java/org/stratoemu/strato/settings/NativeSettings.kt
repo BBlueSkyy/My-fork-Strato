@@ -31,6 +31,7 @@ data class NativeSettings(
     var gpuDriverLibraryName : String,
     var forceTripleBuffering : Boolean,
     var disableFrameThrottling : Boolean,
+    var balancedFullscreenCurve : Float,
     var executorSlotCountScale : Int,
     var executorFlushThreshold : Int,
     var useDirectMemoryImport : Boolean,
@@ -58,6 +59,7 @@ data class NativeSettings(
         if (pref.gpuDriver == EmulationSettings.SYSTEM_GPU_DRIVER) "" else GpuDriverHelper.getLibraryName(context, pref.gpuDriver),
         pref.forceTripleBuffering,
         pref.disableFrameThrottling,
+        calculateBalancedFullscreenCurve(context, pref.aspectRatio),
         pref.executorSlotCountScale,
         pref.executorFlushThreshold,
         pref.useDirectMemoryImport,
@@ -74,4 +76,25 @@ data class NativeSettings(
      * Updates settings in libskyline during emulation
      */
     external fun updateNative()
+}
+
+// Center-weighted presentation keeps the center close to 16:9 while the
+// periphery absorbs the extra width. A full 16:9 image remains visible.
+private fun calculateBalancedFullscreenCurve(context : Context, aspectRatioMode : Int) : Float {
+    if (aspectRatioMode != 3)
+        return 0f
+
+    val metrics = context.resources.displayMetrics
+    val width = maxOf(metrics.widthPixels, metrics.heightPixels)
+    val height = minOf(metrics.widthPixels, metrics.heightPixels)
+    if (height <= 0)
+        return 0f
+
+    val horizontalStretch = (width.toFloat() / height) / (16f / 9f)
+    if (horizontalStretch <= 1f)
+        return 0f
+
+    // In the center: displayed horizontal scale = stretch * (1 - curve / 4).
+    // Aim for only ~4% center distortion while keeping the mapping monotonic.
+    return (4f * (1f - 1.04f / horizontalStretch)).coerceIn(0f, 0.9f)
 }
