@@ -24,24 +24,36 @@ template<typename T> struct span {
     }
 };
 using TranslatedAddressRange = std::vector<span<u8>>;
+struct BlockInfo { bool sparseMapped{}; };
 struct Memory {
     static constexpr VaType AddressSpaceSize{1ULL << 32};
     struct Block {
         VaType virt;
         u8 *phys;
-        struct { bool sparseMapped; } extraInfo;
+        BlockInfo extraInfo;
+        bool operator<(VaType other) const { return virt < other; }
     };
+    struct SegmentEntry {
+        VaType virt{};
+        u8 *phys{};
+        VaType extent{};
+        BlockInfo extraInfo{};
+    };
+    struct SegmentTable {
+        std::vector<SegmentEntry> pages{16};
+        void Set(VaType start, VaType end, SegmentEntry entry) {
+            assert(start < end && start % 0x1000 == 0 && end % 0x1000 == 0);
+            for (VaType p = start; p < end; p += 0x1000)
+                pages.at(p / 0x1000) = entry;
+        }
+        const SegmentEntry &operator[](VaType virt) const { return pages.at(virt / 0x1000); }
+    } blockSegmentTable;
     std::vector<Block> blocks;
     std::shared_mutex blockMutex;
-    // Simulates a segment-table entry whose original extent survived a partial remap.
-    span<u8> staleFastSpan{nullptr, 0};
-    VaType staleFastStart{};
-    std::pair<span<u8>, size_t> LookupBlockLocked(VaType virt, std::function<void(span<u8>)> callback = {}) {
-        assert(staleFastSpan.size() && virt >= staleFastStart);
-        if (callback && staleFastSpan.valid())
-            callback(staleFastSpan);
-        return {staleFastSpan, static_cast<size_t>(virt - staleFastStart)};
-    }
+    void ClipPrecedingSegmentExtent(VaType virt)
+#include "clip.inc"
+    std::pair<span<u8>, size_t> LookupBlockLocked(VaType virt, std::function<void(span<u8>)> cpuAccessCallback = {})
+#include "lookup.inc"
     TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {})
 #include "fastpath.inc"
     TranslatedAddressRange TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {})
@@ -75,22 +87,28 @@ int main() {
     m.blocks = {{0, nullptr, {}}, {0x1000, data, {}}, {0x2000, data + 0x1000, {}}, {0x3000, nullptr, {}}};
     const auto resident = m.TranslateRangeImpl(0x1800, 0x1000);
     assert(resident.size() == 1 && resident[0].data() == data + 0x800 && resident[0].size() == 0x1000);
-    // A sparse mapping partially remapped to resident memory must not be
-    // swallowed by the original broad null fast-path entry.
+    // Partial remap: the segment-table's preceding entry used to retain its
+    // full original extent and swallow the newly resident tail.
     m.blocks = {{0, nullptr, {}}, {0x1000, placeholder, {true}},
-                {0x2000, placeholder, {true}}, {0x3000, data, {}}, {0x4000, nullptr, {}}};
-    m.staleFastSpan = {nullptr, 0x3000};
-    m.staleFastStart = 0x1000;
+                {0x3000, data, {}}, {0x4000, nullptr, {}}};
+    m.blockSegmentTable.Set(0x1000, 0x4000, {0x1000, placeholder, 0x3000, {true}});
+    m.ClipPrecedingSegmentExtent(0x3000);
+    m.blockSegmentTable.Set(0x3000, 0x4000, {0x3000, data, 0x1000, {}});
+    assert(m.blockSegmentTable[0x1000].extent == 0x2000);
     const auto sparseThenResident = m.TranslateRange(0x1800, 0x2000);
-    assert(sparseThenResident.size() == 3);
-    assert(!sparseThenResident[0].valid() && !sparseThenResident[1].valid());
-    assert(sparseThenResident[2].valid() && sparseThenResident[2].size() == 0x800);
+    assert(sparseThenResident.size() == 2);
+    assert(!sparseThenResident[0].valid() && sparseThenResident[0].size() == 0x1800);
+    assert(sparseThenResident[1].valid() && sparseThenResident[1].size() == 0x800);
 
-    // Even if both ends of an originally resident span are still resident,
-    // an internal sparse remap must be respected. No callback on ghost memory.
+    // Resident -> sparse -> resident: a mapping must not be allowed to skip an
+    // internal sparse remap even if both ends have the same physical backing.
     m.blocks = {{0, nullptr, {}}, {0x1000, data, {}},
-                {0x2000, placeholder, {true}}, {0x3000, data + 0x2000, {}}, {0x4000, nullptr, {}}};
-    m.staleFastSpan = {data, 0x3000};
+                {0x2000, placeholder, {true}}, {0x3000, data + 0x2000, {}},
+                {0x4000, nullptr, {}}};
+    m.blockSegmentTable.Set(0x1000, 0x4000, {0x1000, data, 0x3000, {}});
+    m.ClipPrecedingSegmentExtent(0x2000);
+    m.blockSegmentTable.Set(0x2000, 0x3000, {0x2000, placeholder, 0x1000, {true}});
+    assert(m.blockSegmentTable[0x1000].extent == 0x1000);
     size_t translatedResidentBytes{};
     const auto residentThenSparse = m.TranslateRange(0x1800, 0x2000, [&](auto s) {
         translatedResidentBytes += s.size();
@@ -99,10 +117,23 @@ int main() {
     assert(residentThenSparse[0].valid() && !residentThenSparse[1].valid() && residentThenSparse[2].valid());
     assert(translatedResidentBytes == 0x1000);
 
-    // The true single-block fast path remains functional.
+    // Regular resident lookup remains a single fast table lookup with no
+    // block-vector search; callback scope remains exactly the requested range.
     m.blocks = {{0, nullptr, {}}, {0x1000, data, {}}, {0x4000, nullptr, {}}};
+    m.blockSegmentTable.Set(0x1000, 0x4000, {0x1000, data, 0x3000, {}});
     size_t fastCallbackBytes{};
     const auto mappedFast = m.TranslateRange(0x1800, 0x800, [&](auto s) { fastCallbackBytes += s.size(); });
     assert(mappedFast.size() == 1 && mappedFast[0].valid() && fastCallbackBytes == 0x800);
-    std::cout << "PASS: sparse split translation, remap-aware fast path, callback extents\n";
+
+    // A later unmap also clips an earlier resident span: the original mapping
+    // must not remain visible across the newly unmapped boundary.
+    m.blocks = {{0, nullptr, {}}, {0x1000, data, {}}, {0x2000, nullptr, {}},
+                {0x4000, nullptr, {}}};
+    m.ClipPrecedingSegmentExtent(0x2000);
+    m.blockSegmentTable.Set(0x2000, 0x3000, {});
+    const auto mappedThenHole = m.TranslateRange(0x1800, 0x1000);
+    assert(mappedThenHole.size() == 2);
+    assert(mappedThenHole[0].valid() && !mappedThenHole[1].valid());
+
+    std::cout << "PASS: sparse split translation, clip-on-remap, resident fast path and callbacks\\n";
 }

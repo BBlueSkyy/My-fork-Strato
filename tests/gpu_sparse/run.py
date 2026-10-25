@@ -25,6 +25,8 @@ with tempfile.TemporaryDirectory(prefix='strato-sparse-') as tmp:
     has_query = 'bool IsFullySparseRange(' in header
     (tmp / 'query.inc').write_text(body(header, 'bool IsFullySparseRange(') if has_query else '{ return false; }')
     (tmp / 'fastpath.inc').write_text(body(header, 'TranslatedAddressRange TranslateRange('))
+    (tmp / 'lookup.inc').write_text(body(header, 'std::pair<span<u8>, size_t> LookupBlockLocked('))
+    (tmp / 'clip.inc').write_text(body(header, 'void ClipPrecedingSegmentExtent('))
     flags = ['-std=c++20', '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
              '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-fno-omit-frame-pointer', '-no-pie']
     exe = tmp / 'mapping-tests'

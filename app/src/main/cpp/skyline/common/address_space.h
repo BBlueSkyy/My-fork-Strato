@@ -109,6 +109,20 @@ namespace skyline {
         static constexpr size_t AddressSpaceSize{1ULL << AddressSpaceBits};
         SegmentTable<SegmentTableEntry, AddressSpaceSize, VaGranularityBits, VaL2GranularityBits> blockSegmentTable; //!< A page table of all buffer mappings for O(1) lookups on full matches
 
+        // Repair the page table when a partial Map/Unmap inserts a boundary.
+        // Doing this on mapping changes keeps TranslateRange's normal case O(1).
+        // Unmapped spans have no fast-path entry and do not need rewriting.
+        void ClipPrecedingSegmentExtent(VaType virt) {
+            auto successor{std::lower_bound(this->blocks.begin(), this->blocks.end(), virt)};
+            if (successor == this->blocks.begin())
+                return;
+            const auto &previous{*std::prev(successor)};
+            if (!previous.phys || previous.virt >= virt)
+                return;
+            blockSegmentTable.Set(previous.virt, virt,
+                                  {previous.virt, previous.phys, virt - previous.virt, previous.extraInfo});
+        }
+
         TranslatedAddressRange TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {});
 
         std::pair<span<u8>, size_t> LookupBlockLocked(VaType virt, std::function<void(span<u8>)> cpuAccessCallback = {}) {
@@ -217,22 +231,16 @@ namespace skyline {
         TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}) {
             std::shared_lock lock{this->blockMutex};
 
-            // The segment table retains the original extent on pages preceding
-            // a partial remap. Verify the authoritative block boundary before
-            // trusting its fast-path span across a larger requested range.
+            // Extents are clipped on Map/Unmap, so full-span hits can use the
+            // segment table without a binary search through the block vector.
             auto [blockSpan, rangeOffset]{LookupBlockLocked(virt)};
             if (rangeOffset <= blockSpan.size() && size <= blockSpan.size() - rangeOffset) {
-                auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [](auto address, const auto &block) {
-                    return address < block.virt;
-                })};
-                if (successor != this->blocks.end() && size <= successor->virt - virt) {
-                    auto mapped{blockSpan.subspan(blockSpan.valid() ? rangeOffset : 0, size)};
-                    if (cpuAccessCallback && mapped.valid())
-                        cpuAccessCallback(mapped);
-                    TranslatedAddressRange ranges;
-                    ranges.push_back(mapped);
-                    return ranges;
-                }
+                auto mapped{blockSpan.subspan(blockSpan.valid() ? rangeOffset : 0, size)};
+                if (cpuAccessCallback && mapped.valid())
+                    cpuAccessCallback(mapped);
+                TranslatedAddressRange ranges;
+                ranges.push_back(mapped);
+                return ranges;
             }
 
             return TranslateRangeImpl(virt, size, cpuAccessCallback);
@@ -325,12 +333,14 @@ namespace skyline {
         void Map(VaType virt, u8 *phys, VaType size, MemoryManagerBlockInfo extraInfo = {}) {
             std::scoped_lock lock(this->blockMutex);
             this->MapLocked(virt, phys, size, extraInfo);
+            ClipPrecedingSegmentExtent(virt);
             blockSegmentTable.Set(virt, virt + size, {virt, phys, size, extraInfo});
         }
 
         void Unmap(VaType virt, VaType size) {
             std::scoped_lock lock(this->blockMutex);
             this->UnmapLocked(virt, size);
+            ClipPrecedingSegmentExtent(virt);
             blockSegmentTable.Set(virt, virt + size, {});
         }
     };
