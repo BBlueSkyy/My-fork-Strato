@@ -31,3 +31,7 @@ with tempfile.TemporaryDirectory(prefix='strato-sparse-') as tmp:
                     str(ROOT / 'tests/gpu_sparse/mapping.cpp'), '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True, env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'})
     assert has_query, 'whole-range sparse classification is missing'
+    exe = tmp / 'size-tests'
+    subprocess.run([os.environ.get('CXX', 'c++'), *flags, '-I' + str(SKYLINE),
+                    str(ROOT / 'tests/gpu_sparse/sizing.cpp'), '-o', str(exe)], check=True)
+    subprocess.run([str(exe)], check=True, env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'})
