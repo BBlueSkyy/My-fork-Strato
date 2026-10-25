@@ -64,6 +64,7 @@ namespace skyline::loader {
         std::optional<std::string> launchPath;
         u64 homebrewConfigAddress{};
         u64 mainThreadHandleAddress{};
+        u64 processHandleAddress{};
 
         /**
          * @brief Reads the data of the specified segment

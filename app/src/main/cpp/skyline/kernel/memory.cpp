@@ -5,6 +5,7 @@
 #include <asm-generic/unistd.h>
 #include <fcntl.h>
 #include "memory.h"
+#include "results.h"
 #include "types/KProcess.h"
 
 namespace skyline::kernel {
@@ -672,6 +673,18 @@ namespace skyline::kernel {
         return mapped;
     }
 
+    bool MemoryManager::IsRangeWritable(span<u8> region) {
+        std::shared_lock lock{mutex};
+        bool writable{true};
+        ForeachChunkInRange(region, [&](const std::pair<u8 *, ChunkDescriptor> &chunk) {
+            if (chunk.second.state == memory::states::Unmapped ||
+                chunk.second.state == memory::states::Reserved ||
+                !chunk.second.permission.w)
+                writable = false;
+        });
+        return writable;
+    }
+
     bool MemoryManager::MapPhysicalMemoryIfAllowed(span<u8> memory) {
     std::unique_lock lock{mutex};
 
@@ -705,6 +718,378 @@ namespace skyline::kernel {
     }
 
         return true;
+    }
+
+
+    bool MemoryManager::CanContainProcessAlias(span<u8> memory) const {
+        if (!AddressSpaceContains(memory))
+            return false;
+
+        auto overlaps = [](span<u8> lhs, span<u8> rhs) {
+            return !lhs.empty() && !rhs.empty() && lhs.data() < rhs.end().base() && rhs.data() < lhs.end().base();
+        };
+
+        return !overlaps(memory, heap.guest) && !overlaps(memory, alias.guest);
+    }
+
+    bool MemoryManager::ValidateProcessAlias(span<u8> destination, span<u8> source, u64 sourceProcessId, ProcessAliasKind kind) const {
+        u8 *dst{destination.data()};
+        u8 *src{source.data()};
+        u8 *end{destination.end().base()};
+
+        while (dst < end) {
+            auto it{processAliases.upper_bound(dst)};
+            if (it == processAliases.begin())
+                return false;
+            --it;
+
+            u8 *entryStart{it->first};
+            const auto &entry{it->second};
+            u8 *entryEnd{entryStart + entry.size};
+            if (dst < entryStart || dst >= entryEnd || entry.kind != kind || entry.sourceProcessId != sourceProcessId)
+                return false;
+
+            size_t offset{static_cast<size_t>(dst - entryStart)};
+            if (entry.sourceAddress + offset != src)
+                return false;
+
+            size_t amount{std::min<size_t>(static_cast<size_t>(entryEnd - dst), static_cast<size_t>(end - dst))};
+            dst += amount;
+            src += amount;
+        }
+
+        return true;
+    }
+
+    void MemoryManager::RemoveProcessAlias(span<u8> destination) {
+        u8 *removeStart{destination.data()};
+        u8 *removeEnd{destination.end().base()};
+        std::vector<std::pair<u8 *, ProcessAliasDescriptor>> overlaps;
+
+        auto it{processAliases.lower_bound(removeStart)};
+        if (it != processAliases.begin())
+            --it;
+
+        for (; it != processAliases.end() && it->first < removeEnd; ++it) {
+            if (it->first + it->second.size > removeStart)
+                overlaps.emplace_back(*it);
+        }
+
+        for (const auto &[entryStart, entry] : overlaps) {
+            processAliases.erase(entryStart);
+            u8 *entryEnd{entryStart + entry.size};
+
+            if (entryStart < removeStart) {
+                auto left{entry};
+                left.size = static_cast<size_t>(removeStart - entryStart);
+                processAliases.emplace(entryStart, left);
+            }
+
+            if (removeEnd < entryEnd) {
+                auto right{entry};
+                const size_t sourceOffset{static_cast<size_t>(removeEnd - entryStart)};
+                right.sourceAddress += sourceOffset;
+                right.size = static_cast<size_t>(entryEnd - removeEnd);
+                processAliases.emplace(removeEnd, right);
+            }
+        }
+    }
+
+    namespace {
+        Result DuplicateProcessMapping(MemoryManager &sourceMemory, span<u8> source, MemoryManager &destinationMemory, span<u8> destination) {
+            auto sourceHost{sourceMemory.GetHostSpan(source)};
+            auto destinationHost{destinationMemory.GetHostSpan(destination)};
+
+            void *mapped{mremap(sourceHost.data(), 0, sourceHost.size(), MREMAP_MAYMOVE | MREMAP_FIXED, destinationHost.data())};
+            if (mapped == MAP_FAILED) {
+                LOGW("Failed to create process-memory alias {} - {} -> {} - {}: {}",
+                     fmt::ptr(source.data()), fmt::ptr(source.end().base()),
+                     fmt::ptr(destination.data()), fmt::ptr(destination.end().base()), strerror(errno));
+                return result::OutOfMemory;
+            }
+
+            return {};
+        }
+
+        Result ResetProcessMapping(MemoryManager &memory, span<u8> destination) {
+            auto destinationHost{memory.GetHostSpan(destination)};
+            void *mapped{mmap(destinationHost.data(), destinationHost.size(), PROT_NONE,
+                              MAP_FIXED | MAP_ANONYMOUS | MAP_SHARED, -1, 0)};
+            if (mapped == MAP_FAILED) {
+                LOGW("Failed to restore private process-memory range {} - {}: {}",
+                     fmt::ptr(destination.data()), fmt::ptr(destination.end().base()), strerror(errno));
+                return result::OutOfMemory;
+            }
+
+            return {};
+        }
+
+        Result ProtectGuestRange(MemoryManager &memory, span<u8> range, memory::Permission permission) {
+            auto host{memory.GetHostSpan(range)};
+            if (permission.x)
+                __builtin___clear_cache(reinterpret_cast<char *>(host.data()), reinterpret_cast<char *>(host.end().base()));
+
+            if (mprotect(host.data(), host.size(), permission.Get()) != 0) {
+                LOGW("Failed to apply host protection {} to {} - {}: {}",
+                     permission, fmt::ptr(range.data()), fmt::ptr(range.end().base()), strerror(errno));
+                return result::OutOfMemory;
+            }
+
+            return {};
+        }
+    }
+
+    Result MemoryManager::SetProcessMemoryPermission(span<u8> memory, memory::Permission permission) {
+        std::unique_lock lock{mutex};
+
+        bool valid{true};
+        bool first{true};
+        memory::MemoryState firstState{};
+        memory::Permission firstPermission{};
+        memory::MemoryAttribute firstAttributes{};
+
+        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) {
+            if (!desc.second.state.processPermissionChangeAllowed || desc.second.attributes.value != 0 || desc.second.ipcLockCount != 0) {
+                valid = false;
+                return;
+            }
+
+            if (first) {
+                first = false;
+                firstState = desc.second.state;
+                firstPermission = desc.second.permission;
+                firstAttributes = desc.second.attributes;
+            } else if (desc.second.state != firstState || desc.second.permission != firstPermission || desc.second.attributes.value != firstAttributes.value) {
+                valid = false;
+            }
+        });
+
+        if (!valid || first)
+            return result::InvalidCurrentMemory;
+
+        if (auto res{ProtectGuestRange(*this, memory, permission)}; res != Result{})
+            return res;
+
+        ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &desc) {
+            if (permission.w) {
+                if (desc.second.state == memory::states::Code)
+                    desc.second.state = memory::states::CodeMutable;
+                else if (desc.second.state == memory::states::AliasCode)
+                    desc.second.state = memory::states::AliasCodeData;
+            }
+            desc.second.permission = permission;
+            MapInternal(desc);
+        });
+
+        return {};
+    }
+
+    Result MemoryManager::MapProcessMemory(MemoryManager &sourceMemory, u64 sourceProcessId, span<u8> source, span<u8> destination) {
+        auto operation = [&]() -> Result {
+            if (!sourceMemory.AddressSpaceContains(source))
+                return result::InvalidCurrentMemory;
+            if (!CanContainProcessAlias(destination))
+                return result::InvalidMemoryRegion;
+
+            bool sourceValid{true};
+            sourceMemory.ForeachChunkInRange(source, [&](const std::pair<u8 *, ChunkDescriptor> &desc) {
+                if (!desc.second.state.mapProcessAllowed || desc.second.attributes.value != 0 || desc.second.ipcLockCount != 0)
+                    sourceValid = false;
+            });
+            if (!sourceValid)
+                return result::InvalidCurrentMemory;
+
+            bool destinationFree{true};
+            ForeachChunkInRange(destination, [&](const std::pair<u8 *, ChunkDescriptor> &desc) {
+                if (desc.second.state != memory::states::Unmapped || desc.second.permission.raw != 0 || desc.second.attributes.value != 0)
+                    destinationFree = false;
+            });
+            if (!destinationFree)
+                return result::InvalidCurrentMemory;
+
+            if (auto res{DuplicateProcessMapping(sourceMemory, source, *this, destination)}; res != Result{})
+                return res;
+
+            if (auto res{ProtectGuestRange(*this, destination, memory::Permission{true, true, false})}; res != Result{}) {
+                ResetProcessMapping(*this, destination);
+                return res;
+            }
+
+            MapInternal(std::pair<u8 *, ChunkDescriptor>(destination.data(), {
+                .size = destination.size(),
+                .permission = {true, true, false},
+                .state = memory::states::SharedCode,
+                .isSrcMergeDisallowed = true,
+            }));
+
+            processAliases.emplace(destination.data(), ProcessAliasDescriptor{
+                .sourceAddress = source.data(),
+                .size = destination.size(),
+                .sourceProcessId = sourceProcessId,
+                .kind = ProcessAliasKind::SharedCode,
+            });
+            return {};
+        };
+
+        if (&sourceMemory == this) {
+            std::unique_lock lock{mutex};
+            return operation();
+        }
+
+        std::scoped_lock lock{mutex, sourceMemory.mutex};
+        return operation();
+    }
+
+    Result MemoryManager::UnmapProcessMemory(MemoryManager &sourceMemory, u64 sourceProcessId, span<u8> source, span<u8> destination) {
+        auto operation = [&]() -> Result {
+            if (!sourceMemory.AddressSpaceContains(source))
+                return result::InvalidCurrentMemory;
+            if (!CanContainProcessAlias(destination))
+                return result::InvalidMemoryRegion;
+
+            bool sourceValid{true};
+            sourceMemory.ForeachChunkInRange(source, [&](const std::pair<u8 *, ChunkDescriptor> &desc) {
+                if (!desc.second.state.mapProcessAllowed || desc.second.attributes.value != 0 || desc.second.ipcLockCount != 0)
+                    sourceValid = false;
+            });
+            if (!sourceValid)
+                return result::InvalidCurrentMemory;
+
+            bool destinationValid{true};
+            ForeachChunkInRange(destination, [&](const std::pair<u8 *, ChunkDescriptor> &desc) {
+                if (desc.second.state != memory::states::SharedCode || desc.second.permission != memory::Permission{true, true, false} || desc.second.attributes.value != 0 || desc.second.ipcLockCount != 0)
+                    destinationValid = false;
+            });
+            if (!destinationValid)
+                return result::InvalidCurrentMemory;
+            if (!ValidateProcessAlias(destination, source, sourceProcessId, ProcessAliasKind::SharedCode))
+                return result::InvalidMemoryRegion;
+
+            if (auto res{ResetProcessMapping(*this, destination)}; res != Result{})
+                return res;
+
+            MapInternal(std::pair<u8 *, ChunkDescriptor>(destination.data(), {
+                .size = destination.size(),
+                .permission = {false, false, false},
+                .state = memory::states::Unmapped,
+            }));
+            RemoveProcessAlias(destination);
+            return {};
+        };
+
+        if (&sourceMemory == this) {
+            std::unique_lock lock{mutex};
+            return operation();
+        }
+
+        std::scoped_lock lock{mutex, sourceMemory.mutex};
+        return operation();
+    }
+
+    Result MemoryManager::MapProcessCodeMemory(u64 processId, span<u8> source, span<u8> destination) {
+        std::unique_lock lock{mutex};
+
+        if (!AddressSpaceContains(source))
+            return result::InvalidCurrentMemory;
+        if (!CanContainProcessAlias(destination))
+            return result::InvalidMemoryRegion;
+
+        bool sourceValid{true};
+        ForeachChunkInRange(source, [&](const std::pair<u8 *, ChunkDescriptor> &desc) {
+            if (desc.second.state != memory::states::Heap || desc.second.permission != memory::Permission{true, true, false} || desc.second.attributes.value != 0 || desc.second.ipcLockCount != 0)
+                sourceValid = false;
+        });
+        if (!sourceValid)
+            return result::InvalidCurrentMemory;
+
+        bool destinationFree{true};
+        ForeachChunkInRange(destination, [&](const std::pair<u8 *, ChunkDescriptor> &desc) {
+            if (desc.second.state != memory::states::Unmapped || desc.second.permission.raw != 0 || desc.second.attributes.value != 0)
+                destinationFree = false;
+        });
+        if (!destinationFree)
+            return result::InvalidCurrentMemory;
+
+        if (auto res{DuplicateProcessMapping(*this, source, *this, destination)}; res != Result{})
+            return res;
+
+        if (auto res{ProtectGuestRange(*this, source, memory::Permission{})}; res != Result{}) {
+            ResetProcessMapping(*this, destination);
+            return res;
+        }
+        if (auto res{ProtectGuestRange(*this, destination, memory::Permission{})}; res != Result{}) {
+            ProtectGuestRange(*this, source, memory::Permission{true, true, false});
+            ResetProcessMapping(*this, destination);
+            return res;
+        }
+
+        ForeachChunkInRange(source, [&](std::pair<u8 *, ChunkDescriptor> &desc) {
+            desc.second.permission = {false, false, false};
+            desc.second.attributes.isBorrowed = true;
+            MapInternal(desc);
+        });
+        MapInternal(std::pair<u8 *, ChunkDescriptor>(destination.data(), {
+            .size = destination.size(),
+            .permission = {false, false, false},
+            .state = memory::states::AliasCode,
+            .isSrcMergeDisallowed = true,
+        }));
+
+        processAliases.emplace(destination.data(), ProcessAliasDescriptor{
+            .sourceAddress = source.data(),
+            .size = destination.size(),
+            .sourceProcessId = processId,
+            .kind = ProcessAliasKind::Code,
+        });
+        return {};
+    }
+
+    Result MemoryManager::UnmapProcessCodeMemory(u64 processId, span<u8> source, span<u8> destination) {
+        std::unique_lock lock{mutex};
+
+        if (!AddressSpaceContains(source))
+            return result::InvalidCurrentMemory;
+        if (!CanContainProcessAlias(destination))
+            return result::InvalidMemoryRegion;
+
+        bool sourceValid{true};
+        ForeachChunkInRange(source, [&](const std::pair<u8 *, ChunkDescriptor> &desc) {
+            if (desc.second.state != memory::states::Heap || desc.second.permission.raw != 0 || desc.second.attributes.value != 0x1 || desc.second.ipcLockCount != 0)
+                sourceValid = false;
+        });
+        if (!sourceValid)
+            return result::InvalidCurrentMemory;
+
+        bool destinationValid{true};
+        ForeachChunkInRange(destination, [&](const std::pair<u8 *, ChunkDescriptor> &desc) {
+            if (!desc.second.state.unmapProcessCodeMemoryAllowed || (desc.second.attributes.value & ~0x10U) != 0 || desc.second.ipcLockCount != 0)
+                destinationValid = false;
+        });
+        if (!destinationValid)
+            return result::InvalidCurrentMemory;
+        if (!ValidateProcessAlias(destination, source, processId, ProcessAliasKind::Code))
+            return result::InvalidMemoryRegion;
+
+        if (auto res{ProtectGuestRange(*this, source, memory::Permission{true, true, false})}; res != Result{})
+            return res;
+
+        if (auto res{ResetProcessMapping(*this, destination)}; res != Result{}) {
+            ProtectGuestRange(*this, source, memory::Permission{});
+            return res;
+        }
+
+        MapInternal(std::pair<u8 *, ChunkDescriptor>(destination.data(), {
+            .size = destination.size(),
+            .permission = {false, false, false},
+            .state = memory::states::Unmapped,
+        }));
+        ForeachChunkInRange(source, [&](std::pair<u8 *, ChunkDescriptor> &desc) {
+            desc.second.permission = {true, true, false};
+            desc.second.attributes.isBorrowed = false;
+            MapInternal(desc);
+        });
+        RemoveProcessAlias(destination);
+        return {};
     }
   
     __attribute__((always_inline)) void MemoryManager::MapCodeMemory(span<u8> memory, memory::Permission permission) {
