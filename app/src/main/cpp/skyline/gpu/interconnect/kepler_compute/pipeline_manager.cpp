@@ -132,6 +132,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
     DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, const std::array<u32, 3> &groups) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
+        DeferredStorageImageWrites storageWriters;
 
         u32 writeIdx{};
         auto writes{ctx.executor.allocator->AllocateUntracked<vk::WriteDescriptorSet>(descriptorInfo.totalWriteDescCount)};
@@ -254,13 +255,14 @@ namespace skyline::gpu::interconnect::kepler_compute {
                              LOGD("StorageImage: idx={} format={}", static_cast<u32>(handle.textureIndex), static_cast<u32>(desc.format));
                              auto binding{GetImageBinding(ctx, desc, textures, handle,
                                                           vk::PipelineStageFlagBits::eComputeShader,
-                                                          srcStageMask, dstStageMask)};
+                                                          srcStageMask, dstStageMask, storageWriters)};
                             return binding.first;
                         });
 
         if (!writeIdx)
             return nullptr;
 
+        CommitStorageImageWrites(ctx, storageWriters);
         return ctx.executor.allocator->EmplaceUntracked<DescriptorUpdateInfo>(DescriptorUpdateInfo{
             .writes = writes.first(writeIdx),
             .bufferDescs = bufferDescs.first(bufferIdx),
