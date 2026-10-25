@@ -545,6 +545,14 @@ namespace skyline::gpu {
                  fmt::ptr(guestMapping.data()), guestMapping.size(), matches.size(),
                  static_cast<bool>(separateGroup));
         }
+        // Read only through the *existing* safe guest mirror of each source.
+        // Sampling direct guest pointers would trigger traps and change ordering.
+        // Restrict expensive byte comparisons to the first two cubemap lookups.
+        u32 observedLookup{};
+        if (originTrace) {
+            static std::atomic<u32> loggedLookups{};
+            observedLookup = loggedLookups.fetch_add(1, std::memory_order_relaxed) + 1;
+        }
         for (auto &texture : matches) {
             const bool willSync{!separateGroup || texture->aliasGroup.load() != separateGroup};
             if (originTrace)
@@ -554,12 +562,88 @@ namespace skyline::gpu {
                      texture->everUsedAsGpuWrite, texture->gpuWriteSerial,
                      texture->gpuReadbackSerial, texture->aliasStale.load(),
                      texture->memoryFreed, static_cast<u32>(texture->dirtyState));
+
+            std::vector<u8> originBefore;
+            size_t originSourceOffset{};
+            size_t originGuestOffset{};
+            uintptr_t originSourceBegin{};
+            size_t originSourceBytes{};
+            // Source->mirror is guaranteed to be a contiguous representation
+            // only for one mapping. Skip unsafe/missing mirrors explicitly.
+            if (originTrace && observedLookup <= 2 && willSync &&
+                texture->guest && texture->guest->mappings.size() == 1 &&
+                !texture->memoryFreed) {
+                const auto sourceMapping{texture->guest->mappings.front()};
+                const auto guestBegin{reinterpret_cast<uintptr_t>(guestMapping.data())};
+                const auto sourceBegin{reinterpret_cast<uintptr_t>(sourceMapping.data())};
+                const auto guestEnd{guestBegin + guestMapping.size()};
+                const auto sourceEnd{sourceBegin + sourceMapping.size()};
+                const auto begin{std::max(guestBegin, sourceBegin)};
+                const auto end{std::min(guestEnd, sourceEnd)};
+                if (begin < end && end - begin <= 2 * 1024 * 1024) {
+                    const auto offset{static_cast<size_t>(begin - sourceBegin)};
+                    const auto length{static_cast<size_t>(end - begin)};
+                    if (texture->mirror.size() >= offset &&
+                        length <= texture->mirror.size() - offset) {
+                        originBefore.assign(texture->mirror.data() + offset,
+                                            texture->mirror.data() + offset + length);
+                        originSourceOffset = offset;
+                        originGuestOffset = static_cast<size_t>(begin - guestBegin);
+                        originSourceBegin = sourceBegin;
+                        originSourceBytes = sourceMapping.size();
+                    }
+                }
+            }
+
             if (willSync)
                 texture->SynchronizeGuest(false, true);
+
             if (originTrace && willSync)
                 LOGI("HDR_ORIGIN_SOURCE_AFTER source={} readback_serial={} guest_freed={} dirty_state={}",
                      fmt::ptr(texture.get()), texture->gpuReadbackSerial,
                      texture->memoryFreed, static_cast<u32>(texture->dirtyState));
+
+            if (originTrace && observedLookup <= 2 && willSync) {
+                if (originBefore.empty() || texture->memoryFreed ||
+                    texture->mirror.size() < originSourceOffset ||
+                    originBefore.size() > texture->mirror.size() - originSourceOffset) {
+                    LOGI("HDR_ORIGIN_DIFF_SKIP lookup={} source={} mappings={} guest_freed={} mirror_bytes={}",
+                         observedLookup, fmt::ptr(texture.get()),
+                         texture->guest ? texture->guest->mappings.size() : 0,
+                         texture->memoryFreed, texture->mirror.size());
+                } else {
+                    const u8 *after{texture->mirror.data() + originSourceOffset};
+                    size_t changed{}, nanBefore{}, nanAfter{}, nanAdded{}, nanRemoved{};
+                    size_t firstChanged{originBefore.size()}, firstNanAdded{originBefore.size()};
+                    for (size_t i{}; i < originBefore.size(); ++i) {
+                        if (originBefore[i] != after[i]) {
+                            ++changed;
+                            if (firstChanged == originBefore.size()) firstChanged = i;
+                        }
+                        // Count canonical FP16 NaNs only at target-aligned lanes,
+                        // avoiding spurious 0x7E00 matches across channel boundaries.
+                        if (((originGuestOffset + i) & 1) == 0 && i + 1 < originBefore.size()) {
+                            const bool previous{originBefore[i] == 0 && originBefore[i + 1] == 0x7e};
+                            const bool current{after[i] == 0 && after[i + 1] == 0x7e};
+                            nanBefore += previous;
+                            nanAfter += current;
+                            nanAdded += !previous && current;
+                            nanRemoved += previous && !current;
+                            if (!previous && current && firstNanAdded == originBefore.size())
+                                firstNanAdded = i;
+                        }
+                    }
+                    LOGI("HDR_ORIGIN_DIFF lookup={} source={} source_guest_ptr=0x{:X} "
+                         "source_guest_bytes={} guest_offset={} intersect_bytes={} "
+                         "changed_bytes={} first_changed_guest_offset={} nan_before={} "
+                         "nan_after={} nan_added={} nan_removed={} first_nan_added_guest_offset={}",
+                         observedLookup, fmt::ptr(texture.get()), originSourceBegin,
+                         originSourceBytes, originGuestOffset, originBefore.size(), changed,
+                         firstChanged < originBefore.size() ? originGuestOffset + firstChanged : 0,
+                         nanBefore, nanAfter, nanAdded, nanRemoved,
+                         firstNanAdded < originBefore.size() ? originGuestOffset + firstNanAdded : 0);
+                }
+            }
         }
 
         // Create a texture as we cannot find one that matches
