@@ -17,6 +17,7 @@
 #include <vector>
 #include <gpu/texture/pitch_linear.h>
 namespace vk {
+    enum class Format { eR8G8B8A8Unorm, eD16Unorm, eD32Sfloat, eX8D24UnormPack32, eD24UnormS8Uint, eS8Uint };
     enum class ImageType { e1D, e2D, e3D };
     enum class ImageAspectFlagBits { eColor, eDepth };
     enum class SampleCountFlagBits { e1 };
@@ -50,6 +51,7 @@ namespace skyline {
             struct Format {
                 u32 blockWidth, blockHeight, bpb;
                 vk::ImageAspectFlagBits vkAspect{vk::ImageAspectFlagBits::eColor};
+                vk::Format vkFormat{vk::Format::eR8G8B8A8Unorm};
                 bool IsCompatible(const Format &other) const { return this == &other; }
                 size_t GetSize(Dimensions d) const {
                     return size_t{util::DivideCeil(d.width, blockWidth)} * util::DivideCeil(d.height, blockHeight) * bpb * d.depth;

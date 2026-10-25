@@ -418,6 +418,12 @@ namespace skyline {
              */
             void FreeMemory(span<u8> memory);
 
+            /** Discard complete pages in an already-host-mapped mirror.
+             * @return True only when a nonempty MADV_REMOVE operation succeeds.
+             * No guestOffset translation is applied to host virtual addresses.
+             */
+            bool FreeHostMemory(span<u8> memory);
+
             /**
              * Implements the memory manager side functionality of svcMapMemory
              * @note Argument validity must be checked by the caller

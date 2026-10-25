@@ -48,6 +48,10 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
             "void CopyPitchLinearToLinear(",
             "void CopyLinearToPitchLinear(")) + "\n}\n")
     (build / "copy-to-guest.inc").write_text(function(texture, "void Texture::CopyToGuest("))
+    (build / "free-guest.inc").write_text(function(texture, "void Texture::FreeGuest("))
+    memory = (ROOT / "app/src/main/cpp/skyline/kernel/memory.cpp").read_text()
+    (build / "free-host-memory.inc").write_text(function(memory, "bool MemoryManager::FreeHostMemory(").replace(
+        "MemoryManager::FreeHostMemory", "GPU::Memory::FreeHostMemory"))
     start = textures.index("            constexpr size_t CubeFaceCount", textures.index("TextureView *Textures::GetTexture("))
     end = textures.index("            auto mappings{", start)
     # This is the unchanged complete production dimensions/type/tiling setup.

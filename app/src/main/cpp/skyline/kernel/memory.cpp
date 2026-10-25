@@ -826,21 +826,25 @@ namespace skyline::kernel {
     }
 
     __attribute__((always_inline)) void MemoryManager::FreeMemory(span<u8> memory) {
-    memory = GetHostSpan(memory);
-       // Get the host address of memory
-    u8 *alignedStart{util::AlignUp(memory.data(), constant::PageSize)};
-    u8 *alignedEnd{util::AlignDown(memory.end().base(), constant::PageSize)};
+        FreeHostMemory(GetHostSpan(memory));
+    }
 
-    if (alignedStart < alignedEnd) [[likely]] {
-        size_t alignedSize{static_cast<size_t>(alignedEnd - alignedStart)};
-
-        // MADV_REMOVE requires the mapping to be writable, force it before freeing
-        if (mprotect(alignedStart, alignedSize, PROT_READ | PROT_WRITE) == -1) [[unlikely]]
+    bool MemoryManager::FreeHostMemory(span<u8> memory) {
+        u8 *alignedStart{util::AlignUp(memory.data(), constant::PageSize)};
+        u8 *alignedEnd{util::AlignDown(memory.end().base(), constant::PageSize)};
+        if (alignedStart >= alignedEnd)
+            return false;
+        const size_t alignedSize{static_cast<size_t>(alignedEnd - alignedStart)};
+        // MADV_REMOVE requires a writable host mapping, including mirror VAs.
+        if (mprotect(alignedStart, alignedSize, PROT_READ | PROT_WRITE) == -1) [[unlikely]] {
             LOGW("Failed to reprotect memory before freeing: {}", strerror(errno));
-
-        if (madvise(alignedStart, alignedSize, MADV_REMOVE) == -1) [[unlikely]]
-            LOGE("Failed to free memory: {}", strerror(errno));
+            return false;
         }
+        if (madvise(alignedStart, alignedSize, MADV_REMOVE) == -1) [[unlikely]] {
+            LOGE("Failed to free memory: {}", strerror(errno));
+            return false;
+        }
+        return true;
     }
 
     void MemoryManager::SvcMapMemory(span<u8> source, span<u8> destination) {
