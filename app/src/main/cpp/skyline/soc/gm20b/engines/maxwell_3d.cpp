@@ -36,7 +36,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
             .indexBufferRegisters = {*registers.indexBuffer},
             .transformFeedbackBuffersRegisters = util::MergeInto<REGTYPE(TransformFeedbackBufferState), type::StreamOutBufferCount>(*registers.streamOutBuffers, *registers.streamOutputEnable),
             .viewportsRegisters = util::MergeInto<REGTYPE(ViewportState), type::ViewportCount>(registers.viewports[0], registers.viewportClips[0], *registers.viewports, *registers.viewportClips, *registers.windowOrigin, *registers.viewportScaleOffsetEnable, *registers.surfaceClip),
-            .scissorsRegisters = util::MergeInto<REGTYPE(ScissorState), type::ViewportCount>(*registers.scissors),
+            .scissorsRegisters = util::MergeInto<REGTYPE(ScissorState), type::ViewportCount>(*registers.scissors, *registers.windowOrigin, *registers.surfaceClip),
             .lineWidthRegisters = {*registers.lineWidth, *registers.lineWidthAliased, *registers.aliasedLineWidthEnable},
             .depthBiasRegisters = {*registers.depthBias, *registers.depthBiasClamp, *registers.slopeScaleDepthBias},
             .blendConstantsRegisters = {*registers.blendConsts},

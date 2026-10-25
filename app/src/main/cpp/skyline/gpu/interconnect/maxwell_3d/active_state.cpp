@@ -257,7 +257,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     ViewportState::ViewportState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine, u32 index) : engine{manager, dirtyHandle, engine}, index{index} {}
 
-    static vk::Viewport ConvertViewport(const engine::Viewport &viewport, const engine::ViewportClip &viewportClip, const engine::WindowOrigin &windowOrigin, bool viewportScaleOffsetEnable) {
+    static vk::Viewport ConvertViewport(const engine::Viewport &viewport, const engine::ViewportClip &viewportClip, const engine::WindowOrigin &windowOrigin, const engine::SurfaceClip &surfaceClip) {
         vk::Viewport vkViewport{};
 
         vkViewport.x = viewport.offsetX - viewport.scaleX; // Counteract the addition of the half of the width (o_x) to the host translation
@@ -275,9 +275,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
                             engine::Viewport::ToString(viewport.swizzle.z),
                             engine::Viewport::ToString(viewport.swizzle.w));
 
-        // If swizzle and origin mode cancel out then do nothing, otherwise flip the viewport
-        if ((viewport.swizzle.y == CoordinateSwizzle::NegY) != (windowOrigin.lowerLeft != 0)) {
-            // Flip the viewport given that the viewport origin is lower left or the viewport Y has been flipped via a swizzle but not if both are active at the same time
+        // Lower-left window origin is relative to the full surface, not the viewport.
+        // Only the unsupported-NV-swizzle fallback flips about the viewport itself.
+        if (windowOrigin.lowerLeft) {
+            vkViewport.y += static_cast<float>(surfaceClip.vertical.height);
+            vkViewport.height = -vkViewport.height;
+        }
+        if (viewport.swizzle.y == CoordinateSwizzle::NegY) {
             vkViewport.y += vkViewport.height;
             vkViewport.height = -vkViewport.height;
         }
@@ -307,15 +311,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 .maxDepth = 1.0f,
             });
         } else if (engine->viewport.scaleX == 0.0f || engine->viewport.scaleY == 0.0f) {
-            builder.SetViewport(index, ConvertViewport(engine->viewport0, engine->viewportClip0, engine->windowOrigin, engine->viewportScaleOffsetEnable));
+            builder.SetViewport(index, ConvertViewport(engine->viewport0, engine->viewportClip0, engine->windowOrigin, engine->surfaceClip));
         } else {
-            builder.SetViewport(index, ConvertViewport(engine->viewport, engine->viewportClip, engine->windowOrigin, engine->viewportScaleOffsetEnable));
+            builder.SetViewport(index, ConvertViewport(engine->viewport, engine->viewportClip, engine->windowOrigin, engine->surfaceClip));
         }
     }
 
     /* Scissor */
     void ScissorState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
-        manager.Bind(handle, scissor);
+        manager.Bind(handle, scissor, windowOrigin, surfaceClip);
     }
 
     ScissorState::ScissorState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine, u32 index) : engine{manager, dirtyHandle, engine}, index{index} {}
@@ -329,14 +333,21 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 const auto &vertical{engine->scissor.vertical};
                 const auto &horizontal{engine->scissor.horizontal};
 
+                // Scissor rectangles are specified in the guest window origin.
+                // Vulkan uses an upper-left render-area origin.
+                const i32 surfaceHeight{static_cast<i32>(engine->surfaceClip.vertical.height)};
+                const i32 minY{std::max<i32>(0, engine->windowOrigin.lowerLeft
+                    ? surfaceHeight - static_cast<i32>(vertical.yMax) : static_cast<i32>(vertical.yMin))};
+                const i32 maxY{std::max<i32>(0, engine->windowOrigin.lowerLeft
+                    ? surfaceHeight - static_cast<i32>(vertical.yMin) : static_cast<i32>(vertical.yMax))};
                 return vk::Rect2D{
                     .offset = {
-                        .y = vertical.yMin,
+                        .y = minY,
                         .x = horizontal.xMin
                     },
                     .extent = {
-                        .height = static_cast<uint32_t>(vertical.yMax - vertical.yMin),
-                        .width = static_cast<uint32_t>(horizontal.xMax - horizontal.xMin)
+                        .height = static_cast<u32>(std::max(0, maxY - minY)),
+                        .width = static_cast<u32>(horizontal.xMax - horizontal.xMin)
                     }
                 };
             } else {

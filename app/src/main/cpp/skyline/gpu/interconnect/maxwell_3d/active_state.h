@@ -116,6 +116,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
       public:
         struct EngineRegisters {
             const engine::Scissor &scissor;
+            const engine::WindowOrigin &windowOrigin;
+            const engine::SurfaceClip &surfaceClip;
 
             void DirtyBind(DirtyManager &manager, dirty::Handle handle) const;
         };

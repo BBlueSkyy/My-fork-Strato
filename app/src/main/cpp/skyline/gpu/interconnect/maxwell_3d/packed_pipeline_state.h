@@ -42,7 +42,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             bool rasterizerDiscardEnable : 1;
             u8 polygonMode : 2; //!< Use {Set,Get}PolygonMode
             VkCullModeFlags cullMode : 2; //!< Use SetCullMode
-            bool flipYEnable : 1;
+            bool yNegateEnable : 1;
             bool frontFaceClockwise : 1; //!< With Y flip transformation already applied
             bool depthBiasEnable : 1;
             engine::ProvokingVertex::Value provokingVertex : 1;

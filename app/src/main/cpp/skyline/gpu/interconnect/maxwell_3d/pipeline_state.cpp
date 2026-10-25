@@ -256,10 +256,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         packedState.SetCullMode(engine->oglCullEnable, engine->oglCullFace);
 
-        packedState.flipYEnable = engine->windowOrigin.flipY;
+        // FragCoord Y follows the window origin; flipY only changes polygon winding.
+        packedState.yNegateEnable = engine->windowOrigin.lowerLeft;
 
         bool origFrontFaceClockwise{engine->oglFrontFace == engine::FrontFace::CW};
-        packedState.frontFaceClockwise = (packedState.flipYEnable != origFrontFaceClockwise);
+        packedState.frontFaceClockwise = (static_cast<bool>(engine->windowOrigin.flipY) != origFrontFaceClockwise);
         packedState.depthBiasEnable = ConvertDepthBiasEnable(engine->polyOffset, engine->frontPolygonMode);
         packedState.provokingVertex = engine->provokingVertex.value;
         packedState.pointSize = engine->pointSize;
