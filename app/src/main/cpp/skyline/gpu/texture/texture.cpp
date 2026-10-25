@@ -1618,7 +1618,16 @@ namespace skyline::gpu {
             if (extraWaitSemaphore)
                 waitSemaphores.push_back(extraWaitSemaphore);
 
-            return gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commandBuffer) {
+            auto active{gpu.scheduler.AllocateCommandBuffer()};
+            auto copyCycle{active.GetFenceCycle()};
+            const auto previousLayout{layout};
+            try {
+                // Retain both image owners before any GPU work can be submitted.
+                copyCycle->AttachObjects(source, shared_from_this());
+                active->begin(vk::CommandBufferBeginInfo{
+                    .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+                });
+                auto &commandBuffer{*active};
                 auto sourceBacking{source->GetBacking()};
                 if (source->layout != vk::ImageLayout::eTransferSrcOptimal) {
                     commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, vk::ImageMemoryBarrier{
@@ -1706,7 +1715,14 @@ namespace skyline::gpu {
                         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                         .subresourceRange = subresource,
                         });
-            }, waitSemaphores, span<vk::Semaphore>{signalSemaphore});
+                active->end();
+                gpu.scheduler.SubmitCommandBuffer(*active, copyCycle, waitSemaphores, span<vk::Semaphore>{signalSemaphore});
+            } catch (...) {
+                copyCycle->Cancel();
+                layout = previousLayout;
+                throw;
+            }
+            return copyCycle;
         }};
 
         auto newCycle{[&]{
@@ -1715,8 +1731,13 @@ namespace skyline::gpu {
             else
                 return submitFunc({});
         }()};
-        newCycle->AttachObjects(std::move(source), shared_from_this());
-        cycle = newCycle;
+        // A copy reads the source as well as writing the destination. Subsequent
+        // CPU backing writes, promotion and guest readback must see this read,
+        // even when there was no producer fence or its semaphore was already used.
+        // Do not chain the old source cycle here: RecordSemaphoreWaitUsage can
+        // already make its completion depend on this cycle to recycle a semaphore.
+        source->cycle = newCycle;
+        cycle = std::move(newCycle);
     }
 
     bool Texture::ValidateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage) {

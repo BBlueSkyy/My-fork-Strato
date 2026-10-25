@@ -221,11 +221,89 @@ void Uploads() {
     std::puts("PASS: production upload failure/retry, eviction OFF/ON and CPU write during staging");
 }
 
+void Copies() {
+    for (bool priorCycle : {false, true}) {
+        Texture::GPU gpu; auto source{std::make_shared<Texture>(gpu)}, dest{std::make_shared<Texture>(gpu)};
+        std::shared_ptr<FenceCycle> prior;
+        if (priorCycle) {
+            prior = std::make_shared<FenceCycle>(); prior->NotifySubmitted(); prior->Complete();
+            prior->semaphoreConsumed = true; source->cycle = prior;
+        }
+        dest->CopyFrom(source, 0, 0, source->format, {});
+        auto copyCycle{dest->cycle};
+        const bool tracked{source->cycle == copyCycle};
+        // Complete before throwing so facade resource cycles cannot obscure a failure.
+        if (!tracked) { gpu.scheduler.Complete(); Check(false, "texture copy did not publish its source read dependency"); }
+        std::promise<void> entered;
+        auto cpuWrite{std::async(std::launch::async, [&] { entered.set_value(); source->WaitOnFence(); source->hostByte = 99; })};
+        entered.get_future().get();
+        {
+            std::unique_lock lock{copyCycle->mutex};
+            Check(copyCycle->changed.wait_for(lock, 1s, [&] { return copyCycle->waits > 0; }), "CPU backing reuse never waited on copy");
+        }
+        Check(cpuWrite.wait_for(20ms) == std::future_status::timeout, "CPU backing changed during pending texture read");
+        copyCycle->Complete(); cpuWrite.get();
+        Check(source->hostByte == 99, "CPU backing reuse did not resume");
+        gpu.scheduler.Complete();
+    }
+    std::puts("PASS: production texture copy tracks source reads, including previously consumed semaphore; CPU reuse waits locally");
+}
 
+void LifetimesAndFailures() {
+    for (bool copy : {false, true}) {
+        Texture::GPU gpu;
+        auto source{std::make_shared<Texture>(gpu)}, dest{std::make_shared<Texture>(gpu)};
+        gpu.scheduler.submitting = [](const auto &cycle) {
+            Check(cycle->dependencies.size() == 2, "GPU submission preceded lifetime retention");
+        };
+        if (copy) dest->CopyFrom(source, 0, 0, source->format, {}); else source->SynchronizeHost(false);
+        gpu.scheduler.Complete();
+    }
+    for (auto failure : {Failure::Allocate, Failure::Attach, Failure::RecordCopy, Failure::End, Failure::Submit}) {
+        Texture::GPU gpu;
+        auto source{std::make_shared<Texture>(gpu)}, dest{std::make_shared<Texture>(gpu)};
+        auto producer{std::make_shared<FenceCycle>()}; producer->NotifySubmitted(); source->cycle = producer;
+        dest->layout = vk::ImageLayout::eUndefined;
+        gpu.scheduler.fail = failure;
+        bool failed{};
+        try { dest->CopyFrom(source, 0, 0, source->format, {}); } catch (const std::runtime_error &) { failed = true; }
+        Check(failed && source->cycle == producer && !dest->cycle, "failed copy published resource cycles");
+        Check(dest->layout == vk::ImageLayout::eUndefined && !producer->semaphoreUnsignalCycle,
+              "failed copy published layout/semaphore consumption");
+        for (const auto &cycle : gpu.scheduler.cycles)
+            Check(cycle->cancelled, "failed recording left an unsubmitted cycle pending");
+        gpu.scheduler.fail = Failure::None;
+        dest->CopyFrom(source, 0, 0, source->format, {});
+        Check(dest->cycle && dest->cycle == source->cycle, "failed copy could not be retried");
+        gpu.scheduler.Complete(); producer->Complete();
+    }
+    // The producer may still be executing: only its queue submission is needed.
+    {
+        Texture::GPU gpu;
+        auto source{std::make_shared<Texture>(gpu)}, dest{std::make_shared<Texture>(gpu)};
+        auto producer{std::make_shared<FenceCycle>()}; source->cycle = producer;
+        std::promise<void> started;
+        auto copy{std::async(std::launch::async, [&] { started.set_value(); dest->CopyFrom(source, 0, 0, source->format, {}); })};
+        started.get_future().get();
+        const bool pending{copy.wait_for(20ms) == std::future_status::timeout};
+        producer->NotifySubmitted();
+        const bool asynchronous{copy.wait_for(1s) == std::future_status::ready};
+        if (!asynchronous) producer->Complete();
+        copy.get();
+        Check(pending && asynchronous, "texture copy did not use submission-only ordering");
+        Check(!producer->complete && source->cycle == dest->cycle, "copy waited for GPU completion or lost its read cycle");
+        gpu.scheduler.Complete(); producer->Complete();
+        // Completion through the consumed semaphore must not form a cycle.
+        producer->Wait();
+    }
+    std::puts("PASS: pre-submit lifetimes, copy failure/retry/layout rollback and submission-only producer ordering");
+}
 }
 
 int main(int argc, char **argv) {
     try {
         if (argc == 1 || std::string{argv[1]} == "uploads") skyline::gpu::Uploads();
+        if (argc == 1 || std::string{argv[1]} == "copies") skyline::gpu::Copies();
+        if (argc == 1 || std::string{argv[1]} == "failures") skyline::gpu::LifetimesAndFailures();
     } catch (const std::exception &e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }
 }
