@@ -51,6 +51,9 @@ namespace skyline::kernel::type {
 
         state.thread = shared_from_this();
 
+        LOGI("[THREAD-DIAG] T{} host entrypoint started core={} ideal={} entry={} stack={} tls={}",
+             id, coreId, idealCore, entry, fmt::ptr(stackTop), fmt::ptr(tlsRegion));
+
         if (setjmp(originalCtx)) { // Returns 1 if it's returning from guest, 0 otherwise
             state.scheduler->RemoveThread();
 
@@ -84,6 +87,7 @@ namespace skyline::kernel::type {
 
         // Initialize execution-mode-specific stuff
         Init();
+        LOGI("[THREAD-DIAG] T{} Init complete core={} YieldPending={}", id, coreId, Scheduler::YieldPending);
 
         {
             std::scoped_lock lock{statusMutex};
@@ -92,9 +96,15 @@ namespace skyline::kernel::type {
         }
 
         try {
-            if (!Scheduler::YieldPending)
+            if (!Scheduler::YieldPending) {
+                LOGI("[THREAD-DIAG] T{} initial WaitSchedule begin core={}", id, coreId);
                 state.scheduler->WaitSchedule();
+                LOGI("[THREAD-DIAG] T{} initial WaitSchedule returned core={}", id, coreId);
+            } else {
+                LOGI("[THREAD-DIAG] T{} initial WaitSchedule skipped: YieldPending=true", id);
+            }
 
+            bool firstGuestRun{true};
             while (!killed) {
                 while (Scheduler::YieldPending && !killed) [[unlikely]] {
                     // If there is a yield pending on us after thread creation
@@ -104,6 +114,10 @@ namespace skyline::kernel::type {
                 }
 
                 TRACE_EVENT("guest", "Guest");
+                if (firstGuestRun) {
+                    LOGI("[THREAD-DIAG] T{} first guest Run dispatch core={} entry={}", id, coreId, entry);
+                    firstGuestRun = false;
+                }
                 // Run the guest code
                 Run();
             }
@@ -143,11 +157,14 @@ namespace skyline::kernel::type {
     void KThread::Start(bool self) {
         std::unique_lock lock(statusMutex);
         if (!running) {
+            LOGI("[THREAD-DIAG] T{} Start begin handle=0x{:X} entry={} ideal={} core={} priority={} self={}",
+                 id, handle, entry, idealCore, coreId, priority.load(), self);
             {
                 std::scoped_lock migrationLock{coreMigrationMutex};
                 auto thisShared{shared_from_this()};
                 coreId = state.scheduler->GetOptimalCoreForThread(thisShared).id;
                 state.scheduler->InsertThread(thisShared);
+                LOGI("[THREAD-DIAG] T{} Start inserted core={}", id, coreId);
             }
 
             running = true;
@@ -158,6 +175,7 @@ namespace skyline::kernel::type {
                 ThreadEntrypoint();
             } else {
                 thread = std::thread(&KThread::ThreadEntrypoint, this);
+                LOGI("[THREAD-DIAG] T{} host std::thread created", id);
             }
         }
     }
@@ -179,14 +197,19 @@ namespace skyline::kernel::type {
     void KThread::SendSignal(int signal) {
         std::unique_lock lock(statusMutex);
         statusCondition.wait(lock, [this]() { return ready || killed; });
-        if (!killed && running)
+        if (!killed && running) {
+            LOGI("[THREAD-DIAG] T{} SendSignal signal={} core={} priority={} pendingYield={} forceYield={}",
+                 id, signal, coreId, priority.load(), pendingYield, forceYield);
             pthread_kill(pthread, signal);
+        }
     }
 
     void KThread::ArmPreemptionTimer(std::chrono::nanoseconds timeToFire) {
         std::unique_lock lock(statusMutex);
         statusCondition.wait(lock, [this]() { return ready || killed; });
         if (!killed && running) {
+            LOGI("[THREAD-DIAG] T{} ArmPreemptionTimer core={} priority={} duration_ns={}",
+                 id, coreId, priority.load(), timeToFire.count());
             struct itimerspec spec{.it_value = {
                 .tv_nsec = std::min(static_cast<i64>(timeToFire.count()), constant::NsInSecond),
                 .tv_sec = std::max(std::chrono::duration_cast<std::chrono::seconds>(timeToFire).count() - 1, 0LL),
@@ -203,6 +226,7 @@ namespace skyline::kernel::type {
         std::unique_lock lock(statusMutex);
         statusCondition.wait(lock, [this]() { return ready || killed; });
         if (!killed && running) {
+            LOGI("[THREAD-DIAG] T{} DisarmPreemptionTimer core={} priority={}", id, coreId, priority.load());
             struct itimerspec spec{};
             timer_settime(preemptionTimer, 0, &spec, nullptr);
             isPreempted = false;
@@ -268,6 +292,8 @@ namespace skyline::kernel::type {
     }
 
     void KNceThread::Run() {
+        LOGI("[THREAD-DIAG] T{} entering KNceThread::Run core={} entry={} argument=0x{:X} handle=0x{:X}",
+             id, coreId, entry, entryArgument, handle);
         asm volatile(
             "MRS X0, TPIDR_EL0\n\t" // Retrieve current (host) TLS
             "MSR TPIDR_EL0, %x0\n\t" // Set TLS to ThreadContext
