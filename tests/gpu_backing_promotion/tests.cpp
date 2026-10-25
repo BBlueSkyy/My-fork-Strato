@@ -29,6 +29,8 @@
 #include <stdexcept>
 #include <utility>
 #include <variant>
+#include <list>
+#include <ranges>
 
 inline bool operator!(const vk::Extent3D &extent) { return !extent.width || !extent.height || !extent.depth; }
 using u32 = uint32_t;
@@ -40,6 +42,7 @@ using u8 = uint8_t;
 using ContextTag = uint64_t;
 template<typename T> struct span : std::span<T> {
     using std::span<T>::span;
+    span(T &single) : std::span<T>(&single,1) {}
     span(std::span<T> other) : std::span<T>(other) {}
     bool valid() const { return this->data() && this->size(); }
     bool contains(const span &other) const { return this->begin() <= other.begin() && this->end() >= other.end(); }
@@ -47,6 +50,12 @@ template<typename T> struct span : std::span<T> {
 };
 template<typename... Args> std::runtime_error exception(const char *text, Args &&...) {
     return std::runtime_error(text);
+}
+namespace ranges {
+    using std::ranges::all_of; using std::ranges::transform;
+    namespace views { template<class A, class B> auto concat(const A &a, const B &b) {
+        std::vector<typename A::value_type> result(a.begin(),a.end()); result.insert(result.end(),b.begin(),b.end()); return result;
+    } }
 }
 namespace util {
     inline i64 GetTimeNs() { return std::chrono::steady_clock::now().time_since_epoch().count(); }
@@ -391,6 +400,7 @@ namespace skyline::gpu {
         vk::PipelineStageFlags pendingStageMask{}, readStageMask{};
         ResourceMutex mutex;
         void lock() { mutex.lock(); }
+        ContextTag pendingRegionUseTag{};
         std::atomic<ContextTag> tag{}, pendingGpuWriteTag{};
         bool LockWithTag(ContextTag value);
         void unlock();
@@ -433,6 +443,7 @@ namespace skyline::gpu {
         bool everUsedAsGpuWrite{};
         u32 lastRenderPassIndex{};
         texture::RenderPassUsage lastRenderPassUsage{texture::RenderPassUsage::None};
+        bool ValidateRenderPassUsage(u32,texture::RenderPassUsage);
         void UpdateRenderPassUsage(u32,texture::RenderPassUsage);
         static void ValidateAliasWrites(span<TextureView *>);
         void MarkGpuDirty(UsageTracker &);
@@ -562,11 +573,47 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
 
     struct GpuDirtyConstantBufferReadRequest {};
     namespace interconnect {
+        namespace node {
+            struct RenderPassNode {
+                vk::Rect2D renderArea;
+                explicit RenderPassNode(vk::Rect2D area) : renderArea(area) {}
+                void AddSubpass(span<TextureView *> inputs, span<TextureView *> colors, TextureView *depth, int) {
+                    for (auto view : inputs) if(view) view->GetView();
+                    for (auto view : colors) if(view) view->GetView();
+                    if (depth) depth->GetView();
+                }
+                void UpdateDependency(vk::PipelineStageFlags,vk::PipelineStageFlags) {}
+            };
+            struct RenderPassEndNode {};
+            struct SubpassFunctionNode { template<class F> explicit SubpassFunctionNode(F &&) {} };
+            struct NextSubpassFunctionNode { template<class F> explicit NextSubpassFunctionNode(F &&) {} };
+            using Node=std::variant<RenderPassNode,RenderPassEndNode,SubpassFunctionNode,NextSubpassFunctionNode>;
+        }
         struct CommandExecutor {
             bool regionOperationActive{};
-            std::vector<std::pair<std::shared_ptr<texture::RegionAuthority>,std::unique_lock<std::recursive_mutex>>> regionOperationLocks;
-            void HoldRegionAuthority(Texture &);
+            std::vector<Texture *> regionOperationUses;
+            void TrackRegionUse(Texture &);
+            struct RegionPublication {
+                std::vector<std::unique_lock<std::recursive_mutex>> states, metadata;
+            };
+            RegionPublication AcquireRegionPublication(span<TextureView *>);
             #include "region_operation.inc"
+            int gpu{};
+            struct Slot { std::list<node::Node> nodes,pendingPostRenderPassNodes; };
+            std::unique_ptr<Slot> slot{std::make_unique<Slot>()};
+            node::RenderPassNode *renderPass{};
+            std::list<node::Node>::iterator renderPassIt;
+            unsigned renderPassIndex{1},subpassCount{};
+            std::vector<vk::ImageView> lastSubpassColorAttachments,lastSubpassInputAttachments;
+            vk::ImageView lastSubpassDepthStencilAttachment{};
+            std::vector<std::function<void()>> subpassBoundaryCallbacks;
+            struct Settings { std::shared_ptr<unsigned> executorFlushThreshold{std::make_shared<unsigned>(100000)}; };
+            struct { std::shared_ptr<Settings> settings{std::make_shared<Settings>()}; } state;
+            using SubpassFunction=std::function<void(vk::raii::CommandBuffer &,const std::shared_ptr<FenceCycle> &,GPU &,vk::RenderPass,u32)>;
+            struct SubpassHooks { SubpassFunction before; };
+            using SubpassHookFactory=std::function<SubpassHooks(u32)>;
+            bool CreateRenderPassWithSubpass(vk::Rect2D,span<TextureView *>,span<TextureView *>,span<TextureView *>,TextureView *,bool,vk::PipelineStageFlags,vk::PipelineStageFlags,span<TextureView *>);
+            void AddSubpass(SubpassFunction &&,vk::Rect2D,span<TextureView *>,span<TextureView *>,span<TextureView *>,TextureView *,bool,vk::PipelineStageFlags,vk::PipelineStageFlags,SubpassHookFactory,span<TextureView *>,span<TextureView *>);
             ContextTag tag{1};
             std::shared_ptr<Texture> pending;
             std::vector<std::shared_ptr<Texture>> attachedTextures;
@@ -576,15 +623,21 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             void CommitTextureWrites(span<TextureView *>);
             unsigned submissions{};
             std::function<void()> onSubmit;
-            void Submit() { regionOperationLocks.clear(); ++submissions; if (onSubmit) onSubmit(); }
+            void Submit() {
+                regionOperationUses.clear(); ++submissions; if (onSubmit) onSubmit();
+                slot->nodes.clear(); renderPass=nullptr; lastSubpassColorAttachments.clear();
+                lastSubpassInputAttachments.clear(); lastSubpassDepthStencilAttachment=nullptr; ++renderPassIndex;
+            }
             void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &);
             void HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &);
         };
         #include "retry.inc"
         #include "attach.inc"
         #include "region_hold.inc"
+        #include "region_publication.inc"
         #include "preflight.inc"
         #include "commit.inc"
+        #include "graph.inc"
         #include "alias_retry.inc"
     }
 
@@ -2226,28 +2279,192 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto a{manager.FindOrCreate(PartialDescriptor(bytes.data()+4096))};
         auto b{manager.FindOrCreate(PartialDescriptor(bytes.data()+8192))};
         AliasRead(a->texture); AliasRead(b->texture);
-        auto group{a->texture->regionAuthority.load()};
-        auto &trap{gpu.state.process->trap};
-        const auto callback{trap.callbacks[*a->texture->trapHandle]};
-        auto available{[&] { return std::async(std::launch::async,[&] {
-            std::unique_lock lock{group->mutex,std::try_to_lock}; return lock.owns_lock();
-        }).get(); }};
+        const auto callback{gpu.state.process->trap.callbacks[*a->texture->trapHandle]};
         interconnect::CommandExecutor executor;
+        std::array<TextureView *,1> writers{a.get()};
         unsigned attempts{};
-        executor.onSubmit=[&] { assert(!executor.regionOperationActive && available()); };
+        const auto serial{a->texture->gpuWriteSerial};
+        executor.onSubmit=[&] { assert(!executor.regionOperationActive && a->texture->gpuWriteSerial==serial); };
         executor.RunWithTextureBackingRetry([&] {
             ++attempts; executor.AttachTexture(a.get());
-            auto blocked{std::async(std::launch::async,[&] { std::scoped_lock lock{trap.mutex}; return callback.write(); })};
-            assert(!blocked.get() && a->texture->dirtyState==Texture::DirtyState::Clean);
-            if (attempts==1) executor.RunWithTextureBackingRetry([&] { throw TextureAliasReconciliationRequest{b->texture,{}}; });
+            if (attempts==1) {
+                auto changed{std::async(std::launch::async,[&] {
+                    std::scoped_lock trapLock{gpu.state.process->trap.mutex}; return callback.write();
+                })};
+                assert(changed.get()); // Preparation cannot retain a component lock.
+                bytes[0+4096]=0x63;
+            }
+            executor.CommitTextureWrites(writers); // First attempt must retry before claiming ownership.
         });
-        assert(attempts==2 && executor.submissions==1 && available() && !executor.regionOperationActive);
-        bool failed{};
-        try { executor.RunWithTextureBackingRetry([&] { executor.AttachTexture(a.get()); throw std::bad_alloc{}; }); }
-        catch (const std::bad_alloc &) { failed=true; }
-        assert(failed && available() && !executor.regionOperationActive && executor.submissions==1);
+        assert(attempts==2 && executor.submissions==1 && a->texture->gpuWriteSerial>serial);
+        assert(DownloadPartial(a->texture)[0]==0x63);
         gpu.scheduler.Complete(); assert(!validationErrors);
-        std::puts("PASS: real operation preflight blocks CPU authority changes, releases metadata before nested retry/submission and unwinds allocation failures");
+        std::puts("PASS: CPU mutation during resource preparation retries before writer publication and preserves real guest upload");
+    }
+
+    void CheckShortRegionPublication(GPU &gpu) {
+        std::vector<u8> bytes(5*4096,0x2D); TextureManager manager{gpu};
+        auto a{manager.FindOrCreate(PartialDescriptor(bytes.data()+4096))};
+        auto b{manager.FindOrCreate(PartialDescriptor(bytes.data()+8192))};
+        AliasRead(a->texture); AliasRead(b->texture);
+        const auto callback{gpu.state.process->trap.callbacks[*b->texture->trapHandle]};
+        interconnect::CommandExecutor executor;
+        std::array<TextureView *,1> writes{a.get()};
+        executor.RunWithTextureBackingRetry([&] {
+            executor.AttachTexture(a.get()); executor.AttachTexture(b.get());
+            {
+                auto guard{executor.AcquireRegionPublication(writes)};
+                auto blocked{std::async(std::launch::async,[&] {
+                    std::scoped_lock lock{gpu.state.process->trap.mutex}; return callback.write();
+                })};
+                assert(!blocked.get()); // Validation + combined publication are indivisible to callbacks.
+                a->texture->RecordGpuWrite();
+            }
+            auto available{std::async(std::launch::async,[&] {
+                std::unique_lock lock{a->texture->regionAuthority.load()->mutex,std::try_to_lock}; return lock.owns_lock();
+            })};
+            assert(available.get()); // Guard has ended before any later resource/hook preparation.
+        });
+        gpu.scheduler.Complete();
+        std::puts("PASS: short publication guard excludes CPU mutation and releases metadata immediately after writer claims");
+    }
+
+    void CheckPreparedRegionRead(GPU &gpu) {
+        std::vector<u8> bytes(5*4096,0x2D); TextureManager manager{gpu};
+        auto descriptor{PartialDescriptor(bytes.data()+4096)};
+        descriptor.mappings={{bytes.data()+4096,4096},{bytes.data()+8192,4096}};
+        auto a{manager.FindOrCreate(descriptor)};
+        auto b{manager.FindOrCreate(PartialDescriptor(bytes.data()+8192))};
+        ClearAllRegionMips(b->texture,{0,1,0,1}); AliasRead(a->texture);
+        interconnect::CommandExecutor executor;
+        executor.AttachTexture(a.get());
+        const auto callback{gpu.state.process->trap.callbacks[*a->texture->trapHandle]};
+        { std::scoped_lock trapLock{gpu.state.process->trap.mutex}; assert(callback.write()); }
+        bytes[4096]=0x63;
+        auto commands{gpu.scheduler.AllocateCommandBuffer()}; auto readCycle{commands.GetFenceCycle()};
+        commands->begin(vk::CommandBufferBeginInfo{});
+        a->texture->SynchronizeHostInline(*commands,readCycle,true); // Real SubmitInternal path.
+        commands->end(); gpu.scheduler.SubmitCommandBuffer(*commands,readCycle);
+        a->texture->cycle=readCycle; a->texture->pendingRegionUseTag={};
+        assert(a->texture->dirtyState==Texture::DirtyState::CpuDirty);
+        auto oldRead{DownloadPartial(a->texture)};
+        const std::array<u8,4> green{0,255,0,255};
+        assert(oldRead[0]==0x2D); // Earlier prepared read retains its original host snapshot.
+        for(size_t i{4096};i<8192;++i) assert(oldRead[i]==green[i%4]);
+        assert(readCycle->gpuWaits==0); // Snapshot handling adds no GPU-completion wait.
+        AliasRead(a->texture);
+        auto newRead{DownloadPartial(a->texture)};
+        assert(newRead[0]==0x63); // Subsequent use sees the later CPU write.
+        for(size_t i{4096};i<8192;++i) assert(newRead[i]==green[i%4]);
+        gpu.scheduler.Complete(); assert(!validationErrors);
+        std::puts("PASS: late CPU write stays guest-authoritative until the next use; submission cannot replace a prepared GPU read");
+    }
+
+    void CheckChangingRegionDonors(GPU &gpu) {
+        std::vector<u8> bytes(6*4096,0x2D); TextureManager manager{gpu};
+        auto a{manager.FindOrCreate(PartialDescriptor(bytes.data()+4096))};
+        auto target{manager.FindOrCreate(PartialDescriptor(bytes.data()+8192))};
+        auto b{manager.FindOrCreate(PartialDescriptor(bytes.data()+12288))};
+        ClearAllRegionMips(a->texture,{1,0,0,1});
+        ClearAllRegionMips(b->texture,{0,1,0,1});
+        { std::scoped_lock lock{*b->texture}; b->texture->SynchronizeGuest(true,true); }
+        AliasRead(b->texture); // B's rows are guest-owned in the first donor snapshot.
+        auto commands{gpu.scheduler.AllocateCommandBuffer()}; const auto producer{commands.GetFenceCycle()};
+        commands->begin(vk::CommandBufferBeginInfo{});
+        const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor,0,1,0,1};
+        commands->pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,vk::PipelineStageFlagBits::eTransfer,{},
+            vk::MemoryBarrier{.srcAccessMask=vk::AccessFlagBits::eMemoryRead|vk::AccessFlagBits::eMemoryWrite,.dstAccessMask=vk::AccessFlagBits::eTransferWrite},{},{});
+        commands->clearColorImage(b->texture->GetBacking(),vk::ImageLayout::eGeneral,vk::ClearColorValue{std::array<float,4>{0,0,1,1}},range);
+        commands->pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eAllCommands,{},
+            vk::MemoryBarrier{.srcAccessMask=vk::AccessFlagBits::eTransferWrite,.dstAccessMask=vk::AccessFlagBits::eMemoryRead|vk::AccessFlagBits::eMemoryWrite},{},{});
+        commands->end();
+        std::promise<void> ready, changeDonor, changed, submit;
+        auto start{changeDonor.get_future().share()}, finish{submit.get_future().share()};
+        auto writer{std::async(std::launch::async,[&] {
+            std::unique_lock first{*a->texture}; ready.set_value(); start.wait();
+            const bool owned{b->texture->LockWithTag(77)}; assert(owned);
+            b->texture->RecordGpuWrite();
+            first.unlock(); changed.set_value(); finish.wait();
+            gpu.scheduler.SubmitCommandBuffer(*commands,producer);
+            b->texture->cycle=producer; b->texture->unlock();
+        })};
+        ready.get_future().wait(); bool requested{}, donorLocked{};
+        a->texture->mutex.beforeBlocking=[&] {
+            if (!requested) { requested=true; changeDonor.set_value(); changed.get_future().wait(); }
+        };
+        b->texture->mutex.beforeBlocking=[&] {
+            assert(!producer->submitted);
+            if (!donorLocked) { donorLocked=true; submit.set_value(); }
+        };
+        target->texture->ReconcileAliases();
+        if (!donorLocked) submit.set_value(); // Negative control can finish without hanging its producer.
+        writer.get();
+        a->texture->mutex.beforeBlocking={}; b->texture->mutex.beforeBlocking={};
+        assert(requested && donorLocked && producer->submitted);
+        const auto data{DownloadPartial(target->texture)};
+        const std::array<u8,4> red{255,0,0,255}, blue{0,0,255,255};
+        for(size_t i{};i<8192;++i) assert(data[i]==(i<4096 ? red[i%4] : blue[i%4]));
+        gpu.scheduler.Complete(); assert(!validationErrors);
+        std::puts("PASS: donor-set change while resource acquisition waits restarts locks and observes the newly submitted Vulkan producer");
+    }
+
+    void CheckWriterChangedDuringPreflight(GPU &gpu) {
+        std::vector<u8> bytes(5*4096,0x2D); TextureManager manager{gpu};
+        auto a{manager.FindOrCreate(PartialDescriptor(bytes.data()+4096))};
+        auto b{manager.FindOrCreate(PartialDescriptor(bytes.data()+8192))};
+        AliasRead(a->texture); AliasRead(b->texture);
+        interconnect::CommandExecutor executor; unsigned attempts{};
+        std::array<TextureView *,1> writers{a.get()};
+        const auto before{a->texture->gpuWriteSerial};
+        executor.onSubmit=[&] { assert(a->texture->gpuWriteSerial==before); };
+        executor.RunWithTextureBackingRetry([&] {
+            ++attempts; executor.AttachTexture(a.get());
+            if (attempts==1) ClearAllRegionMips(b->texture,{0,1,0,1});
+            executor.CommitTextureWrites(writers);
+        });
+        assert(attempts==2 && executor.submissions==1 && a->texture->gpuWriteSerial>before);
+        const auto data{DownloadPartial(a->texture)};
+        const std::array<u8,4> green{0,255,0,255};
+        for(size_t i{};i<4096;++i) assert(data[i]==0x2D);
+        for(size_t i{4096};i<8192;++i) assert(data[i]==green[i%4]);
+        gpu.scheduler.Complete(); assert(!validationErrors);
+        std::puts("PASS: a newer Vulkan writer during preflight rejects the old prepared writer before ownership publication");
+    }
+
+    void CheckRenderPassPublication(GPU &gpu) {
+        std::vector<u8> bytes(5*4096,0x2D); TextureManager manager{gpu};
+        auto a{manager.FindOrCreate(PartialDescriptor(bytes.data()+4096))};
+        auto b{manager.FindOrCreate(PartialDescriptor(bytes.data()+8192))};
+        AliasRead(a->texture); AliasRead(b->texture);
+        interconnect::CommandExecutor executor;
+        executor.renderPass=&std::get<interconnect::node::RenderPassNode>(executor.slot->nodes.emplace_back(
+            std::in_place_type<interconnect::node::RenderPassNode>,vk::Rect2D{{0,0},{1,1}}));
+        const auto serial{a->texture->gpuWriteSerial}; bool changed{},hookRan{};
+        executor.subpassBoundaryCallbacks.emplace_back([&] {
+            if (changed) return;
+            changed=true;
+            auto callback{gpu.state.process->trap.callbacks[*b->texture->trapHandle]};
+            auto mutation{std::async(std::launch::async,[&] { std::scoped_lock trapLock{gpu.state.process->trap.mutex}; return callback.write(); })};
+            assert(mutation.get()); bytes[12288]=0x73;
+        });
+        executor.onSubmit=[&] {
+            assert(a->texture->gpuWriteSerial==serial && executor.slot->nodes.size()<=1);
+        };
+        std::array<TextureView *,1> color{a.get()}, retainedReadOnlyStorage{b.get()};
+        executor.RunWithTextureBackingRetry([&] {
+            executor.AddSubpass([](auto &,const auto &,auto &,auto,auto) {},vk::Rect2D{{0,0},{64,32}},
+                {},{},color,nullptr,false,{}, {},[&](u32) {
+                    hookRan=true;
+                    auto unlocked{std::async(std::launch::async,[&] {
+                        std::unique_lock lock{a->texture->regionAuthority.load()->mutex,std::try_to_lock}; return lock.owns_lock();
+                    })};
+                    assert(unlocked.get()); return interconnect::CommandExecutor::SubpassHooks{};
+                },{},retainedReadOnlyStorage);
+        });
+        assert(changed && hookRan && executor.submissions>=1 && a->texture->gpuWriteSerial>serial && executor.slot->nodes.size()==2);
+        assert(DownloadPartial(b->texture)[4096]==0x73);
+        gpu.scheduler.Complete(); assert(!validationErrors);
+        std::puts("PASS: complete production AddSubpass/CreateRenderPass preflight retries before nodes/writers and releases the guard before draw hooks; retained read-only storage is validated");
     }
 
     void CheckPaddedGuestPreservation(GPU &gpu) {
@@ -2287,6 +2504,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
                 std::unique_lock lock{group->mutex,std::try_to_lock}; return lock.owns_lock();
             }).get()};
             if (metadataHeld) throw std::runtime_error("component held while waiting for presentation texture");
+            allowPresentation.set_value();
         };
         interconnect::CommandExecutor executor;
         try { executor.RunWithTextureBackingRetry([&] { executor.AttachTexture(a.get()); executor.AttachTexture(b.get()); }); }
@@ -2296,7 +2514,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         for(const auto &texture : executor.attachedTextures) texture->unlock();
         executor.attachedTextures.clear();
         b->texture->mutex.beforeBlocking={};
-        allowPresentation.set_value(); presentation.get();
+        if (inversion) allowPresentation.set_value();
+        presentation.get();
         gpu.scheduler.Complete();
         std::fprintf(stderr,"LOCK ORDER PROBE: %s\n",inversion ? "BLOCKED: executor component -> texture conflicts with presentation texture -> component" : "PASS");
         assert(!inversion);
@@ -2357,6 +2576,11 @@ int main() {
                 CheckRegionIncompatibleDrain(gpu);
                 CheckRegionMipLayers(gpu);
                 CheckRegionOperationBoundary(gpu);
+                CheckShortRegionPublication(gpu);
+                CheckPreparedRegionRead(gpu);
+                CheckChangingRegionDonors(gpu);
+                CheckWriterChangedDuringPreflight(gpu);
+                CheckRenderPassPublication(gpu);
                 CheckPaddedGuestPreservation(gpu);
                 continue;
             } CheckPendingMaterialization(gpu,false);

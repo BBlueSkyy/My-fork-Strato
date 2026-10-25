@@ -52,6 +52,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         "void Texture::RecordGpuWrite(",
         "void Texture::ValidateAliasWrites(",
         "void Texture::MarkGpuDirty(",
+        "bool Texture::ValidateRenderPassUsage(",
         "void Texture::UpdateRenderPassUsage(",
         "bool Texture::ViewFormatAdmitted(",
         "bool Texture::ViewRangeFits(",
@@ -126,7 +127,11 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "unrepresentable.inc").write_text(function(manager, "if (unrepresentableMatch || separateGroup)"))
     executor = (GPU / "interconnect/command_executor.cpp").read_text()
     (directory / "alias_retry.inc").write_text(function(executor,"void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &"))
-    (directory / "region_hold.inc").write_text(function(executor,"void CommandExecutor::HoldRegionAuthority("))
+    (directory / "graph.inc").write_text(function(executor,"static bool ViewsEqual(") + "\n" +
+        function(executor,"bool CommandExecutor::CreateRenderPassWithSubpass(") + "\n" +
+        function(executor,"void CommandExecutor::AddSubpass("))
+    (directory / "region_hold.inc").write_text(function(executor,"void CommandExecutor::TrackRegionUse("))
+    (directory / "region_publication.inc").write_text(function(executor,"CommandExecutor::RegionPublication CommandExecutor::AcquireRegionPublication("))
     (directory / "region_operation.inc").write_text(function((GPU / "interconnect/command_executor.h").read_text(),
         "template<typename Operation>\n        void RunWithTextureBackingRetry("))
     (directory / "preflight.inc").write_text(function(executor,"void CommandExecutor::PreflightTextureUses("))

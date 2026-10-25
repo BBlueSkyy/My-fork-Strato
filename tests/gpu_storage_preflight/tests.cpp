@@ -52,6 +52,8 @@ struct CommandExecutor {
     int usageTracker{};
     std::shared_ptr<Allocator> allocator{std::make_shared<Allocator>()};
     void AttachTexture(TextureView *) {}
+    struct RegionPublication { ~RegionPublication() {} };
+    RegionPublication AcquireRegionPublication(span<TextureView *>) { return {}; } // Region protocol uses real Vulkan fixture.
     void CommitTextureWrites(span<TextureView *>);
 };
 #include "commit.inc"

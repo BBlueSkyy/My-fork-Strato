@@ -780,6 +780,7 @@ namespace skyline::gpu {
     }
 
     void Texture::unlock() {
+        pendingRegionUseTag = {};
         pendingGpuWriteTag.store({}, std::memory_order_relaxed);
         tag = ContextTag{};
         mutex.unlock();
@@ -1313,6 +1314,10 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeHostInline(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &pCycle, bool gpuDirty) {
+        // AttachTexture initialized/reconciled this snapshot before preparing its
+        // GPU uses. A subsequent CPU write must stay CpuDirty for the next use;
+        // uploading it here could replace an older pending read's valid rows.
+        if (pendingRegionUseTag && regionTracked.load(std::memory_order_relaxed)) return;
         if (!guest)
             return;
 

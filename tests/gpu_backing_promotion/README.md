@@ -81,8 +81,10 @@ skipped readback are also covered: only an actual completed guest encoding
 permits retirement of the latest GPU writer.
 
 
-## Unpublished physical-region checkpoint
+## Physical-region authority and publication
 
-See [the checkpoint and blocking concurrency test](../../docs/region-authority-checkpoint.md).
-`TEXMAN_AUTHORITY_PROBE=1 python3 tests/gpu_backing_promotion/run.py` now asserts real Vulkan shared/exclusive content, alternating writers, failure recovery, CPU callbacks, retained views and dense mip/layer regions.
-`TEXMAN_LOCK_ORDER_PROBE=1 python3 tests/gpu_backing_promotion/run.py` is currently RED: operation-spanning component locking can invert presentation's resource/component order. Passing the pixel oracle alone does not authorize publication. These are optional host commands; APK workflows are unchanged.
+See [the current protocol and acceptance results](../../docs/region-publication.md), with the [historical checkpoint](../../docs/region-authority-checkpoint.md) retained for the original RED case.
+
+`TEXMAN_AUTHORITY_PROBE=1 python3 tests/gpu_backing_promotion/run.py` asserts real Vulkan shared/exclusive content, alternating writers, failure recovery, CPU callbacks, retained views, donor-set changes and dense mip/layer regions. It also compiles the complete production AddSubpass/CreateRenderPass control paths against graph facades.
+
+`TEXMAN_LOCK_ORDER_PROBE=1 python3 tests/gpu_backing_promotion/run.py` verifies presentation/resource contention. Both gates must pass; neither is added as a required APK/CI job.

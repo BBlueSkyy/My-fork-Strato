@@ -41,6 +41,7 @@ namespace skyline::gpu {
         std::optional<int> trapHandle{1};
         Texture(GPU &gpu, GuestTexture value) : gpu(gpu), guest(std::make_shared<GuestTexture>(value)), format(value.format) {}
         void lock() { mutex.lock(); }
+        ContextTag pendingRegionUseTag{};
         std::atomic<ContextTag> tag{}, pendingGpuWriteTag{};
         void unlock();
         bool ViewRangeFits(vk::ImageViewType, vk::ImageSubresourceRange, u32 = 1) const { return true; }

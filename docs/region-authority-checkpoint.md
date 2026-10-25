@@ -1,6 +1,6 @@
-# Local region-authority checkpoint — publication blocked
+# Historical checkpoint f60370d1 — publication was blocked
 
-This is **unfinished local work**, based on the nine published commits of Draft #400 (`baaf3cd2`). It must not be pushed or used as a validated APK. The original branch, master base `9935f133`, Release workflow and published PR are unchanged remotely.
+This report records the **unfinished local state at f60370d1**, based on the nine earlier commits of Draft #400 (`baaf3cd2`). Its lock-order block was subsequently resolved by the [resource-first publication continuation](region-publication.md). The remaining text is retained as historical evidence; consult that continuation for current acceptance results.
 
 ## Data-path result
 

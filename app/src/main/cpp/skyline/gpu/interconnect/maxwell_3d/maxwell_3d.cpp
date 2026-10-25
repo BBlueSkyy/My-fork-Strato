@@ -150,7 +150,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
          [this](u32 renderPassIndex) {
              return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-         }, activeDescriptorSetStorageImages);
+         }, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads);
           InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
           ctx.executor.AddCheckpoint("After inline index draw");
      
@@ -242,6 +242,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
          Pipeline *pipeline{activeState.GetPipeline()};
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
          activeDescriptorSetStorageImages.resize(pipeline->GetTotalStorageImageCount());
+         activeDescriptorSetStorageReads.resize(pipeline->GetTotalStorageImageCount());
 
 
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
@@ -254,14 +255,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
                  if (constantBuffers.quickBind)
                      // If only a single constant buffer has been rebound between draws we can perform a partial descriptor update
                      return pipeline->SyncDescriptorsQuickBind(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
-                                                               *constantBuffers.quickBind, activeDescriptorSetSampledImages, activeDescriptorSetStorageImages,
+                                                               *constantBuffers.quickBind, activeDescriptorSetSampledImages, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads,
                                                                srcStageMask, dstStageMask);
                  else
                      return nullptr;
              } else {
                  // If bindings have changed or quick bind is disabled, perform a full descriptor update
                  return pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
-                                                  activeDescriptorSetSampledImages, activeDescriptorSetStorageImages,
+                                                  activeDescriptorSetSampledImages, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads,
                                                   srcStageMask, dstStageMask);
              }
          }()};
@@ -819,7 +820,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-           }, activeDescriptorSetStorageImages);
+           }, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads);
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
     
@@ -903,7 +904,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-           }, activeDescriptorSetStorageImages);
+           }, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads);
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After indirect draw");
     

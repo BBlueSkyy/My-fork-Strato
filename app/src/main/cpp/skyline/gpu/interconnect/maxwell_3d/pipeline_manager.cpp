@@ -804,7 +804,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return descriptorInfo.totalCombinedImageSamplerCount;
     }
 
-    DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, span<TextureView *> sampledImages, span<TextureView *> storageImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+    DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, span<TextureView *> sampledImages, span<TextureView *> storageImages, span<TextureView *> storageReads, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
         DeferredStorageImageWrites storageWriters;
 
@@ -948,6 +948,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                 BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers[i], desc, arrayIdx)};
                                 LOGD("StorageImage: idx={} format={}", static_cast<u32>(handle.textureIndex), static_cast<u32>(desc.format));
                                 auto binding{GetImageBinding(ctx, desc, textures, handle, stage.stage, srcStageMask, dstStageMask, storageWriters)};
+                                storageReads[storageImageIdx] = binding.second;
                                 storageImages[storageImageIdx++] = desc.is_written ? binding.second : nullptr;
                                 return binding.first;
                             }, ctx.gpu.traits.quirks.needsIndividualTextureBindingWrites);
@@ -965,7 +966,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return updateInfo;
     }
 
-    DescriptorUpdateInfo *Pipeline::SyncDescriptorsQuickBind(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, ConstantBuffers::QuickBind quickBind, span<TextureView *> sampledImages, span<TextureView *> storageImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+    DescriptorUpdateInfo *Pipeline::SyncDescriptorsQuickBind(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, ConstantBuffers::QuickBind quickBind, span<TextureView *> sampledImages, span<TextureView *> storageImages, span<TextureView *> storageReads, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
         DeferredStorageImageWrites storageWriters;
 
@@ -1075,6 +1076,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                       auto binding{GetImageBinding(ctx, desc, textures, handle,
                                                                              stageDescInfo.stage,
                                                                              srcStageMask, dstStageMask, storageWriters)};
+                                                      storageReads[usage.entirePipelineIdx + arrayIdx] = binding.second;
                                                       storageImages[usage.entirePipelineIdx + arrayIdx] = desc.is_written ? binding.second : nullptr;
                                                       return binding.first;
                                                   });

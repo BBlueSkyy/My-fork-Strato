@@ -167,6 +167,7 @@ namespace texture { enum class RenderPassUsage { None }; }
 #define TRACE_EVENT(...)
 namespace texture { struct RegionAuthority { std::recursive_mutex mutex; }; }
 struct Texture : std::enable_shared_from_this<Texture> {
+    unsigned pendingRegionUseTag{};
     std::atomic<bool> regionTracked{};
     struct { std::shared_ptr<texture::RegionAuthority> load() const { return {}; } } regionAuthority;
     void RecordRegionUpload() { throw std::logic_error("unexpected region in independent submission control"); }

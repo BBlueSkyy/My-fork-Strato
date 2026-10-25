@@ -1,6 +1,6 @@
 # PR #400 continuation: producer-safe partial-overlap materialization
 
-This describes the published `baaf3cd2` stage. The unpublished follow-up and its concurrency publication block are recorded in [region-authority-checkpoint.md](region-authority-checkpoint.md).
+This describes the published `baaf3cd2` stage. The regional-authority checkpoint and its former block are recorded in [region-authority-checkpoint.md](region-authority-checkpoint.md); the resolution and current validation are in [region-publication.md](region-publication.md).
 
 Continuation of Draft #400, preserving its existing five commits, followed first by `9babcf1a` (skip unchanged-layout GPU completion wait). Master remains `9935f133`; no new PR, merge, readback re-port or shader change.
 

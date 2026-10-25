@@ -116,6 +116,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         Pipeline *activeDescriptorPipeline{};
         std::vector<TextureView *> activeDescriptorSetSampledImages{};
         std::vector<TextureView *> activeDescriptorSetStorageImages{};
+        std::vector<TextureView *> activeDescriptorSetStorageReads{};
         u64 descriptorRegionEpoch{};
 
         size_t UpdateQuadConversionBuffer(u32 count, u32 firstVertex);

@@ -144,6 +144,7 @@ struct TestFormat {
 namespace texture { struct RegionAuthority { std::recursive_mutex mutex; }; }
 struct Texture : std::enable_shared_from_this<Texture> {
     using Region = texture::RegionAuthority;
+    unsigned pendingRegionUseTag{};
     std::atomic<bool> regionTracked{};
     struct { std::shared_ptr<Region> load() const { return {}; } } regionAuthority;
     void RecordRegionUpload() { throw std::logic_error("unexpected region upload in independent texture control"); }
