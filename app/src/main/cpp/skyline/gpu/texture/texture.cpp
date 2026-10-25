@@ -17,6 +17,7 @@
 #include "view_range.h"
 #include <bit>
 #include <numeric>
+#include <gpu/texture_manager.h>
 
 namespace skyline::gpu {
     u32 GuestTexture::GetLayerStride() {
@@ -194,6 +195,10 @@ namespace skyline::gpu {
             mirror = alignedMirror.subspan(static_cast<size_t>(frontMapping.data() - alignedData), totalSize);
         }
 
+        // MADV_REMOVE cannot preserve padding that the image encoder never
+        // writes. Prove complete coverage once, not on every render-target use.
+        guestDiscardSafe = format == guest->format && CanDiscardGuest(*guest, mirror.size());
+
         // We can't just capture `this` in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Texture> weakThis{weak_from_this()};
         trapHandle = gpu.state.process->trap.CreateTrap(mappings, [weakThis] {
@@ -238,6 +243,12 @@ namespace skyline::gpu {
             if (!stateLock)
                 return false;
 
+            auto regions{texture->regionTracked.load(std::memory_order_relaxed) ? texture->regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
+            std::unique_lock<std::recursive_mutex> regionLock;
+            if (regions) {
+                regionLock = std::unique_lock{regions->mutex, std::try_to_lock};
+                if (!regionLock) return false;
+            }
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty)
                 return true; // If state is already CPU dirty/Clean we don't need to do anything
 
@@ -267,8 +278,15 @@ namespace skyline::gpu {
             if (!stateLock)
                 return false;
 
+            auto regions{texture->regionTracked.load(std::memory_order_relaxed) ? texture->regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
+            std::unique_lock<std::recursive_mutex> regionLock;
+            if (regions) {
+                regionLock = std::unique_lock{regions->mutex, std::try_to_lock};
+                if (!regionLock) return false;
+            }
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty) {
                 texture->dirtyState = DirtyState::CpuDirty;
+                if (regions) texture->ReleaseRegionHost();
                 return true; // If the texture is already CPU dirty or we can transition it to being CPU dirty then we don't need to do anything
             }
 
@@ -548,7 +566,11 @@ namespace skyline::gpu {
     void Texture::CopyToGuest(u8 *hostBuffer) {
         if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
             throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
-        auto guestOutput{mirror.data()};
+        // A partially superseded image may still own exclusive rows, but must
+        // never publish an old encoding over a newer writer's physical bytes.
+        std::vector<u8> encoded;
+        if (regionTracked.load(std::memory_order_relaxed)) encoded.resize(mirror.size());
+        auto guestOutput{encoded.empty() ? mirror.data() : encoded.data()};
 
         auto guestLayerStride{guest->GetLayerStride()};
         if (levelCount == 1) {
@@ -584,13 +606,14 @@ namespace skyline::gpu {
         } else if (levelCount != 0) {
             throw exception("Mipmapped textures with tiling mode '{}' aren't supported", static_cast<int>(tiling));
         }
+        if (!encoded.empty()) PublishRegionGuest(encoded);
     }
 
     void Texture::FreeGuest() {
         // A read-only alias may need the guest representation again after another
         // alias becomes the writer. Preserve those bytes without changing the
         // global Free Guest Texture Memory policy for ordinary textures.
-        if (aliasReadOnly.load())
+        if (!guestDiscardSafe || aliasReadOnly.load() || regionTracked.load(std::memory_order_relaxed))
             return;
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
         if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
@@ -943,8 +966,9 @@ namespace skyline::gpu {
         // Trap callbacks only try-lock these resources while holding stateMutex.
         std::vector<std::unique_lock<Texture>> locks;
         for (auto &texture : textures) locks.emplace_back(*texture);
+        const bool inferredLayout{!requested};
         if (!requested) {
-            if (!reference->guest || !reference->CanReconcileGuestLayout(*reference->guest))
+            if (!reference->guest)
                 throw exception("Cannot losslessly reconcile these texture alias layouts");
             requested = &*reference->guest;
         }
@@ -987,6 +1011,12 @@ namespace skyline::gpu {
                 throw;
             }
         }
+
+        // CanReconcileGuestLayout requires resident guest bytes. An evicted
+        // native writer must first complete the restoration above; rejecting it
+        // beforehand makes the existing FreeGuest recovery path unreachable.
+        if (inferredLayout && !reference->CanReconcileGuestLayout(*requested))
+            throw exception("Cannot losslessly reconcile these texture alias layouts");
 
         std::vector<std::shared_ptr<Texture>> eligible, historical;
         for (const auto &texture : textures) {
@@ -1066,7 +1096,11 @@ namespace skyline::gpu {
         return group;
     }
 
+    #include "region_authority.inc"
+
     void Texture::RequireAliasCoherence(ContextTag context) {
+        if (regionStale.load(std::memory_order_relaxed))
+            throw TextureAliasReconciliationRequest{shared_from_this(), {}};
         if (aliasRetired.load())
             throw exception("Retired texture alias must be resolved through the texture manager");
         if (!aliasStale.load()) return;
@@ -1077,6 +1111,7 @@ namespace skyline::gpu {
     }
 
     void Texture::ReconcileAliases() {
+        if (regionTracked.load(std::memory_order_relaxed)) { ReconcileRegions(); return; }
         if (aliasRetired.load())
             throw exception("Cannot reconcile a retired non-reversible texture alias");
         auto group{aliasGroup.load()};
@@ -1116,6 +1151,17 @@ namespace skyline::gpu {
             auto owner{writers[i]->texture.get()};
             if (owner->aliasReadOnly.load())
                 throw exception("A materialized read-only texture alias cannot be used as a render target");
+            if (owner->regionTracked.load(std::memory_order_relaxed)) {
+                auto regions{owner->regionAuthority.load()};
+                std::scoped_lock metadata{regions->mutex};
+                for (size_t j{}; j < i; ++j) {
+                    if (!writers[j] || writers[j]->texture.get() == owner || writers[j]->texture->regionAuthority.load() != regions) continue;
+                    for (const auto &a : owner->regionBindings)
+                        for (const auto &b : writers[j]->texture->regionBindings)
+                            if (a.region == b.region)
+                                throw exception("Concurrent writers overlap the same physical texture region");
+                }
+            }
             auto group{owner->aliasGroup.load()};
             if (!group) continue;
             for (size_t j{}; j < i; ++j)
@@ -1139,6 +1185,7 @@ namespace skyline::gpu {
     }
 
     void Texture::RecordGpuWrite() {
+        if (regionTracked.load(std::memory_order_relaxed)) RequireAliasCoherence(tag.load());
         if (aliasReadOnly.load())
             throw exception("Cannot write through a materialized read-only texture alias");
         if (aliasRetired.load())
@@ -1150,6 +1197,16 @@ namespace skyline::gpu {
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
         pendingGpuWriteTag.store(tag.load(), std::memory_order_relaxed);
+        if (regionTracked.load(std::memory_order_relaxed)) {
+            // State and ownership become visible atomically to CPU callbacks.
+            // No callback may see a new owner while this image is still Clean.
+            std::scoped_lock stateLock{stateMutex};
+            auto regions{regionAuthority.load()};
+            std::scoped_lock metadata{regions->mutex};
+            dirtyState = DirtyState::GpuDirty;
+            gpu.state.process->trap.TrapRegions(*trapHandle, false);
+            RecordRegionWrite();
+        }
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};
@@ -1187,6 +1244,10 @@ namespace skyline::gpu {
         // RT and storage paths call RecordGpuWrite before submission.
         if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
             gpuDirty = false;
+
+        auto regions{regionTracked.load(std::memory_order_relaxed) ? regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
+        std::unique_lock<std::recursive_mutex> regionLock;
+        if (regions) regionLock = std::unique_lock{regions->mutex};
 
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
         {
@@ -1241,6 +1302,8 @@ namespace skyline::gpu {
             throw;
         }
 
+        if (regions) RecordRegionUpload();
+
         {
             std::scoped_lock lock{stateMutex};
 
@@ -1260,6 +1323,10 @@ namespace skyline::gpu {
         if (HasAliases()) gpuDirty = false;
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
+
+        auto regions{regionTracked.load(std::memory_order_relaxed) ? regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
+        std::unique_lock<std::recursive_mutex> regionLock;
+        if (regions) regionLock = std::unique_lock{regions->mutex};
 
         TRACE_EVENT("gpu", "Texture::SynchronizeHostInline");
         // Preserve the Free Guest Texture Memory policy while still tracking
@@ -1300,6 +1367,8 @@ namespace skyline::gpu {
             throw;
         }
 
+        if (regions) RecordRegionUpload();
+
         {
             std::scoped_lock lock{stateMutex};
 
@@ -1316,6 +1385,9 @@ namespace skyline::gpu {
         auto alias{aliasGroup.load()};
         std::unique_lock<std::recursive_mutex> aliasLock;
         if (alias) aliasLock = std::unique_lock{alias->operationMutex};
+        auto regions{regionTracked.load(std::memory_order_relaxed) ? regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
+        std::unique_lock<std::recursive_mutex> regionLock;
+        if (regions) regionLock = std::unique_lock{regions->mutex};
         if (aliasStale.load()) return; // A superseded GPU image must never overwrite newer guest bytes.
         if (!guest)
             return;
@@ -1326,17 +1398,30 @@ namespace skyline::gpu {
             std::scoped_lock lock{stateMutex};
             if (cpuDirty && dirtyState == DirtyState::Clean) {
                 dirtyState = DirtyState::CpuDirty;
+                if (regions) ReleaseRegionHost();
                 if (!skipTrap)
                     gpu.state.process->trap.DeleteTrap(*trapHandle);
                 return;
             } else if (dirtyState != DirtyState::GpuDirty) {
+                if (regions && cpuDirty) ReleaseRegionHost();
                 return;
             }
 
-            if (!alias) {
+            if (!alias && !regions) {
                 dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
                 memoryFreed = false;
             } // Group writer remains authoritative until the encoded readback succeeds.
+        }
+
+        if (regions && !NeedsRegionReadback()) {
+            std::scoped_lock stateLock{stateMutex};
+            dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
+            if (cpuDirty) ReleaseRegionHost();
+            if (!skipTrap) {
+                if (cpuDirty) gpu.state.process->trap.DeleteTrap(*trapHandle);
+                else gpu.state.process->trap.TrapRegions(*trapHandle, true);
+            }
+            return;
         }
 
         if (layout == vk::ImageLayout::eUndefined || format != guest->format)
@@ -1368,7 +1453,8 @@ namespace skyline::gpu {
         {
             std::scoped_lock lock{stateMutex};
             gpuReadbackSerial = gpuWriteSerial;
-            if (alias) {
+            if (regions && cpuDirty) ReleaseRegionHost();
+            if (alias || regions) {
                 dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
                 memoryFreed = false;
             }

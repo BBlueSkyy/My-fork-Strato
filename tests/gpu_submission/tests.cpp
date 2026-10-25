@@ -165,7 +165,11 @@ namespace texture { enum class RenderPassUsage { None }; }
 // Keep dirty-state transitions, staging lifetime attachments and cycle
 // replacement in the exact production SynchronizeHostInline implementation.
 #define TRACE_EVENT(...)
+namespace texture { struct RegionAuthority { std::recursive_mutex mutex; }; }
 struct Texture : std::enable_shared_from_this<Texture> {
+    std::atomic<bool> regionTracked{};
+    struct { std::shared_ptr<texture::RegionAuthority> load() const { return {}; } } regionAuthority;
+    void RecordRegionUpload() { throw std::logic_error("unexpected region in independent submission control"); }
     std::shared_ptr<FenceCycle> cycle;
     bool staged;
     std::function<void()> onSync;

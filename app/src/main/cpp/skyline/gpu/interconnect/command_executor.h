@@ -4,6 +4,8 @@
 #pragma once
 
 #include <gpu/texture/backing_promotion.h>
+#include <gpu/texture/region_authority.h>
+#include <boost/container/small_vector.hpp>
 #include "common/common.h"
 
 #include <boost/container/stable_vector.hpp>
@@ -160,6 +162,9 @@ namespace skyline::gpu::interconnect {
      */
     class CommandExecutor {
       private:
+        bool regionOperationActive{};
+        boost::container::small_vector<std::pair<std::shared_ptr<texture::RegionAuthority>, std::unique_lock<std::recursive_mutex>>, 4> regionOperationLocks;
+        void HoldRegionAuthority(Texture &texture);
         const DeviceState &state;
         GPU &gpu;
         CommandRecordThread recordThread;
@@ -278,6 +283,8 @@ namespace skyline::gpu::interconnect {
          * @note This'll automatically handle syncing of the texture in the most optimal way possible
          */
         bool AttachTexture(TextureView *view);
+        void CommitTextureWrites(span<TextureView *> writers);
+        void PreflightTextureUses(span<TextureView *> reads, span<TextureView *> writers);
 
         /**
          * @brief Attach the lifetime of a buffer view to the command buffer
@@ -321,7 +328,7 @@ namespace skyline::gpu::interconnect {
 
         using SubpassHookFactory = std::function<SubpassHooks(u32 renderPassIndex)>;
 
-        void AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, SubpassHookFactory hookFactory = {});
+        void AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, SubpassHookFactory hookFactory = {}, span<TextureView *> storageWrites = {});
 
         /**
          * @brief Adds a subpass that clears the entirety of the specified attachment with a color value, it may utilize VK_ATTACHMENT_LOAD_OP_CLEAR for a more efficient clear when possible
@@ -427,10 +434,22 @@ namespace skyline::gpu::interconnect {
             // locks and pipeline state before submitting, then retry the
             // complete operation with the newly visible buffer contents.
             // The common (CPU-clean) path does not submit or add a fence wait.
+            // Nested helpers use the outer operation's preparation/rollback.
+            if (regionOperationActive) { operation(); return; }
             for (;;) {
                 try {
-                    texture::RetryBackingPromotion(operation,
-                        [this](const auto &request) { HandleTextureBackingPromotion(request); });
+                    texture::RetryBackingPromotion([&] {
+                        regionOperationActive = true;
+                        try { operation(); }
+                        catch (...) {
+                            regionOperationLocks.clear();
+                            regionOperationActive = false;
+                            throw;
+                        }
+                        regionOperationLocks.clear();
+                        regionOperationActive = false;
+                    },
+                        [this](const auto &request) { this->HandleTextureBackingPromotion(request); });
                     return;
                 } catch (const GpuDirtyConstantBufferReadRequest &) {
                     Submit();

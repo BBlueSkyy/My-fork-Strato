@@ -25,11 +25,9 @@ deferred = "DeferredStorageImageWrites" in common
 with tempfile.TemporaryDirectory(prefix="strato-storage-preflight-") as directory:
     directory = Path(directory)
     code = function(common, "static std::pair<vk::DescriptorImageInfo, TextureView *> GetImageBinding(")
-    if deferred:
-        commit = function(common, "static void CommitStorageImageWrites(")
-    else:
-        commit = "static void CommitStorageImageWrites(InterconnectContext &, DeferredStorageImageWrites &) {}"
-    (directory / "binding.inc").write_text(commit + "\n" + code)
+    executor = (GPU / "command_executor.cpp").read_text()
+    (directory / "commit.inc").write_text(function(executor, "void CommandExecutor::CommitTextureWrites("))
+    (directory / "binding.inc").write_text(code)
     paths = [("maxwell_3d/pipeline_manager.cpp", "DescriptorUpdateInfo *Pipeline::SyncDescriptors("),
              ("maxwell_3d/pipeline_manager.cpp", "DescriptorUpdateInfo *Pipeline::SyncDescriptorsQuickBind("),
              ("kepler_compute/pipeline_manager.cpp", "DescriptorUpdateInfo *Pipeline::SyncDescriptors(")]

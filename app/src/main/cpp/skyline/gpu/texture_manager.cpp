@@ -351,6 +351,8 @@ namespace skyline::gpu {
         bool requestedReadOnlyAlias{};
         for (const auto &alias : exactAliases)
             if (auto group{alias->aliasGroup.load()}) { separateGroup = std::move(group); break; }
+        if (unrepresentableMatch && unrepresentableMatch->regionTracked.load(std::memory_order_relaxed))
+            Texture::DrainRegionAuthority({unrepresentableMatch}, tag);
         if (unrepresentableMatch || separateGroup) {
             const bool requestedMaterializable{Texture::CanMaterializeGuestLayout(guestTexture)};
             const bool requestedLossless{Texture::IsGuestLayoutReversible(guestTexture) &&
@@ -414,6 +416,10 @@ namespace skyline::gpu {
             const auto selected{depthSliceMatch ? depthSliceMatch : layerMipMatch ? layerMipMatch : fullMatch};
             if (selected) selected->ReconcileAliases();
         }
+
+        if (!tag && fullMatch && !depthSliceMatch && !layerMipMatch &&
+            !fullMatch->ViewRangeFits(guestTexture.viewType, requestedRange) && fullMatch->regionTracked.load(std::memory_order_relaxed))
+            Texture::DrainRegionAuthority({fullMatch}, tag);
 
         if (depthSliceMatch) {
             // Prefer the real 3D storage over an independently cached slice. The latter
@@ -575,7 +581,7 @@ namespace skyline::gpu {
         for (auto &texture : matches)
             if (!separateGroup || texture->aliasGroup.load() != separateGroup)
                 readbackSources.push_back(texture);
-        SynchronizeGuestOverlaps(std::move(readbackSources), tag);
+        SynchronizeGuestOverlaps(readbackSources, tag);
 
         // Create a texture as we cannot find one that matches
 
@@ -588,6 +594,16 @@ namespace skyline::gpu {
             separateGroup->members.emplace_back(texture);
             texture->aliasGroup.store(separateGroup);
             texture->aliasStale = separateGroup->guestGeneration != separateGroup->generation;
+        }
+        // Build a physical partition only when every overlap has a proven row
+        // correspondence. Incompatible transitions first publish the old domain.
+        auto regionMembers{readbackSources};
+        regionMembers.push_back(texture);
+        if (!Texture::RegisterRegionAuthority(regionMembers, tag)) {
+            const bool tracked{std::any_of(readbackSources.begin(), readbackSources.end(), [](const auto &source) {
+                return source->regionTracked.load(std::memory_order_relaxed);
+            })};
+            if (tracked) Texture::DrainRegionAuthority(readbackSources, tag);
         }
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto firstChanged{textures.size()};

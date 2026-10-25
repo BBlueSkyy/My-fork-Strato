@@ -476,6 +476,13 @@ namespace skyline::gpu::interconnect {
             texture->unlock();
     }
 
+    void CommandExecutor::HoldRegionAuthority(Texture &texture) {
+        if (!regionOperationActive || !texture.regionTracked.load(std::memory_order_relaxed)) return;
+        auto group{texture.regionAuthority.load()};
+        for (const auto &entry : regionOperationLocks) if (entry.first == group) return;
+        regionOperationLocks.emplace_back(group, std::unique_lock{group->mutex});
+    }
+
     bool CommandExecutor::AttachTexture(TextureView *view) {
         // Cached TICs/descriptors bypass FindOrCreate. Check them before any node
         // for this operation is published; retry submits prior work only.
@@ -490,9 +497,30 @@ namespace skyline::gpu::interconnect {
             //    preserveAttachedTextures.emplace_back(view->texture);
         }
 
-        if (view->texture->HasAliases())
+        // Keep CPU callbacks from changing authority between preflight and
+        // publishing this operation's writers. Released before every retry/submit.
+        HoldRegionAuthority(*view->texture);
+        if (view->texture->HasAliases()) {
             view->texture->SynchronizeHost(false); // Initialize before claiming a GPU write, once per generation.
+            view->texture->RequireAliasCoherence(tag);
+        }
         return didLock;
+    }
+
+    void CommandExecutor::PreflightTextureUses(span<TextureView *> reads, span<TextureView *> writers) {
+        Texture::ValidateAliasWrites(writers);
+        for (auto view : reads)
+            if (view && view->texture->regionTracked.load(std::memory_order_relaxed)) AttachTexture(view);
+        for (auto view : writers) if (view) {
+            if (view->texture->regionTracked.load(std::memory_order_relaxed)) AttachTexture(view);
+            view->GetView();
+        }
+    }
+
+    void CommandExecutor::CommitTextureWrites(span<TextureView *> writers) {
+        Texture::ValidateAliasWrites(writers);
+        for (auto view : writers) if (view) view->texture->RequireAliasCoherence(tag);
+        for (auto view : writers) if (view) view->texture->MarkGpuDirty(usageTracker);
     }
 
     CommandExecutor::LockedBuffer::LockedBuffer(std::shared_ptr<Buffer> buffer) : buffer{std::move(buffer)} {}
@@ -543,7 +571,16 @@ namespace skyline::gpu::interconnect {
         cycle->AttachObject(dependency);
     }
 
-    void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory) {
+    void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory, span<TextureView *> storageWrites) {
+        // Retained descriptors also participate in preflight. No writer is
+        // claimed until every input/output view that may request a retry is ready.
+        boost::container::small_vector<TextureView *, 8> writers;
+        for (auto view : colorAttachments) if (view) writers.push_back(view);
+        if (depthStencilAttachment) writers.push_back(depthStencilAttachment);
+        for (auto view : storageWrites) if (view) writers.push_back(view);
+        PreflightTextureUses(sampledImages, writers);
+        PreflightTextureUses(inputAttachments, {});
+
         bool gotoNext{CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask)};
 
         SubpassHooks hooks{};
@@ -562,6 +599,10 @@ namespace skyline::gpu::interconnect {
                 slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::move(hooks.before));
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
         }
+
+        // All retry-capable texture work was preflighted before render-pass
+        // publication; concurrent overlapping output/storage writers were rejected.
+        for (auto view : storageWrites) if (view) view->texture->MarkGpuDirty(usageTracker);
 
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
             Submit();
@@ -762,6 +803,7 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::Submit(std::function<void()> &&callback, bool wait) {
+        regionOperationLocks.clear();
         for (const auto &flushCallback : flushCallbacks)
             flushCallback();
 
@@ -823,6 +865,8 @@ namespace skyline::gpu::interconnect {
         // Restart preparation after submitting old nodes. In particular, allocator
         // pointers and descriptors from the interrupted operation must not be reused.
         Submit();
+        if (request.levels > request.texture->levelCount && request.texture->regionTracked.load(std::memory_order_relaxed))
+            Texture::DrainRegionAuthority({request.texture}, tag);
         ContextLock lock{tag, *request.texture};
         request.texture->PromoteBackingForView(request.format, request.levels);
     }

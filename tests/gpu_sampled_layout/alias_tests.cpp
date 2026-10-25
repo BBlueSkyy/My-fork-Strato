@@ -3,6 +3,7 @@
 // metadata/fence facades; GPU readback is represented by an ordering assertion.
 #include "host_types.h"
 #include <gpu/texture/alias_group.h>
+#include <gpu/texture/region_authority.h>
 
 namespace skyline::gpu {
     using ContextTag = u64;
@@ -27,7 +28,10 @@ namespace skyline::gpu {
         const texture::Format *format;
         mutable std::mutex stateMutex;
         texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup;
-        std::atomic<bool> aliasStale{}, aliasRetired{}, aliasReadOnly{};
+        texture::AtomicSharedPtr<texture::RegionAuthority> regionAuthority;
+        std::atomic<bool> aliasStale{}, aliasRetired{}, aliasReadOnly{}, regionStale{}, regionTracked{};
+        void ReconcileRegions() { throw std::logic_error("region path belongs to real Vulkan suite"); }
+        void RecordRegionWrite() { throw std::logic_error("region path belongs to real Vulkan suite"); }
         bool memoryFreed{}, replaced{}, everUsedAsGpuWrite{};
         DirtyState dirtyState{DirtyState::GpuDirty};
         vk::SampleCountFlagBits sampleCount{vk::SampleCountFlagBits::e1};

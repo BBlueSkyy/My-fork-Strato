@@ -130,7 +130,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         }
     }
 
-    DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, const std::array<u32, 3> &groups) {
+    DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, const std::array<u32, 3> &groups, boost::container::small_vector<TextureView *, 8> &pendingWrites) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
         DeferredStorageImageWrites storageWriters;
 
@@ -271,7 +271,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             .bindPoint = vk::PipelineBindPoint::eCompute,
             .descriptorSetIndex = 0,
         });
-        CommitStorageImageWrites(ctx, storageWriters);
+        pendingWrites.assign(storageWriters.begin(), storageWriters.end());
         return updateInfo;
     }
 }

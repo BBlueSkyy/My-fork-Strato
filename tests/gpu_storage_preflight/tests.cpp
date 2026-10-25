@@ -4,6 +4,8 @@
 #include <memory>
 #include <stdexcept>
 #include <vector>
+#include <span>
+template<class T> using span = std::span<T>;
 using u32 = unsigned;
 namespace vk {
 enum class PipelineStageFlagBits { eFragmentShader };
@@ -16,8 +18,12 @@ struct DescriptorImageInfo { int imageView{}; ImageLayout imageLayout{}; };
 namespace skyline::gpu::interconnect {
 void Check(bool value, const char *message) { if (!value) throw std::runtime_error(message); }
 template<class... T> std::runtime_error exception(const char *message, T...) { return std::runtime_error(message); }
+struct TextureView;
 struct Texture {
     unsigned writes{};
+    bool stale{};
+    void RequireAliasCoherence(unsigned) { if (stale) throw std::runtime_error("late attachment retry"); }
+    static void ValidateAliasWrites(span<TextureView *>) {}
     void MarkGpuDirty(int &) { ++writes; }
     void TransitionLayout(vk::ImageLayout) {}
     void PopulateReadBarrier(vk::PipelineStageFlagBits, unsigned &, unsigned &) {}
@@ -41,13 +47,15 @@ struct Allocator {
         update = value; return &update;
     }
 };
-struct InterconnectContext {
-    struct Executor {
-        int usageTracker{};
-        std::shared_ptr<Allocator> allocator{std::make_shared<Allocator>()};
-        void AttachTexture(TextureView *) {}
-    } executor;
+struct CommandExecutor {
+    unsigned tag{1};
+    int usageTracker{};
+    std::shared_ptr<Allocator> allocator{std::make_shared<Allocator>()};
+    void AttachTexture(TextureView *) {}
+    void CommitTextureWrites(span<TextureView *>);
 };
+#include "commit.inc"
+struct InterconnectContext { CommandExecutor executor; };
 struct BindlessHandle { u32 textureIndex{}; };
 struct Textures {
     TextureView *view{}; bool retry{};
@@ -64,6 +72,7 @@ struct Pipeline {
     struct { std::shared_ptr<int> pipelineLayout{std::make_shared<int>(1)}, descriptorSetLayout{std::make_shared<int>(2)}; } compiledPipeline;
     u32 writeIdx{1}, bufferIdx{};
     Ranges writes, bufferDescs, bufferDescDynamicBindings;
+    std::vector<TextureView *> pendingWrites;
     DescriptorUpdateInfo *Finish0(InterconnectContext &ctx, [[maybe_unused]] DeferredStorageImageWrites &storageWriters) {
 #include "tail0.inc"
     }
@@ -101,15 +110,23 @@ void Run() {
         Check(failed && !image.texture->writes, "failed update-info allocation published a writer");
         ctx.executor.allocator->fail = false;
         auto *update{(pipeline.*finish)(ctx, writers)};
-        Check(update && image.texture->writes == 1, "successful preflight lost its writer claim");
+        Check(update && !image.texture->writes, "descriptor tail published before operation preflight");
+        TextureView later; later.texture->stale=true;
+        std::vector<TextureView *> outputs{&image,&later};
+        bool lateRetry{};
+        try { ctx.executor.CommitTextureWrites(outputs); } catch (const std::runtime_error &) { lateRetry=true; }
+        Check(lateRetry && !image.texture->writes, "later stale attachment published an earlier writer");
+        ctx.executor.CommitTextureWrites(writers);
+        Check(image.texture->writes==1, "successful operation lost its writer");
+        // Descriptor allocation/update is intentionally skipped on a retained draw.
+        ctx.executor.CommitTextureWrites(writers);
+        Check(image.texture->writes==2, "retained storage binding did not publish its later operation");
         image.texture->writes = 0; writers.clear();
         Resolve(ctx, textures, Descriptor{1, false}, writers);
         (pipeline.*finish)(ctx, writers);
         Check(!image.texture->writes, "read-only storage image became a writer");
     }
-    // Keep the fallback function referenced in the negative control too.
-    if (false) { InterconnectContext ctx; DeferredStorageImageWrites writers; CommitStorageImageWrites(ctx, writers); }
-    std::puts("PASS: production storage binding and graphics/full/quick/compute allocation tails; late retry, allocation failure and successful claims");
+    std::puts("PASS: production storage binding and graphics/full/quick/compute allocation tails; late retry, allocation failure, deferred operation claims and retained storage bindings");
 }
 }
 int main() {

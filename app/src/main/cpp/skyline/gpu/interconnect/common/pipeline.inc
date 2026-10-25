@@ -9,15 +9,10 @@
 #include "textures.h"
 
 namespace skyline::gpu::interconnect {
-    // Storage image claims are committed after descriptor preflight. A later
+    // Storage image claims are deferred through descriptor and operation preflight. A later
     // sampled/storage descriptor can still require a backing/alias retry, and
     // a rejected operation must not publish a phantom GPU write.
     using DeferredStorageImageWrites = boost::container::small_vector<TextureView *, 8>;
-
-    static void CommitStorageImageWrites(InterconnectContext &ctx, DeferredStorageImageWrites &writers) {
-        for (auto *view : writers)
-            view->texture->MarkGpuDirty(ctx.executor.usageTracker);
-    }
 
     union BindlessHandle {
         u32 raw;
