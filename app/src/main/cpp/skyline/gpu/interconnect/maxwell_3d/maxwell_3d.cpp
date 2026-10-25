@@ -736,7 +736,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Maxwell3D::Draw(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, u32 count, u32 first, u32 instanceCount, u32 vertexOffset, u32 firstInstance) {
+        // Each retry must start from the guest's original draw parameters:
+        // quad conversion mutates count/first/indexed, and a later descriptor
+        // reconciliation may restart this operation before enqueueing the draw.
+        const auto originalCount{count};
+        const auto originalFirst{first};
+        const auto originalIndexed{indexed};
         ctx.executor.RunWithTextureBackingRetry([&] {
+        count = originalCount;
+        first = originalFirst;
+        indexed = originalIndexed;
         TRACE_EVENT("gpu", "Draw", "indexed", indexed, "count", count, "instanceCount", instanceCount);
 
         StateUpdateBuilder builder{*ctx.executor.allocator};
