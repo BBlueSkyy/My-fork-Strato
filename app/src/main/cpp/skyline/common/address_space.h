@@ -173,6 +173,45 @@ namespace skyline {
         }
 
         /**
+         * @brief Describes the first non-sparse span for bounded diagnostic logs.
+         * @note Only use on logged failures; never changes the translation path.
+         */
+        struct SparseRangeDiagnostic {
+            const char *state;
+            VaType firstAddress;
+            VaType bytes;
+        };
+
+        SparseRangeDiagnostic DiagnoseSparseRangeForDiagnostics(VaType virt, VaType size) {
+            if (!size || virt >= AddressSpaceSize || size > AddressSpaceSize - virt)
+                return {"invalid-range", virt, size};
+
+            std::shared_lock lock{this->blockMutex};
+            auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [](auto address, const auto &block) {
+                return address < block.virt;
+            })};
+            if (successor == this->blocks.begin())
+                return {"unmapped", virt, size};
+
+            auto block{std::prev(successor)};
+            const auto end{virt + size};
+            auto cursor{virt};
+            while (cursor < end) {
+                const auto spanEnd{successor == this->blocks.end() ? end : std::min(end, successor->virt)};
+                if (!block->phys || !block->extraInfo.sparseMapped) {
+                    const char *state{block->extraInfo.sparseMapped ? "invalid-sparse-block" :
+                                      block->phys ? "resident" : "unmapped"};
+                    return {state, cursor, spanEnd - cursor};
+                }
+                if (spanEnd == end)
+                    break;
+                cursor = spanEnd;
+                block = successor++;
+            }
+            return {"fully-sparse", virt, size};
+        }
+
+        /**
          * @brief Translates a region in the VA space to a corresponding set of regions in the PA space
          */
         TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}) {

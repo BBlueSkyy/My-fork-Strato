@@ -278,7 +278,8 @@ namespace skyline::gpu::interconnect {
     }
 
     static std::shared_ptr<Texture> CreateSparseZeroImage(InterconnectContext &ctx, texture::Dimensions dimensions,
-                                                          u32 mipLevels, size_t budget, size_t &allocatedBytes) {
+                                                          u32 mipLevels, size_t budget, size_t &allocatedBytes,
+                                                          const char *&rejectReason, size_t &requiredBytes) {
         constexpr texture::Format ZeroFormat{format::R8G8B8A8Unorm};
         constexpr vk::ImageUsageFlags Usage{vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst};
         // Only cache misses query the driver. The logical chain alone does not
@@ -286,8 +287,10 @@ namespace skyline::gpu::interconnect {
         const auto limits{ctx.gpu.vkPhysicalDevice.getImageFormatProperties(ZeroFormat->vkFormat, vk::ImageType::e2D,
                                                                           vk::ImageTiling::eOptimal, Usage, {})};
         if (dimensions.width > limits.maxExtent.width || dimensions.height > limits.maxExtent.height ||
-            mipLevels > limits.maxMipLevels || !limits.maxArrayLayers || !(limits.sampleCounts & vk::SampleCountFlagBits::e1))
+            mipLevels > limits.maxMipLevels || !limits.maxArrayLayers || !(limits.sampleCounts & vk::SampleCountFlagBits::e1)) {
+            rejectReason = "vulkan-image-format-limits";
             return {};
+        }
 
         const vk::ImageCreateInfo createInfo{
             .imageType = vk::ImageType::e2D,
@@ -308,16 +311,29 @@ namespace skyline::gpu::interconnect {
         const auto requirements{ctx.gpu.vkDevice.createImage(createInfo).getMemoryRequirements()};
         const auto properties{ctx.gpu.vkPhysicalDevice.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceMaintenance3Properties>()};
         const auto maxAllocation{properties.get<vk::PhysicalDeviceMaintenance3Properties>().maxMemoryAllocationSize};
-        if (!requirements.memoryTypeBits || requirements.size > budget || requirements.size > maxAllocation ||
-            requirements.size > limits.maxResourceSize)
+        requiredBytes = static_cast<size_t>(requirements.size);
+        if (!requirements.memoryTypeBits) {
+            rejectReason = "vulkan-no-memory-type";
             return {};
+        }
+        if (requirements.size > maxAllocation || requirements.size > limits.maxResourceSize) {
+            rejectReason = "vulkan-allocation-limit";
+            return {};
+        }
+        if (requirements.size > budget) {
+            rejectReason = "vulkan-memory-budget";
+            return {};
+        }
 
         auto backing{ctx.gpu.memory.AllocateImage(createInfo)};
         VmaAllocationInfo allocationInfo{};
         vmaGetAllocationInfo(backing.vmaAllocator, backing.vmaAllocation, &allocationInfo);
         const auto bytes{std::max<vk::DeviceSize>(requirements.size, allocationInfo.size)};
-        if (bytes > budget)
+        requiredBytes = static_cast<size_t>(bytes);
+        if (bytes > budget) {
+            rejectReason = "vma-allocation-budget";
             return {};
+        }
 
         auto image{std::make_shared<Texture>(ctx.gpu, std::move(backing), dimensions, ZeroFormat,
                                              vk::ImageLayout::eUndefined, vk::ImageTiling::eOptimal,
@@ -360,30 +376,53 @@ namespace skyline::gpu::interconnect {
     }
 
     TextureView *Textures::GetSparseTexture(InterconnectContext &ctx, const TextureImageControl &header,
-                                           GuestTexture &guest, Shader::TextureType shaderType) {
-        if (shaderType != Shader::TextureType::Color2D || guest.aspect != vk::ImageAspectFlagBits::eColor ||
-            IsIntegerTicFormat(guest.format) || guest.dimensions.depth != 1 || guest.layerCount != 1 || guest.baseArrayLayer ||
-            (header.textureType != TextureImageControl::TextureType::e2D && header.textureType != TextureImageControl::TextureType::e2DNoMipmap) ||
-            !SparseMipViewFits(guest.mipLevelCount, guest.viewMipBase, guest.viewMipCount))
+                                           GuestTexture &guest, Shader::TextureType shaderType,
+                                           const char *&rejectReason, size_t &requiredBytes) {
+        if (shaderType != Shader::TextureType::Color2D ||
+            (header.textureType != TextureImageControl::TextureType::e2D &&
+             header.textureType != TextureImageControl::TextureType::e2DNoMipmap)) {
+            rejectReason = "unsupported-texture-type";
             return nullptr;
+        }
+        if (guest.aspect != vk::ImageAspectFlagBits::eColor || IsIntegerTicFormat(guest.format) ||
+            guest.dimensions.depth != 1 || guest.layerCount != 1 || guest.baseArrayLayer) {
+            rejectReason = "unsupported-format-or-layers";
+            return nullptr;
+        }
+        if (!SparseMipViewFits(guest.mipLevelCount, guest.viewMipBase, guest.viewMipCount)) {
+            rejectReason = "invalid-mip-view";
+            return nullptr;
+        }
 
         const auto logicalBytes{SparseRgba8MipBytes(guest.dimensions.width, guest.dimensions.height, guest.mipLevelCount)};
         constexpr size_t MaxSparseZeroBytes{32 * 1024 * 1024};
-        if (!logicalBytes || *logicalBytes > MaxSparseZeroBytes)
+        if (!logicalBytes) {
+            rejectReason = "invalid-mip-chain-size";
             return nullptr;
+        }
+        requiredBytes = *logicalBytes;
+        if (*logicalBytes > MaxSparseZeroBytes) {
+            rejectReason = "logical-image-over-budget";
+            return nullptr;
+        }
         // Reject both holes and partially resident ranges; the split translator
         // deliberately represents either kind of unavailable span with nullptr.
-        if (!ctx.channelCtx.asCtx->gmmu.IsFullySparseRange(header.Iova(), guest.GetSize()))
+        if (!ctx.channelCtx.asCtx->gmmu.IsFullySparseRange(header.Iova(), guest.GetSize())) {
+            rejectReason = "range-not-fully-sparse";
             return nullptr;
+        }
 
         const auto key{std::tuple{guest.dimensions.width, guest.dimensions.height, guest.mipLevelCount}};
         auto existing{sparseZeroImages.find(key)};
         if (existing == sparseZeroImages.end()) {
             const size_t remaining{MaxSparseZeroBytes - sparseZeroAllocatedBytes};
-            if (*logicalBytes > remaining)
+            if (*logicalBytes > remaining) {
+                rejectReason = "logical-cache-budget";
                 return nullptr;
+            }
             size_t allocatedBytes{};
-            auto image{CreateSparseZeroImage(ctx, guest.dimensions, guest.mipLevelCount, remaining, allocatedBytes)};
+            auto image{CreateSparseZeroImage(ctx, guest.dimensions, guest.mipLevelCount, remaining,
+                                             allocatedBytes, rejectReason, requiredBytes)};
             if (!image)
                 return nullptr;
             existing = sparseZeroImages.emplace(key, std::move(image)).first;
@@ -526,15 +565,28 @@ namespace skyline::gpu::interconnect {
             auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
             guest.mappings.assign(mappings.begin(), mappings.end());
             if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
-                if (auto sparse{GetSparseTexture(ctx, textureHeader, guest, shaderType)})
+                const char *sparseRejectReason{"unknown"};
+                size_t requiredSparseBytes{};
+                if (auto sparse{GetSparseTexture(ctx, textureHeader, guest, shaderType, sparseRejectReason, requiredSparseBytes)})
                     return sparse;
-                // Report each distinct invalid TIC immediately, then at powers
-                // of two. Do not cache the failure or suppress translation retries.
+                // Detailed diagnosis only once per TIC; repeat warnings retain
+                // power-of-two throttling, without extra GMMU scans.
                 auto &warnings{unmappedTextureWarnings[textureHeader]};
-                if (std::has_single_bit(++warnings))
-                    LOGW("Unmapped texture in pool: 0x{:X} tic={} dims={}x{} mips={} format=0x{:X} occurrences={}",
-                         textureHeader.Iova(), index, guest.dimensions.width, guest.dimensions.height,
-                         guest.mipLevelCount, textureHeader.formatWord.Raw(), warnings);
+                if (std::has_single_bit(++warnings)) {
+                    if (warnings == 1) {
+                        const auto range{ctx.channelCtx.asCtx->gmmu.DiagnoseSparseRangeForDiagnostics(textureHeader.Iova(), guest.GetSize())};
+                        constexpr size_t MaxSparseZeroBytes{32 * 1024 * 1024};
+                        LOGW("Unmapped texture in pool: 0x{:X} tic={} dims={}x{} mips={} format=0x{:X} occurrences={} reason={} gmmu={} first_bad=0x{:X} bad_bytes=0x{:X} guest_bytes=0x{:X} segments={} cache_used={} cache_free={} required={}",
+                             textureHeader.Iova(), index, guest.dimensions.width, guest.dimensions.height,
+                             guest.mipLevelCount, textureHeader.formatWord.Raw(), warnings, sparseRejectReason,
+                             range.state, range.firstAddress, range.bytes, guest.GetSize(), guest.mappings.size(),
+                             sparseZeroAllocatedBytes, MaxSparseZeroBytes - sparseZeroAllocatedBytes, requiredSparseBytes);
+                    } else {
+                        LOGW("Unmapped texture in pool: 0x{:X} tic={} dims={}x{} mips={} format=0x{:X} occurrences={}",
+                             textureHeader.Iova(), index, guest.dimensions.width, guest.dimensions.height,
+                             guest.mipLevelCount, textureHeader.formatWord.Raw(), warnings);
+                    }
+                }
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
 

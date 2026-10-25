@@ -49,7 +49,8 @@ namespace skyline::gpu::interconnect {
 
         vk::raii::BufferView *GetOrCreateTexelBufferView(InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format);
 
-        TextureView *GetSparseTexture(InterconnectContext &ctx, const TextureImageControl &header, GuestTexture &guest, Shader::TextureType shaderType);
+        TextureView *GetSparseTexture(InterconnectContext &ctx, const TextureImageControl &header, GuestTexture &guest,
+                                      Shader::TextureType shaderType, const char *&rejectReason, size_t &requiredBytes);
 
         struct CacheEntry {
             TextureImageControl tic;
