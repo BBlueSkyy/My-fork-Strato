@@ -15,7 +15,6 @@ namespace skyline::gpu::interconnect {
     using DeferredStorageImageWrites = boost::container::small_vector<TextureView *, 8>;
 
     static void CommitStorageImageWrites(InterconnectContext &ctx, DeferredStorageImageWrites &writers) {
-        Texture::ValidateAliasWrites(writers);
         for (auto *view : writers)
             view->texture->MarkGpuDirty(ctx.executor.usageTracker);
     }
