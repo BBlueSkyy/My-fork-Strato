@@ -6,6 +6,8 @@
 #include <gpu/texture_manager.h>
 #include <gpu/buffer_manager.h>
 #include <gpu/texture/format.h>
+#include <array>
+#include "sparse_texture.h"
 #include "textures.h"
 
 namespace skyline::gpu::interconnect {
@@ -260,6 +262,145 @@ namespace skyline::gpu::interconnect {
         });;
     }
 
+    static vk::ComponentMapping ConvertSparseZeroSwizzle(vk::Format format, vk::ComponentMapping mapping) {
+        // The internal RGBA8 image represents numerical zero texels, not the
+        // guest's encoded blocks. Preserve format defaults before applying the
+        // TIC swizzle: R/RG/RGB formats (including BC5) supply absent alpha as 1.
+        // Absent G/B already read zero from this backing; explicit Zero/One stay unchanged.
+        if (vk::componentCount(format) < 4) {
+            if (mapping.r == vk::ComponentSwizzle::eA) mapping.r = vk::ComponentSwizzle::eOne;
+            if (mapping.g == vk::ComponentSwizzle::eA) mapping.g = vk::ComponentSwizzle::eOne;
+            if (mapping.b == vk::ComponentSwizzle::eA) mapping.b = vk::ComponentSwizzle::eOne;
+            if (mapping.a == vk::ComponentSwizzle::eA || mapping.a == vk::ComponentSwizzle::eIdentity)
+                mapping.a = vk::ComponentSwizzle::eOne;
+        }
+        return mapping;
+    }
+
+    static std::shared_ptr<Texture> CreateSparseZeroImage(InterconnectContext &ctx, texture::Dimensions dimensions,
+                                                          u32 mipLevels, size_t budget, size_t &allocatedBytes) {
+        constexpr texture::Format ZeroFormat{format::R8G8B8A8Unorm};
+        constexpr vk::ImageUsageFlags Usage{vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst};
+        // Only cache misses query the driver. The logical chain alone does not
+        // account for tiling/alignment or the device's single-allocation limit.
+        const auto limits{ctx.gpu.vkPhysicalDevice.getImageFormatProperties(ZeroFormat->vkFormat, vk::ImageType::e2D,
+                                                                          vk::ImageTiling::eOptimal, Usage, {})};
+        if (dimensions.width > limits.maxExtent.width || dimensions.height > limits.maxExtent.height ||
+            mipLevels > limits.maxMipLevels || !limits.maxArrayLayers || !(limits.sampleCounts & vk::SampleCountFlagBits::e1))
+            return {};
+
+        const vk::ImageCreateInfo createInfo{
+            .imageType = vk::ImageType::e2D,
+            .format = ZeroFormat->vkFormat,
+            .extent = dimensions,
+            .mipLevels = mipLevels,
+            .arrayLayers = 1,
+            .samples = vk::SampleCountFlagBits::e1,
+            .tiling = vk::ImageTiling::eOptimal,
+            .usage = Usage,
+            .sharingMode = vk::SharingMode::eExclusive,
+            .queueFamilyIndexCount = 1,
+            .pQueueFamilyIndices = &ctx.gpu.vkQueueFamilyIndex,
+            .initialLayout = vk::ImageLayout::eUndefined,
+        };
+        // An unbound probe has no device-memory allocation; it is destroyed
+        // before VMA creates the identical image with its normal allocator.
+        const auto requirements{ctx.gpu.vkDevice.createImage(createInfo).getMemoryRequirements()};
+        const auto properties{ctx.gpu.vkPhysicalDevice.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceMaintenance3Properties>()};
+        const auto maxAllocation{properties.get<vk::PhysicalDeviceMaintenance3Properties>().maxMemoryAllocationSize};
+        if (!requirements.memoryTypeBits || requirements.size > budget || requirements.size > maxAllocation ||
+            requirements.size > limits.maxResourceSize)
+            return {};
+
+        auto backing{ctx.gpu.memory.AllocateImage(createInfo)};
+        VmaAllocationInfo allocationInfo{};
+        vmaGetAllocationInfo(backing.vmaAllocator, backing.vmaAllocation, &allocationInfo);
+        const auto bytes{std::max<vk::DeviceSize>(requirements.size, allocationInfo.size)};
+        if (bytes > budget)
+            return {};
+
+        auto image{std::make_shared<Texture>(ctx.gpu, std::move(backing), dimensions, ZeroFormat,
+                                             vk::ImageLayout::eUndefined, vk::ImageTiling::eOptimal,
+                                             vk::ImageCreateFlags{}, Usage, mipLevels)};
+        auto cycle{ctx.gpu.scheduler.Submit([image, mipLevels](vk::raii::CommandBuffer &commandBuffer) {
+            const vk::ImageSubresourceRange range{
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .levelCount = mipLevels,
+                .layerCount = 1,
+            };
+            commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer,
+                                          {}, {}, {}, vk::ImageMemoryBarrier{
+                .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+                .oldLayout = vk::ImageLayout::eUndefined,
+                .newLayout = vk::ImageLayout::eGeneral,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = image->GetBacking(),
+                .subresourceRange = range,
+            });
+            commandBuffer.clearColorImage(image->GetBacking(), vk::ImageLayout::eGeneral,
+                                          vk::ClearColorValue{std::array<float, 4>{}}, range);
+            commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands,
+                                          {}, {}, {}, vk::ImageMemoryBarrier{
+                .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                .dstAccessMask = vk::AccessFlagBits::eShaderRead,
+                .oldLayout = vk::ImageLayout::eGeneral,
+                .newLayout = vk::ImageLayout::eGeneral,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = image->GetBacking(),
+                .subresourceRange = range,
+            });
+        })};
+        cycle->AttachObject(image);
+        image->cycle = cycle;
+        image->layout = vk::ImageLayout::eGeneral;
+        allocatedBytes = static_cast<size_t>(bytes);
+        return image;
+    }
+
+    TextureView *Textures::GetSparseTexture(InterconnectContext &ctx, const TextureImageControl &header,
+                                           GuestTexture &guest, Shader::TextureType shaderType) {
+        if (shaderType != Shader::TextureType::Color2D || guest.aspect != vk::ImageAspectFlagBits::eColor ||
+            IsIntegerTicFormat(guest.format) || guest.dimensions.depth != 1 || guest.layerCount != 1 || guest.baseArrayLayer ||
+            (header.textureType != TextureImageControl::TextureType::e2D && header.textureType != TextureImageControl::TextureType::e2DNoMipmap) ||
+            !SparseMipViewFits(guest.mipLevelCount, guest.viewMipBase, guest.viewMipCount))
+            return nullptr;
+
+        const auto logicalBytes{SparseRgba8MipBytes(guest.dimensions.width, guest.dimensions.height, guest.mipLevelCount)};
+        constexpr size_t MaxSparseZeroBytes{32 * 1024 * 1024};
+        if (!logicalBytes || *logicalBytes > MaxSparseZeroBytes)
+            return nullptr;
+        // Reject both holes and partially resident ranges; the split translator
+        // deliberately represents either kind of unavailable span with nullptr.
+        if (!ctx.channelCtx.asCtx->gmmu.IsFullySparseRange(header.Iova(), guest.GetSize()))
+            return nullptr;
+
+        const auto key{std::tuple{guest.dimensions.width, guest.dimensions.height, guest.mipLevelCount}};
+        auto existing{sparseZeroImages.find(key)};
+        if (existing == sparseZeroImages.end()) {
+            const size_t remaining{MaxSparseZeroBytes - sparseZeroAllocatedBytes};
+            if (*logicalBytes > remaining)
+                return nullptr;
+            size_t allocatedBytes{};
+            auto image{CreateSparseZeroImage(ctx, guest.dimensions, guest.mipLevelCount, remaining, allocatedBytes)};
+            if (!image)
+                return nullptr;
+            existing = sparseZeroImages.emplace(key, std::move(image)).first;
+            sparseZeroAllocatedBytes += allocatedBytes;
+        }
+        auto &view{sparseZeroViews[header]};
+        if (!view) {
+            view = existing->second->GetView(vk::ImageViewType::e2D, vk::ImageSubresourceRange{
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .baseMipLevel = guest.viewMipBase,
+                .levelCount = guest.viewMipCount,
+                .layerCount = 1,
+            }, {}, ConvertSparseZeroSwizzle(guest.format->vkFormat, guest.swizzle));
+        }
+        return view.get();
+    }
+
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
         if (textureHeaderCache.size() != textureHeaders.size()) {
@@ -385,7 +526,15 @@ namespace skyline::gpu::interconnect {
             auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
             guest.mappings.assign(mappings.begin(), mappings.end());
             if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
-                LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
+                if (auto sparse{GetSparseTexture(ctx, textureHeader, guest, shaderType)})
+                    return sparse;
+                // Report each distinct invalid TIC immediately, then at powers
+                // of two. Do not cache the failure or suppress translation retries.
+                auto &warnings{unmappedTextureWarnings[textureHeader]};
+                if (std::has_single_bit(++warnings))
+                    LOGW("Unmapped texture in pool: 0x{:X} tic={} dims={}x{} mips={} format=0x{:X} occurrences={}",
+                         textureHeader.Iova(), index, guest.dimensions.width, guest.dimensions.height,
+                         guest.mipLevelCount, textureHeader.formatWord.Raw(), warnings);
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
 

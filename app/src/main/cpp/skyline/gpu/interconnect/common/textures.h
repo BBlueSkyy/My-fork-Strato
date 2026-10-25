@@ -4,6 +4,8 @@
 #pragma once
 
 #include <functional>
+#include <map>
+#include <tuple>
 #include <tsl/robin_map.h>
 #include <shader_compiler/shader_info.h>
 #include <gpu/texture/texture.h>
@@ -35,11 +37,19 @@ namespace skyline::gpu::interconnect {
     class Textures {
       private:
         std::shared_ptr<TextureView> nullTextureView{};
+        // Consulted only after fresh GMMU translation fails. Never put sparse
+        // results in the positive TIC caches: physical remaps must win next draw.
+        std::map<std::tuple<u32, u32, u32>, std::shared_ptr<Texture>> sparseZeroImages;
+        tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> sparseZeroViews;
+        tsl::robin_map<TextureImageControl, u64, util::ObjectHash<TextureImageControl>> unmappedTextureWarnings;
+        size_t sparseZeroAllocatedBytes{};
         dirty::ManualDirtyState<TexturePoolState> texturePool;
 
         tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
 
         vk::raii::BufferView *GetOrCreateTexelBufferView(InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format);
+
+        TextureView *GetSparseTexture(InterconnectContext &ctx, const TextureImageControl &header, GuestTexture &guest, Shader::TextureType shaderType);
 
         struct CacheEntry {
             TextureImageControl tic;
