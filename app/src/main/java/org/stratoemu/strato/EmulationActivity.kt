@@ -1076,17 +1076,22 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     @Suppress("unused")
     fun openSoftwareKeyboard(sessionId : Long, buffer : ByteBuffer, initialText : String, inline : Boolean) : Boolean {
+        Log.d(Tag, "[SWKBD-FLOW] Android open request session=$sessionId inline=$inline thread=${Thread.currentThread().name} main=${Looper.myLooper() == Looper.getMainLooper()} finishing=$isFinishing destroyed=$isDestroyed")
         if (isFinishing || isDestroyed) {
+            Log.d(Tag, "[SWKBD-FLOW] Android open rejected session=$sessionId reason=lifecycle")
             return false
         }
         val config = try {
             buffer.order(ByteOrder.LITTLE_ENDIAN)
             ByteBufferSerializable.createFromByteBuffer(SoftwareKeyboardConfig::class, buffer) as SoftwareKeyboardConfig
         } catch (exception : Exception) {
+            Log.w(Tag, "[SWKBD-FLOW] Android config decode failed session=$sessionId", exception)
             return false
         }
 
+        Log.d(Tag, "[SWKBD-FLOW] Android config decoded session=$sessionId inline=$inline min=${config.textMinLength} max=${config.textMaxLength}")
         runOnUiThread {
+            Log.d(Tag, "[SWKBD-FLOW] UI dispatch session=$sessionId thread=${Thread.currentThread().name} main=${Looper.myLooper() == Looper.getMainLooper()} finishing=$isFinishing destroyed=$isDestroyed")
             if (isFinishing || isDestroyed) {
                 nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
                 return@runOnUiThread
@@ -1103,10 +1108,14 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend()
             val dialog = SoftwareKeyboardDialog.newInstance(sessionId, config, initialText, inline)
             softwareKeyboardDialogs[sessionId] = dialog
+            Log.d(Tag, "[SWKBD-FLOW] dialog created session=$sessionId inline=$inline")
             try {
+                Log.d(Tag, "[SWKBD-FLOW] dialog showNow begin session=$sessionId stateSaved=${supportFragmentManager.isStateSaved}")
                 dialog.showNow(supportFragmentManager, "software-keyboard-$sessionId")
+                Log.d(Tag, "[SWKBD-FLOW] dialog showNow end session=$sessionId added=${dialog.isAdded} main=${Looper.myLooper() == Looper.getMainLooper()}")
                 nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendOpened, "", 0)
             } catch (exception : IllegalStateException) {
+                Log.w(Tag, "[SWKBD-FLOW] dialog showNow failed session=$sessionId", exception)
                 softwareKeyboardDialogs.remove(sessionId)
                 nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
             }
@@ -1146,6 +1155,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     fun sendSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int) {
+        Log.d(Tag, "[SWKBD-FLOW] UI -> native event session=$sessionId type=$type cursor=$cursor thread=${Thread.currentThread().name} main=${Looper.myLooper() == Looper.getMainLooper()}")
         nativeSoftwareKeyboardEvent(sessionId, type, text, cursor)
     }
 
