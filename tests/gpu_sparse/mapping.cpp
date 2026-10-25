@@ -17,6 +17,11 @@ template<typename T> struct span {
     T *data() const { return ptr; }
     size_t size() const { return count; }
     bool valid() const { return ptr != nullptr; }
+    bool empty() const { return count == 0; }
+    span subspan(size_t offset, size_t size) const {
+        assert(offset <= count && size <= count - offset);
+        return {ptr ? ptr + offset : nullptr, size};
+    }
 };
 using TranslatedAddressRange = std::vector<span<u8>>;
 struct Memory {
@@ -28,6 +33,17 @@ struct Memory {
     };
     std::vector<Block> blocks;
     std::shared_mutex blockMutex;
+    // Simulates a segment-table entry whose original extent survived a partial remap.
+    span<u8> staleFastSpan{nullptr, 0};
+    VaType staleFastStart{};
+    std::pair<span<u8>, size_t> LookupBlockLocked(VaType virt, std::function<void(span<u8>)> callback = {}) {
+        assert(staleFastSpan.size() && virt >= staleFastStart);
+        if (callback && staleFastSpan.valid())
+            callback(staleFastSpan);
+        return {staleFastSpan, static_cast<size_t>(virt - staleFastStart)};
+    }
+    TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {})
+#include "fastpath.inc"
     TranslatedAddressRange TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {})
 #include "translate.inc"
     bool IsFullySparseRange(VaType virt, VaType size)
@@ -59,5 +75,34 @@ int main() {
     m.blocks = {{0, nullptr, {}}, {0x1000, data, {}}, {0x2000, data + 0x1000, {}}, {0x3000, nullptr, {}}};
     const auto resident = m.TranslateRangeImpl(0x1800, 0x1000);
     assert(resident.size() == 1 && resident[0].data() == data + 0x800 && resident[0].size() == 0x1000);
-    std::cout << "PASS: sparse split translation, whole-range residency, remap, resident coalescing\n";
+    // A sparse mapping partially remapped to resident memory must not be
+    // swallowed by the original broad null fast-path entry.
+    m.blocks = {{0, nullptr, {}}, {0x1000, placeholder, {true}},
+                {0x2000, placeholder, {true}}, {0x3000, data, {}}, {0x4000, nullptr, {}}};
+    m.staleFastSpan = {nullptr, 0x3000};
+    m.staleFastStart = 0x1000;
+    const auto sparseThenResident = m.TranslateRange(0x1800, 0x2000);
+    assert(sparseThenResident.size() == 3);
+    assert(!sparseThenResident[0].valid() && !sparseThenResident[1].valid());
+    assert(sparseThenResident[2].valid() && sparseThenResident[2].size() == 0x800);
+
+    // Even if both ends of an originally resident span are still resident,
+    // an internal sparse remap must be respected. No callback on ghost memory.
+    m.blocks = {{0, nullptr, {}}, {0x1000, data, {}},
+                {0x2000, placeholder, {true}}, {0x3000, data + 0x2000, {}}, {0x4000, nullptr, {}}};
+    m.staleFastSpan = {data, 0x3000};
+    size_t translatedResidentBytes{};
+    const auto residentThenSparse = m.TranslateRange(0x1800, 0x2000, [&](auto s) {
+        translatedResidentBytes += s.size();
+    });
+    assert(residentThenSparse.size() == 3);
+    assert(residentThenSparse[0].valid() && !residentThenSparse[1].valid() && residentThenSparse[2].valid());
+    assert(translatedResidentBytes == 0x1000);
+
+    // The true single-block fast path remains functional.
+    m.blocks = {{0, nullptr, {}}, {0x1000, data, {}}, {0x4000, nullptr, {}}};
+    size_t fastCallbackBytes{};
+    const auto mappedFast = m.TranslateRange(0x1800, 0x800, [&](auto s) { fastCallbackBytes += s.size(); });
+    assert(mappedFast.size() == 1 && mappedFast[0].valid() && fastCallbackBytes == 0x800);
+    std::cout << "PASS: sparse split translation, remap-aware fast path, callback extents\n";
 }

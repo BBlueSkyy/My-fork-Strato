@@ -24,6 +24,7 @@ with tempfile.TemporaryDirectory(prefix='strato-sparse-') as tmp:
     header = (SKYLINE / 'common/address_space.h').read_text()
     has_query = 'bool IsFullySparseRange(' in header
     (tmp / 'query.inc').write_text(body(header, 'bool IsFullySparseRange(') if has_query else '{ return false; }')
+    (tmp / 'fastpath.inc').write_text(body(header, 'TranslatedAddressRange TranslateRange('))
     flags = ['-std=c++20', '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
              '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-fno-omit-frame-pointer', '-no-pie']
     exe = tmp / 'mapping-tests'

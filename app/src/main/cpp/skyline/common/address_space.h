@@ -217,12 +217,22 @@ namespace skyline {
         TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}) {
             std::shared_lock lock{this->blockMutex};
 
-            // Fast path for when the range is mapped in a single block
-            auto [blockSpan, rangeOffset]{LookupBlockLocked(virt, cpuAccessCallback)};
-            if (blockSpan.size() - rangeOffset >= size) {
-                TranslatedAddressRange ranges;
-                ranges.push_back(blockSpan.subspan(blockSpan.valid() ? rangeOffset : 0, size));
-                return ranges;
+            // The segment table retains the original extent on pages preceding
+            // a partial remap. Verify the authoritative block boundary before
+            // trusting its fast-path span across a larger requested range.
+            auto [blockSpan, rangeOffset]{LookupBlockLocked(virt)};
+            if (rangeOffset <= blockSpan.size() && size <= blockSpan.size() - rangeOffset) {
+                auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [](auto address, const auto &block) {
+                    return address < block.virt;
+                })};
+                if (successor != this->blocks.end() && size <= successor->virt - virt) {
+                    auto mapped{blockSpan.subspan(blockSpan.valid() ? rangeOffset : 0, size)};
+                    if (cpuAccessCallback && mapped.valid())
+                        cpuAccessCallback(mapped);
+                    TranslatedAddressRange ranges;
+                    ranges.push_back(mapped);
+                    return ranges;
+                }
             }
 
             return TranslateRangeImpl(virt, size, cpuAccessCallback);
