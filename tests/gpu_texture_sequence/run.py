@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix="strato-texture-sequence-") as directory
     directory = Path(directory)
     (directory / "production.inc").write_text("\n".join(function(source, signature) for signature in (
         "void Texture::SynchronizeHost(", "void Texture::SynchronizeHostInline(",
-        "void Texture::WaitOnFence(", "void Texture::CopyFrom(")))
+        "void Texture::WaitOnFence(", "void Texture::TransitionLayout(", "void Texture::CopyFrom(")))
     command = [os.environ.get("CXX", "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror",
                "-pthread", "-I" + str(directory), str(HERE / "tests.cpp"), "-o", str(directory / "tests")]
     sanitizer = os.environ.get("SANITIZE", "undefined")

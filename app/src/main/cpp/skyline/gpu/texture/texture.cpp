@@ -814,6 +814,11 @@ namespace skyline::gpu {
 
     void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         WaitOnBacking();
+        // Descriptor preparation repeatedly requests General for storage images.
+        // An unchanged layout must retain the asynchronous resource cycle rather
+        // than waiting for a presentation read that needs no layout transition.
+        if (layout == pLayout)
+            return;
         WaitOnFence();
 
         TRACE_EVENT("gpu", "Texture::TransitionLayout");

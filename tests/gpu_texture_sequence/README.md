@@ -6,3 +6,5 @@ Optional groups: `uploads`, `copies`, `failures`. Set `SANITIZE=address,undefine
 The runner compiles the actual production methods without rewriting their bodies. CPU resource and GPU interfaces are host facades, with gated completion for CPU reuse and injected allocation/record/submit failures. These tests prove state/lifetime ordering at those interfaces, not actual Vulkan barriers, shader behavior, Android signal handling or game performance.
 
 Negative control: `TEXTURE_SEQUENCE_BASELINE_REF=9935f133 python3 tests/gpu_texture_sequence/run.py uploads` fails for lost CPU upload authority; group `copies` fails for the untracked source reader. Inline failure metadata is tested with a fresh/discarded recording context: no command-buffer rewind is claimed.
+
+Group `layouts` exercises the exact production `TransitionLayout`: a no-op preserves an incomplete reader cycle without waiting/submitting, while a real transition retains its wait and submission. This guards the presentation-related CPU stall investigated after the FighterZ performance report.

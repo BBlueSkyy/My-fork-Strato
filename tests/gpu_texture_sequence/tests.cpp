@@ -28,8 +28,8 @@ template<class T> struct span {
 };
 namespace vk {
 enum class ImageLayout { eUndefined, eGeneral, eTransferSrcOptimal, eTransferDstOptimal };
-enum class PipelineStageFlagBits { eTopOfPipe, eAllCommands, eTransfer };
-enum class AccessFlagBits { eMemoryWrite, eMemoryRead, eTransferRead, eTransferWrite };
+enum class PipelineStageFlagBits { eTopOfPipe, eAllCommands, eTransfer, eBottomOfPipe };
+enum class AccessFlagBits { eMemoryWrite, eMemoryRead, eTransferRead, eTransferWrite, eNoneKHR };
 enum class CommandBufferUsageFlagBits { eOneTimeSubmit };
 enum class Filter { eLinear };
 using Semaphore = int;
@@ -94,6 +94,7 @@ struct FenceCycle {
         if (attaching) attaching();
         (dependencies.push_back(objects), ...);
     }
+    template<class T> void AttachObject(const T &object) { AttachObjects(object); }
     std::shared_ptr<FenceCycle> RecordSemaphoreWaitUsage(std::function<std::shared_ptr<FenceCycle>(vk::Semaphore)> &&callback) {
         WaitSubmit();
         if (semaphoreConsumed) { Wait(); return callback({}); }
@@ -135,6 +136,11 @@ struct Scheduler {
     }
     void Complete() { for (auto &cycle : cycles) cycle->Complete(); }
 };
+struct TestFormat {
+    int vkAspect{1};
+    const TestFormat *operator->() const { return this; }
+    bool operator==(const TestFormat &) const = default;
+};
 struct Texture : std::enable_shared_from_this<Texture> {
     enum class DirtyState { CpuDirty, Clean, GpuDirty };
     struct Group { std::recursive_mutex operationMutex; };
@@ -155,7 +161,8 @@ struct Texture : std::enable_shared_from_this<Texture> {
     vk::ImageLayout layout{vk::ImageLayout::eGeneral};
     vk::Extent3D dimensions;
     u32 layerCount{1}, levelCount{1};
-    int format{1}, guestByte{42}, hostByte{7};
+    TestFormat format;
+    int guestByte{42}, hostByte{7};
     unsigned stages{}, discards{};
     bool mapped{};
     std::function<void()> stagingHook;
@@ -165,6 +172,7 @@ struct Texture : std::enable_shared_from_this<Texture> {
     void WaitOnBacking() {}
     int GetBacking() const { return 1; }
     void WaitOnFence();
+    void TransitionLayout(vk::ImageLayout);
     auto SynchronizeHostImpl() {
         ++stages; gpu.scheduler.Fail(Failure::Staging);
         if (stagingHook) stagingHook();
@@ -177,9 +185,9 @@ struct Texture : std::enable_shared_from_this<Texture> {
     }
     void SynchronizeHost(bool gpuDirty = false);
     void SynchronizeHostInline(const vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, bool gpuDirty);
-    void CopyFrom(std::shared_ptr<Texture>, vk::Semaphore, vk::Semaphore, int, const vk::ImageSubresourceRange &);
+    void CopyFrom(std::shared_ptr<Texture>, vk::Semaphore, vk::Semaphore, TestFormat, const vk::ImageSubresourceRange &);
 };
-namespace texture { using Format = int; }
+namespace texture { using Format = TestFormat; }
 #include "production.inc"
 
 void Uploads() {
@@ -298,6 +306,34 @@ void LifetimesAndFailures() {
     }
     std::puts("PASS: pre-submit lifetimes, copy failure/retry/layout rollback and submission-only producer ordering");
 }
+
+void LayoutTransitions() {
+    for (bool change : {false, true}) {
+        Texture::GPU gpu; auto t{std::make_shared<Texture>(gpu)};
+        auto reader{std::make_shared<FenceCycle>()}; reader->NotifySubmitted(); t->cycle = reader;
+        std::promise<void> started;
+        auto transition{std::async(std::launch::async, [&] {
+            started.set_value();
+            t->TransitionLayout(change ? vk::ImageLayout::eTransferDstOptimal : vk::ImageLayout::eGeneral);
+        })};
+        started.get_future().get();
+        const bool returned{transition.wait_for(100ms) == std::future_status::ready};
+        if (!change) {
+            const bool keptReader{t->cycle == reader};
+            reader->Complete(); transition.get();
+            Check(returned && keptReader && !reader->waits && gpu.scheduler.cycles.empty(),
+                  "unchanged image layout blocked on a pending GPU reader or discarded its dependency");
+        } else {
+            reader->Complete(); transition.get();
+            Check(!returned && reader->waits == 1 && gpu.scheduler.cycles.size() == 1,
+                  "a real layout change skipped its required GPU wait/transition");
+            Check(t->layout == vk::ImageLayout::eTransferDstOptimal && t->cycle != reader,
+                  "real transition did not publish its new layout/cycle");
+        }
+        gpu.scheduler.Complete();
+    }
+    std::puts("PASS: unchanged layout preserves asynchronous reader; real layout change retains wait and submission");
+}
 }
 
 int main(int argc, char **argv) {
@@ -305,5 +341,6 @@ int main(int argc, char **argv) {
         if (argc == 1 || std::string{argv[1]} == "uploads") skyline::gpu::Uploads();
         if (argc == 1 || std::string{argv[1]} == "copies") skyline::gpu::Copies();
         if (argc == 1 || std::string{argv[1]} == "failures") skyline::gpu::LifetimesAndFailures();
+        if (argc == 1 || std::string{argv[1]} == "layouts") skyline::gpu::LayoutTransitions();
     } catch (const std::exception &e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }
 }

@@ -60,3 +60,11 @@ In particular, this branch prevents discard after the newly tested failed-upload
 Independent whole-diff review found the cancelled-slot recovery blocker; its regression failed before the fix and passed after it. The upload/copy and pushbuffer regressions also failed on master before implementation. All three final test commands passed. An additional ASan/UBSan run passed with `ASAN_OPTIONS=detect_leaks=0`; LeakSanitizer itself could not inspect `/proc/.../task` in this environment, so no leak-check claim is made.
 
 No local Android APK build, device FPS result, Vulkan driver validation or mini-RenderDoc capture is claimed. Test ON/OFF under identical Release settings in SpongeBob: The Cosmic Shake, Dragon Ball: Sparking! ZERO, Bulletstorm and Dragon Ball FighterZ, including repeated presentation, menus and gameplay. Keep Draft and do not merge without device results. Existing `assembleDevRelease`, `arm64-v8a` and APK artifact workflow are unchanged; no RelDebug, new mandatory CI tests, or Actions monitoring.
+
+## Follow-up: unnecessary layout wait after presentation (FighterZ performance investigation)
+
+`TransitionLayout(General)` waited on and cleared the resource cycle before checking whether the image was already General. Storage descriptors request this layout repeatedly. Since this PR tracks presentation reads on the source texture, that no-op could wait for presentation GPU completion during descriptor preparation.
+
+Return after `WaitOnBacking()` when the layout is unchanged. Keep the existing cycle, copy-reader lifetime guarantees, real-transition wait and all GPU barriers. No reader/producer split, rollback of earlier mechanisms or driver-specific workaround is introduced.
+
+The exact production-method test `python3 tests/gpu_texture_sequence/run.py layouts` was RED on #400 and GREEN after the early return: General→General returns while a pending reader remains incomplete, without a wait, cycle reset or submission; a different layout still waits and submits. The full texture-sequence and submission regressions pass. This removes a demonstrated unnecessary stall, **not a measured FighterZ FPS regression**. Compare the updated Release APK against the original #400 with identical driver, settings and scene before asserting FPS recovery.
