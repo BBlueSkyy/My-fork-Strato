@@ -2024,6 +2024,116 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         gpu.scheduler.Complete(); assert(!validationErrors);
     }
 
+    // A cold lookup following an attachment must make progress across a retry.
+    // Merely submitting cannot help if every attempt reattaches the same A.
+    bool CheckColdRegionLookupProgress(GPU &gpu, bool compatible, bool drain) {
+        std::vector<u8> bytes(5*4096,0x2D); TextureManager manager{gpu};
+        auto a{manager.FindOrCreate(PartialDescriptor(bytes.data()+4096))};
+        WriteAliasRenderTarget(a->texture,{1,0,0,1});
+        std::shared_ptr<TextureView> b;
+        if (drain) {
+            b=manager.FindOrCreate(PartialDescriptor(bytes.data()+8192));
+            WriteAliasRenderTarget(b->texture,{0,1,0,1});
+            AliasRead(a->texture);
+        }
+        auto requested{PartialDescriptor(bytes.data()+(drain ? (compatible ? 5120 : 4096) : 8192))};
+        if (!compatible) requested.dimensions={32,64,1};
+        a->lockOnAttach=true;
+        const auto retainedView{a->GetView()};
+        interconnect::CommandExecutor executor;
+        auto release=[&] {
+            for (const auto &resource : executor.attachedTextures) resource->unlock();
+            executor.attachedTextures.clear();
+        };
+        executor.onSubmit=release;
+        unsigned attempts{}; bool stalled{};
+        std::shared_ptr<TextureView> result;
+        try {
+            executor.RunWithTextureBackingRetry([&] {
+                if (++attempts>3) throw std::runtime_error("cold lookup repeats after submission");
+                executor.AttachTexture(a.get());
+                result=manager.FindOrCreate(requested,executor.tag);
+            });
+        } catch (const std::runtime_error &) { stalled=true; }
+        release();
+        if (result) {
+            assert(manager.FindOrCreate(requested)->texture==result->texture);
+            AliasRead(result->texture);
+            const auto actual{DownloadPartial(result->texture)};
+            const std::array<u8,4> red{255,0,0,255},green{0,255,0,255};
+            const size_t redBytes{drain && compatible ? 3072U : 4096U};
+            for(size_t i{};i<redBytes;++i) assert(actual[i]==red[i%4]);
+            for(size_t i{redBytes};i<8192;++i) assert(actual[i]==(drain ? green[i%4] : 0x2D));
+            assert(a->GetView()==retainedView);
+        }
+        if (result) {
+            const auto submissions{executor.submissions};
+            executor.RunWithTextureBackingRetry([&] {
+                executor.AttachTexture(a.get());
+                assert(manager.FindOrCreate(requested,executor.tag)->texture==result->texture);
+                auto independent{PartialDescriptor(bytes.data())}; independent.mappings={{bytes.data(),4096}};
+                independent.dimensions={64,16,1}; independent.layerStride=4096;
+                auto separate{manager.FindOrCreate(independent,executor.tag)};
+                assert(!separate->texture->regionTracked && !separate->texture->HasAliases());
+            });
+            release();
+            assert(executor.submissions==submissions); // Cache hits and unrelated cold lookups never submit.
+        }
+        gpu.scheduler.Complete(); assert(!validationErrors);
+        std::fprintf(stderr,"COLD LOOKUP PROBE: compatible=%d drain=%d FreeGuest=%d attempts=%u %s\n",
+            compatible,drain,*gpu.state.settings->freeGuestTextureMemory,attempts,stalled ? "FAIL: repeated regional retry" : "PASS");
+        return !stalled && result;
+    }
+
+    void CheckColdRegionLookupFailure(GPU &gpu) {
+        std::vector<u8> bytes(5*4096,0x2D); TextureManager manager{gpu};
+        auto a{manager.FindOrCreate(PartialDescriptor(bytes.data()+4096))};
+        auto b{manager.FindOrCreate(PartialDescriptor(bytes.data()+8192))};
+        WriteAliasRenderTarget(a->texture,{1,0,0,1});
+        WriteAliasRenderTarget(b->texture,{0,1,0,1}); AliasRead(a->texture);
+        auto group{a->texture->regionAuthority.load()};
+        const auto backing{a->texture->GetBacking()}; const auto view{a->GetView()};
+        auto requested{PartialDescriptor(bytes.data()+5120)}; // Requires drain, not a row-compatible copy.
+        a->lockOnAttach=true;
+        interconnect::CommandExecutor executor;
+        auto release=[&] {
+            for(const auto &resource : executor.attachedTextures) resource->unlock();
+            executor.attachedTextures.clear();
+        };
+        executor.onSubmit=[&] { release(); gpu.memory.failAllocation=true; };
+        std::shared_ptr<TextureView> result;
+        auto prepare=[&] { executor.AttachTexture(a.get()); result=manager.FindOrCreate(requested,executor.tag); };
+        bool failed{};
+        try { executor.RunWithTextureBackingRetry(prepare); } catch(const std::bad_alloc &) { failed=true; }
+        gpu.memory.failAllocation=false; release();
+        assert(failed && !result && !executor.regionOperationActive && executor.regionOperationUses.empty());
+        assert(a->texture->regionAuthority.load()==group && b->texture->regionAuthority.load()==group);
+        assert(a->texture->GetBacking()==backing && a->GetView()==view);
+        executor.onSubmit=release;
+        executor.RunWithTextureBackingRetry(prepare); release();
+        assert(result && !a->texture->regionTracked && !b->texture->regionTracked);
+        assert(manager.FindOrCreate(requested)->texture==result->texture);
+        AliasRead(a->texture); const auto data{DownloadPartial(a->texture)};
+        const std::array<u8,4> red{255,0,0,255},green{0,255,0,255};
+        for(size_t i{};i<4096;++i) assert(data[i]==red[i%4]);
+        for(size_t i{4096};i<8192;++i) assert(data[i]==green[i%4]);
+        gpu.scheduler.Complete(); assert(!validationErrors);
+        std::puts("PASS: deferred cold lookup allocation failure preserves regional writers/views; retry drains and recovers latest Vulkan bytes");
+    }
+
+    void CheckColdRegionLookups(GPU &gpu) {
+        for(bool eviction : {false,true}) {
+            *gpu.state.settings->freeGuestTextureMemory=eviction;
+            bool success{CheckColdRegionLookupProgress(gpu,true,false)};
+            success &= CheckColdRegionLookupProgress(gpu,false,false);
+            success &= CheckColdRegionLookupProgress(gpu,true,true);
+            success &= CheckColdRegionLookupProgress(gpu,false,true);
+            assert(success);
+            if (!std::getenv("TEXMAN_BASELINE_MANAGER_REF")) CheckColdRegionLookupFailure(gpu);
+        }
+        *gpu.state.settings->freeGuestTextureMemory=false;
+    }
+
     void CheckRegionCpuPublication(GPU &gpu) {
         std::vector<u8> bytes(5*4096,0x2D); TextureManager manager{gpu};
         auto a{manager.FindOrCreate(PartialDescriptor(bytes.data()+4096))};
@@ -2565,9 +2675,14 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_COLD_LOOKUP_PROBE")) {
+                CheckColdRegionLookups(gpu);
+                continue;
+            }
             if (std::getenv("TEXMAN_LOCK_ORDER_PROBE")) { ProbeRegionLockOrder(gpu); continue; }
             if (std::getenv("TEXMAN_AUTHORITY_PROBE")) {
                 for (bool eviction : {false,true}) ProbeLivePartialReuse(gpu,eviction);
+                CheckColdRegionLookups(gpu);
                 CheckRegionCpuPublication(gpu);
                 for (bool eviction : {false,true}) CheckRegionFailures(gpu,eviction);
                 CheckRegionExtension(gpu);
@@ -2583,7 +2698,9 @@ int main() {
                 CheckRenderPassPublication(gpu);
                 CheckPaddedGuestPreservation(gpu);
                 continue;
-            } CheckPendingMaterialization(gpu,false);
+            }
+            CheckColdRegionLookups(gpu);
+            CheckPendingMaterialization(gpu,false);
             CheckPendingMaterialization(gpu,true);
             if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
                 CheckManagerOverlapLookup(gpu);

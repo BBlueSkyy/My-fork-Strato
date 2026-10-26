@@ -895,6 +895,12 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {
         Submit();
+        if (request.lookupManager) {
+            // Complete registration/drain and cache the requested image before
+            // replaying preparation, which may immediately reattach its peers.
+            request.lookupManager->FindOrCreate(*request.lookupLayout);
+            return;
+        }
         TextureManager::SynchronizeGuestOverlaps(request.overlapReadbacks);
         if (!request.registration.empty())
             Texture::RegisterAliases(request.registration, request.registrationLayout.get());

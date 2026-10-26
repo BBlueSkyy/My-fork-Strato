@@ -2,6 +2,8 @@
 
 This continues local checkpoint `f60370d1` without discarding its physical-region ledger, masked readback, compatible GPU copies or original nine PR #400 commits. The old checkpoint report is historical; its operation-spanning mutex is replaced here.
 
+Follow-up: a separate cold-lookup retry loop introduced by the regional checkpoint is reproduced and corrected in [cold-region-lookup-retry.md](cold-region-lookup-retry.md). Device startup causality remains unconfirmed.
+
 ## Protocol and ordering
 
 1. `AttachTexture` acquires/initializes the resource and collects regional uses of the current operation. It retains no regional mutex. Resource, view and descriptor resolution, read barriers and boundary callbacks can finish without introducing component → resource lock ordering.

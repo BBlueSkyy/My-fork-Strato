@@ -11,13 +11,15 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+#include "../../app/src/main/cpp/skyline/gpu/texture/alias_group.h"
 using ContextTag = uint64_t;
 namespace skyline::gpu {
 void Check(bool value, const char *message) { if (!value) throw std::runtime_error(message); }
 template<class... T> std::runtime_error exception(const char *message, T...) { return std::runtime_error(message); }
 namespace boost::container { template<class T, unsigned> using small_vector = std::vector<T>; }
 struct Group {};
-struct Texture {
+class Texture {
+  public:
     enum class DirtyState { Clean, CpuDirty, GpuDirty } dirtyState{DirtyState::GpuDirty};
     std::atomic<ContextTag> tag{};
     std::atomic<ContextTag> pendingGpuWriteTag{};
@@ -48,13 +50,7 @@ struct Texture {
     static void RegisterAliases(const std::vector<std::shared_ptr<Texture>> &, void *) {}
     void ReconcileAliases() {}
 };
-struct TextureAliasReconciliationRequest {
-    std::shared_ptr<Texture> target;
-    std::vector<std::shared_ptr<Texture>> registration;
-    std::vector<std::shared_ptr<void>> guestMemoryLeases;
-    std::shared_ptr<void> registrationLayout;
-    std::vector<std::shared_ptr<Texture>> overlapReadbacks;
-};
+
 template<class T> struct ContextLock {
     T &resource; bool owned;
     ContextLock(ContextTag tag, T &resource) : resource{resource}, owned{resource.LockWithTag(tag)} {}
@@ -62,7 +58,9 @@ template<class T> struct ContextLock {
     ~ContextLock() { if (owned) resource.unlock(); }
     bool IsFirstUsage() const { return owned; }
 };
-struct TextureManager {
+class TextureManager {
+  public:
+    void FindOrCreate(const GuestTexture &) { throw std::logic_error("materialization fixture cannot replay a regional lookup"); }
     static void SynchronizeGuestOverlaps(std::vector<std::shared_ptr<Texture>>, ContextTag = 0);
 };
 #include "publication.inc"

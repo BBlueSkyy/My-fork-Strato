@@ -60,6 +60,15 @@ namespace skyline::gpu {
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
+        auto regionPreflight = [&](auto &&prepare) {
+            try { return prepare(); }
+            catch (TextureAliasReconciliationRequest &request) {
+                request.lookupManager = this;
+                request.lookupLayout = std::make_shared<GuestTexture>(guestTexture);
+                throw;
+            }
+        };
+
         // Never dereference an empty guest mapping sequence or try to resolve
         // invalid physical spans through the Texman overlap table.
         if (guestTexture.mappings.empty() || guestTexture.mappings.front().empty() || !guestTexture.MappingsValid())
@@ -352,7 +361,7 @@ namespace skyline::gpu {
         for (const auto &alias : exactAliases)
             if (auto group{alias->aliasGroup.load()}) { separateGroup = std::move(group); break; }
         if (unrepresentableMatch && unrepresentableMatch->regionTracked.load(std::memory_order_relaxed))
-            Texture::DrainRegionAuthority({unrepresentableMatch}, tag);
+            regionPreflight([&] { Texture::DrainRegionAuthority({unrepresentableMatch}, tag); });
         if (unrepresentableMatch || separateGroup) {
             const bool requestedMaterializable{Texture::CanMaterializeGuestLayout(guestTexture)};
             const bool requestedLossless{Texture::IsGuestLayoutReversible(guestTexture) &&
@@ -419,7 +428,7 @@ namespace skyline::gpu {
 
         if (!tag && fullMatch && !depthSliceMatch && !layerMipMatch &&
             !fullMatch->ViewRangeFits(guestTexture.viewType, requestedRange) && fullMatch->regionTracked.load(std::memory_order_relaxed))
-            Texture::DrainRegionAuthority({fullMatch}, tag);
+            regionPreflight([&] { Texture::DrainRegionAuthority({fullMatch}, tag); });
 
         if (depthSliceMatch) {
             // Prefer the real 3D storage over an independently cached slice. The latter
@@ -599,11 +608,11 @@ namespace skyline::gpu {
         // correspondence. Incompatible transitions first publish the old domain.
         auto regionMembers{readbackSources};
         regionMembers.push_back(texture);
-        if (!Texture::RegisterRegionAuthority(regionMembers, tag)) {
+        if (!regionPreflight([&] { return Texture::RegisterRegionAuthority(regionMembers, tag); })) {
             const bool tracked{std::any_of(readbackSources.begin(), readbackSources.end(), [](const auto &source) {
                 return source->regionTracked.load(std::memory_order_relaxed);
             })};
-            if (tracked) Texture::DrainRegionAuthority(readbackSources, tag);
+            if (tracked) regionPreflight([&] { Texture::DrainRegionAuthority(readbackSources, tag); });
         }
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto firstChanged{textures.size()};

@@ -63,7 +63,9 @@ namespace skyline::gpu {
         }
     };
 #include "alias-methods.inc"
-    struct TextureManager {
+    class TextureManager {
+      public:
+        void FindOrCreate(const GuestTexture &) { throw std::logic_error("exact-alias fixture cannot replay a regional lookup"); }
         static void SynchronizeGuestOverlaps(const std::vector<std::shared_ptr<Texture>> &sources) {
             if (!sources.empty()) throw std::logic_error("exact-alias fixture cannot resolve partial readbacks");
         }
