@@ -119,6 +119,8 @@ namespace skyline::gpu::cache {
             hashReferences(subpass.pColorAttachments, subpass.colorAttachmentCount);
             if (subpass.pResolveAttachments)
                 hashReferences(subpass.pResolveAttachments, subpass.colorAttachmentCount);
+            else
+                HASH(0U); // Match the owned key's empty resolve-attachment vector.
 
             HASH(subpass.pDepthStencilAttachment != nullptr);
             if (subpass.pDepthStencilAttachment) {
