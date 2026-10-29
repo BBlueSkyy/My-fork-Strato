@@ -7,7 +7,6 @@
 #include "nca.h"
 #include "xci.h"
 #include "program_content.h"
-#include "startup_trace.h"
 
 namespace skyline::loader {
     XciLoader::XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore, u8 programIndex) {
@@ -87,9 +86,7 @@ namespace skyline::loader {
     void *XciLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
         if (!programContentResolved || !processExeFs)
             throw exception("Program content must be resolved before loading the process");
-        StartupTrace trace("NPDM.read.XCI");
         process->npdm = vfs::NPDM(processExeFs->OpenFile("main.npdm"));
-        trace.Complete();
         return NcaLoader::LoadExeFs(this, processExeFs, process, state);
     }
 

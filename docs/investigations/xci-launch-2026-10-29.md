@@ -173,3 +173,25 @@ continuam pendentes de validação no aparelho. Nenhuma espera global, mudança
 GPU/TexMan/shader/pipelines/Free Guest ou alteração de sincronização foi feita.
 A instrumentação roda no carregamento, não no processamento de cada frame.
 O resultado ARM64 DevRelease e os artefatos ficam registrados na PR/Actions.
+
+## Atualização após teste no Moto G100 e limpeza para merge
+
+O novo log enviado em 2026-10-29 comprova resolução de conteúdo, NPDM,
+carregamento e LZ4 de rtld/main/subsdk0/sdk, mapeamento e patches NCE,
+criação/despacho da thread principal e acesso ao RomFS por IPC.
+Portanto a falha anterior de carregamento XCI foi ultrapassada neste teste.
+Não equivale a compatibilidade completa do jogo.
+
+Após cerca de 8,8 segundos de execução da thread principal há SIGSEGV
+no endereço 0x38, na thread Sky-CmdRecord, com topo simbolizado em
+SetDescriptorSetCmdImpl<true>::Record, no caminho de push descriptors.
+A causa exata e o objeto inválido ainda não foram identificados.
+O erro de áudio anterior não foi demonstrado como causal.
+
+Por solicitação do usuário, os marcadores temporários StartupTrace e suas
+cópias síncronas Logcat foram removidos antes do merge, junto do teste
+e do plano específicos da instrumentação. As correções e testes de
+XCI/NCA/NSO/NPDM/KeyStore e a configuração de repositórios Gradle permanecem.
+As seções anteriores de instrumentação/ausência de teste descrevem o estado
+inicial da investigação; esta atualização registra o resultado posterior.
+O crash de GPU permanece pendente e não recebe correção especulativa nesta PR.

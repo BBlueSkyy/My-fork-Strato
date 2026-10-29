@@ -5,7 +5,6 @@
 #include <kernel/types/KProcess.h>
 #include <vfs/ticket.h>
 #include "nca.h"
-#include "startup_trace.h"
 #include "nsp.h"
 #include "program_content.h"
 
@@ -87,11 +86,7 @@ namespace skyline::loader {
     void *NspLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
         if (!programContentResolved || !processExeFs)
             throw exception("Program content must be resolved before loading the process");
-        {
-            StartupTrace trace("NPDM.read.NSP");
-            process->npdm = vfs::NPDM(processExeFs->OpenFile("main.npdm"));
-            trace.Complete();
-        }
+        process->npdm = vfs::NPDM(processExeFs->OpenFile("main.npdm"));
         return NcaLoader::LoadExeFs(this, processExeFs, process, state);
     }
 

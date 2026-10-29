@@ -10,7 +10,6 @@
 #include <kernel/types/KProcess.h>
 #include <boost/regex/v5/regex.hpp>
 #include "nso.h"
-#include <loader/startup_trace.h>
 #include "zbic.h"
 
 namespace skyline::loader {
@@ -22,8 +21,6 @@ namespace skyline::loader {
     }
 
     std::vector<u8> NsoLoader::GetSegment(const std::shared_ptr<vfs::Backing> &backing, const NsoSegmentHeader &segment, bool isCompressed, u32 compressedSize, bool useZbicCompression) {
-        StartupTrace trace{fmt::format("NSO segment offset=0x{:X} size=0x{:X} codec={}", segment.fileOffset, segment.decompressedSize,
-                                      isCompressed ? (useZbicCompression ? "ZBIC" : "LZ4") : "raw")};
         if (isCompressed && !compressedSize && segment.decompressedSize)
             throw exception("Invalid NSO segment compressed size: zero for a nonempty segment");
 
@@ -53,12 +50,10 @@ namespace skyline::loader {
                 throw exception("NSO segment short read at 0x{:X}", segment.fileOffset);
         }
 
-        trace.Complete();
         return outputBuffer;
     }
 
     Loader::ExecutableLoadInfo NsoLoader::LoadNso(Loader *loader, const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state, size_t offset, const std::string &name, bool dynamicallyLinked) {
-        StartupTrace trace{fmt::format("NSO load {}", name.empty() ? "main" : name)};
         NsoHeader header{};
         if (backing->Read(span<u8>{reinterpret_cast<u8 *>(&header), sizeof(header)}) != sizeof(header))
             throw exception("NSO header short read");
@@ -155,9 +150,7 @@ namespace skyline::loader {
 
         PrintRoContentsInfo(executable.ro.contents);
 
-        auto loadInfo{loader->LoadExecutable(process, state, executable, offset, name, dynamicallyLinked)};
-        trace.Complete();
-        return loadInfo;
+        return loader->LoadExecutable(process, state, executable, offset, name, dynamicallyLinked);
     }
 
     void *NsoLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {

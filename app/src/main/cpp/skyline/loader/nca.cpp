@@ -5,7 +5,6 @@
 #include <vfs/npdm.h>
 #include "nso.h"
 #include "nca.h"
-#include "startup_trace.h"
 
 namespace skyline::loader {
     NcaLoader::NcaLoader(std::shared_ptr<vfs::Backing> backing, std::shared_ptr<crypto::KeyStore> keyStore) {
@@ -16,25 +15,15 @@ namespace skyline::loader {
     }
 
     void *NcaLoader::LoadExeFs(Loader *loader, const std::shared_ptr<vfs::FileSystem> &exeFs, const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
-        StartupTrace exeTrace("LoadExeFs");
         if (exeFs == nullptr)
             throw exception("Cannot load a null ExeFS");
 
         if (!exeFs->FileExists("rtld"))
             throw exception("Cannot load an ExeFS that doesn't contain rtld");
 
-        auto nsoFile{[&] {
-            StartupTrace trace("ExeFs.open.rtld");
-            auto result{exeFs->OpenFile("rtld")};
-            trace.Complete();
-            return result;
-        }()};
+        auto nsoFile{exeFs->OpenFile("rtld")};
 
-        {
-            StartupTrace trace("VMM.initialize");
-            state.process->memory.InitializeVmm(process->npdm.meta.flags.type, process->npdm.meta.flags.enableAliasRegionExtraSize);
-            trace.Complete();
-        }
+        state.process->memory.InitializeVmm(process->npdm.meta.flags.type, process->npdm.meta.flags.enableAliasRegionExtraSize);
 
         auto loadInfo{NsoLoader::LoadNso(loader, nsoFile, process, state, 0, "rtld.nso")};
         u64 offset{loadInfo.size};
@@ -54,12 +43,7 @@ namespace skyline::loader {
             offset += loadInfo.size;
         }
 
-        {
-            StartupTrace trace("VMM.initializeRegions");
-            state.process->memory.InitializeRegions(span<u8>{base, offset});
-            trace.Complete();
-        }
-        exeTrace.Complete();
+        state.process->memory.InitializeRegions(span<u8>{base, offset});
 
         return entry;
     }
@@ -67,11 +51,7 @@ namespace skyline::loader {
     void *NcaLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
         if (!programContentResolved || !processExeFs)
             throw exception("Program content must be resolved before loading the process");
-        {
-            StartupTrace trace("NPDM.read.NCA");
-            process->npdm = vfs::NPDM(processExeFs->OpenFile("main.npdm"));
-            trace.Complete();
-        }
+        process->npdm = vfs::NPDM(processExeFs->OpenFile("main.npdm"));
         return LoadExeFs(this, processExeFs, process, state);
     }
 }
