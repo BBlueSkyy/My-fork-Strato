@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/strato-emu/)
 
 #include <lz4.h>
+#include <limits>
 #include <nce.h>
 #include <os.h>
 #include <mods/ips.h>
@@ -9,6 +10,7 @@
 #include <kernel/types/KProcess.h>
 #include <boost/regex/v5/regex.hpp>
 #include "nso.h"
+#include <loader/startup_trace.h>
 #include "zbic.h"
 
 namespace skyline::loader {
@@ -19,47 +21,71 @@ namespace skyline::loader {
             throw exception("Invalid NSO magic! 0x{0:X}", magic);
     }
 
-    std::vector<u8> NsoLoader::GetSegment(const std::shared_ptr<vfs::Backing> &backing, const NsoSegmentHeader &segment, u32 compressedSize, bool useZbicCompression) {
+    std::vector<u8> NsoLoader::GetSegment(const std::shared_ptr<vfs::Backing> &backing, const NsoSegmentHeader &segment, bool isCompressed, u32 compressedSize, bool useZbicCompression) {
+        StartupTrace trace{fmt::format("NSO segment offset=0x{:X} size=0x{:X} codec={}", segment.fileOffset, segment.decompressedSize,
+                                      isCompressed ? (useZbicCompression ? "ZBIC" : "LZ4") : "raw")};
+        if (isCompressed && !compressedSize && segment.decompressedSize)
+            throw exception("Invalid NSO segment compressed size: zero for a nonempty segment");
+
+        if (isCompressed && !useZbicCompression &&
+            (compressedSize > std::numeric_limits<int>::max() || segment.decompressedSize > std::numeric_limits<int>::max()))
+            throw exception("NSO LZ4 segment exceeds signed size limit (0x{:X}/0x{:X})", compressedSize, segment.decompressedSize);
+
+        const size_t fileSize{isCompressed ? compressedSize : segment.decompressedSize};
+        if (segment.fileOffset > backing->size || fileSize > backing->size - segment.fileOffset)
+            throw exception("Invalid NSO segment file range (offset=0x{:X}, size=0x{:X}, file=0x{:X})", segment.fileOffset, fileSize, backing->size);
+
         std::vector<u8> outputBuffer(segment.decompressedSize);
-
-        if (compressedSize) {
+        if (isCompressed && compressedSize) {
             std::vector<u8> compressedBuffer(compressedSize);
-            backing->Read(compressedBuffer, segment.fileOffset);
+            if (backing->Read(compressedBuffer, segment.fileOffset) != compressedBuffer.size())
+                throw exception("NSO compressed segment short read at 0x{:X}", segment.fileOffset);
 
-            if (useZbicCompression)
+            if (useZbicCompression) {
                 zbic::Decompress(compressedBuffer, outputBuffer);
-            else
-                LZ4_decompress_safe(reinterpret_cast<char *>(compressedBuffer.data()), reinterpret_cast<char *>(outputBuffer.data()), static_cast<int>(compressedSize), static_cast<int>(segment.decompressedSize));
-        } else {
-            backing->Read(outputBuffer, segment.fileOffset);
+            } else {
+                const int result{LZ4_decompress_safe(reinterpret_cast<char *>(compressedBuffer.data()), reinterpret_cast<char *>(outputBuffer.data()), static_cast<int>(compressedSize), static_cast<int>(segment.decompressedSize))};
+                if (result != static_cast<int>(segment.decompressedSize))
+                    throw exception("NSO LZ4 decompression failed or size mismatch (result={}, expected=0x{:X})", result, segment.decompressedSize);
+            }
+        } else if (!outputBuffer.empty()) {
+            if (backing->Read(outputBuffer, segment.fileOffset) != outputBuffer.size())
+                throw exception("NSO segment short read at 0x{:X}", segment.fileOffset);
         }
 
+        trace.Complete();
         return outputBuffer;
     }
 
     Loader::ExecutableLoadInfo NsoLoader::LoadNso(Loader *loader, const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state, size_t offset, const std::string &name, bool dynamicallyLinked) {
-        auto header{backing->Read<NsoHeader>()};
+        StartupTrace trace{fmt::format("NSO load {}", name.empty() ? "main" : name)};
+        NsoHeader header{};
+        if (backing->Read(span<u8>{reinterpret_cast<u8 *>(&header), sizeof(header)}) != sizeof(header))
+            throw exception("NSO header short read");
 
         if (header.magic != util::MakeMagic<u32>("NSO0"))
             throw exception("Invalid NSO magic! 0x{0:X}", header.magic);
 
         Executable executable{};
 
-        executable.text.contents = GetSegment(backing, header.text, header.flags.textCompressed ? header.textCompressedSize : 0, header.flags.useZbicCompression);
+        executable.text.contents = GetSegment(backing, header.text, header.flags.textCompressed, header.textCompressedSize, header.flags.useZbicCompression);
         executable.text.contents.resize(util::AlignUp(executable.text.contents.size(), constant::PageSize));
         executable.text.offset = header.text.memoryOffset;
 
-        executable.ro.contents = GetSegment(backing, header.ro, header.flags.roCompressed ? header.roCompressedSize : 0, header.flags.useZbicCompression);
+        executable.ro.contents = GetSegment(backing, header.ro, header.flags.roCompressed, header.roCompressedSize, header.flags.useZbicCompression);
         executable.ro.contents.resize(util::AlignUp(executable.ro.contents.size(), constant::PageSize));
         executable.ro.offset = header.ro.memoryOffset;
 
-        executable.data.contents = GetSegment(backing, header.data, header.flags.dataCompressed ? header.dataCompressedSize : 0, header.flags.useZbicCompression);
+        executable.data.contents = GetSegment(backing, header.data, header.flags.dataCompressed, header.dataCompressedSize, header.flags.useZbicCompression);
         executable.data.offset = header.data.memoryOffset;
 
         // Data and BSS are aligned together
         executable.bssSize = util::AlignUp(executable.data.contents.size() + header.bssSize, constant::PageSize) - executable.data.contents.size();
 
-        if (header.dynsym.offset + header.dynsym.size <= header.ro.decompressedSize && header.dynstr.offset + header.dynstr.size <= header.ro.decompressedSize) {
+        auto FitsInRo = [&](const NsoRelativeSegmentHeader &range) {
+            return range.offset <= header.ro.decompressedSize && range.size <= header.ro.decompressedSize - range.offset;
+        };
+        if (FitsInRo(header.dynsym) && FitsInRo(header.dynstr)) {
             executable.dynsym = {header.dynsym.offset, header.dynsym.size};
             executable.dynstr = {header.dynstr.offset, header.dynstr.size};
         }
@@ -129,7 +155,9 @@ namespace skyline::loader {
 
         PrintRoContentsInfo(executable.ro.contents);
 
-        return loader->LoadExecutable(process, state, executable, offset, name, dynamicallyLinked);
+        auto loadInfo{loader->LoadExecutable(process, state, executable, offset, name, dynamicallyLinked)};
+        trace.Complete();
+        return loadInfo;
     }
 
     void *NsoLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) {
@@ -154,12 +182,15 @@ namespace skyline::loader {
 
         std::string contentsRaw(contents.begin(), contents.begin() + static_cast<ssize_t>(scanSize));
         std::string modulePath;
-        if (contents.size() >= 4 && memcmp(&contents[0], "\x00\x00\x00\x00", 4) == 0) {
+        if (contents.size() >= 2 * sizeof(u32) && memcmp(contents.data(), "\x00\x00\x00\x00", 4) == 0) {
             i32 length;
             std::memcpy(&length, &contents[4], sizeof(i32));
 
-            if (length > 0)
-                modulePath = reinterpret_cast<const char *>(&contents[4 + sizeof(i32)]);
+            constexpr size_t PathOffset{2 * sizeof(u32)};
+            if (length > 0 && static_cast<size_t>(length) <= contents.size() - PathOffset) {
+                const auto *path{reinterpret_cast<const char *>(contents.data() + PathOffset)};
+                modulePath.assign(path, std::find(path, path + length, '\0'));
+            }
         }
 
         if (modulePath.empty()) {
