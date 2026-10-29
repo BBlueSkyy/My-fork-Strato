@@ -177,7 +177,7 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
         __android_log_print(ANDROID_LOG_ERROR, "StratoStartup", "Uncaught startup/emulation exception: %s", e.what());
         LOGENF("An uncaught exception has occurred: {}", e.what());
     } catch (const skyline::signal::SignalException &e) {
-        __android_log_print(ANDROID_LOG_ERROR, "StratoStartup", "Uncaught signal exception: %s", e.what());
+        __android_log_print(ANDROID_LOG_ERROR, "StratoStartup", "Uncaught signal exception: %s", e.what().c_str());
         LOGENF("An uncaught signal exception has occurred: {}", e.what());
     } catch (...) {
         __android_log_print(ANDROID_LOG_ERROR, "StratoStartup", "Unknown uncaught startup/emulation exception");
