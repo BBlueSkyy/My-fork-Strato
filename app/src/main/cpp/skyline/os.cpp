@@ -13,6 +13,7 @@
 #include "loader/nca.h"
 #include "loader/nsp.h"
 #include "loader/xci.h"
+#include "loader/startup_trace.h"
 #include "services/account/IAccountServiceForApplication.h"
 #include "services/fssrv/IFileSystemProxy.h"
 #include "os.h"
@@ -64,6 +65,7 @@ namespace skyline::kernel {
           serviceManager(state) {}
 
     void OS::Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType) {
+        loader::StartupTrace executeTrace("OS.Execute");
         auto romFile{std::make_shared<vfs::OsBacking>(romFd)};
         keyStore = std::make_shared<crypto::KeyStore>(privateAppFilesPath + "keys/");
 
@@ -71,7 +73,11 @@ namespace skyline::kernel {
 
         const u8 programIndex{GetCurrentProgramIndex()};
         LOGI("Launching ProgramIndex {} (previous {})", programIndex, GetPreviousProgramIndex());
-        state.loader = GetLoader(romFd, keyStore, romType, programIndex);
+        {
+            loader::StartupTrace trace("GetLoader.base");
+            state.loader = GetLoader(romFd, keyStore, romType, programIndex);
+            trace.Complete();
+        }
 
         if (updateFd >= 0) {
             LOGI("OS::Execute - Loading update from FD: {}", updateFd);
@@ -86,7 +92,11 @@ namespace skyline::kernel {
             for (int fd : dlcFds)
                 state.dlcLoaders.push_back(GetLoader(fd, keyStore, loader::RomFormat::NSP));
 
-        state.loader->ResolveProgramContent(state);
+        {
+            loader::StartupTrace trace("ResolveProgramContent");
+            state.loader->ResolveProgramContent(state);
+            trace.Complete();
+        }
 
         if (state.loader->nacp) {
             const auto &nacp{state.loader->nacp->nacpContents};
@@ -109,12 +119,25 @@ namespace skyline::kernel {
                 throw exception("Failed to provision application save data: {}", saveProvisionResult.raw);
         }
 
-        state.gpu->Initialise();
+        {
+            loader::StartupTrace trace("GPU.Initialise");
+            state.gpu->Initialise();
+            trace.Complete();
+        }
 
         auto &process{state.process};
-        process = std::make_shared<kernel::type::KProcess>(state);
+        {
+            loader::StartupTrace trace("KProcess.create");
+            process = std::make_shared<kernel::type::KProcess>(state);
+            trace.Complete();
+        }
 
-        auto entry{state.loader->LoadProcessData(process, state)};
+        auto entry{[&] {
+            loader::StartupTrace trace("LoadProcessData");
+            auto result{state.loader->LoadProcessData(process, state)};
+            trace.Complete();
+            return result;
+        }()};
         state.audio->SetGuestAddressOffset(process->memory.TranslateVirtualAddress(0));
         auto &nacp{state.loader->nacp};
         if (nacp) {
@@ -143,15 +166,30 @@ namespace skyline::kernel {
             state.jit32 = std::make_shared<jit::Jit32>(state);
         }
 
-        process->InitializeHeapTls();
-        auto thread{process->CreateThread(entry, state.loader->GetMainThreadArgument())};
+        {
+            loader::StartupTrace trace("HeapTls.initialize");
+            process->InitializeHeapTls();
+            trace.Complete();
+        }
+        auto thread{[&] {
+            loader::StartupTrace trace("MainThread.create");
+            auto result{process->CreateThread(entry, state.loader->GetMainThreadArgument())};
+            if (result) trace.Complete();
+            return result;
+        }()};
         if (thread) {
             state.loader->OnMainThreadCreated(process, thread->handle);
             LOGI("Starting main HOS thread");
-            thread->Start(true);
+            {
+                loader::StartupTrace trace("MainThread.runUntilExit");
+                thread->Start(true);
+                trace.Complete();
+            }
             process->Kill(true, true, true);
+            executeTrace.Complete();
             skyline::AsyncLogger::Finalize(true);
         }
+        executeTrace.Complete();
     }
 
     std::shared_ptr<loader::Loader> OS::GetLoader(int fd, std::shared_ptr<crypto::KeyStore> keyStore, loader::RomFormat romType,

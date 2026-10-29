@@ -8,9 +8,11 @@
 #include <kernel/types/KProcess.h>
 #include <kernel/memory.h>
 #include "loader.h"
+#include "startup_trace.h"
 
 namespace skyline::loader {
     Loader::ExecutableLoadInfo Loader::LoadExecutable(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state, Executable &executable, size_t offset, const std::string &name, bool dynamicallyLinked) {
+        StartupTrace executableTrace(fmt::format("LoadExecutable.{}", name));
         u8 *base{reinterpret_cast<u8 *>(process->memory.code.host.data() + offset)};
         // The base address in the guest address space, used to map memory by the memory manager
         u8 *guestBase{reinterpret_cast<u8 *>(process->memory.code.guest.data() + offset)};
@@ -41,7 +43,12 @@ namespace skyline::loader {
             throw exception("Section offsets are not aligned with page size: 0x{:X}, 0x{:X}, 0x{:X}", executable.text.offset, executable.ro.offset, executable.data.offset);
 
         // Use an empty PatchData if we don't need to patch
-        auto patch{needsNcePatching ? state.nce->GetPatchData(executable.text.contents) : nce::NCE::PatchData{}};
+        auto patch{[&] {
+            StartupTrace trace("NCE.analyze");
+            auto result{needsNcePatching ? state.nce->GetPatchData(executable.text.contents) : nce::NCE::PatchData{}};
+            trace.Complete();
+            return result;
+        }()};
 
         span dynsym{reinterpret_cast<u8 *>(executable.ro.contents.data() + executable.dynsym.offset), executable.dynsym.size};
         span dynstr{reinterpret_cast<char *>(executable.ro.contents.data() + executable.dynstr.offset), executable.dynstr.size};
@@ -54,6 +61,7 @@ namespace skyline::loader {
             hookSize = util::AlignUp(state.nce->GetHookSectionSize(executableSymbols), PAGE_SIZE);
         }
 
+        StartupTrace mappingTrace("Executable.map");
         // Reserve patch + hook size only if we need to patch
         if (patch.size > 0) {
             if (process->memory.addressSpaceType == memory::AddressSpaceType::AddressSpace36Bit) {
@@ -80,6 +88,7 @@ namespace skyline::loader {
         process->memory.MapMutableCodeMemory(span<u8>{executableGuestBase + executable.data.offset, dataSize}); // RW-
         LOGD("Successfully mapped section .data + .bss @ {}, Size = 0x{:X}", fmt::ptr(executableGuestBase + executable.data.offset), dataSize);
 
+        mappingTrace.Complete();
         size_t size{patch.size + hookSize + textSize + roSize + dataSize};
         {
             // Note: We need to copy out the symbols here as it'll be overwritten by any hooks
@@ -97,6 +106,7 @@ namespace skyline::loader {
             executables.insert(std::upper_bound(executables.begin(), executables.end(), base, [](void *ptr, const ExecutableSymbolicInfo &it) { return ptr < it.patchStart; }), std::move(symbolicInfo));
         }
 
+        StartupTrace patchTrace("NCE.patch");
         // Patch the executable (NCE and symbol hooks)
         if (patch.size > 0) {
             state.nce->PatchCode(executable.text.contents, reinterpret_cast<u32 *>(base), patch.size, patch.offsets, hookSize);
@@ -104,11 +114,13 @@ namespace skyline::loader {
                 state.nce->WriteHookSection(executableSymbols, span<u8>{base + patch.size, hookSize}.cast<u32>());
         }
 
+        patchTrace.Complete();
         // Copy the executable sections to code memory
         std::memcpy(executableBase, executable.text.contents.data(), executable.text.contents.size());
         std::memcpy(executableBase + executable.ro.offset, executable.ro.contents.data(), roSize);
         std::memcpy(executableBase + executable.data.offset, executable.data.contents.data(), dataSize - executable.bssSize);
 
+        executableTrace.Complete();
         return {guestBase, size, executableGuestBase + executable.text.offset};
     }
 

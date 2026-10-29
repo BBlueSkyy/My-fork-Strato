@@ -5,6 +5,7 @@
 #include <limits>
 #include <pthread.h>
 #include <android/asset_manager_jni.h>
+#include <android/log.h>
 #include <sys/system_properties.h>
 #include "skyline/common.h"
 #include "skyline/common/language.h"
@@ -173,10 +174,13 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
 
         os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
     } catch (std::exception &e) {
+        __android_log_print(ANDROID_LOG_ERROR, "StratoStartup", "Uncaught startup/emulation exception: %s", e.what());
         LOGENF("An uncaught exception has occurred: {}", e.what());
     } catch (const skyline::signal::SignalException &e) {
+        __android_log_print(ANDROID_LOG_ERROR, "StratoStartup", "Uncaught signal exception: %s", e.what());
         LOGENF("An uncaught signal exception has occurred: {}", e.what());
     } catch (...) {
+        __android_log_print(ANDROID_LOG_ERROR, "StratoStartup", "Unknown uncaught startup/emulation exception");
         LOGENF("An unknown uncaught exception has occurred");
     }
 

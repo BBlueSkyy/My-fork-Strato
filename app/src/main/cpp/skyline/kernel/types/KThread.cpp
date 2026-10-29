@@ -10,6 +10,7 @@
 #include <os.h>
 #include "KProcess.h"
 #include "KThread.h"
+#include <loader/startup_trace.h>
 
 namespace skyline::kernel::type {
     KThread::KThread(const DeviceState &state, KHandle handle, KProcess &process, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore)
@@ -82,8 +83,14 @@ namespace skyline::kernel::type {
         if (timer_create(CLOCK_THREAD_CPUTIME_ID, &event, &preemptionTimer))
             throw exception("timer_create has failed with '{}'", strerror(errno));
 
-        // Initialize execution-mode-specific stuff
-        Init();
+        // End the diagnostic scope before guest execution, which may longjmp.
+        if (id == 1) {
+            loader::StartupTrace trace("MainThread.initializeExecution");
+            Init();
+            trace.Complete();
+        } else {
+            Init();
+        }
 
         {
             std::scoped_lock lock{statusMutex};
@@ -91,6 +98,7 @@ namespace skyline::kernel::type {
             statusCondition.notify_all();
         }
 
+        bool firstMainDispatch{id == 1};
         try {
             if (!Scheduler::YieldPending)
                 state.scheduler->WaitSchedule();
@@ -105,6 +113,11 @@ namespace skyline::kernel::type {
 
                 TRACE_EVENT("guest", "Guest");
                 // Run the guest code
+                if (firstMainDispatch) {
+                    loader::StartupTrace trace("MainThread.dispatchGuest");
+                    trace.Complete();
+                    firstMainDispatch = false;
+                }
                 Run();
             }
             // A JIT thread stopped by SIGINT returns from Dynarmic instead of jumping
