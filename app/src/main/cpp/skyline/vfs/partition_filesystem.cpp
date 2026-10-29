@@ -6,7 +6,9 @@
 
 namespace skyline::vfs {
     PartitionFileSystem::PartitionFileSystem(const std::shared_ptr<Backing> &backing) : FileSystem(), backing(backing) {
-        header = backing->Read<FsHeader>();
+        if (backing->size < sizeof(header) ||
+            backing->Read(span<u8>(reinterpret_cast<u8 *>(&header), sizeof(header))) != sizeof(header))
+            throw exception("Truncated partition filesystem header");
 
         if (header.magic == util::MakeMagic<u32>("PFS0"))
             hashed = false;
@@ -15,18 +17,36 @@ namespace skyline::vfs {
         else
             throw exception("Invalid filesystem magic: {}", header.magic);
 
-        size_t entrySize{hashed ? sizeof(HashedFileEntry) : sizeof(PartitionFileEntry)};
-        size_t stringTableOffset{sizeof(FsHeader) + (header.numFiles * entrySize)};
+        const size_t entrySize{hashed ? sizeof(HashedFileEntry) : sizeof(PartitionFileEntry)};
+        if (header.numFiles > (backing->size - sizeof(FsHeader)) / entrySize)
+            throw exception("Partition filesystem entry table exceeds backing");
+        const size_t stringTableOffset{sizeof(FsHeader) + (header.numFiles * entrySize)};
+        if (header.stringTableSize > backing->size - stringTableOffset)
+            throw exception("Partition filesystem string table exceeds backing");
         fileDataOffset = stringTableOffset + header.stringTableSize;
 
-        std::vector<char> stringTable(header.stringTableSize + 1);
-        backing->Read(span(stringTable).first(header.stringTableSize), stringTableOffset);
-        stringTable[header.stringTableSize] = 0;
+        std::vector<char> stringTable(header.stringTableSize);
+        if (backing->Read(span(stringTable), stringTableOffset) != stringTable.size())
+            throw exception("Short partition filesystem string table read");
 
-        for (u32 entryOffset{sizeof(FsHeader)}; entryOffset < header.numFiles * entrySize; entryOffset += entrySize) {
-            auto entry{backing->Read<PartitionFileEntry>(entryOffset)};
+        const size_t dataSize{backing->size - fileDataOffset};
+        for (u32 index{}; index < header.numFiles; ++index) {
+            PartitionFileEntry entry{};
+            const size_t entryOffset{sizeof(FsHeader) + index * entrySize};
+            if (backing->Read(span<u8>(reinterpret_cast<u8 *>(&entry), sizeof(entry)), entryOffset) != sizeof(entry))
+                throw exception("Short partition filesystem entry read");
+            if (entry.offset > dataSize || entry.size > dataSize - entry.offset)
+                throw exception("Partition filesystem file {} exceeds backing", index);
+            if (hashed && entry.hashedSize > entry.size)
+                throw exception("HFS0 hashed prefix exceeds file {}", index);
+            if (entry.stringTableOffset >= stringTable.size())
+                throw exception("Partition filesystem name offset exceeds string table");
+            const auto nameStart{stringTable.begin() + entry.stringTableOffset};
+            const auto nameEnd{std::find(nameStart, stringTable.end(), '\0')};
+            if (nameEnd == stringTable.end())
+                throw exception("Unterminated partition filesystem name");
 
-            std::string name(&stringTable[entry.stringTableOffset]);
+            std::string name(nameStart, nameEnd);
             fileMap.emplace(name, entry);
         }
     }

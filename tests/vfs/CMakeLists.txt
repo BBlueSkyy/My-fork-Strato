@@ -21,7 +21,8 @@ add_executable(vfs_tests storage_tests.cpp
     "${SKYLINE}/crypto/aes_cipher.cpp"
     "${STRATO_ROOT}/app/libraries/lz4/lib/lz4.c")
 target_include_directories(vfs_tests PRIVATE host "${SKYLINE}"
-    "${STRATO_ROOT}/app/libraries/fmt/include" "${STRATO_ROOT}/app/libraries/lz4/lib")
+    "${STRATO_ROOT}/app/libraries/fmt/include" "${STRATO_ROOT}/app/libraries/lz4/lib"
+    "${STRATO_ROOT}/app/libraries/mbedtls/include")
 target_compile_definitions(vfs_tests PRIVATE FMT_HEADER_ONLY)
 target_link_libraries(vfs_tests PRIVATE mbedcrypto)
 enable_testing()
