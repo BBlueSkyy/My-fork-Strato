@@ -23,13 +23,13 @@ namespace skyline::vfs {
             u64 offset; //!< The offset of the file in the backing
             u64 size; //!< The size of the file
             u32 stringTableOffset; //!< The offset of the file in the string table
-            u32 _pad_;
+            u32 hashedSize; //!< HFS0 hashed prefix size; reserved for PFS0
         };
         static_assert(sizeof(PartitionFileEntry) == 0x18);
 
         struct HashedFileEntry {
             PartitionFileEntry entry; //!< The base file entry
-            u32 _pad_;
+            u64 _reserved_;
             std::array<u8, 0x20> hash; //!< The hash of the file
         };
         static_assert(sizeof(HashedFileEntry) == 0x40);

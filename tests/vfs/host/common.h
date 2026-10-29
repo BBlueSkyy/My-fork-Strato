@@ -28,6 +28,7 @@ namespace kernel::type { class KProcess; }
 struct DeviceState { std::shared_ptr<loader::Loader> updateLoader; };
 using u8 = uint8_t; using u16 = uint16_t; using u32 = uint32_t; using u64 = uint64_t;
 using i8 = int8_t; using i16 = int16_t; using i32 = int32_t; using i64 = int64_t;
+using KHandle = u32;
 class exception : public std::runtime_error {
 public:
     template<class... T> exception(std::string_view s, T&&...) : std::runtime_error(std::string(s)) {}
@@ -48,6 +49,11 @@ public:
         return std::span<T, N>::subspan(offset, count);
     }
     span<T> first(size_t n) const { return subspan(0, n); }
+    std::string_view as_string(bool nullTerminated = false) const {
+        auto bytes{this->template cast<const char>()};
+        const auto end{nullTerminated ? std::find(bytes.begin(), bytes.end(), '\0') : bytes.end()};
+        return {bytes.data(), static_cast<size_t>(end - bytes.begin())};
+    }
 };
 template<class T> span(T*, size_t) -> span<T>;
 template<class T> span(std::vector<T>&) -> span<T>;

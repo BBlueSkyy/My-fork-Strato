@@ -18,11 +18,19 @@ namespace skyline {
                 u32 offset;
                 u32 size;
 
+                void Validate(size_t parentSize, size_t minimumOffset, const char *name) const {
+                    if (offset < minimumOffset || offset > parentSize || size > parentSize - offset)
+                        throw exception("NPDM {} section exceeds its parent: Offset: 0x{:X}, Size: 0x{:X}, Parent Size: 0x{:X}", name, offset, size, parentSize);
+                }
+
                 template<typename T>
                 T Read(const std::shared_ptr<vfs::Backing> &backing, size_t baseOffset = 0) {
                     if (sizeof(T) > size)
                         throw exception("Section size ({}) smaller than Read type size ({})", size, sizeof(T));
-                    return backing->Read<T>(baseOffset + offset);
+                    T object;
+                    if (backing->Read(span(reinterpret_cast<u8 *>(&object), sizeof(T)), baseOffset + offset) != sizeof(T))
+                        throw exception("NPDM section header read was incomplete");
+                    return object;
                 }
             };
             static_assert(sizeof(Section) == sizeof(u64));
@@ -110,7 +118,7 @@ namespace skyline {
             struct {
                 kernel::Priority priority;
                 kernel::CoreMask coreMask;
-            } threadInfo;
+            } threadInfo{};
 
             struct {
                 u8 minorVersion;
