@@ -34,9 +34,14 @@ namespace skyline::gpu {
 
         // If we cannot find the buffer quickly, do a binary search to find all overlapping buffers
         auto entryIt{std::lower_bound(bufferMappings.begin(), bufferMappings.end(), range.end().base(), BufferLessThan)};
-        while (entryIt != bufferMappings.begin() && (*--entryIt)->guest->begin() <= range.end())
+        while (entryIt != bufferMappings.begin() && (*--entryIt)->guest->begin() <= range.end()) {
             if ((*entryIt)->guest->end() > range.begin())
                 overlaps.emplace_back(*entryIt, tag);
+            else
+                // Live mappings are disjoint: creation coalesces all overlaps.
+                // Every earlier mapping therefore also ends before this range.
+                break;
+        }
 
         return overlaps;
     }
