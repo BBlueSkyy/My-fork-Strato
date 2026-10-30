@@ -46,7 +46,12 @@ namespace skyline::gpu::readback_diagnostics {
         PresentedFrames, PresentCpuNs, GuestFenceNs, SwapchainFenceNs,
         AcquireSwapchainNs, TextureSyncNs, DisplayCopyNs, QueuePresentNs,
         RecordedSlots, RecordWorkNs, SubmitNs, AcquireSlots, AcquireSlotWaitNs,
-        CompletedFences, CompletionWaitNs, FrameMetricCount
+        CompletedFences, CompletionWaitNs,
+        SyncNoFence, SyncNoFenceNs,
+        SyncGuestPending, SyncGuestPendingNs,
+        SyncHostPending, SyncHostPendingNs,
+        SyncHostReady, SyncHostReadyNs,
+        FrameMetricCount
     };
     using FrameValues = std::array<uint64_t, FrameMetricCount>;
     struct FrameCounters {

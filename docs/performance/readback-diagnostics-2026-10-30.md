@@ -100,3 +100,46 @@ all Vulkan work, or GPU device execution. It cannot by itself prove the
 historical #294 regression. No readback thresholds, GPU ordering, copy
 semantics, alias protections or workflow settings change. The diagnostic APK
 has measurement overhead and is not a performance benchmark baseline.
+
+## Device log interpretation (October 30, 2026): Zelda 1.0.0, Turnip 24.0.99
+
+The 166.7-second diagnostic log confirms both readback settings enabled and
+11,403 buffer fast paths, with 752 normal write syncs. The 120 texture write
+trap attempts all found texture state not GPU-dirty, so this log does not
+demonstrate texture alias blocking.
+
+In approximately 50–130 seconds of continuous low-output gameplay,
+FrameDiag recorded 16.68 presented frames/s, 3.05 recorded command slots
+per presented frame, 26.41 ms of Host1x presentation-fence wait per frame,
+1.19 ms recording CPU time per slot and 0.11 ms CPU submission time per
+slot. This is a *Host1x host syncpoint* wait, not a direct Vulkan fence
+wait. The execution waiter spent about 11.27 ms waiting per cycle, but
+this includes scheduling and overlapping execution; it is not a GPU timer.
+At about 140 seconds throughput fell to 8.64 presented frames/s, with
+63.61 ms of Host1x wait per presented frame. The previous fast/menu
+segments recorded around one command slot per presented frame, while the
+slow scene consistently recorded around three. That correlation alone does
+not prove the cause of historical PR #294.
+
+The next experimental question is whether guest command processing has
+already incremented the corresponding guest syncpoint threshold at
+presentation wait entry. We now count four **mutually exclusive frame
+classifications** in each five-second FrameDiag interval:
+
+- `sync_no_fence`: no active Host1x fence supplied;
+- `sync_guest_pending`: at least one supplied fence threshold is still
+  ahead of guest syncpoint decode/command processing;
+- `sync_host_pending`: all guest thresholds have been reached, but at
+  least one host threshold is still pending, indicating completion and/or
+  deferred host callback remains outstanding;
+- `sync_host_ready`: all active guest and host thresholds are already
+  reached at wait entry.
+
+Each category has an associated `*_ns` wall duration. The classifications
+are a single observation just before Wait(), not a state history; concurrent
+updates may race with this observation. Multi-fence frames use worst
+pending classification. This does not change guest synchronization,
+command submission, GPU execution, presentation order, or fence waiting.
+One counter update per classified frame plus two lock-free syncpoint reads
+per active fence adds some diagnostic overhead. Compare only equivalent
+settings and scenes; do not claim a FPS increase from these probes.

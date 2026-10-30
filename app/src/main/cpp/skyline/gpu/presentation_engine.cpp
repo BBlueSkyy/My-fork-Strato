@@ -98,9 +98,37 @@ namespace skyline::gpu {
         std::unique_lock lock(mutex);
         surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
 
+        // Observe whether a frame's Host1x fence was already produced in
+        // the emulated GPU stream before the host-side wait begins. This
+        // classification is observational and does not affect Wait().
+        bool activeFence{};
+        bool guestPending{};
+        bool hostPending{};
+        auto &syncpoints{state.soc->host1x.syncpoints};
+        const auto fenceCount{std::min(static_cast<size_t>(frame.fence.fenceCount), frame.fence.fences.size())};
+        for (size_t i{}; i < fenceCount; ++i) {
+            const auto &fence{frame.fence.fences[i]};
+            if (fence.id == service::hosbinder::AndroidFence::InvalidFenceId)
+                continue;
+            activeFence = true;
+            auto &syncpoint{syncpoints.at(fence.id)};
+            const u32 guestValue{syncpoint.guest.Load()};
+            const u32 hostValue{syncpoint.host.Load()};
+            // Wrap-safe threshold comparison for monotonically increasing u32 syncpoints.
+            guestPending |= static_cast<i32>(guestValue - fence.threshold) < 0;
+            hostPending |= static_cast<i32>(hostValue - fence.threshold) < 0;
+        }
+
         const auto guestFenceBeginNs{readback_diagnostics::NowNs()};
         frame.fence.Wait(state.soc->host1x);
-        readback_diagnostics::frames.Add(readback_diagnostics::GuestFenceNs, readback_diagnostics::NowNs() - guestFenceBeginNs);
+        const auto guestFenceDurationNs{readback_diagnostics::NowNs() - guestFenceBeginNs};
+        readback_diagnostics::frames.Add(readback_diagnostics::GuestFenceNs, guestFenceDurationNs);
+
+        using namespace readback_diagnostics;
+        const FrameMetric fenceCountMetric{!activeFence ? SyncNoFence : guestPending ? SyncGuestPending : hostPending ? SyncHostPending : SyncHostReady};
+        const FrameMetric fenceTimeMetric{!activeFence ? SyncNoFenceNs : guestPending ? SyncGuestPendingNs : hostPending ? SyncHostPendingNs : SyncHostReadyNs};
+        frames.Add(fenceCountMetric);
+        frames.Add(fenceTimeMetric, guestFenceDurationNs);
 
         // A retained display view may belong to an older guest representation.
         frame.textureView->texture->ReconcileAliases();
@@ -285,13 +313,17 @@ namespace skyline::gpu {
                         auto delta{[&](FrameMetric metric) -> uint64_t {
                             return currentFrame[metric] - previousFrame[metric];
                         }};
-                        LOGINF("FrameDiag window_ns={} frames={} present_cpu_ns={} guest_fence_ns={} swapchain_fence_ns={} acquire_ns={} texture_sync_ns={} display_copy_ns={} queue_present_ns={} record_slots={} record_work_ns={} submit_ns={} acquire_slots={} acquire_slot_wait_ns={} completion_waits={} completion_wait_ns={}",
+                        LOGINF("FrameDiag window_ns={} frames={} present_cpu_ns={} guest_fence_ns={} swapchain_fence_ns={} acquire_ns={} texture_sync_ns={} display_copy_ns={} queue_present_ns={} record_slots={} record_work_ns={} submit_ns={} acquire_slots={} acquire_slot_wait_ns={} completion_waits={} completion_wait_ns={} sync_no_fence={} sync_no_fence_ns={} sync_guest_pending={} sync_guest_pending_ns={} sync_host_pending={} sync_host_pending_ns={} sync_host_ready={} sync_host_ready_ns={}",
                             reportAtNs - previousAtNs, delta(PresentedFrames), delta(PresentCpuNs),
                             delta(GuestFenceNs), delta(SwapchainFenceNs), delta(AcquireSwapchainNs),
                             delta(TextureSyncNs), delta(DisplayCopyNs), delta(QueuePresentNs),
                             delta(RecordedSlots), delta(RecordWorkNs), delta(SubmitNs),
                             delta(AcquireSlots), delta(AcquireSlotWaitNs),
-                            delta(CompletedFences), delta(CompletionWaitNs));
+                            delta(CompletedFences), delta(CompletionWaitNs),
+                            delta(SyncNoFence), delta(SyncNoFenceNs),
+                            delta(SyncGuestPending), delta(SyncGuestPendingNs),
+                            delta(SyncHostPending), delta(SyncHostPendingNs),
+                            delta(SyncHostReady), delta(SyncHostReadyNs));
                     }
                     previousFrame = currentFrame;
                     previousAtNs = reportAtNs;
