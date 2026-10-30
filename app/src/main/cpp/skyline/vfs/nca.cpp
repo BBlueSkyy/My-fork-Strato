@@ -480,8 +480,19 @@ namespace skyline::vfs {
         // Validate names and file extents before PartitionFileSystem indexes the name table.
         const auto pfsHeader{ReadExact<std::array<u32, 4>>(data)};
         const u64 namesOffset{0x10 + static_cast<u64>(pfsHeader[1]) * 0x18};
-        if (pfsHeader[0] != util::MakeMagic<u32>("PFS0") || !InRange(namesOffset, pfsHeader[2], data->size))
-            throw loader_exception(LoaderResult::ParsingError, "Invalid NCA PFS0 table extent");
+        const auto failHeader{[&](const char *reason) {
+            throw loader_exception(LoaderResult::ParsingError, fmt::format(
+                "{} (titleId=0x{:016X}, section={}, magic=0x{:08X}, files={}, stringTableSize=0x{:X}, "
+                "namesOffset=0x{:X}, dataOffset=0x{:X}, dataSize=0x{:X}, sectionSize=0x{:X}, "
+                "hashLayers={}, encryption={}, encryptedHeader={}, useKeyArea={}, rightsIdEmpty={})",
+                reason, header.titleId, index, pfsHeader[0], pfsHeader[1], pfsHeader[2], namesOffset,
+                dataLevel[0], data->size, raw->size, count, static_cast<u8>(section.raw.header.encryptionType),
+                encrypted, useKeyArea, rightsIdEmpty));
+        }};
+        if (pfsHeader[0] != util::MakeMagic<u32>("PFS0"))
+            failHeader("Invalid NCA PFS0 magic");
+        if (!InRange(namesOffset, pfsHeader[2], data->size))
+            failHeader("Invalid NCA PFS0 table extent");
         const u64 filesOffset{namesOffset + pfsHeader[2]};
         std::vector<u8> names(pfsHeader[2]);
         if (data->Read(names, namesOffset) != names.size())
