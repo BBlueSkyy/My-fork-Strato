@@ -14,6 +14,6 @@ target_include_directories(xci_tests PRIVATE host ../vfs/host "${SKYLINE}"
     "${STRATO_ROOT}/app/libraries/fmt/include" "${STRATO_ROOT}/app/libraries/lz4/lib"
     "${STRATO_ROOT}/app/libraries/mbedtls/include")
 target_compile_definitions(xci_tests PRIVATE FMT_HEADER_ONLY _GLIBCXX_ASSERTIONS)
-target_link_libraries(xci_tests PRIVATE mbedcrypto)
+target_link_libraries(xci_tests PRIVATE mbedcrypto z)
 enable_testing()
 add_test(NAME xci_containers COMMAND xci_tests)

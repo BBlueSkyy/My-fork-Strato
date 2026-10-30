@@ -7,6 +7,11 @@
 #include <crypto/key_store.h>
 
 namespace skyline::vfs {
+    class FileSystem;
+
+    /** Imports embedded title keys before opening the container's NCAs. */
+    void ImportTickets(const std::shared_ptr<FileSystem> &fileSystem, const std::shared_ptr<crypto::KeyStore> &keyStore);
+
     /**
      * @brief The Ticket struct allows easy access to ticket files, a format used to store an encrypted title keys
      * @url https://switchbrew.org/wiki/Ticket

@@ -9,25 +9,10 @@
 #include "program_content.h"
 
 namespace skyline::loader {
-    static void ExtractTickets(const std::shared_ptr<vfs::PartitionFileSystem>& dir, const std::shared_ptr<crypto::KeyStore> &keyStore) {
-        std::vector<vfs::Ticket> tickets;
-
-        auto dirContent{dir->OpenDirectory("", {false, true})};
-        for (const auto &entry : dirContent->Read()) {
-            if (entry.name.substr(entry.name.find_last_of('.') + 1) == "tik")
-                tickets.emplace_back(dir->OpenFile(entry.name));
-        }
-
-        for (auto ticket : tickets) {
-            auto titleKey{span(ticket.titleKeyBlock).subspan(0, 16).as<crypto::KeyStore::Key128>()};
-            keyStore->PopulateTitleKey(ticket.rightsId, titleKey);
-        }
-    }
-
     NspLoader::NspLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore,
                          const std::string &diagnosticsPath, NspLoadMode loadMode, u8 programIndex)
         : nsp(std::make_shared<vfs::PartitionFileSystem>(backing)) {
-        ExtractTickets(nsp, keyStore);
+        vfs::ImportTickets(nsp, keyStore);
 
         const auto ncaParseMode{loadMode == NspLoadMode::MetadataOnly ? vfs::NCAParseMode::MetadataOnly : vfs::NCAParseMode::ProgramDeferred};
         std::vector<ProgramNcaCandidate> programs;
