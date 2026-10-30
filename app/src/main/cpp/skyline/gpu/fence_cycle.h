@@ -70,6 +70,11 @@ namespace skyline::gpu {
         void Cancel() {
             {
                 std::scoped_lock lock{submitMutex};
+                // An unsubmitted cycle neither waited on nor signalled its
+                // semaphore. Preserve the state inherited by this slot instead
+                // of inventing a signal for the next cycle to consume.
+                if (!submitted.load(std::memory_order_acquire))
+                    nextSemaphoreSubmitWait = semaphoreSubmitWait;
                 signalled.test_and_set(std::memory_order_release);
             }
             submitCondition.notify_all();

@@ -33,6 +33,10 @@ namespace skyline::gpu {
       public:
         TextureManager(GPU &gpu);
 
+        // Materialization bridge only. Caller holds channelLock; queued producer
+        // uses unwind through the executor before any guest readback is started.
+        static void SynchronizeGuestOverlaps(std::vector<std::shared_ptr<Texture>> sources, ContextTag tag = {});
+
         /**
          * @return A pre-existing or newly created Texture object which matches the specified criteria
          * @note The texture manager **must** be locked prior to calling this

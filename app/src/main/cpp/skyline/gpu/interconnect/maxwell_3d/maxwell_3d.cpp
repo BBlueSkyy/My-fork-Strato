@@ -150,7 +150,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
          [this](u32 renderPassIndex) {
              return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-         });
+         }, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads);
           InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
           ctx.executor.AddCheckpoint("After inline index draw");
      
@@ -226,6 +226,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
      void Maxwell3D::PrepareDraw(StateUpdateBuilder &builder,
                                  engine::DrawTopology topology, bool indexed, bool estimateIndexBufferSize, u32 firstIndex, u32 count,
                                  vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+         const auto regionEpoch{texture::regionInvalidationSequence.load(std::memory_order_relaxed)};
+         if (descriptorRegionEpoch != regionEpoch) {
+             descriptorRegionEpoch = regionEpoch;
+             activeDescriptorPipeline = nullptr;
+             activeState.MarkAllDirty();
+             constantBuffers.DisableQuickBind();
+         }
          Pipeline *oldPipeline{activeState.GetPipeline()};
          samplers.Update(ctx, samplerBinding.value == engine::SamplerBinding::Value::ViaHeaderBinding);
          activeState.Update(ctx, textures, samplers, constantBuffers.boundConstantBuffers,
@@ -234,6 +241,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                             srcStageMask, dstStageMask);
          Pipeline *pipeline{activeState.GetPipeline()};
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
+         activeDescriptorSetStorageImages.resize(pipeline->GetTotalStorageImageCount());
+         activeDescriptorSetStorageReads.resize(pipeline->GetTotalStorageImageCount());
 
 
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
@@ -246,14 +255,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
                  if (constantBuffers.quickBind)
                      // If only a single constant buffer has been rebound between draws we can perform a partial descriptor update
                      return pipeline->SyncDescriptorsQuickBind(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
-                                                               *constantBuffers.quickBind, activeDescriptorSetSampledImages,
+                                                               *constantBuffers.quickBind, activeDescriptorSetSampledImages, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads,
                                                                srcStageMask, dstStageMask);
                  else
                      return nullptr;
              } else {
                  // If bindings have changed or quick bind is disabled, perform a full descriptor update
                  return pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
-                                                  activeDescriptorSetSampledImages,
+                                                  activeDescriptorSetSampledImages, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads,
                                                   srcStageMask, dstStageMask);
              }
          }()};
@@ -398,7 +407,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ctx.executor.AttachDependency(destination);
         ctx.executor.AttachTexture(source);
         ctx.executor.AttachTexture(dest);
-        dest->texture->MarkGpuDirty(ctx.executor.usageTracker);
 
         RefreshRenderCondition();
         ctx.executor.NotifyPipelineChange();
@@ -428,7 +436,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     false, vk::PipelineStageFlagBits::eAllGraphics, vk::PipelineStageFlagBits::eAllGraphics,
                     [this](u32 renderPassIndex) {
                         return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-                    });
+                    }, colorAttachments);
             },
             **sampler, renderArea
         );
@@ -628,6 +636,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             ? activeState.GetColorRenderTargetForClear(ctx, clearSurface.mrtSelect) : std::shared_ptr<TextureView>{}};
         auto requestedDepth{(clearSurface.stencilEnable || clearSurface.zEnable)
             ? activeState.GetDepthRenderTargetForClear(ctx) : std::shared_ptr<TextureView>{}};
+        std::array<TextureView *, 2> clearWriters{requestedColor.get(), requestedDepth.get()};
+        ctx.executor.PreflightTextureUses({}, clearWriters);
         RefreshRenderCondition();
         queries.Pause(ctx);
         ctx.executor.AddCheckpoint("Before clear");
@@ -810,7 +820,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-           });
+           }, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads);
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
     
@@ -894,7 +904,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-           });
+           }, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads);
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After indirect draw");
     

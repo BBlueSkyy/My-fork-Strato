@@ -4,6 +4,7 @@
 #pragma once
 
 #include "alias_group.h"
+#include "region_authority.h"
 
 #include <range/v3/view.hpp>
 #include <range/v3/algorithm.hpp>
@@ -410,6 +411,7 @@ namespace skyline::gpu {
             CpuDirty, //!< The CPU mappings have been modified but the GPU texture is not up to date
             GpuDirty, //!< The GPU texture has been modified but the CPU mappings have not been updated
         } dirtyState{DirtyState::CpuDirty}; //!< The state of the CPU mappings with respect to the GPU texture
+        bool guestDiscardSafe{}; //!< Cached proof that every guest byte can be reconstructed; computed during mapping setup.
         bool memoryFreed{}; //!< If the guest backing memory has been freed
         mutable std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
         texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup{};
@@ -418,7 +420,24 @@ namespace skyline::gpu {
         std::atomic<bool> aliasReadOnly{}; //!< Materializable aliases without a lossless GPU -> guest path may only be sampled/read.
         u64 gpuWriteSerial{};
         u64 gpuReadbackSerial{}; //!< Updated only after successful guest encoding.
-        bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
+        ContextTag pendingRegionUseTag{}; //!< Prepared regional snapshot; late CPU uploads belong to the next submission.
+        std::atomic<ContextTag> pendingGpuWriteTag{}; //!< A write prepared while this executor owns the resource; cleared on unlock.
+        texture::AtomicSharedPtr<texture::RegionAuthority> regionAuthority{};
+        std::atomic<bool> regionTracked{}, regionStale{};
+        std::vector<texture::PhysicalImageBinding> regionBindings;
+        std::vector<std::weak_ptr<Texture>> regionNeighbors;
+        static std::vector<texture::PhysicalImageSpan> PhysicalImageSpans(const GuestTexture &value);
+        static bool CanDiscardGuest(const GuestTexture &value, size_t mappedSize);
+        static bool RegisterRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
+        static void DrainRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
+        void ReconcileRegions();
+        void InvalidateRegionPeers();
+        void RecordRegionWrite();
+        bool NeedsRegionReadback() const;
+        void PublishRegionGuest(span<const u8> encoded);
+        void ReleaseRegionHost();
+        void RecordRegionUpload();
+        bool HasAliases() const { return regionTracked.load(std::memory_order_relaxed) || static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const GuestTexture &requested) const;
         static bool CanMaterializeGuestLayout(const GuestTexture &value);
         static bool IsGuestLayoutReversible(const GuestTexture &value);

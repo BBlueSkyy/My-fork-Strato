@@ -79,3 +79,14 @@ asserted. No runtime Vulkan transport or FreeGuest policy changes are included.
 The all-history/no-eligible-member case and a converted writer marked Clean by
 skipped readback are also covered: only an actual completed guest encoding
 permits retirement of the latest GPU writer.
+
+
+## Physical-region authority and publication
+
+See [the current protocol and acceptance results](../../docs/region-publication.md), with the [historical checkpoint](../../docs/region-authority-checkpoint.md) retained for the original RED case.
+
+`TEXMAN_AUTHORITY_PROBE=1 python3 tests/gpu_backing_promotion/run.py` asserts real Vulkan shared/exclusive content, alternating writers, failure recovery, CPU callbacks, retained views, donor-set changes and dense mip/layer regions. It also compiles the complete production AddSubpass/CreateRenderPass control paths against graph facades.
+
+`TEXMAN_LOCK_ORDER_PROBE=1 python3 tests/gpu_backing_promotion/run.py` verifies presentation/resource contention. Both gates must pass; neither is added as a required APK/CI job.
+
+`TEXMAN_COLD_LOOKUP_PROBE=1 python3 tests/gpu_backing_promotion/run.py` checks progress when the same operation attaches A before a cold overlapping lookup. Compatible/incompatible partial registration and exact-alias drain must finish rather than recreate the same retry. Real Vulkan bytes, retained views, allocation-failure recovery and cache/no-overlap submission counts are checked with FreeGuest OFF/ON. These cases also run in the normal and authority suites. See [the regression report](../../docs/cold-region-lookup-retry.md) for source negative controls and device limitations.
