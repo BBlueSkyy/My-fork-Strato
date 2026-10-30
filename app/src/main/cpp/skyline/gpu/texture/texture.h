@@ -641,6 +641,9 @@ namespace skyline::gpu {
          * @param skipTrap If true, trapping/untrapping the guest mappings will be skipped and has to be handled by the caller
          * @note This function is blocking and waiting on the fence is not required
          * @note The texture **must** be locked prior to calling this
+         * @note Guest validity is published after successful encoding, or when an
+         *       unmodified converted image retained its authoritative guest bytes.
+         *       Unsupported GPU writes remain GpuDirty; traps must not release access.
          */
         void SynchronizeGuest(bool cpuDirty = false, bool skipTrap = false);
 
