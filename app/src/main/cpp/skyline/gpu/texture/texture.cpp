@@ -5,6 +5,7 @@
 #include <kernel/memory.h>
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
+#include <gpu/readback_diagnostics.h>
 #include <common/settings.h>
 #include "texture.h"
 #include "layout.h"
@@ -211,7 +212,9 @@ namespace skyline::gpu {
                     // We need to do a loop here since we can't wait with the texture locked but not doing so means that the texture could have it's cycle changed which we wouldn't wait on, loop until we are sure the cycle hasn't changed to avoid that
                     if (waitCycle) {
                         i64 startNs{texture->accumulatedGuestWaitCounter > SkipReadbackHackWaitCountThreshold ? util::GetTimeNs() : 0};
+                        auto diagnosticStart{readback_diagnostics::NowNs()};
                         waitCycle->Wait();
+                        readback_diagnostics::textures.Wait(readback_diagnostics::NowNs() - diagnosticStart);
                         if (startNs)
                             texture->accumulatedGuestWaitTime += std::chrono::nanoseconds(util::GetTimeNs() - startNs);
 
@@ -229,68 +232,96 @@ namespace skyline::gpu {
             }
         }, [weakThis] {
             TRACE_EVENT("gpu", "Texture::ReadTrap");
+            readback_diagnostics::textures.Add(readback_diagnostics::ReadTrap);
 
             auto texture{weakThis.lock()};
             if (!texture)
                 return true;
 
             std::unique_lock stateLock{texture->stateMutex, std::try_to_lock};
-            if (!stateLock)
+            if (!stateLock) {
+                readback_diagnostics::textures.Add(readback_diagnostics::Retry);
                 return false;
+            }
 
-            if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty)
+            if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty) {
+                readback_diagnostics::textures.Add(readback_diagnostics::NotGpuDirty);
                 return true; // If state is already CPU dirty/Clean we don't need to do anything
+            }
 
             std::unique_lock lock{*texture, std::try_to_lock};
-            if (!lock)
+            if (!lock) {
+                readback_diagnostics::textures.Add(readback_diagnostics::Retry);
                 return false;
+            }
 
-            if (texture->cycle)
+            if (texture->cycle) {
+                readback_diagnostics::textures.Add(readback_diagnostics::Retry);
                 return false;
+            }
 
             auto group{texture->aliasGroup.load()};
             std::unique_lock<std::recursive_mutex> aliasLock;
             if (group) {
                 aliasLock = std::unique_lock{group->operationMutex, std::try_to_lock};
-                if (!aliasLock) return false; // trapMutex must never wait on an alias operation.
+                if (!aliasLock) {
+                    readback_diagnostics::textures.Add(readback_diagnostics::Retry);
+                    return false; // trapMutex must never wait on an alias operation.
+                }
             }
             texture->SynchronizeGuest(false, true); // We can skip trapping since the caller will do it
+            readback_diagnostics::textures.Add(readback_diagnostics::ReadSync);
             return true;
         }, [weakThis] {
             TRACE_EVENT("gpu", "Texture::WriteTrap");
+            readback_diagnostics::textures.Add(readback_diagnostics::WriteTrap);
 
             auto texture{weakThis.lock()};
             if (!texture)
                 return true;
 
             std::unique_lock stateLock{texture->stateMutex, std::try_to_lock};
-            if (!stateLock)
+            if (!stateLock) {
+                readback_diagnostics::textures.Add(readback_diagnostics::Retry);
                 return false;
+            }
 
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty) {
                 texture->dirtyState = DirtyState::CpuDirty;
+                readback_diagnostics::textures.Add(readback_diagnostics::NotGpuDirty);
                 return true; // If the texture is already CPU dirty or we can transition it to being CPU dirty then we don't need to do anything
             }
 
+            readback_diagnostics::textures.Decision(*texture->gpu.state.settings->enableFastGpuReadbackHack, texture->accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold, texture->HasAliases(), texture->memoryFreed);
+
             if (!texture->HasAliases() && texture->accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *texture->gpu.state.settings->enableFastGpuReadbackHack && !texture->memoryFreed) {
+                readback_diagnostics::textures.Add(readback_diagnostics::FastTaken);
                 texture->dirtyState = DirtyState::Clean;
                 return true;
             }
 
             std::unique_lock lock{*texture, std::try_to_lock};
-            if (!lock)
+            if (!lock) {
+                readback_diagnostics::textures.Add(readback_diagnostics::Retry);
                 return false;
+            }
 
-            if (texture->cycle)
+            if (texture->cycle) {
+                readback_diagnostics::textures.Add(readback_diagnostics::Retry);
                 return false;
+            }
 
             auto group{texture->aliasGroup.load()};
             std::unique_lock<std::recursive_mutex> aliasLock;
             if (group) {
                 aliasLock = std::unique_lock{group->operationMutex, std::try_to_lock};
-                if (!aliasLock) return false;
+                if (!aliasLock) {
+                    readback_diagnostics::textures.Add(readback_diagnostics::Retry);
+                    return false;
+                }
             }
             texture->SynchronizeGuest(true, true); // We need to assume the texture is dirty since we don't know what the guest is writing
+            readback_diagnostics::textures.Add(readback_diagnostics::WriteSync);
             return true;
         });
     }

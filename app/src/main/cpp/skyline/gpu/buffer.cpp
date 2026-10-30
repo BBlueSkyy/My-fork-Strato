@@ -6,6 +6,7 @@
 #include <kernel/memory.h>
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
+#include "readback_diagnostics.h"
 #include <common/settings.h>
 #include "buffer.h"
 
@@ -39,7 +40,9 @@ namespace skyline::gpu {
                 do {
                     if (waitCycle) {
                         i64 startNs{buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold ? util::GetTimeNs() : 0};
+                        auto diagnosticStart{readback_diagnostics::NowNs()};
                         waitCycle->Wait();
+                        readback_diagnostics::buffers.Wait(readback_diagnostics::NowNs() - diagnosticStart);
                         if (startNs)
                             buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(util::GetTimeNs() - startNs);
 
@@ -57,59 +60,83 @@ namespace skyline::gpu {
             }
         }, [weakThis] {
             TRACE_EVENT("gpu", "Buffer::ReadTrap");
+            readback_diagnostics::buffers.Add(readback_diagnostics::ReadTrap);
 
             auto buffer{weakThis.lock()};
             if (!buffer)
                 return true;
 
             std::unique_lock stateLock{buffer->stateMutex, std::try_to_lock};
-            if (!stateLock)
+            if (!stateLock) {
+                readback_diagnostics::buffers.Add(readback_diagnostics::Retry);
                 return false;
+            }
 
-            if (buffer->dirtyState != DirtyState::GpuDirty)
+            if (buffer->dirtyState != DirtyState::GpuDirty) {
+                readback_diagnostics::buffers.Add(readback_diagnostics::NotGpuDirty);
                 return true; // If state is already CPU dirty/Clean we don't need to do anything
+            }
 
             std::unique_lock lock{*buffer, std::try_to_lock};
-            if (!lock)
+            if (!lock) {
+                readback_diagnostics::buffers.Add(readback_diagnostics::Retry);
                 return false;
+            }
 
-            if (buffer->cycle)
+            if (buffer->cycle) {
+                readback_diagnostics::buffers.Add(readback_diagnostics::Retry);
                 return false;
+            }
 
             buffer->SynchronizeGuest(true); // We can skip trapping since the caller will do it
+            readback_diagnostics::buffers.Add(readback_diagnostics::ReadSync);
             return true;
         }, [weakThis] {
             TRACE_EVENT("gpu", "Buffer::WriteTrap");
+            readback_diagnostics::buffers.Add(readback_diagnostics::WriteTrap);
 
             auto buffer{weakThis.lock()};
             if (!buffer)
                 return true;
 
             std::unique_lock stateLock{buffer->stateMutex, std::try_to_lock};
-            if (!stateLock)
+            if (!stateLock) {
+                readback_diagnostics::buffers.Add(readback_diagnostics::Retry);
                 return false;
+            }
 
             if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty) {
                 buffer->dirtyState = DirtyState::CpuDirty;
+                readback_diagnostics::buffers.Add(readback_diagnostics::NotGpuDirty);
                 return true;
             }
+
+            readback_diagnostics::buffers.Decision(*buffer->gpu.state.settings->enableFastGpuReadbackHack, buffer->accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold, false, false);
 
             if (buffer->accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold && *buffer->gpu.state.settings->enableFastGpuReadbackHack) {
                 // As opposed to skipping readback as we do for textures, with buffers we can still perform the readback but just without syncinc the GPU
                 // While the read data may be invalid it's still better than nothing and works in most cases
+                readback_diagnostics::buffers.Add(readback_diagnostics::FastTaken);
                 memcpy(buffer->mirror.data(), buffer->backing->data(), buffer->mirror.size());
                 buffer->dirtyState = *buffer->gpu.state.settings->enableFastReadbackWrites ? DirtyState::CpuDirty : DirtyState::Clean;
+                if (buffer->dirtyState == DirtyState::CpuDirty)
+                    readback_diagnostics::buffers.Add(readback_diagnostics::FastWrites);
                 return true;
             }
 
             std::unique_lock lock{*buffer, std::try_to_lock};
-            if (!lock)
+            if (!lock) {
+                readback_diagnostics::buffers.Add(readback_diagnostics::Retry);
                 return false;
+            }
 
-            if (buffer->cycle)
+            if (buffer->cycle) {
+                readback_diagnostics::buffers.Add(readback_diagnostics::Retry);
                 return false;
+            }
 
             buffer->SynchronizeGuest(true); // We need to assume the buffer is dirty since we don't know what the guest is writing
+            readback_diagnostics::buffers.Add(readback_diagnostics::WriteSync);
             buffer->dirtyState = DirtyState::CpuDirty;
 
             return true;

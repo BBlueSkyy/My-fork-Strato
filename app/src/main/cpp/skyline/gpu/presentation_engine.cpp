@@ -11,6 +11,7 @@
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
 #include "presentation_engine.h"
+#include "readback_diagnostics.h"
 #include "native_window.h"
 #include "texture/format.h"
 
@@ -243,8 +244,23 @@ namespace skyline::gpu {
             presentQueue.Process([this](const PresentableFrame &frame) {
                 PresentFrame(frame);
                 frame.presentCallback(); // We're calling the callback here as it's outside of all the locks in PresentFrame
+
                 skipSignal = true;
                 vsyncEvent->Signal();
+
+                // Report outside PresentFrame's resource/queue locks. Two lines
+                // per five seconds, cumulative; these are not GPU timestamps.
+                static readback_diagnostics::Reporter readbackReporter;
+                if (readbackReporter.Due(readback_diagnostics::NowNs())) {
+                    using namespace readback_diagnostics;
+                    for (bool isTexture : {false, true}) {
+                        auto v{(isTexture ? textures : buffers).Snapshot()};
+                        LOGINF("ReadbackDiag {} cumulative fast={} writes={} read_traps={} write_traps={} not_dirty={} retries={} read_sync={} write_sync={} disabled={} below_threshold={} aliases={} freed={} fast_eligible={} fast_taken={} fast_writes={} prep_waits={} prep_wait_ns={}",
+                            isTexture ? "texture" : "buffer", *state.settings->enableFastGpuReadbackHack, *state.settings->enableFastReadbackWrites,
+                            v[ReadTrap], v[WriteTrap], v[NotGpuDirty], v[Retry], v[ReadSync], v[WriteSync],
+                            v[Disabled], v[BelowThreshold], v[Aliased], v[Freed], v[FastEligible], v[FastTaken], v[FastWrites], v[WaitCount], v[WaitNs]);
+                    }
+                }
             }, [] {});
         } catch (const signal::SignalException &e) {
             LOGE("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
@@ -427,3 +443,4 @@ namespace skyline::gpu {
         return GetAndroidTransform(vkSurfaceCapabilities.currentTransform);
     }
 }
+
