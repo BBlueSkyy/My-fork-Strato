@@ -24,6 +24,6 @@ target_include_directories(vfs_tests PRIVATE host "${SKYLINE}"
     "${STRATO_ROOT}/app/libraries/fmt/include" "${STRATO_ROOT}/app/libraries/lz4/lib"
     "${STRATO_ROOT}/app/libraries/mbedtls/include")
 target_compile_definitions(vfs_tests PRIVATE FMT_HEADER_ONLY)
-target_link_libraries(vfs_tests PRIVATE mbedcrypto)
+target_link_libraries(vfs_tests PRIVATE mbedcrypto z)
 enable_testing()
 add_test(NAME storage_layers COMMAND vfs_tests)
