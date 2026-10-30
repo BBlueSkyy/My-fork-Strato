@@ -109,6 +109,20 @@ namespace skyline {
         static constexpr size_t AddressSpaceSize{1ULL << AddressSpaceBits};
         SegmentTable<SegmentTableEntry, AddressSpaceSize, VaGranularityBits, VaL2GranularityBits> blockSegmentTable; //!< A page table of all buffer mappings for O(1) lookups on full matches
 
+        // Repair the page table when a partial Map/Unmap inserts a boundary.
+        // Doing this on mapping changes keeps TranslateRange's normal case O(1).
+        // Unmapped spans have no fast-path entry and do not need rewriting.
+        void ClipPrecedingSegmentExtent(VaType virt) {
+            auto successor{std::lower_bound(this->blocks.begin(), this->blocks.end(), virt)};
+            if (successor == this->blocks.begin())
+                return;
+            const auto &previous{*std::prev(successor)};
+            if (!previous.phys || previous.virt >= virt)
+                return;
+            blockSegmentTable.Set(previous.virt, virt,
+                                  {previous.virt, previous.phys, virt - previous.virt, previous.extraInfo});
+        }
+
         TranslatedAddressRange TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {});
 
         std::pair<span<u8>, size_t> LookupBlockLocked(VaType virt, std::function<void(span<u8>)> cpuAccessCallback = {}) {
@@ -147,16 +161,85 @@ namespace skyline {
         }
 
         /**
+         * @brief Checks the entire range for sparse mappings under one lock.
+         * @note Failure path only: null translated spans alone cannot distinguish sparse pages from holes.
+         */
+        bool IsFullySparseRange(VaType virt, VaType size) {
+            if (!size || virt >= AddressSpaceSize || size > AddressSpaceSize - virt)
+                return false;
+
+            std::shared_lock lock{this->blockMutex};
+            auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [](auto address, const auto &block) {
+                return address < block.virt;
+            })};
+            if (successor == this->blocks.begin())
+                return false;
+            auto block{std::prev(successor)};
+            const auto end{virt + size};
+            while (block != this->blocks.end()) {
+                if (!block->phys || !block->extraInfo.sparseMapped)
+                    return false;
+                if (successor == this->blocks.end() || successor->virt >= end)
+                    return true;
+                block = successor++;
+            }
+            return false;
+        }
+
+        /**
+         * @brief Describes the first non-sparse span for bounded diagnostic logs.
+         * @note Only use on logged failures; never changes the translation path.
+         */
+        struct SparseRangeDiagnostic {
+            const char *state;
+            VaType firstAddress;
+            VaType bytes;
+        };
+
+        SparseRangeDiagnostic DiagnoseSparseRangeForDiagnostics(VaType virt, VaType size) {
+            if (!size || virt >= AddressSpaceSize || size > AddressSpaceSize - virt)
+                return {"invalid-range", virt, size};
+
+            std::shared_lock lock{this->blockMutex};
+            auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [](auto address, const auto &block) {
+                return address < block.virt;
+            })};
+            if (successor == this->blocks.begin())
+                return {"unmapped", virt, size};
+
+            auto block{std::prev(successor)};
+            const auto end{virt + size};
+            auto cursor{virt};
+            while (cursor < end) {
+                const auto spanEnd{successor == this->blocks.end() ? end : std::min(end, successor->virt)};
+                if (!block->phys || !block->extraInfo.sparseMapped) {
+                    const char *state{block->extraInfo.sparseMapped ? "invalid-sparse-block" :
+                                      block->phys ? "resident" : "unmapped"};
+                    return {state, cursor, spanEnd - cursor};
+                }
+                if (spanEnd == end)
+                    break;
+                cursor = spanEnd;
+                block = successor++;
+            }
+            return {"fully-sparse", virt, size};
+        }
+
+        /**
          * @brief Translates a region in the VA space to a corresponding set of regions in the PA space
          */
         TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}) {
             std::shared_lock lock{this->blockMutex};
 
-            // Fast path for when the range is mapped in a single block
-            auto [blockSpan, rangeOffset]{LookupBlockLocked(virt, cpuAccessCallback)};
-            if (blockSpan.size() - rangeOffset >= size) {
+            // Extents are clipped on Map/Unmap, so full-span hits can use the
+            // segment table without a binary search through the block vector.
+            auto [blockSpan, rangeOffset]{LookupBlockLocked(virt)};
+            if (rangeOffset <= blockSpan.size() && size <= blockSpan.size() - rangeOffset) {
+                auto mapped{blockSpan.subspan(blockSpan.valid() ? rangeOffset : 0, size)};
+                if (cpuAccessCallback && mapped.valid())
+                    cpuAccessCallback(mapped);
                 TranslatedAddressRange ranges;
-                ranges.push_back(blockSpan.subspan(blockSpan.valid() ? rangeOffset : 0, size));
+                ranges.push_back(mapped);
                 return ranges;
             }
 
@@ -250,12 +333,14 @@ namespace skyline {
         void Map(VaType virt, u8 *phys, VaType size, MemoryManagerBlockInfo extraInfo = {}) {
             std::scoped_lock lock(this->blockMutex);
             this->MapLocked(virt, phys, size, extraInfo);
+            ClipPrecedingSegmentExtent(virt);
             blockSegmentTable.Set(virt, virt + size, {virt, phys, size, extraInfo});
         }
 
         void Unmap(VaType virt, VaType size) {
             std::scoped_lock lock(this->blockMutex);
             this->UnmapLocked(virt, size);
+            ClipPrecedingSegmentExtent(virt);
             blockSegmentTable.Set(virt, virt + size, {});
         }
     };
