@@ -4,6 +4,7 @@
 #include <gpu.h>
 #include <common/signal.h>
 #include <common/settings.h>
+#include <gpu/readback_diagnostics.h>
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
 #include <soc.h>
@@ -380,16 +381,28 @@ namespace skyline::soc::gm20b {
                 LOGD("Processing pushbuffer: 0x{:X}, Size: 0x{:X}", gpEntry.Address(), +gpEntry.size);
 
                 if (!channelLocked) {
+                    const auto lockBeginNs{gpu::readback_diagnostics::NowNs()};
                     channelCtx.Lock();
+                    gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoLockNs,
+                        gpu::readback_diagnostics::NowNs() - lockBeginNs);
                     channelLocked = true;
                 }
 
+                const auto processBeginNs{gpu::readback_diagnostics::NowNs()};
                 Process(gpEntry);
+                gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoEntries);
+                gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoWords, gpEntry.size);
+                gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoProcessNs,
+                    gpu::readback_diagnostics::NowNs() - processBeginNs);
             }, [this, &channelLocked]() {
                 // If we run out of GpEntries to process ensure we submit any remaining GPU work before waiting for more to arrive
                 LOGD("Finished processing pushbuffer batch");
                 if (channelLocked) {
+                    const auto drainBeginNs{gpu::readback_diagnostics::NowNs()};
                     channelCtx.executor.Submit();
+                    gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoDrainSubmits);
+                    gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoDrainNs,
+                        gpu::readback_diagnostics::NowNs() - drainBeginNs);
                     channelCtx.Unlock();
                     channelLocked = false;
                 }

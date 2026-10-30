@@ -825,8 +825,12 @@ namespace skyline::gpu::interconnect {
                 cv.notify_one();
             });
 
+            const auto syncWaitBeginNs{readback_diagnostics::NowNs()};
             std::unique_lock lock{mutex};
             cv.wait(lock, [&gpuDone] { return gpuDone; });
+            readback_diagnostics::frames.Add(readback_diagnostics::SyncSubmitWaits);
+            readback_diagnostics::frames.Add(readback_diagnostics::SyncSubmitWaitNs,
+                readback_diagnostics::NowNs() - syncWaitBeginNs);
         }
     }
 

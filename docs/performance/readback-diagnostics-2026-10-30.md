@@ -143,3 +143,31 @@ command submission, GPU execution, presentation order, or fence waiting.
 One counter update per classified frame plus two lock-free syncpoint reads
 per active fence adds some diagnostic overhead. Compare only equivalent
 settings and scenes; do not claim a FPS increase from these probes.
+
+## Follow-up: CPU-side decode and mandatory completion waits
+
+The next device test should compare a similar slow scene with `GpuDecodeDiag`
+alongside `FrameDiag`. The October 30 sample had **1,238/1,238 frames
+classified guest-pending at the start of the Host1x wait** between 45–115 s,
+17.5 presented FPS, and approximately 26.0 ms/frame waiting on the Host1x host
+syncpoint. This is **not** proof that the entire 26.0 ms is spent decoding
+guest commands: the condition can transition through guest-ready to
+host-pending during the one blocking Wait().
+
+`GpuDecodeDiag` emits interval deltas: `fifo_entries`, `fifo_words`,
+`fifo_process_ns` for GPFIFO entry processing in ChannelGpfifo::Run;
+`fifo_lock_ns` for taking the channel lock;
+`fifo_drain_submits` / `fifo_drain_ns` for idle-batch flushes;
+and `synchronous_waits` / `synchronous_wait_ns` for the explicit
+CommandExecutor::Submit(wait=true) completion wait. Other possible CPU
+waits such as memory-trap synchronization and unrelated kernel threads are
+not fully captured. Times are wall-clock totals, including scheduling, not
+per-frame GPU execution times. They can overlap across threads or be
+observed in neighboring presentation windows. This is instrumented only in
+the Draft diagnostic build and should not ship in a normal optimized build.
+
+The desired final solution is *automatic optimization with correct memory
+and synchronization semantics*, not relying on enabling Fast GPU Readback
+or Fast Readback Writes, and not adding a new user-facing switch.
+Do not make semantic changes until an actual high-cost work path is proven
+by device evidence and compared against historical good PR #293 builds.

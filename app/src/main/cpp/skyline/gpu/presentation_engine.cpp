@@ -324,6 +324,12 @@ namespace skyline::gpu {
                             delta(SyncGuestPending), delta(SyncGuestPendingNs),
                             delta(SyncHostPending), delta(SyncHostPendingNs),
                             delta(SyncHostReady), delta(SyncHostReadyNs));
+                        LOGINF("GpuDecodeDiag window_ns={} fifo_entries={} fifo_words={} fifo_process_ns={} fifo_lock_ns={} fifo_drain_submits={} fifo_drain_ns={} synchronous_waits={} synchronous_wait_ns={}",
+                            reportAtNs - previousAtNs, delta(GpfifoEntries),
+                            delta(GpfifoWords), delta(GpfifoProcessNs),
+                            delta(GpfifoLockNs), delta(GpfifoDrainSubmits),
+                            delta(GpfifoDrainNs), delta(SyncSubmitWaits),
+                            delta(SyncSubmitWaitNs));
                     }
                     previousFrame = currentFrame;
                     previousAtNs = reportAtNs;
