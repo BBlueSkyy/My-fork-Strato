@@ -98,7 +98,9 @@ namespace skyline::gpu {
         std::unique_lock lock(mutex);
         surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
 
+        const auto guestFenceBeginNs{readback_diagnostics::NowNs()};
         frame.fence.Wait(state.soc->host1x);
+        readback_diagnostics::frames.Add(readback_diagnostics::GuestFenceNs, readback_diagnostics::NowNs() - guestFenceBeginNs);
 
         // A retained display view may belong to an older guest representation.
         frame.textureView->texture->ReconcileAliases();
@@ -127,11 +129,15 @@ namespace skyline::gpu {
 
         auto &acquireSemaphore{acquireSemaphores[frameIndex]};
         auto &frameFence{frameFences[frameIndex]};
-        if (frameFence)
+        if (frameFence) {
+            const auto swapchainFenceBeginNs{readback_diagnostics::NowNs()};
             frameFence->Wait();
+            readback_diagnostics::frames.Add(readback_diagnostics::SwapchainFenceNs, readback_diagnostics::NowNs() - swapchainFenceBeginNs);
+        }
 
         frameIndex = (frameIndex + 1) % swapchainImageCount;
 
+        const auto acquireBeginNs{readback_diagnostics::NowNs()};
         std::pair<vk::Result, u32> nextImage;
         while (nextImage = vkSwapchain->acquireNextImage(std::numeric_limits<u64>::max(), *acquireSemaphore, {}), nextImage.first != vk::Result::eSuccess) [[unlikely]] {
             if (nextImage.first == vk::Result::eSuboptimalKHR)
@@ -140,16 +146,21 @@ namespace skyline::gpu {
                 throw exception("vkAcquireNextImageKHR returned an unhandled result '{}'", vk::to_string(nextImage.first));
         }
 
+        readback_diagnostics::frames.Add(readback_diagnostics::AcquireSwapchainNs, readback_diagnostics::NowNs() - acquireBeginNs);
         auto &nextImageTexture{images.at(nextImage.second)};
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
+        const auto textureSyncBeginNs{readback_diagnostics::NowNs()};
         texture->SynchronizeHost();
+        readback_diagnostics::frames.Add(readback_diagnostics::TextureSyncNs, readback_diagnostics::NowNs() - textureSyncBeginNs);
+        const auto displayCopyBeginNs{readback_diagnostics::NowNs()};
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,
             .layerCount = 1,
         });
 
+        readback_diagnostics::frames.Add(readback_diagnostics::DisplayCopyNs, readback_diagnostics::NowNs() - displayCopyBeginNs);
         frameFence = nextImageTexture->cycle;
 
         auto getMonotonicNsNow{[]() -> i64 {
@@ -195,6 +206,7 @@ namespace skyline::gpu {
         if ((result = window->perform(window, NATIVE_WINDOW_GET_NEXT_FRAME_ID, &frameId)))
             throw exception("Retrieving the next frame's ID failed with {}", result);
 
+        const auto queuePresentBeginNs{readback_diagnostics::NowNs()};
         {
             std::scoped_lock queueLock{gpu.queueMutex};
             std::ignore = gpu.vkQueue.presentKHR(vk::PresentInfoKHR{
@@ -206,6 +218,7 @@ namespace skyline::gpu {
             }); // We don't care about suboptimal images as they are caused by not respecting the transform hint, we handle transformations externally
         }
 
+        readback_diagnostics::frames.Add(readback_diagnostics::QueuePresentNs, readback_diagnostics::NowNs() - queuePresentBeginNs);
         if (!firstFramePresented.exchange(true))
             state.jvm->NotifyFirstFramePresented();
 
@@ -242,7 +255,10 @@ namespace skyline::gpu {
 
         try {
             presentQueue.Process([this](const PresentableFrame &frame) {
+                const auto presentBeginNs{readback_diagnostics::NowNs()};
                 PresentFrame(frame);
+                readback_diagnostics::frames.Add(readback_diagnostics::PresentCpuNs, readback_diagnostics::NowNs() - presentBeginNs);
+                readback_diagnostics::frames.Add(readback_diagnostics::PresentedFrames);
                 frame.presentCallback(); // We're calling the callback here as it's outside of all the locks in PresentFrame
 
                 skipSignal = true;
@@ -251,7 +267,8 @@ namespace skyline::gpu {
                 // Report outside PresentFrame's resource/queue locks. Two lines
                 // per five seconds, cumulative; these are not GPU timestamps.
                 static readback_diagnostics::Reporter readbackReporter;
-                if (readbackReporter.Due(readback_diagnostics::NowNs())) {
+                const auto reportAtNs{readback_diagnostics::NowNs()};
+                if (readbackReporter.Due(reportAtNs)) {
                     using namespace readback_diagnostics;
                     for (bool isTexture : {false, true}) {
                         auto v{(isTexture ? textures : buffers).Snapshot()};
@@ -260,6 +277,24 @@ namespace skyline::gpu {
                             v[ReadTrap], v[WriteTrap], v[NotGpuDirty], v[Retry], v[ReadSync], v[WriteSync],
                             v[Disabled], v[BelowThreshold], v[Aliased], v[Freed], v[FastEligible], v[FastTaken], v[FastWrites], v[WaitCount], v[WaitNs]);
                     }
+                    // The first presented frame establishes the sampling baseline.
+                    static FrameValues previousFrame{};
+                    static uint64_t previousAtNs{};
+                    const auto currentFrame{frames.Snapshot()};
+                    if (previousAtNs) {
+                        auto delta{[&](FrameMetric metric) -> uint64_t {
+                            return currentFrame[metric] - previousFrame[metric];
+                        }};
+                        LOGINF("FrameDiag window_ns={} frames={} present_cpu_ns={} guest_fence_ns={} swapchain_fence_ns={} acquire_ns={} texture_sync_ns={} display_copy_ns={} queue_present_ns={} record_slots={} record_work_ns={} submit_ns={} acquire_slots={} acquire_slot_wait_ns={} completion_waits={} completion_wait_ns={}",
+                            reportAtNs - previousAtNs, delta(PresentedFrames), delta(PresentCpuNs),
+                            delta(GuestFenceNs), delta(SwapchainFenceNs), delta(AcquireSwapchainNs),
+                            delta(TextureSyncNs), delta(DisplayCopyNs), delta(QueuePresentNs),
+                            delta(RecordedSlots), delta(RecordWorkNs), delta(SubmitNs),
+                            delta(AcquireSlots), delta(AcquireSlotWaitNs),
+                            delta(CompletedFences), delta(CompletionWaitNs));
+                    }
+                    previousFrame = currentFrame;
+                    previousAtNs = reportAtNs;
                 }
             }, [] {});
         } catch (const signal::SignalException &e) {

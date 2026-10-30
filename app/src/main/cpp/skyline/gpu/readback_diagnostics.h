@@ -40,6 +40,29 @@ namespace skyline::gpu::readback_diagnostics {
         return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
     }
+    // Diagnostic wall-clock phase totals. They are not GPU timestamps and
+    // separate threads' measurements can overlap.
+    enum FrameMetric : size_t {
+        PresentedFrames, PresentCpuNs, GuestFenceNs, SwapchainFenceNs,
+        AcquireSwapchainNs, TextureSyncNs, DisplayCopyNs, QueuePresentNs,
+        RecordedSlots, RecordWorkNs, SubmitNs, AcquireSlots, AcquireSlotWaitNs,
+        CompletedFences, CompletionWaitNs, FrameMetricCount
+    };
+    using FrameValues = std::array<uint64_t, FrameMetricCount>;
+    struct FrameCounters {
+        std::array<std::atomic<uint64_t>, FrameMetricCount> values{};
+        void Add(FrameMetric metric, uint64_t amount = 1) {
+            values[metric].fetch_add(amount, std::memory_order_relaxed);
+        }
+        FrameValues Snapshot() const {
+            FrameValues result{};
+            for (size_t i{}; i < FrameMetricCount; ++i)
+                result[i] = values[i].load(std::memory_order_relaxed);
+            return result;
+        }
+    };
+    inline FrameCounters frames;
+
     // Called only by the presentation thread, outside its frame/resource locks.
     struct Reporter {
         uint64_t last{};

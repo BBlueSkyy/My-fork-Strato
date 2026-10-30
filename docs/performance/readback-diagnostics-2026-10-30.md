@@ -1,6 +1,6 @@
 # Readback diagnostic plan and interpretation
 
-Base: master 3900c30fa7b982f6f5369ccd8f7b6e51d23e6987. Separate diagnostic branch;
+Base: master b8593d8b2c2e9742a4f1f9edfaa935f653cd3663. Separate diagnostic branch;
 no optimizations from Draft #401, no changes to #400, no merge.
 
 The device test of #401 showed no perceptible Zelda improvement. The user reports
@@ -67,7 +67,36 @@ behavior remain CI/device validation. No FPS gain or compatibility claim.
 On Moto G100: keep the same Turnip, save, mods, clock option and other settings.
 Use INFO logging. Start Zelda with both readback options enabled, wait for shader
 loading, play the same slow scene for 30 seconds, then exit normally and export
-the emulation log. Record APK commit, Turnip version and approximate FPS. A second
-run with only Fast GPU Readback disabled can be requested if the first log shows
-its paths matter; no need to generate another APK. Do not remove the alias guard
+the emulation log. Record APK commit, Turnip version and approximate FPS. The shortcut was confirmed active on Moto G100; do not repeat its on/off
+comparison without a new hypothesis. Do not remove the alias guard
 or lower thresholds based solely on these counts.
+
+## Frame-phase diagnostics (follow-up)
+
+The latest device log confirmed 3,625 buffer fast paths and 3,624 fast-write
+paths at 80.4 seconds, yet no perceptible gain. It also reported 1,417
+preparatory waits totaling 13.92 seconds across potentially parallel threads.
+This cumulative time does not equal main-thread stalling.
+
+The new `FrameDiag` line prints **five-second interval deltas**, not cumulative
+totals, after the first presentation establishes a baseline. All times are
+CPU-side wall durations in nanoseconds; none is a Vulkan GPU timestamp.
+`window_ns` and `frames` measure presented output throughput.
+`present_cpu_ns` includes blocking presentation work and API calls.
+`guest_fence_ns`, `swapchain_fence_ns`, and `acquire_ns` separate
+presentation-side blocking stages. `texture_sync_ns` measures
+SynchronizeHost, `display_copy_ns` CPU display-copy preparation and
+`queue_present_ns` queueMutex acquisition plus presentKHR.
+`record_slots` and `record_work_ns` describe recorded command slots
+and time executing their nodes. `submit_ns` is the CPU wall duration of
+SubmitCommandBuffer (including its internal synchronization), not execution on
+the GPU. `acquire_slots` and `acquire_slot_wait_ns` measure command-record
+slot backpressure; `completion_waits` and `completion_wait_ns`
+measure the execution-waiter's fence completion wall durations.
+
+Values across different threads may overlap, and must not be summed into one
+frame budget. The diagnostic branch still does not measure guest CPU emulation,
+all Vulkan work, or GPU device execution. It cannot by itself prove the
+historical #294 regression. No readback thresholds, GPU ordering, copy
+semantics, alias protections or workflow settings change. The diagnostic APK
+has measurement overhead and is not a performance benchmark baseline.
