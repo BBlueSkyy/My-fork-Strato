@@ -4,6 +4,7 @@
 #include <common.h>
 #include <kernel/types/KProcess.h>
 #include <vfs/region_backing.h>
+#include <vfs/ticket.h>
 #include "nca.h"
 #include "xci.h"
 #include "program_content.h"
@@ -40,13 +41,16 @@ namespace skyline::loader {
         std::vector<ProgramNcaCandidate> programs;
         std::vector<vfs::CNMT> metadata;
         if (secure) {
+            vfs::ImportTickets(secure, keyStore);
             root = secure->OpenDirectory("", {false, true});
             for (const auto &entry : root->Read()) {
                 if (entry.name.substr(entry.name.find_last_of('.') + 1) != "nca")
                     continue;
 
                 try {
-                    auto nca{vfs::NCA(secure->OpenFile(entry.name), keyStore, true, vfs::NCAParseMode::ProgramDeferred)};
+                    // Rights-managed NCAs need their title key even inside an XCI.
+                    // Let the NCA rights ID select title-key versus key-area decryption.
+                    auto nca{vfs::NCA(secure->OpenFile(entry.name), keyStore, false, vfs::NCAParseMode::ProgramDeferred)};
 
                     if (nca.contentType == vfs::NCAContentType::Program)
                         programs.push_back({entry.name, std::move(nca)});
