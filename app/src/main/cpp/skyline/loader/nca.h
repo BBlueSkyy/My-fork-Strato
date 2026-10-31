@@ -5,6 +5,7 @@
 
 #include <vfs/nca.h>
 #include "loader.h"
+#include "extracted.h"
 
 namespace skyline::loader {
     /**
@@ -28,6 +29,7 @@ namespace skyline::loader {
     class ExtractedLoader : public Loader {
       public:
         explicit ExtractedLoader(const std::string &gameDirectory);
+        explicit ExtractedLoader(const std::shared_ptr<JavaExtractedSource> &source);
 
         void *LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process,
                               const DeviceState &state) override;
