@@ -12,6 +12,7 @@
 #include "skyline/common/android_settings.h"
 #include "skyline/common/trace.h"
 #include "skyline/loader/loader.h"
+#include "skyline/loader/extracted.h"
 #include "skyline/vfs/android_asset_filesystem.h"
 #include "skyline/os.h"
 #include "skyline/jvm.h"
@@ -71,7 +72,8 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
     jstring publicAppFilesPathJstring,
     jstring privateAppFilesPathJstring,
     jstring nativeLibraryPathJstring,
-    jobject assetManager
+    jobject assetManager,
+    jobject extractedSource
 ) {
     skyline::signal::ScopedStackBlocker stackBlocker; // We do not want anything to unwind past JNI code as there are invalid stack frames which can lead to a segmentation fault
     Fps = 0;
@@ -161,6 +163,11 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
             std::make_shared<skyline::vfs::AndroidAssetFileSystem>(AAssetManager_fromJava(env, assetManager)),
             programLaunchState
         )};
+        // Keep the SAF document bridge alive for the lifetime of emulation.
+        if (static_cast<skyline::loader::RomFormat>(romType) == skyline::loader::RomFormat::EXTRACTED &&
+            extractedSource)
+            os->extractedSource = std::make_shared<skyline::loader::JavaExtractedSource>(env, extractedSource);
+
         OsWeak = os;
         GpuWeak = os->state.gpu;
         AudioWeak = os->state.audio;
