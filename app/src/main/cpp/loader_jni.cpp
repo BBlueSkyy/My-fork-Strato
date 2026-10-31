@@ -33,33 +33,19 @@ extern "C" JNIEXPORT jint JNICALL Java_org_stratoemu_strato_loader_RomFile_popul
         skyline::loader::RomFormat format{static_cast<skyline::loader::RomFormat>(jformat)};
 
         if (format == skyline::loader::RomFormat::EXTRACTED) {
-            // The FD points to exefs/main. Validate the extracted tree and read
-            // the real program ID from its NPDM instead of guessing from a name.
-            std::error_code error;
-            const auto path{std::filesystem::canonical(
-                std::filesystem::path("/proc/self/fd") / std::to_string(fd), error)};
-            if (error || path.filename() != "main" || path.parent_path().filename() != "exefs")
-                return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);
-
-            auto exefs{std::make_shared<skyline::vfs::OsFileSystem>(path.parent_path().string())};
-            if (!exefs->FileExists("main") || !exefs->FileExists("rtld") || !exefs->FileExists("main.npdm"))
-                return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);
-            const skyline::vfs::NPDM npdm(exefs->OpenFile("main.npdm"));
-
-            jclass clazz{env->GetObjectClass(thiz)};
-            const auto nameField{env->GetFieldID(clazz, "applicationName", "Ljava/lang/String;")};
-            const auto titleIdField{env->GetFieldID(clazz, "applicationTitleId", "Ljava/lang/String;")};
-            const auto typeField{env->GetFieldID(clazz, "romTypeInt", "I")};
-            if (!nameField || !titleIdField || !typeField)
-                return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);
-
-            const auto name{NewMetadataString(env, path.parent_path().parent_path().filename().string())};
+            // The frontend supplies the NPDM descriptor obtained through SAF.
+            // Its native path is intentionally unavailable on scoped-storage.
+            auto backing{std::make_shared<skyline::vfs::OsBacking>(fd)};
+            const skyline::vfs::NPDM npdm(backing);
             const auto titleId{NewMetadataString(env, fmt::format("{:016X}", npdm.aci0.programId))};
-            if (!name || !titleId)
+            if (!titleId)
                 return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);
-
-            env->SetObjectField(thiz, nameField, name);
-            env->SetObjectField(thiz, titleIdField, titleId);
+            jclass clazz{env->GetObjectClass(thiz)};
+            const auto titleField{env->GetFieldID(clazz, "applicationTitleId", "Ljava/lang/String;")};
+            const auto typeField{env->GetFieldID(clazz, "romTypeInt", "I")};
+            if (!titleField || !typeField)
+                return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);
+            env->SetObjectField(thiz, titleField, titleId);
             env->SetIntField(thiz, typeField, 128); // RomType.Base
             return env->ExceptionCheck() ? static_cast<jint>(skyline::loader::LoaderResult::ParsingError)
                                          : static_cast<jint>(skyline::loader::LoaderResult::Success);
