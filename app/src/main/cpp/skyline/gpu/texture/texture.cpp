@@ -89,14 +89,27 @@ namespace skyline::gpu {
         return ranges::all_of(mappings, [](const auto &mapping) { return mapping.valid(); });
     }
 
-    TextureView::TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format, vk::ComponentMapping mapping) : texture(std::move(texture)), type(type), format(format), mapping(mapping), range(range) {}
+    TextureView::TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format, vk::ComponentMapping mapping)
+        : texture(std::move(texture)), type(type), format(format), mapping(mapping), range(range) {
+        // Native-format views don't need a Vulkan format-property query.
+        // For foreign-format views, query once while building this immutable view.
+        if (format && format->vkFormat != this->texture->format->vkFormat) {
+            cachedForeignFormat = format->vkFormat;
+            cachedForeignFormatProperties = this->texture->gpu.vkPhysicalDevice.getFormatProperties(cachedForeignFormat);
+        }
+    }
 
     Texture::TextureViewStorage::TextureViewStorage(vk::ImageViewType type, texture::Format format, vk::ComponentMapping mapping, vk::ImageSubresourceRange range, vk::raii::ImageView &&vkView) : type(type), format(format), mapping(mapping), range(range), vkView(std::move(vkView)) {}
 
     vk::ImageUsageFlags TextureView::GetUsage() const {
         auto usage{texture->usage};
         if (!format || format->vkFormat == texture->format->vkFormat) return usage;
-        const auto properties{texture->gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat)};
+        // Normally use the view's cached physical-device capabilities. The
+        // fallback preserves the old behavior if a caller ever replaces the
+        // public view format after construction.
+        const auto properties{cachedForeignFormat == format->vkFormat
+            ? cachedForeignFormatProperties
+            : texture->gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat)};
         const auto features{texture->tiling == vk::ImageTiling::eOptimal ? properties.optimalTilingFeatures : properties.linearTilingFeatures};
         if (!(features & vk::FormatFeatureFlagBits::eSampledImage)) usage &= ~vk::ImageUsageFlagBits::eSampled;
         if (!(features & vk::FormatFeatureFlagBits::eStorageImage)) usage &= ~vk::ImageUsageFlagBits::eStorage;

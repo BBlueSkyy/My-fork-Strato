@@ -331,6 +331,12 @@ namespace skyline::gpu {
         vk::ImageView identityVkView{};
         u64 identityVkViewGeneration{};
 
+        // Physical-device format capabilities do not change during a view's lifetime.
+        // Keep the immutable query result per view rather than asking the Vulkan
+        // driver again when recording each render-pass attachment.
+        vk::Format cachedForeignFormat{vk::Format::eUndefined};
+        vk::FormatProperties cachedForeignFormatProperties{};
+
       public:
         LockableSharedPtr<Texture> texture;
         vk::ImageViewType type;
