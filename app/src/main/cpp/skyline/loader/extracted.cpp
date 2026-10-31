@@ -61,6 +61,8 @@ namespace skyline::loader {
             if (relative.empty() || relative.front() == '/' || relative.find("..") != std::string::npos ||
                 relative.find('\\') != std::string::npos)
                 throw exception("Invalid extracted-game relative path");
+            if (!fileIndices.emplace(relative, files.size()).second)
+                throw exception("Duplicate extracted-game document path");
             files.emplace_back(File{std::move(relative), static_cast<size_t>(lengths[i])});
         }
         title = JniString(env, name);
@@ -80,11 +82,9 @@ namespace skyline::loader {
     }
 
     std::shared_ptr<vfs::Backing> JavaExtractedSource::OpenFile(const std::string &path) {
-        auto it{std::find_if(files.begin(), files.end(), [&](const File &file) {
-            return file.path == path;
-        })};
-        if (it == files.end()) return nullptr;
-        return std::make_shared<DocumentBacking>(shared_from_this(), static_cast<size_t>(it - files.begin()));
+        const auto it{fileIndices.find(path)};
+        if (it == fileIndices.end()) return nullptr;
+        return std::make_shared<DocumentBacking>(shared_from_this(), it->second);
     }
 
     size_t JavaExtractedSource::Read(size_t index, span<u8> output, size_t offset) {
