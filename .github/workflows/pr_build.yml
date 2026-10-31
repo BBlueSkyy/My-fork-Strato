@@ -1,10 +1,9 @@
 # A workflow to build and upload APKs for pull requests
-name: PR Build
+name: "Teste SSBO INVERSO — PR #294"
 
 on:
-  pull_request:
-    types: [ opened, synchronize, reopened ]
-    branches: [ master, UE4-fixes ]
+  push:
+    branches: [ investigate/pr294-ssbo-inverse-20261031 ]
 
 # Only allow the latest build to run for a given PR, and cancel any previous builds
 concurrency:
@@ -18,6 +17,8 @@ jobs:
       - name: Git Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
           submodules: recursive
     
       - name: Debug NDK
@@ -51,23 +52,27 @@ jobs:
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand assembleDevRelease assembleDevReldebug
-      - name: Rename APKs
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand assembleDevRelease
+      - name: Verify experimental provenance
         run: |
-          mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
-          mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
-
-      - name: Upload Release APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git rev-parse HEAD^)" = "28bcb957a9f018212f3b0a2e5628028bdb22bf69"
+          test "$(git -C app/libraries/shader-compiler rev-parse HEAD)" = "dcb938866f4234963fcbc199f2443438d8ef6f07"
+          {
+            echo "Teste SSBO INVERSO — PR #294; experimental, not a permanent fix"
+            echo "Base: 28bcb957a9f018212f3b0a2e5628028bdb22bf69"
+            echo "Host: $(git rev-parse HEAD)"
+            echo "Shader compiler: $(git -C app/libraries/shader-compiler rev-parse HEAD)"
+            echo "Variant: assembleDevRelease; arm64-v8a"
+            sha256sum app/build/outputs/apk/dev/release/app-dev-release.apk
+          } > Teste-SSBO-Inverso-PR294-provenance.txt
+      - name: Rename ARM64 DevRelease APK
+        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk Strato-Teste-SSBO-Inverso-PR294-arm64-devrelease.apk
+      - name: Upload Teste SSBO PR294
         uses: actions/upload-artifact@v4
         with:
-          name: strato-pr${{ github.event.number }}-release.apk
-          path: strato-pr${{ github.event.number }}-release.apk
-
-      - name: Upload Debug APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: strato-pr${{ github.event.number }}-reldebug.apk
-          path: strato-pr${{ github.event.number }}-reldebug.apk
+          name: Strato-Teste-SSBO-Inverso-PR294-ARM64-DevRelease
+          if-no-files-found: error
+          path: |
+            Strato-Teste-SSBO-Inverso-PR294-arm64-devrelease.apk
+            Teste-SSBO-Inverso-PR294-provenance.txt

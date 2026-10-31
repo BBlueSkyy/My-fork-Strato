@@ -53,6 +53,7 @@ namespace skyline::gpu {
         u32 subgroupSize{}; //!< Size of a subgroup on the host GPU
         u32 hostVisibleCoherentCachedMemoryType{std::numeric_limits<u32>::max()};
         u32 minimumStorageBufferAlignment{}; //!< Minimum alignment for storage buffers passed to shaders
+        u32 maximumStorageBufferRange{}; //!< Vulkan limit for storage descriptor ranges
 
         u32 vendorId{}; //!< The `vendorID` Vulkan property
         u32 deviceId{}; //!< The `deviceID` Vulkan property

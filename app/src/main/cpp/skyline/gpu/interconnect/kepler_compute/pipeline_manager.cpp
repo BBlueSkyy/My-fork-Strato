@@ -128,7 +128,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         }
     }
 
-    DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+    DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, const std::array<u32, 3> &groups) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
 
         u32 writeIdx{};
@@ -208,10 +208,13 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         writeBufferDescs(vk::DescriptorType::eStorageBuffer, shaderStage.info.storage_buffers_descriptors,
                          [&](const Shader::StorageBufferDescriptor &desc, size_t) {
+                             auto &cachedView{storageBufferViews[storageBufferIdx++]};
+                             const auto accessSize{desc.access_range.GetSize(groups, sourcePackedState.dimensions)};
                              auto binding{GetStorageBufferBinding(ctx, desc, constantBuffers[desc.cbuf_index],
-                                                                  storageBufferViews[storageBufferIdx++],
+                                                                  cachedView,
                                                                   vk::PipelineStageFlagBits::eComputeShader,
-                                                                  srcStageMask, dstStageMask)};
+                                                                  srcStageMask, dstStageMask,
+                                                                  accessSize)};
                              return binding;
                          });
 
