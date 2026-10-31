@@ -26,6 +26,7 @@ import org.stratoemu.strato.data.AppItemTag
 import org.stratoemu.strato.databinding.AppDialogBinding
 import org.stratoemu.strato.utils.NspFilePicker
 import org.stratoemu.strato.loader.LoaderResult
+import org.stratoemu.strato.loader.RomFormat
 import org.stratoemu.strato.settings.SettingsActivity
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -183,14 +184,16 @@ class AppDialog : BottomSheetDialogFragment() {
         binding.gameTitleId.text = item.titleId
         binding.gameAuthor.text = item.author
 
-        binding.gamePlay.isEnabled = item.loaderResult == LoaderResult.Success
+        binding.gamePlay.isEnabled = item.loaderResult == LoaderResult.Success &&
+            item.format != RomFormat.SWITCH2_EXTRACTED
         binding.gamePlay.setOnClickListener {
             startActivity(Intent(activity, EmulationActivity::class.java).apply {
                 putExtras(requireArguments())
             })
         }
 
-        binding.gameSettings.isEnabled = item.loaderResult == LoaderResult.Success
+        binding.gameSettings.isEnabled = item.loaderResult == LoaderResult.Success &&
+            item.format != RomFormat.SWITCH2_EXTRACTED
         binding.gameSettings.setOnClickListener {
             startActivity(Intent(activity, SettingsActivity::class.java).apply {
                 putExtras(requireArguments())
@@ -198,7 +201,8 @@ class AppDialog : BottomSheetDialogFragment() {
         }
 
         val shortcutManager = requireActivity().getSystemService(ShortcutManager::class.java)
-        binding.gamePin.isEnabled = shortcutManager.isRequestPinShortcutSupported
+        binding.gamePin.isEnabled = shortcutManager.isRequestPinShortcutSupported &&
+            item.format != RomFormat.SWITCH2_EXTRACTED
 
         binding.gamePin.setOnClickListener {
             val info = ShortcutInfo.Builder(context, item.title)
