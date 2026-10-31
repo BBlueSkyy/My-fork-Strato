@@ -2,6 +2,7 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #pragma once
+#include <source_location>
 
 #include <boost/functional/hash.hpp>
 #include <tsl/robin_map.h>
@@ -379,7 +380,7 @@ namespace skyline::gpu {
          * @param skipTrap If true, setting up a CPU trap will be skipped
          * @note The buffer **must** be locked prior to calling this
          */
-        void SynchronizeHost(bool skipTrap = false);
+        void SynchronizeHost(bool skipTrap = false, std::source_location diagnostic = std::source_location::current());
 
         /**
          * @brief Synchronizes the guest buffer with the host buffer
@@ -388,7 +389,7 @@ namespace skyline::gpu {
          * @return If the buffer's contents were successfully synchronized, this'll only be false on non-blocking operations or lack of a guest buffer
          * @note The buffer **must** be locked prior to calling this
          */
-        bool SynchronizeGuest(bool skipTrap = false, bool nonBlocking = false);
+        bool SynchronizeGuest(bool skipTrap = false, bool nonBlocking = false, std::source_location diagnostic = std::source_location::current());
 
         /**
          * @brief Synchronizes the guest buffer with the host buffer immediately, flushing GPU work if necessary

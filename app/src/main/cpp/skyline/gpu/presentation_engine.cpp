@@ -241,14 +241,15 @@ namespace skyline::gpu {
         AsyncLogger::UpdateTag();
 
         uint64_t diagnosticFrames{}, diagnosticFirst{}, diagnosticLast{};
-        size_t diagnosticBindingCursor{}, diagnosticBufferCursor{};
+        size_t diagnosticBindingCursor{}, diagnosticBufferCursor{}, diagnosticDirtyCursor{};
+        std::vector<uint64_t> diagnosticDirtyReported(ssbo_diagnostics::dirty.entries.size());
         std::array<uint64_t, 2048> diagnosticBindingsReported{};
         std::array<bool, 32768> diagnosticRelated{};
         std::vector<uint64_t> diagnosticBuffersReported(32768);
         try {
             presentQueue.Process([this, &diagnosticFrames, &diagnosticFirst, &diagnosticLast,
                 &diagnosticBindingCursor, &diagnosticBufferCursor, &diagnosticBindingsReported,
-                &diagnosticBuffersReported, &diagnosticRelated](const PresentableFrame &frame) {
+                &diagnosticBuffersReported, &diagnosticRelated, &diagnosticDirtyCursor, &diagnosticDirtyReported](const PresentableFrame &frame) {
                 PresentFrame(frame);
                 frame.presentCallback(); // We're calling the callback here as it's outside of all the locks in PresentFrame
                 skipSignal = true;
@@ -301,6 +302,21 @@ namespace skyline::gpu {
                         e.fastCopies.load(std::memory_order_relaxed), e.fastBytes.load(std::memory_order_relaxed),
                         e.coalesceCopies.load(std::memory_order_relaxed), e.coalesceBytes.load(std::memory_order_relaxed), e.coalesceNs.load(std::memory_order_relaxed));
                 }
+                size_t dirtyRows{};
+                for(size_t scanned{};scanned<dirty.entries.size() && dirtyRows<16;++scanned) {
+                    const auto index{diagnosticDirtyCursor};diagnosticDirtyCursor=(index+1)%dirty.entries.size();
+                    const auto &e{dirty.entries[index]};
+                    if(e.state.load(std::memory_order_acquire)!=2)continue;
+                    const auto revision{e.revision.load(std::memory_order_acquire)};
+                    const auto &k{e.key};
+                    if(!revision || diagnosticDirtyReported[index]==revision || k.buffer>=diagnosticRelated.size() || !diagnosticRelated[k.buffer])continue;
+                    diagnosticDirtyReported[index]=revision;++dirtyRows;
+                    LOGINF("SsboDirty buffer={} origin={} before={} after={} extent={} offset={} size={} caller={} line={} calls={} copied={} copy_ns={} wait_ns={}",
+                        k.buffer,unsigned(k.origin),k.before,k.after,k.extent,k.offset,k.size,k.caller,k.line,
+                        e.calls.load(std::memory_order_relaxed),e.copied.load(std::memory_order_relaxed),
+                        e.copyNs.load(std::memory_order_relaxed),e.waitNs.load(std::memory_order_relaxed));
+                }
+                LOGINF("SsboDirty capacity rows={} dropped={}",dirtyRows,dirty.dropped.load(std::memory_order_relaxed));
                 LOGINF("SsboTrace totals frames={} elapsed_ns={} binding_rows={} buffer_rows={} bindings_dropped={} buffers_created={} buffers_dropped={} pipelines_dropped={}",
                     diagnosticFrames, static_cast<uint64_t>(now) - diagnosticFirst, bindingRows, bufferRows,
                     bindings.dropped.load(std::memory_order_relaxed), buffers.created.load(std::memory_order_relaxed),

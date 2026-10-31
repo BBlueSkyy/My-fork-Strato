@@ -96,12 +96,16 @@ namespace skyline::gpu {
                 const auto diagnosticStart{util::GetTimeNs()};
                 std::memcpy(dstPtr + dstOffset, srcPtr, copySize);
                 ssbo_diagnostics::buffers.Coalesce(newBuffer->id, copySize, util::GetTimeNs() - diagnosticStart);
+                ssbo_diagnostics::dirty.Record({newBuffer->id,dstOffset,copySize,ssbo_diagnostics::Origin::Coalesce,
+                    3,3,1,__func__,__LINE__},copySize);
             } else if (dstGuest.begin().base() > srcGuest.begin().base()) {
                 size_t srcOffset{static_cast<size_t>(dstGuest.begin().base() - srcGuest.begin().base())};
                 size_t copySize{std::min(dstGuest.size(), srcGuest.size() - srcOffset)};
                 const auto diagnosticStart{util::GetTimeNs()};
                 std::memcpy(dstPtr, srcPtr + srcOffset, copySize);
                 ssbo_diagnostics::buffers.Coalesce(newBuffer->id, copySize, util::GetTimeNs() - diagnosticStart);
+                ssbo_diagnostics::dirty.Record({newBuffer->id,0,copySize,ssbo_diagnostics::Origin::Coalesce,
+                    3,3,1,__func__,__LINE__},copySize);
             }
         }}; //!< Copies between two buffers based off of their mappings in guest memory
 

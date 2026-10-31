@@ -174,6 +174,47 @@ namespace skyline::gpu::ssbo_diagnostics {
             }
         }
     };
+    // Observation only. Known=actual CPU memcpy interval, Declared=GPU binding
+    // extent (not bytes written), Unknown=trap/whole-resource state information.
+    enum class Origin : unsigned { TrapWrite, FastTrap, GpuDirty, CpuWrite, CpuCopy, Upload, Download, GpuDeclared, Coalesce };
+    struct DirtyKey {
+        uint64_t buffer, offset, size;
+        Origin origin;
+        unsigned before, after, extent;
+        const char *caller;
+        unsigned line;
+        bool operator==(const DirtyKey &) const = default;
+    };
+    struct DirtyEntry {
+        std::atomic<unsigned> state{};
+        DirtyKey key{};
+        std::atomic<uint64_t> calls{}, copied{}, copyNs{}, waitNs{}, revision{};
+    };
+    struct DirtyTable {
+        std::array<DirtyEntry,16384> entries{};
+        std::atomic<uint64_t> dropped{};
+        void Record(DirtyKey key, uint64_t copied=0, uint64_t copyNs=0, uint64_t waitNs=0) {
+            uint64_t hash{1469598103934665603ULL};
+            const auto mix=[&](uint64_t x){hash=(hash^x)*1099511628211ULL;};
+            mix(key.buffer);mix(key.offset);mix(key.size);mix(unsigned(key.origin));
+            mix(key.before);mix(key.after);mix(key.extent);mix(key.line);mix(reinterpret_cast<uintptr_t>(key.caller));
+            hash^=hash>>30;hash*=0xbf58476d1ce4e5b9ULL;
+            hash^=hash>>27;hash*=0x94d049bb133111ebULL;hash^=hash>>31;
+            for (size_t probe{};probe<32;++probe) {
+                auto &e{entries[(hash+probe)%entries.size()]};
+                unsigned state{e.state.load(std::memory_order_acquire)};
+                if (!state && e.state.compare_exchange_strong(state,1,std::memory_order_acquire)) {
+                    e.key=key;e.state.store(2,std::memory_order_release);state=2;
+                }
+                if (state!=2 || !(e.key==key)) continue;
+                e.calls.fetch_add(1,std::memory_order_relaxed);e.copied.fetch_add(copied,std::memory_order_relaxed);
+                e.copyNs.fetch_add(copyNs,std::memory_order_relaxed);e.waitNs.fetch_add(waitNs,std::memory_order_relaxed);
+                e.revision.fetch_add(1,std::memory_order_release);return;
+            }
+            dropped.fetch_add(1,std::memory_order_relaxed);
+        }
+    };
+    inline DirtyTable dirty;
     inline BindingTable bindings;
     inline BufferTable buffers;
     inline std::atomic<uint64_t> compiledPipelines{}, diagnosticPipelinesDropped{};

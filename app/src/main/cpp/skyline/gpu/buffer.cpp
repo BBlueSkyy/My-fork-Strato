@@ -93,6 +93,8 @@ namespace skyline::gpu {
                 return false;
 
             if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty) {
+                ssbo_diagnostics::dirty.Record({buffer->id,0,0,ssbo_diagnostics::Origin::TrapWrite,
+                    unsigned(buffer->dirtyState),unsigned(DirtyState::CpuDirty),0,__func__,__LINE__});
                 buffer->dirtyState = DirtyState::CpuDirty;
                 return true;
             }
@@ -102,6 +104,8 @@ namespace skyline::gpu {
                 // While the read data may be invalid it's still better than nothing and works in most cases
                 memcpy(buffer->mirror.data(), buffer->backing->data(), buffer->mirror.size());
                 ssbo_diagnostics::buffers.Fast(buffer->id, buffer->mirror.size());
+                ssbo_diagnostics::dirty.Record({buffer->id,0,0,ssbo_diagnostics::Origin::FastTrap,
+                    unsigned(buffer->dirtyState),unsigned(*buffer->gpu.state.settings->enableFastReadbackWrites ? DirtyState::CpuDirty : DirtyState::Clean),0,__func__,__LINE__});
                 buffer->dirtyState = *buffer->gpu.state.settings->enableFastReadbackWrites ? DirtyState::CpuDirty : DirtyState::Clean;
                 return true;
             }
@@ -114,6 +118,8 @@ namespace skyline::gpu {
                 return false;
 
             buffer->SynchronizeGuest(true); // We need to assume the buffer is dirty since we don't know what the guest is writing
+            ssbo_diagnostics::dirty.Record({buffer->id,0,0,ssbo_diagnostics::Origin::TrapWrite,
+                unsigned(buffer->dirtyState),unsigned(DirtyState::CpuDirty),0,__func__,__LINE__});
             buffer->dirtyState = DirtyState::CpuDirty;
 
             return true;
@@ -226,6 +232,8 @@ namespace skyline::gpu {
             SynchronizeHost();
 
         if (dirtyState != DirtyState::GpuDirty && src->dirtyState != DirtyState::GpuDirty) {
+            ssbo_diagnostics::dirty.Record({id,dstOffset,size,ssbo_diagnostics::Origin::CpuCopy,
+                unsigned(dirtyState),unsigned(dirtyState),1,__func__,__LINE__});
             std::memcpy(mirror.data() + dstOffset, src->mirror.data() + srcOffset, size);
 
             if (dirtyState == DirtyState::CpuDirty && !SequencedCpuBackingWritesBlocked())
@@ -304,6 +312,8 @@ namespace skyline::gpu {
             // If the buffer is used in sequence directly on the GPU, SynchronizeHost before modifying the mirror contents to ensure proper sequencing. This write will then be sequenced on the GPU instead (the buffer will be kept clean for the rest of the execution due to gpuCopyCallback blocking all writes)
             SynchronizeHost();
 
+        ssbo_diagnostics::dirty.Record({id,offset,data.size(),ssbo_diagnostics::Origin::CpuWrite,
+            unsigned(dirtyState),unsigned(dirtyState),1,__func__,__LINE__});
         std::memcpy(mirror.data() + offset, data.data(), data.size()); // Always copy to mirror since any CPU side reads will need the up-to-date contents
 
         if (dirtyState == DirtyState::CpuDirty && !SequencedCpuBackingWritesBlocked())
@@ -369,6 +379,8 @@ namespace skyline::gpu {
         if (dirtyState == DirtyState::CpuDirty)
             SynchronizeHost(true); // Will transition the Buffer to Clean
 
+        ssbo_diagnostics::dirty.Record({id,0,0,ssbo_diagnostics::Origin::GpuDirty,
+            unsigned(dirtyState),unsigned(DirtyState::GpuDirty),0,__func__,__LINE__});
         dirtyState = DirtyState::GpuDirty;
 
         BlockAllCpuBackingWrites();
@@ -471,19 +483,25 @@ namespace skyline::gpu {
         guest = {};
     }
 
-    void Buffer::SynchronizeHost(bool skipTrap) {
+    void Buffer::SynchronizeHost(bool skipTrap, std::source_location diagnostic) {
         if (!guest || isDirect)
             return;
 
         TRACE_EVENT("gpu", "Buffer::SynchronizeHost");
 
+        uint64_t diagnosticWaitNs{};
         {
             std::scoped_lock lock{stateMutex};
-            if (dirtyState != DirtyState::CpuDirty)
+            if (dirtyState != DirtyState::CpuDirty) {
+                ssbo_diagnostics::dirty.Record({id,0,mirror.size(),ssbo_diagnostics::Origin::Upload,
+                    unsigned(dirtyState),unsigned(dirtyState),0,diagnostic.function_name(),diagnostic.line()});
                 return;
+            }
 
             dirtyState = DirtyState::Clean;
+            const auto diagnosticWaitStart{util::GetTimeNs()};
             WaitOnFence();
+            diagnosticWaitNs=util::GetTimeNs()-diagnosticWaitStart;
 
             AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
 
@@ -493,15 +511,19 @@ namespace skyline::gpu {
 
         const auto diagnosticStart{util::GetTimeNs()};
         std::memcpy(backing->data(), mirror.data(), mirror.size());
-        ssbo_diagnostics::buffers.Copy(id, true, mirror.size(), util::GetTimeNs() - diagnosticStart);
+        const auto diagnosticCopyNs{util::GetTimeNs()-diagnosticStart};
+        ssbo_diagnostics::buffers.Copy(id, true, mirror.size(), diagnosticCopyNs);
+        ssbo_diagnostics::dirty.Record({id,0,mirror.size(),ssbo_diagnostics::Origin::Upload,1,0,0,
+            diagnostic.function_name(),diagnostic.line()},mirror.size(),diagnosticCopyNs,diagnosticWaitNs);
     }
 
-    bool Buffer::SynchronizeGuest(bool skipTrap, bool nonBlocking) {
+    bool Buffer::SynchronizeGuest(bool skipTrap, bool nonBlocking, std::source_location diagnostic) {
         if (!guest || isDirect)
             return false;
 
         TRACE_EVENT("gpu", "Buffer::SynchronizeGuest");
 
+        uint64_t diagnosticWaitNs{};
         {
             std::scoped_lock lock{stateMutex};
 
@@ -511,10 +533,15 @@ namespace skyline::gpu {
             if (nonBlocking && !PollFence())
                 return false; // If the fence is not signalled and non-blocking behaviour is requested then bail out
 
+            const auto diagnosticWaitStart{util::GetTimeNs()};
             WaitOnFence();
+            diagnosticWaitNs=util::GetTimeNs()-diagnosticWaitStart;
             const auto diagnosticStart{util::GetTimeNs()};
             std::memcpy(mirror.data(), backing->data(), mirror.size());
-            ssbo_diagnostics::buffers.Copy(id, false, mirror.size(), util::GetTimeNs() - diagnosticStart);
+            const auto diagnosticCopyNs{util::GetTimeNs()-diagnosticStart};
+            ssbo_diagnostics::buffers.Copy(id, false, mirror.size(), diagnosticCopyNs);
+            ssbo_diagnostics::dirty.Record({id,0,mirror.size(),ssbo_diagnostics::Origin::Download,2,0,0,
+                diagnostic.function_name(),diagnostic.line()},mirror.size(),diagnosticCopyNs,diagnosticWaitNs);
 
             dirtyState = DirtyState::Clean;
         }

@@ -97,6 +97,8 @@ namespace skyline::gpu::interconnect {
                 dstStageMask |= dstStage;
             }
 
+            if (diagnostic) ssbo_diagnostics::dirty.Record({view.GetBuffer()->DiagnosticId(),view.GetOffset(),view.size,
+                ssbo_diagnostics::Origin::GpuDeclared,3,3,2,__func__,__LINE__});
             view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
         } else {
             if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag)}) {
