@@ -73,7 +73,17 @@ class SafExtractedSource private constructor(private val context: Context, val r
             if (prefix.count { it == '/' } > 64)
                 throw IllegalArgumentException("Extracted game directory nesting is too deep")
             for (child in children(directory)) {
-                val path = prefix + child.name
+                // Canonicalize the top-level section names; existing NSO and
+                // RomFS paths inside them remain case-sensitive.
+                val rootName = if (prefix.isEmpty()) {
+                    when {
+                        child.name.equals("exefs", true) -> "exefs"
+                        child.name.equals("romfs", true) -> "romfs"
+                        child.name.equals("control.nacp", true) -> "control.nacp"
+                        else -> child.name
+                    }
+                } else child.name
+                val path = prefix + rootName
                 if (!seen.add(path)) throw IllegalArgumentException("Duplicate file path in extracted game: $path")
                 if (child.directory) {
                     queue.add(child.uri to "$path/")
