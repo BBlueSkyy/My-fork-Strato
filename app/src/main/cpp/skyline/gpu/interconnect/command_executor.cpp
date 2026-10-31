@@ -116,8 +116,8 @@ namespace skyline::gpu::interconnect {
         auto startTime{util::GetTimeNs()};
 
         cycle->Wait(); // Existing wait only; do not add GPU synchronization.
-        const uint64_t waitedNs{util::GetTimeNs() - startTime};
-        gpuTiming.slotWaitNs.fetch_add(waitedNs, std::memory_order_relaxed);
+        const i64 waitedNs{util::GetTimeNs() - startTime};
+        gpuTiming.slotWaitNs.fetch_add(waitedNs > 0 ? static_cast<uint64_t>(waitedNs) : 0, std::memory_order_relaxed);
         gpuTiming.slotWaits.fetch_add(1, std::memory_order_relaxed);
         if (timingPending && timingPool) {
             std::array<uint64_t, 2> ticks{};
@@ -165,7 +165,7 @@ namespace skyline::gpu::interconnect {
     void CommandRecordThread::ProcessSlot(Slot *slot) {
         TRACE_EVENT_FMT("gpu", "ProcessSlot: {}, execution: {}", fmt::ptr(slot), u64{slot->executionTag});
         auto &gpu{*state.gpu};
-        const uint64_t recordStart{util::GetTimeNs()};
+        const i64 recordStart{util::GetTimeNs()};
         const uint64_t submission{gpuTiming.submissions.fetch_add(1, std::memory_order_relaxed) + 1};
         gpuTiming.nodes.fetch_add(slot->nodes.size(), std::memory_order_relaxed);
         // One query pair per 16 command buffers to limit profiling overhead.
@@ -245,7 +245,8 @@ namespace skyline::gpu::interconnect {
         slot->ready = false;
 
         gpu.scheduler.SubmitCommandBuffer(slot->commandBuffer, slot->cycle);
-        gpuTiming.cpuRecordNs.fetch_add(util::GetTimeNs() - recordStart, std::memory_order_relaxed);
+        const i64 cpuRecordNs{util::GetTimeNs() - recordStart};
+        gpuTiming.cpuRecordNs.fetch_add(cpuRecordNs > 0 ? static_cast<uint64_t>(cpuRecordNs) : 0, std::memory_order_relaxed);
 
         slot->nodes.clear();
         slot->allocator.Reset();
@@ -267,7 +268,7 @@ namespace skyline::gpu::interconnect {
             LOGW("Failed to set the thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
 
-        uint64_t timingLastReport{};
+        i64 timingLastReport{};
         try {
             incoming.Process([this, renderDocApi, &gpu, &timingLastReport](Slot *slot) {
                 idle = false;
@@ -276,8 +277,8 @@ namespace skyline::gpu::interconnect {
                     renderDocApi->StartFrameCapture(RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE(instance), nullptr);
 
                 ProcessSlot(slot);
-                const uint64_t timingNow{util::GetTimeNs()};
-                if (!timingLastReport || timingNow - timingLastReport >= 5000000000ULL) {
+                const i64 timingNow{util::GetTimeNs()};
+                if (!timingLastReport || timingNow - timingLastReport >= 5000000000LL) {
                     timingLastReport = timingNow;
                     LOGINF("GpuTiming submissions={} nodes={} cpu_record_ns={} slot_wait_ns={} slot_waits={} gpu_samples={} gpu_ns={} gpu_not_ready={} gpu_errors={} supported_slots={} sample_every=16",
                         gpuTiming.submissions.load(std::memory_order_relaxed),
