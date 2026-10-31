@@ -11,6 +11,8 @@
 #include "loader/loader.h"
 #include "services/serviceman.h"
 
+namespace skyline::loader { class JavaExtractedSource; }
+
 namespace skyline::kernel {
     struct ProgramLaunchState {
         mutable std::mutex mutex;
@@ -30,6 +32,7 @@ namespace skyline::kernel {
         std::string deviceTimeZone; //!< The timezone name (e.g. Europe/London)
         std::shared_ptr<vfs::FileSystem> assetFileSystem; //!< A filesystem to be used for accessing emulator assets (like tzdata)
         std::shared_ptr<crypto::KeyStore> keyStore;
+        std::shared_ptr<loader::JavaExtractedSource> extractedSource;
         std::shared_ptr<ProgramLaunchState> programLaunchState;
         DeviceState state;
         service::ServiceManager serviceManager;
