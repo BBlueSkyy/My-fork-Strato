@@ -4,6 +4,7 @@
 #include <gpu.h>
 #include <common/signal.h>
 #include <common/settings.h>
+#include <gpu/readback_diagnostics.h>
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
 #include <soc.h>
@@ -12,6 +13,31 @@
 #include "macro/macro_state.h"
 
 namespace skyline::soc::gm20b {
+    namespace {
+        // Only measure methods from one in 128 GPFIFO entries. Sampling avoids
+        // a steady-clock call for every decoded register write in normal entries.
+        struct ScopedMethodSample {
+            bool sampled;
+            gpu::readback_diagnostics::FrameMetric countMetric;
+            gpu::readback_diagnostics::FrameMetric timeMetric;
+            uint64_t startNs;
+
+            ScopedMethodSample(bool sample,
+                               gpu::readback_diagnostics::FrameMetric count,
+                               gpu::readback_diagnostics::FrameMetric duration)
+                : sampled{sample}, countMetric{count}, timeMetric{duration},
+                  startNs{sample ? gpu::readback_diagnostics::NowNs() : 0} {
+                if (sampled)
+                    gpu::readback_diagnostics::frames.Add(countMetric);
+            }
+            ~ScopedMethodSample() {
+                if (sampled)
+                    gpu::readback_diagnostics::frames.Add(timeMetric,
+                        gpu::readback_diagnostics::NowNs() - startNs);
+            }
+        };
+    }
+
     /**
      * @brief A single pushbuffer method header that describes a compressed method sequence
      * @url https://github.com/NVIDIA/open-gpu-doc/blob/ab27fc22db5de0d02a4cabe08e555663b62db4d4/manuals/volta/gv100/dev_ram.ref.txt#L850
@@ -91,10 +117,16 @@ namespace skyline::soc::gm20b {
 
     void ChannelGpfifo::SendFull(u32 method, GpfifoArgument argument, SubchannelId subChannel, bool lastCall) {
         if (method < engine::GPFIFO::RegisterCount) {
+            ScopedMethodSample sample{methodSampleThisEntry,
+                gpu::readback_diagnostics::SampleControlCalls,
+                gpu::readback_diagnostics::SampleControlNs};
             gpfifoEngine.CallMethod(method, *argument);
         } else if (method < engine::EngineMethodsEnd) { [[likely]]
             SendPure(method, *argument, subChannel);
         } else {
+            ScopedMethodSample sample{methodSampleThisEntry,
+                gpu::readback_diagnostics::SampleMacroCalls,
+                gpu::readback_diagnostics::SampleMacroNs};
             switch (subChannel) {
                 case SubchannelId::ThreeD:
                     skipDirtyFlushes = channelCtx.maxwell3D.HandleMacroCall(method - engine::EngineMethodsEnd, argument, lastCall,
@@ -116,6 +148,15 @@ namespace skyline::soc::gm20b {
     }
 
     void ChannelGpfifo::SendPure(u32 method, u32 argument, SubchannelId subChannel) {
+        const auto is3D{subChannel == SubchannelId::ThreeD};
+        const auto isCompute{subChannel == SubchannelId::Compute};
+        ScopedMethodSample sample{methodSampleThisEntry,
+            is3D ? gpu::readback_diagnostics::SampleThreeDCalls
+                 : isCompute ? gpu::readback_diagnostics::SampleComputeCalls
+                             : gpu::readback_diagnostics::SampleOtherCalls,
+            is3D ? gpu::readback_diagnostics::SampleThreeDNs
+                 : isCompute ? gpu::readback_diagnostics::SampleComputeNs
+                             : gpu::readback_diagnostics::SampleOtherNs};
         if (subChannel == SubchannelId::ThreeD) [[likely]] {
             channelCtx.maxwell3D.CallMethod(method, argument);
             return;
@@ -144,6 +185,9 @@ namespace skyline::soc::gm20b {
     }
 
     void ChannelGpfifo::SendPureBatchNonInc(u32 method, span<u32> arguments, SubchannelId subChannel) {
+        ScopedMethodSample sample{methodSampleThisEntry,
+            gpu::readback_diagnostics::SampleBatchCalls,
+            gpu::readback_diagnostics::SampleBatchNs};
         switch (subChannel) {
             case SubchannelId::ThreeD:
                 channelCtx.maxwell3D.CallMethodBatchNonInc(method, arguments);
@@ -175,8 +219,20 @@ namespace skyline::soc::gm20b {
             }
         }
 
-        auto pushBufferMappedRanges{channelCtx.asCtx->gmmu.TranslateRange(gpEntry.Address(), gpEntry.size * sizeof(u32))};
+        methodSampleThisEntry = ((++methodSampleEntryCounter & 127U) == 0U);
+        if (methodSampleThisEntry)
+            gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::SampledGpfifoEntries);
 
+        const auto translateBeginNs{gpu::readback_diagnostics::NowNs()};
+        auto pushBufferMappedRanges{channelCtx.asCtx->gmmu.TranslateRange(gpEntry.Address(), gpEntry.size * sizeof(u32))};
+        gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoTranslateNs,
+            gpu::readback_diagnostics::NowNs() - translateBeginNs);
+        gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoMappedRanges,
+            pushBufferMappedRanges.size());
+        if (pushBufferMappedRanges.size() != 1)
+            gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoSplitEntries);
+
+        const auto backingBeginNs{gpu::readback_diagnostics::NowNs()};
         bool pushBufferCopied{}; //!< Set by the below lambda in order to track if the pushbuffer is a copy of guest memory or not
         auto pushBuffer{[&]() -> span<u32> {
             if (pushBufferMappedRanges.size() == 1) {
@@ -189,17 +245,24 @@ namespace skyline::soc::gm20b {
                 return span(pushBufferData);
             }
         }()};
+        gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoBackingNs,
+            gpu::readback_diagnostics::NowNs() - backingBeginNs);
 
         bool pushbufferDirty{false};
-
+        uint64_t dirtyHits{};
+        const auto dirtyBeginNs{gpu::readback_diagnostics::NowNs()};
         for (auto range : pushBufferMappedRanges) {
             if (channelCtx.executor.usageTracker.dirtyIntervals.Intersect(range)) {
+                ++dirtyHits;
                 if (skipDirtyFlushes)
                     pushbufferDirty = true;
                 else
                     channelCtx.executor.Submit({}, true);
             }
         }
+        gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoDirtyHits, dirtyHits);
+        gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoDirtyScanNs,
+            gpu::readback_diagnostics::NowNs() - dirtyBeginNs);
 
         // There will be at least one entry here
         auto entry{pushBuffer.begin()};
@@ -380,16 +443,28 @@ namespace skyline::soc::gm20b {
                 LOGD("Processing pushbuffer: 0x{:X}, Size: 0x{:X}", gpEntry.Address(), +gpEntry.size);
 
                 if (!channelLocked) {
+                    const auto lockBeginNs{gpu::readback_diagnostics::NowNs()};
                     channelCtx.Lock();
+                    gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoLockNs,
+                        gpu::readback_diagnostics::NowNs() - lockBeginNs);
                     channelLocked = true;
                 }
 
+                const auto processBeginNs{gpu::readback_diagnostics::NowNs()};
                 Process(gpEntry);
+                gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoEntries);
+                gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoWords, gpEntry.size);
+                gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoProcessNs,
+                    gpu::readback_diagnostics::NowNs() - processBeginNs);
             }, [this, &channelLocked]() {
                 // If we run out of GpEntries to process ensure we submit any remaining GPU work before waiting for more to arrive
                 LOGD("Finished processing pushbuffer batch");
                 if (channelLocked) {
+                    const auto drainBeginNs{gpu::readback_diagnostics::NowNs()};
                     channelCtx.executor.Submit();
+                    gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoDrainSubmits);
+                    gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoDrainNs,
+                        gpu::readback_diagnostics::NowNs() - drainBeginNs);
                     channelCtx.Unlock();
                     channelLocked = false;
                 }

@@ -11,6 +11,7 @@
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
 #include "presentation_engine.h"
+#include "readback_diagnostics.h"
 #include "native_window.h"
 #include "texture/format.h"
 
@@ -97,7 +98,37 @@ namespace skyline::gpu {
         std::unique_lock lock(mutex);
         surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
 
+        // Observe whether a frame's Host1x fence was already produced in
+        // the emulated GPU stream before the host-side wait begins. This
+        // classification is observational and does not affect Wait().
+        bool activeFence{};
+        bool guestPending{};
+        bool hostPending{};
+        auto &syncpoints{state.soc->host1x.syncpoints};
+        const auto fenceCount{std::min(static_cast<size_t>(frame.fence.fenceCount), frame.fence.fences.size())};
+        for (size_t i{}; i < fenceCount; ++i) {
+            const auto &fence{frame.fence.fences[i]};
+            if (fence.id == service::hosbinder::AndroidFence::InvalidFenceId)
+                continue;
+            activeFence = true;
+            auto &syncpoint{syncpoints.at(fence.id)};
+            const u32 guestValue{syncpoint.guest.Load()};
+            const u32 hostValue{syncpoint.host.Load()};
+            // Wrap-safe threshold comparison for monotonically increasing u32 syncpoints.
+            guestPending |= static_cast<i32>(guestValue - fence.threshold) < 0;
+            hostPending |= static_cast<i32>(hostValue - fence.threshold) < 0;
+        }
+
+        const auto guestFenceBeginNs{readback_diagnostics::NowNs()};
         frame.fence.Wait(state.soc->host1x);
+        const auto guestFenceDurationNs{readback_diagnostics::NowNs() - guestFenceBeginNs};
+        readback_diagnostics::frames.Add(readback_diagnostics::GuestFenceNs, guestFenceDurationNs);
+
+        using namespace readback_diagnostics;
+        const FrameMetric fenceCountMetric{!activeFence ? SyncNoFence : guestPending ? SyncGuestPending : hostPending ? SyncHostPending : SyncHostReady};
+        const FrameMetric fenceTimeMetric{!activeFence ? SyncNoFenceNs : guestPending ? SyncGuestPendingNs : hostPending ? SyncHostPendingNs : SyncHostReadyNs};
+        frames.Add(fenceCountMetric);
+        frames.Add(fenceTimeMetric, guestFenceDurationNs);
 
         // A retained display view may belong to an older guest representation.
         frame.textureView->texture->ReconcileAliases();
@@ -126,11 +157,15 @@ namespace skyline::gpu {
 
         auto &acquireSemaphore{acquireSemaphores[frameIndex]};
         auto &frameFence{frameFences[frameIndex]};
-        if (frameFence)
+        if (frameFence) {
+            const auto swapchainFenceBeginNs{readback_diagnostics::NowNs()};
             frameFence->Wait();
+            readback_diagnostics::frames.Add(readback_diagnostics::SwapchainFenceNs, readback_diagnostics::NowNs() - swapchainFenceBeginNs);
+        }
 
         frameIndex = (frameIndex + 1) % swapchainImageCount;
 
+        const auto acquireBeginNs{readback_diagnostics::NowNs()};
         std::pair<vk::Result, u32> nextImage;
         while (nextImage = vkSwapchain->acquireNextImage(std::numeric_limits<u64>::max(), *acquireSemaphore, {}), nextImage.first != vk::Result::eSuccess) [[unlikely]] {
             if (nextImage.first == vk::Result::eSuboptimalKHR)
@@ -139,16 +174,21 @@ namespace skyline::gpu {
                 throw exception("vkAcquireNextImageKHR returned an unhandled result '{}'", vk::to_string(nextImage.first));
         }
 
+        readback_diagnostics::frames.Add(readback_diagnostics::AcquireSwapchainNs, readback_diagnostics::NowNs() - acquireBeginNs);
         auto &nextImageTexture{images.at(nextImage.second)};
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
+        const auto textureSyncBeginNs{readback_diagnostics::NowNs()};
         texture->SynchronizeHost();
+        readback_diagnostics::frames.Add(readback_diagnostics::TextureSyncNs, readback_diagnostics::NowNs() - textureSyncBeginNs);
+        const auto displayCopyBeginNs{readback_diagnostics::NowNs()};
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,
             .layerCount = 1,
         });
 
+        readback_diagnostics::frames.Add(readback_diagnostics::DisplayCopyNs, readback_diagnostics::NowNs() - displayCopyBeginNs);
         frameFence = nextImageTexture->cycle;
 
         auto getMonotonicNsNow{[]() -> i64 {
@@ -194,6 +234,7 @@ namespace skyline::gpu {
         if ((result = window->perform(window, NATIVE_WINDOW_GET_NEXT_FRAME_ID, &frameId)))
             throw exception("Retrieving the next frame's ID failed with {}", result);
 
+        const auto queuePresentBeginNs{readback_diagnostics::NowNs()};
         {
             std::scoped_lock queueLock{gpu.queueMutex};
             std::ignore = gpu.vkQueue.presentKHR(vk::PresentInfoKHR{
@@ -205,6 +246,7 @@ namespace skyline::gpu {
             }); // We don't care about suboptimal images as they are caused by not respecting the transform hint, we handle transformations externally
         }
 
+        readback_diagnostics::frames.Add(readback_diagnostics::QueuePresentNs, readback_diagnostics::NowNs() - queuePresentBeginNs);
         if (!firstFramePresented.exchange(true))
             state.jvm->NotifyFirstFramePresented();
 
@@ -241,10 +283,71 @@ namespace skyline::gpu {
 
         try {
             presentQueue.Process([this](const PresentableFrame &frame) {
+                const auto presentBeginNs{readback_diagnostics::NowNs()};
                 PresentFrame(frame);
+                readback_diagnostics::frames.Add(readback_diagnostics::PresentCpuNs, readback_diagnostics::NowNs() - presentBeginNs);
+                readback_diagnostics::frames.Add(readback_diagnostics::PresentedFrames);
                 frame.presentCallback(); // We're calling the callback here as it's outside of all the locks in PresentFrame
+
                 skipSignal = true;
                 vsyncEvent->Signal();
+
+                // Report outside PresentFrame's resource/queue locks. Two lines
+                // per five seconds, cumulative; these are not GPU timestamps.
+                static readback_diagnostics::Reporter readbackReporter;
+                const auto reportAtNs{readback_diagnostics::NowNs()};
+                if (readbackReporter.Due(reportAtNs)) {
+                    using namespace readback_diagnostics;
+                    for (bool isTexture : {false, true}) {
+                        auto v{(isTexture ? textures : buffers).Snapshot()};
+                        LOGINF("ReadbackDiag {} cumulative fast={} writes={} read_traps={} write_traps={} not_dirty={} retries={} read_sync={} write_sync={} disabled={} below_threshold={} aliases={} freed={} fast_eligible={} fast_taken={} fast_writes={} prep_waits={} prep_wait_ns={}",
+                            isTexture ? "texture" : "buffer", *state.settings->enableFastGpuReadbackHack, *state.settings->enableFastReadbackWrites,
+                            v[ReadTrap], v[WriteTrap], v[NotGpuDirty], v[Retry], v[ReadSync], v[WriteSync],
+                            v[Disabled], v[BelowThreshold], v[Aliased], v[Freed], v[FastEligible], v[FastTaken], v[FastWrites], v[WaitCount], v[WaitNs]);
+                    }
+                    // The first presented frame establishes the sampling baseline.
+                    static FrameValues previousFrame{};
+                    static uint64_t previousAtNs{};
+                    const auto currentFrame{frames.Snapshot()};
+                    if (previousAtNs) {
+                        auto delta{[&](FrameMetric metric) -> uint64_t {
+                            return currentFrame[metric] - previousFrame[metric];
+                        }};
+                        LOGINF("FrameDiag window_ns={} frames={} present_cpu_ns={} guest_fence_ns={} swapchain_fence_ns={} acquire_ns={} texture_sync_ns={} display_copy_ns={} queue_present_ns={} record_slots={} record_work_ns={} submit_ns={} acquire_slots={} acquire_slot_wait_ns={} completion_waits={} completion_wait_ns={} sync_no_fence={} sync_no_fence_ns={} sync_guest_pending={} sync_guest_pending_ns={} sync_host_pending={} sync_host_pending_ns={} sync_host_ready={} sync_host_ready_ns={}",
+                            reportAtNs - previousAtNs, delta(PresentedFrames), delta(PresentCpuNs),
+                            delta(GuestFenceNs), delta(SwapchainFenceNs), delta(AcquireSwapchainNs),
+                            delta(TextureSyncNs), delta(DisplayCopyNs), delta(QueuePresentNs),
+                            delta(RecordedSlots), delta(RecordWorkNs), delta(SubmitNs),
+                            delta(AcquireSlots), delta(AcquireSlotWaitNs),
+                            delta(CompletedFences), delta(CompletionWaitNs),
+                            delta(SyncNoFence), delta(SyncNoFenceNs),
+                            delta(SyncGuestPending), delta(SyncGuestPendingNs),
+                            delta(SyncHostPending), delta(SyncHostPendingNs),
+                            delta(SyncHostReady), delta(SyncHostReadyNs));
+                        LOGINF("GpuDecodeDiag window_ns={} fifo_entries={} fifo_words={} fifo_process_ns={} fifo_lock_ns={} fifo_drain_submits={} fifo_drain_ns={} synchronous_waits={} synchronous_wait_ns={}",
+                            reportAtNs - previousAtNs, delta(GpfifoEntries),
+                            delta(GpfifoWords), delta(GpfifoProcessNs),
+                            delta(GpfifoLockNs), delta(GpfifoDrainSubmits),
+                            delta(GpfifoDrainNs), delta(SyncSubmitWaits),
+                            delta(SyncSubmitWaitNs));
+                        // Decompose Process() without timing every guest method.
+                        LOGINF("GpuFifoPhases window_ns={} translate_ns={} backing_ns={} dirty_scan_ns={} mapped_ranges={} split_entries={} dirty_hits={}",
+                            reportAtNs - previousAtNs,
+                            delta(GpfifoTranslateNs), delta(GpfifoBackingNs),
+                            delta(GpfifoDirtyScanNs), delta(GpfifoMappedRanges),
+                            delta(GpfifoSplitEntries), delta(GpfifoDirtyHits));
+                        LOGINF("GpuMethodSample window_ns={} sampled_entries={} three_d_calls={} three_d_ns={} compute_calls={} compute_ns={} other_calls={} other_ns={} batch_calls={} batch_ns={} macro_calls={} macro_ns={} control_calls={} control_ns={}",
+                            reportAtNs - previousAtNs, delta(SampledGpfifoEntries),
+                            delta(SampleThreeDCalls), delta(SampleThreeDNs),
+                            delta(SampleComputeCalls), delta(SampleComputeNs),
+                            delta(SampleOtherCalls), delta(SampleOtherNs),
+                            delta(SampleBatchCalls), delta(SampleBatchNs),
+                            delta(SampleMacroCalls), delta(SampleMacroNs),
+                            delta(SampleControlCalls), delta(SampleControlNs));
+                    }
+                    previousFrame = currentFrame;
+                    previousAtNs = reportAtNs;
+                }
             }, [] {});
         } catch (const signal::SignalException &e) {
             LOGE("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
@@ -427,3 +530,4 @@ namespace skyline::gpu {
         return GetAndroidTransform(vkSurfaceCapabilities.currentTransform);
     }
 }
+

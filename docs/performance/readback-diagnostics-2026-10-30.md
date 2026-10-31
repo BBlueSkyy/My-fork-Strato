@@ -1,0 +1,243 @@
+# Readback diagnostic plan and interpretation
+
+Base: master b8593d8b2c2e9742a4f1f9edfaa935f653cd3663. Separate diagnostic branch;
+no optimizations from Draft #401, no changes to #400, no merge.
+
+The device test of #401 showed no perceptible Zelda improvement. The user reports
+that Fast GPU Readback and Fast Readback Writes formerly helped but no longer do.
+PR #341 added the no-alias condition to the texture shortcut; that condition is
+absent from both good 28bcb957 and slow e7290a9b/9a6b48be, so it cannot establish
+the initial #294 regression. The existing system trace shows fence waits but lacks
+internal Strato track events and has import errors; no cause is proved.
+
+## Design and implementation plan
+
+Use lock-free relaxed cumulative counters at existing staged trap callbacks,
+without changing their return decisions, thresholds, copies, fences or alias rules.
+Alternatives were verbose per-trap logs (too intrusive) and another generic system
+trace (cannot explain these internal decisions). The user approved spaced log
+summaries. No new settings or workflow; diagnostics are always active in this
+branch only. This is measurement, not a proposed performance fix.
+
+1. Test mutually exclusive eligibility reasons, concurrent accumulation, the
+   distinction between eligibility and actual execution, and a five-second gate.
+2. Add one header, observe buffer/texture trap decisions and preparatory fence waits.
+3. Emit two INFO lines from presentation after the existing frame callback and
+   vsync signal, on the first presented frame and at most once per five seconds.
+4. Review the source diff, run essential host checks, publish one Draft PR using
+   the existing ARM64 DevRelease workflow. Do not rerun or merge.
+
+## Log schema
+
+Search the normal emulation log for `ReadbackDiag`. Each interval prints a buffer
+line and a texture line. Values are cumulative from process start, not per-frame;
+subtract consecutive samples of the same kind. Snapshots may straddle concurrent
+increments and must not be treated as transactionally consistent.
+
+- `fast`, `writes`: current options at report time; use unchanged settings per run.
+- `read_traps`, `write_traps`: callback attempts including retries, not unique accesses.
+- `not_dirty`: early clean/CPU-dirty (or stale texture) paths.
+- `retries`: failed lock acquisition or still-pending cycle in read/write callbacks.
+- `read_sync`, `write_sync`: completed normal SynchronizeGuest calls from these traps.
+- `disabled`, `below_threshold`, `aliases`, `freed`: mutually exclusive primary
+  reasons among write callbacks that reached the shortcut check. Priority is
+  disabled, below threshold, aliases, freed. Aliases counts only otherwise eligible
+  textures; it is not a total of all accesses to aliased textures. More than one
+  underlying condition can apply even though only the primary reason is counted.
+- `fast_eligible`: diagnostic snapshot satisfies the shortcut conditions.
+- `fast_taken`: original shortcut branch actually entered. Concurrent state changes
+  can cause a difference from eligibility; no diagnostic result controls execution.
+- `fast_writes`: actual buffer shortcut left CpuDirty (Fast Readback Writes path).
+  Textures have no corresponding path and always report zero here.
+- `prep_waits`, `prep_wait_ns`: count and wall time of Wait calls in staged trap
+  preparation only. Includes scheduling delays; not GPU timestamps or all Vulkan
+  waits, and may overlap between threads. It cannot be summed as lost frame time.
+
+No logs run inside trap/resource locks. Counters and timing add overhead; this
+APK is diagnostic, not a benchmark baseline. No summaries appear while no frames
+are presented. INFO logging must be enabled. Direct-import buffers bypass staged
+traps, and the counters do not characterize every direct-import access.
+
+## Validation and device collection
+
+The header test passed locally with GCC, ASan and UBSan (LeakSanitizer disabled due
+host process inspection restrictions). A full Android build and actual device
+behavior remain CI/device validation. No FPS gain or compatibility claim.
+
+On Moto G100: keep the same Turnip, save, mods, clock option and other settings.
+Use INFO logging. Start Zelda with both readback options enabled, wait for shader
+loading, play the same slow scene for 30 seconds, then exit normally and export
+the emulation log. Record APK commit, Turnip version and approximate FPS. The shortcut was confirmed active on Moto G100; do not repeat its on/off
+comparison without a new hypothesis. Do not remove the alias guard
+or lower thresholds based solely on these counts.
+
+## Frame-phase diagnostics (follow-up)
+
+The latest device log confirmed 3,625 buffer fast paths and 3,624 fast-write
+paths at 80.4 seconds, yet no perceptible gain. It also reported 1,417
+preparatory waits totaling 13.92 seconds across potentially parallel threads.
+This cumulative time does not equal main-thread stalling.
+
+The new `FrameDiag` line prints **five-second interval deltas**, not cumulative
+totals, after the first presentation establishes a baseline. All times are
+CPU-side wall durations in nanoseconds; none is a Vulkan GPU timestamp.
+`window_ns` and `frames` measure presented output throughput.
+`present_cpu_ns` includes blocking presentation work and API calls.
+`guest_fence_ns`, `swapchain_fence_ns`, and `acquire_ns` separate
+presentation-side blocking stages. `texture_sync_ns` measures
+SynchronizeHost, `display_copy_ns` CPU display-copy preparation and
+`queue_present_ns` queueMutex acquisition plus presentKHR.
+`record_slots` and `record_work_ns` describe recorded command slots
+and time executing their nodes. `submit_ns` is the CPU wall duration of
+SubmitCommandBuffer (including its internal synchronization), not execution on
+the GPU. `acquire_slots` and `acquire_slot_wait_ns` measure command-record
+slot backpressure; `completion_waits` and `completion_wait_ns`
+measure the execution-waiter's fence completion wall durations.
+
+Values across different threads may overlap, and must not be summed into one
+frame budget. The diagnostic branch still does not measure guest CPU emulation,
+all Vulkan work, or GPU device execution. It cannot by itself prove the
+historical #294 regression. No readback thresholds, GPU ordering, copy
+semantics, alias protections or workflow settings change. The diagnostic APK
+has measurement overhead and is not a performance benchmark baseline.
+
+## Device log interpretation (October 30, 2026): Zelda 1.0.0, Turnip 24.0.99
+
+The 166.7-second diagnostic log confirms both readback settings enabled and
+11,403 buffer fast paths, with 752 normal write syncs. The 120 texture write
+trap attempts all found texture state not GPU-dirty, so this log does not
+demonstrate texture alias blocking.
+
+In approximately 50–130 seconds of continuous low-output gameplay,
+FrameDiag recorded 16.68 presented frames/s, 3.05 recorded command slots
+per presented frame, 26.41 ms of Host1x presentation-fence wait per frame,
+1.19 ms recording CPU time per slot and 0.11 ms CPU submission time per
+slot. This is a *Host1x host syncpoint* wait, not a direct Vulkan fence
+wait. The execution waiter spent about 11.27 ms waiting per cycle, but
+this includes scheduling and overlapping execution; it is not a GPU timer.
+At about 140 seconds throughput fell to 8.64 presented frames/s, with
+63.61 ms of Host1x wait per presented frame. The previous fast/menu
+segments recorded around one command slot per presented frame, while the
+slow scene consistently recorded around three. That correlation alone does
+not prove the cause of historical PR #294.
+
+The next experimental question is whether guest command processing has
+already incremented the corresponding guest syncpoint threshold at
+presentation wait entry. We now count four **mutually exclusive frame
+classifications** in each five-second FrameDiag interval:
+
+- `sync_no_fence`: no active Host1x fence supplied;
+- `sync_guest_pending`: at least one supplied fence threshold is still
+  ahead of guest syncpoint decode/command processing;
+- `sync_host_pending`: all guest thresholds have been reached, but at
+  least one host threshold is still pending, indicating completion and/or
+  deferred host callback remains outstanding;
+- `sync_host_ready`: all active guest and host thresholds are already
+  reached at wait entry.
+
+Each category has an associated `*_ns` wall duration. The classifications
+are a single observation just before Wait(), not a state history; concurrent
+updates may race with this observation. Multi-fence frames use worst
+pending classification. This does not change guest synchronization,
+command submission, GPU execution, presentation order, or fence waiting.
+One counter update per classified frame plus two lock-free syncpoint reads
+per active fence adds some diagnostic overhead. Compare only equivalent
+settings and scenes; do not claim a FPS increase from these probes.
+
+## Follow-up: CPU-side decode and mandatory completion waits
+
+The next device test should compare a similar slow scene with `GpuDecodeDiag`
+alongside `FrameDiag`. The October 30 sample had **1,238/1,238 frames
+classified guest-pending at the start of the Host1x wait** between 45–115 s,
+17.5 presented FPS, and approximately 26.0 ms/frame waiting on the Host1x host
+syncpoint. This is **not** proof that the entire 26.0 ms is spent decoding
+guest commands: the condition can transition through guest-ready to
+host-pending during the one blocking Wait().
+
+`GpuDecodeDiag` emits interval deltas: `fifo_entries`, `fifo_words`,
+`fifo_process_ns` for GPFIFO entry processing in ChannelGpfifo::Run;
+`fifo_lock_ns` for taking the channel lock;
+`fifo_drain_submits` / `fifo_drain_ns` for idle-batch flushes;
+and `synchronous_waits` / `synchronous_wait_ns` for the explicit
+CommandExecutor::Submit(wait=true) completion wait. Other possible CPU
+waits such as memory-trap synchronization and unrelated kernel threads are
+not fully captured. Times are wall-clock totals, including scheduling, not
+per-frame GPU execution times. They can overlap across threads or be
+observed in neighboring presentation windows. This is instrumented only in
+the Draft diagnostic build and should not ship in a normal optimized build.
+
+The desired final solution is *automatic optimization with correct memory
+and synchronization semantics*, not relying on enabling Fast GPU Readback
+or Fast Readback Writes, and not adding a new user-facing switch.
+Do not make semantic changes until an actual high-cost work path is proven
+by device evidence and compared against historical good PR #293 builds.
+
+## October 30, 2026 device log: narrow GPFIFO candidate
+
+A new Moto G100, Turnip 24.0.99 Zelda log with FrameDiag and GpuDecodeDiag
+shows, over 60.34 seconds of slow-scene samples (38.27–93.61 seconds),
+1,060 presented frames, about 17.57 presented frames/s.
+GPFIFO processed 864,176 entries / 86,406,654 words (~815 entries and
+81,516 words per presented frame), consuming 24.74 seconds cumulative
+CPU-side wall time in Process (~23.34ms per presented frame).
+GPFIFO idle-batch submission consumed 1.67 seconds in those windows,
+while channel-lock acquisition was only 0.0013 seconds and measured
+explicit Submit(wait=true) waits were zero. Command-record work totalled
+5.11 seconds (~4.82ms per presented frame), independently of GPFIFO,
+and the host syncpoint wait was 26.22 seconds (~24.73ms/frame).
+The workload substantially differs from the fast/menu sample; no
+like-for-like good/slow build comparison has been made yet.
+
+The exact blob of soc/gm20b/gpfifo.cpp is identical in good
+28bcb957a9f018212f3b0a2e5628028bdb22bf69, early slow
+e7290a9b5f4c346a2e5198210d022a8da151f6ab, and current master.
+Thus the historical regression cannot be due to a direct edit of that file.
+However Process() includes GMMU translation, backing reads, dirty-region
+checks and all called GPU engine method handlers (including texture and
+pipeline work). We cannot yet attribute 23ms to parsing alone.
+
+The `GpuFifoPhases` five-second deltas now time only per-entry GMMU
+TranslateRange, backing access/copy and dirty-interval checks. They also
+count mapping ranges, split-mapping entries and dirty hits; the remainder
+of Process() timing is a **non-independent approximate** estimate of method
+dispatch and handlers, not a separate profiler or a guaranteed exact sum.
+There are a few extra steady-clock reads and relaxed atomic increments
+per entry, so use the APK to localize costs, not benchmark raw FPS.
+No synchronization, lookup/caching, memory alias or GPU behavior changed.
+Normal Release optimizations must eventually remove diagnostic overhead
+and avoid all user-facing readback options.
+
+## October 30, 2026: measured GMMU and backing are not main cost
+
+Latest 100.23-second device log (Zelda v1.0.0, Turnip 24.0.99)
+in slow-scene windows from about 40–100 s measured 60.31 seconds
+and 986 presented frames (~16.35/s).
+`GpuDecodeDiag`: 869,699 GPFIFO entries (882/frame), 86,532,443
+pushbuffer words (87,761/frame), and 24.643 seconds Process() CPU
+wall time (~24.99ms/frame). The explicitly measured preparation was
+306.15ms GMMU translation, 252.73ms pushbuffer backing and 283.61ms
+dirty-interval scan: 842.48ms total, 3.42% of the Process() time.
+The remaining ~23.800 seconds include packet interpretation and downstream
+engine handlers, and may include other overhead. There were ZERO
+fragmented entries and ZERO dirty-range hits, and zero
+measured explicit completion waits. The host Host1x fence wait total was
+25.850 seconds (~26.22ms/frame), but overlaps with command handling and
+does not independently demonstrate slow host GPU execution.
+
+`ChannelGpfifo::Process` has the same exact source blob in known-good
+PR #293 commit 28bcb957, early PR #294 commit e7290a9b, and latest master,
+so its direct code is not the historical source change. The shader
+compiler, texture/backing logic and command preparation changed in the
+historical commit range and remain candidates to test, not proven causes.
+
+The new diagnostic `GpuMethodSample` reports sampled per-call wall
+time for 3D, compute, other pure-method, batched pure-method, macro
+and GPFIFO-control handlers. The sampling is deterministic: one entry
+in 128. Each sampled method pays a clock read at entry and return;
+unsampled methods only pay a branch/stack guard. The sampled time is
+NOT a valid full-process budget: sample categories only describe the
+relative composition of the sampled entries, not all execution, and
+the sampled clock instrumentation perturbs runtime. No commands,
+GPU synchronization, texture backing, or user-visible settings are
+altered by the diagnostic. Restrict this to Draft #404; remove it
+from future production optimization.

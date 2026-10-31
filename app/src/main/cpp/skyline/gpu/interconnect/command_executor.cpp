@@ -11,6 +11,7 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <gpu/readback_diagnostics.h>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -117,6 +118,7 @@ namespace skyline::gpu::interconnect {
         vk::RenderPass lRenderPass;
         u32 subpassIndex;
 
+        const auto recordBeginNs{readback_diagnostics::NowNs()};
         using namespace node;
         for (NodeVariant &node : slot->nodes) {
             std::visit(VariantVisitor{
@@ -175,8 +177,11 @@ namespace skyline::gpu::interconnect {
 
         slot->commandBuffer.end();
         slot->ready = false;
-
+        readback_diagnostics::frames.Add(readback_diagnostics::RecordWorkNs, readback_diagnostics::NowNs() - recordBeginNs);
+        const auto submitBeginNs{readback_diagnostics::NowNs()};
         gpu.scheduler.SubmitCommandBuffer(slot->commandBuffer, slot->cycle);
+        readback_diagnostics::frames.Add(readback_diagnostics::SubmitNs, readback_diagnostics::NowNs() - submitBeginNs);
+        readback_diagnostics::frames.Add(readback_diagnostics::RecordedSlots);
 
         slot->nodes.clear();
         slot->allocator.Reset();
@@ -242,9 +247,12 @@ namespace skyline::gpu::interconnect {
     CommandRecordThread::Slot *CommandRecordThread::AcquireSlot() {
         auto startTime{util::GetTimeNs()};
         auto slot{outgoing.Pop()};
-        if (util::GetTimeNs() - startTime > GrowThresholdNs)
+        const auto waitNs{util::GetTimeNs() - startTime};
+        if (waitNs > GrowThresholdNs)
             slot->didWait = true;
-
+        readback_diagnostics::frames.Add(readback_diagnostics::AcquireSlots);
+        if (waitNs > 0)
+            readback_diagnostics::frames.Add(readback_diagnostics::AcquireSlotWaitNs, static_cast<uint64_t>(waitNs));
         return slot;
     }
 
@@ -284,8 +292,12 @@ namespace skyline::gpu::interconnect {
             }
             {
                 TRACE_EVENT("gpu", "GPU");
-                if (item.first)
+                if (item.first) {
+                    const auto completionBeginNs{readback_diagnostics::NowNs()};
                     item.first->Wait();
+                    readback_diagnostics::frames.Add(readback_diagnostics::CompletionWaitNs, readback_diagnostics::NowNs() - completionBeginNs);
+                    readback_diagnostics::frames.Add(readback_diagnostics::CompletedFences);
+                }
             }
 
             if (item.second)
@@ -813,8 +825,12 @@ namespace skyline::gpu::interconnect {
                 cv.notify_one();
             });
 
+            const auto syncWaitBeginNs{readback_diagnostics::NowNs()};
             std::unique_lock lock{mutex};
             cv.wait(lock, [&gpuDone] { return gpuDone; });
+            readback_diagnostics::frames.Add(readback_diagnostics::SyncSubmitWaits);
+            readback_diagnostics::frames.Add(readback_diagnostics::SyncSubmitWaitNs,
+                readback_diagnostics::NowNs() - syncWaitBeginNs);
         }
     }
 
