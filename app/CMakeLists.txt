@@ -315,6 +315,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/loader/zbic.cpp
         ${source_DIR}/skyline/loader/zbic_zstd.c
         ${source_DIR}/skyline/loader/nca.cpp
+        ${source_DIR}/skyline/loader/extracted.cpp
         ${source_DIR}/skyline/loader/xci.cpp
         ${source_DIR}/skyline/loader/nsp.cpp
         ${source_DIR}/skyline/hle/symbol_hooks.cpp
