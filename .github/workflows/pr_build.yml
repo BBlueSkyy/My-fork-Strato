@@ -48,6 +48,8 @@ jobs:
 
       - name: Verify copying policy and SSBO binding behavior
         run: |
+          # The differential test reads this exact baseline, beyond the shallow parent.
+          git fetch --no-tags --depth=1 origin b8593d8b2c2e9742a4f1f9edfaa935f653cd3663
           python3 tests/ssbo_trace/run.py
           python3 tests/gpu_megabuffer_rejected/run.py
 
@@ -61,7 +63,7 @@ jobs:
       - name: Verify experimental provenance
         run: |
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
-          test "$(git rev-parse HEAD^)" = "abf26faa164520f1a88370f6a3e185f95b7a0138"
+          test "$(git rev-parse HEAD^)" = "082dd3edd10f77047156009c1fa83818ca5877f1"
           test "$(git -C app/libraries/shader-compiler rev-parse HEAD)" = "97a97679a1d48877aec7d31c7871df28be239415"
           test -s app/build/outputs/apk/dev/release/app-dev-release.apk
           unzip -l app/build/outputs/apk/dev/release/app-dev-release.apk | grep 'lib/arm64-v8a/libskyline.so'
