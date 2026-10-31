@@ -23,4 +23,13 @@ namespace skyline::loader {
 
         void *LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state) override;
     };
+
+    /** Loads an already-extracted application using the standard ExeFS NSO path. */
+    class ExtractedLoader : public Loader {
+      public:
+        explicit ExtractedLoader(const std::string &gameDirectory);
+
+        void *LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process,
+                              const DeviceState &state) override;
+    };
 }
