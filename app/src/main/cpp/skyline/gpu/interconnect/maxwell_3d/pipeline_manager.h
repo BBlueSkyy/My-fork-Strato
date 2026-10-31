@@ -56,14 +56,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     u32 cbuf_offset;
                     u8 cbuf_index;
                     bool is_written;
-                    bool has_size;
                     u8 count;
 
                     StorageBufferDesc(const Shader::StorageBufferDescriptor &desc)
                         : cbuf_offset{desc.cbuf_offset},
                           cbuf_index{static_cast<u8>(desc.cbuf_index)},
                           is_written{desc.is_written},
-                          has_size{desc.has_size},
                           count{static_cast<u8>(desc.count)} {}
 
                     auto operator<=>(const StorageBufferDesc &) const = default;

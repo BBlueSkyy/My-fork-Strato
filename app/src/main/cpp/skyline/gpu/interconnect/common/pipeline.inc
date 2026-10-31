@@ -37,31 +37,20 @@ namespace skyline::gpu::interconnect {
         }
     }
 
-    struct StorageBufferGuestDescriptor {
-        u64 address;
-        u32 size;
-    };
-
     static DynamicBufferBinding GetStorageBufferBinding(InterconnectContext &ctx, const auto &desc,
                                                         ConstantBuffer &cbuf, CachedMappedBufferView &cachedView,
                                                         vk::PipelineStageFlagBits dstStage,
-                                                        vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
-                                                        std::optional<u64> accessSize = std::nullopt) {
-        const StorageBufferGuestDescriptor ssbo{desc.has_size
-            ? cbuf.Read<StorageBufferGuestDescriptor>(ctx.executor, desc.cbuf_offset)
-            : StorageBufferGuestDescriptor{cbuf.Read<u64>(ctx.executor, desc.cbuf_offset), 0}};
-        if (ssbo.address == 0 || (desc.has_size && ssbo.size == 0))
+                                                        vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+        struct SsboDescriptor {
+            u64 address;
+            u32 size;
+        };
+        auto ssbo{cbuf.Read<SsboDescriptor>(ctx.executor, desc.cbuf_offset)};
+        if (ssbo.size == 0)
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         size_t padding{ssbo.address & (ctx.gpu.traits.minimumStorageBufferAlignment - 1)};
-        constexpr u64 MaximumUnknownStorageBufferRange{8 * 1024 * 1024};
-        const u64 pointerRange{accessSize ? util::AlignUp(*accessSize + padding, ctx.gpu.traits.minimumStorageBufferAlignment)
-                                         : MaximumUnknownStorageBufferRange};
-        const u64 range{desc.has_size ? std::min<u64>(util::AlignUp(u64{ssbo.size} + padding, ctx.gpu.traits.minimumStorageBufferAlignment), ctx.gpu.traits.maximumStorageBufferRange)
-                                     : std::min<u64>(pointerRange, ctx.gpu.traits.maximumStorageBufferRange)};
-        if (!range)
-            return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
-        cachedView.Update(ctx, ssbo.address - padding, range, desc.has_size);
+        cachedView.Update(ctx, ssbo.address - padding, util::AlignUp(ssbo.size + padding, ctx.gpu.traits.minimumStorageBufferAlignment));
         if (!cachedView.view) // Retorna um buffer dummy se o SSBO não estiver vinculado
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 

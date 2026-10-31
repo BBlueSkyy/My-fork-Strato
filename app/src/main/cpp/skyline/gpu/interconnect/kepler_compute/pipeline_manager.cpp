@@ -208,13 +208,10 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         writeBufferDescs(vk::DescriptorType::eStorageBuffer, shaderStage.info.storage_buffers_descriptors,
                          [&](const Shader::StorageBufferDescriptor &desc, size_t) {
-                             auto &cachedView{storageBufferViews[storageBufferIdx++]};
-                             const auto accessSize{desc.access_range.GetSize(groups, sourcePackedState.dimensions)};
                              auto binding{GetStorageBufferBinding(ctx, desc, constantBuffers[desc.cbuf_index],
-                                                                  cachedView,
+                                                                  storageBufferViews[storageBufferIdx++],
                                                                   vk::PipelineStageFlagBits::eComputeShader,
-                                                                  srcStageMask, dstStageMask,
-                                                                  accessSize)};
+                                                                  srcStageMask, dstStageMask)};
                              return binding;
                          });
 
