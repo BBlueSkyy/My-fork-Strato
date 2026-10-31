@@ -28,6 +28,7 @@ namespace skyline::loader {
         NCA, //!< The NCA format: https://switchbrew.org/wiki/NCA
         XCI, //!< The XCI format: https://switchbrew.org/wiki/XCI
         NSP, //!< The NSP format from "nspwn" exploit: https://switchbrew.org/wiki/Switch_System_Flaws
+        EXTRACTED, //!< Decrypted game in app-owned exefs/ and romfs/ directories
     };
 
     /**
