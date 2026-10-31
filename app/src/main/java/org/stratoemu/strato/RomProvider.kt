@@ -9,6 +9,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import org.stratoemu.strato.loader.AppEntry
 import org.stratoemu.strato.loader.RomFile
 import org.stratoemu.strato.loader.RomFormat
+import org.stratoemu.strato.loader.Switch2ExtractedDiscovery
 import org.stratoemu.strato.loader.RomFormat.*
 import java.io.File
 import javax.inject.Inject
@@ -42,6 +43,15 @@ class RomProvider @Inject constructor(
             directory.listFiles()
         } catch (e: Exception) {
             Log.w(TAG, "Unable to list ROM directory ${directory.uri}: ${e.message}")
+            return
+        }
+
+        // Recognize native NX2 programs as library entries without loading them.
+        // The existing recursive scan remains unchanged for Switch 1 and other folders.
+        val extracted = Switch2ExtractedDiscovery.inspect(context, directory, files)
+        if (extracted != null) {
+            if (seenUris.add(directory.uri.toString()))
+                entries.add(extracted)
             return
         }
 
