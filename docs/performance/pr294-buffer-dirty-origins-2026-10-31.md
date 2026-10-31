@@ -1,5 +1,9 @@
 # PR404: origem dos uploads integrais — diagnóstico, sem sincronização parcial
 
+> Errata interpretativa: origin0/1 identifica o callback roteado como escrita.
+> NCE encaminha true sem distinguir o acesso real; isso não prova um store CPU.
+> Ver pr294-buffer-cycle-order-2026-10-31.md para a coleta ESR/ordem desta etapa.
+
 ## Resultado e escopo
 
 O usuário confirmou que 082dd3ed não recuperou FPS. O último log

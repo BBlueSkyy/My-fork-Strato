@@ -206,6 +206,9 @@ namespace skyline::gpu::ssbo_diagnostics {
                 if (!state && e.state.compare_exchange_strong(state,1,std::memory_order_acquire)) {
                     e.key=key;e.state.store(2,std::memory_order_release);state=2;
                 }
+                // Never duplicate a key behind a slot whose key is still being
+                // published. Do not wait on a preempted producer in a trap.
+                if(state==1){dropped.fetch_add(1,std::memory_order_relaxed);return;}
                 if (state!=2 || !(e.key==key)) continue;
                 e.calls.fetch_add(1,std::memory_order_relaxed);e.copied.fetch_add(copied,std::memory_order_relaxed);
                 e.copyNs.fetch_add(copyNs,std::memory_order_relaxed);e.waitNs.fetch_add(waitNs,std::memory_order_relaxed);
@@ -215,6 +218,22 @@ namespace skyline::gpu::ssbo_diagnostics {
         }
     };
     inline DirtyTable dirty;
+    struct CycleEvent {
+        uint64_t buffer{},epoch{},time{},phase{},before{},after{},cause{},flags{},offset{},size{},bytes{},copyNs{},waitNs{},compareNs{},equal{};
+        const char *caller{};
+        uint64_t faultAddress{},faultPc{},actualAccess{2};
+    };
+    struct CycleSlot { std::atomic<bool> ready{};CycleEvent event{}; };
+    struct CycleTable {
+        std::array<CycleSlot,2048> entries{};
+        std::atomic<uint64_t> next{},dropped{};
+        void Record(CycleEvent event) {
+            const auto index{next.fetch_add(1,std::memory_order_relaxed)};
+            if(index>=entries.size()){dropped.fetch_add(1,std::memory_order_relaxed);return;}
+            entries[index].event=event;entries[index].ready.store(true,std::memory_order_release);
+        }
+    };
+    inline CycleTable cycles;
     inline BindingTable bindings;
     inline BufferTable buffers;
     inline std::atomic<uint64_t> compiledPipelines{}, diagnosticPipelinesDropped{};

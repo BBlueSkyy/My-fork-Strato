@@ -52,6 +52,13 @@ namespace skyline::gpu {
         std::optional<GuestBuffer> guest;
         std::shared_ptr<FenceCycle> cycle{}; //!< A fence cycle for when any host operation mutating the buffer has completed, it must be waited on prior to any mutations to the backing
         size_t id;
+        // Temporary observation, accessed under the existing stateMutex.
+        uint64_t diagnosticEpoch{};
+        unsigned diagnosticCause{99};
+        bool DiagnosticSample() const;
+        unsigned DiagnosticFlags();
+        void DiagnosticCycle(unsigned phase,unsigned before,unsigned after,uint64_t offset=0,uint64_t size=0);
+
         bool isDirect{}; //!< Indicates if a buffer is directly mapped from the guest
 
         IntervalList<size_t> directTrackedWrites; //!< (Direct) A list of tracking intervals for the buffer, this is used to determine when to read from `directTrackedShadow`

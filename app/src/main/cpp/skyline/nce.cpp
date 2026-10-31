@@ -5,6 +5,7 @@
 #include <cxxabi.h>
 #include <linux/elf.h>
 #include "common/signal.h"
+#include "common/fault_access.h"
 #include "common/trace.h"
 #include "os.h"
 #include "jvm.h"
@@ -148,10 +149,13 @@ namespace skyline::nce {
         auto &mctx{ctx->uc_mcontext};
         const auto &state{*reinterpret_cast<ThreadContext *>(*tls)->state};
 
-        if (signal == SIGSEGV)
-            // If we get a guest access violation then we want to handle any accesses that may be from a trapped region
+        if (signal == SIGSEGV) {
+            trap_diagnostics::SignalScope diagnosticSignal{mctx.pc, (signal==SIGSEGV && info->si_code>0) ? fault_diagnostics::Access(
+                {reinterpret_cast<const std::byte *>(mctx.__reserved), sizeof(mctx.__reserved)}) : 2};
+            // Preserve legacy routing until actual access types are observed.
             if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
                 return;
+        }
 
         if (signal != SIGINT) {
             signal::StackFrame topFrame{.lr = reinterpret_cast<void *>(ctx->uc_mcontext.pc), .next = reinterpret_cast<signal::StackFrame *>(ctx->uc_mcontext.regs[29])};
@@ -181,8 +185,13 @@ namespace skyline::nce {
     }
 
     void NCE::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
-        if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
-            return;
+        {
+            const auto &mctx{ctx->uc_mcontext};
+            trap_diagnostics::SignalScope diagnosticSignal{mctx.pc, (signal==SIGSEGV && info->si_code>0) ? fault_diagnostics::Access(
+                {reinterpret_cast<const std::byte *>(mctx.__reserved), sizeof(mctx.__reserved)}) : 2};
+            if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
+                return;
+        }
 
         bool runningUnderDebugger{[]() {
             static std::ifstream status("/proc/self/status");

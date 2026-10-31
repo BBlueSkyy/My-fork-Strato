@@ -8,6 +8,25 @@
 #include "interval_map.h"
 
 namespace skyline {
+    // Temporary callback-local observation; no page/protection decisions.
+    namespace trap_diagnostics {
+        inline thread_local const u8 *faultAddress{};
+        inline thread_local bool writeAccess{};
+        inline thread_local uint64_t faultPc{};
+        inline thread_local unsigned actualAccess{2};
+        struct SignalScope {
+            uint64_t oldPc{faultPc};unsigned oldAccess{actualAccess};
+            SignalScope(uint64_t pc,unsigned access){faultPc=pc;actualAccess=access;}
+            ~SignalScope(){faultPc=oldPc;actualAccess=oldAccess;}
+        };
+        struct FaultScope {
+            const u8 *oldAddress{faultAddress};
+            bool oldWrite{writeAccess};
+            FaultScope(const u8 *address,bool write){faultAddress=address;writeAccess=write;}
+            ~FaultScope(){faultAddress=oldAddress;writeAccess=oldWrite;}
+        };
+    }
+
     /**
      * @brief The level of protection that is required for a callback entry
      */

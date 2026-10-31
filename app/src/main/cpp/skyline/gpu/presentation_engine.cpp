@@ -241,6 +241,7 @@ namespace skyline::gpu {
         AsyncLogger::UpdateTag();
 
         uint64_t diagnosticFrames{}, diagnosticFirst{}, diagnosticLast{};
+        size_t diagnosticCycleCursor{};
         size_t diagnosticBindingCursor{}, diagnosticBufferCursor{}, diagnosticDirtyCursor{};
         std::vector<uint64_t> diagnosticDirtyReported(ssbo_diagnostics::dirty.entries.size());
         std::array<uint64_t, 2048> diagnosticBindingsReported{};
@@ -249,7 +250,7 @@ namespace skyline::gpu {
         try {
             presentQueue.Process([this, &diagnosticFrames, &diagnosticFirst, &diagnosticLast,
                 &diagnosticBindingCursor, &diagnosticBufferCursor, &diagnosticBindingsReported,
-                &diagnosticBuffersReported, &diagnosticRelated, &diagnosticDirtyCursor, &diagnosticDirtyReported](const PresentableFrame &frame) {
+                &diagnosticBuffersReported, &diagnosticRelated, &diagnosticDirtyCursor, &diagnosticDirtyReported, &diagnosticCycleCursor](const PresentableFrame &frame) {
                 PresentFrame(frame);
                 frame.presentCallback(); // We're calling the callback here as it's outside of all the locks in PresentFrame
                 skipSignal = true;
@@ -316,6 +317,18 @@ namespace skyline::gpu {
                         e.calls.load(std::memory_order_relaxed),e.copied.load(std::memory_order_relaxed),
                         e.copyNs.load(std::memory_order_relaxed),e.waitNs.load(std::memory_order_relaxed));
                 }
+                size_t cycleRows{};
+                while(diagnosticCycleCursor<cycles.entries.size() && cycleRows<24) {
+                    const auto &slot{cycles.entries[diagnosticCycleCursor]};
+                    if(!slot.ready.load(std::memory_order_acquire))break;
+                    const auto &e{slot.event};
+                    LOGINF("SsboCycle order={} buffer={} epoch={} time_ns={} phase={} before={} after={} cause={} flags={} offset={} size={} bytes={} copy_ns={} wait_ns={} compare_ns={} equal={} caller={} fault_address=0x{:X} pc=0x{:X} actual_access={}",
+                        diagnosticCycleCursor,e.buffer,e.epoch,e.time,e.phase,e.before,e.after,e.cause,e.flags,e.offset,e.size,
+                        e.bytes,e.copyNs,e.waitNs,e.compareNs,e.equal,e.caller,e.faultAddress,e.faultPc,e.actualAccess);
+                    ++diagnosticCycleCursor;++cycleRows;
+                }
+                LOGINF("SsboCycle capacity emitted={} reserved={} dropped={}",diagnosticCycleCursor,
+                    cycles.next.load(std::memory_order_relaxed),cycles.dropped.load(std::memory_order_relaxed));
                 LOGINF("SsboDirty capacity rows={} dropped={}",dirtyRows,dirty.dropped.load(std::memory_order_relaxed));
                 LOGINF("SsboTrace totals frames={} elapsed_ns={} binding_rows={} buffer_rows={} bindings_dropped={} buffers_created={} buffers_dropped={} pipelines_dropped={}",
                     diagnosticFrames, static_cast<uint64_t>(now) - diagnosticFirst, bindingRows, bufferRows,

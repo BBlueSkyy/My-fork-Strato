@@ -143,6 +143,7 @@ namespace skyline {
                         // We don't need to do the callback if the entry doesn't require any protection already
                         continue;
 
+                    trap_diagnostics::FaultScope diagnosticFault{address,true};
                     if (!entry.writeCallback()) {
                         lockCallback = entry.lockCallback;
                         break;
@@ -161,6 +162,7 @@ namespace skyline {
                         continue;
                     }
 
+                    trap_diagnostics::FaultScope diagnosticFault{address,false};
                     if (!entry.readCallback()) {
                         lockCallback = entry.lockCallback;
                         break;

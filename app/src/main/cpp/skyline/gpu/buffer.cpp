@@ -7,10 +7,27 @@
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
 #include <common/settings.h>
+#include <common/trap_manager.h>
 #include "buffer.h"
 #include "ssbo_diagnostics.h"
 
 namespace skyline::gpu {
+    bool Buffer::DiagnosticSample() const {
+        const auto *e{ssbo_diagnostics::buffers.Get(id)};
+        return diagnosticEpoch%128==1 && e && e->bytes.load(std::memory_order_relaxed)>=1024*1024 && e->computeSeen.load(std::memory_order_relaxed);
+    }
+    unsigned Buffer::DiagnosticFlags() {
+        return unsigned(*gpu.state.settings->enableFastGpuReadbackHack) |
+            (unsigned(*gpu.state.settings->enableFastReadbackWrites)<<1) |
+            (unsigned(AllCpuBackingWritesBlocked())<<3) | (unsigned(::skyline::trap_diagnostics::writeAccess)<<4);
+    }
+    void Buffer::DiagnosticCycle(unsigned phase,unsigned before,unsigned after,uint64_t offset,uint64_t size) {
+        if(DiagnosticSample()) ssbo_diagnostics::cycles.Record({id,diagnosticEpoch,uint64_t(util::GetTimeNs()),phase,before,after,
+            diagnosticCause,DiagnosticFlags(),offset,size,(phase==2 || phase==8) ? size : 0,0,0,0,2,__func__,
+            reinterpret_cast<uintptr_t>(::skyline::trap_diagnostics::faultAddress),
+            ::skyline::trap_diagnostics::faultPc,::skyline::trap_diagnostics::actualAccess});
+    }
+
     void Buffer::ResetMegabufferState() {
         if (megaBufferTableUsed)
             megaBufferTableValidity.reset();
@@ -95,6 +112,8 @@ namespace skyline::gpu {
             if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty) {
                 ssbo_diagnostics::dirty.Record({buffer->id,0,0,ssbo_diagnostics::Origin::TrapWrite,
                     unsigned(buffer->dirtyState),unsigned(DirtyState::CpuDirty),0,__func__,__LINE__});
+                ++buffer->diagnosticEpoch;buffer->diagnosticCause=0;
+                buffer->DiagnosticCycle(0,unsigned(buffer->dirtyState),1);
                 buffer->dirtyState = DirtyState::CpuDirty;
                 return true;
             }
@@ -102,10 +121,13 @@ namespace skyline::gpu {
             if (buffer->accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold && *buffer->gpu.state.settings->enableFastGpuReadbackHack) {
                 // As opposed to skipping readback as we do for textures, with buffers we can still perform the readback but just without syncinc the GPU
                 // While the read data may be invalid it's still better than nothing and works in most cases
+                ++buffer->diagnosticEpoch;buffer->diagnosticCause=1;
+                buffer->DiagnosticCycle(1,unsigned(buffer->dirtyState),unsigned(buffer->dirtyState),0,buffer->mirror.size());
                 memcpy(buffer->mirror.data(), buffer->backing->data(), buffer->mirror.size());
                 ssbo_diagnostics::buffers.Fast(buffer->id, buffer->mirror.size());
                 ssbo_diagnostics::dirty.Record({buffer->id,0,0,ssbo_diagnostics::Origin::FastTrap,
                     unsigned(buffer->dirtyState),unsigned(*buffer->gpu.state.settings->enableFastReadbackWrites ? DirtyState::CpuDirty : DirtyState::Clean),0,__func__,__LINE__});
+                buffer->DiagnosticCycle(2,unsigned(buffer->dirtyState),unsigned(*buffer->gpu.state.settings->enableFastReadbackWrites ? DirtyState::CpuDirty : DirtyState::Clean),0,buffer->mirror.size());
                 buffer->dirtyState = *buffer->gpu.state.settings->enableFastReadbackWrites ? DirtyState::CpuDirty : DirtyState::Clean;
                 return true;
             }
@@ -117,9 +139,12 @@ namespace skyline::gpu {
             if (buffer->cycle)
                 return false;
 
+            ++buffer->diagnosticEpoch;buffer->diagnosticCause=0;
+            buffer->DiagnosticCycle(9,unsigned(buffer->dirtyState),unsigned(buffer->dirtyState));
             buffer->SynchronizeGuest(true); // We need to assume the buffer is dirty since we don't know what the guest is writing
             ssbo_diagnostics::dirty.Record({buffer->id,0,0,ssbo_diagnostics::Origin::TrapWrite,
                 unsigned(buffer->dirtyState),unsigned(DirtyState::CpuDirty),0,__func__,__LINE__});
+            buffer->DiagnosticCycle(0,unsigned(buffer->dirtyState),1);
             buffer->dirtyState = DirtyState::CpuDirty;
 
             return true;
@@ -235,6 +260,7 @@ namespace skyline::gpu {
             ssbo_diagnostics::dirty.Record({id,dstOffset,size,ssbo_diagnostics::Origin::CpuCopy,
                 unsigned(dirtyState),unsigned(dirtyState),1,__func__,__LINE__});
             std::memcpy(mirror.data() + dstOffset, src->mirror.data() + srcOffset, size);
+            DiagnosticCycle(6,unsigned(dirtyState),unsigned(dirtyState),dstOffset,size);
 
             if (dirtyState == DirtyState::CpuDirty && !SequencedCpuBackingWritesBlocked())
                 // Skip updating backing if the changes are gonna be updated later by SynchroniseHost in executor anyway
@@ -315,6 +341,7 @@ namespace skyline::gpu {
         ssbo_diagnostics::dirty.Record({id,offset,data.size(),ssbo_diagnostics::Origin::CpuWrite,
             unsigned(dirtyState),unsigned(dirtyState),1,__func__,__LINE__});
         std::memcpy(mirror.data() + offset, data.data(), data.size()); // Always copy to mirror since any CPU side reads will need the up-to-date contents
+        DiagnosticCycle(6,unsigned(dirtyState),unsigned(dirtyState),offset,data.size());
 
         if (dirtyState == DirtyState::CpuDirty && !SequencedCpuBackingWritesBlocked())
             // Skip updating backing if the changes are gonna be updated later by SynchroniseHost in executor anyway
@@ -381,6 +408,7 @@ namespace skyline::gpu {
 
         ssbo_diagnostics::dirty.Record({id,0,0,ssbo_diagnostics::Origin::GpuDirty,
             unsigned(dirtyState),unsigned(DirtyState::GpuDirty),0,__func__,__LINE__});
+        DiagnosticCycle(5,unsigned(dirtyState),2);
         dirtyState = DirtyState::GpuDirty;
 
         BlockAllCpuBackingWrites();
@@ -489,7 +517,9 @@ namespace skyline::gpu {
 
         TRACE_EVENT("gpu", "Buffer::SynchronizeHost");
 
-        uint64_t diagnosticWaitNs{};
+        uint64_t diagnosticWaitNs{},diagnosticSampleEpoch{};
+        unsigned diagnosticSampleCause{},diagnosticSampleFlags{};
+        bool diagnosticSample{};
         {
             std::scoped_lock lock{stateMutex};
             if (dirtyState != DirtyState::CpuDirty) {
@@ -498,6 +528,10 @@ namespace skyline::gpu {
                 return;
             }
 
+            diagnosticSample=DiagnosticSample();diagnosticSampleEpoch=diagnosticEpoch;
+            diagnosticSampleCause=diagnosticCause;diagnosticSampleFlags=diagnosticSample ? DiagnosticFlags() : 0;
+            if(diagnosticSample) ssbo_diagnostics::cycles.Record({id,diagnosticSampleEpoch,uint64_t(util::GetTimeNs()),3,1,0,
+                diagnosticSampleCause,diagnosticSampleFlags,0,mirror.size(),0,0,0,0,2,diagnostic.function_name()});
             dirtyState = DirtyState::Clean;
             const auto diagnosticWaitStart{util::GetTimeNs()};
             WaitOnFence();
@@ -509,9 +543,19 @@ namespace skyline::gpu {
                 gpu.state.process->trap.TrapRegions(*trapHandle, true); // Trap any future CPU writes to this buffer, must be done before the memcpy so that any modifications during the copy are tracked
         }
 
+        // Sample only after the original fence wait and reprotection; no copy is skipped.
+        uint64_t diagnosticCompareNs{};unsigned diagnosticEqual{2};
+        if(diagnosticSample) {
+            const auto start{util::GetTimeNs()};
+            diagnosticEqual=std::memcmp(backing->data(),mirror.data(),mirror.size())==0;
+            diagnosticCompareNs=util::GetTimeNs()-start;
+        }
         const auto diagnosticStart{util::GetTimeNs()};
         std::memcpy(backing->data(), mirror.data(), mirror.size());
         const auto diagnosticCopyNs{util::GetTimeNs()-diagnosticStart};
+        if(diagnosticSample) ssbo_diagnostics::cycles.Record({id,diagnosticSampleEpoch,uint64_t(util::GetTimeNs()),4,1,0,
+            diagnosticSampleCause,diagnosticSampleFlags,0,mirror.size(),mirror.size(),uint64_t(diagnosticCopyNs),
+            diagnosticWaitNs,diagnosticCompareNs,diagnosticEqual,diagnostic.function_name()});
         ssbo_diagnostics::buffers.Copy(id, true, mirror.size(), diagnosticCopyNs);
         ssbo_diagnostics::dirty.Record({id,0,mirror.size(),ssbo_diagnostics::Origin::Upload,1,0,0,
             diagnostic.function_name(),diagnostic.line()},mirror.size(),diagnosticCopyNs,diagnosticWaitNs);
@@ -533,6 +577,7 @@ namespace skyline::gpu {
             if (nonBlocking && !PollFence())
                 return false; // If the fence is not signalled and non-blocking behaviour is requested then bail out
 
+            DiagnosticCycle(7,2,0,0,mirror.size());
             const auto diagnosticWaitStart{util::GetTimeNs()};
             WaitOnFence();
             diagnosticWaitNs=util::GetTimeNs()-diagnosticWaitStart;
@@ -544,6 +589,7 @@ namespace skyline::gpu {
                 diagnostic.function_name(),diagnostic.line()},mirror.size(),diagnosticCopyNs,diagnosticWaitNs);
 
             dirtyState = DirtyState::Clean;
+            DiagnosticCycle(8,2,0,0,mirror.size());
         }
 
         if (!skipTrap)
