@@ -9,6 +9,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import org.stratoemu.strato.loader.AppEntry
 import org.stratoemu.strato.loader.RomFile
 import org.stratoemu.strato.loader.RomFormat
+import org.stratoemu.strato.loader.SafExtractedSource
 import org.stratoemu.strato.loader.RomFormat.*
 import java.io.File
 import javax.inject.Inject
@@ -47,7 +48,20 @@ class RomProvider @Inject constructor(
 
         files.forEach { file ->
             if (file.isDirectory) {
-                addEntries(fileFormats, file, entries, seenUris, systemLanguage)
+                if (SafExtractedSource.isExtractedDirectory(context, file.uri)) {
+                    val rootUri = file.uri
+                    if (seenUris.add(rootUri.toString())) {
+                        try {
+                            val npdmUri = SafExtractedSource.npdmUri(context, rootUri)
+                            val metadata = RomFile(context, EXTRACTED, npdmUri, systemLanguage).appEntry
+                            entries.add(metadata.copy(name = file.name ?: "Extracted game", uri = rootUri))
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Unable to inspect extracted game $rootUri: ${e.message}")
+                        }
+                    }
+                } else {
+                    addEntries(fileFormats, file, entries, seenUris, systemLanguage)
+                }
             } else {
                 val extension = file.name
                     ?.substringAfterLast(".", "")
@@ -101,7 +115,9 @@ class RomProvider @Inject constructor(
                     return@forEach
 
                 try {
-                    entries.add(RomFile(context, EXTRACTED, uri, systemLanguage).appEntry)
+                    val npdmUri = Uri.fromFile(File(exeFs, "main.npdm"))
+                    val metadata = RomFile(context, EXTRACTED, npdmUri, systemLanguage).appEntry
+                    entries.add(metadata.copy(uri = Uri.fromFile(game), name = game.name))
                 } catch (e: Exception) {
                     Log.w(TAG, "Unable to load extracted game ${game.name}: ${e.message}")
                 }
