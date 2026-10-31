@@ -487,13 +487,11 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         val rom = item.uri
         val romType = item.format.ordinal
 
-        // SAF-backed directory ROMs are opened through ContentResolver, not by
-        // resolving a content:// document into a Linux filesystem path.
-        val extractedSource = if (item.format == RomFormat.EXTRACTED && rom.scheme != "file")
-            SafExtractedSource(this, rom) else null
-
+        // A large extracted RomFS may contain thousands of documents. Defer
+        // enumeration to the emulation thread so the Android UI never blocks.
+        val isSafExtraction = item.format == RomFormat.EXTRACTED && rom.scheme != "file"
         @SuppressLint("Recycle")
-        val romFd = extractedSource?.openMain() ?: openRomFileDescriptor(this, rom)!!
+        val romFd = if (isSafExtraction) null else openRomFileDescriptor(this, rom)!!
 
         var dlcFds : IntArray? = null
         if (dlcUris.isNotEmpty()) {
@@ -551,8 +549,16 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         }
         
         emulationThread = Thread {
-            executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, programIndex, previousProgramIndex, userChannel, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets, extractedSource)
-            returnFromEmulation()
+            try {
+                val extractedSource = if (isSafExtraction) SafExtractedSource(this, rom) else null
+                val launchDescriptor = extractedSource?.openMain() ?: romFd
+                    ?: throw IllegalStateException("Missing ROM descriptor")
+                executeApplication(rom.toString(), romType, launchDescriptor.detachFd(), dlcFds, updateFd, programIndex, previousProgramIndex, userChannel, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets, extractedSource)
+            } catch (e: Exception) {
+                Log.e(Tag, "Failed to load extracted or packaged game", e)
+            } finally {
+                returnFromEmulation()
+            }
         }
 
         emulationThread!!.start()
