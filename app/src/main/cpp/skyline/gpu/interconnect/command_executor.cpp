@@ -2,6 +2,8 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <chrono>
+#include <array>
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <range/v3/view.hpp>
@@ -14,6 +16,13 @@
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
+    namespace {
+        struct TimingCounters {
+            std::atomic<uint64_t> submissions{}, nodes{}, cpuRecordNs{}, slotWaitNs{}, slotWaits{};
+            std::atomic<uint64_t> gpuSamples{}, gpuNs{}, gpuNotReady{}, gpuErrors{}, gpuSupportedSlots{};
+        };
+        TimingCounters gpuTiming;
+    }
     static void RecordFullBarrier(vk::raii::CommandBuffer &commandBuffer) {
         commandBuffer.pipelineBarrier(
             vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, {}, vk::MemoryBarrier{
@@ -69,6 +78,22 @@ namespace skyline::gpu::interconnect {
           cycle{std::make_shared<FenceCycle>(gpu.vkDevice, *fence, *semaphore, true)},
           nodes{allocator},
           pendingPostRenderPassNodes{allocator} {
+        const auto families{gpu.vkPhysicalDevice.getQueueFamilyProperties()};
+        if (gpu.vkQueueFamilyIndex < families.size())
+            timingBits = families[gpu.vkQueueFamilyIndex].timestampValidBits;
+        timingPeriod = gpu.vkPhysicalDevice.getProperties().limits.timestampPeriod;
+        if (timingBits && timingPeriod > 0) {
+            try {
+                timingPool.emplace(gpu.vkDevice, vk::QueryPoolCreateInfo{
+                    .queryType = vk::QueryType::eTimestamp,
+                    .queryCount = 2,
+                });
+                gpuTiming.gpuSupportedSlots.fetch_add(1, std::memory_order_relaxed);
+            } catch (const std::exception &e) {
+                LOGW("GpuTiming: timestamp query unavailable: {}", e.what());
+                timingPool.reset();
+            }
+        }
         Begin();
     }
 
@@ -78,6 +103,10 @@ namespace skyline::gpu::interconnect {
           fence{std::move(other.fence)},
           semaphore{std::move(other.semaphore)},
           cycle{std::move(other.cycle)},
+          timingPool{std::move(other.timingPool)},
+          timingBits{other.timingBits},
+          timingPeriod{other.timingPeriod},
+          timingPending{other.timingPending},
           allocator{std::move(other.allocator)},
           nodes{std::move(other.nodes)},
           pendingPostRenderPassNodes{std::move(other.pendingPostRenderPassNodes)},
@@ -86,9 +115,32 @@ namespace skyline::gpu::interconnect {
     std::shared_ptr<FenceCycle> CommandRecordThread::Slot::Reset(GPU &gpu) {
         auto startTime{util::GetTimeNs()};
 
-        cycle->Wait();
+        cycle->Wait(); // Existing wait only; do not add GPU synchronization.
+        const uint64_t waitedNs{util::GetTimeNs() - startTime};
+        gpuTiming.slotWaitNs.fetch_add(waitedNs, std::memory_order_relaxed);
+        gpuTiming.slotWaits.fetch_add(1, std::memory_order_relaxed);
+        if (timingPending && timingPool) {
+            std::array<uint64_t, 2> ticks{};
+            const VkResult result{gpu.vkDevice.getDispatcher()->vkGetQueryPoolResults(
+                static_cast<VkDevice>(*gpu.vkDevice), static_cast<VkQueryPool>(**timingPool),
+                0, 2, sizeof(ticks), ticks.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT)};
+            if (result == VK_SUCCESS) {
+                const uint64_t mask{timingBits >= 64 ? UINT64_MAX : ((uint64_t{1} << timingBits) - 1)};
+                const uint64_t delta{(ticks[1] - ticks[0]) & mask};
+                const double ns{static_cast<double>(delta) * timingPeriod};
+                if (ns >= 0 && ns < 100000000000.0) {
+                    gpuTiming.gpuSamples.fetch_add(1, std::memory_order_relaxed);
+                    gpuTiming.gpuNs.fetch_add(static_cast<uint64_t>(ns), std::memory_order_relaxed);
+                } else gpuTiming.gpuErrors.fetch_add(1, std::memory_order_relaxed);
+            } else if (result == VK_NOT_READY) {
+                gpuTiming.gpuNotReady.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                gpuTiming.gpuErrors.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        timingPending = false;
         cycle = std::make_shared<FenceCycle>(*cycle);
-        if (util::GetTimeNs() - startTime > GrowThresholdNs)
+        if (waitedNs > GrowThresholdNs)
             didWait = true;
 
         // Command buffer doesn't need to be reset since that's done implicitly by begin
@@ -113,6 +165,17 @@ namespace skyline::gpu::interconnect {
     void CommandRecordThread::ProcessSlot(Slot *slot) {
         TRACE_EVENT_FMT("gpu", "ProcessSlot: {}, execution: {}", fmt::ptr(slot), u64{slot->executionTag});
         auto &gpu{*state.gpu};
+        const uint64_t recordStart{util::GetTimeNs()};
+        const uint64_t submission{gpuTiming.submissions.fetch_add(1, std::memory_order_relaxed) + 1};
+        gpuTiming.nodes.fetch_add(slot->nodes.size(), std::memory_order_relaxed);
+        // One query pair per 16 command buffers to limit profiling overhead.
+        slot->timingPending = slot->timingPool.has_value() && submission % 16 == 0;
+        if (slot->timingPending) {
+            const VkCommandBuffer cmd{static_cast<VkCommandBuffer>(*slot->commandBuffer)};
+            const VkQueryPool pool{static_cast<VkQueryPool>(**slot->timingPool)};
+            gpu.vkDevice.getDispatcher()->vkCmdResetQueryPool(cmd, pool, 0, 2);
+            gpu.vkDevice.getDispatcher()->vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, pool, 0);
+        }
 
         vk::RenderPass lRenderPass;
         u32 subpassIndex;
@@ -173,10 +236,16 @@ namespace skyline::gpu::interconnect {
             #undef NODE
         }
 
+        if (slot->timingPending) {
+            gpu.vkDevice.getDispatcher()->vkCmdWriteTimestamp(
+                static_cast<VkCommandBuffer>(*slot->commandBuffer), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                static_cast<VkQueryPool>(**slot->timingPool), 1);
+        }
         slot->commandBuffer.end();
         slot->ready = false;
 
         gpu.scheduler.SubmitCommandBuffer(slot->commandBuffer, slot->cycle);
+        gpuTiming.cpuRecordNs.fetch_add(util::GetTimeNs() - recordStart, std::memory_order_relaxed);
 
         slot->nodes.clear();
         slot->allocator.Reset();
@@ -198,14 +267,30 @@ namespace skyline::gpu::interconnect {
             LOGW("Failed to set the thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
 
+        uint64_t timingLastReport{};
         try {
-            incoming.Process([this, renderDocApi, &gpu](Slot *slot) {
+            incoming.Process([this, renderDocApi, &gpu, &timingLastReport](Slot *slot) {
                 idle = false;
                 VkInstance instance{*gpu.vkInstance};
                 if (renderDocApi && slot->capture)
                     renderDocApi->StartFrameCapture(RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE(instance), nullptr);
 
                 ProcessSlot(slot);
+                const uint64_t timingNow{util::GetTimeNs()};
+                if (!timingLastReport || timingNow - timingLastReport >= 5000000000ULL) {
+                    timingLastReport = timingNow;
+                    LOGINF("GpuTiming submissions={} nodes={} cpu_record_ns={} slot_wait_ns={} slot_waits={} gpu_samples={} gpu_ns={} gpu_not_ready={} gpu_errors={} supported_slots={} sample_every=16",
+                        gpuTiming.submissions.load(std::memory_order_relaxed),
+                        gpuTiming.nodes.load(std::memory_order_relaxed),
+                        gpuTiming.cpuRecordNs.load(std::memory_order_relaxed),
+                        gpuTiming.slotWaitNs.load(std::memory_order_relaxed),
+                        gpuTiming.slotWaits.load(std::memory_order_relaxed),
+                        gpuTiming.gpuSamples.load(std::memory_order_relaxed),
+                        gpuTiming.gpuNs.load(std::memory_order_relaxed),
+                        gpuTiming.gpuNotReady.load(std::memory_order_relaxed),
+                        gpuTiming.gpuErrors.load(std::memory_order_relaxed),
+                        gpuTiming.gpuSupportedSlots.load(std::memory_order_relaxed));
+                }
 
                 if (renderDocApi && slot->capture)
                     renderDocApi->EndFrameCapture(RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE(instance), nullptr);

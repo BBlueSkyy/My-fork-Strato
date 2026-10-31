@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include <gpu/texture/backing_promotion.h>
 
 #include <boost/container/stable_vector.hpp>
@@ -41,6 +43,11 @@ namespace skyline::gpu::interconnect {
             vk::raii::Fence fence;
             vk::raii::Semaphore semaphore;
             std::shared_ptr<FenceCycle> cycle;
+            // Diagnostic only: timestamps from already-completed submissions.
+            std::optional<vk::raii::QueryPool> timingPool;
+            uint32_t timingBits{};
+            double timingPeriod{};
+            bool timingPending{};
             LinearAllocatorState<> allocator;
             std::list<node::NodeVariant, LinearAllocator<node::NodeVariant>> nodes;
             std::list<node::NodeVariant, LinearAllocator<node::NodeVariant>> pendingPostRenderPassNodes;
