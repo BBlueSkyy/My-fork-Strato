@@ -171,3 +171,38 @@ and synchronization semantics*, not relying on enabling Fast GPU Readback
 or Fast Readback Writes, and not adding a new user-facing switch.
 Do not make semantic changes until an actual high-cost work path is proven
 by device evidence and compared against historical good PR #293 builds.
+
+## October 30, 2026 device log: narrow GPFIFO candidate
+
+A new Moto G100, Turnip 24.0.99 Zelda log with FrameDiag and GpuDecodeDiag
+shows, over 60.34 seconds of slow-scene samples (38.27–93.61 seconds),
+1,060 presented frames, about 17.57 presented frames/s.
+GPFIFO processed 864,176 entries / 86,006,654 words (~815 entries and
+81,516 words per presented frame), consuming 24.74 seconds cumulative
+CPU-side wall time in Process (~23.34ms per presented frame).
+GPFIFO idle-batch submission consumed 1.67 seconds in those windows,
+while channel-lock acquisition was only 0.0013 seconds and measured
+explicit Submit(wait=true) waits were zero. Command-record work totalled
+5.11 seconds (~4.82ms per presented frame), independently of GPFIFO,
+and the host syncpoint wait was 26.22 seconds (~24.73ms/frame).
+The workload substantially differs from the fast/menu sample; no
+like-for-like good/slow build comparison has been made yet.
+
+The exact blob of soc/gm20b/gpfifo.cpp is identical in good
+28bcb957a9f018212f3b0a2e5628028bdb22bf69, early slow
+e7290a9b5f4c346a2e5198210d022a8da151f6ab, and current master.
+Thus the historical regression cannot be due to a direct edit of that file.
+However Process() includes GMMU translation, backing reads, dirty-region
+checks and all called GPU engine method handlers (including texture and
+pipeline work). We cannot yet attribute 23ms to parsing alone.
+
+The `GpuFifoPhases` five-second deltas now time only per-entry GMMU
+TranslateRange, backing access/copy and dirty-interval checks. They also
+count mapping ranges, split-mapping entries and dirty hits; the remainder
+of Process() timing is a **non-independent approximate** estimate of method
+dispatch and handlers, not a separate profiler or a guaranteed exact sum.
+There are a few extra steady-clock reads and relaxed atomic increments
+per entry, so use the APK to localize costs, not benchmark raw FPS.
+No synchronization, lookup/caching, memory alias or GPU behavior changed.
+Normal Release optimizations must eventually remove diagnostic overhead
+and avoid all user-facing readback options.

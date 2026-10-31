@@ -330,6 +330,12 @@ namespace skyline::gpu {
                             delta(GpfifoLockNs), delta(GpfifoDrainSubmits),
                             delta(GpfifoDrainNs), delta(SyncSubmitWaits),
                             delta(SyncSubmitWaitNs));
+                        // Decompose Process() without timing every guest method.
+                        LOGINF("GpuFifoPhases window_ns={} translate_ns={} backing_ns={} dirty_scan_ns={} mapped_ranges={} split_entries={} dirty_hits={}",
+                            reportAtNs - previousAtNs,
+                            delta(GpfifoTranslateNs), delta(GpfifoBackingNs),
+                            delta(GpfifoDirtyScanNs), delta(GpfifoMappedRanges),
+                            delta(GpfifoSplitEntries), delta(GpfifoDirtyHits));
                     }
                     previousFrame = currentFrame;
                     previousAtNs = reportAtNs;

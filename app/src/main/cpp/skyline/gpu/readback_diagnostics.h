@@ -54,6 +54,8 @@ namespace skyline::gpu::readback_diagnostics {
         GpfifoEntries, GpfifoWords, GpfifoProcessNs,
         GpfifoLockNs, GpfifoDrainSubmits, GpfifoDrainNs,
         SyncSubmitWaits, SyncSubmitWaitNs,
+        GpfifoTranslateNs, GpfifoBackingNs, GpfifoDirtyScanNs,
+        GpfifoMappedRanges, GpfifoSplitEntries, GpfifoDirtyHits,
         FrameMetricCount
     };
     using FrameValues = std::array<uint64_t, FrameMetricCount>;

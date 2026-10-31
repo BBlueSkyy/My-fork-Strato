@@ -176,8 +176,16 @@ namespace skyline::soc::gm20b {
             }
         }
 
+        const auto translateBeginNs{gpu::readback_diagnostics::NowNs()};
         auto pushBufferMappedRanges{channelCtx.asCtx->gmmu.TranslateRange(gpEntry.Address(), gpEntry.size * sizeof(u32))};
+        gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoTranslateNs,
+            gpu::readback_diagnostics::NowNs() - translateBeginNs);
+        gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoMappedRanges,
+            pushBufferMappedRanges.size());
+        if (pushBufferMappedRanges.size() != 1)
+            gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoSplitEntries);
 
+        const auto backingBeginNs{gpu::readback_diagnostics::NowNs()};
         bool pushBufferCopied{}; //!< Set by the below lambda in order to track if the pushbuffer is a copy of guest memory or not
         auto pushBuffer{[&]() -> span<u32> {
             if (pushBufferMappedRanges.size() == 1) {
@@ -190,17 +198,24 @@ namespace skyline::soc::gm20b {
                 return span(pushBufferData);
             }
         }()};
+        gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoBackingNs,
+            gpu::readback_diagnostics::NowNs() - backingBeginNs);
 
         bool pushbufferDirty{false};
-
+        uint64_t dirtyHits{};
+        const auto dirtyBeginNs{gpu::readback_diagnostics::NowNs()};
         for (auto range : pushBufferMappedRanges) {
             if (channelCtx.executor.usageTracker.dirtyIntervals.Intersect(range)) {
+                ++dirtyHits;
                 if (skipDirtyFlushes)
                     pushbufferDirty = true;
                 else
                     channelCtx.executor.Submit({}, true);
             }
         }
+        gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoDirtyHits, dirtyHits);
+        gpu::readback_diagnostics::frames.Add(gpu::readback_diagnostics::GpfifoDirtyScanNs,
+            gpu::readback_diagnostics::NowNs() - dirtyBeginNs);
 
         // There will be at least one entry here
         auto entry{pushBuffer.begin()};
