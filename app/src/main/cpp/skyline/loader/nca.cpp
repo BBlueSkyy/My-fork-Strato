@@ -3,6 +3,9 @@
 
 #include <kernel/types/KProcess.h>
 #include <vfs/npdm.h>
+#include <vfs/os_filesystem.h>
+#include <vfs/layered_romfs.h>
+#include <filesystem>
 #include "nso.h"
 #include "nca.h"
 
@@ -53,5 +56,34 @@ namespace skyline::loader {
             throw exception("Program content must be resolved before loading the process");
         process->npdm = vfs::NPDM(processExeFs->OpenFile("main.npdm"));
         return LoadExeFs(this, processExeFs, process, state);
+    }
+
+    ExtractedLoader::ExtractedLoader(const std::string &gameDirectory) {
+        const std::filesystem::path root{gameDirectory};
+        const auto exeFsDirectory{root / "exefs"};
+        if (!std::filesystem::is_directory(exeFsDirectory))
+            throw exception("Extracted game has no exefs directory");
+
+        auto exeFs{std::make_shared<vfs::OsFileSystem>(exeFsDirectory.string())};
+        if (!exeFs->FileExists("main.npdm") || !exeFs->FileExists("main") || !exeFs->FileExists("rtld"))
+            throw exception("Extracted ExeFS must contain main.npdm, main and rtld");
+
+        processExeFs = std::move(exeFs);
+
+        const auto romFsDirectory{root / "romfs"};
+        if (std::filesystem::is_directory(romFsDirectory)) {
+            // Build a virtual RomFS header backed by the original extracted
+            // files. No repacking or copying the data partition is required.
+            romFs = std::make_shared<vfs::LayeredRomFsBacking>(
+                nullptr, std::vector<std::filesystem::path>{romFsDirectory});
+        }
+    }
+
+    void *ExtractedLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process,
+                                           const DeviceState &state) {
+        if (!programContentResolved || !processExeFs)
+            throw exception("Extracted Program content must be resolved before launch");
+        process->npdm = vfs::NPDM(processExeFs->OpenFile("main.npdm"));
+        return NcaLoader::LoadExeFs(this, processExeFs, process, state);
     }
 }
