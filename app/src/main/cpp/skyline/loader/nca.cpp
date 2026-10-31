@@ -122,6 +122,35 @@ namespace skyline::loader {
         }
     }
 
+    ExtractedLoader::ExtractedLoader(const std::shared_ptr<JavaExtractedSource> &source) {
+        if (!source)
+            throw exception("Null extracted-game Android document source");
+        auto exefs{std::make_shared<ExtractedExeFs>(source)};
+        if (!exefs->FileExists("main.npdm") || !exefs->FileExists("main") || !exefs->FileExists("rtld"))
+            throw exception("SAF ExeFS is missing main.npdm, main or rtld");
+
+        const vfs::NPDM npdm(exefs->OpenFile("main.npdm"));
+        if (auto control{source->OpenFile("control.nacp")})
+            nacp.emplace(control);
+        else {
+            nacp.emplace(std::make_shared<ExtractedNacpBacking>(
+                npdm.aci0.programId, source->title));
+            LOGW("SAF extracted title missing control.nacp; save-size metadata is unknown");
+        }
+
+        processExeFs = exefs;
+        std::vector<vfs::LayeredRomFsBacking::ExtractedFile> romFiles;
+        for (const auto &file : source->files) {
+            if (file.path.starts_with("romfs/")) {
+                auto backing{source->OpenFile(file.path)};
+                romFiles.emplace_back(vfs::LayeredRomFsBacking::ExtractedFile{
+                    file.path.substr(sizeof("romfs/") - 1), std::move(backing)});
+            }
+        }
+        if (!romFiles.empty())
+            romFs = std::make_shared<vfs::LayeredRomFsBacking>(romFiles);
+    }
+
     void *ExtractedLoader::LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &process,
                                            const DeviceState &state) {
         if (!programContentResolved || !processExeFs)
