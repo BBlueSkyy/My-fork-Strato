@@ -197,6 +197,10 @@ namespace skyline::gpu {
         void MarkGpuDirtyImpl();
 
       public:
+        // Diagnostic branch only; caller holds the buffer lock. No synchronization.
+        size_t DiagnosticGuestSize() const { return guest ? guest->size() : 0; }
+        bool DiagnosticIsDirect() const { return isDirect; }
+
         void UpdateCycle(const std::shared_ptr<FenceCycle> &newCycle) {
             // A lifetime chain alone does not order independent record threads'
             // queue submissions, including clean and directly imported buffers.

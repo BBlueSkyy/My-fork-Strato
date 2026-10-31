@@ -11,6 +11,7 @@
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
 #include "presentation_engine.h"
+#include "ssbo_diagnostics.h"
 #include "native_window.h"
 #include "texture/format.h"
 
@@ -239,12 +240,43 @@ namespace skyline::gpu {
             LOGW("Failed to set the thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
 
+        uint64_t diagnosticFrames{}, diagnosticFirst{}, diagnosticLast{};
+        size_t diagnosticCursor{};
+        std::array<uint64_t, 128> diagnosticReported{};
         try {
-            presentQueue.Process([this](const PresentableFrame &frame) {
+            presentQueue.Process([this, &diagnosticFrames, &diagnosticFirst, &diagnosticLast, &diagnosticCursor, &diagnosticReported](const PresentableFrame &frame) {
                 PresentFrame(frame);
                 frame.presentCallback(); // We're calling the callback here as it's outside of all the locks in PresentFrame
                 skipSignal = true;
                 vsyncEvent->Signal();
+                using namespace ssbo_diagnostics;
+                const auto now{util::GetTimeNs()};
+                ++diagnosticFrames;
+                if (!diagnosticFirst) diagnosticFirst = now;
+                if (diagnosticLast && static_cast<uint64_t>(now) - diagnosticLast < 5000000000ULL) return;
+                diagnosticLast = now;
+                size_t rows{};
+                for (size_t scanned{}; scanned < bindings.entries.size() && rows < 16; ++scanned) {
+                    const auto index{diagnosticCursor};
+                    diagnosticCursor = (diagnosticCursor + 1) % bindings.entries.size();
+                    const auto &e{bindings.entries[index]};
+                    const auto key{e.key.load(std::memory_order_relaxed)};
+                    const auto calls{e.calls.load(std::memory_order_relaxed)};
+                    if (!key || calls == diagnosticReported[index]) continue;
+                    diagnosticReported[index] = calls;
+                    ++rows;
+                    LOGINF("SsboDiag binding stage=0x{:X} cbuf={} offset=0x{:X} kind={} has_size={} written={} calls={} request_bytes={} view_bytes={} max_request={} max_view={} max_backing={} misses={} direct_calls={}",
+                        Stage(key), Index(key), Offset(key), Kind(key), Kind(key) == 0, Written(key), calls,
+                        e.requested.load(std::memory_order_relaxed), e.effective.load(std::memory_order_relaxed),
+                        e.maxRequested.load(std::memory_order_relaxed), e.maxEffective.load(std::memory_order_relaxed),
+                        e.maxBacking.load(std::memory_order_relaxed), e.misses.load(std::memory_order_relaxed), e.directCalls.load(std::memory_order_relaxed));
+                }
+                LOGINF("SsboDiag totals frames={} elapsed_ns={} rows={} dropped={} all_buffer_uploads={} upload_bytes={} all_buffer_downloads={} download_bytes={} all_buffer_dirty_marks={} dirty_span_bytes={}",
+                    diagnosticFrames, static_cast<uint64_t>(now) - diagnosticFirst, rows, bindings.dropped.load(std::memory_order_relaxed),
+                    uploadCopies.load(std::memory_order_relaxed), uploadBytes.load(std::memory_order_relaxed),
+                    downloadCopies.load(std::memory_order_relaxed), downloadBytes.load(std::memory_order_relaxed),
+                    dirtyMarks.load(std::memory_order_relaxed), dirtySpanBytes.load(std::memory_order_relaxed));
+
             }, [] {});
         } catch (const signal::SignalException &e) {
             LOGE("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));

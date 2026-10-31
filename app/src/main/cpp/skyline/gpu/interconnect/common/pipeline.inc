@@ -4,6 +4,7 @@
 #pragma once
 
 #include <gpu/interconnect/command_executor.h>
+#include <gpu/ssbo_diagnostics.h>
 #include "samplers.h"
 #include "textures.h"
 
@@ -62,11 +63,18 @@ namespace skyline::gpu::interconnect {
         if (!range)
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
         cachedView.Update(ctx, ssbo.address - padding, range, desc.has_size);
+        const auto diagnosticKey{ssbo_diagnostics::Key(static_cast<u32>(dstStage), desc.cbuf_index, desc.cbuf_offset,
+            ssbo_diagnostics::Classify(desc.has_size, dstStage == vk::PipelineStageFlagBits::eComputeShader, accessSize.has_value()), desc.is_written)};
+        if (!cachedView.view)
+            ssbo_diagnostics::bindings.Record(diagnosticKey, range, 0, 0);
+
         if (!cachedView.view) // Retorna um buffer dummy se o SSBO não estiver vinculado
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         auto view{cachedView.view};
         ctx.executor.AttachBuffer(view);
+        ssbo_diagnostics::bindings.Record(diagnosticKey, range, view.size,
+            view.GetBuffer()->DiagnosticGuestSize(), view.GetBuffer()->DiagnosticIsDirect());
         view.GetBuffer()->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
         if (desc.is_written) {

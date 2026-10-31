@@ -8,6 +8,7 @@
 #include <common/trace.h>
 #include <common/settings.h>
 #include "buffer.h"
+#include "ssbo_diagnostics.h"
 
 namespace skyline::gpu {
     void Buffer::ResetMegabufferState() {
@@ -428,6 +429,8 @@ namespace skyline::gpu {
         if (!guest)
             return;
 
+        ssbo_diagnostics::dirtyMarks.fetch_add(1, std::memory_order_relaxed);
+        ssbo_diagnostics::dirtySpanBytes.fetch_add(guest->size(), std::memory_order_relaxed);
         usageTracker.dirtyIntervals.Insert(*guest);
         MarkGpuDirtyImpl();
     }
@@ -484,6 +487,8 @@ namespace skyline::gpu {
         }
 
         std::memcpy(backing->data(), mirror.data(), mirror.size());
+        ssbo_diagnostics::uploadCopies.fetch_add(1, std::memory_order_relaxed);
+        ssbo_diagnostics::uploadBytes.fetch_add(mirror.size(), std::memory_order_relaxed);
     }
 
     bool Buffer::SynchronizeGuest(bool skipTrap, bool nonBlocking) {
@@ -503,6 +508,8 @@ namespace skyline::gpu {
 
             WaitOnFence();
             std::memcpy(mirror.data(), backing->data(), mirror.size());
+            ssbo_diagnostics::downloadCopies.fetch_add(1, std::memory_order_relaxed);
+            ssbo_diagnostics::downloadBytes.fetch_add(mirror.size(), std::memory_order_relaxed);
 
             dirtyState = DirtyState::Clean;
         }
