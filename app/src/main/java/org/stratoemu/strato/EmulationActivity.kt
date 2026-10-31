@@ -58,6 +58,7 @@ import org.stratoemu.strato.databinding.EmuActivityBinding
 import org.stratoemu.strato.emulation.PipelineLoadingFragment
 import org.stratoemu.strato.input.*
 import org.stratoemu.strato.loader.RomFile
+import org.stratoemu.strato.loader.RomFormat
 import org.stratoemu.strato.loader.getRomFormat
 import org.stratoemu.strato.loader.openRomFileDescriptor
 import org.stratoemu.strato.preference.GameContentPreference
@@ -617,6 +618,11 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         super.onCreate(savedInstanceState)
 
         populateAppItem()
+        if (item.format == RomFormat.SWITCH2_EXTRACTED) {
+            Toast.makeText(this, R.string.switch2_extracted_unsupported, Toast.LENGTH_LONG).show()
+            finish()
+            return
+        }
         emulationSettings = EmulationSettings.forEmulation(item.titleId ?: item.key())
 
         if (!isProgramRelaunch || relaunchOrientationPolicy == ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)
