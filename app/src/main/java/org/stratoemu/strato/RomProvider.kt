@@ -117,7 +117,7 @@ class RomProvider @Inject constructor(
                 try {
                     val npdmUri = Uri.fromFile(File(exeFs, "main.npdm"))
                     val metadata = RomFile(context, EXTRACTED, npdmUri, systemLanguage).appEntry
-                    entries.add(metadata.copy(uri = Uri.fromFile(game), name = game.name))
+                    entries.add(metadata.copy(uri = uri, name = game.name))
                 } catch (e: Exception) {
                     Log.w(TAG, "Unable to load extracted game ${game.name}: ${e.message}")
                 }
