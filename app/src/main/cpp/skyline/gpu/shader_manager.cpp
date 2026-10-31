@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
+#include <atomic>
 #include <fstream>
 #include <range/v3/algorithm.hpp>
 #include <boost/functional/hash.hpp>
@@ -30,6 +32,36 @@ namespace Shader::Log {
 }
 
 namespace skyline::gpu {
+    namespace {
+        // PR294 diagnostic only: capture a single Zelda Compute shader payload.
+        // Emitted once, and only in the deliberate capture APK; not suitable for FPS tests.
+        void TraceZeldaShaderPayload(u64 hash, bool spirv, span<const u8> bytes) {
+            static std::atomic<bool> guestLogged{false};
+            static std::atomic<bool> spirvLogged{false};
+            auto &logged{spirv ? spirvLogged : guestLogged};
+            if (logged.exchange(true, std::memory_order_acq_rel)) return;
+            constexpr size_t MaxBytes{2 * 1024 * 1024};
+            constexpr size_t ChunkBytes{512};
+            constexpr char Hex[]{"0123456789ABCDEF"};
+            const size_t captured{std::min(bytes.size(), MaxBytes)};
+            LOGINF("ZeldaShaderCaptureBegin hash=0x{:016X} kind={} bytes={} captured={} truncated={}",
+                   hash, spirv ? "SPIRV" : "Maxwell", bytes.size(), captured, bytes.size() != captured);
+            for (size_t offset{}; offset < captured; offset += ChunkBytes) {
+                const size_t count{std::min(ChunkBytes, captured - offset)};
+                std::string hex(count * 2, '0');
+                for (size_t i{}; i < count; ++i) {
+                    const u8 value{bytes[offset + i]};
+                    hex[i * 2] = Hex[value >> 4];
+                    hex[i * 2 + 1] = Hex[value & 15];
+                }
+                LOGINF("ZeldaShaderCaptureChunk hash=0x{:016X} kind={} offset={} hex={}",
+                       hash, spirv ? "SPIRV" : "Maxwell", offset, hex);
+            }
+            LOGINF("ZeldaShaderCaptureEnd hash=0x{:016X} kind={} captured={}",
+                   hash, spirv ? "SPIRV" : "Maxwell", captured);
+        }
+    }
+
     void ShaderManager::LoadShaderReplacements(std::string_view replacementDir) {
         std::filesystem::path replacementDirPath{replacementDir};
         if (std::filesystem::exists(replacementDirPath)) {
@@ -58,6 +90,9 @@ namespace skyline::gpu {
             LOGI("Replacing shader with hash: 0x{:X}", hash);
             return it->second;
         }
+
+        if (hash == 0xE8B459126941F6CEULL)
+            TraceZeldaShaderPayload(hash, spv, {binary.data(), binary.size()});
 
         if (DumpShaders) {
             std::scoped_lock lock{dumpMutex};
@@ -456,7 +491,20 @@ namespace skyline::gpu {
 
         std::scoped_lock lock{poolMutex};
 
-        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, isTexturePixelFormatInteger, getTextureCompareFunc};
+        const bool captureZelda{hash == 0xE8B459126941F6CEULL};
+        size_t cbufReads{};
+        if (captureZelda)
+            LOGINF("ZeldaShaderCaptureConfig hash=0x{:016X} base_offset=0x{:X} texture_cbuf={} local_mem={} shared_mem={} threads={},{},{}",
+                   hash, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize,
+                   workgroupDimensions[0], workgroupDimensions[1], workgroupDimensions[2]);
+        const ConstantBufferRead recordedCbufRead{[&](u32 index, u32 offset) -> u32 {
+            const u32 value{constantBufferRead(index, offset)};
+            if (captureZelda && cbufReads++ < 1024)
+                LOGINF("ZeldaShaderCaptureCbuf hash=0x{:016X} index={} offset=0x{:X} value=0x{:08X}",
+                       hash, index, offset, value);
+            return value;
+        }};
+        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, recordedCbufRead, getTextureType, isTexturePixelFormatInteger, getTextureCompareFunc};
         Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset)}};
         return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
     }
