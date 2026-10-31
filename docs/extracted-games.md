@@ -1,35 +1,59 @@
-# Extracted game directories (experimental)
+# Extracted Switch games in regular ROM folders (experimental)
 
-Strato can discover decrypted Switch program directories placed under the app-owned files directory:
+Any ROM directory already selected in Strato can contain an extracted, decrypted
+game alongside NSP/XCI/NRO/NSO/NCA files. No extra folder selection or copying
+to `Android/data` is needed:
 
 ```text
-<Strato public files>/switch/extracted/
-  Example Game/
+<selected ROM folder>/
+  Zelda/
     exefs/
       main
       main.npdm
       rtld
-      sdk                   # optional
-      subsdk0               # optional
-    romfs/                  # optional
-      ... original RomFS paths ...
-    control.nacp            # recommended, optional
+      sdk                    # optional
+      subsdk0                # optional
+    romfs/                   # optional
+      ...
+    control.nacp             # recommended, optional
+  other-game.nsp
+  game.xci
 ```
 
-Use the app's Android DocumentsProvider or another allowed file-transfer method to place these files in the Strato public files directory. The games are picked up on the next library refresh. This feature does **not** read arbitrary Android Storage Access Framework directory URIs; Android grants those as document handles, not regular host directories.
+Subfolders are scanned recursively as before. When a folder contains the three
+required ExeFS files, it is shown as **one game** in the library. Refresh the
+game list after adding extracted content.
 
-## Implementation
+## Android Storage Access Framework (SAF)
 
-* The UI scans immediate children of `switch/extracted` and opens each `exefs/main` as a regular file descriptor. The native loader resolves the file descriptor and verifies the canonical directory is an immediate child of the app-owned extraction root.
-* The standard `NcaLoader::LoadExeFs` path handles `main.npdm`, `rtld`, `main` and other NSOs, preserving existing NCE and module semantics.
-* `LayeredRomFsBacking` constructs a RomFS view backed by the extracted files (metadata only, no full repack/copy of file contents). Existing base-backed LayeredRomFS behavior is unchanged.
-* Existing ExeFS/RomFS game mods still apply using the NPDM Program ID.
-* When `control.nacp` exists at the game root, it supplies the actual metadata, save sizes and language settings. Otherwise a **minimal fallback** is synthesized using the Program ID; unknown save sizes/policies are not invented. Such titles can have limited save functionality.
+The game-root directory URI retains the persisted tree grant from the ROM folder
+chosen by the user. Strato enumerates the ExeFS and RomFS document tree on the
+emulation thread, gathers relative paths and sizes, and opens document file
+descriptors **on demand** through ContentResolver. Native code maintains a
+bounded LRU of 24 open descriptors and uses `pread64` for random reads.
+Unlike a copied or rebuilt NSP, file contents stay in the selected ROM folder.
 
-## Constraints
+The existing `NcaLoader::LoadExeFs` process path handles the NSOs. A virtual
+RomFS index uses the existing `LayeredRomFsBacking` and the SAF file backings.
+Program ID comes from `main.npdm`; existing ExeFS/RomFS mods remain available.
 
-* This is for a **decrypted** game extraction containing `exefs/main`, `exefs/main.npdm`, and `exefs/rtld`, not a directory containing encrypted NCAs.
-* Currently only app-owned folders are supported (not arbitrary folders picked using SAF); layouts are case-sensitive.
-* External NSP updates against an extracted base are explicitly rejected rather than silently mixing content without an appropriate base NCA. Use an already-resolved extraction or an NSP/XCI base for update handling.
-* Large titles with many extracted files still need device-level verification of startup latency and file-descriptor usage.
-* There is no validated Android APK or on-device compatibility claim until CI and device testing pass.
+The previous experimental app-owned `switch/extracted/` location is still
+recognized for backward compatibility, but **is not required**.
+
+## Requirements and limitations
+
+- Files must be **decrypted**, and the ExeFS folder must contain `main`,
+  `rtld`, and `main.npdm`. An encrypted `*.nca` dump is not an extracted
+  ExeFS game.
+- Prefer a real `control.nacp` at the game root: it contains language, save
+  sizing, ownership and runtime settings. If missing, minimal metadata is
+  generated from NPDM; unknown save sizes cannot be reconstructed reliably.
+- Arbitrary external NSP updates are not applied to an extracted base until
+  full base/update content reconciliation is implemented. Use a properly
+  resolved extraction or packaged NSP/XCI for that scenario.
+- SAF providers must expose byte sizes and seekable file descriptors.
+  Providers that only offer streams or omit sizes are unsupported.
+- The virtual metadata is created from the file list, with a maximum of
+  200,000 files. Recursively enumerating many folders may have noticeable
+  startup latency (it runs off the UI thread).
+- Real device performance, booting and APK compilation still require validation.
