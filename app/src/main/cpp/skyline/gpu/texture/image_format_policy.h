@@ -20,8 +20,11 @@ namespace skyline::gpu::texture {
         }
     }
 
-    constexpr vk::ImageCreateFlags GuestImageFormatFlags(vk::Format format, bool mutableFormatCostly, bool canPromote = true) {
-        return !mutableFormatCostly || !canPromote || RequiresMutableFormatForAliasing(format)
+    constexpr vk::ImageCreateFlags GuestImageFormatFlags(vk::Format format, bool mutableFormatCostly,
+                                                         bool canPromote = true, bool mayHaveForeignView = true) {
+        // Vulkan depth/stencil formats are only compatible with themselves.
+        // They cannot legally acquire a foreign-format view.
+        return mayHaveForeignView && (!mutableFormatCostly || !canPromote || RequiresMutableFormatForAliasing(format))
             ? vk::ImageCreateFlags{vk::ImageCreateFlagBits::eMutableFormat}
             : vk::ImageCreateFlags{};
     }
