@@ -173,7 +173,9 @@ namespace skyline::kernel {
             case loader::RomFormat::NCA:
                 return std::make_shared<loader::NcaLoader>(std::move(file), std::move(keyStore));
             case loader::RomFormat::EXTRACTED: {
-                // The frontend passes an FD for exefs/main, not a directory path.
+                if (extractedSource)
+                    return std::make_shared<loader::ExtractedLoader>(extractedSource);
+                // App-owned fallback: FD for exefs/main, not a directory path.
                 // Resolve that FD to a canonical, app-owned extracted-game root.
                 std::error_code error;
                 const auto path{std::filesystem::canonical(
