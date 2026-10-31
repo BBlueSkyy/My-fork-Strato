@@ -151,25 +151,26 @@ namespace skyline::vfs {
         }
 
         void Build(const std::shared_ptr<Backing> &baseBacking, const std::vector<std::filesystem::path> &modDirectories) {
-            if (!baseBacking)
-                throw exception("Cannot layer a null RomFS backing");
-
-            RomFileSystem baseRomFs(baseBacking);
+            // A null base builds a standalone RomFS from extracted host files.
+            // Normal layered RomFS users retain their existing backing.
             std::map<std::string, FileSource> effectiveFiles;
             std::set<std::string> effectiveDirectories;
             effectiveDirectories.emplace("");
 
-            for (const auto &[path, entry] : baseRomFs.directoryMap)
-                effectiveDirectories.emplace(path);
+            if (baseBacking) {
+                RomFileSystem baseRomFs(baseBacking);
+                for (const auto &[path, entry] : baseRomFs.directoryMap)
+                    effectiveDirectories.emplace(path);
 
-            for (const auto &[path, entry] : baseRomFs.fileMap) {
-                if (entry.size > std::numeric_limits<size_t>::max())
-                    throw exception("RomFS file is too large");
-                effectiveFiles.emplace(path, FileSource{
-                    baseBacking,
-                    static_cast<size_t>(baseRomFs.header.dataOffset + entry.offset),
-                    static_cast<size_t>(entry.size),
-                });
+                for (const auto &[path, entry] : baseRomFs.fileMap) {
+                    if (entry.size > std::numeric_limits<size_t>::max())
+                        throw exception("RomFS file is too large");
+                    effectiveFiles.emplace(path, FileSource{
+                        baseBacking,
+                        static_cast<size_t>(baseRomFs.header.dataOffset + entry.offset),
+                        static_cast<size_t>(entry.size),
+                    });
+                }
             }
 
             std::unordered_set<std::string> claimedFiles;
