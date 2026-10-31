@@ -35,6 +35,7 @@ import org.stratoemu.strato.databinding.MainActivityBinding
 import org.stratoemu.strato.loader.AppEntry
 import org.stratoemu.strato.loader.LoaderResult
 import org.stratoemu.strato.loader.RomType
+import org.stratoemu.strato.loader.RomFormat
 import org.stratoemu.strato.preference.FolderPickerPreference
 import org.stratoemu.strato.provider.DocumentsProvider
 import org.stratoemu.strato.settings.AppSettings
@@ -485,6 +486,12 @@ class MainActivity : AppCompatActivity() {
     private fun selectStartGame(appItem: BaseAppItem) {
         if (binding.swipeRefreshLayout.isRefreshing)
             return
+
+        if (appItem.format == RomFormat.SWITCH2_EXTRACTED) {
+            // Library discovery is intentionally independent of execution.
+            AppDialog.newInstance(appItem).show(supportFragmentManager, "game")
+            return
+        }
 
         if (appSettings.selectAction) {
             AppDialog.newInstance(appItem)
