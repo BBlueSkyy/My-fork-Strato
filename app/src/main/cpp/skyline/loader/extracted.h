@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <vfs/filesystem.h>
 
@@ -28,6 +29,7 @@ namespace skyline::loader {
         JavaExtractedSource &operator=(const JavaExtractedSource &) = delete;
 
         std::vector<File> files;
+        std::unordered_map<std::string, size_t> fileIndices;
         std::string title;
         std::shared_ptr<vfs::Backing> OpenFile(const std::string &path);
         size_t Read(size_t index, span<u8> data, size_t offset);
