@@ -4,6 +4,7 @@
 #include <kernel/types/KProcess.h>
 #include <vfs/npdm.h>
 #include "nso.h"
+#include "switch2_profile.h"
 #include "nca.h"
 
 namespace skyline::loader {
@@ -23,7 +24,16 @@ namespace skyline::loader {
 
         auto nsoFile{exeFs->OpenFile("rtld")};
 
-        state.process->memory.InitializeVmm(process->npdm.meta.flags.type, process->npdm.meta.flags.enableAliasRegionExtraSize);
+        const u64 applicationId{process->npdm.aci0.programId};
+        const bool nativeSwitch2Title{IsNativeSwitch2TitleId(applicationId)};
+        if (nativeSwitch2Title) {
+            LOGW("Native Switch 2 application detected: {:016X}. Enabling experimental 16 GiB guest heap region; "
+                 "NX2 GPU, services, and CPU compatibility are not implemented yet.", applicationId);
+        }
+
+        state.process->memory.InitializeVmm(process->npdm.meta.flags.type,
+                                             process->npdm.meta.flags.enableAliasRegionExtraSize,
+                                             nativeSwitch2Title);
 
         auto loadInfo{NsoLoader::LoadNso(loader, nsoFile, process, state, 0, "rtld.nso")};
         u64 offset{loadInfo.size};
