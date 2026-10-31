@@ -50,6 +50,44 @@ These changes are an independent Strato implementation inspired by publicly
 documented high-level NX2 requirements. No Eden GPL source code was copied
 into MPL-licensed Strato implementation files.
 
+## Stage-1 library discovery (native NX2 only)
+
+The ROM scanner now recognizes **decrypted** native Switch 2 games as one
+library item when their directory, in an already-selected SAF ROM tree, contains
+`exefs/main`, `exefs/rtld`, and `exefs/main.npdm`. A bounded read of NPDM
+`META.aci0` verifies the `ACI0` magic and the program ID's native `0x04`
+namespace. Specifically `040074A01BF12000` is displayed as **Donkey Kong
+Bananza**. All other native titles use the directory name.
+
+- No directory data is copied, and other Switch 1 game discovery is unchanged.
+- A dedicated **`SWITCH2_EXTRACTED` UI-only format** makes the library item
+  visible even when the "filter invalid files" option is enabled.
+- Version text clearly says **Nintendo Switch 2 - not playable**.
+- Play, settings and desktop shortcut actions are disabled in the game's
+  details sheet. A secondary guard in `EmulationActivity` prevents opening
+  the unsupported directory through a stale intent containing this entry.
+- This does not borrow PR #407's extracted Switch 1 loader: the independent
+  NX2 research branch has **recognition only**, not execution.
+- Data requires a seekable SAF descriptor for the small NPDM header. The
+  scanner does **not** classify every `exefs` directory as a Switch 2 game.
+- Icon, publisher, exact version and language data are not inferred from
+  `control.nacp` yet. Default icon is displayed.
+- Refresh the ROM library after adding a game; the default cached listing
+  may otherwise continue showing previous scan results.
+
+**Desired layout:**
+
+```text
+<already selected ROM directory>/
+  Donkey Kong Bananza/
+    exefs/
+      main
+      rtld
+      main.npdm
+    romfs/
+      ...
+```
+
 ## Safety, compatibility and next milestone
 
 - Reserved virtual address space is not committed physical RAM, but
