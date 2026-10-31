@@ -3,13 +3,45 @@
 
 #include <kernel/types/KProcess.h>
 #include <vfs/npdm.h>
+#include <vfs/nacp.h>
 #include <vfs/os_filesystem.h>
 #include <vfs/layered_romfs.h>
 #include <filesystem>
+#include <cstring>
+#include <algorithm>
 #include "nso.h"
 #include "nca.h"
 
 namespace skyline::loader {
+    namespace {
+        /** Minimal NACP for extracted dumps without an optional control.nacp.
+         * Fields that cannot be inferred (save sizes, policies) remain zero.
+         */
+        class ExtractedNacpBacking final : public vfs::Backing {
+          private:
+            vfs::NACP::NacpData data{};
+
+            size_t ReadImpl(span<u8> output, size_t offset) override {
+                if (offset >= size)
+                    return 0;
+                const size_t length{std::min(output.size(), size - offset)};
+                std::memcpy(output.data(), reinterpret_cast<const u8 *>(&data) + offset, length);
+                return length;
+            }
+
+          public:
+            ExtractedNacpBacking(u64 programId, std::string_view title)
+                : Backing({true, false, false}, sizeof(data)) {
+                data.saveDataOwnerId = programId;
+                data.supportedLanguageFlag = 1; // American English fallback
+                auto &name{data.titleEntries[0].applicationName};
+                const auto length{std::min(title.size(), name.size() - 1)};
+                std::memcpy(name.data(), title.data(), length);
+                constexpr std::string_view version{"0.0.0"};
+                std::memcpy(data.displayVersion.data(), version.data(), version.size());
+            }
+        };
+    }
     NcaLoader::NcaLoader(std::shared_ptr<vfs::Backing> backing, std::shared_ptr<crypto::KeyStore> keyStore) {
         programNca.emplace(std::move(backing), std::move(keyStore));
         if (programNca->exeFs == nullptr)
@@ -67,6 +99,17 @@ namespace skyline::loader {
         auto exeFs{std::make_shared<vfs::OsFileSystem>(exeFsDirectory.string())};
         if (!exeFs->FileExists("main.npdm") || !exeFs->FileExists("main") || !exeFs->FileExists("rtld"))
             throw exception("Extracted ExeFS must contain main.npdm, main and rtld");
+
+        const vfs::NPDM npdm(exeFs->OpenFile("main.npdm"));
+        const auto controlPath{root / "control.nacp"};
+        if (std::filesystem::is_regular_file(controlPath)) {
+            vfs::OsFileSystem controlFs(root.string());
+            nacp.emplace(controlFs.OpenFile("control.nacp"));
+        } else {
+            nacp.emplace(std::make_shared<ExtractedNacpBacking>(
+                npdm.aci0.programId, root.filename().string()));
+            LOGW("Extracted title has no control.nacp; using minimal fallback metadata without save-size information");
+        }
 
         processExeFs = std::move(exeFs);
 
