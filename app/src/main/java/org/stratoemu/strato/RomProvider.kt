@@ -186,13 +186,30 @@ class RomProvider @Inject constructor(
                     return@forEach
                 }
 
-                addEntries(
-                    ROM_FORMATS,
-                    documentFile,
-                    entries,
-                    seenUris,
-                    systemLanguage
-                )
+                // Also accept the selected ROM root itself being a game dump.
+                if (SafExtractedSource.isExtractedDirectory(context, documentFile.uri)) {
+                    val rootUri = documentFile.uri
+                    if (seenUris.add(rootUri.toString())) {
+                        try {
+                            val npdmUri = SafExtractedSource.npdmUri(context, rootUri)
+                            val metadata = RomFile(context, EXTRACTED, npdmUri, systemLanguage).appEntry
+                            entries.add(metadata.copy(
+                                name = documentFile.name ?: "Extracted game",
+                                uri = rootUri
+                            ))
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Cannot inspect extracted ROM root $rootUri: ${e.message}")
+                        }
+                    }
+                } else {
+                    addEntries(
+                        ROM_FORMATS,
+                        documentFile,
+                        entries,
+                        seenUris,
+                        systemLanguage
+                    )
+                }
             }
 
         return entries
