@@ -58,6 +58,8 @@ import org.stratoemu.strato.databinding.EmuActivityBinding
 import org.stratoemu.strato.emulation.PipelineLoadingFragment
 import org.stratoemu.strato.input.*
 import org.stratoemu.strato.loader.RomFile
+import org.stratoemu.strato.loader.RomFormat
+import org.stratoemu.strato.loader.SafExtractedSource
 import org.stratoemu.strato.loader.getRomFormat
 import org.stratoemu.strato.loader.openRomFileDescriptor
 import org.stratoemu.strato.preference.GameContentPreference
@@ -184,7 +186,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * @param nativeLibraryPath The full path to the app native library directory
      * @param assetManager The asset manager used for accessing app assets
      */
-    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, dlcFds : IntArray?, updateFd : Int, programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray?, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager)
+    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, dlcFds : IntArray?, updateFd : Int, programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray?, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager, extractedSource : SafExtractedSource?)
 
     /**
      * @param join If the function should only return after all the threads join or immediately
@@ -485,8 +487,13 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         val rom = item.uri
         val romType = item.format.ordinal
 
+        // SAF-backed directory ROMs are opened through ContentResolver, not by
+        // resolving a content:// document into a Linux filesystem path.
+        val extractedSource = if (item.format == RomFormat.EXTRACTED && rom.scheme != "file")
+            SafExtractedSource(this, rom) else null
+
         @SuppressLint("Recycle")
-        val romFd = openRomFileDescriptor(this, rom)!!
+        val romFd = extractedSource?.openMain() ?: openRomFileDescriptor(this, rom)!!
 
         var dlcFds : IntArray? = null
         if (dlcUris.isNotEmpty()) {
@@ -544,7 +551,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         }
         
         emulationThread = Thread {
-            executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, programIndex, previousProgramIndex, userChannel, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
+            executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, programIndex, previousProgramIndex, userChannel, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets, extractedSource)
             returnFromEmulation()
         }
 
