@@ -177,7 +177,7 @@ by device evidence and compared against historical good PR #293 builds.
 A new Moto G100, Turnip 24.0.99 Zelda log with FrameDiag and GpuDecodeDiag
 shows, over 60.34 seconds of slow-scene samples (38.27–93.61 seconds),
 1,060 presented frames, about 17.57 presented frames/s.
-GPFIFO processed 864,176 entries / 86,006,654 words (~815 entries and
+GPFIFO processed 864,176 entries / 86,406,654 words (~815 entries and
 81,516 words per presented frame), consuming 24.74 seconds cumulative
 CPU-side wall time in Process (~23.34ms per presented frame).
 GPFIFO idle-batch submission consumed 1.67 seconds in those windows,
