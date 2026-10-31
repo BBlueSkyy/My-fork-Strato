@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "loader.h"
 #include <vfs/patch_manager.h>
+#include <vfs/npdm.h>
 
 namespace skyline::loader {
     namespace {
@@ -36,6 +37,11 @@ namespace skyline::loader {
         if (programContentResolved)
             return;
 
+        // An extracted title is already a resolved Program and cannot be used
+        // as the base for an NCA/BKTR update without a matching base NCA.
+        if (processExeFs && state.updateLoader)
+            throw exception("External NSP updates are not supported for extracted games");
+
         vfs::NCA *base{programNca ? &*programNca : nullptr};
         vfs::NCA *patch{programPatchNca ? &*programPatchNca : nullptr};
 
@@ -57,6 +63,15 @@ namespace skyline::loader {
 
         if (!base) {
             if (!patch) {
+                if (processExeFs) {
+                    // Standalone extracted ExeFS: use the same patch manager as
+                    // packaged Program content. The original files stay read-only.
+                    const vfs::NPDM npdm(processExeFs->OpenFile("main.npdm"));
+                    vfs::PatchManager modifications;
+                    processExeFs = modifications.PatchExeFS(state, processExeFs, npdm.aci0.programId);
+                    if (romFs)
+                        romFs = modifications.PatchRomFS(state, romFs, npdm.aci0.programId);
+                }
                 currentProcessRomFs = romFs;
                 currentProcessRomFsIdentity = DescribeRomFs(currentProcessRomFs);
                 programContentResolved = true;
