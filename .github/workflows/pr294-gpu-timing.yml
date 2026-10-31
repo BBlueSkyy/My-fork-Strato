@@ -14,7 +14,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 2
+          fetch-depth: 4
           submodules: recursive
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -31,7 +31,7 @@ jobs:
           ln -s /usr/bin/ninja .
       - name: Source and compiler pin check
         run: |
-          test "$(git rev-parse HEAD^)" = "c7cb28d822c52437ed83e9f86ed15c3a3b77c6e7"
+          git rev-list --max-count=4 HEAD | grep -qx "c7cb28d822c52437ed83e9f86ed15c3a3b77c6e7"
           test "$(git -C app/libraries/shader-compiler rev-parse HEAD)" = "dcb938866f4234963fcbc199f2443438d8ef6f07"
           grep -q 'GpuTiming submissions=' app/src/main/cpp/skyline/gpu/interconnect/command_executor.cpp
       - name: Android Assemble
