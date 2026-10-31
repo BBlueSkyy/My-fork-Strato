@@ -206,3 +206,38 @@ per entry, so use the APK to localize costs, not benchmark raw FPS.
 No synchronization, lookup/caching, memory alias or GPU behavior changed.
 Normal Release optimizations must eventually remove diagnostic overhead
 and avoid all user-facing readback options.
+
+## October 30, 2026: measured GMMU and backing are not main cost
+
+Latest 100.23-second device log (Zelda v1.0.0, Turnip 24.0.99)
+in slow-scene windows from about 40–100 s measured 60.31 seconds
+and 986 presented frames (~16.35/s).
+`GpuDecodeDiag`: 869,699 GPFIFO entries (882/frame), 86,532,443
+pushbuffer words (87,761/frame), and 24.643 seconds Process() CPU
+wall time (~24.99ms/frame). The explicitly measured preparation was
+306.15ms GMMU translation, 252.73ms pushbuffer backing and 283.61ms
+dirty-interval scan: 842.48ms total, 3.42% of the Process() time.
+The remaining ~23.800 seconds include packet interpretation and downstream
+engine handlers, and may include other overhead. There were ZERO
+fragmented entries and ZERO dirty-range hits, and zero
+measured explicit completion waits. The host Host1x fence wait total was
+25.850 seconds (~26.22ms/frame), but overlaps with command handling and
+does not independently demonstrate slow host GPU execution.
+
+`ChannelGpfifo::Process` has the same exact source blob in known-good
+PR #293 commit 28bcb957, early PR #294 commit e7290a9b, and latest master,
+so its direct code is not the historical source change. The shader
+compiler, texture/backing logic and command preparation changed in the
+historical commit range and remain candidates to test, not proven causes.
+
+The new diagnostic `GpuMethodSample` reports sampled per-call wall
+time for 3D, compute, other pure-method, batched pure-method, macro
+and GPFIFO-control handlers. The sampling is deterministic: one entry
+in 128. Each sampled method pays a clock read at entry and return;
+unsampled methods only pay a branch/stack guard. The sampled time is
+NOT a valid full-process budget: sample categories only describe the
+relative composition of the sampled entries, not all execution, and
+the sampled clock instrumentation perturbs runtime. No commands,
+GPU synchronization, texture backing, or user-visible settings are
+altered by the diagnostic. Restrict this to Draft #404; remove it
+from future production optimization.

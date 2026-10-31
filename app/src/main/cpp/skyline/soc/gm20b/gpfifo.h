@@ -109,6 +109,9 @@ namespace skyline::soc::gm20b {
         CircularQueue<GpEntry> gpEntries;
         std::vector<u32> pushBufferData; //!< Persistent vector storing pushbuffer data to avoid constant reallocations
         bool skipDirtyFlushes{}; //!< If GPU flushing should be skipped when fetching pushbuffer contents
+        // Diagnostic PR only: deterministic 1/128 GPFIFO-entry sampling.
+        u32 methodSampleEntryCounter{};
+        bool methodSampleThisEntry{};
 
         /**
          * @brief Holds the required state in order to resume a method started from one call to `Process` in another

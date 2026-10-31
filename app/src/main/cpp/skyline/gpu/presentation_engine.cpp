@@ -336,6 +336,14 @@ namespace skyline::gpu {
                             delta(GpfifoTranslateNs), delta(GpfifoBackingNs),
                             delta(GpfifoDirtyScanNs), delta(GpfifoMappedRanges),
                             delta(GpfifoSplitEntries), delta(GpfifoDirtyHits));
+                        LOGINF("GpuMethodSample window_ns={} sampled_entries={} three_d_calls={} three_d_ns={} compute_calls={} compute_ns={} other_calls={} other_ns={} batch_calls={} batch_ns={} macro_calls={} macro_ns={} control_calls={} control_ns={}",
+                            reportAtNs - previousAtNs, delta(SampledGpfifoEntries),
+                            delta(SampleThreeDCalls), delta(SampleThreeDNs),
+                            delta(SampleComputeCalls), delta(SampleComputeNs),
+                            delta(SampleOtherCalls), delta(SampleOtherNs),
+                            delta(SampleBatchCalls), delta(SampleBatchNs),
+                            delta(SampleMacroCalls), delta(SampleMacroNs),
+                            delta(SampleControlCalls), delta(SampleControlNs));
                     }
                     previousFrame = currentFrame;
                     previousAtNs = reportAtNs;

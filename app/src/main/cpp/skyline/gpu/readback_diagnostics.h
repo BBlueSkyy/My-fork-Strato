@@ -56,6 +56,13 @@ namespace skyline::gpu::readback_diagnostics {
         SyncSubmitWaits, SyncSubmitWaitNs,
         GpfifoTranslateNs, GpfifoBackingNs, GpfifoDirtyScanNs,
         GpfifoMappedRanges, GpfifoSplitEntries, GpfifoDirtyHits,
+        SampledGpfifoEntries,
+        SampleThreeDCalls, SampleThreeDNs,
+        SampleComputeCalls, SampleComputeNs,
+        SampleOtherCalls, SampleOtherNs,
+        SampleBatchCalls, SampleBatchNs,
+        SampleMacroCalls, SampleMacroNs,
+        SampleControlCalls, SampleControlNs,
         FrameMetricCount
     };
     using FrameValues = std::array<uint64_t, FrameMetricCount>;
