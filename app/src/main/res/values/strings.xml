@@ -371,4 +371,5 @@
     <string name="add_content">Add content</string>
     <string name="content_type_icon">Content type icon</string>
     <string name="delete_content">Delete content</string>
+    <string name="switch2_extracted_unsupported">This Nintendo Switch 2 game is recognized, but running Switch 2 games is not supported yet.</string>
 </resources>
