@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <limits>
+#include <sys/types.h>
 #include <unistd.h>
 #include <common.h>
 #include <jvm.h>
