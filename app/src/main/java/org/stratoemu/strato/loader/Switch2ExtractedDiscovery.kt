@@ -51,7 +51,8 @@ internal object Switch2ExtractedDiscovery {
     }
 
     /** Parse only the NPDM META/ACI0 headers. Do not confuse directory names with NX2 detection. */
-    private fun readProgramId(context: Context, document: DocumentFile): Long? = try {
+    private fun readProgramId(context: Context, document: DocumentFile): Long? {
+        return try {
         val descriptor = context.contentResolver.openFileDescriptor(document.uri, "r") ?: return null
         descriptor.use { pfd ->
             FileInputStream(pfd.fileDescriptor).use { input ->
@@ -69,8 +70,9 @@ internal object Switch2ExtractedDiscovery {
                 aci.getLong(0x10)
             }
         }
-    } catch (_: Exception) {
-        null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun readAt(channel: FileChannel, buffer: ByteBuffer, start: Long): Boolean {
