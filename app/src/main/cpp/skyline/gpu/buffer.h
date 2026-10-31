@@ -178,6 +178,8 @@ namespace skyline::gpu {
             cycle = newCycle;
         }
 
+        size_t ExperimentGuestSize() const { return guest ? guest->size() : 0; }
+
         constexpr vk::Buffer GetBacking() {
             return backing ? backing->vkBuffer : *directBacking->vkBuffer;
         }
@@ -501,7 +503,7 @@ namespace skyline::gpu {
          * @note The view **must** be locked prior to calling this
          * @note This is the **ONLY** function in BufferView that can be called from non-GPFIFO threads
          */
-        BufferBinding GetBinding(GPU &gpu) const;
+        BufferBinding GetBinding(GPU &gpu, size_t *experimentBackingBytes = nullptr) const;
 
         /**
          * @note The buffer manager **MUST** be locked prior to calling this

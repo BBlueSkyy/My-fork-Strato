@@ -11,6 +11,7 @@
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
 #include "presentation_engine.h"
+#include "ssbo_range_ab.h"
 #include "native_window.h"
 #include "texture/format.h"
 
@@ -237,12 +238,42 @@ namespace skyline::gpu {
             LOGW("Failed to set the thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
 
+        i64 experimentLast{};
+        u64 experimentFrames{};
+        std::array<u64,128> experimentReported{};
+
         try {
-            presentQueue.Process([this](const PresentableFrame &frame) {
+            presentQueue.Process([this, &experimentLast, &experimentFrames, &experimentReported](const PresentableFrame &frame) {
                 PresentFrame(frame);
                 frame.presentCallback(); // We're calling the callback here as it's outside of all the locks in PresentFrame
                 skipSignal = true;
                 vsyncEvent->Signal();
+                ++experimentFrames;
+                const i64 experimentNow{util::GetTimeNs()};
+                if (!experimentLast) { experimentLast = experimentNow; experimentFrames = 0; }
+                if (experimentNow - experimentLast >= 5000000000LL) {
+                    const auto elapsed{experimentNow - experimentLast};
+                    LOGI("SsboRangeAB fps arm={} frames={} elapsed_ns={} present_hz={} overlay_fps={} dropped={}",
+                         STRATO_SSBO_RANGE_AB, experimentFrames, elapsed,
+                         double(experimentFrames) * 1000000000.0 / double(elapsed), Fps,
+                         ssbo_range_ab::table.dropped.load(std::memory_order_relaxed));
+                    experimentLast = experimentNow; experimentFrames = 0;
+                    for (size_t i{}; i < ssbo_range_ab::table.rows.size(); ++i) {
+                        const auto &row{ssbo_range_ab::table.rows[i]};
+                        if (row.state.load(std::memory_order_acquire) != 2) continue;
+                        const auto resolved{row.resolved.load(std::memory_order_acquire)};
+                        if (!resolved || resolved == experimentReported[i]) continue;
+                        experimentReported[i] = resolved;
+                        const auto &key{row.key};
+                        LOGI("SsboRangeAB row arm={} slot={} guest=0x{:X} legacy_word={} legacy_clamp={} padding={} modern_request={} selected_request={} prepared_view={} groups={},{},{} prepared={} resolved={} range_min={} range_max={} backing_max={} prepared_backing_max={} offset_max={} fixed_binding={} truncated={}",
+                             STRATO_SSBO_RANGE_AB, key.slot, key.address, key.legacy, key.legacyClamp, key.padding,
+                             key.modern, key.selected, key.view, key.groups[0], key.groups[1], key.groups[2],
+                             row.prepared.load(std::memory_order_relaxed), resolved,
+                             row.rangeMin.load(std::memory_order_relaxed), row.rangeMax.load(std::memory_order_relaxed),
+                             row.backingMax.load(std::memory_order_relaxed), row.preparedBackingMax.load(std::memory_order_relaxed), row.offsetMax.load(std::memory_order_relaxed),
+                             row.mega.load(std::memory_order_relaxed), row.truncated.load(std::memory_order_relaxed));
+                    }
+                }
             }, [] {});
         } catch (const signal::SignalException &e) {
             LOGE("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));

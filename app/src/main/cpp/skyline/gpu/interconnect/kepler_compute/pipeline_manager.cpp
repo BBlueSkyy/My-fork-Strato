@@ -30,7 +30,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         Shader::Backend::Bindings bindings{};
 
-        return {ctx.gpu.shader->CompileShader({}, program, bindings, packedState.shaderHash), program.info};
+        bool certificate{};
+        auto module{ctx.gpu.shader->CompileShader({}, program, bindings, packedState.shaderHash, &certificate)};
+        return {std::move(module), program.info, certificate};
     }
 
     static Pipeline::DescriptorInfo MakePipelineDescriptorInfo(const Pipeline::ShaderStage &stage) {
@@ -142,6 +144,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
         u32 texelBufferIdx{};
         auto texelBufferDescs{ctx.executor.allocator->AllocateUntracked<vk::BufferView>(descriptorInfo.totalTexelBufferDescCount)};
 
+        std::array<u32, 2> rangeIndices{ssbo_range_ab::None, ssbo_range_ab::None};
+        std::array<u32, 2> rangeRows{ssbo_range_ab::None, ssbo_range_ab::None};
         u32 storageBufferIdx{};
         u32 texelBufferCacheIdx{};
         u32 bindingIdx{};
@@ -214,7 +218,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
                                                                   cachedView,
                                                                   vk::PipelineStageFlagBits::eComputeShader,
                                                                   srcStageMask, dstStageMask,
-                                                                  accessSize)};
+                                                                  accessSize, shaderStage.rangeCertificate, &rangeRows, &rangeIndices, bufferIdx, groups)};
                              return binding;
                          });
 
@@ -267,6 +271,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
             .descriptorSetLayout = *compiledPipeline.descriptorSetLayout,
             .bindPoint = vk::PipelineBindPoint::eCompute,
             .descriptorSetIndex = 0,
+            .rangeAbIndices = rangeIndices,
+            .rangeAbRows = rangeRows,
         });
     }
 }

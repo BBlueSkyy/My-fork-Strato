@@ -33,7 +33,7 @@ android {
 
         externalNativeBuild {
             cmake {
-                cppFlags "-std=c++20"
+                cppFlags "-std=c++20", "-DSTRATO_SSBO_RANGE_AB=${System.getenv('STRATO_SSBO_RANGE_AB') ?: '0'}"
             }
         }
 

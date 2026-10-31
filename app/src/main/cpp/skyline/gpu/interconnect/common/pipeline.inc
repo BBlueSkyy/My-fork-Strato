@@ -4,6 +4,7 @@
 #pragma once
 
 #include <gpu/interconnect/command_executor.h>
+#include <gpu/ssbo_range_ab.h>
 #include "samplers.h"
 #include "textures.h"
 
@@ -46,8 +47,15 @@ namespace skyline::gpu::interconnect {
                                                         ConstantBuffer &cbuf, CachedMappedBufferView &cachedView,
                                                         vk::PipelineStageFlagBits dstStage,
                                                         vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
-                                                        std::optional<u64> accessSize = std::nullopt) {
-        const StorageBufferGuestDescriptor ssbo{desc.has_size
+                                                        std::optional<u64> accessSize = std::nullopt,
+                                                        bool rangeCertificate = false,
+                                                        std::array<u32, 2> *rangeRows = nullptr, std::array<u32, 2> *rangeIndices = nullptr,
+                                                        u32 descriptorIndex = 0, std::array<u32, 3> groups = {}) {
+        const bool probe{rangeCertificate && rangeRows && rangeIndices && !desc.has_size && !desc.is_written &&
+                         dstStage == vk::PipelineStageFlagBits::eComputeShader && desc.cbuf_index == 0 &&
+                         (desc.cbuf_offset == 0x280 || desc.cbuf_offset == 0x2A0)};
+        const unsigned slot{desc.cbuf_offset == 0x280 ? 0U : 1U};
+        const StorageBufferGuestDescriptor ssbo{(desc.has_size || probe)
             ? cbuf.Read<StorageBufferGuestDescriptor>(ctx.executor, desc.cbuf_offset)
             : StorageBufferGuestDescriptor{cbuf.Read<u64>(ctx.executor, desc.cbuf_offset), 0}};
         if (ssbo.address == 0 || (desc.has_size && ssbo.size == 0))
@@ -57,16 +65,29 @@ namespace skyline::gpu::interconnect {
         constexpr u64 MaximumUnknownStorageBufferRange{8 * 1024 * 1024};
         const u64 pointerRange{accessSize ? util::AlignUp(*accessSize + padding, ctx.gpu.traits.minimumStorageBufferAlignment)
                                          : MaximumUnknownStorageBufferRange};
-        const u64 range{desc.has_size ? std::min<u64>(util::AlignUp(u64{ssbo.size} + padding, ctx.gpu.traits.minimumStorageBufferAlignment), ctx.gpu.traits.maximumStorageBufferRange)
+        const u64 modernRange{desc.has_size ? std::min<u64>(util::AlignUp(u64{ssbo.size} + padding, ctx.gpu.traits.minimumStorageBufferAlignment), ctx.gpu.traits.maximumStorageBufferRange)
                                      : std::min<u64>(pointerRange, ctx.gpu.traits.maximumStorageBufferRange)};
+        const u64 proofRange{util::AlignUp(u64{4608} + padding, ctx.gpu.traits.minimumStorageBufferAlignment)};
+        const u64 range{ssbo_range_ab::SelectedRange(modernRange, proofRange, slot, probe)};
         if (!range)
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
         cachedView.Update(ctx, ssbo.address - padding, range, desc.has_size);
+        if (probe) {
+            const u64 legacyRange{ssbo.size ? util::AlignUp(u64{ssbo.size} + padding, ctx.gpu.traits.minimumStorageBufferAlignment) : 0};
+            const u64 available{cachedView.RangeAvailableFrom(ssbo.address - padding)};
+            const u64 viewSize{cachedView.view ? cachedView.view.size : 0};
+            const u64 required{slot == 0 ? proofRange : util::AlignUp(u64{4} + padding, ctx.gpu.traits.minimumStorageBufferAlignment)};
+            (*rangeRows)[slot] = ssbo_range_ab::table.Prepare({ssbo.address, modernRange, range, viewSize,
+                std::min(legacyRange, available), padding, slot, ssbo.size, groups}, viewSize < required);
+            (*rangeIndices)[slot] = descriptorIndex;
+        }
         if (!cachedView.view) // Retorna um buffer dummy se o SSBO não estiver vinculado
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
 
         auto view{cachedView.view};
         ctx.executor.AttachBuffer(view);
+        if (probe && (*rangeRows)[slot] != ssbo_range_ab::None)
+            ssbo_range_ab::Max(ssbo_range_ab::table.rows[(*rangeRows)[slot]].preparedBackingMax, view.GetBuffer()->ExperimentGuestSize());
         view.GetBuffer()->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
         if (desc.is_written) {

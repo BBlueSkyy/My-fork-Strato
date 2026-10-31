@@ -1,73 +1,76 @@
-# A workflow to build and upload APKs for pull requests
-name: PR Build
-
+name: SSBO Range A-B — PR294
 on:
-  pull_request:
-    types: [ opened, synchronize, reopened ]
-    branches: [ master, UE4-fixes ]
-
-# Only allow the latest build to run for a given PR, and cancel any previous builds
+  push:
+    branches: [ investigate/pr294-ssbo-range-ab-20261031 ]
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: A
+            policy: '0'
+          - arm: B
+            policy: '1'
+    env:
+      STRATO_SSBO_RANGE_AB: ${{ matrix.policy }}
     steps:
-      - name: Git Checkout
+      - name: Checkout identical experiment source
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
           submodules: recursive
-    
-      - name: Debug NDK
+      - name: Verify experiment ancestry and modern compiler
         run: |
-          echo "== NDKs instalados =="
-          ls -la $ANDROID_SDK_ROOT/ndk || true
-          echo "== Variaveis de ambiente =="
-          env | grep -i ndk || true
-     
+          test "$(git rev-parse HEAD^)" = c7cb28d822c52437ed83e9f86ed15c3a3b77c6e7
+          test "$(git -C app/libraries/shader-compiler rev-parse HEAD)" = dcb938866f4234963fcbc199f2443438d8ef6f07
+          python3 tests/ssbo_range_ab/run.py
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           max-size: 3Gi
-
-      
-
+          key: ssbo-range-${{ matrix.arm }}
       - name: Install Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin' # Temurin should come pre-installed on GitHub-hosted runners
+          distribution: temurin
           java-version: '17'
-
-      - name: Install Ninja Build
+      - name: Install Ninja
         run: |
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
-
-      - name: Android Assemble
+      - name: ARM64 DevRelease only
         env:
-          CMAKE_C_COMPILER_LAUNCHER: "ccache"
-          CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
-          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
-          PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand assembleDevRelease assembleDevReldebug
-      - name: Rename APKs
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          CCACHE_COMPILERCHECK: content
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand assembleDevRelease
+      - name: Verify and identify APK
+        env:
+          ARM: ${{ matrix.arm }}
         run: |
-          mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
-          mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
-
-      - name: Upload Release APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
+          test -s app/build/outputs/apk/dev/release/app-dev-release.apk
+          unzip -l app/build/outputs/apk/dev/release/app-dev-release.apk | grep 'lib/arm64-v8a/libskyline.so'
+          test -z "$(git status --porcelain --untracked-files=no)"
+          mv app/build/outputs/apk/dev/release/app-dev-release.apk "Strato-SSBO-Range-${ARM}-ARM64-DevRelease.apk"
+          {
+            echo "SSBO range controlled experiment — PR294; NOT A PERMANENT FIX"
+            echo "Arm: ${ARM}; STRATO_SSBO_RANGE_AB=${STRATO_SSBO_RANGE_AB}"
+            echo "Source: $(git rev-parse HEAD); historical BAD base: c7cb28d"
+            echo "Compiler: $(git -C app/libraries/shader-compiler rev-parse HEAD)"
+            echo "Build: assembleDevRelease; arm64-v8a"
+            sha256sum "Strato-SSBO-Range-${ARM}-ARM64-DevRelease.apk"
+          } > "SSBO-Range-${ARM}-provenance.txt"
+      - name: Upload experiment arm
         uses: actions/upload-artifact@v4
         with:
-          name: strato-pr${{ github.event.number }}-release.apk
-          path: strato-pr${{ github.event.number }}-release.apk
-
-      - name: Upload Debug APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: strato-pr${{ github.event.number }}-reldebug.apk
-          path: strato-pr${{ github.event.number }}-reldebug.apk
+          name: Strato-SSBO-Range-${{ matrix.arm }}-ARM64-DevRelease
+          if-no-files-found: error
+          path: |
+            Strato-SSBO-Range-${{ matrix.arm }}-ARM64-DevRelease.apk
+            SSBO-Range-${{ matrix.arm }}-provenance.txt

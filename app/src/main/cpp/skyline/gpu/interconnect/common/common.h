@@ -56,6 +56,9 @@ namespace skyline::gpu::interconnect {
          * @brief Purges the cached block mapping so the next `Update()` call will perform a full lookup
          */
         void PurgeCaches();
+        u64 RangeAvailableFrom(u64 address) const {
+            return address >= blockMappingStartAddr && address < blockMappingEndAddr ? blockMappingEndAddr - address : 0;
+        }
 
         BufferView &operator*() {
             return view;
@@ -100,5 +103,7 @@ namespace skyline::gpu::interconnect {
         vk::DescriptorSetLayout descriptorSetLayout;
         vk::PipelineBindPoint bindPoint;
         u32 descriptorSetIndex;
+        std::array<u32, 2> rangeAbIndices{UINT32_MAX, UINT32_MAX};
+        std::array<u32, 2> rangeAbRows{UINT32_MAX, UINT32_MAX};
     };
 }

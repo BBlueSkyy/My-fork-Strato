@@ -2,6 +2,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #pragma once
+#include <gpu/ssbo_range_ab.h>
 
 #include <future>
 #include <gpu/interconnect/command_executor.h>
@@ -209,15 +210,22 @@ namespace skyline::gpu::interconnect {
             // Resolve descriptor infos from dynamic bindings
             for (size_t i{}; i < updateInfo->bufferDescDynamicBindings.size(); i++) {
                 auto &dynamicBinding{updateInfo->bufferDescDynamicBindings[i]};
-                BufferBinding binding{[&dynamicBinding, &gpu]() {
+                size_t experimentBacking{};
+                const bool observed{i == updateInfo->rangeAbIndices[0] || i == updateInfo->rangeAbIndices[1]};
+                BufferBinding binding{[&dynamicBinding, &gpu, observed, &experimentBacking]() {
                     if (auto view{std::get_if<BufferView>(&dynamicBinding)})
-                        return view->GetBinding(gpu);
+                        return view->GetBinding(gpu, observed ? &experimentBacking : nullptr);
                     else if (auto binding{std::get_if<BufferBinding>(&dynamicBinding)})
                         return *binding;
                     else
                         return BufferBinding{};
                 }()};
 
+                if (observed) {
+                    const unsigned slot{i == updateInfo->rangeAbIndices[0] ? 0U : 1U};
+                    ssbo_range_ab::table.Resolve(updateInfo->rangeAbRows[slot], binding.size, binding.offset,
+                        experimentBacking, std::holds_alternative<BufferBinding>(dynamicBinding));
+                }
                 updateInfo->bufferDescs[i] = vk::DescriptorBufferInfo{
                     .buffer = binding.buffer,
                     .offset = binding.offset,

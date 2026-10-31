@@ -20,6 +20,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         struct ShaderStage {
             vk::ShaderModule module;
             Shader::Info info;
+            bool rangeCertificate{};
         };
 
         struct DescriptorInfo {

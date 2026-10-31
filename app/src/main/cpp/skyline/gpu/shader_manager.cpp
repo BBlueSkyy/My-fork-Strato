@@ -2,6 +2,8 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <fstream>
+#include <mbedtls/sha256.h>
+#include "ssbo_range_ab.h"
 #include <range/v3/algorithm.hpp>
 #include <boost/functional/hash.hpp>
 #include <gpu.h>
@@ -461,7 +463,7 @@ namespace skyline::gpu {
         return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
     }
 
-    vk::ShaderModule ShaderManager::CompileShader(const Shader::RuntimeInfo &runtimeInfo, Shader::IR::Program &program, Shader::Backend::Bindings &bindings, u64 hash) {
+    vk::ShaderModule ShaderManager::CompileShader(const Shader::RuntimeInfo &runtimeInfo, Shader::IR::Program &program, Shader::Backend::Bindings &bindings, u64 hash, bool *rangeCertificate) {
         std::scoped_lock lock{poolMutex};
 
         if (program.info.loads.Legacy() || program.info.stores.Legacy())
@@ -469,6 +471,16 @@ namespace skyline::gpu {
 
         auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings)};
         auto spirv{ProcessShaderBinary(true, hash, span<u32>{spirvEmitted}.cast<u8>()).cast<u32>()};
+
+        if (rangeCertificate) {
+            *rangeCertificate = false;
+            if (hash == ssbo_range_ab::ShaderHash && program.stage == Shader::Stage::Compute) {
+                std::array<uint8_t, 32> digest{};
+                const bool hashOk{mbedtls_sha256_ret(reinterpret_cast<const unsigned char *>(spirv.data()), spirv.size_bytes(), digest.data(), 0) == 0};
+                *rangeCertificate = ssbo_range_ab::ModuleCertified(hash, true, hashOk, digest);
+                LOGI("SsboRangeAB certificate arm={} accepted={} module_bytes={}", STRATO_SSBO_RANGE_AB, *rangeCertificate, spirv.size_bytes());
+            }
+        }
 
         vk::ShaderModuleCreateInfo createInfo{
             .pCode = spirv.data(),
