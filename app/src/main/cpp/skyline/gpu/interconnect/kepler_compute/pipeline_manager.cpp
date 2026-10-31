@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <gpu/texture/texture.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/common/pipeline.inc>
@@ -28,6 +29,29 @@ namespace skyline::gpu::interconnect::kepler_compute {
                 return samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex);
             })};
 
+        const auto diagnosticPipeline{util::ObjectHash<PackedPipelineState>{}(packedState)};
+        const bool diagnosticRelevant{std::any_of(program.info.storage_buffers_descriptors.begin(),
+            program.info.storage_buffers_descriptors.end(), [](const auto &desc) { return !desc.has_size; })};
+        if (diagnosticRelevant && ssbo_diagnostics::compiledPipelines.fetch_add(1, std::memory_order_relaxed) < 128) {
+            LOGINF("SsboTrace pipeline shader=0x{:016X} pipeline=0x{:016X} local={},{},{} local_memory={} shared_memory={}",
+                packedState.shaderHash, diagnosticPipeline, packedState.dimensions[0], packedState.dimensions[1], packedState.dimensions[2],
+                packedState.localMemorySize, packedState.sharedMemorySize);
+            for (const auto &desc : program.info.storage_buffers_descriptors) {
+                const auto &range{desc.access_range};
+                LOGINF("SsboTrace descriptor shader=0x{:016X} pipeline=0x{:016X} cbuf={} offset=0x{:X} sized={} written={} known={} constant={} group_coeff={},{},{} local_coeff={},{},{}",
+                    packedState.shaderHash, diagnosticPipeline, desc.cbuf_index, desc.cbuf_offset, desc.has_size, desc.is_written, range.known,
+                    range.constant, range.workgroup[0], range.workgroup[1], range.workgroup[2], range.local[0], range.local[1], range.local[2]);
+            }
+            for (const auto &failure : program.info.compute_ssbo_diagnostics) {
+                constexpr size_t ChunkSize{1400};
+                for (size_t offset{}; offset < failure.detail.size(); offset += ChunkSize)
+                    LOGINF("SsboTrace inference shader=0x{:016X} pipeline=0x{:016X} cbuf={} offset=0x{:X} part={} total={} detail={}",
+                        packedState.shaderHash, diagnosticPipeline, failure.cbuf_index, failure.cbuf_offset, offset / ChunkSize,
+                        (failure.detail.size() + ChunkSize - 1) / ChunkSize, failure.detail.substr(offset, ChunkSize));
+            }
+        } else if (diagnosticRelevant) ssbo_diagnostics::diagnosticPipelinesDropped.fetch_add(1, std::memory_order_relaxed);
+        // Diagnostic strings are not retained in pipeline runtime state.
+        program.info.compute_ssbo_diagnostics.clear();
         Shader::Backend::Bindings bindings{};
 
         return {ctx.gpu.shader->CompileShader({}, program, bindings, packedState.shaderHash), program.info};
@@ -212,11 +236,13 @@ namespace skyline::gpu::interconnect::kepler_compute {
                          [&](const Shader::StorageBufferDescriptor &desc, size_t) {
                              auto &cachedView{storageBufferViews[storageBufferIdx++]};
                              const auto accessSize{desc.access_range.GetSize(groups, sourcePackedState.dimensions)};
+                             const ssbo_diagnostics::Dispatch diagnostic{sourcePackedState.shaderHash,
+                                 util::ObjectHash<PackedPipelineState>{}(sourcePackedState), groups};
                              auto binding{GetStorageBufferBinding(ctx, desc, constantBuffers[desc.cbuf_index],
                                                                   cachedView,
                                                                   vk::PipelineStageFlagBits::eComputeShader,
                                                                   srcStageMask, dstStageMask,
-                                                                  accessSize)};
+                                                                  accessSize, &diagnostic)};
                              return binding;
                          });
 

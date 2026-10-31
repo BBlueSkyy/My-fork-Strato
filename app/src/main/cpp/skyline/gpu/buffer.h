@@ -197,6 +197,8 @@ namespace skyline::gpu {
         void MarkGpuDirtyImpl();
 
       public:
+        // Experimental identity only; caller holds the buffer lock.
+        size_t DiagnosticId() const { return id; }
         void UpdateCycle(const std::shared_ptr<FenceCycle> &newCycle) {
             // A lifetime chain alone does not order independent record threads'
             // queue submissions, including clean and directly imported buffers.

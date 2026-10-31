@@ -1,10 +1,9 @@
 # A workflow to build and upload APKs for pull requests
-name: PR Build
+name: "SSBO Compute Trace — PR #294"
 
 on:
-  pull_request:
-    types: [ opened, synchronize, reopened ]
-    branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture ]
+  push:
+    branches: [ investigate/pr294-compute-identity-20261031 ]
 
 # Only allow the latest build to run for a given PR, and cancel any previous builds
 concurrency:
@@ -18,22 +17,23 @@ jobs:
       - name: Git Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
           submodules: recursive
-    
+
+      - name: Debug NDK
+        run: |
+          echo "== NDKs instalados =="
+          ls -la $ANDROID_SDK_ROOT/ndk || true
+          echo "== Variaveis de ambiente =="
+          env | grep -i ndk || true
+
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           max-size: 3Gi
 
-      
 
-      - name: Restore Gradle Cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
 
       - name: Install Java 17
         uses: actions/setup-java@v4
@@ -46,18 +46,41 @@ jobs:
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
+      - name: Verify observation preserves binding and inference behavior
+        run: |
+          python3 tests/ssbo_trace/run.py
+          git -C app/libraries/shader-compiler fetch --no-tags --depth=2 origin 97a97679a1d48877aec7d31c7871df28be239415
+          python3 app/libraries/shader-compiler/tests/ssbo_diagnostics/run.py --fmt app/libraries/fmt --range app/libraries/range --boost app/libraries/boost
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand assembleDevRelease
+      - name: Verify experimental provenance
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git rev-parse HEAD^)" = "b8593d8b2c2e9742a4f1f9edfaa935f653cd3663"
+          test "$(git -C app/libraries/shader-compiler rev-parse HEAD)" = "97a97679a1d48877aec7d31c7871df28be239415"
+          test -s app/build/outputs/apk/dev/release/app-dev-release.apk
+          unzip -l app/build/outputs/apk/dev/release/app-dev-release.apk | grep 'lib/arm64-v8a/libskyline.so'
+          {
+            echo "SSBO Compute Trace — PR #294; experimental, not a permanent fix"
+            echo "Base: b8593d8b2c2e9742a4f1f9edfaa935f653cd3663"
+            echo "Host: $(git rev-parse HEAD)"
+            echo "Shader compiler: $(git -C app/libraries/shader-compiler rev-parse HEAD)"
+            echo "Variant: assembleDevRelease; arm64-v8a"
+            sha256sum app/build/outputs/apk/dev/release/app-dev-release.apk
+          } > SSBO-Compute-Trace-PR294-provenance.txt
       - name: Rename ARM64 DevRelease APK
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
-
-      - name: Upload ARM64 DevRelease APK
+        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk Strato-SSBO-Compute-Trace-PR294-arm64-devrelease.apk
+      - name: Upload Teste SSBO PR294
         uses: actions/upload-artifact@v4
         with:
-          name: strato-pr${{ github.event.number }}-arm64-release.apk
-          path: strato-pr${{ github.event.number }}-arm64-release.apk
+          name: Strato-SSBO-Compute-Trace-PR294-ARM64-DevRelease
+          if-no-files-found: error
+          path: |
+            Strato-SSBO-Compute-Trace-PR294-arm64-devrelease.apk
+            SSBO-Compute-Trace-PR294-provenance.txt

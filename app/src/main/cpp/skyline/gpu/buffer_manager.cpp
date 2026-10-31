@@ -4,6 +4,7 @@
 #include <common/settings.h>
 #include <gpu.h>
 #include "buffer_manager.h"
+#include "ssbo_diagnostics.h"
 
 namespace skyline::gpu {
     BufferManager::BufferManager(GPU &gpu) : gpu{gpu} {}
@@ -88,15 +89,19 @@ namespace skyline::gpu {
         newBuffer->SynchronizeHost(false); // Overlaps don't necessarily fully cover the buffer so we have to perform a sync here to prevent any gaps
         newBuffer->cycle = newBufferCycle;
 
-        auto copyBuffer{[](auto dstGuest, auto srcGuest, auto dstPtr, auto srcPtr) {
+        auto copyBuffer{[&](auto dstGuest, auto srcGuest, auto dstPtr, auto srcPtr) {
             if (dstGuest.begin().base() <= srcGuest.begin().base()) {
                 size_t dstOffset{static_cast<size_t>(srcGuest.begin().base() - dstGuest.begin().base())};
                 size_t copySize{std::min(dstGuest.size() - dstOffset, srcGuest.size())};
+                const auto diagnosticStart{util::GetTimeNs()};
                 std::memcpy(dstPtr + dstOffset, srcPtr, copySize);
+                ssbo_diagnostics::buffers.Coalesce(newBuffer->id, copySize, util::GetTimeNs() - diagnosticStart);
             } else if (dstGuest.begin().base() > srcGuest.begin().base()) {
                 size_t srcOffset{static_cast<size_t>(dstGuest.begin().base() - srcGuest.begin().base())};
                 size_t copySize{std::min(dstGuest.size(), srcGuest.size() - srcOffset)};
+                const auto diagnosticStart{util::GetTimeNs()};
                 std::memcpy(dstPtr, srcPtr + srcOffset, copySize);
+                ssbo_diagnostics::buffers.Coalesce(newBuffer->id, copySize, util::GetTimeNs() - diagnosticStart);
             }
         }}; //!< Copies between two buffers based off of their mappings in guest memory
 
@@ -138,6 +143,7 @@ namespace skyline::gpu {
             // Transfer all views from the overlapping buffer to the new buffer with the new buffer and updated offset, ensuring pointer stability
             vk::DeviceSize overlapOffset{static_cast<vk::DeviceSize>(srcBuffer->guest->begin() - newBuffer->guest->begin())};
             srcBuffer->delegate->Link(newBuffer->delegate, overlapOffset);
+            ssbo_diagnostics::buffers.Link(srcBuffer->id, newBuffer->id);
         }
 
         return newBuffer;

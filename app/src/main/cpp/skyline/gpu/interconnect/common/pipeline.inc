@@ -4,6 +4,7 @@
 #pragma once
 
 #include <gpu/interconnect/command_executor.h>
+#include <gpu/ssbo_diagnostics.h>
 #include "samplers.h"
 #include "textures.h"
 
@@ -46,7 +47,8 @@ namespace skyline::gpu::interconnect {
                                                         ConstantBuffer &cbuf, CachedMappedBufferView &cachedView,
                                                         vk::PipelineStageFlagBits dstStage,
                                                         vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
-                                                        std::optional<u64> accessSize = std::nullopt) {
+                                                        std::optional<u64> accessSize = std::nullopt,
+                                                        const ssbo_diagnostics::Dispatch *diagnostic = nullptr) {
         const StorageBufferGuestDescriptor ssbo{desc.has_size
             ? cbuf.Read<StorageBufferGuestDescriptor>(ctx.executor, desc.cbuf_offset)
             : StorageBufferGuestDescriptor{cbuf.Read<u64>(ctx.executor, desc.cbuf_offset), 0}};
@@ -61,12 +63,28 @@ namespace skyline::gpu::interconnect {
                                      : std::min<u64>(pointerRange, ctx.gpu.traits.maximumStorageBufferRange)};
         if (!range)
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
+        const auto diagnosticStart{diagnostic ? util::GetTimeNs() : 0};
         cachedView.Update(ctx, ssbo.address - padding, range, desc.has_size);
-        if (!cachedView.view) // Retorna um buffer dummy se o SSBO não estiver vinculado
+        const auto diagnosticUpdated{diagnostic ? util::GetTimeNs() : 0};
+        if (!cachedView.view) { // Preserve the existing dummy fallback.
+            if (diagnostic) ssbo_diagnostics::bindings.Record({*diagnostic, UINT64_MAX, desc.cbuf_index, desc.cbuf_offset,
+                desc.has_size ? 0U : accessSize ? 2U : 3U, desc.is_written}, range, 0, 0,
+                diagnosticUpdated - diagnosticStart, 0, ssbo.address);
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
+        }
 
         auto view{cachedView.view};
         ctx.executor.AttachBuffer(view);
+        ssbo_diagnostics::BindingEntry *diagnosticEntry{};
+        if (diagnostic) {
+            const auto id{view.GetBuffer()->DiagnosticId()};
+            ssbo_diagnostics::buffers.Bind(id);
+            const auto *physical{ssbo_diagnostics::buffers.Get(id)};
+            diagnosticEntry = ssbo_diagnostics::bindings.Record({*diagnostic, id, desc.cbuf_index, desc.cbuf_offset,
+                desc.has_size ? 0U : accessSize ? 2U : 3U, desc.is_written}, range, view.size,
+                physical ? physical->bytes.load(std::memory_order_relaxed) : 0,
+                diagnosticUpdated - diagnosticStart, util::GetTimeNs() - diagnosticUpdated, ssbo.address, view.GetOffset());
+        }
         view.GetBuffer()->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
         if (desc.is_written) {
@@ -81,8 +99,13 @@ namespace skyline::gpu::interconnect {
 
             view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
         } else {
-            if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag)})
+            if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag)}) {
+                if (diagnosticEntry) {
+                    diagnosticEntry->megaCalls.fetch_add(1, std::memory_order_relaxed);
+                    diagnosticEntry->revision.fetch_add(1, std::memory_order_release);
+                }
                 return megaBufferBinding;
+            }
         }
 
         view.GetBuffer()->BlockSequencedCpuBackingWrites();

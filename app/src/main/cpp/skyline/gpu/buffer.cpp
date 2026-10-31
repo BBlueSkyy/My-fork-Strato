@@ -8,6 +8,7 @@
 #include <common/trace.h>
 #include <common/settings.h>
 #include "buffer.h"
+#include "ssbo_diagnostics.h"
 
 namespace skyline::gpu {
     void Buffer::ResetMegabufferState() {
@@ -38,12 +39,14 @@ namespace skyline::gpu {
                 std::shared_ptr<FenceCycle> waitCycle{};
                 do {
                     if (waitCycle) {
+                        const auto diagnosticStart{util::GetTimeNs()};
                         i64 startNs{buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold ? util::GetTimeNs() : 0};
                         waitCycle->Wait();
                         if (startNs)
                             buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(util::GetTimeNs() - startNs);
 
                         buffer->accumulatedGuestWaitCounter++;
+                        ssbo_diagnostics::buffers.TrapWait(buffer->id, util::GetTimeNs() - diagnosticStart);
                     }
 
                     std::scoped_lock lock{*buffer};
@@ -98,6 +101,7 @@ namespace skyline::gpu {
                 // As opposed to skipping readback as we do for textures, with buffers we can still perform the readback but just without syncinc the GPU
                 // While the read data may be invalid it's still better than nothing and works in most cases
                 memcpy(buffer->mirror.data(), buffer->backing->data(), buffer->mirror.size());
+                ssbo_diagnostics::buffers.Fast(buffer->id, buffer->mirror.size());
                 buffer->dirtyState = *buffer->gpu.state.settings->enableFastReadbackWrites ? DirtyState::CpuDirty : DirtyState::Clean;
                 return true;
             }
@@ -388,6 +392,7 @@ namespace skyline::gpu {
           isDirect{direct},
           id{id},
           megaBufferTableShift{std::max(std::bit_width(guest.size() / MegaBufferTableMaxEntries - 1), MegaBufferTableShiftMin)} {
+        ssbo_diagnostics::buffers.Init(id, guest.size(), reinterpret_cast<uintptr_t>(guest.data()), isDirect);
         if (isDirect)
             directBacking = gpu.memory.ImportBuffer(mirror);
         else
@@ -428,6 +433,7 @@ namespace skyline::gpu {
         if (!guest)
             return;
 
+        ssbo_diagnostics::buffers.Dirty(id, guest->size());
         usageTracker.dirtyIntervals.Insert(*guest);
         MarkGpuDirtyImpl();
     }
@@ -436,7 +442,9 @@ namespace skyline::gpu {
         TRACE_EVENT("gpu", "Buffer::WaitOnFence");
 
         if (cycle) {
+            const auto diagnosticStart{util::GetTimeNs()};
             cycle->Wait();
+            ssbo_diagnostics::buffers.Wait(id, util::GetTimeNs() - diagnosticStart);
             cycle = nullptr;
         }
     }
@@ -483,7 +491,9 @@ namespace skyline::gpu {
                 gpu.state.process->trap.TrapRegions(*trapHandle, true); // Trap any future CPU writes to this buffer, must be done before the memcpy so that any modifications during the copy are tracked
         }
 
+        const auto diagnosticStart{util::GetTimeNs()};
         std::memcpy(backing->data(), mirror.data(), mirror.size());
+        ssbo_diagnostics::buffers.Copy(id, true, mirror.size(), util::GetTimeNs() - diagnosticStart);
     }
 
     bool Buffer::SynchronizeGuest(bool skipTrap, bool nonBlocking) {
@@ -502,7 +512,9 @@ namespace skyline::gpu {
                 return false; // If the fence is not signalled and non-blocking behaviour is requested then bail out
 
             WaitOnFence();
+            const auto diagnosticStart{util::GetTimeNs()};
             std::memcpy(mirror.data(), backing->data(), mirror.size());
+            ssbo_diagnostics::buffers.Copy(id, false, mirror.size(), util::GetTimeNs() - diagnosticStart);
 
             dirtyState = DirtyState::Clean;
         }
@@ -585,6 +597,7 @@ namespace skyline::gpu {
         if (unifiedMegaBufferEnabled || (megaBufferViewAccumulatedSize > (mirror.size() / 2) && mirror.size() < MegaBufferChunkSize)) {
             if (!unifiedMegaBuffer) {
                 unifiedMegaBuffer = allocator.Push(pCycle, mirror, true);
+                ssbo_diagnostics::buffers.Mega(id, mirror.size());
                 unifiedMegaBufferEnabled = true;
             }
 
@@ -610,6 +623,7 @@ namespace skyline::gpu {
             // Use max(oldSize, newSize) to avoid redundant reallocations within an execution if a larger allocation comes along later
             auto mirrorAllocationRegion{mirror.subspan(bufferEntryOffset, std::max(entryViewOffset + size, allocation.region.size()))};
             allocation = allocator.Push(pCycle, mirrorAllocationRegion, true);
+            ssbo_diagnostics::buffers.Mega(id, mirrorAllocationRegion.size());
             megaBufferTableValidity.set(entryIdx);
             megaBufferViewAccumulatedSize += mirrorAllocationRegion.size();
             megaBufferTableUsed = true;

@@ -11,6 +11,7 @@
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
 #include "presentation_engine.h"
+#include "ssbo_diagnostics.h"
 #include "native_window.h"
 #include "texture/format.h"
 
@@ -239,12 +240,72 @@ namespace skyline::gpu {
             LOGW("Failed to set the thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
 
+        uint64_t diagnosticFrames{}, diagnosticFirst{}, diagnosticLast{};
+        size_t diagnosticBindingCursor{}, diagnosticBufferCursor{};
+        std::array<uint64_t, 2048> diagnosticBindingsReported{};
+        std::array<bool, 32768> diagnosticRelated{};
+        std::vector<uint64_t> diagnosticBuffersReported(32768);
         try {
-            presentQueue.Process([this](const PresentableFrame &frame) {
+            presentQueue.Process([this, &diagnosticFrames, &diagnosticFirst, &diagnosticLast,
+                &diagnosticBindingCursor, &diagnosticBufferCursor, &diagnosticBindingsReported,
+                &diagnosticBuffersReported, &diagnosticRelated](const PresentableFrame &frame) {
                 PresentFrame(frame);
                 frame.presentCallback(); // We're calling the callback here as it's outside of all the locks in PresentFrame
                 skipSignal = true;
                 vsyncEvent->Signal();
+                using namespace ssbo_diagnostics;
+                const auto now{util::GetTimeNs()};
+                ++diagnosticFrames;
+                if (!diagnosticFirst) diagnosticFirst = now;
+                if (diagnosticLast && static_cast<uint64_t>(now) - diagnosticLast < 5000000000ULL) return;
+                diagnosticLast = now;
+                size_t bindingRows{}, bufferRows{};
+                for (size_t scanned{}; scanned < bindings.entries.size() && bindingRows < 16; ++scanned) {
+                    const auto index{diagnosticBindingCursor};
+                    diagnosticBindingCursor = (index + 1) % bindings.entries.size();
+                    const auto &e{bindings.entries[index]};
+                    if (e.state.load(std::memory_order_acquire) != 2) continue;
+                    const auto revision{e.revision.load(std::memory_order_acquire)};
+                    const auto calls{e.calls.load(std::memory_order_relaxed)};
+                    if (!revision || revision == diagnosticBindingsReported[index]) continue;
+                    diagnosticBindingsReported[index] = revision;
+                    ++bindingRows;
+                    const auto &k{e.key};
+                    LOGINF("SsboTrace binding shader=0x{:016X} pipeline=0x{:016X} groups={},{},{} buffer={} cbuf={} offset=0x{:X} kind={} written={} calls={} request_bytes={} view_bytes={} max_request={} max_view={} max_backing={} min_guest=0x{:X} max_guest=0x{:X} max_view_offset={} update_ns={} attach_ns={} mega_calls={}",
+                        k.dispatch.shader, k.dispatch.pipeline, k.dispatch.groups[0], k.dispatch.groups[1], k.dispatch.groups[2],
+                        k.buffer, k.cbuf, k.offset, k.kind, k.written, calls,
+                        e.requested.load(std::memory_order_relaxed), e.viewed.load(std::memory_order_relaxed),
+                        e.maxRequest.load(std::memory_order_relaxed), e.maxView.load(std::memory_order_relaxed), e.maxBacking.load(std::memory_order_relaxed),
+                        e.minGuest.load(std::memory_order_relaxed), e.maxGuest.load(std::memory_order_relaxed), e.maxViewOffset.load(std::memory_order_relaxed),
+                        e.updateNs.load(std::memory_order_relaxed), e.attachNs.load(std::memory_order_relaxed), e.megaCalls.load(std::memory_order_relaxed));
+                }
+                buffers.ResolveComputeRelated(diagnosticRelated);
+                for (size_t scanned{}; scanned < buffers.entries.size() && bufferRows < 16; ++scanned) {
+                    const auto index{diagnosticBufferCursor};
+                    diagnosticBufferCursor = (index + 1) % buffers.entries.size();
+                    const auto &e{buffers.entries[index]};
+                    const auto revision{e.revision.load(std::memory_order_acquire)};
+                    if (!e.seen.load(std::memory_order_acquire) || !revision || revision == diagnosticBuffersReported[index]) continue;
+                    if (!diagnosticRelated[index]) continue;
+                    diagnosticBuffersReported[index] = revision;
+                    ++bufferRows;
+                    LOGINF("SsboTrace buffer id={} bytes={} guest_start=0x{:X} direct={} compute_seen={} successor_plus_one={} uploads={} upload_bytes={} upload_ns={} downloads={} download_bytes={} download_ns={} waits={} wait_ns={} trap_waits={} trap_wait_ns={} dirty_marks={} dirty_span_bytes={} mega_copies={} mega_bytes={} fast_copies={} fast_bytes={} coalesce_copies={} coalesce_bytes={} coalesce_ns={}",
+                        index, e.bytes.load(std::memory_order_relaxed), e.guestStart.load(std::memory_order_relaxed), e.direct.load(std::memory_order_relaxed),
+                        e.computeSeen.load(std::memory_order_relaxed), e.successor.load(std::memory_order_relaxed),
+                        e.uploads.load(std::memory_order_relaxed), e.uploadBytes.load(std::memory_order_relaxed), e.uploadNs.load(std::memory_order_relaxed),
+                        e.downloads.load(std::memory_order_relaxed), e.downloadBytes.load(std::memory_order_relaxed), e.downloadNs.load(std::memory_order_relaxed),
+                        e.waits.load(std::memory_order_relaxed), e.waitNs.load(std::memory_order_relaxed),
+                        e.trapWaits.load(std::memory_order_relaxed), e.trapWaitNs.load(std::memory_order_relaxed),
+                        e.dirtyMarks.load(std::memory_order_relaxed), e.dirtySpan.load(std::memory_order_relaxed),
+                        e.megaCopies.load(std::memory_order_relaxed), e.megaBytes.load(std::memory_order_relaxed),
+                        e.fastCopies.load(std::memory_order_relaxed), e.fastBytes.load(std::memory_order_relaxed),
+                        e.coalesceCopies.load(std::memory_order_relaxed), e.coalesceBytes.load(std::memory_order_relaxed), e.coalesceNs.load(std::memory_order_relaxed));
+                }
+                LOGINF("SsboTrace totals frames={} elapsed_ns={} binding_rows={} buffer_rows={} bindings_dropped={} buffers_created={} buffers_dropped={} pipelines_dropped={}",
+                    diagnosticFrames, static_cast<uint64_t>(now) - diagnosticFirst, bindingRows, bufferRows,
+                    bindings.dropped.load(std::memory_order_relaxed), buffers.created.load(std::memory_order_relaxed),
+                    buffers.dropped.load(std::memory_order_relaxed), diagnosticPipelinesDropped.load(std::memory_order_relaxed));
+
             }, [] {});
         } catch (const signal::SignalException &e) {
             LOGE("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
