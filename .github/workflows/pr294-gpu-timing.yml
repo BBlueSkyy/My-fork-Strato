@@ -1,0 +1,64 @@
+name: PR294 GPU Timing GOOD
+on:
+  push:
+    branches:
+      - investigate/pr294-gpu-timing-good-20261031
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          submodules: recursive
+      - name: Restore CCache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 3Gi
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Ninja Build
+        run: |
+          sudo apt-get install -y ninja-build
+          ln -s /usr/bin/ninja .
+      - name: Source and compiler pin check
+        run: |
+          test "$(git rev-parse HEAD^)" = "28bcb957a9f018212f3b0a2e5628028bdb22bf69"
+          test "$(git -C app/libraries/shader-compiler rev-parse HEAD)" = "6c804797a6e073c925958cedd6d5eb8114a3c65d"
+          grep -q 'GpuTiming submissions=' app/src/main/cpp/skyline/gpu/interconnect/command_executor.cpp
+      - name: Android Assemble
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          CCACHE_COMPILERCHECK: string:${{ env.NDK_VERSION }}
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand assembleDevRelease
+      - name: Verify APK and provenance
+        run: |
+          test -s app/build/outputs/apk/dev/release/app-dev-release.apk
+          unzip -l app/build/outputs/apk/dev/release/app-dev-release.apk | grep 'lib/arm64-v8a/libskyline.so'
+          {
+            echo "PR294 GPU timing GOOD"
+            echo "Baseline: 28bcb957a9f018212f3b0a2e5628028bdb22bf69"
+            echo "Compiler: 6c804797a6e073c925958cedd6d5eb8114a3c65d"
+            echo "Instrumented: $(git rev-parse HEAD)"
+            echo "Sample: 1 GPU-timestamped command buffer in 16"
+            echo "No waits beyond existing slot completion; CPU totals not additive to GPU timing"
+            sha256sum app/build/outputs/apk/dev/release/app-dev-release.apk
+          } > pr294-gpu-timing-good-provenance.txt
+          mv app/build/outputs/apk/dev/release/app-dev-release.apk Strato-PR294-GpuTiming-GOOD-ARM64-DevRelease.apk
+      - name: Upload GOOD diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strato-PR294-GpuTiming-GOOD-ARM64-DevRelease
+          if-no-files-found: error
+          path: |
+            Strato-PR294-GpuTiming-GOOD-ARM64-DevRelease.apk
+            pr294-gpu-timing-good-provenance.txt
