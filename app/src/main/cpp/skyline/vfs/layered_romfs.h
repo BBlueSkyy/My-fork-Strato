@@ -20,6 +20,12 @@ namespace skyline::vfs {
      * Earlier mod directories have priority over later ones and the base RomFS.
      */
     class LayeredRomFsBacking final : public Backing {
+      public:
+        struct ExtractedFile {
+            std::string path; // Relative path inside RomFS
+            std::shared_ptr<Backing> backing;
+        };
+
       private:
         static constexpr u32 EmptyEntry{0xFFFFFFFF};
         static constexpr size_t FilePartitionOffset{0x200};
@@ -150,7 +156,9 @@ namespace skyline::vfs {
                 throw exception("Failed to enumerate RomFS mod '{}': {}", root.string(), error.message());
         }
 
-        void Build(const std::shared_ptr<Backing> &baseBacking, const std::vector<std::filesystem::path> &modDirectories) {
+        void Build(const std::shared_ptr<Backing> &baseBacking,
+                   const std::vector<std::filesystem::path> &modDirectories,
+                   const std::vector<ExtractedFile> &extractedFiles = {}) {
             // A null base builds a standalone RomFS from extracted host files.
             // Normal layered RomFS users retain their existing backing.
             std::map<std::string, FileSource> effectiveFiles;
@@ -176,6 +184,17 @@ namespace skyline::vfs {
             std::unordered_set<std::string> claimedFiles;
             for (const auto &directory : modDirectories)
                 AddModLayer(directory, effectiveFiles, effectiveDirectories, claimedFiles);
+
+            // SAF files are backed by lazy document FDs. Only the metadata is
+            // constructed here; document payload is read when the guest asks.
+            for (const auto &file : extractedFiles) {
+                if (!file.backing || file.path.empty() || file.path.front() == '/' ||
+                    file.path.find("..") != std::string::npos || file.path.find('\\') != std::string::npos)
+                    throw exception("Invalid extracted RomFS file path");
+                AddParentDirectories(effectiveDirectories, file.path);
+                if (!effectiveFiles.emplace(file.path, FileSource{file.backing, 0, file.backing->size}).second)
+                    throw exception("Duplicate extracted RomFS file {}", file.path);
+            }
 
             std::vector<DirectoryNode> directories;
             directories.reserve(effectiveDirectories.size());
@@ -372,6 +391,11 @@ namespace skyline::vfs {
         LayeredRomFsBacking(std::shared_ptr<Backing> baseBacking, std::vector<std::filesystem::path> modDirectories)
             : Backing({true, false, false}, 0) {
             Build(baseBacking, modDirectories);
+        }
+
+        explicit LayeredRomFsBacking(const std::vector<ExtractedFile> &files)
+            : Backing({true, false, false}, 0) {
+            Build(nullptr, {}, files);
         }
     };
 }
