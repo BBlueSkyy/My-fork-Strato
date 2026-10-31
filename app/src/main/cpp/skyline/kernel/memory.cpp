@@ -208,7 +208,8 @@ namespace skyline::kernel {
         namespace AS39bit {
             constexpr size_t MaxCodeRegionSize{4ULL * 1024 * 1024 * 1024}; //!< The assumed maximum size of the code region (4GiB)
             constexpr size_t AliasRegionSize{0x1000000000}; //!< The size of the alias region (64GiB)
-            constexpr size_t HeapRegionSize{0x180000000}; //!< The size of the heap region (6GiB)
+            constexpr size_t HeapRegionSize{0x180000000}; //!< Default Switch 1 heap region (6GiB)
+            constexpr size_t Switch2HeapRegionSize{0x400000000}; //!< Experimental Switch 2 heap reservation (16GiB)
             constexpr size_t StackRegionSize{0x80000000}; //!< The size of the stack region (2GiB)
             constexpr size_t TlsIoRegionSize{0x1000000000}; //!< The size of the TLS/IO region (64GiB)
 
@@ -216,10 +217,15 @@ namespace skyline::kernel {
         }
     }
 
-    void MemoryManager::InitializeVmm(memory::AddressSpaceType type, bool enableAliasRegionExtraSize) {
+    void MemoryManager::InitializeVmm(memory::AddressSpaceType type, bool enableAliasRegionExtraSize, bool nativeSwitch2Title) {
         addressSpaceType = type;
+        switch2GuestLayout = nativeSwitch2Title;
+        aliasRegionExtraSize = 0;
 
-        LOGD("Initializing VMM for {}", to_string(addressSpaceType));
+        if (switch2GuestLayout && type != memory::AddressSpaceType::AddressSpace39Bit)
+            throw exception("Switch 2 16 GiB heap profile requires a 39-bit guest address space");
+
+        LOGD("Initializing VMM for {} (Switch 2 heap profile: {})", to_string(addressSpaceType), switch2GuestLayout);
 
         size_t baseSize{}, maxAddress{};
         switch (type) {
@@ -247,7 +253,12 @@ namespace skyline::kernel {
                 if (enableAliasRegionExtraSize)
                     aliasRegionExtraSize = addressSpace.size() >> 3;
 
-                baseSize = AS39bit::TotalSize + aliasRegionExtraSize;
+                // Guest virtual address reservation, not a 16 GiB physical allocation.
+                // The extra range is only reserved for titles in the native 0x04
+                // Switch 2 namespace; Switch 1 retains the 6 GiB default.
+                const size_t additionalHeapSize{switch2GuestLayout
+                    ? AS39bit::Switch2HeapRegionSize - AS39bit::HeapRegionSize : 0};
+                baseSize = AS39bit::TotalSize + aliasRegionExtraSize + additionalHeapSize;
                 maxAddress = addressSpace.size();
                 break;
             }
@@ -372,7 +383,8 @@ namespace skyline::kernel {
             case memory::AddressSpaceType::AddressSpace39Bit: {
                 code = span<u8>{base.data(), util::AlignUp(codeRegion.size(), RegionAlignment)};
                 alias = span<u8>{code.host.end().base(), AS39bit::AliasRegionSize + aliasRegionExtraSize};
-                heap = span<u8>{alias.host.end().base(), AS39bit::HeapRegionSize};
+                heap = span<u8>{alias.host.end().base(), switch2GuestLayout
+                    ? AS39bit::Switch2HeapRegionSize : AS39bit::HeapRegionSize};
                 stack = span<u8>{heap.host.end().base(), AS39bit::StackRegionSize};
                 tlsIo = span<u8>{stack.host.end().base(), AS39bit::TlsIoRegionSize};
 
