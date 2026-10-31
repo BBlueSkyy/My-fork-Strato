@@ -75,6 +75,39 @@ class RomProvider @Inject constructor(
         }
     }
 
+    /**
+     * Extracted titles are stored inside the app-owned filesystem so native
+     * OsFileSystem can open RomFS files lazily without copying large games.
+     * Each immediate child must contain exefs/main, rtld and main.npdm.
+     */
+    private fun addExtractedGameEntries(
+        entries: ArrayList<AppEntry>,
+        seenUris: MutableSet<String>,
+        systemLanguage: Int
+    ) {
+        val root = File(context.getExternalFilesDir(null) ?: context.filesDir, "switch/extracted")
+        root.listFiles()
+            ?.filter { it.isDirectory }
+            ?.sortedBy { it.name.lowercase() }
+            ?.forEach { game ->
+                val exeFs = File(game, "exefs")
+                val main = File(exeFs, "main")
+                if (!main.isFile || !File(exeFs, "rtld").isFile ||
+                    !File(exeFs, "main.npdm").isFile)
+                    return@forEach
+
+                val uri = Uri.fromFile(main)
+                if (!seenUris.add(uri.toString()))
+                    return@forEach
+
+                try {
+                    entries.add(RomFile(context, EXTRACTED, uri, systemLanguage).appEntry)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Unable to load extracted game ${game.name}: ${e.message}")
+                }
+            }
+    }
+
     private fun addEmulatedSdHomebrewEntries(
         entries: ArrayList<AppEntry>,
         seenUris: MutableSet<String>,
@@ -119,6 +152,7 @@ class RomProvider @Inject constructor(
         // directly accessible to Strato even though Android's document picker does
         // not normally expose Android/data as a selectable game folder.
         addEmulatedSdHomebrewEntries(entries, seenUris, systemLanguage)
+        addExtractedGameEntries(entries, seenUris, systemLanguage)
 
         searchLocations
             .filter { it.toString().isNotBlank() }
