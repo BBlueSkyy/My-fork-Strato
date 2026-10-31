@@ -697,7 +697,8 @@ namespace skyline::gpu {
           surfaceSize(format == guest->format ? deswizzledSurfaceSize : (guest->tileConfig.mode == texture::TileMode::Pitch ? texture::PitchLinearCheckedMultiply(CalculateTargetLevelStride(mipLayouts), layerCount) : CalculateTargetLevelStride(mipLayouts) * layerCount)),
           sampleCount(vk::SampleCountFlagBits::e1),
           flags(texture::GuestImageFormatFlags(format->vkFormat, gpu.traits.quirks.vkImageMutableFormatCostly,
-              guest->GetImageType() == vk::ImageType::e2D && format->vkAspect == vk::ImageAspectFlagBits::eColor && !format->IsCompressed())),
+              guest->GetImageType() == vk::ImageType::e2D && format->vkAspect == vk::ImageAspectFlagBits::eColor && !format->IsCompressed(),
+              format->vkAspect == vk::ImageAspectFlagBits::eColor)),
           usage(vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled) {
         if ((format->vkAspect & vk::ImageAspectFlagBits::eColor) && !format->IsCompressed())
             usage |= vk::ImageUsageFlagBits::eColorAttachment;

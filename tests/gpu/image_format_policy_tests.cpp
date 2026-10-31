@@ -25,6 +25,16 @@ int main() {
         assert(GuestImageFormatFlags(format, false) & vk::ImageCreateFlagBits::eMutableFormat);
     }
     assert(GuestImageFormatFlags(vk::Format::eR8G8B8A8Unorm, true, false) & vk::ImageCreateFlagBits::eMutableFormat);
+    // Depth and stencil formats cannot legally be reinterpreted as foreign
+    // formats. They keep their existing native-format view support.
+    for (auto format : {vk::Format::eD16Unorm, vk::Format::eD24UnormS8Uint,
+                        vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint,
+                        vk::Format::eS8Uint}) {
+        assert(!GuestImageFormatFlags(format, true, false, false));
+        assert(!GuestImageFormatFlags(format, false, false, false));
+    }
+    // Non-depth compressed color aliases are still allocated mutable.
+    assert(GuestImageFormatFlags(vk::Format::eBc7UnormBlock, true, false, true) & vk::ImageCreateFlagBits::eMutableFormat);
     const auto rgba{vk::Format::eR8G8B8A8Unorm}, bgra{vk::Format::eB8G8R8A8Unorm};
     const auto flags{GuestImageFormatFlags(rgba, true)};
     assert(ViewFormatAdmitted(rgba, flags, {}, rgba));
