@@ -292,6 +292,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             auto &stageDescInfo{descriptorInfo.stages[i]};
             stageDescInfo.stage = ConvertShaderToPipelineStage(stage.stage);
+            // Preserve the shader compiler's precise constant-buffer access
+            // extents. Leaving this zero-initialized silently disables the
+            // used-range path in GetConstantBufferBinding/TryMegaBuffer.
+            stageDescInfo.constantBufferUsedSizes = stage.info.constant_buffer_used_sizes;
 
             auto pushBindings{[&](vk::DescriptorType type, const auto &descs, u16 &count, auto &outputDescs, auto &&descCb, bool individualDescWrites = false) {
                 descriptorInfo.totalWriteDescCount += individualDescWrites ? descs.size() : ((descs.size() > 0) ? 1 : 0);
