@@ -1,9 +1,9 @@
 # A workflow to build and upload APKs for pull requests
-name: "SSBO Compute Trace — PR #294"
+name: "SSBO Rejected Views — PR #294"
 
 on:
   push:
-    branches: [ investigate/pr294-compute-identity-20261031 ]
+    branches: [ investigate/pr294-ssbo-rejected-megabuffer-20261031 ]
 
 # Only allow the latest build to run for a given PR, and cancel any previous builds
 concurrency:
@@ -46,11 +46,10 @@ jobs:
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
-      - name: Verify observation preserves binding and inference behavior
+      - name: Verify copying policy and SSBO binding behavior
         run: |
           python3 tests/ssbo_trace/run.py
-          git -C app/libraries/shader-compiler fetch --no-tags --depth=2 origin 97a97679a1d48877aec7d31c7871df28be239415
-          python3 app/libraries/shader-compiler/tests/ssbo_diagnostics/run.py --fmt app/libraries/fmt --range app/libraries/range --boost app/libraries/boost
+          python3 tests/gpu_megabuffer_rejected/run.py
 
       - name: Android Assemble
         env:
@@ -62,25 +61,25 @@ jobs:
       - name: Verify experimental provenance
         run: |
           test "$(git rev-parse HEAD)" = "${{ github.sha }}"
-          test "$(git rev-parse HEAD^)" = "b8593d8b2c2e9742a4f1f9edfaa935f653cd3663"
+          test "$(git rev-parse HEAD^)" = "abf26faa164520f1a88370f6a3e185f95b7a0138"
           test "$(git -C app/libraries/shader-compiler rev-parse HEAD)" = "97a97679a1d48877aec7d31c7871df28be239415"
           test -s app/build/outputs/apk/dev/release/app-dev-release.apk
           unzip -l app/build/outputs/apk/dev/release/app-dev-release.apk | grep 'lib/arm64-v8a/libskyline.so'
           {
-            echo "SSBO Compute Trace — PR #294; experimental, not a permanent fix"
-            echo "Base: b8593d8b2c2e9742a4f1f9edfaa935f653cd3663"
+            echo "SSBO Rejected Views — PR #294; experimental, not a permanent fix"
+            echo "Base: abf26faa164520f1a88370f6a3e185f95b7a0138"
             echo "Host: $(git rev-parse HEAD)"
             echo "Shader compiler: $(git -C app/libraries/shader-compiler rev-parse HEAD)"
             echo "Variant: assembleDevRelease; arm64-v8a"
             sha256sum app/build/outputs/apk/dev/release/app-dev-release.apk
-          } > SSBO-Compute-Trace-PR294-provenance.txt
+          } > SSBO-Rejected-Views-PR294-provenance.txt
       - name: Rename ARM64 DevRelease APK
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk Strato-SSBO-Compute-Trace-PR294-arm64-devrelease.apk
+        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk Strato-SSBO-Rejected-Views-PR294-arm64-devrelease.apk
       - name: Upload Teste SSBO PR294
         uses: actions/upload-artifact@v4
         with:
-          name: Strato-SSBO-Compute-Trace-PR294-ARM64-DevRelease
+          name: Strato-SSBO-Rejected-Views-PR294-ARM64-DevRelease
           if-no-files-found: error
           path: |
-            Strato-SSBO-Compute-Trace-PR294-arm64-devrelease.apk
-            SSBO-Compute-Trace-PR294-provenance.txt
+            Strato-SSBO-Rejected-Views-PR294-arm64-devrelease.apk
+            SSBO-Rejected-Views-PR294-provenance.txt
