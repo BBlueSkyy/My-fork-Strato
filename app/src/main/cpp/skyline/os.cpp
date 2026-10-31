@@ -11,6 +11,8 @@
 #include "loader/nro.h"
 #include "loader/nso.h"
 #include "loader/nca.h"
+#include <filesystem>
+#include <iterator>
 #include "loader/nsp.h"
 #include "loader/xci.h"
 #include "services/account/IAccountServiceForApplication.h"
@@ -170,6 +172,28 @@ namespace skyline::kernel {
                 return std::make_shared<loader::NsoLoader>(std::move(file));
             case loader::RomFormat::NCA:
                 return std::make_shared<loader::NcaLoader>(std::move(file), std::move(keyStore));
+            case loader::RomFormat::EXTRACTED: {
+                // The frontend passes an FD for exefs/main, not a directory path.
+                // Resolve that FD to a canonical, app-owned extracted-game root.
+                std::error_code error;
+                const auto path{std::filesystem::canonical(
+                    std::filesystem::path("/proc/self/fd") / std::to_string(fd), error)};
+                if (error || path.filename() != "main" || path.parent_path().filename() != "exefs")
+                    throw exception("Invalid extracted ExeFS entry point");
+
+                const auto root{path.parent_path().parent_path()};
+                const auto allowedRoot{std::filesystem::weakly_canonical(
+                    std::filesystem::path(publicAppFilesPath) / "switch" / "extracted", error)};
+                if (error)
+                    throw exception("Cannot resolve extracted-games root");
+
+                const auto relative{root.lexically_relative(allowedRoot)};
+                if (relative.empty() || relative == "." || relative.is_absolute() ||
+                    *relative.begin() == ".." || std::next(relative.begin()) != relative.end())
+                    throw exception("Extracted game must be a direct child of switch/extracted");
+
+                return std::make_shared<loader::ExtractedLoader>(root.string());
+            }
             case loader::RomFormat::NSP:
                 return std::make_shared<loader::NspLoader>(file, keyStore, std::string{}, loader::NspLoadMode::Full, programIndex);
             case loader::RomFormat::XCI:
