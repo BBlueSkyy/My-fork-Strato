@@ -28,6 +28,8 @@ enum class RomFormat(val format : Int) {
     NCA(2),
     XCI(3),
     NSP(4),
+    // UI-only sentinel. Not passed to the native Switch 1 loader.
+    SWITCH2_EXTRACTED(5),
 }
 
 enum class RomType(val value: Int) {
