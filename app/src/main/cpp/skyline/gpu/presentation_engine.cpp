@@ -171,9 +171,14 @@ namespace skyline::gpu {
                         const bool sceneSnapshots{fs::exists(root / "ENABLE_SCENE_SNAPSHOTS", ec) && !ec};
                         ec.clear();
                         const bool scanHdr{fs::exists(root / "ENABLE_HDR_SCAN", ec) && !ec};
-                        capture.Start(folder, sceneSnapshots || scanHdr, scanHdr);
-                        LOGI("MINIRD_PACMAN armed in {} scene_snapshots={} hdr_scan={}",
-                             folder.string(), sceneSnapshots || scanHdr, scanHdr);
+                        ec.clear();
+                        const bool rpSplit{fs::exists(root / "ENABLE_EXECUTOR_RP_SPLIT_TEST", ec) && !ec};
+                        ec.clear();
+                        const bool rpBarrier{fs::exists(root / "ENABLE_EXECUTOR_BARRIER_TEST", ec) && !ec};
+                        const u32 experimentMode{rpBarrier ? 2U : rpSplit ? 1U : 0U};
+                        capture.Start(folder, sceneSnapshots || scanHdr, scanHdr, experimentMode);
+                        LOGI("MINIRD_PACMAN armed in {} scene_snapshots={} hdr_scan={} executor_test={}",
+                             folder.string(), sceneSnapshots || scanHdr, scanHdr, experimentMode);
                         break;
                     }
                 }
