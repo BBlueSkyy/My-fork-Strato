@@ -61,6 +61,17 @@ namespace skyline::loader {
         if (header.magic != util::MakeMagic<u32>("NSO0"))
             throw exception("Invalid NSO magic! 0x{0:X}", header.magic);
 
+        // Record the identity of the *loaded* update NSO, which may differ from
+        // a separately extracted base-game NSO even at the same guest address.
+        if (process->npdm.aci0.programId == 0x0100E66010ADE000ULL) {
+            const auto *buildBytes{reinterpret_cast<const u8 *>(header.buildId.data())};
+            std::string buildId;
+            for (size_t i{}; i < 20; ++i)
+                buildId += fmt::format("{:02X}", buildBytes[i]);
+            LOGI("CrysisNSO: {} buildId={} textSize=0x{:X} roOffset=0x{:X}",
+                 name, buildId, header.text.decompressedSize, header.ro.memoryOffset);
+        }
+
         Executable executable{};
 
         executable.text.contents = GetSegment(backing, header.text, header.flags.textCompressed, header.textCompressedSize, header.flags.useZbicCompression);
