@@ -7,6 +7,8 @@
 #include "hle/symbol_hooks.h"
 
 namespace skyline::nce {
+    // Temporary NCE diagnostic call for Crysis v1.6.0's NVN command-memory callback.
+    constexpr u16 CrysisMemoryCallbackProbeSvc{0x7FF0};
     /**
      * @brief The NCE (Native Code Execution) class is responsible for managing state relevant to the layer between the host and guest
      */
