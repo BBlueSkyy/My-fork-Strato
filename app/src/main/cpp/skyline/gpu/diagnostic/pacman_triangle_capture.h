@@ -16,7 +16,7 @@ namespace skyline::gpu::diagnostic {
     class PacmanTriangleCapture {
         static constexpr std::uint32_t MaxEvents{12000};
         static constexpr std::uint32_t MaxPresentedFrames{6};
-        static constexpr std::uint32_t MaxSnapshots{14};
+        static constexpr std::uint32_t MaxSnapshots{8};
         static constexpr std::size_t MaxSnapshotBytes{64ULL * 1024 * 1024};
 
         mutable std::mutex mutex;
