@@ -51,6 +51,13 @@ jobs:
           python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
           python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
 
+      - name: Test precise readback traps
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          python3 tests/readback_traps/run.py
+          ASAN_OPTIONS=detect_leaks=0:handle_segv=0 TEST_SOURCE=pipeline.cpp python3 tests/readback_traps/run.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
