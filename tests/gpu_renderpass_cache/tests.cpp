@@ -98,8 +98,57 @@ static void CheckDepthEquality() {
     Check(!Cache::RenderPassEqual{}(owned, f.info), "different depth attachment and layout accepted");
 }
 
+static void CheckKeyFields() {
+    Fixture f;
+    f.subpasses[0].pDepthStencilAttachment = &f.references[1];
+    f.subpasses[0].pResolveAttachments = f.references.data();
+    f.subpasses[0].inputAttachmentCount = 1;
+    f.subpasses[0].pInputAttachments = &f.references[1];
+    f.subpasses[0].preserveAttachmentCount = 1;
+    f.subpasses[0].pPreserveAttachments = f.preserved.data();
+    f.info.dependencyCount = 1;
+    f.info.pDependencies = &f.dependency;
+    Cache::RenderPassMetadata owned{f.info};
+    auto mismatch = [&] {
+        Cache::RenderPassMetadata changed{f.info};
+        Check(!Cache::RenderPassEqual{}(owned, changed), "owned key ignored changed field");
+        Check(!Cache::RenderPassEqual{}(owned, f.info), "borrowed key ignored changed field");
+        CheckLookup(f.info);
+    };
+    auto mutate = [&](auto &field, auto value) {
+        const auto original{field}; field = value; mismatch(); field = original;
+    };
+    for (auto &attachment : f.attachments) {
+        mutate(attachment.flags, vk::AttachmentDescriptionFlags{vk::AttachmentDescriptionFlagBits::eMayAlias});
+        mutate(attachment.format, vk::Format::eD24UnormS8Uint);
+        mutate(attachment.samples, vk::SampleCountFlagBits::e4);
+        mutate(attachment.loadOp, vk::AttachmentLoadOp::eClear);
+        mutate(attachment.storeOp, vk::AttachmentStoreOp::eDontCare);
+        mutate(attachment.stencilLoadOp, vk::AttachmentLoadOp::eClear);
+        mutate(attachment.stencilStoreOp, vk::AttachmentStoreOp::eDontCare);
+        mutate(attachment.initialLayout, vk::ImageLayout::eGeneral);
+        mutate(attachment.finalLayout, vk::ImageLayout::eGeneral);
+    }
+    mutate(f.references[0].attachment, VK_ATTACHMENT_UNUSED);
+    mutate(f.references[0].layout, vk::ImageLayout::eGeneral);
+    mutate(f.references[1].attachment, VK_ATTACHMENT_UNUSED);
+    mutate(f.references[1].layout, vk::ImageLayout::eGeneral);
+    mutate(f.preserved[0], 0U);
+    mutate(f.subpasses[0].flags, vk::SubpassDescriptionFlags{vk::SubpassDescriptionFlagBits::ePerViewAttributesNVX});
+    mutate(f.subpasses[0].pipelineBindPoint, vk::PipelineBindPoint::eCompute);
+    mutate(f.dependency.srcSubpass, VK_SUBPASS_EXTERNAL);
+    mutate(f.dependency.dstSubpass, VK_SUBPASS_EXTERNAL);
+    mutate(f.dependency.srcStageMask, vk::PipelineStageFlags{vk::PipelineStageFlagBits::eTransfer});
+    mutate(f.dependency.dstStageMask, vk::PipelineStageFlags{vk::PipelineStageFlagBits::eFragmentShader});
+    mutate(f.dependency.srcAccessMask, vk::AccessFlags{vk::AccessFlagBits::eTransferWrite});
+    mutate(f.dependency.dstAccessMask, vk::AccessFlags{vk::AccessFlagBits::eShaderRead});
+    mutate(f.dependency.dependencyFlags, vk::DependencyFlags{vk::DependencyFlagBits::eByRegion});
+    std::puts("PASS owned/borrowed key differences: every attachment field, depth/stencil/color/input/resolve references, preserve and dependencies");
+}
+
 static void Regression() {
     CheckDepthEquality();
+    CheckKeyFields();
     Fixture f;
     CheckLookup(f.info); // Regression: color attachments with absent resolves.
     f.subpasses[0].colorAttachmentCount = 0;
@@ -161,4 +210,5 @@ int main(int argc, char **argv) {
         for (size_t sample{}; sample < 5; ++sample) Benchmark();
     }
     else Regression();
+    return 0;
 }

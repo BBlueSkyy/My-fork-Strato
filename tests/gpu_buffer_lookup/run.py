@@ -26,9 +26,10 @@ with tempfile.TemporaryDirectory(prefix="strato-buffer-lookup-") as temporary:
     directory = pathlib.Path(temporary)
     (directory / "production.inc").write_text("\n".join(method(source, signature) for signature in (
         "    bool BufferManager::BufferLessThan(",
-        "    BufferManager::LockedBuffers BufferManager::Lookup(")))
+        "    BufferManager::LockedBuffers BufferManager::Lookup(",
+        "    void BufferManager::InsertBuffer(", "    void BufferManager::DeleteBuffer(")))
     flags = ["-O3", "-DNDEBUG"] if args.benchmark else ["-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
-    subprocess.run([os.environ.get("CXX", "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror", *flags,
+    subprocess.run([os.environ.get("CXX", "c++"), "-std=c++20", "-pthread", "-Wall", "-Wextra", "-Werror", *flags,
                     "-I" + str(directory), str(ROOT / "tests/gpu_buffer_lookup/tests.cpp"),
                     "-o", str(directory / "tests")], check=True)
     subprocess.run([str(directory / "tests"), *(["--benchmark"] if args.benchmark else [])], check=True)

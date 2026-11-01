@@ -10,6 +10,8 @@
 #include <stdexcept>
 #include <string_view>
 #include <vector>
+#include <thread>
+#include <mutex>
 using u8 = uint8_t;
 using ContextTag = uint64_t;
 
@@ -38,11 +40,24 @@ struct BufferManager {
     using LockedBuffers = std::vector<LockedBuffer>;
     std::vector<std::shared_ptr<Buffer>> bufferMappings;
     struct Table {
+        struct Entry { u8 *first, *last; Buffer *buffer; };
+        std::vector<Entry> entries;
         Buffer *hit{};
-        Buffer *operator[](u8 *) const { return hit; }
+        Buffer *operator[](u8 *address) const {
+            if (hit) return hit;
+            for (const auto &entry : entries)
+                if (entry.first <= address && address < entry.last) return entry.buffer;
+            return nullptr;
+        }
+        void Set(u8 *first, u8 *last, Buffer *buffer) {
+            std::erase_if(entries,[&](const auto &entry) { return entry.first < last && first < entry.last; });
+            if (buffer) entries.push_back({first,last,buffer});
+        }
     } bufferTable;
     static bool BufferLessThan(const std::shared_ptr<Buffer> &, u8 *);
     LockedBuffers Lookup(span<u8>, ContextTag);
+    void InsertBuffer(std::shared_ptr<Buffer>);
+    void DeleteBuffer(const std::shared_ptr<Buffer> &);
 };
 #include "production.inc"
 
@@ -68,6 +83,48 @@ static void CheckLookup(BufferManager &manager, span<u8> range) {
     for (size_t i{}; i < actual.size(); ++i)
         Check(actual[i].buffer == expected[i] && actual[i].tag == 19, "overlap identity/context/order changed");
     ++cases;
+}
+
+static void Replacements() {
+    std::vector<u8> storage(32768);
+    auto base{storage.data()};
+    BufferManager manager;
+    auto insert = [&](size_t first,size_t last) {
+        auto buffer{std::make_shared<Buffer>()};
+        buffer->guest = GuestRange{{base+first,base+last}};
+        manager.InsertBuffer(buffer);
+        return buffer;
+    };
+    auto left{insert(128,256)}, middle{insert(384,512)}, right{insert(640,768)};
+    CheckLookup(manager,{base+200,base+700}); // Three partial overlaps, descending order.
+    CheckLookup(manager,{base+260,base+380}); // Gap before a partial-table candidate.
+    CheckLookup(manager,{base+400,base+450}); // Real populated table full hit.
+    manager.DeleteBuffer(middle);
+    middle->guest.reset(); // Old retained alias no longer belongs to the live map.
+    CheckLookup(manager,{base+380,base+520});
+    manager.DeleteBuffer(left);
+    manager.DeleteBuffer(right);
+    auto merged{insert(64,896)};
+    for (size_t i=1;i<1000;++i) CheckLookup(manager,{base+i,base+i+16});
+    Check(left->guest && right->guest, "retained buffer lifetime changed on replacement");
+    // BufferManager's caller owns the manager lock. Exercise read/replacement
+    // schedules under that same required serialization; resource/NCE locks are
+    // covered separately by submission/texture suites, not this range facade.
+    std::mutex managerLock;
+    auto worker = [&](bool replace) {
+        for(unsigned i{};i<500;++i) {
+            std::scoped_lock lock{managerLock};
+            if (replace) {
+                manager.DeleteBuffer(merged);
+                merged=insert(64,896);
+            }
+            CheckLookup(manager,{base+32,base+1024});
+            CheckLookup(manager,{base+200,base+700});
+        }
+    };
+    std::thread reader{worker,false}, writer{worker,true};
+    reader.join(); writer.join();
+    std::puts("PASS production Insert/Delete/Lookup: partial overlaps, table hits, invalidated aliases, replacement and serialized concurrent lookup");
 }
 
 static void Regression() {
@@ -142,5 +199,5 @@ static void Benchmark() {
 }
 int main(int argc, char **argv) {
     if (argc == 2 && std::string_view{argv[1]} == "--benchmark") Benchmark();
-    else Regression();
+    else { Regression(); Replacements(); }
 }
