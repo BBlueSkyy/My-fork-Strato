@@ -169,9 +169,11 @@ namespace skyline::gpu {
                             break;
                         ec.clear();
                         const bool sceneSnapshots{fs::exists(root / "ENABLE_SCENE_SNAPSHOTS", ec) && !ec};
-                        capture.Start(folder, sceneSnapshots);
-                        LOGI("MINIRD_PACMAN armed in {} scene_snapshots={}",
-                             folder.string(), sceneSnapshots);
+                        ec.clear();
+                        const bool scanHdr{fs::exists(root / "ENABLE_HDR_SCAN", ec) && !ec};
+                        capture.Start(folder, sceneSnapshots || scanHdr, scanHdr);
+                        LOGI("MINIRD_PACMAN armed in {} scene_snapshots={} hdr_scan={}",
+                             folder.string(), sceneSnapshots || scanHdr, scanHdr);
                         break;
                     }
                 }
