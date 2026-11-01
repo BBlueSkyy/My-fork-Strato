@@ -55,17 +55,10 @@ namespace skyline {
         switch (protection) {
             case TrapProtection::None:
                 reprotectIntervalsWithFunction([&](auto region) {
-                    auto entries{trapMap.GetRange(region)};
-
                     TrapProtection lowestProtection{TrapProtection::None};
-                    for (const auto &entry : entries) {
-                        auto entryProtection{entry.get().protection};
-                        if (entryProtection > lowestProtection) {
-                            lowestProtection = entryProtection;
-                            if (entryProtection == TrapProtection::ReadWrite)
-                                return PROT_NONE;
-                        }
-                    }
+                    trapMap.ForEachOverlap(region, [&](const auto &entry) {
+                        lowestProtection = std::max(lowestProtection, entry.protection);
+                    });
 
                     switch (lowestProtection) {
                         case TrapProtection::None:
@@ -80,12 +73,11 @@ namespace skyline {
 
             case TrapProtection::WriteOnly:
                 reprotectIntervalsWithFunction([&](auto region) {
-                    auto entries{trapMap.GetRange(region)};
-                    for (const auto &entry : entries)
-                        if (entry.get().protection == TrapProtection::ReadWrite)
-                            return PROT_NONE;
-
-                    return PROT_READ | PROT_EXEC;
+                    bool readWrite{};
+                    trapMap.ForEachOverlap(region, [&](const auto &entry) {
+                        readWrite |= entry.protection == TrapProtection::ReadWrite;
+                    });
+                    return readWrite ? PROT_NONE : PROT_READ | PROT_EXEC;
                 });
                 break;
 

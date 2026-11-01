@@ -51,6 +51,9 @@ jobs:
           python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
           python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
 
+      - name: Test regional trap foundations
+        run: ASAN_OPTIONS=detect_leaks=0 python3 tests/buffer_regions/run_map.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"

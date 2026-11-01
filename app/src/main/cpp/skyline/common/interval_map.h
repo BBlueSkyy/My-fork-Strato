@@ -5,6 +5,7 @@
 
 #include <list>
 #include <vector>
+#include <stdexcept>
 #include "utils.h"
 #include "span.h"
 
@@ -88,6 +89,15 @@ namespace skyline {
         }
 
         std::vector<Entry> entries;
+        void ReserveAdditionalEntries(size_t count) {
+            if (count > entries.max_size() - entries.size())
+                throw std::length_error("Too many interval mappings");
+            const auto required{entries.size() + count};
+            if (required > entries.capacity()) {
+                const auto growth{entries.capacity() <= entries.max_size() / 2 ? entries.capacity() * 2 : entries.max_size()};
+                entries.reserve(std::max(required, growth));
+            }
+        }
 
       public:
         IntervalMap() = default;
@@ -101,12 +111,14 @@ namespace skyline {
         IntervalMap &operator=(IntervalMap &&) = delete;
 
         GroupHandle Insert(AddressType start, AddressType end, EntryType value) {
+            ReserveAdditionalEntries(1);
             GroupHandle group{groups.emplace(groups.begin(), Interval{start, end}, value)};
             entries.emplace(std::lower_bound(entries.begin(), entries.end(), end), start, end, group);
             return group;
         }
 
         GroupHandle Insert(span<Interval> intervals, EntryType value) {
+            ReserveAdditionalEntries(intervals.size());
             GroupHandle group{groups.emplace(groups.begin(), intervals, value)};
             for (const auto &interval : intervals)
                 entries.emplace(std::lower_bound(entries.begin(), entries.end(), interval.end), interval.start, interval.end, group);
@@ -115,6 +127,7 @@ namespace skyline {
 
         template<typename T>
         GroupHandle Insert(span<span<T>> intervals, EntryType value) requires std::is_pointer_v<AddressType> {
+            ReserveAdditionalEntries(intervals.size());
             GroupHandle group{groups.emplace(groups.begin(), intervals, std::move(value))};
             for (const auto &interval : intervals)
                 entries.emplace(std::lower_bound(entries.begin(), entries.end(), interval.data()), interval.data(), interval.data() + interval.size(), group);
@@ -152,6 +165,15 @@ namespace skyline {
                     result.emplace_back(entry->group->value);
 
             return result;
+        }
+
+        /** Visits overlaps without allocating; a group can be visited more than once. */
+        template<typename Func>
+        void ForEachOverlap(Interval interval, Func &&func) {
+            for (auto entry{std::lower_bound(entries.begin(), entries.end(), interval.end)};
+                 entry != entries.begin() && (--entry)->start < interval.end;)
+                if (entry->end > interval.start)
+                    func(entry->group->value);
         }
 
         /**
