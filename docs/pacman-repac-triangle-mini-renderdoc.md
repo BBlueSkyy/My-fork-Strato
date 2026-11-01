@@ -94,7 +94,7 @@ Adreno 650, Qualcomm proprietary 0.777.0, Vulkan 1.1.276.
   (184 + 211); **these are not complete independent guest frames**.
 - Per complete sequence: approximately 183 depth-only draws to a
   2048×2048 depth target, followed by a 1280×720 scene/color pass and
-  postprocessing. Guest topologies 4 and 7, mostly indexed. All
+  postprocessing. The main color target uses Vulkan format 122,\n  `VK_FORMAT_B10G11R11_UFLOAT_PACK32` (packed HDR floating point).\n  This makes scene HDR data worth examining for anomalous pixels,\n  but no pixel values were captured in stage 1. Guest topologies 4\n  and 7, mostly indexed. All
   `flipY=false`; front-face mostly counterclockwise. No evidence of a
   global flip regression from this data.
 - Three alternating 1920×1080 VI sources. Source format IDs alternate
