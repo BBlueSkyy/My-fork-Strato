@@ -424,7 +424,7 @@ namespace skyline::gpu::interconnect {
         const auto details{fmt::format(
             "id={} interval={} scene_draw_ordinal={} texture={} "
             "dimensions=1280x720 format={} layout={} size={} "
-            "executor={} submission={} draw={} note=post_draw_gpu_ordered\\n",
+            "executor={} submission={} draw={} note=post_draw_gpu_ordered\n",
             id, interval, ordinal, fmt::ptr(tex.get()),
             vk::to_string(tex->format->vkFormat), vk::to_string(tex->layout),
             tex->surfaceSize, fmt::ptr(this), submissionNumber, description)};
