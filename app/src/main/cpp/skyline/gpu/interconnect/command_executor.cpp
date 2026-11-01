@@ -706,6 +706,21 @@ namespace skyline::gpu::interconnect {
 
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
             Submit();
+
+        // Strictly opt-in differential test at the original flush threshold.
+        // Mode 1: end each render pass without submitting the command buffer.
+        // Mode 2: same split, plus a Vulkan all-commands memory barrier.
+        // If 0 fixes the artifact but mode 1/2 do not, investigate queue
+        // submission/cycle timing and lifetime rather than renderpass reuse.
+        auto &pacmanDiagnostic{diagnostic::PacmanCapture()};
+        const auto testMode{pacmanDiagnostic.ExecutorExperimentMode()};
+        if (testMode == 1) {
+            BreakRenderPass();
+            pacmanDiagnostic.ExecutorExperimentStep();
+        } else if (testMode == 2) {
+            AddFullBarrier();
+            pacmanDiagnostic.ExecutorExperimentStep();
+        }
     }
 
     void CommandExecutor::AddOutsideRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function) {
