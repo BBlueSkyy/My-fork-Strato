@@ -55,3 +55,100 @@ Plan/test gates:
 Async/per-region producer cycles are separate future stages only if safe measured
 benefit is demonstrated. This stage removes waits for regions with no GPU writer;
 it retains full fence waits whenever requested data actually needs the GPU.
+
+## Functional regional stage (PR416)
+
+The staged path now keeps separate page-aligned CPU/GPU authority partitions.
+`BufferRegionState` owns monotonic partition boundaries and the union of accesses
+recorded for a submission. `Buffer` installs one trap per partition, downloads only
+GPU-owned intersections and uploads CPU-owned intersections without overwriting
+GPU-owned siblings. SSBO/texel/image bindings, vertex/index/indirect buffers,
+transform feedback, queries, DMA and inline callbacks pass conservative view bounds
+using the current delegate offset. SSBO range inference and the compiler gitlink
+are unchanged. Direct imports keep their original synchronization path.
+
+`SynchronizeHostForGpu` consumes the submission's access union, so deferring a CPU
+write outside GPU region A does not merely move its wait to an unrelated A-only
+submission. An unknown access falls back to the full backing. Backing mutation,
+coalescence and actual GPU-owned CPU demands still retain the existing full cycle
+and its predecessor chain. This does not relax FenceCycle or Vulkan barriers.
+
+Coalescence publishes CPU-owned siblings before copying a whole source backing,
+including a CPU-dirty source made immutable by a read-only DMA use. Pending
+retargeted views conservatively register full backing use. Replacement traps are
+protected before old handles are removed; allocation failure retains the old
+scalar callbacks and their stronger protections. Empty synchronization ranges do
+not change authority or page protection. Existing optional hacks preserve CPU-owned
+siblings, but are disabled in the safe-path tests and are not part of the gain.
+
+## Reproduced costs and completed checks
+
+The existing negative-control fixture on master failed because a CPU store in B
+blocked on a gated GPU producer in A. The regional implementation completes that
+store and an A-only submit while the producer remains pending: **one unnecessary
+producer wait becomes zero for this case**. A later demand for A still waits the
+producer once. These are controlled dependency counts, not an FPS benchmark.
+The supplied final logs contain no CPU fault offsets, so they cannot establish
+how frequently Zelda will hit this newly separable case.
+
+Commands run locally:
+
+```
+ASAN_OPTIONS=detect_leaks=0:handle_segv=0 python3 tests/buffer_regions/run.py
+ASAN_OPTIONS=detect_leaks=0 python3 tests/buffer_regions/run_map.py
+ASAN_OPTIONS=detect_leaks=0 SANITIZE=address,undefined python3 tests/gpu_submission/run.py
+ASAN_OPTIONS=detect_leaks=0 python3 tests/gpu_conditional/run.py
+python3 tests/ssbo_bounded/run.py --compiler <shader-compiler-checkout>
+VULKAN=1 ASAN_OPTIONS=detect_leaks=0:handle_segv=0 python3 tests/buffer_regions/run.py
+```
+
+The first harness extracts production Buffer synchronization/trap/read/write/copy
+bodies, complete CoalesceBuffers and the actual master NCE fault-routing expression.
+Android allocation/resource interfaces are host facades; guest/mirror mappings
+share a real memfd and protection uses real mprotect/SIGSEGV. Checks include:
+
+- Every-byte mixed downloads/uploads; partial same-page writes; replaced/chained
+  writers; mandatory and disjoint faults; zero-byte demands; inline callback
+  execution once; same-backing disjoint DMA; source authority during coalescence.
+- Overlapping external traps retain their callback and the GPU page's protection.
+- Concurrent CPU faults over 25 repetitions; wait failure/retry; invalidation.
+- Trap replacement recovery across **19 injected allocation failures**, plus the
+  foundation's nine interval-registration failures; no orphan callback after removal.
+- **2,000** randomized page-authority comparisons, bounds, partial last page and
+  access-union coalescing; **96** existing SSBO binding/mapping cases.
+- Production FenceCycle/SubmitInternal host regression retains submission ordering,
+  cancellation, chained lifetime and clean/direct dependencies; conditional rendering
+  regression still passes. Its resource facade forwards into regional host sync.
+
+Native Vulkan used llvmpipe (LLVM20.1.2), Khronos validation with synchronization
+validation, ASan and UBSan. A real gated GPU fill/copy of A remains pending while a
+CPU alias writes B and submits only A. The later required fence/readback and B
+upload are retained; the next full Vulkan copy matches all 8,192 expected bytes,
+with **zero synchronization-validation errors**. Allocation interposition tests run
+in a separate host process so they do not replace LLVM's shared-library allocators.
+LeakSanitizer is disabled because this environment cannot inspect processes;
+AddressSanitizer and UndefinedBehaviorSanitizer remain enabled. The intentional
+page-fault harness uses its own SIGSEGV handler (`handle_segv=0`).
+
+## Limits and device validation
+
+No Android device, Adreno/Turnip validation or FPS improvement is claimed. No new
+diagnostic APK or product logging was added. ARM64 DevRelease remains the existing
+PR workflow; Actions is neither queried nor awaited. Local native tests are not
+a full Android compilation.
+
+Page ownership is conservative: bytes sharing a page remain coupled, unknown
+bindings and coalesced pending views can widen dependencies, and overlapping
+legacy trap groups can conservatively widen fault handling. Partition/trap
+counts and mprotect overhead can increase when a large backing is fragmented.
+The full producer/lifetime chain is still mandatory when the requested region is
+GPU-owned. Asynchronous memcpy alone would not remove that dependency; async
+staging/generation publication and finer producer cycles remain deferred until
+there is a proven safe benefit. No Yuzu Normal-accuracy wait relaxation is used.
+
+On Moto G100, test Zelda Link's Awakening1.0.0 with Turnip24.0.99, then Marvel
+Cosmic Invasion, SpongeBob Cosmic Shake and Dragon Ball Sparking ZERO. Initially
+set Fast GPU Readback, Fast Readback Writes, Force Maximum GPU Clocks and Free
+Guest Texture Memory OFF. Compare identical scenes/saves against master; record
+FPS, real simulation speed, pacing, flicker/magenta/black textures and stability
+separately. No 60FPS cheat. Other Drafts400/405/406/411/412/415 stay independent.

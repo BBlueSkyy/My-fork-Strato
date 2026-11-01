@@ -71,6 +71,7 @@ struct BufferView {
  Delegate*delegate{};u64 offset{},size{};
  operator bool()const{return delegate&&size;}
  Buffer*GetBuffer()const{return delegate->GetBuffer();}
+ u64 GetOffset()const{return offset+delegate->GetOffset();}
  BufferBinding GetBinding(GPU&)const;
  BufferBinding TryMegaBuffer(auto&,auto&,auto&);
 };
@@ -84,8 +85,8 @@ struct Buffer {
  }
  void PopulateReadBarrier(auto,auto&,auto&){++barriers;}
  bool SequencedCpuBackingWritesBlocked(){return true;}
- void MarkGpuDirty(auto&){++dirty;}
- void BlockSequencedCpuBackingWrites(){++blocked;}
+ void MarkGpuDirty(auto&,u64,u64){++dirty;}
+ void BlockSequencedCpuBackingWrites(u64,u64){++blocked;}
 };
 BufferBinding BufferView::TryMegaBuffer(auto&,auto&,auto&){return GetBuffer()->mega?BufferBinding{2,128,size}:BufferBinding{};}
 struct GPU {

@@ -21,6 +21,9 @@ namespace skyline {
     }
     template <class T> struct span : std::span<T> {
         using std::span<T>::span;
+        bool valid() const {
+            return this->data() != nullptr;
+        }
         span(T &value) : std::span<T>{&value, 1} {}
         template <class R> span(R &range) : std::span<T>{range.data(), range.size()} {}
         operator std::vector<T>() const { return {this->begin(), this->end()}; }

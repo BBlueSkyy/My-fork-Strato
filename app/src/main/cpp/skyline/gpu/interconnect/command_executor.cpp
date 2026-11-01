@@ -736,7 +736,7 @@ namespace skyline::gpu::interconnect {
 
         for (const auto &attachedBuffer : ranges::views::concat(attachedBuffers, preserveAttachedBuffers)) {
             if (attachedBuffer->RequiresCycleAttach()) {
-                attachedBuffer->SynchronizeHost(); // Synchronize attached buffers from the CPU without using a staging buffer
+                attachedBuffer->SynchronizeHostForGpu(); // Synchronize attached buffers from the CPU without using a staging buffer
                 cycle->AttachObject(attachedBuffer.buffer);
                 attachedBuffer->UpdateCycle(cycle);
                 attachedBuffer->AllowAllBackingWrites();

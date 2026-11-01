@@ -59,6 +59,9 @@ namespace skyline::gpu {
             // Since new direct buffers will share the underlying backing of source buffers we don't need to wait for the GPU if they're dirty, for non direct buffers we do though as otherwise we won't be able to migrate their contents to the new backing
             if (!*gpu.state.settings->useDirectMemoryImport && (srcBuffer->dirtyState == Buffer::DirtyState::GpuDirty || srcBuffer->AllCpuBackingWritesBlocked()))
                 srcBuffer->WaitOnFence();
+            if (!*gpu.state.settings->useDirectMemoryImport &&
+                (srcBuffer->dirtyState == Buffer::DirtyState::GpuDirty || srcBuffer->AllCpuBackingWritesBlocked()) && srcBuffer->HasStagedCpuWrites())
+                srcBuffer->SynchronizeHost(); // Preserve CPU-owned siblings before migrating the whole backing.
 
             // We can't chain cycles here as that may also introduce a deadlock since we have no way to determine what order to chain them in right now
             // Wait on all source buffers before we lock the recreation mutex as locking it may prevent submissions of the cycles and introduce a deadlock
@@ -87,6 +90,8 @@ namespace skyline::gpu {
         newBuffer->SetupStagedTraps();
         newBuffer->SynchronizeHost(false); // Overlaps don't necessarily fully cover the buffer so we have to perform a sync here to prevent any gaps
         newBuffer->cycle = newBufferCycle;
+        if (!*gpu.state.settings->useDirectMemoryImport)
+            newBuffer->stagedRegions.Use(0, newBuffer->mirror.size()); // Pending delegated uses can cover any predecessor region.
 
         auto copyBuffer{[](auto dstGuest, auto srcGuest, auto dstPtr, auto srcPtr) {
             if (dstGuest.begin().base() <= srcGuest.begin().base()) {

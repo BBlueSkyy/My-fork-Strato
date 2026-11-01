@@ -321,8 +321,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         ctx.executor.AttachBuffer(*view);
 
-        view->GetBuffer()->BlockSequencedCpuBackingWrites();
-        view->GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
+        view->GetBuffer()->BlockSequencedCpuBackingWrites(view->GetOffset(), view->size);
+        view->GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker, view->GetOffset(), view->size);
 
         counters[static_cast<u32>(type)].Report(ctx, *view, timestamp);
     }

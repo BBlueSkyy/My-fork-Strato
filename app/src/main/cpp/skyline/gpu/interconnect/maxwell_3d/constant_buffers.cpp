@@ -64,7 +64,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             view.Write(srcCpuBuf, offset, ctx.executor.usageTracker, [&callbackData]() {
                 callbackData.ctx.executor.AttachLockedBufferView(callbackData.view, std::move(callbackData.lock));
                 // This will prevent any CPU accesses to backing for the duration of the usage
-                callbackData.view.GetBuffer()->BlockAllCpuBackingWrites();
+                callbackData.view.GetBuffer()->BlockAllCpuBackingWrites(callbackData.view.GetOffset() + callbackData.offset,
+                                                                        callbackData.srcCpuBuf.size_bytes());
 
                 auto srcGpuAllocation{callbackData.ctx.gpu.megaBufferAllocator.Push(callbackData.ctx.executor.cycle, callbackData.srcCpuBuf)};
                 callbackData.ctx.executor.AddCheckpoint("Before constant buffer load");

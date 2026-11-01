@@ -371,7 +371,7 @@ namespace skyline::gpu::interconnect {
         }
 
         void SetVertexBuffer(u32 index, BufferView view, bool ext = false, vk::DeviceSize stride = 0) {
-            view.GetBuffer()->BlockSequencedCpuBackingWrites();
+            view.GetBuffer()->BlockSequencedCpuBackingWrites(view.GetOffset(), view.size);
 
             if (index != vertexBatchBindNextBinding || vertexBatchBind->header.record != &SetVertexBuffersDynamicCmd::Record || vertexBatchBind->cmd.base.ext != ext) {
                 FlushVertexBatchBind();
@@ -397,7 +397,7 @@ namespace skyline::gpu::interconnect {
         }
 
         void SetIndexBuffer(BufferView view, vk::IndexType indexType) {
-            view.GetBuffer()->BlockSequencedCpuBackingWrites();
+            view.GetBuffer()->BlockSequencedCpuBackingWrites(view.GetOffset(), view.size);
 
             AppendCmd<SetIndexBufferDynamicCmd>(
                 {
@@ -417,7 +417,7 @@ namespace skyline::gpu::interconnect {
         }
 
         void SetTransformFeedbackBuffer(u32 index, BufferView view) {
-            view.GetBuffer()->BlockSequencedCpuBackingWrites();
+            view.GetBuffer()->BlockSequencedCpuBackingWrites(view.GetOffset(), view.size);
 
             AppendCmd<SetTransformFeedbackBufferDynamicCmd>(
                 {

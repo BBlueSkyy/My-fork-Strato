@@ -32,7 +32,7 @@ namespace skyline::gpu::interconnect {
         if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag, sizeOverride)}) {
             return megaBufferBinding;
         } else {
-            view.GetBuffer()->BlockSequencedCpuBackingWrites();
+            view.GetBuffer()->BlockSequencedCpuBackingWrites(view.GetOffset(), view.size);
             return view;
         }
     }
@@ -79,13 +79,13 @@ namespace skyline::gpu::interconnect {
                 dstStageMask |= dstStage;
             }
 
-            view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
+            view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker, view.GetOffset(), view.size);
         } else {
             if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag)})
                 return megaBufferBinding;
         }
 
-        view.GetBuffer()->BlockSequencedCpuBackingWrites();
+        view.GetBuffer()->BlockSequencedCpuBackingWrites(view.GetOffset(), view.size);
 
         return view;
     }
@@ -102,7 +102,7 @@ namespace skyline::gpu::interconnect {
         auto view{cachedView.view};
         ctx.executor.AttachBuffer(view);
         view.GetBuffer()->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
-        view.GetBuffer()->BlockSequencedCpuBackingWrites();
+        view.GetBuffer()->BlockSequencedCpuBackingWrites(view.GetOffset(), view.size);
 
         return **bufferView;
     }
@@ -126,10 +126,10 @@ namespace skyline::gpu::interconnect {
                 srcStageMask |= vk::PipelineStageFlagBits::eAllCommands;
                 dstStageMask |= dstStage;
             }
-            view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
+            view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker, view.GetOffset(), view.size);
         }
 
-        view.GetBuffer()->BlockSequencedCpuBackingWrites();
+        view.GetBuffer()->BlockSequencedCpuBackingWrites(view.GetOffset(), view.size);
 
         return **bufferView;
     }

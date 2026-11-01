@@ -12,6 +12,7 @@
 #include "usage_tracker.h"
 #include "megabuffer.h"
 #include "memory_manager.h"
+#include "buffer_region_state.h"
 
 namespace skyline::gpu {
     using GuestBuffer = span<u8>; //!< The CPU mapping for the guest buffer, multiple mappings for buffers aren't supported since overlaps cannot be reconciled
@@ -61,7 +62,12 @@ namespace skyline::gpu {
         std::optional<memory::Buffer> backing;
         std::optional<memory::ImportedBuffer> directBacking;
 
-        std::optional<TrapHandle> trapHandle{}; //!< (Staged) The handle of the traps for the guest mappings
+        struct StagedTrap {
+            size_t begin, end;
+            TrapHandle handle;
+        };
+        std::vector<StagedTrap> stagedTraps;
+        BufferRegionState stagedRegions;
 
         enum class DirtyState {
             Clean, //!< The CPU mappings are in sync with the GPU buffer
@@ -192,9 +198,17 @@ namespace skyline::gpu {
 
         void MarkGpuDirtyImplDirect();
 
-        void MarkGpuDirtyImplStaged();
+        void MarkGpuDirtyImplStaged(vk::DeviceSize offset = 0, vk::DeviceSize size = VK_WHOLE_SIZE);
+        void RebuildStagedTraps();
+        void PrepareStagedRange(vk::DeviceSize offset, vk::DeviceSize size);
+        void ProtectStagedRange(size_t begin, size_t end, bool gpuDirty);
+        void MarkStagedCpuWrite(vk::DeviceSize offset, vk::DeviceSize size, bool skipTrap = false);
+        void RefreshStagedDirtyState();
+        bool HasStagedCpuWrites();
+        void SynchronizeHostRegion(bool skipTrap, vk::DeviceSize offset, vk::DeviceSize size);
+        bool SynchronizeGuestRegion(bool skipTrap, bool nonBlocking, vk::DeviceSize offset, vk::DeviceSize size);
 
-        void MarkGpuDirtyImpl();
+        void MarkGpuDirtyImpl(vk::DeviceSize offset = 0, vk::DeviceSize size = VK_WHOLE_SIZE);
 
       public:
         void UpdateCycle(const std::shared_ptr<FenceCycle> &newCycle) {
@@ -267,7 +281,7 @@ namespace skyline::gpu {
          * @note This **must** be called after syncing the buffer to the GPU not before
          * @note The buffer **must** be locked prior to calling this
          */
-        void MarkGpuDirty(UsageTracker &usageTracker);
+        void MarkGpuDirty(UsageTracker& usageTracker, vk::DeviceSize offset = 0, vk::DeviceSize size = VK_WHOLE_SIZE);
 
         /** @return Sequenced-write generation; the buffer must be locked. */
         u64 GetWriteGeneration() const { return writeGeneration; }
@@ -276,11 +290,12 @@ namespace skyline::gpu {
          * @brief Prevents sequenced writes to this buffer's backing from occuring on the CPU, forcing sequencing on the GPU instead for the duration of the context. Unsequenced writes such as those from the guest can still occur however.
          * @note The buffer **must** be locked prior to calling this
          */
-        void BlockSequencedCpuBackingWrites() {
+        void BlockSequencedCpuBackingWrites(vk::DeviceSize offset = 0, vk::DeviceSize size = VK_WHOLE_SIZE) {
             std::unique_lock lock{stateMutex, std::defer_lock};
             if (!isDirect)
                 lock.lock();
-
+            if (!isDirect && guest)
+                stagedRegions.Use(offset, size == VK_WHOLE_SIZE ? mirror.size() - offset : size);
             if (backingImmutability == BackingImmutability::None)
                 backingImmutability = BackingImmutability::SequencedWrites;
         }
@@ -289,11 +304,12 @@ namespace skyline::gpu {
          * @brief Prevents *any* writes to this buffer's backing from occuring on the CPU, forcing sequencing on the GPU instead for the duration of the context.
          * @note The buffer **must** be locked prior to calling this
          */
-        void BlockAllCpuBackingWrites() {
+        void BlockAllCpuBackingWrites(vk::DeviceSize offset = 0, vk::DeviceSize size = VK_WHOLE_SIZE) {
             std::unique_lock lock{stateMutex, std::defer_lock};
             if (!isDirect)
                 lock.lock();
-
+            if (!isDirect && guest)
+                stagedRegions.Use(offset, size == VK_WHOLE_SIZE ? mirror.size() - offset : size);
             backingImmutability = BackingImmutability::AllWrites;
         }
 
@@ -378,6 +394,7 @@ namespace skyline::gpu {
          * @note The buffer **must** be locked prior to calling this
          */
         void SynchronizeHost(bool skipTrap = false);
+        void SynchronizeHostForGpu();
 
         /**
          * @brief Synchronizes the guest buffer with the host buffer

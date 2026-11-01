@@ -34,7 +34,8 @@ with tempfile.TemporaryDirectory(prefix="strato-submission-") as directory:
     (directory / "buffer_cycle.inc").write_text(function(buffer_header, "void UpdateCycle("))
     buffer_source = source("app/src/main/cpp/skyline/gpu/buffer.cpp")
     (directory / "buffer.inc").write_text("\n".join(function(buffer_source, signature) for signature in (
-        "void Buffer::WaitOnFence(", "void Buffer::SynchronizeHost(")))
+        "void Buffer::WaitOnFence(", "void Buffer::SynchronizeHost(",
+        "void Buffer::SynchronizeHostRegion(", "void Buffer::SynchronizeHostForGpu()")))
     command = [os.environ.get("CXX", "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
                "-I" + str(HERE / "stubs"), "-I" + str(directory), "-I" + str(ROOT / "app/src/main/cpp/skyline"),
                str(HERE / "tests.cpp"), "-o", str(directory / "tests")]

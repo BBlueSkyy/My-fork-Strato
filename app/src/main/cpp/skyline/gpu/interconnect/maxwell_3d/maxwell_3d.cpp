@@ -538,13 +538,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
         // Resolving the second operand may merge buffers and update both delegates.
         // Capture identities and generations only after both mappings are resolved.
         ctx.executor.AttachBuffer(*renderConditionLhsView);
-        renderConditionLhsView.view.GetBuffer()->BlockSequencedCpuBackingWrites();
+        renderConditionLhsView.view.GetBuffer()->BlockSequencedCpuBackingWrites(renderConditionLhsView.view.GetOffset(), renderConditionLhsView.view.size);
         const RenderConditionInput lhsInput{
             renderConditionLhsView.view.GetBuffer(), renderConditionLhsView.view.GetOffset(),
             renderConditionLhsView.view.GetBuffer()->GetWriteGeneration()};
         if (mode != RenderConditionMode::NonZero) {
             ctx.executor.AttachBuffer(*renderConditionRhsView);
-            renderConditionRhsView.view.GetBuffer()->BlockSequencedCpuBackingWrites();
+            renderConditionRhsView.view.GetBuffer()->BlockSequencedCpuBackingWrites(renderConditionRhsView.view.GetOffset(), renderConditionRhsView.view.size);
             rhsInput = RenderConditionInput{
                 renderConditionRhsView.view.GetBuffer(), renderConditionRhsView.view.GetOffset(),
                 renderConditionRhsView.view.GetBuffer()->GetWriteGeneration()};
@@ -839,7 +839,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
             });
 
-        indirectBufferView.GetBuffer()->BlockSequencedCpuBackingWrites();
+        indirectBufferView.GetBuffer()->BlockSequencedCpuBackingWrites(indirectBufferView.GetOffset(), indirectBufferView.size);
 
         RefreshRenderCondition();
         auto stateUpdater{builder.Build()};

@@ -54,6 +54,12 @@ jobs:
       - name: Test regional trap foundations
         run: ASAN_OPTIONS=detect_leaks=0 python3 tests/buffer_regions/run_map.py
 
+      - name: Test regional buffer coherence
+        run: |
+          ASAN_OPTIONS=detect_leaks=0:handle_segv=0 python3 tests/buffer_regions/run.py
+          ASAN_OPTIONS=detect_leaks=0 SANITIZE=address,undefined python3 tests/gpu_submission/run.py
+          ASAN_OPTIONS=detect_leaks=0 python3 tests/gpu_conditional/run.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"

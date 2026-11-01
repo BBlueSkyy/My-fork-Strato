@@ -20,100 +20,161 @@ namespace skyline::gpu {
     }
 
     void Buffer::SetupStagedTraps() {
-        if (isDirect)
+        if (!isDirect && guest)
+            RebuildStagedTraps();
+    }
+
+    void Buffer::RebuildStagedTraps() {
+        if (!guest || isDirect)
             return;
-
-        // We can't just capture this in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Buffer> weakThis{shared_from_this()};
-        trapHandle = gpu.state.process->trap.CreateTrap(*guest, [weakThis] {
-            auto buffer{weakThis.lock()};
-            if (!buffer)
-                return;
-
-            std::unique_lock stateLock{buffer->stateMutex};
-            if (buffer->AllCpuBackingWritesBlocked() || buffer->dirtyState == DirtyState::GpuDirty) {
-                stateLock.unlock(); // If the lock isn't unlocked, a deadlock from threads waiting on the other lock can occur
-
-                // If this mutex would cause other callbacks to be blocked then we should block on this mutex in advance
-                std::shared_ptr<FenceCycle> waitCycle{};
-                do {
-                    if (waitCycle) {
-                        i64 startNs{buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold ? util::GetTimeNs() : 0};
-                        waitCycle->Wait();
-                        if (startNs)
-                            buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(util::GetTimeNs() - startNs);
-
-                        buffer->accumulatedGuestWaitCounter++;
-                    }
-
-                    std::scoped_lock lock{*buffer};
-                    if (waitCycle && buffer->cycle == waitCycle) {
-                        buffer->cycle = {};
-                        waitCycle = {};
-                    } else {
-                        waitCycle = buffer->cycle;
-                    }
-                } while (waitCycle);
+        std::vector<StagedTrap> next;
+        next.reserve(stagedRegions.Regions().size());
+        try {
+            for (const auto& region : stagedRegions.Regions()) {
+                const auto begin{region.begin}, end{region.end};
+                span<u8> mapping{guest->data() + begin, end - begin};
+                auto handle{gpu.state.process->trap.CreateTrap(
+                    mapping,
+                    [weakThis, begin, end] {
+                        auto buffer{weakThis.lock()};
+                        if (!buffer)
+                            return;
+                        std::shared_ptr<FenceCycle> waited{};
+                        bool completed{}, measure{};
+                        std::chrono::nanoseconds elapsed{};
+                        for (;;) {
+                            {
+                                std::scoped_lock resourceLock{*buffer};
+                                std::scoped_lock stateLock{buffer->stateMutex};
+                                if (completed) {
+                                    ++buffer->accumulatedGuestWaitCounter;
+                                    buffer->accumulatedGuestWaitTime += elapsed;
+                                    completed = false;
+                                }
+                                if (!buffer->guest)
+                                    return;
+                                if (!buffer->AllCpuBackingWritesBlocked() && !buffer->stagedRegions.Has(BufferRegionState::Owner::Gpu, begin, end - begin))
+                                    return;
+                                if (waited && buffer->cycle == waited) {
+                                    buffer->cycle = {};
+                                    return;
+                                }
+                                waited = buffer->cycle;
+                                measure = buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold;
+                            }
+                            if (!waited)
+                                return;
+                            const auto start{measure ? util::GetTimeNs() : 0};
+                            waited->Wait();
+                            elapsed = measure ? std::chrono::nanoseconds(util::GetTimeNs() - start) : std::chrono::nanoseconds{};
+                            completed = true;
+                        }
+                    },
+                    [weakThis, begin, end] {
+                        auto buffer{weakThis.lock()};
+                        if (!buffer)
+                            return true;
+                        std::unique_lock stateLock{buffer->stateMutex, std::try_to_lock};
+                        if (!stateLock)
+                            return false;
+                        if (!buffer->guest || !buffer->stagedRegions.Has(BufferRegionState::Owner::Gpu, begin, end - begin))
+                            return true;
+                        std::unique_lock resourceLock{*buffer, std::try_to_lock};
+                        if (!resourceLock || buffer->cycle)
+                            return false;
+                        return buffer->SynchronizeGuestRegion(true, false, begin, end - begin);
+                    },
+                    [weakThis, begin, end] {
+                        auto buffer{weakThis.lock()};
+                        if (!buffer)
+                            return true;
+                        std::unique_lock stateLock{buffer->stateMutex, std::try_to_lock};
+                        if (!stateLock)
+                            return false;
+                        if (!buffer->guest)
+                            return true;
+                        const bool gpuDirty{buffer->stagedRegions.Has(BufferRegionState::Owner::Gpu, begin, end - begin)};
+                        if (!buffer->AllCpuBackingWritesBlocked() && !gpuDirty) {
+                            buffer->MarkStagedCpuWrite(begin, end - begin, true);
+                            return true;
+                        }
+                        if (gpuDirty && buffer->accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold &&
+                            *buffer->gpu.state.settings->enableFastGpuReadbackHack) {
+                            // Preserve unrelated CPU ownership even in the existing unsafe shortcut.
+                            for (const auto r : buffer->stagedRegions.Regions())
+                                if (r.owner == BufferRegionState::Owner::Gpu && r.begin < end && begin < r.end) {
+                                    const auto lo{std::max(begin, r.begin)}, hi{std::min(end, r.end)};
+                                    std::memcpy(buffer->mirror.data() + lo, buffer->backing->data() + lo, hi - lo);
+                                    buffer->stagedRegions.AssignExisting(lo, hi - lo,
+                                                                         *buffer->gpu.state.settings->enableFastReadbackWrites
+                                                                             ? BufferRegionState::Owner::Cpu
+                                                                             : BufferRegionState::Owner::Synced);
+                                }
+                            buffer->RefreshStagedDirtyState();
+                            return true;
+                        }
+                        std::unique_lock resourceLock{*buffer, std::try_to_lock};
+                        if (!resourceLock || buffer->cycle)
+                            return false;
+                        if (!buffer->SynchronizeGuestRegion(true, false, begin, end - begin))
+                            return false;
+                        buffer->MarkStagedCpuWrite(begin, end - begin, true);
+                        return true;
+                    })};
+                next.push_back({begin, end, handle});
+                if (region.owner != BufferRegionState::Owner::Cpu)
+                    gpu.state.process->trap.TrapRegions(handle, region.owner != BufferRegionState::Owner::Gpu);
             }
-        }, [weakThis] {
-            TRACE_EVENT("gpu", "Buffer::ReadTrap");
+        } catch (...) {
+            for (const auto& entry : next)
+                gpu.state.process->trap.DeleteTrap(entry.handle);
+            throw;
+        }
+        // Replacement protections are live before any old protection is removed.
+        auto previous{std::move(stagedTraps)};
+        stagedTraps = std::move(next);
+        for (const auto& entry : previous)
+            gpu.state.process->trap.DeleteTrap(entry.handle);
+    }
 
-            auto buffer{weakThis.lock()};
-            if (!buffer)
-                return true;
+    void Buffer::PrepareStagedRange(vk::DeviceSize offset, vk::DeviceSize size) {
+        if (stagedRegions.EnsureBounds(offset, size) || stagedTraps.size() != stagedRegions.Regions().size())
+            RebuildStagedTraps();
+    }
 
-            std::unique_lock stateLock{buffer->stateMutex, std::try_to_lock};
-            if (!stateLock)
-                return false;
+    void Buffer::ProtectStagedRange(size_t begin, size_t end, bool gpuDirty) {
+        if (begin == end)
+            return;
+        for (const auto& entry : stagedTraps)
+            if (entry.begin < end && begin < entry.end)
+                gpu.state.process->trap.TrapRegions(entry.handle, !gpuDirty);
+    }
 
-            if (buffer->dirtyState != DirtyState::GpuDirty)
-                return true; // If state is already CPU dirty/Clean we don't need to do anything
+    void Buffer::RefreshStagedDirtyState() {
+        dirtyState = stagedRegions.Has(BufferRegionState::Owner::Gpu)   ? DirtyState::GpuDirty
+                     : stagedRegions.Has(BufferRegionState::Owner::Cpu) ? DirtyState::CpuDirty
+                                                                        : DirtyState::Clean;
+    }
 
-            std::unique_lock lock{*buffer, std::try_to_lock};
-            if (!lock)
-                return false;
+    bool Buffer::HasStagedCpuWrites() {
+        std::scoped_lock stateLock{stateMutex};
+        return stagedRegions.Has(BufferRegionState::Owner::Cpu);
+    }
 
-            if (buffer->cycle)
-                return false;
-
-            buffer->SynchronizeGuest(true); // We can skip trapping since the caller will do it
-            return true;
-        }, [weakThis] {
-            TRACE_EVENT("gpu", "Buffer::WriteTrap");
-
-            auto buffer{weakThis.lock()};
-            if (!buffer)
-                return true;
-
-            std::unique_lock stateLock{buffer->stateMutex, std::try_to_lock};
-            if (!stateLock)
-                return false;
-
-            if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty) {
-                buffer->dirtyState = DirtyState::CpuDirty;
-                return true;
-            }
-
-            if (buffer->accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold && *buffer->gpu.state.settings->enableFastGpuReadbackHack) {
-                // As opposed to skipping readback as we do for textures, with buffers we can still perform the readback but just without syncinc the GPU
-                // While the read data may be invalid it's still better than nothing and works in most cases
-                memcpy(buffer->mirror.data(), buffer->backing->data(), buffer->mirror.size());
-                buffer->dirtyState = *buffer->gpu.state.settings->enableFastReadbackWrites ? DirtyState::CpuDirty : DirtyState::Clean;
-                return true;
-            }
-
-            std::unique_lock lock{*buffer, std::try_to_lock};
-            if (!lock)
-                return false;
-
-            if (buffer->cycle)
-                return false;
-
-            buffer->SynchronizeGuest(true); // We need to assume the buffer is dirty since we don't know what the guest is writing
-            buffer->dirtyState = DirtyState::CpuDirty;
-
-            return true;
-        });
+    void Buffer::MarkStagedCpuWrite(vk::DeviceSize offset, vk::DeviceSize size, bool skipTrap) {
+        if (!size)
+            return;
+        if (!skipTrap)
+            PrepareStagedRange(offset, size);
+        stagedRegions.AssignExisting(offset, size, BufferRegionState::Owner::Cpu);
+        RefreshStagedDirtyState();
+        if (!skipTrap) {
+            auto range{stagedRegions.Aligned(offset, size)};
+            for (const auto& entry : stagedTraps)
+                if (entry.begin < range.end && range.begin < entry.end)
+                    gpu.state.process->trap.RemoveTrap(entry.handle);
+        }
     }
 
     void Buffer::EnableTrackedShadowDirect() {
@@ -215,7 +276,10 @@ namespace skyline::gpu {
     void Buffer::CopyFromImplStaged(vk::DeviceSize dstOffset,
                                     Buffer *src, vk::DeviceSize srcOffset, vk::DeviceSize size,
                                     UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
+        if (!size)
+            return;
         std::scoped_lock lock{stateMutex, src->stateMutex}; // Fine even if src and dst are same since recursive mutex
+        PrepareStagedRange(dstOffset, size);
 
         if (dirtyState == DirtyState::CpuDirty && SequencedCpuBackingWritesBlocked())
             // If the buffer is used in sequence directly on the GPU, SynchronizeHost before modifying the mirror contents to ensure proper sequencing. This write will then be sequenced on the GPU instead (the buffer will be kept clean for the rest of the execution due to gpuCopyCallback blocking all writes)
@@ -224,9 +288,10 @@ namespace skyline::gpu {
         if (dirtyState != DirtyState::GpuDirty && src->dirtyState != DirtyState::GpuDirty) {
             std::memcpy(mirror.data() + dstOffset, src->mirror.data() + srcOffset, size);
 
-            if (dirtyState == DirtyState::CpuDirty && !SequencedCpuBackingWritesBlocked())
-                // Skip updating backing if the changes are gonna be updated later by SynchroniseHost in executor anyway
+            if (dirtyState == DirtyState::CpuDirty && !SequencedCpuBackingWritesBlocked()) {
+                MarkStagedCpuWrite(dstOffset, size);
                 return;
+            }
 
             if (!SequencedCpuBackingWritesBlocked() && PollFence()) {
                 // We can write directly to the backing as long as this resource isn't being actively used by a past workload (in the current context or another)
@@ -236,8 +301,8 @@ namespace skyline::gpu {
                 // its mirror is newer than that backing, so blocking backing writes first would leave
                 // the GPU reading stale data and create the invalid CpuDirty + AllWrites state.
                 // Synchronize the source before the callback makes it immutable for this execution.
-                if (src->dirtyState == DirtyState::CpuDirty)
-                    src->SynchronizeHost();
+                if (src->HasStagedCpuWrites())
+                    src->SynchronizeHostRegion(false, srcOffset, size);
 
                 gpuCopyCallback();
             }
@@ -245,10 +310,10 @@ namespace skyline::gpu {
             // If only the destination is GPU dirty, the source can still be CPU dirty. The GPU
             // callback will read the source backing, so make it current before either buffer is
             // made immutable by the interconnect copy path.
-            if (src->dirtyState == DirtyState::CpuDirty)
-                src->SynchronizeHost();
+            if (src->HasStagedCpuWrites())
+                src->SynchronizeHostRegion(false, srcOffset, size);
 
-            MarkGpuDirty(usageTracker);
+            MarkGpuDirty(usageTracker, dstOffset, size);
             gpuCopyCallback();
         }
     }
@@ -284,40 +349,33 @@ namespace skyline::gpu {
         return false;
     }
 
-    bool Buffer::WriteImplStaged(span<u8> data, vk::DeviceSize offset, const std::function<void()> &gpuCopyCallback) {
-        // We cannot have *ANY* state changes for the duration of this function, if the buffer became CPU dirty partway through the GPU writes would mismatch the CPU writes
-        std::scoped_lock lock{stateMutex};
-
-        // If the buffer is GPU dirty do the write on the GPU and we're done
-        if (dirtyState == DirtyState::GpuDirty) {
-            if (gpuCopyCallback)
-                gpuCopyCallback();
-            else
-                return true;
-        }
-
-        if (dirtyState == DirtyState::CpuDirty && SequencedCpuBackingWritesBlocked())
-            // If the buffer is used in sequence directly on the GPU, SynchronizeHost before modifying the mirror contents to ensure proper sequencing. This write will then be sequenced on the GPU instead (the buffer will be kept clean for the rest of the execution due to gpuCopyCallback blocking all writes)
-            SynchronizeHost();
-
-        std::memcpy(mirror.data() + offset, data.data(), data.size()); // Always copy to mirror since any CPU side reads will need the up-to-date contents
-
-        if (dirtyState == DirtyState::CpuDirty && !SequencedCpuBackingWritesBlocked())
-            // Skip updating backing if the changes are gonna be updated later by SynchroniseHost in executor anyway
+    bool Buffer::WriteImplStaged(span<u8> data, vk::DeviceSize offset, const std::function<void()>& gpuCopyCallback) {
+        if (data.empty())
             return false;
-
-        if (!SequencedCpuBackingWritesBlocked() && PollFence()) {
-            // We can write directly to the backing as long as this resource isn't being actively used by a past workload (in the current context or another)
+        std::scoped_lock stateLock{stateMutex};
+        PrepareStagedRange(offset, data.size());
+        if (dirtyState == DirtyState::GpuDirty) {
+            if (!gpuCopyCallback)
+                return true;
+            MarkGpuDirtyImpl(offset, data.size());
+            gpuCopyCallback();
+            return false;
+        }
+        if (dirtyState == DirtyState::CpuDirty && SequencedCpuBackingWritesBlocked())
+            SynchronizeHost();
+        std::memcpy(mirror.data() + offset, data.data(), data.size());
+        if (dirtyState == DirtyState::CpuDirty && !SequencedCpuBackingWritesBlocked()) {
+            MarkStagedCpuWrite(offset, data.size());
+            return false;
+        }
+        if (!SequencedCpuBackingWritesBlocked() && PollFence())
             std::memcpy(backing->data() + offset, data.data(), data.size());
-        } else {
-            // If this buffer is host immutable, perform a GPU-side inline update for the buffer contents since we can't directly modify the backing
-            // If no copy callback is supplied, return true to indicate that the caller should repeat the write with an appropriate callback
+        else {
             if (gpuCopyCallback)
                 gpuCopyCallback();
             else
                 return true;
         }
-
         return false;
     }
 
@@ -342,9 +400,14 @@ namespace skyline::gpu {
     }
 
     void Buffer::ReadImplStaged(bool isFirstUsage, const std::function<void()> &flushHostCallback, span<u8> data, vk::DeviceSize offset) {
-        if (dirtyState == DirtyState::GpuDirty)
-            SynchronizeGuestImmediate(isFirstUsage, flushHostCallback);
-
+        if (data.empty())
+            return;
+        std::scoped_lock stateLock{stateMutex};
+        if (stagedRegions.Has(BufferRegionState::Owner::Gpu, offset, data.size())) {
+            if (!isFirstUsage)
+                flushHostCallback();
+            SynchronizeGuestRegion(false, false, offset, data.size());
+        }
         std::memcpy(data.data(), mirror.data() + offset, data.size());
     }
 
@@ -354,30 +417,26 @@ namespace skyline::gpu {
         AdvanceSequence();
     }
 
-    void Buffer::MarkGpuDirtyImplStaged() {
-        std::scoped_lock lock{stateMutex}; // stateMutex is locked to prevent state changes at any point during this function
-
-        if (dirtyState == DirtyState::GpuDirty)
-            return;
-
-        gpu.state.process->trap.TrapRegions(*trapHandle, false); // This has to occur prior to any synchronization as it'll skip trapping
-
-        if (dirtyState == DirtyState::CpuDirty)
-            SynchronizeHost(true); // Will transition the Buffer to Clean
-
-        dirtyState = DirtyState::GpuDirty;
-
-        BlockAllCpuBackingWrites();
-        AdvanceSequence(); // The GPU will modify buffer contents so advance to the next sequence
+    void Buffer::MarkGpuDirtyImplStaged(vk::DeviceSize offset, vk::DeviceSize size) {
+        std::scoped_lock stateLock{stateMutex};
+        if (size == VK_WHOLE_SIZE)
+            size = mirror.size() - offset;
+        PrepareStagedRange(offset, size);
+        SynchronizeHostRegion(false, offset, size);
+        auto range{stagedRegions.Aligned(offset, size)};
+        ProtectStagedRange(range.begin, range.end, true);
+        stagedRegions.AssignExisting(offset, size, BufferRegionState::Owner::Gpu);
+        RefreshStagedDirtyState();
+        BlockAllCpuBackingWrites(offset, size);
+        AdvanceSequence();
     }
 
-    void Buffer::MarkGpuDirtyImpl() {
+    void Buffer::MarkGpuDirtyImpl(vk::DeviceSize offset, vk::DeviceSize size) {
         currentExecutionGpuDirty = true;
-
         if (isDirect)
             MarkGpuDirtyImplDirect();
         else
-            MarkGpuDirtyImplStaged();
+            MarkGpuDirtyImplStaged(offset, size);
     }
 
     Buffer::Buffer(LinearAllocatorState<> &delegateAllocator, GPU &gpu, GuestBuffer guest, size_t id, bool direct)
@@ -390,8 +449,10 @@ namespace skyline::gpu {
           megaBufferTableShift{std::max(std::bit_width(guest.size() / MegaBufferTableMaxEntries - 1), MegaBufferTableShiftMin)} {
         if (isDirect)
             directBacking = gpu.memory.ImportBuffer(mirror);
-        else
+        else {
             backing = gpu.memory.AllocateBuffer(mirror.size());
+            stagedRegions.Reset(mirror.size(), constant::PageSize);
+        }
 
         megaBufferTable.resize(guest.size() / (1 << megaBufferTableShift));
     }
@@ -415,21 +476,21 @@ namespace skyline::gpu {
     }
 
     Buffer::~Buffer() {
-        if (trapHandle)
-            gpu.state.process->trap.DeleteTrap(*trapHandle);
+        for (const auto& entry : stagedTraps)
+            gpu.state.process->trap.DeleteTrap(entry.handle);
+        stagedTraps.clear();
         SynchronizeGuest(true);
         if (mirror.valid())
             munmap(mirror.data(), mirror.size());
         WaitOnFence();
     }
 
-    void Buffer::MarkGpuDirty(UsageTracker &usageTracker) {
+    void Buffer::MarkGpuDirty(UsageTracker& usageTracker, vk::DeviceSize offset, vk::DeviceSize size) {
         ++writeGeneration;
         if (!guest)
             return;
-
         usageTracker.dirtyIntervals.Insert(*guest);
-        MarkGpuDirtyImpl();
+        MarkGpuDirtyImpl(offset, size);
     }
 
     void Buffer::WaitOnFence() {
@@ -454,62 +515,73 @@ namespace skyline::gpu {
     }
 
     void Buffer::Invalidate() {
-        if (trapHandle) {
-            gpu.state.process->trap.DeleteTrap(*trapHandle);
-            trapHandle = {};
-        }
-
-        // Will prevent any sync operations so even if the trap handler is partway through running and hasn't yet acquired the lock it won't do anything
+        for (const auto& entry : stagedTraps)
+            gpu.state.process->trap.DeleteTrap(entry.handle);
+        stagedTraps.clear();
         guest = {};
     }
 
     void Buffer::SynchronizeHost(bool skipTrap) {
+        SynchronizeHostRegion(skipTrap, 0, mirror.size());
+    }
+
+    void Buffer::SynchronizeHostForGpu() {
         if (!guest || isDirect)
             return;
+        std::scoped_lock stateLock{stateMutex};
+        if (stagedRegions.Accesses().empty())
+            SynchronizeHostRegion(false, 0, mirror.size());
+        else
+            for (const auto range : stagedRegions.Accesses())
+                SynchronizeHostRegion(false, range.begin, range.end - range.begin);
+        stagedRegions.ClearAccesses();
+    }
 
-        TRACE_EVENT("gpu", "Buffer::SynchronizeHost");
-
-        {
-            std::scoped_lock lock{stateMutex};
-            if (dirtyState != DirtyState::CpuDirty)
-                return;
-
-            dirtyState = DirtyState::Clean;
-            WaitOnFence();
-
-            AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
-
-            if (!skipTrap)
-                gpu.state.process->trap.TrapRegions(*trapHandle, true); // Trap any future CPU writes to this buffer, must be done before the memcpy so that any modifications during the copy are tracked
-        }
-
-        std::memcpy(backing->data(), mirror.data(), mirror.size());
+    void Buffer::SynchronizeHostRegion(bool skipTrap, vk::DeviceSize offset, vk::DeviceSize size) {
+        if (!guest || isDirect)
+            return;
+        std::scoped_lock stateLock{stateMutex};
+        if (!stagedRegions.Has(BufferRegionState::Owner::Cpu, offset, size))
+            return;
+        PrepareStagedRange(offset, size);
+        const auto range{stagedRegions.Aligned(offset, size)};
+        WaitOnFence(); // A backing mutation still needs all prior GPU users.
+        AdvanceSequence();
+        for (const auto r : stagedRegions.Regions())
+            if (r.owner == BufferRegionState::Owner::Cpu && r.begin < range.end && range.begin < r.end) {
+                if (!skipTrap)
+                    ProtectStagedRange(r.begin, r.end, false);
+                std::memcpy(backing->data() + r.begin, mirror.data() + r.begin, r.end - r.begin);
+                stagedRegions.AssignExisting(r.begin, r.end - r.begin, BufferRegionState::Owner::Synced);
+            }
+        RefreshStagedDirtyState();
     }
 
     bool Buffer::SynchronizeGuest(bool skipTrap, bool nonBlocking) {
+        return SynchronizeGuestRegion(skipTrap, nonBlocking, 0, mirror.size());
+    }
+
+    bool Buffer::SynchronizeGuestRegion(bool skipTrap, bool nonBlocking, vk::DeviceSize offset, vk::DeviceSize size) {
         if (!guest || isDirect)
             return false;
-
-        TRACE_EVENT("gpu", "Buffer::SynchronizeGuest");
-
-        {
-            std::scoped_lock lock{stateMutex};
-
-            if (dirtyState != DirtyState::GpuDirty)
-                return true; // If the buffer is not dirty, there is no need to synchronize it
-
-            if (nonBlocking && !PollFence())
-                return false; // If the fence is not signalled and non-blocking behaviour is requested then bail out
-
-            WaitOnFence();
-            std::memcpy(mirror.data(), backing->data(), mirror.size());
-
-            dirtyState = DirtyState::Clean;
-        }
-
+        std::scoped_lock stateLock{stateMutex};
+        if (!stagedRegions.Has(BufferRegionState::Owner::Gpu, offset, size))
+            return true;
+        if (nonBlocking && !PollFence())
+            return false;
         if (!skipTrap)
-            gpu.state.process->trap.TrapRegions(*trapHandle, true);
-
+            PrepareStagedRange(offset, size);
+        auto range{stagedRegions.Aligned(offset, size)};
+        WaitOnFence();
+        for (const auto r : stagedRegions.Regions())
+            if (r.owner == BufferRegionState::Owner::Gpu && r.begin < range.end && range.begin < r.end) {
+                const auto lo{std::max(r.begin, range.begin)}, hi{std::min(r.end, range.end)};
+                std::memcpy(mirror.data() + lo, backing->data() + lo, hi - lo);
+                stagedRegions.AssignExisting(lo, hi - lo, BufferRegionState::Owner::Synced);
+                if (!skipTrap)
+                    ProtectStagedRange(lo, hi, false);
+            }
+        RefreshStagedDirtyState();
         return true;
     }
 

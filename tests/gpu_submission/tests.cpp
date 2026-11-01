@@ -1,4 +1,9 @@
 #include <gpu/fence_cycle.h>
+#include <gpu/buffer_region_state.h>
+namespace vk {
+    using DeviceSize = uint64_t;
+}
+using skyline::gpu::BufferRegionState;
 #include <algorithm>
 #include <chrono>
 #include <future>
@@ -125,13 +130,21 @@ struct Buffer {
     std::shared_ptr<FenceCycle> cycle;
     bool guest{true}, isDirect{};
     enum class DirtyState { CpuDirty, Clean, GpuDirty } dirtyState{DirtyState::Clean};
-    std::mutex stateMutex;
+    std::recursive_mutex stateMutex;
     Texture::Gpu gpu;
     std::shared_ptr<int> trapHandle{std::make_shared<int>(0)};
     std::shared_ptr<std::vector<int>> backing{std::make_shared<std::vector<int>>()};
     std::vector<int> mirror;
     bool RequiresCycleAttach() const { return true; }
+    BufferRegionState stagedRegions;
     void SynchronizeHost(bool skipTrap = false);
+    void SynchronizeHostRegion(bool, vk::DeviceSize, vk::DeviceSize);
+    void SynchronizeHostForGpu();
+    void PrepareStagedRange(vk::DeviceSize offset, vk::DeviceSize size) {
+        stagedRegions.EnsureBounds(offset, size);
+    }
+    void ProtectStagedRange(size_t, size_t, bool) {}
+    void RefreshStagedDirtyState() {}
     void WaitOnFence();
     void AdvanceSequence() {}
     #include "buffer_cycle.inc"

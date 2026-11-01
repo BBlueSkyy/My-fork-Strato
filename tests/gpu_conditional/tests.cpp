@@ -54,7 +54,9 @@ struct StateUpdateBuilder { template<class T> explicit StateUpdateBuilder(T &) {
 struct Buffer : std::enable_shared_from_this<Buffer> {
     memory::Buffer allocation{64}; u64 generation{}; bool blocked{}, dirty{}, currentDirty{}, locked{};
     u64 GetWriteGeneration() const { return generation; }
-    void BlockSequencedCpuBackingWrites() { blocked = true; }
+    void BlockSequencedCpuBackingWrites(u64 = 0, u64 = ~u64{}) {
+        blocked = true;
+    }
     bool IsCurrentExecutionGpuDirty() const { return currentDirty; }
 };
 struct BufferView {
@@ -172,11 +174,13 @@ struct UsageTracker { struct Intervals { void Insert(int) {} } dirtyIntervals, s
 struct GenerationBuffer {
     u64 writeGeneration{}; bool alreadyGpuDirty{}, everHadInlineUpdate{}, isDirect{}; std::optional<int> guest{1};
     u64 GetWriteGeneration() const { return writeGeneration; }
-    void MarkGpuDirty(UsageTracker &);
+    void MarkGpuDirty(UsageTracker&, u64 = 0, u64 = ~u64{});
     bool Write(span<u8>, u64, UsageTracker &, const std::function<void()> &);
     void CopyFrom(u64, GenerationBuffer *, u64, u64, UsageTracker &, const std::function<void()> &);
     void AdvanceSequence() {}
-    void MarkGpuDirtyImpl() { alreadyGpuDirty = true; }
+    void MarkGpuDirtyImpl(u64 = 0, u64 = ~u64{}) {
+        alreadyGpuDirty = true;
+    }
     bool WriteImplDirect(span<u8>,u64,UsageTracker &,const std::function<void()> &) { return false; }
     bool WriteImplStaged(span<u8>,u64,const std::function<void()> &) { return false; }
     void CopyFromImplDirect(u64,GenerationBuffer *,u64,u64,UsageTracker &,const std::function<void()> &) {}

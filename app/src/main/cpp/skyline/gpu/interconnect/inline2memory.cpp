@@ -25,7 +25,7 @@ namespace skyline::gpu::interconnect {
         dstBuf.Write(src, 0, executor.usageTracker, [&]() {
             executor.AttachLockedBufferView(dstBuf, std::move(dstBufLock));
             // This will prevent any CPU accesses to backing for the duration of the usage
-            dstBuf.GetBuffer()->BlockAllCpuBackingWrites();
+            dstBuf.GetBuffer()->BlockAllCpuBackingWrites(dstBuf.GetOffset(), dstBuf.size);
 
             auto srcGpuAllocation{gpu.megaBufferAllocator.Push(executor.cycle, src)};
             executor.AddOutsideRpCommand([srcGpuAllocation, dstBuf, src](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &pGpu) {

@@ -29,8 +29,8 @@ namespace skyline::gpu::interconnect {
             executor.AttachLockedBufferView(dstBuf, std::move(dstBufLock));
             // This will prevent any CPU accesses to backing for the duration of the usage
             // GPU dirtiness will be handled on the CopyFrom end as it's not always necessary
-            srcBuf.GetBuffer()->BlockAllCpuBackingWrites();
-            dstBuf.GetBuffer()->BlockAllCpuBackingWrites();
+            srcBuf.GetBuffer()->BlockAllCpuBackingWrites(srcBuf.GetOffset(), srcBuf.size);
+            dstBuf.GetBuffer()->BlockAllCpuBackingWrites(dstBuf.GetOffset(), dstBuf.size);
 
             executor.AddOutsideRpCommand([srcBuf, dstBuf](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) {
                 commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, vk::MemoryBarrier{
@@ -62,8 +62,8 @@ namespace skyline::gpu::interconnect {
         })};
         executor.AttachBuffer(clearBuf);
 
-        clearBuf.GetBuffer()->BlockSequencedCpuBackingWrites();
-        clearBuf.GetBuffer()->MarkGpuDirty(executor.usageTracker);
+        clearBuf.GetBuffer()->BlockSequencedCpuBackingWrites(clearBuf.GetOffset(), clearBuf.size);
+        clearBuf.GetBuffer()->MarkGpuDirty(executor.usageTracker, clearBuf.GetOffset(), clearBuf.size);
 
         executor.AddOutsideRpCommand([clearBuf, value](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) {
             commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, vk::MemoryBarrier{
