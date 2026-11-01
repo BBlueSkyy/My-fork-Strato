@@ -127,7 +127,8 @@ namespace skyline::gpu::diagnostic {
         std::optional<std::pair<std::uint32_t, std::uint64_t>> ReserveScan(std::size_t bytes) {
             if (!ScanEnabled() || bytes != 1280ULL * 720 * 4) return {};
             std::lock_guard lock{mutex};
-            if (!Active() || scanRequested >= MaxScanReadbacks) return {};
+            // Cap scan staging to 4 in-flight images (~14.1 MiB), not 60.
+            if (!Active() || scanRequested >= MaxScanReadbacks || scanPending >= 4) return {};
             ++scanPending;
             return std::make_pair(scanRequested++, generation);
         }
