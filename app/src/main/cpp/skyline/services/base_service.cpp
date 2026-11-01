@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <array>
 #include <cxxabi.h>
+#include <limits>
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
 #include "base_service.h"
@@ -28,7 +30,7 @@ namespace skyline::service {
             if (recentIpcCount) {
                 auto &previous{recentIpcCalls[(recentIpcNext + RecentIpcCapacity - 1) % RecentIpcCapacity]};
                 if (previous.function == function && previous.commandId == commandId && previous.result == result) {
-                    if (previous.repeats != UINT32_MAX)
+                    if (previous.repeats != std::numeric_limits<u32>::max())
                         ++previous.repeats;
                     return;
                 }
