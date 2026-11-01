@@ -128,6 +128,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
          */
         vk::Rect2D GetDrawScissor();
 
+        // Bounded diagnostics; inert until gpu_capture/pacman_world/ARM_CAPTURE.
+        void TraceTriangleDraw(const char *kind, engine::DrawTopology topology,
+                               bool indexed, u32 count, u32 first, u32 instances,
+                               i32 vertexOffset, const vk::Rect2D &scissor);
+
         /**
          * @brief Performs operations common across indirect and regular draws
          */
