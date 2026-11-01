@@ -89,6 +89,8 @@ namespace skyline::service::am {
         auto result{request.Pop<Result>()};
         LOGI("App set termination result: {} (module {}, description {})", result.raw,
              static_cast<u32>(result.module), static_cast<u32>(result.id));
+        if (state.process->npdm.aci0.programId == 0x0100E66010ADE000ULL)
+            DumpRecentIpcCallsForCurrentThread();
         if (!state.process->is64bit()) {
             const auto &guest{static_cast<const kernel::type::KJit32Thread &>(*state.thread).ctx};
             LOGI("Guest AArch32 termination call: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}",
