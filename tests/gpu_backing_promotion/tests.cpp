@@ -371,7 +371,15 @@ namespace skyline::gpu {
         std::vector<TextureViewStorage> views;
         std::vector<vk::Format> backingViewFormats;
         u64 backingGeneration{1};
-        std::condition_variable backingCondition;
+        struct BackingCondition {
+            std::condition_variable_any condition;
+            std::promise<void> entered;
+            template<class Lock, class Predicate> void wait(Lock &lock, Predicate predicate) {
+                entered.set_value();
+                condition.wait(lock, predicate);
+            }
+            void notify_all() { condition.notify_all(); }
+        } backingCondition;
         // Sentinels: backing promotion must not rewrite dirty/lifetime/alias identity state.
         enum DirtyState { Clean = 0, CpuDirty = 1, GpuDirty = 2 };
         DirtyState dirtyState{GpuDirty};
@@ -440,9 +448,9 @@ namespace skyline::gpu {
             if (auto image{std::get_if<memory::Image>(&backing)}) return image->vkImage;
             return std::get<vk::Image>(backing);
         }
-        void WaitOnBacking() { assert(GetBacking()); }
+        bool WaitOnBacking();
         span<const vk::Format> GetBackingViewFormats() const { return backingViewFormats; }
-        void WaitOnFence() { if (cycle) { cycle->Wait(); cycle.reset(); } }
+        void WaitOnFence();
         bool ViewFormatAdmitted(vk::Format) const;
         void PromoteBackingForView(vk::Format, u32 levels = 0);
         bool ViewRangeFits(vk::ImageViewType, const vk::ImageSubresourceRange &, u32 levels = 0) const;
@@ -503,33 +511,6 @@ namespace skyline::gpu {
     #include "guest_copy.inc"
     #include "production.inc"
 
-void Texture::TransitionLayout(vk::ImageLayout pLayout) {
-        WaitOnBacking();
-        WaitOnFence();
-
-        TRACE_EVENT("gpu", "Texture::TransitionLayout");
-
-        if (layout != pLayout) {
-            auto lCycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commandBuffer) {
-                commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eBottomOfPipe, {}, {}, {}, vk::ImageMemoryBarrier{
-                    .srcAccessMask = vk::AccessFlagBits::eNoneKHR,
-                    .dstAccessMask = vk::AccessFlagBits::eNoneKHR,
-                    .oldLayout = std::exchange(layout, pLayout),
-                    .newLayout = pLayout,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image = GetBacking(),
-                    .subresourceRange = {
-                        .aspectMask = format->vkAspect,
-                        .levelCount = levelCount,
-                        .layerCount = layerCount,
-                    },
-                });
-            })};
-            lCycle->AttachObject(shared_from_this());
-            cycle = lCycle;
-        }
-    }
 
     namespace interconnect {
         struct CommandExecutor {
@@ -576,7 +557,144 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         }
     };
 
+    #include "record_barrier.inc"
+
+    void CheckLayoutTransitions(GPU &gpu) {
+
+        auto texture{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm, vk::Extent3D{16,16,1}, 1, 1)};
+        {
+            std::scoped_lock lock{*texture};
+            texture->TransitionLayout(vk::ImageLayout::eGeneral);
+            auto producer{texture->cycle};
+            const auto submissions{gpu.scheduler.submissions};
+            for (unsigned i{}; i < 2000; ++i) texture->TransitionLayout(vk::ImageLayout::eGeneral);
+            assert(texture->cycle == producer && producer->gpuWaits == 0);
+            assert(gpu.scheduler.submissions == submissions);
+        }
+        std::vector<u8> expected(16 * 16 * 4);
+        for (size_t i{}; i < expected.size(); ++i) expected[i] = static_cast<u8>((i * 37 + i / 13) % 251);
+        Buffer upload{gpu, expected.size()}, readback{gpu, expected.size()};
+        upload.Write(expected);
+        const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor,0,1,0,1};
+        const vk::BufferImageCopy region{.imageSubresource={vk::ImageAspectFlagBits::eColor,0,0,1}, .imageExtent={16,16,1}};
+        auto pending{gpu.scheduler.AllocateCommandBuffer()};
+        pending->begin(vk::CommandBufferBeginInfo{});
+        RecordFullBarrier(*pending); // Same consumer dependency as SubmitInternal.
+        pending->copyBufferToImage(*upload.buffer,texture->GetBacking(),vk::ImageLayout::eGeneral,region);
+        pending->pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eAllCommands,{}, {}, {},
+            vk::ImageMemoryBarrier{.srcAccessMask=vk::AccessFlagBits::eTransferWrite,
+                .dstAccessMask=vk::AccessFlagBits::eMemoryRead|vk::AccessFlagBits::eMemoryWrite,
+                .oldLayout=vk::ImageLayout::eGeneral,.newLayout=vk::ImageLayout::eGeneral,
+                .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                .image=texture->GetBacking(),.subresourceRange=range});
+        pending->end();
+        pending.cycle->AttachObject(texture);
+        texture->cycle=pending.cycle;
+        {
+            std::scoped_lock lock{*texture};
+            texture->TransitionLayout(vk::ImageLayout::eGeneral);
+        }
+        assert(texture->cycle == pending.cycle && !pending.cycle->submitted && pending.cycle->gpuWaits == 0);
+        gpu.scheduler.SubmitCommandBuffer(*pending,pending.cycle);
+        // Consume General directly, with the executor's real incoming barrier.
+        // No layout change or producer CPU fence wait may precede this read.
+        auto asynchronousRead{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
+            RecordFullBarrier(commands);
+            commands.copyImageToBuffer(texture->GetBacking(),vk::ImageLayout::eGeneral,*readback.buffer,region);
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eHost,{}, {},
+                vk::BufferMemoryBarrier{.srcAccessMask=vk::AccessFlagBits::eTransferWrite,.dstAccessMask=vk::AccessFlagBits::eHostRead,
+                    .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                    .buffer=*readback.buffer,.size=expected.size()},{});
+        })};
+        asynchronousRead->AttachObject(texture);
+        asynchronousRead->ChainCycle(pending.cycle);
+        asynchronousRead->Wait(true); // CPU waits only for the requested readback.
+        assert(readback.Read()==expected && pending.cycle->gpuWaits==0 && texture->cycle==pending.cycle);
+        // A real change still waits for the submitted producer and publishes a
+        // new cycle. No-op removal must not weaken this synchronization.
+        {
+            std::scoped_lock lock{*texture};
+            texture->TransitionLayout(vk::ImageLayout::eTransferSrcOptimal);
+        }
+        assert(pending.cycle->gpuWaits == 1 && texture->cycle != pending.cycle);
+        auto destination{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm, vk::Extent3D{16,16,1}, 1, 1)};
+        {
+            std::scoped_lock lock{*destination};
+            destination->TransitionLayout(vk::ImageLayout::eTransferDstOptimal);
+        }
+        auto copy{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
+            RecordFullBarrier(commands);
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,vk::PipelineStageFlagBits::eTransfer,{}, {}, {},
+                vk::ImageMemoryBarrier{.srcAccessMask=vk::AccessFlagBits::eMemoryWrite,
+                    .dstAccessMask=vk::AccessFlagBits::eTransferRead,
+                    .oldLayout=vk::ImageLayout::eTransferSrcOptimal,.newLayout=vk::ImageLayout::eTransferSrcOptimal,
+                    .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                    .image=texture->GetBacking(),.subresourceRange=range});
+            commands.copyImage(texture->GetBacking(),vk::ImageLayout::eTransferSrcOptimal,
+                destination->GetBacking(),vk::ImageLayout::eTransferDstOptimal,
+                vk::ImageCopy{.srcSubresource={vk::ImageAspectFlagBits::eColor,0,0,1},
+                    .dstSubresource={vk::ImageAspectFlagBits::eColor,0,0,1},.extent={16,16,1}});
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eTransfer,{}, {}, {},
+                vk::ImageMemoryBarrier{.srcAccessMask=vk::AccessFlagBits::eTransferWrite,
+                    .dstAccessMask=vk::AccessFlagBits::eTransferRead,
+                    .oldLayout=vk::ImageLayout::eTransferDstOptimal,.newLayout=vk::ImageLayout::eTransferSrcOptimal,
+                    .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                    .image=destination->GetBacking(),.subresourceRange=range});
+            commands.copyImageToBuffer(destination->GetBacking(),vk::ImageLayout::eTransferSrcOptimal,*readback.buffer,region);
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eHost,{}, {},
+                vk::BufferMemoryBarrier{.srcAccessMask=vk::AccessFlagBits::eTransferWrite,.dstAccessMask=vk::AccessFlagBits::eHostRead,
+                    .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                    .buffer=*readback.buffer,.size=expected.size()},{});
+        })};
+        copy->AttachObjects(texture,destination);
+        copy->Wait(true);
+        assert(readback.Read() == expected);
+        destination->layout=vk::ImageLayout::eTransferSrcOptimal;
+        // Allocation failure before recording must not change the layout.
+        gpu.scheduler.failRecording=true;
+        bool failed{};
+        try { std::scoped_lock lock{*texture}; texture->TransitionLayout(vk::ImageLayout::eGeneral); }
+        catch(const std::bad_alloc&) { failed=true; }
+        gpu.scheduler.failRecording=false;
+        assert(failed && texture->layout==vk::ImageLayout::eTransferSrcOptimal);
+        { std::scoped_lock lock{*texture}; texture->TransitionLayout(vk::ImageLayout::eGeneral); }
+        std::weak_ptr<Texture> lifetime{texture};
+        texture.reset();
+        assert(!lifetime.expired());
+        gpu.scheduler.Complete();
+        assert(lifetime.expired());
+
+        // WaitOnBacking remains mandatory even when the absent representation's
+        // stale layout equals the request. Publication can replace that layout.
+        auto absent{std::make_shared<Texture>(gpu,vk::Format::eR8G8B8A8Unorm,vk::Extent3D{16,16,1},1,1)};
+        Texture::BackingType replacement{std::move(absent->backing)};
+        absent->backing.emplace<vk::Image>();
+        absent->layout=vk::ImageLayout::eGeneral;
+        auto entered{absent->backingCondition.entered.get_future()};
+        auto waiting{std::async(std::launch::async,[absent] {
+            std::scoped_lock lock{*absent};
+            absent->TransitionLayout(vk::ImageLayout::eGeneral);
+        })};
+        const bool reachedWait{entered.wait_for(std::chrono::seconds(1))==std::future_status::ready};
+        const bool blocked{waiting.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout};
+        // A wakeup without a valid backing must not let the consumer proceed.
+        absent->backingCondition.notify_all();
+        const bool stillBlocked{waiting.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout};
+        const auto beforePublish{gpu.scheduler.submissions};
+        {
+            std::scoped_lock lock{*absent};
+            absent->SwapBacking(std::move(replacement),absent->flags,vk::ImageLayout::eUndefined,{});
+        }
+        waiting.get();
+        assert(reachedWait && blocked && stillBlocked);
+        assert(absent->layout==vk::ImageLayout::eGeneral && absent->cycle);
+        assert(gpu.scheduler.submissions==beforePublish+1);
+        gpu.scheduler.Complete();
+        std::puts("PASS production layout/backing: 2000 no-op requests, pending producer, real transition, GPU upload/copy/readback bytes, lifetime, allocation retry, absent backing and replacement layout");
+    }
+
     void CheckImagelessAttachment(GPU &gpu, TextureView *view) {
+
         std::vector<vk::FramebufferAttachmentImageInfo> attachmentInfo;
         const auto viewLayers{view->range.layerCount};
         #include "attachment.inc" // Exact metadata emitted by RenderPassNode::AddAttachment.
@@ -621,6 +739,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckPromotion(GPU &gpu, bool reverse) {
+
         const auto native{reverse ? vk::Format::eB8G8R8A8Unorm : vk::Format::eR8G8B8A8Unorm};
         NativeFormat foreign{reverse ? vk::Format::eR8G8B8A8Unorm : vk::Format::eB8G8R8A8Unorm};
         NativeFormat integer{vk::Format::eR8G8B8A8Uint};
@@ -786,6 +905,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckCompressed(GPU &gpu, bool bc3, bool reverse) {
+
         const auto unorm{bc3 ? vk::Format::eBc3UnormBlock : vk::Format::eBc1RgbaUnormBlock};
         const auto srgb{bc3 ? vk::Format::eBc3SrgbBlock : vk::Format::eBc1RgbaSrgbBlock};
         auto texture{std::make_shared<Texture>(gpu, reverse ? srgb : unorm)};
@@ -833,6 +953,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckMipGrowth(GPU &gpu, bool cpuDirty, size_t blockHeight) {
+
         auto texture{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm, vk::Extent3D{128, 128, 1}, 1, 6)};
         texture->guest->tileConfig.blockHeight = blockHeight;
         texture->guest->viewType = vk::ImageViewType::e2DArray;
@@ -1121,6 +1242,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckIndependentAliases(GPU &gpu) {
+
         std::vector<u8> guest(90112*6), expected;
         for (size_t i{};i<guest.size();++i) guest[i]=static_cast<u8>(i*17+i/101);
         expected=guest;
@@ -1200,6 +1322,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckManagerOverlapLookup(GPU &gpu) {
+
         // The host mirror adapter supports page-aligned, adjacent physical
         // segments. Actual disjoint segment order is checked by mapping_match.
         std::vector<u8> storage(131072 + 4096, 0x2D);
@@ -1246,6 +1369,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckManagerAliases(GPU &gpu) {
+
         TextureManager manager{gpu};
         std::vector<u8> guest(90112*6,0x2D),expected{guest};
         GuestTexture descriptor;
@@ -1357,6 +1481,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     // Exact mappings also find obsolete representations whose host format
     // cannot round-trip. They are not necessarily the current guest writer.
     void CheckHistoricalAlias(GPU &gpu, bool authoritative, bool writerReadBack, bool alreadyGrouped, bool executorContext, bool skippedReadback = false) {
+
         std::vector<u8> bytes(90112*6,0x39),expected{bytes};
         TextureManager manager{gpu}; // Guest mappings outlive every manager entry.
         GuestTexture descriptor;
@@ -1446,6 +1571,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckOnlyHistoricalAliases(GPU &gpu, bool readBack, bool executorContext) {
+
         std::vector<u8> bytes(90112*6,0x58),expected{bytes};
         TextureManager manager{gpu};
         GuestTexture descriptor;
@@ -1489,6 +1615,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckHistoricalAliasReadbackFailure(GPU &gpu) {
+
         std::vector<u8> bytes(90112*6,0x42),expected{bytes};
         auto make{[&](u32 stride,u32 layers) {
             auto value{std::make_shared<Texture>(gpu,vk::Format::eR8G8B8A8Unorm,vk::Extent3D{128,128,1},1,layers)};
@@ -1515,6 +1642,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckAliasTraps(GPU &gpu) {
+
         TextureManager manager{gpu};
         std::vector<u8> bytes(90112*6,0x77),expected{bytes};
         GuestTexture descriptor;
@@ -1554,6 +1682,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckCpuWriteBeforeSubmit(GPU &gpu) {
+
         TextureManager manager{gpu};
         std::vector<u8> bytes(90112*6,0x33),expected{bytes};
         GuestTexture descriptor;
@@ -1582,6 +1711,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckRegistrationAfterReadback(GPU &gpu) {
+
         std::vector<u8> bytes(90112*6,0x44),expected{bytes};
         auto make{[&](u32 stride,u32 layers) {
             auto texture{std::make_shared<Texture>(gpu,vk::Format::eR8G8B8A8Unorm,vk::Extent3D{128,128,1},1,layers)};
@@ -1613,6 +1743,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckSeparateLayouts(GPU &gpu) {
+
         auto texture{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm, vk::Extent3D{128,128,1}, 1, 6)};
         auto guestTexture{*texture->guest};
         guestTexture.layerStride = 180224;
@@ -1647,6 +1778,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckMaterializationVsWriteback() {
+
         std::vector<u8> pitchBytes(64 * 32 * 4);
         GuestTexture pitch;
         pitch.format = format::R8G8B8A8Unorm;
@@ -1697,7 +1829,10 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckFreedWriterGuestBridge(GPU &gpu) {
-        std::vector<u8> bytes(90112 * 6), expected(bytes.size());
+
+        // The positive eviction control needs a dense writer: an image cannot
+        // reconstruct guest padding that was never uploaded into its texels.
+        std::vector<u8> bytes(65536 * 6), expected(bytes.size());
         for (size_t i{}; i < bytes.size(); ++i) bytes[i] = static_cast<u8>(i * 29 + i / 113);
         expected = bytes;
 
@@ -1713,15 +1848,26 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             return texture;
         }};
 
-        auto writer{make(90112, 6)};
-        auto alternate{make(180224, 3)};
+        auto writer{make(65536, 6)};
+        auto alternate{make(131072, 3)};
+        assert(writer->surfaceSize == bytes.size());
+        assert(writer->guest->layerStride == writer->mipLayouts.front().blockLinearSize);
         *gpu.state.settings->freeGuestTextureMemory = true;
         WriteAliasRenderTarget(writer, {0,0,1,1});
         EncodeAliasBase(writer, expected, {0,0,255,255});
         assert(writer->memoryFreed && writer->dirtyState == Texture::DirtyState::GpuDirty);
         assert(bytes != expected); // Fake FreeMemory removes the guest bridge.
 
-        Texture::RegisterAliases({writer, alternate});
+        // An evicted first member cannot supply the default reference layout.
+        // Keep that rejection, then pass the explicit registration layout as
+        // the production manager/executor does via registrationLayout.
+        const auto beforeRegistration{bytes};
+        bool missingReferenceRejected{};
+        try { Texture::RegisterAliases({writer, alternate}); }
+        catch (const std::runtime_error &) { missingReferenceRejected=true; }
+        assert(missingReferenceRejected && writer->memoryFreed && bytes==beforeRegistration);
+        assert(!writer->aliasGroup.load() && !alternate->aliasGroup.load());
+        Texture::RegisterAliases({writer, alternate}, &*alternate->guest);
         auto group{writer->aliasGroup.load()};
         assert(group && alternate->aliasGroup.load() == group);
         assert(!writer->memoryFreed && writer->gpuReadbackSerial == writer->gpuWriteSerial);
@@ -1732,6 +1878,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 
     void CheckStorageWriterTracking(GPU &gpu) {
+
         std::vector<u8> bytes(64 * 64 * 4, 0x31);
         GuestTexture guest;
         guest.format = format::R8G8B8A8Unorm;
@@ -1769,10 +1916,16 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto freeCommands{gpu.scheduler.AllocateCommandBuffer()};
         freeGuestSampled->SynchronizeHostInline(*freeCommands, freeCommands.GetFenceCycle(), true);
         assert(freeGuestSampled->dirtyState == Texture::DirtyState::GpuDirty && !freeGuestSampled->everUsedAsGpuWrite);
+        // These clean-state probes record no commands. Do not leave their
+        // unsubmitted facade cycles for the scheduler's completion drain.
+        sampledCommands.GetFenceCycle()->Cancel();
+        storageCommands.GetFenceCycle()->Cancel();
+        freeCommands.GetFenceCycle()->Cancel();
         *gpu.state.settings->freeGuestTextureMemory = false;
     }
 
     void CheckReadOnlyAliasWriteGate(GPU &gpu) {
+
         std::vector<u8> bytes(90112 * 6, 0x4D);
         GuestTexture guest;
         guest.format = format::R8G8B8A8Unorm;
@@ -1825,11 +1978,13 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         texture->SynchronizeHostInline(*submitBuffer, submitBuffer.GetFenceCycle(), true);
         assert(texture->dirtyState == Texture::DirtyState::Clean &&
                group->generation == generation && texture->gpuWriteSerial == serial);
+        submitBuffer.GetFenceCycle()->Cancel(); // No upload/draw was recorded by this clean-state probe.
 
         texture->dirtyState = Texture::DirtyState::CpuDirty;
     }
 
     void CheckLogicalExtent() {
+
         struct Guest {
             struct { u32 width, height, depth{1}; } dimensions;
             u32 depth, viewMipBase;
@@ -1877,10 +2032,17 @@ int main() {
                 CheckManagerOverlapLookup(gpu);
                 continue;
             }
+            CheckLayoutTransitions(gpu);
+            if (std::getenv("TEXTURE_LAYOUT_ONLY")) continue;
+
             CheckSeparateLayouts(gpu);
+
             CheckIndependentAliases(gpu);
+
             if (!std::getenv("TEXMAN_SKIP_LOOKUP")) CheckManagerOverlapLookup(gpu);
+
             CheckManagerAliases(gpu);
+
             for (bool authoritative : {false,true})
                 for (bool readBack : {false,true})
                     for (bool grouped : {false,true})
@@ -1906,6 +2068,10 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if (std::getenv("TEXTURE_LAYOUT_ONLY")) {
+        std::puts("PASS layout-only suite; zero Vulkan validation errors");
+        return 0;
+    }
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;

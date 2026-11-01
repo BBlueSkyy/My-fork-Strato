@@ -58,7 +58,13 @@ strides over identical mappings, alternating render-target writers, stale
 readback prevention, repeated reads, canonical mip growth, registration after
 a newer completed readback and CPU writes between attachment and submission.
 
-CopyFromStagingBuffer, CopyIntoStagingBuffer and TransitionLayout are explicit
+TransitionLayout, WaitOnBacking and WaitOnFence now execute extracted production
+bodies. A native layout test checks no-op pending producers, direct General
+readback without a producer CPU wait, true transitions, image copies, allocation
+retry, lifetime and missing/replaced backings. It uses the executor's production
+RecordFullBarrier before its consumer copies.
+
+CopyFromStagingBuffer and CopyIntoStagingBuffer remain explicit
 **test-only Vulkan transport fixtures** in this suite. Runtime copies/barriers
 and FreeGuest policy remain unchanged by Part 1. Thus zero fixture validation
 errors establish ownership/content behavior with synchronized transport, not
@@ -79,3 +85,8 @@ asserted. No runtime Vulkan transport or FreeGuest policy changes are included.
 The all-history/no-eligible-member case and a converted writer marked Clean by
 skipped readback are also covered: only an actual completed guest encoding
 permits retirement of the latest GPU writer.
+
+For only the layout/backing cases, use `TEXTURE_LAYOUT_ONLY=1`. A full run
+executes all cases. The Free Guest bridge positive control uses a dense writer
+and an explicit registration layout; padded eviction is not certified by this
+fixture (see `docs/performance/coherent-resource-hotpaths-2026-11-01.md`).

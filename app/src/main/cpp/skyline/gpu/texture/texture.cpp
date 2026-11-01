@@ -814,6 +814,11 @@ namespace skyline::gpu {
 
     void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         WaitOnBacking();
+        // Repeated storage-image preparation needs no transition when the
+        // layout already matches. Keep the pending resource cycle for its next
+        // consumer instead of turning this no-op into a GPU completion wait.
+        if (layout == pLayout)
+            return;
         WaitOnFence();
 
         TRACE_EVENT("gpu", "Texture::TransitionLayout");

@@ -40,6 +40,9 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "production.inc").write_text("\n".join(function(
         view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
         signature) for signature in (
+        "bool Texture::WaitOnBacking(",
+        "void Texture::WaitOnFence(",
+        "void Texture::TransitionLayout(",
         "void Texture::SetupGuestMappings(",
         "bool Texture::CanMaterializeGuestLayout(",
         "bool Texture::IsGuestLayoutReversible(",
@@ -120,6 +123,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "request_validation.inc").write_text(function(manager, "if (!texture::SubresourceRangeFits("))
     (directory / "unrepresentable.inc").write_text(function(manager, "if (unrepresentableMatch || separateGroup)"))
     executor = (GPU / "interconnect/command_executor.cpp").read_text()
+    (directory / "record_barrier.inc").write_text(function(executor, "static void RecordFullBarrier("))
     (directory / "alias_retry.inc").write_text(function(executor,"void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &"))
     (directory / "attach.inc").write_text(function(executor,"bool CommandExecutor::AttachTexture("))
     (directory / "retry.inc").write_text(function(executor,
