@@ -94,3 +94,37 @@ Record real elapsed time for the same gameplay action, presentation cadence and
 any flicker separately. Do not infer FPS improvement from these diagnostics.
 The log does not replace GPU timestamps, scheduler tracing, or alias/write-range
 proof needed for a future producer-only or regional readback optimization.
+
+## v3 sampled fence decomposition
+
+The new build retains all v2 counters unsampled. `BufferReadback v3 phases` and
+`v3 hot` report only one of every16 GPU-dirty prepare waits per admitted buffer.
+Each value is `calls,0,completed_thread_ns`; no transferred bytes belong to these
+phase counters. `samples` contains the total sampled wait time (including phases).
+`chain`, `submit`, `mutex`, `driver`, `semaphore_tail` are disjoint **root-call**
+segments. A predecessor's entire recursive wait belongs to `chain`; a semaphore
+consumer's entire wait belongs to `semaphore_tail`. They are not also added as
+root driver time. `mutex` may include another waiter's Vulkan wait while it owns
+the completion mutex. It is not proof of avoidable CPU lock contention.
+
+`unsubmitted` / `already_signalled` count sampled root states at entry; `nodes`
+counts root and nested FenceCycle::Wait calls. Sampling is periodic and may align
+with guest behavior: do not multiply by16 and present it as an exact whole-run
+measurement. Metadata/table limits from v2 still apply. Small unclassified time
+includes state checks, lifetime destruction and diagnostic overhead; phase sums
+must not be added to `samples` or v2 `dirty_prepare`.
+
+The production FenceCycle is used directly by these additional tests:
+
+```sh
+ASAN_OPTIONS=detect_leaks=0 python3 tests/gpu_submission/run_trace.py
+ASAN_OPTIONS=detect_leaks=0 SANITIZE=address,undefined python3 tests/gpu_submission/run.py
+# With the loader, Vulkan-Hpp/headers, ICD and Khronos layer configured:
+ASAN_OPTIONS=detect_leaks=0 VULKAN=1 python3 tests/gpu_submission/run_trace.py
+```
+
+Host tests gate each wait segment and verify cancellation and disjoint recursive
+accounting. Native mode uses the production FenceCycle with a real VkEvent-gated
+writer, copy and readback, comparing every byte with synchronization validation.
+Host mutex/list interfaces are test facades; native Vulkan calls and FenceCycle
+logic are real. No Android/Turnip performance result is inferred from llvmpipe.

@@ -27,6 +27,10 @@ namespace skyline::gpu::buffer_readback_probe {
     };
     inline constexpr std::array<const char *, Count> Names{
         "dirty_prepare", "current_prepare", "readback_wait", "upload_wait", "download", "upload", "hack", "released"};
+    enum WaitPart : unsigned { Chain, Submit, Mutex, Driver, Tail, WaitPartCount };
+    inline constexpr unsigned WaitMetricCount{WaitPartCount + 4};
+    inline constexpr std::array<const char *, WaitMetricCount> WaitNames{
+        "chain", "submit", "mutex", "driver", "semaphore_tail", "samples", "unsubmitted", "already_signalled", "nodes"};
     struct Value {
         uint64_t calls{}, bytes{}, ns{};
         bool operator==(const Value &) const = default;
@@ -39,9 +43,12 @@ namespace skyline::gpu::buffer_readback_probe {
     struct Entry {
         std::atomic<uint64_t> key{}, size{};
         std::array<Counter, Count> phases{};
+        std::array<Counter, WaitMetricCount> waits{};
+        std::atomic<uint64_t> sampleSequence{};
     };
     inline std::array<Entry, 512> entries{};
     inline std::array<Counter, Count> totals{};
+    inline std::array<Counter, WaitMetricCount> waitTotals{};
     inline std::atomic<uint64_t> dropped{};
     inline uint64_t Now() {
         timespec t{};
@@ -82,6 +89,79 @@ namespace skyline::gpu::buffer_readback_probe {
                 Find(id, size, phase == DirtyPrepare || phase == ReadbackWait || phase == Download || phase == Hack))
             Add(e->phases[phase], ns, bytes);
     }
+    inline bool SampleWait(uint64_t id, uint64_t size) {
+        auto e = Find(id, size);
+        return e && (e->sampleSequence.fetch_add(1, std::memory_order_relaxed) % 16 == 0);
+    }
+    struct WaitTrace {
+        uint64_t id, size, start, end{}, nodes{};
+        unsigned depth{};
+        bool enabled, unsubmitted{}, alreadySignalled{};
+        std::array<uint64_t, WaitPartCount> parts{};
+        WaitTrace(uint64_t id, uint64_t size, bool enabled)
+            : id{id}, size{size}, start{enabled ? Now() : 0}, enabled{enabled} {}
+        WaitTrace(const WaitTrace &) = delete;
+        WaitTrace &operator=(const WaitTrace &) = delete;
+        bool Enabled() const { return enabled; }
+        uint64_t Elapsed() const { return end ? end - start : Now() - start; }
+        void Finish() {
+            if (!enabled || end)
+                return;
+            end = Now();
+            auto e = Find(id, size, false);
+            auto add = [&](unsigned metric, uint64_t calls, uint64_t ns) {
+                auto update = [&](Counter &c) {
+                    c.calls.fetch_add(calls, std::memory_order_relaxed);
+                    c.ns.fetch_add(ns, std::memory_order_relaxed);
+                };
+                update(waitTotals[metric]);
+                if (e)
+                    update(e->waits[metric]);
+            };
+            for (unsigned p{}; p < WaitPartCount; ++p)
+                add(p, 1, parts[p]);
+            add(WaitPartCount, 1, Elapsed());
+            add(WaitPartCount + 1, unsubmitted, 0);
+            add(WaitPartCount + 2, alreadySignalled, 0);
+            add(WaitPartCount + 3, nodes, 0);
+        }
+        ~WaitTrace() { Finish(); }
+    };
+    // Explicit per-call context: simultaneous waiters and nested signal handling
+    // cannot borrow another thread's attribution. Only root phases are timed.
+    struct FenceWaitScope {
+        WaitTrace *trace;
+        bool root{};
+        unsigned phase{WaitPartCount};
+        uint64_t start{};
+        explicit FenceWaitScope(WaitTrace *trace) : trace{trace} {
+            if (trace) {
+                root = trace->depth++ == 0;
+                ++trace->nodes;
+            }
+        }
+        bool Active() const { return trace != nullptr; }
+        void Entry(bool submitted, bool signalled) {
+            if (root) {
+                trace->unsubmitted = !submitted && !signalled;
+                trace->alreadySignalled = signalled;
+            }
+        }
+        void Next(unsigned next) {
+            if (!root)
+                return;
+            auto now = Now();
+            if (phase < WaitPartCount)
+                trace->parts[phase] += now - start;
+            phase = next;
+            start = now;
+        }
+        ~FenceWaitScope() {
+            Next(WaitPartCount);
+            if (trace)
+                --trace->depth;
+        }
+    };
     struct Scope {
         uint64_t id, size, start, bytes;
         Phase phase;
@@ -100,6 +180,18 @@ namespace skyline::gpu::buffer_readback_probe {
     };
 #else
     inline void Record(uint64_t, uint64_t, Phase, uint64_t = 0, uint64_t = 0) {}
+    inline bool SampleWait(uint64_t, uint64_t) { return false; }
+    struct WaitTrace {
+        WaitTrace(uint64_t, uint64_t, bool) {}
+        bool Enabled() const { return false; }
+        void Finish() {}
+    };
+    struct FenceWaitScope {
+        explicit FenceWaitScope(WaitTrace *) {}
+        bool Active() const { return false; }
+        void Entry(bool, bool) {}
+        void Next(unsigned) {}
+    };
     struct Scope {
         Scope(uint64_t, uint64_t, Phase, uint64_t = 0, bool = true) {}
         void End() {}

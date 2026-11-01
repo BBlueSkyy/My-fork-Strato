@@ -12,7 +12,7 @@ namespace skyline::gpu {
         std::atomic<unsigned> waits{};
         bool done{};
         std::function<void()> complete;
-        void Wait() {
+        void Wait(bool = false, buffer_readback_probe::WaitTrace * = nullptr) {
             ++waits;
             if (!done && complete)
                 complete();

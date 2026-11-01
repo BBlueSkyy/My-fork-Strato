@@ -13,6 +13,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL Validation(VkDebugUtilsMessageSeverityFlag
 }
 static void VkCheck(VkResult result) { Check(result == VK_SUCCESS, "Vulkan operation failed"); }
 struct Vulkan {
+    bool externalDeviceInstanceOwnership{}; // Optional RAII owner outlives this fixture.
     VkInstance instance{};
     VkPhysicalDevice physical{};
     VkDevice device{};
@@ -83,10 +84,12 @@ struct Vulkan {
     }
     ~Vulkan() {
         vkDestroyCommandPool(device, pool, nullptr);
-        vkDestroyDevice(device, nullptr);
+        if (!externalDeviceInstanceOwnership)
+            vkDestroyDevice(device, nullptr);
         reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
             vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"))(instance, messenger, nullptr);
-        vkDestroyInstance(instance, nullptr);
+        if (!externalDeviceInstanceOwnership)
+            vkDestroyInstance(instance, nullptr);
     }
     VkCommandBuffer Begin() {
         VkCommandBuffer cmd{};

@@ -8,6 +8,7 @@
 #include <cstring>
 
 using skyline::gpu::FenceCycle;
+namespace buffer_readback_probe = skyline::gpu::buffer_readback_probe;
 using namespace std::chrono_literals;
 static int failures;
 static void check(bool success, const char *message) {
@@ -122,6 +123,7 @@ struct Texture : std::enable_shared_from_this<Texture> {
 using skyline::exception;
 #include "texture.inc"
 struct Buffer {
+    size_t id{1};
     std::shared_ptr<FenceCycle> cycle;
     bool guest{true}, isDirect{};
     enum class DirtyState { CpuDirty, Clean, GpuDirty } dirtyState{DirtyState::Clean};

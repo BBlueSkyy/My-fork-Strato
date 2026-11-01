@@ -58,6 +58,8 @@ jobs:
           PROBE_ENABLED=0 python3 tests/buffer_trap_dependencies/run.py
           PROBE_ENABLED=1 python3 tests/buffer_trap_dependencies/run.py
           python3 tests/buffer_trap_dependencies/run_probe.py --deps app/libraries
+          SANITIZE=address,undefined python3 tests/gpu_submission/run.py
+          python3 tests/gpu_submission/run_trace.py
 
       - name: Android Assemble
         env:

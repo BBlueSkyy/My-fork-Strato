@@ -42,9 +42,24 @@ int main() {
     assert(e);
     auto v = bp::Read(e->phases[bp::Download]);
     assert(v.calls == 8000 && v.bytes == 524288000 && v.ns == 16000000);
+    unsigned samples{};
+    for (unsigned i{}; i < 32; ++i)
+        samples += bp::SampleWait(81, 65536);
+    assert(samples == 2);
     {
         bp::Session session(false, false, false, false);
         bp::Record(81, 65536, bp::DirtyPrepare, 1000000);
+        {
+            bp::WaitTrace trace{81, 65536, true};
+            {
+                bp::FenceWaitScope root{&trace};
+                root.Entry(false, false);
+                root.Next(bp::Driver);
+                { bp::FenceWaitScope child{&trace}; child.Entry(true, true); child.Next(bp::Tail); }
+            }
+            trace.Finish();
+            assert(trace.depth == 0 && trace.nodes == 2 && trace.unsubmitted && !trace.alreadySignalled);
+        }
         // A valid split-counter snapshot must emit late fields even with no new call.
         bp::totals[bp::Download].bytes.fetch_add(31);
         bp::totals[bp::Download].ns.fetch_add(13);
@@ -53,12 +68,13 @@ int main() {
         session.Stop();
     }
     alive = true;
-    bool hot{}, late{};
+    bool hot{}, late{}, phases{};
     for (const auto &text : logs) {
         hot |= text.find("hot id=81 size=65536") != std::string::npos;
         late |= text.find("download=0,31,13") != std::string::npos;
+        phases |= text.find("BufferReadback v3 hot id=81 size=65536") != std::string::npos && text.find("unsubmitted=1,0,0") != std::string::npos;
     }
-    assert(hot && late);
+    assert(hot && late && phases);
     for (uint64_t i = 4000; i < 5000; ++i)
         bp::Record(i, 4096, bp::Download, 20, 4096);
     assert(bp::dropped.load() > 0);

@@ -14,18 +14,21 @@ namespace skyline::gpu::buffer_readback_probe {
         }
         Value Delta(Value a, Value b) { return {a.calls - b.calls, a.bytes - b.bytes, a.ns - b.ns}; }
         using Row = std::array<Value, Count>;
-        Row ReadRow(const std::array<Counter, Count> &counters) {
-            Row row;
-            for (unsigned p{}; p < Count; ++p)
+        template <size_t N> std::array<Value, N> ReadRow(const std::array<Counter, N> &counters) {
+            std::array<Value, N> row;
+            for (unsigned p{}; p < N; ++p)
                 row[p] = Read(counters[p]);
             return row;
         }
-        std::string Print(const Row &row) {
+        template <size_t N>
+        std::string PrintValues(const std::array<Value, N> &row, const std::array<const char *, N> &names) {
             std::ostringstream out;
-            for (unsigned p{}; p < Count; ++p)
-                out << Names[p] << "=" << row[p].calls << "," << row[p].bytes << "," << row[p].ns << " ";
+            for (unsigned p{}; p < N; ++p)
+                out << names[p] << "=" << row[p].calls << "," << row[p].bytes << "," << row[p].ns << " ";
             return out.str();
         }
+        std::string Print(const Row &row) { return PrintValues(row, Names); }
+        using WaitRow = std::array<Value, WaitMetricCount>;
     } // namespace
     struct Session::State {
         std::mutex mutex;
@@ -34,11 +37,16 @@ namespace skyline::gpu::buffer_readback_probe {
         std::thread thread;
         Row beforeTotal{};
         std::array<Row, 512> before{};
+        WaitRow beforeWaitTotal{};
+        std::array<WaitRow, 512> beforeWait{};
         uint64_t previous{Now()};
         State() {
             beforeTotal = ReadRow(totals);
-            for (unsigned i{}; i < 512; ++i)
+            beforeWaitTotal = ReadRow(waitTotals);
+            for (unsigned i{}; i < 512; ++i) {
                 before[i] = ReadRow(entries[i].phases);
+                beforeWait[i] = ReadRow(entries[i].waits);
+            }
         }
         void Report() {
             const auto now = Now();
@@ -51,11 +59,21 @@ namespace skyline::gpu::buffer_readback_probe {
             Log("BufferReadback v2 window start={} end={} wall_ns={} calls,bytes,completed_thread_ns (inclusive,not "
                 "frame time): {}",
                 previous, now, now - previous, Print(total));
+            WaitRow waitDelta;
+            for (unsigned p{}; p < WaitMetricCount; ++p) {
+                auto v = Read(waitTotals[p]);
+                waitDelta[p] = Delta(v, beforeWaitTotal[p]);
+                beforeWaitTotal[p] = v;
+            }
+            Log("BufferReadback v3 phases start={} end={} sample_every=16 calls,0,completed_thread_ns (root phases "
+                "disjoint; samples includes phases): {}",
+                previous, now, PrintValues(waitDelta, WaitNames));
             previous = now;
             // Heap-owned snapshots keep the reporter's native stack bounded.
             struct Hot {
                 uint64_t rank{}, id{}, size{};
                 Row delta{};
+                WaitRow waitDelta{};
             };
             std::array<Hot, 4> hot{};
             unsigned active{};
@@ -71,20 +89,30 @@ namespace skyline::gpu::buffer_readback_probe {
                     delta[p] = Delta(v, before[i][p]);
                     before[i][p] = v;
                 }
+                WaitRow waitDelta;
+                for (unsigned p{}; p < WaitMetricCount; ++p) {
+                    auto v = Read(entries[i].waits[p]);
+                    changed |= v != beforeWait[i][p];
+                    waitDelta[p] = Delta(v, beforeWait[i][p]);
+                    beforeWait[i][p] = v;
+                }
                 if (!changed)
                     continue;
                 ++active;
-                auto rank = delta[DirtyPrepare].ns + delta[ReadbackWait].ns;
-                Hot next{rank, key - 1, entries[i].size.load(), delta};
+                auto rank = std::max(delta[DirtyPrepare].ns + delta[ReadbackWait].ns, waitDelta[WaitPartCount].ns);
+                Hot next{rank, key - 1, entries[i].size.load(), delta, waitDelta};
                 if (rank > hot.back().rank) {
                     hot.back() = next;
                     std::sort(hot.begin(), hot.end(), [](const auto &a, const auto &b) { return a.rank > b.rank; });
                 }
             }
             for (const auto &row : hot)
-                if (row.rank)
+                if (row.rank) {
                     Log("BufferReadback v2 hot id={} size={} rank_gpu_dirty_thread_ns={} {}", row.id, row.size,
                         row.rank, Print(row.delta));
+                    Log("BufferReadback v3 hot id={} size={} {}", row.id, row.size,
+                        PrintValues(row.waitDelta, WaitNames));
+                }
             Log("BufferReadback v2 coverage active_ids={} top_dirty_ids_only=4 dropped_records_all={} (restart app per "
                 "capture; IDs belong to one BufferManager)",
                 active, dropped.load());
@@ -98,7 +126,7 @@ namespace skyline::gpu::buffer_readback_probe {
                 try {
                     AsyncLogger::UpdateTag();
                     Log("BufferReadback v2 start fast={} fast_writes={} max_clocks={} free_guest={} capacity=512 "
-                        "interval_ms=5000",
+                        "interval_ms=5000 wait_sample_every=16",
                         fast, writes, clocks, freeGuest);
                     std::unique_lock lock{p->mutex};
                     while (!p->condition.wait_for(lock, std::chrono::seconds(5), [p] { return p->stopping; })) {

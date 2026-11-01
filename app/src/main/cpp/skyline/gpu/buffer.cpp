@@ -42,7 +42,9 @@ namespace skyline::gpu {
                     if (waitCycle) {
                         i64 startNs{buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold ? util::GetTimeNs() : 0};
                         buffer_readback_probe::Scope diagnosticWait{buffer->id, buffer->mirror.size(), diagnosticGpuDirty ? buffer_readback_probe::DirtyPrepare : buffer_readback_probe::CurrentPrepare};
-                        waitCycle->Wait();
+                        buffer_readback_probe::WaitTrace diagnosticTrace{buffer->id, buffer->mirror.size(), diagnosticGpuDirty && buffer_readback_probe::SampleWait(buffer->id, buffer->mirror.size())};
+                        waitCycle->Wait(false, diagnosticTrace.Enabled() ? &diagnosticTrace : nullptr);
+                        diagnosticTrace.Finish();
                         diagnosticWait.End();
                         if (startNs)
                             buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(util::GetTimeNs() - startNs);

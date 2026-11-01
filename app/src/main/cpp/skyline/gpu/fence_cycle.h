@@ -8,6 +8,7 @@
 #include <common.h>
 #include <common/spin_lock.h>
 #include <common/atomic_forward_list.h>
+#include <gpu/buffer_readback_probe.h>
 
 namespace skyline::gpu {
     class CommandScheduler;
@@ -127,7 +128,10 @@ namespace skyline::gpu {
          * @brief Wait on a fence cycle till it has been signalled
          * @param shouldDestroy If true, the dependencies of this cycle will be destroyed after the fence is signalled
          */
-        void Wait(bool shouldDestroy = false) {
+        void Wait(bool shouldDestroy = false, buffer_readback_probe::WaitTrace *diagnostic = nullptr) {
+            buffer_readback_probe::FenceWaitScope diagnosticScope{diagnostic};
+            if (diagnosticScope.Active())
+                diagnosticScope.Entry(submitted.load(std::memory_order_acquire), signalled.test(std::memory_order_acquire));
             if (signalled.test(std::memory_order_consume)) {
                 if (shouldDestroy) {
                     std::unique_lock lock{mutex};
@@ -136,15 +140,19 @@ namespace skyline::gpu {
                 return;
             }
 
+            diagnosticScope.Next(buffer_readback_probe::Chain);
             {
                 std::shared_lock lock{chainMutex};
-                chainedCycles.Iterate([shouldDestroy](auto &cycle) {
-                    cycle->Wait(shouldDestroy);
+                chainedCycles.Iterate([shouldDestroy, diagnostic](auto &cycle) {
+                    cycle->Wait(shouldDestroy, diagnostic);
                 });
             }
 
+            diagnosticScope.Next(buffer_readback_probe::Submit);
             WaitSubmit();
+            diagnosticScope.Next(buffer_readback_probe::Mutex);
             std::unique_lock lock{mutex};
+            diagnosticScope.Next(buffer_readback_probe::WaitPartCount);
 
             if (signalled.test(std::memory_order_relaxed)) {
                 if (shouldDestroy)
@@ -153,6 +161,7 @@ namespace skyline::gpu {
             }
 
             vk::Result waitResult;
+            diagnosticScope.Next(buffer_readback_probe::Driver);
             while ((waitResult = (*device).waitForFences(1, &fence, false, std::numeric_limits<u64>::max(), *device.getDispatcher())) != vk::Result::eSuccess) {
                 if (waitResult == vk::Result::eTimeout)
                     // Retry if the waiting time out
@@ -165,8 +174,10 @@ namespace skyline::gpu {
                 throw exception("An error occurred while waiting for fence {}: {}", fmt::ptr(static_cast<VkFence>(fence)), vk::to_string(waitResult));
             }
 
+            diagnosticScope.Next(buffer_readback_probe::Tail);
             if (semaphoreUnsignalCycle)
-                semaphoreUnsignalCycle->Wait();
+                semaphoreUnsignalCycle->Wait(false, diagnostic);
+            diagnosticScope.Next(buffer_readback_probe::WaitPartCount);
 
             signalled.test_and_set(std::memory_order_relaxed);
             if (shouldDestroy)
