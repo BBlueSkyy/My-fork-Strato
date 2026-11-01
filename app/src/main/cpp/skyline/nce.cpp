@@ -34,6 +34,30 @@ namespace skyline::nce {
             AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
                 "CrysisNVNMemory: event={} minSize=0x{:X} ({}) cmdBuffer=0x{:X} data=0x{:X}",
                 gpr.x1, gpr.x2, gpr.x2, gpr.x0, gpr.x3));
+
+            // Updated main.nso stores the original command/control backing
+            // pointers and configured sizes in the wrapper at data+0x1A8.
+            // Read only on the verified title-specific callback and only when
+            // the complete 32-byte guest range is mapped.
+            constexpr u64 BackingOffset{0x1A8};
+            std::array<u64, 4> backing{};
+            if (gpr.x3 && gpr.x3 <= std::numeric_limits<u64>::max() -
+                                                 BackingOffset - sizeof(backing)) {
+                const auto address{gpr.x3 + BackingOffset};
+                auto range{span<u8>{reinterpret_cast<u8 *>(address), sizeof(backing)}};
+                if (state.process->memory.AddressSpaceContains(range) &&
+                    state.process->memory.IsRangeMapped(range)) {
+                    std::memcpy(backing.data(),
+                                state.process->memory.TranslateVirtualPointer<const u8 *>(address),
+                                sizeof(backing));
+                    AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+                        "CrysisNVNState: cmdBacking=0x{:X} ctrlBacking=0x{:X} configuredCmd=0x{:X} ({}) configuredCtrl=0x{:X} ({})",
+                        backing[0], backing[1], backing[2], backing[2], backing[3], backing[3]));
+                } else {
+                    AsyncLogger::LogSync(AsyncLogger::LogLevel::Info,
+                        "CrysisNVNState: wrapper backing fields not mapped");
+                }
+            }
             TRACE_EVENT_BEGIN("guest", "Guest");
             return;
         }
