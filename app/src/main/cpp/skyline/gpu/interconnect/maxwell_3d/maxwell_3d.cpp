@@ -885,6 +885,36 @@ namespace skyline::gpu::interconnect::maxwell3d {
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
+        // The first 1,580-event trace established a repeating 1280x720
+        // color scene pass after the depth-only 2048x2048 pass. Sample
+        // post-draw images at logarithmic milestones, without shader hashes.
+        auto &pacmanCap{diagnostic::PacmanCapture()};
+        if (pacmanCap.SnapshotsEnabled() && !transformFeedbackEnable) {
+            TextureView *sceneTarget{};
+            for (auto *view : activeState.GetColorAttachments()) {
+                if (view && view->texture &&
+                    view->texture->dimensions.width == 1280 &&
+                    view->texture->dimensions.height == 720) {
+                    sceneTarget = view;
+                    break;
+                }
+            }
+            const auto *pipeline{activeState.GetPipeline()};
+            if (sceneTarget && pipeline &&
+                pipeline->sourcePackedState.attachmentBlendStates[0].colorWriteMask) {
+                const auto ordinal{pacmanCap.NextSceneOrdinal()};
+                if (ordinal && (*ordinal == 1 || *ordinal == 8 || *ordinal == 16 ||
+                                *ordinal == 32 || *ordinal == 64 || *ordinal == 128 ||
+                                *ordinal == 176)) {
+                    const auto &p{pipeline->sourcePackedState};
+                    ctx.executor.CapturePacmanSceneStep(
+                        sceneTarget, *ordinal,
+                        fmt::format("guest_top={} count={} indexed={} vs={:016X} fs={:016X}",
+                                    static_cast<u32>(topology), count, indexed,
+                                    p.shaderHashes[1], p.shaderHashes[5]));
+                }
+            }
+        }
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
     
