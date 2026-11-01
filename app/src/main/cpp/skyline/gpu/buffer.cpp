@@ -422,13 +422,17 @@ namespace skyline::gpu {
         if (size == VK_WHOLE_SIZE)
             size = mirror.size() - offset;
         PrepareStagedRange(offset, size);
-        SynchronizeHostRegion(false, offset, size);
-        auto range{stagedRegions.Aligned(offset, size)};
-        ProtectStagedRange(range.begin, range.end, true);
-        stagedRegions.AssignExisting(offset, size, BufferRegionState::Owner::Gpu);
-        RefreshStagedDirtyState();
+        // Rebinding a GPU-owned range does not change authority or protections.
+        // Still register this execution's use and immutability below.
+        if (stagedRegions.Has(BufferRegionState::Owner::Cpu, offset, size) || stagedRegions.Has(BufferRegionState::Owner::Synced, offset, size)) {
+            SynchronizeHostRegion(false, offset, size);
+            auto range{stagedRegions.Aligned(offset, size)};
+            ProtectStagedRange(range.begin, range.end, true);
+            stagedRegions.AssignExisting(offset, size, BufferRegionState::Owner::Gpu);
+            RefreshStagedDirtyState();
+            AdvanceSequence();
+        }
         BlockAllCpuBackingWrites(offset, size);
-        AdvanceSequence();
     }
 
     void Buffer::MarkGpuDirtyImpl(vk::DeviceSize offset, vk::DeviceSize size) {

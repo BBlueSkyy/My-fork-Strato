@@ -111,7 +111,7 @@ share a real memfd and protection uses real mprotect/SIGSEGV. Checks include:
   writers; mandatory and disjoint faults; zero-byte demands; inline callback
   execution once; same-backing disjoint DMA; source authority during coalescence.
 - Overlapping external traps retain their callback and the GPU page's protection.
-- Concurrent CPU faults over 25 repetitions; wait failure/retry; invalidation.
+- Concurrent CPU faults over 25 repetitions; wait failure/retry; invalidation, including during a pending wait.
 - Trap replacement recovery across **19 injected allocation failures**, plus the
   foundation's nine interval-registration failures; no orphan callback after removal.
 - **2,000** randomized page-authority comparisons, bounds, partial last page and
@@ -152,3 +152,16 @@ set Fast GPU Readback, Fast Readback Writes, Force Maximum GPU Clocks and Free
 Guest Texture Memory OFF. Compare identical scenes/saves against master; record
 FPS, real simulation speed, pacing, flicker/magenta/black textures and stability
 separately. No 60FPS cheat. Other Drafts400/405/406/411/412/415 stay independent.
+
+## Follow-up: repeated binding overhead
+
+Device feedback for b741bec1: no perceptible Zelda improvement and approximately
+2–3 FPS lower. This is a reported game regression, not a measured attribution to
+one host function. The local repeated-binding fixture nevertheless reproduces a
+specific added cost: 2,000 identical GPU-dirty declarations issue 2,000 mprotect
+calls even though their protections/authority already match. The follow-up issues
+zero calls in that fixture while still recording each submission's access and
+immutability. Actual CPU→GPU authority changes still re-arm traps and preserve
+partial bytes. EnsureBounds also avoids allocation when no boundary is inserted;
+allocation-failure injection reproduced that redundant reserve independently.
+These results demonstrate removed host work, not recovered device FPS.

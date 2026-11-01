@@ -60,10 +60,15 @@ namespace skyline::gpu {
             auto r = Aligned(offset, size);
             if (r.begin == r.end)
                 return false;
-            if (regions.capacity() - regions.size() < 2) {
-                if (regions.size() > regions.max_size() - 2)
+            const size_t needed =
+                std::count_if(regions.begin(), regions.end(), [&](const auto& region) { return region.begin < r.begin && r.begin < region.end; }) +
+                std::count_if(regions.begin(), regions.end(), [&](const auto& region) { return region.begin < r.end && r.end < region.end; });
+            if (!needed)
+                return false;
+            if (regions.capacity() - regions.size() < needed) {
+                if (regions.size() > regions.max_size() - needed)
                     throw std::length_error("Too many buffer regions");
-                auto wanted = regions.size() + 2;
+                auto wanted = regions.size() + needed;
                 auto growth = regions.capacity() <= regions.max_size() / 2 ? regions.capacity() * 2 : regions.max_size();
                 regions.reserve(std::max(wanted, growth));
             }

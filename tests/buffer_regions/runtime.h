@@ -13,7 +13,15 @@
 #include <unistd.h>
 #include "trap_manager.h"
 #define TRACE_EVENT(...)
+// Count real protection syscalls without instrumenting the Android product.
+static std::atomic<size_t> regionProtectionCalls{};
+static int CountRegionProtect(void* address, size_t size, int permission) {
+    ++regionProtectionCalls;
+    return ::mprotect(address, size, permission);
+}
+#define mprotect CountRegionProtect
 #include "trap.inc"
+#undef mprotect
 namespace skyline {
     struct ArmContext {
         struct {

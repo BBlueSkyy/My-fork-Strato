@@ -69,6 +69,37 @@ static void UnrelatedCpuPageDoesNotWait() {
 }
 
 #if HAS_BUFFER_REGIONS
+static void StableGpuDirtyProtection() {
+    Fixture f;
+    auto b = f.buffer;
+    auto producer = std::make_shared<gpu::FenceCycle>();
+    producer->done = true;
+    f.GpuWrite(0, 2040, producer);
+    regionProtectionCalls = 0;
+    for (unsigned i = 0; i < 2000; ++i)
+        f.GpuWrite(0, 2040, producer);
+    std::printf("Repeated GPU-dirty bindings: %zu protection syscalls\n", regionProtectionCalls.load());
+    Check(regionProtectionCalls == 0, "stable GPU-dirty bindings repeated page protections");
+#ifndef WITH_VULKAN
+    gpu::BufferRegionState stableMap;
+    stableMap.Reset(8192, 4096);
+    failAllocation = 1;
+    try {
+        Check(!stableMap.EnsureBounds(0, 8192), "unchanged map added a boundary");
+    } catch (...) {
+        failAllocation = 0;
+        throw;
+    }
+    failAllocation = 0;
+#endif
+    // A real authority change must still re-arm protection and recover GPU bytes.
+    b->backing->data()[37] = 0x61;
+    Check(f.Load(37) == 0x61, "stable marking weakened GPU page protection");
+    f.GpuWrite(0, 2040, producer);
+    b->backing->data()[37] = 0x72;
+    Check(f.Load(37) == 0x72, "new GPU writer did not re-arm CPU-dirty page");
+    std::puts("PASS stable GPU ownership avoids protection/reserve work; ownership changes still trap");
+}
 static void DemandReadAndZeroSize() {
     Fixture f;
     auto b = f.buffer;
@@ -500,6 +531,7 @@ int main() {
     try {
         UnrelatedCpuPageDoesNotWait();
 #if HAS_BUFFER_REGIONS
+        StableGpuDirtyProtection();
         DemandReadAndZeroSize();
         ZeroWriteRetainsProtection();
         RequiredFaultAndSharedTrap();
