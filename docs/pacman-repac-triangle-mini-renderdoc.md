@@ -138,3 +138,42 @@ search with new draw ordinals if necessary. No rendering fix should be
 committed before evidence ties a specific GPU operation to the defect.
 
 **Stage 2 build and phone execution have not been validated yet.**
+
+
+## Stage 2 results and Stage 3 (November 1, 2026)
+
+The uploaded second `capture_001.zip` successfully contains six ordered,
+post-draw `B10G11R11UfloatPack32` images and a completed async readback
+marker. It captures no after-draw-176 image: this title's sampled scene has
+101 eligible full-resolution color draws per interval, so ordinal 176 was
+unreachable.
+
+The visible triangular discontinuity and overly bright region already
+exist after draw 1; after draw 16 they persist; after draw 64 much of the
+affected area has been replaced. HDR RGB values above 10 occupy
+4.673% / 4.673% / 1.330% of the first interval's pixels, respectively.
+The same pattern appears in interval 2. There are no NaN/Inf values.
+The 11,264 peak is finite and **does not prove an HDR bug by itself**.
+
+**Stage 3 has been published in the same Draft PR**. The normal
+manual triggers are unchanged: create
+`gpu_capture/pacman_world/ENABLE_SCENE_SNAPSHOTS` before a new
+`gpu_capture/pacman_world/ARM_CAPTURE`. Stage 3 now acquires a
+**pre-first-draw** RT snapshot and post-draw snapshots at ordinals
+1, 16, 32, 48, 64, 80 and 100, all within one scene interval. It
+uses the existing eight-image/64-MiB quota and async readback completion
+marker; no diagnostics run unarmed. These probes are intended to separate
+old RT contents from the actual draw responsible for a new anomaly.
+
+Send the newly generated `capture_###` ZIP with
+`scene_*.raw`, `scene_*.txt`, `gpu_events.txt`,
+`capture_complete.txt`, and `snapshot_readbacks_done.txt`,
+plus `emulation.log`. A matching phone screenshot/video showing the
+visible defect is important to separate expected scene lighting and
+raw-image orientation from actual display corruption.
+
+Full numeric results and SHA256 fingerprints:
+`docs/pacman-repac-capture-002-analysis.md`.
+
+**Not a rendering fix.** Stage-3 Android compilation and capture
+validation are pending. Preserve Draft, do not merge.
