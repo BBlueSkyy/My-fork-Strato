@@ -89,6 +89,7 @@ namespace skyline::gpu::diagnostic {
             ++generation;
             scanRequested = scanPending = scanCompleted = scanKept = 0;
             scanAnomalous = scanFailed = 0;
+            scanBaselineCaptured = false;
             reservedBytes = 0;
             reservedSnapshots = pendingSnapshots = writtenSnapshots = failedSnapshots = 0;
             presentationsFinished = false;
@@ -137,9 +138,11 @@ namespace skyline::gpu::diagnostic {
             if (abnormal) ++scanAnomalous;
             // First completed scan is a baseline. Retain at most four
             // anomalous examples, under a strict 5-image output limit.
-            const bool save{scanCompleted == 0 || (abnormal && scanKept < 5)};
-            if (save && scanKept < 5) ++scanKept;
-            return save && scanKept <= 5;
+            const bool baseline{!scanBaselineCaptured};
+            if (baseline) scanBaselineCaptured = true;
+            const bool save{(baseline || abnormal) && scanKept < 5};
+            if (save) ++scanKept;
+            return save;
         }
         void ScanFinished(std::uint64_t epoch, std::uint32_t sample,
                           std::uint32_t saturatedPixels, bool success) {
