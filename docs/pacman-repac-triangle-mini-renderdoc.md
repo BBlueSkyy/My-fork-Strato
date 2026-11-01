@@ -340,3 +340,56 @@ fault is identified, reproduced and regression-tested.
 
 Stage 6 code is published but the new ARM64 APK and on-device result
 are **not yet validated**. Keep PR Draft, no merge.
+
+
+## Stage 6 capture analyzed; duration bug fixed (2026-11-01)
+
+The first mode-3 attachment `capture_001.zip` confirms successful
+activation, but is **NOT an exhaustive negative A/B result**:
+
+- `executor_experiment_mode=3`, `recorded_presentations=60`,
+  `executor_experiment_draws=6213`, `dropped_events=0`.
+- The log arms mode 3 at `172955013` and closes the 60-present
+  metadata window at `175611024` (roughly **2.66 seconds**).
+- The user reports that the triangle remained visible upon returning
+  to the game after creating the files. The old implementation
+  incorrectly made `ExecutorExperimentMode()` return **0** whenever
+  the capture window ended. It automatically deactivated mode 3
+  immediately after the 60 presentations, even though its marker
+  remained on disk. The same duration limitation affected earlier
+  mode-1 and mode-2 A/B testing.
+- Therefore, the user may have observed the artifact **after the
+  2.66-second intervention had ceased**. The old data establish
+  activation and 6,213 selective submits only, not necessarily
+  a visual comparison over an entire playable sequence.
+
+### Revised A/B behavior
+
+The opt-in experiment mode now remains latched **until app process exit**
+(or until a new explicit capture replaces the mode). Only the metadata
+capture ends after 60 host presentations. No unarmed/default behavior
+changes. `capture_complete.txt` now records
+`executor_experiment_persists_after_capture=1` for tests 1/2/3.
+
+To retest **mode 3** on a new APK:
+1. Fully terminate the Strato app (not simply background it).
+2. With in-app `Executor Flush Threshold=256`, leave only
+   `ENABLE_EXECUTOR_SCENE_SUBMIT_TEST` (not the split/barrier/HDR
+   markers) in `gpu_capture/pacman_world`.
+3. Recreate the empty `ARM_CAPTURE` file **before** starting
+   the game, then boot the same save and scene.
+4. Play long enough to determine whether the triangle is present
+   while mode 3 is active. The experiment persists even after the
+   text ZIP's 60-frame `capture_complete.txt` exists, until the
+   application exits. Extra targeted submissions may lower FPS.
+5. Send the resulting ZIP/log and the on-screen visual result.
+
+One test per process. Removing a mode file after arming does not
+instantly disable that mode; close/restart Strato to restore normal
+`256` rendering. Do not merge test-only submission changes into
+the default pipeline.
+
+If mode 3 still fails after a complete A/B game run with the corrected
+persistent test, treat selective *scene-only* submissions as
+insufficient and prioritize the omitted depth, postprocess and
+presentation producer→consumer boundaries. No root-cause fix yet.
