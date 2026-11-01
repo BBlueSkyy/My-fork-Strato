@@ -69,7 +69,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                      bool indexed, u32 count, u32 first, u32 instances,
                                      i32 vertexOffset, const vk::Rect2D &scissor) {
         auto &cap{diagnostic::PacmanCapture()};
-        if (!cap.Active() || cap.ScanEnabled()) return;
+        if (!cap.Active() || cap.ScanEnabled() || cap.ExecutorExperimentMode()) return;
         if (cap.TakeRenderDocRequest()) {
             ctx.executor.captureNextExecution = true;
             cap.Record("RENDERDOC next_execution_requested; requires external RenderDoc layer");
