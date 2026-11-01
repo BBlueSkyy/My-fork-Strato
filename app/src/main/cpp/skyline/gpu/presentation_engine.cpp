@@ -175,7 +175,11 @@ namespace skyline::gpu {
                         const bool rpSplit{fs::exists(root / "ENABLE_EXECUTOR_RP_SPLIT_TEST", ec) && !ec};
                         ec.clear();
                         const bool rpBarrier{fs::exists(root / "ENABLE_EXECUTOR_BARRIER_TEST", ec) && !ec};
-                        const u32 experimentMode{rpBarrier ? 2U : rpSplit ? 1U : 0U};
+                        ec.clear();
+                        const bool sceneSubmit{fs::exists(root / "ENABLE_EXECUTOR_SCENE_SUBMIT_TEST", ec) && !ec};
+                        // Only one marker should be present: submit-mode is
+                        // intentionally distinct from renderpass/barrier tests.
+                        const u32 experimentMode{sceneSubmit ? 3U : rpBarrier ? 2U : rpSplit ? 1U : 0U};
                         capture.Start(folder, sceneSnapshots || scanHdr, scanHdr, experimentMode);
                         LOGI("MINIRD_PACMAN armed in {} scene_snapshots={} hdr_scan={} executor_test={}",
                              folder.string(), sceneSnapshots || scanHdr, scanHdr, experimentMode);
