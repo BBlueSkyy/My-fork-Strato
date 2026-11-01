@@ -222,6 +222,7 @@ namespace skyline::gpu::interconnect {
         std::vector<std::function<void()>> subpassBoundaryCallbacks; //!< Called immediately before leaving the current subpass
 
         std::vector<std::function<void()>> pendingDeferredActions;
+        std::vector<std::function<void()>> pacmanSceneReadbacks; // after GPU fence, diagnostic only
 
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
@@ -265,6 +266,9 @@ namespace skyline::gpu::interconnect {
         size_t submissionNumber{};
         ContextTag executionTag{};
         bool captureNextExecution{};
+        // Queues a GPU-ordered post-draw color-RT readback (only when manually armed).
+        void CapturePacmanSceneStep(TextureView *target, u32 sceneDrawOrdinal,
+                                    std::string_view drawDescription);
         UsageTracker usageTracker;
 
         CommandExecutor(const DeviceState &state);
