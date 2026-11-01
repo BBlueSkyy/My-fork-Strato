@@ -411,6 +411,64 @@ namespace skyline::gpu::interconnect {
                 static_cast<u32>(tex->usage), tex->surfaceSize));
             return;
         }
+        if (cap.ScanEnabled()) {
+            const auto ticket{cap.ReserveScan(tex->surfaceSize)};
+            if (!ticket) return;
+            const auto [scanId, epoch]{*ticket};
+            const auto interval{cap.PresentedFrames()};
+            const auto folder{cap.CaptureDirectory()};
+            BreakRenderPass(); // Explicitly armed: never split a normal draw.
+            auto staging{gpu.memory.AllocateStagingBuffer(tex->surfaceSize)};
+            AddCommand([tex, staging](vk::raii::CommandBuffer &cmd,
+                                       const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                cycle->AttachObjects(tex, staging);
+                tex->CopyIntoStagingBuffer(cmd, staging);
+            });
+            pacmanSceneReadbacks.emplace_back(
+                [staging, folder, scanId, epoch, interval] {
+                    // VK_FORMAT_B10G11R11_UFLOAT_PACK32: threshold >100
+                    // corresponds to packed R/G11 >1380, B10 >690.
+                    // The threshold separates prior bad (>10k pixels)
+                    // and good (zero pixels) captures. Detection only;
+                    // no shader or rendering decisions depend on it.
+                    auto *bytes{static_cast<const u8 *>(staging->data())};
+                    std::uint32_t above100{};
+                    for (std::size_t i{}; i < 1280ULL * 720; ++i) {
+                        std::uint32_t word{};
+                        std::memcpy(&word, bytes + i * 4, sizeof(word));
+                        if ((word & 0x7FFU) > 1380U ||
+                            ((word >> 11) & 0x7FFU) > 1380U ||
+                            ((word >> 22) & 0x3FFU) > 690U)
+                            ++above100;
+                    }
+                    auto &capture{diagnostic::PacmanCapture()};
+                    const bool keep{capture.KeepScanImage(epoch, above100)};
+                    bool ok{true};
+                    if (keep) {
+                        const auto stem{fmt::format("hdr_scan_{:02}_i{}", scanId, interval)};
+                        const auto rawPath{folder / (stem + ".raw")};
+                        const auto metaPath{folder / (stem + ".txt")};
+                        std::ofstream raw{rawPath, std::ios::binary | std::ios::trunc};
+                        if (raw)
+                            raw.write(reinterpret_cast<const char *>(bytes),
+                                      static_cast<std::streamsize>(staging->size()));
+                        raw.close();
+                        std::ofstream meta{metaPath, std::ios::trunc};
+                        if (meta)
+                            meta << "interval=" << interval << " scan_id=" << scanId
+                                 << " draw_ordinal=100 format=B10G11R11UfloatPack32"
+                                 << " width=1280 height=720 over_100_pixels=" << above100
+                                 << " threshold_pixels=512\n";
+                        meta.close();
+                        ok = raw.good() && meta.good();
+                    }
+                    capture.ScanFinished(epoch, scanId, above100, ok);
+                    if (above100 >= 512)
+                        LOGI("MINIRD_PACMAN HDR scan match sample={} pixels_above_100={} saved={}",
+                             scanId, above100, keep && ok);
+                });
+            return;
+        }
         const auto idOpt{cap.ReserveSnapshot(tex->surfaceSize)};
         if (!idOpt)
             return;
