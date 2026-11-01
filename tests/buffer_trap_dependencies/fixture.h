@@ -14,15 +14,26 @@ namespace skyline::gpu {
         uint64_t GetDiagnosticId() const {return diagnosticId;}
 #endif
         std::atomic<unsigned> waits{};
-        bool done{};
+        std::atomic<bool> done{};
+        std::recursive_mutex waitMutex;
+        std::vector<std::shared_ptr<FenceCycle>> predecessors;
         std::function<void()> complete;
         void Wait(bool = false, buffer_readback_probe::WaitTrace * = nullptr) {
             ++waits;
-            if (!done && complete)
-                complete();
-            done = true;
+            std::scoped_lock lock{waitMutex};
+            if (!done) {
+                for (const auto &previous : predecessors) previous->Wait();
+                if (complete) complete();
+                done = true;
+            }
         }
         bool Poll() { return done; }
+        void WaitSubmit() {}
+        void ChainCycle(const std::shared_ptr<FenceCycle> &previous) {
+            if(previous&&previous.get()!=this&&!previous->Poll()) {
+                std::scoped_lock lock{waitMutex};predecessors.push_back(previous);
+            }
+        }
     };
     struct Backing {
         std::vector<u8> bytes = std::vector<u8>(4096);
@@ -53,9 +64,10 @@ namespace skyline::gpu {
         std::shared_ptr<Backing> backing = std::make_shared<Backing>();
         std::optional<TrapHandle> trapHandle;
         std::shared_ptr<FenceCycle> cycle;
+        std::shared_ptr<FenceCycle> gpuWriteCycle;
         void DiagnoseGpuWrite(buffer_readback_probe::WriteSource, size_t, size_t, const std::shared_ptr<FenceCycle>&);
         std::recursive_mutex stateMutex;
-        std::mutex mutex;
+        std::recursive_mutex mutex;
         bool isDirect{}, blocked{};
         unsigned sequence{};
         std::atomic<unsigned> lockCalls{};
@@ -71,7 +83,7 @@ namespace skyline::gpu {
             mutex.lock();
         }
         void unlock();
-        uint64_t tag{};bool currentExecutionGpuDirty{};
+        uint64_t tag{};bool currentExecutionGpuDirty{},pendingGpuWrite{};
         void AllowAllBackingWrites(){std::scoped_lock lock{stateMutex};blocked=false;}
         bool try_lock() { return mutex.try_lock(); }
         bool AllCpuBackingWritesBlocked() { return blocked; }
@@ -83,7 +95,14 @@ namespace skyline::gpu {
         void Invalidate();
         void SynchronizeHost(bool skipTrap = false);
         bool SynchronizeGuest(bool skipTrap = false, bool nonBlocking = false);
+        bool SequencedCpuBackingWritesBlocked(){return blocked;}
+        bool WriteImplStaged(span<u8>,vk::DeviceSize,const std::function<void()>&);
         void MarkGpuDirtyImplStaged();
+        void MarkGpuDirtyImpl();
+        void MarkGpuDirtyImplDirect() {throw std::runtime_error("direct import not part of staged fixture");}
+        std::shared_ptr<FenceCycle> GetGuestReadCycle();
+        void WaitOnGuestReadFence();
+        #include "buffer_cycle.inc"
     };
 } // namespace skyline::gpu
 #include "buffer.inc"

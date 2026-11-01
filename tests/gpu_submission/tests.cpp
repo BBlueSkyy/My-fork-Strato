@@ -125,6 +125,8 @@ using skyline::exception;
 struct Buffer {
     size_t id{1};
     std::shared_ptr<FenceCycle> cycle;
+    std::shared_ptr<FenceCycle> gpuWriteCycle;
+    bool currentExecutionGpuDirty{},pendingGpuWrite{};
     bool guest{true}, isDirect{};
     enum class DirtyState { CpuDirty, Clean, GpuDirty } dirtyState{DirtyState::Clean};
     std::mutex stateMutex;

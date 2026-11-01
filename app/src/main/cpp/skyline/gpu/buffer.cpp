@@ -58,6 +58,7 @@ namespace skyline::gpu {
                     }
 
                     std::scoped_lock lock{*buffer};
+                    std::shared_ptr<FenceCycle> nextCycle{};
                     {
                         std::scoped_lock stateLock{buffer->stateMutex};
                         // Acquiring the resource may have waited for submission to
@@ -71,12 +72,14 @@ namespace skyline::gpu {
                             return;
                         }
                         diagnosticGpuDirty = buffer->dirtyState == DirtyState::GpuDirty;
+                        nextCycle = diagnosticGpuDirty ? buffer->GetGuestReadCycle() : buffer->cycle;
                     }
-                    if (waitCycle && buffer->cycle == waitCycle) {
-                        buffer->cycle = {};
-                        waitCycle = {};
+                    if (waitCycle && nextCycle == waitCycle) {
+                        // The producer is ready. Retain any later readers for a
+                        // future upload; the callback rechecks under both locks.
+                        return;
                     } else {
-                        waitCycle = buffer->cycle;
+                        waitCycle = std::move(nextCycle);
 #if STRATO_BUFFER_READBACK_PROBE
                         diagnosticAnnotation = buffer->diagnosticLastAnnotation;
 #endif
@@ -101,7 +104,7 @@ namespace skyline::gpu {
             if (!lock)
                 return false;
 
-            if (buffer->cycle)
+            if (auto readCycle{buffer->GetGuestReadCycle()}; readCycle && !readCycle->Poll())
                 return false;
 
             buffer->SynchronizeGuest(true); // We can skip trapping since the caller will do it
@@ -135,7 +138,7 @@ namespace skyline::gpu {
             if (!lock)
                 return false;
 
-            if (buffer->cycle)
+            if (auto readCycle{buffer->GetGuestReadCycle()}; readCycle && !readCycle->Poll())
                 return false;
 
             buffer->SynchronizeGuest(true); // We need to assume the buffer is dirty since we don't know what the guest is writing
@@ -319,9 +322,12 @@ namespace skyline::gpu {
 
         // If the buffer is GPU dirty do the write on the GPU and we're done
         if (dirtyState == DirtyState::GpuDirty) {
-            if (gpuCopyCallback)
+            if (gpuCopyCallback) {
+                // This execution becomes a producer even without a dirty-state
+                // transition (inline uploads and constant-buffer updates).
+                pendingGpuWrite = true;
                 gpuCopyCallback();
-            else
+            } else
                 return true;
         }
 
@@ -402,6 +408,7 @@ namespace skyline::gpu {
 
     void Buffer::MarkGpuDirtyImpl() {
         currentExecutionGpuDirty = true;
+        pendingGpuWrite = true;
 
         if (isDirect)
             MarkGpuDirtyImplDirect();
@@ -473,22 +480,42 @@ namespace skyline::gpu {
     void Buffer::WaitOnFence() {
         TRACE_EVENT("gpu", "Buffer::WaitOnFence");
 
-        if (cycle) {
-            cycle->Wait();
+        if (auto fullCycle{cycle ? cycle : gpuWriteCycle}) {
+            fullCycle->Wait();
             cycle = nullptr;
+            gpuWriteCycle = nullptr;
         }
     }
 
     bool Buffer::PollFence() {
-        if (!cycle)
+        auto fullCycle{cycle ? cycle : gpuWriteCycle};
+        if (!fullCycle)
             return true;
 
-        if (cycle->Poll()) {
+        if (fullCycle->Poll()) {
             cycle = nullptr;
+            gpuWriteCycle = nullptr;
             return true;
         }
 
         return false;
+    }
+
+    std::shared_ptr<FenceCycle> Buffer::GetGuestReadCycle() {
+        if (!isDirect && dirtyState == DirtyState::GpuDirty && gpuWriteCycle && !pendingGpuWrite && !AllCpuBackingWritesBlocked())
+            return gpuWriteCycle;
+        return cycle ? cycle : gpuWriteCycle;
+    }
+
+    void Buffer::WaitOnGuestReadFence() {
+        auto readCycle{GetGuestReadCycle()};
+        if (readCycle) {
+            if (!readCycle->Poll())
+                readCycle->Wait();
+            if (cycle == readCycle)
+                cycle = nullptr;
+        }
+        gpuWriteCycle = nullptr;
     }
 
     void Buffer::Invalidate() {
@@ -539,11 +566,12 @@ namespace skyline::gpu {
             if (dirtyState != DirtyState::GpuDirty)
                 return true; // If the buffer is not dirty, there is no need to synchronize it
 
-            if (nonBlocking && !PollFence())
+            auto readCycle{GetGuestReadCycle()};
+            if (nonBlocking && readCycle && !readCycle->Poll())
                 return false; // If the fence is not signalled and non-blocking behaviour is requested then bail out
 
-            buffer_readback_probe::Scope diagnosticWait{id, mirror.size(), buffer_readback_probe::ReadbackWait, 0, static_cast<bool>(cycle)};
-            WaitOnFence();
+            buffer_readback_probe::Scope diagnosticWait{id, mirror.size(), buffer_readback_probe::ReadbackWait, 0, static_cast<bool>(readCycle)};
+            WaitOnGuestReadFence();
             diagnosticWait.End();
             {
                 buffer_readback_probe::Scope diagnosticCopy{id, mirror.size(), buffer_readback_probe::Download, mirror.size()};

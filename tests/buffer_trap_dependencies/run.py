@@ -29,12 +29,18 @@ with tempfile.TemporaryDirectory(prefix='strato-readback-traps-') as td:
     (td/'routing.inc').write_text('bool RouteGuest(int signal,siginfo_t *info,ArmContext *ctx) {return '+call(source,'void NCE::SignalHandler(')+';}\n')
     source=read('gpu/buffer.cpp',os.environ.get('BUFFER_BASELINE_REF'))
     functions=[]
-    for signature in ['void Buffer::DiagnoseGpuWrite(', 'void Buffer::SetupStagedTraps()', 'void Buffer::unlock()', 'void Buffer::WaitOnFence()', 'bool Buffer::PollFence()', 'void Buffer::Invalidate()', 'void Buffer::SynchronizeHost(', 'bool Buffer::SynchronizeGuest(', 'void Buffer::MarkGpuDirtyImplStaged()']:
+    for signature in ['void Buffer::DiagnoseGpuWrite(', 'void Buffer::SetupStagedTraps()', 'void Buffer::unlock()', 'void Buffer::WaitOnFence()', 'bool Buffer::PollFence()', 'void Buffer::Invalidate()', 'void Buffer::SynchronizeHost(', 'bool Buffer::SynchronizeGuest(', 'void Buffer::MarkGpuDirtyImplStaged()', 'void Buffer::MarkGpuDirtyImpl()', 'std::shared_ptr<FenceCycle> Buffer::GetGuestReadCycle()', 'void Buffer::WaitOnGuestReadFence()', 'bool Buffer::WriteImplStaged(']:
+        if signature not in source: continue
         start=source.index(signature);end=source.index('{',start)+1;depth=1
         while depth:
             depth+=(source[end]=='{')-(source[end]=='}');end+=1
         functions.append(source[start:end])
     (td/'buffer.inc').write_text('namespace skyline::gpu {\n'+'\n'.join(functions)+'\n}')
+    header=read('gpu/buffer.h',os.environ.get('BUFFER_BASELINE_REF'))
+    start=header.index('void UpdateCycle(');end=header.index('{',start)+1;depth=1
+    while depth:
+        depth+=(header[end]=='{')-(header[end]=='}');end+=1
+    (td/'buffer_cycle.inc').write_text(header[start:end])
     command=[os.environ.get('CXX','c++'),'-DSTRATO_BUFFER_READBACK_PROBE='+os.environ.get('PROBE_ENABLED','1'),'-std=c++20','-pthread','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-invalid-offsetof','-Wno-return-type','-O1','-g','-fsanitize='+os.environ.get('SANITIZERS','address,undefined'),'-fno-sanitize-recover=all','-I'+str(here),'-I'+str(td),'-I'+str(cpp),str(here/'tests.cpp'),'-o',str(td/'test')]
     if os.environ.get('VULKAN'):
         command += ['-DWITH_VULKAN','-I'+os.environ['VULKAN_HEADERS_INCLUDE_DIR'],os.environ.get('VULKAN_LOADER_LIBRARY','-lvulkan')]

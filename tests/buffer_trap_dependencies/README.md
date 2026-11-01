@@ -161,3 +161,28 @@ maximum clocks and Free Guest OFF initially. Save complete v2/v3 lines. The
 phase split establishes whether submit/chain/mutex/driver/semaphore completion
 dominates; writer/range clues guide a follow-up dependency/range proof. No safe
 regional or last-writer-only bypass is established by the current captures.
+
+## Functional producer-scoped readback
+
+The latest functional build disables the optional probe. Buffers retain distinct
+producer and latest-use cycles; mandatory readback waits for the producer while
+later read-only GPU users can continue. Upload/coalescence/destruction retain
+full dependencies. Unknown or unsubmitted writers remain conservative.
+
+```sh
+ASAN_OPTIONS=detect_leaks=0:handle_segv=0 PROBE_ENABLED=0 python3 tests/buffer_trap_dependencies/run.py
+# Native RED against the previous implementation (expected nonzero exit):
+ASAN_OPTIONS=detect_leaks=0:handle_segv=0 PROBE_ENABLED=0 VULKAN=1 BUFFER_BASELINE_REF=44b1b05 python3 tests/buffer_trap_dependencies/run.py --producer-native-only
+# Native GREEN, same gated Vulkan writer/reader and byte comparisons:
+ASAN_OPTIONS=detect_leaks=0:handle_segv=0 PROBE_ENABLED=0 VULKAN=1 python3 tests/buffer_trap_dependencies/run.py
+```
+
+producer.inc exercises extracted production MarkGpuDirtyImpl, UpdateCycle,
+WriteImplStaged, guest/host synchronization and traps. producer_native.inc adds a
+real writer, GPU copy and gated later reader: CPU readback/store can finish while
+that reader stays pending; upload must wait; old/new GPU consumers receive the
+correct versions. Tests include replacement during a wait, failure/retry, full
+poll cleanup, AllWrites, repeated inline/CBUF GPU-dirty writers and nested unlocks.
+The pending writer bit is separate from temporary barrier state and is consumed
+only when associated with an execution cycle. The old read-only consumer cycle
+is never discarded merely because its producer is complete.

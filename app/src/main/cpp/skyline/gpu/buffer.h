@@ -51,6 +51,8 @@ namespace skyline::gpu {
         std::atomic<ContextTag> tag{}; //!< The tag associated with the last lock call
         std::optional<GuestBuffer> guest;
         std::shared_ptr<FenceCycle> cycle{}; //!< A fence cycle for when any host operation mutating the buffer has completed, it must be waited on prior to any mutations to the backing
+        std::shared_ptr<FenceCycle> gpuWriteCycle{}; //!< (Staged) Latest producer execution; later readers need not delay copying backing to mirror
+        bool pendingGpuWrite{}; //!< (Staged) Recorded writer not yet associated with a cycle; survives nested unlocks
         size_t id;
 #if STRATO_BUFFER_READBACK_PROBE
         buffer_readback_probe::WriteSnapshot diagnosticLastAnnotation{}; //!< Last annotation, not proof of the last writer. Resource lock required.
@@ -199,6 +201,9 @@ namespace skyline::gpu {
         void MarkGpuDirtyImplStaged();
 
         void MarkGpuDirtyImpl();
+        /** Resource and state locks required. Unknown producers retain the full-use dependency. */
+        std::shared_ptr<FenceCycle> GetGuestReadCycle();
+        void WaitOnGuestReadFence();
 
       public:
         void UpdateCycle(const std::shared_ptr<FenceCycle> &newCycle) {
@@ -207,6 +212,12 @@ namespace skyline::gpu {
             if (cycle && cycle != newCycle)
                 cycle->WaitSubmit();
             newCycle->ChainCycle(cycle);
+            if (!isDirect) {
+                std::scoped_lock stateLock{stateMutex};
+                if (dirtyState == DirtyState::GpuDirty && (pendingGpuWrite || !gpuWriteCycle))
+                    gpuWriteCycle = newCycle;
+            }
+            pendingGpuWrite = false;
             cycle = newCycle;
         }
 

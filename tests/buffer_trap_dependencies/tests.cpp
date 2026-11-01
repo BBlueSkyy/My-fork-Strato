@@ -79,6 +79,7 @@ static void AnnotationDoesNotSynchronize() {
 #endif
     std::puts("PASS production write annotation preserves cycle, dirty state and wait policy");
 }
+#include "producer.inc"
 #ifdef WITH_VULKAN
 #include "vulkan.inc"
 static void NativePendingReader() {
@@ -133,13 +134,21 @@ static void NativePendingWriter() {
     std::puts("PASS native pending GPU writer blocks CPU store; mandatory GPU-dirty readback preserves bytes; zero validation errors");
 }
 
+#include "producer_native.inc"
 #endif
-int main(){
+int main(int argc,char** argv){
+#ifndef WITH_VULKAN
+    (void)argc;(void)argv;
+#endif
     struct sigaction action{};action.sa_sigaction=Fault;action.sa_flags=SA_SIGINFO;sigemptyset(&action.sa_mask);
     Check(!sigaction(SIGSEGV,&action,nullptr),"sigaction failed");
-    try{AnnotationDoesNotSynchronize();CleanStoreDoesNotWait();DirtyProducerStillWaits();ProducerFailureRecovery();
+    try{
 #ifdef WITH_VULKAN
-    NativePendingReader();NativePendingWriter();
+    if(argc>1&&std::string_view{argv[1]}=="--producer-native-only"){NativeWriterThenPendingReader();return 0;}
+#endif
+    AnnotationDoesNotSynchronize();ProducerReadbackDoesNotWaitForReader();FailedTrackedProducerRetries();NewWriterDuringWaitIsRevalidated();FullPollAndAllWritesRemainConservative();InlineGpuDirtyWriteBecomesProducer();NestedUnlockCannotForgetRecordedWriter();CleanStoreDoesNotWait();DirtyProducerStillWaits();ProducerFailureRecovery();
+#ifdef WITH_VULKAN
+    NativeWriterThenPendingReader();NativePendingReader();NativePendingWriter();
 #endif
     }catch(const std::exception&e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}
 }
