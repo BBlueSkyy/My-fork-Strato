@@ -412,6 +412,8 @@ namespace skyline::gpu::interconnect {
             return;
         }
         if (cap.ScanEnabled()) {
+            if (tex->format->vkFormat != vk::Format::eB10G11R11UfloatPack32)
+                return; // Raw packed-float scan is only valid for this format.
             const auto ticket{cap.ReserveScan(tex->surfaceSize)};
             if (!ticket) return;
             const auto [scanId, epoch]{*ticket};
