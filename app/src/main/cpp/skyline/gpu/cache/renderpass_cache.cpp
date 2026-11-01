@@ -119,6 +119,8 @@ namespace skyline::gpu::cache {
             hashReferences(subpass.pColorAttachments, subpass.colorAttachmentCount);
             if (subpass.pResolveAttachments)
                 hashReferences(subpass.pResolveAttachments, subpass.colorAttachmentCount);
+            else
+                HASH(0U); // Match the owned key's empty resolve-attachment vector.
 
             HASH(subpass.pDepthStencilAttachment != nullptr);
             if (subpass.pDepthStencilAttachment) {
@@ -172,7 +174,7 @@ namespace skyline::gpu::cache {
 
             RETF(subpass.depthStencilAttachment.has_value() != (vkSubpass->pDepthStencilAttachment != nullptr))
             if (subpass.depthStencilAttachment)
-                RETF(subpass.depthStencilAttachment->attachment != vkSubpass->pDepthStencilAttachment->attachment &&
+                RETF(subpass.depthStencilAttachment->attachment != vkSubpass->pDepthStencilAttachment->attachment ||
                     subpass.depthStencilAttachment->layout != vkSubpass->pDepthStencilAttachment->layout)
 
             RETARRNEQ(subpass.preserveAttachments, vkSubpass->pPreserveAttachments, vkSubpass->preserveAttachmentCount)
