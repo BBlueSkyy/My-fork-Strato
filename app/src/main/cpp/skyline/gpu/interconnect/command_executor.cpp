@@ -11,6 +11,9 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <gpu/diagnostic/pacman_triangle_capture.h>
+#include <filesystem>
+#include <fstream>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -382,6 +385,80 @@ namespace skyline::gpu::interconnect {
 
     static bool ViewsEqual(vk::ImageView a, TextureView *b) {
         return (!a && !b) || (a && b && b->GetView() == a);
+    }
+
+
+    void CommandExecutor::CapturePacmanSceneStep(TextureView *target, u32 ordinal,
+                                                  std::string_view drawDescription) {
+        auto &cap{diagnostic::PacmanCapture()};
+        if (!cap.SnapshotsEnabled() || !target || !target->texture)
+            return;
+        auto tex{target->texture};
+        // The first capture established that the scene color pass is 1280x720.
+        // Check dimensions and image-copy prerequisites, never alter the RT.
+        if (tex->dimensions.width != 1280 || tex->dimensions.height != 720 ||
+            tex->dimensions.depth != 1 || tex->levelCount != 1 ||
+            tex->layerCount != 1 || tex->sampleCount != vk::SampleCountFlagBits::e1 ||
+            !tex->surfaceSize || !tex->format ||
+            !(tex->format->vkAspect & vk::ImageAspectFlagBits::eColor) ||
+            tex->format->IsCompressed() ||
+            !(tex->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+            (tex->layout != vk::ImageLayout::eGeneral &&
+             tex->layout != vk::ImageLayout::eTransferSrcOptimal)) {
+            cap.Record(fmt::format(
+                "SCENE_SNAPSHOT_SKIPPED ordinal={} tex={} layout={} usage={} size={}",
+                ordinal, fmt::ptr(tex.get()), vk::to_string(tex->layout),
+                static_cast<u32>(tex->usage), tex->surfaceSize));
+            return;
+        }
+        const auto idOpt{cap.ReserveSnapshot(tex->surfaceSize)};
+        if (!idOpt)
+            return;
+        const auto id{*idOpt};
+        const auto interval{cap.PresentedFrames()};
+        const auto folder{cap.CaptureDirectory()};
+        const auto rawPath{folder / fmt::format(
+            "scene_{:02}_i{}_draw{:03}_1280x720.raw", id, interval, ordinal)};
+        const auto metaPath{folder / fmt::format("scene_{:02}.txt", id)};
+        const auto description{std::string{drawDescription}};
+        const auto details{fmt::format(
+            "id={} interval={} scene_draw_ordinal={} texture={} "
+            "dimensions=1280x720 format={} layout={} size={} "
+            "executor={} submission={} draw={} note=post_draw_gpu_ordered\\n",
+            id, interval, ordinal, fmt::ptr(tex.get()),
+            vk::to_string(tex->format->vkFormat), vk::to_string(tex->layout),
+            tex->surfaceSize, fmt::ptr(this), submissionNumber, description)};
+
+        // Ends the current render pass, then copies the target. This is a
+        // deliberate diagnostic-only split, never performed in normal play.
+        BreakRenderPass();
+        auto staging{gpu.memory.AllocateStagingBuffer(tex->surfaceSize)};
+        AddCommand([tex, staging](vk::raii::CommandBuffer &cmd,
+                                   const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+            cycle->AttachObjects(tex, staging);
+            tex->CopyIntoStagingBuffer(cmd, staging);
+        });
+        pacmanSceneReadbacks.emplace_back([staging, rawPath, metaPath, details, id] {
+            std::ofstream out{rawPath, std::ios::binary | std::ios::trunc};
+            if (out)
+                out.write(reinterpret_cast<const char *>(staging->data()),
+                          static_cast<std::streamsize>(staging->size()));
+            out.close();
+            const bool rawGood{out.good()};
+            std::ofstream info{metaPath, std::ios::trunc};
+            if (info)
+                info << details;
+            info.close();
+            const bool ok{rawGood && info.good()};
+            diagnostic::PacmanCapture().SnapshotFinished(ok);
+            if (ok)
+                LOGI("MINIRD_PACMAN scene snapshot {} written", id);
+            else
+                LOGE("MINIRD_PACMAN scene snapshot {} failed", id);
+        });
+        cap.Record(fmt::format(
+            "SCENE_SNAPSHOT_RESERVED id={} interval={} ordinal={} tex={} bytes={}",
+            id, interval, ordinal, fmt::ptr(tex.get()), tex->surfaceSize));
     }
 
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
@@ -788,6 +865,12 @@ namespace skyline::gpu::interconnect {
             SubmitInternal();
             submissionNumber++;
         }
+
+        // Our staging buffer can be read only after this slot's cycle completes.
+        // The completion waiter was enqueued before SubmitInternal().
+        for (auto &readback : pacmanSceneReadbacks)
+            waiterThread.Queue(nullptr, std::move(readback));
+        pacmanSceneReadbacks.clear();
 
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission
