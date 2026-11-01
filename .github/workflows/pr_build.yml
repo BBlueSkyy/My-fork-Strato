@@ -51,13 +51,23 @@ jobs:
           python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
           python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
 
+      - name: Test bounded readback diagnostics
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          python3 tests/readback_probe/run.py --deps app/libraries
+          ASAN_OPTIONS=detect_leaks=0:handle_segv=0 python3 tests/readback_probe/pipeline.py
+          ASAN_OPTIONS=detect_leaks=0:handle_segv=0 PROBE_ENABLED=0 python3 tests/readback_probe/pipeline.py
+          SANITIZE=address,undefined CXXFLAGS=-DSTRATO_READBACK_DIAGNOSTICS=1 python3 tests/gpu_submission/run.py
+          SANITIZE=address,undefined python3 tests/gpu_submission/run.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache -PreadbackDiagnostics=true assembleDevRelease
       - name: Rename ARM64 DevRelease APK
         run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
 
