@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 namespace skyline::gpu {
+    struct FenceCycle;
     // Independent page-aligned authority map. Boundaries only split, so trap
     // callbacks can safely keep scalar ranges while a later partition is added.
     class BufferRegionState {
@@ -17,6 +19,8 @@ namespace skyline::gpu {
         };
         struct Region : Range {
             Owner owner;
+            std::shared_ptr<FenceCycle> producer{};
+            bool pendingWrite{};
         };
 
       private:
@@ -24,7 +28,7 @@ namespace skyline::gpu {
         std::vector<Region> regions;
         std::vector<Range> accesses;
         bool Split(size_t offset) {
-            auto it = std::find_if(regions.begin(), regions.end(), [&](auto r) { return r.begin < offset && offset < r.end; });
+            auto it = std::find_if(regions.begin(), regions.end(), [&](const auto& r) { return r.begin < offset && offset < r.end; });
             if (it == regions.end())
                 return false;
             auto index = static_cast<size_t>(it - regions.begin());
@@ -79,8 +83,8 @@ namespace skyline::gpu {
             auto r = Aligned(offset, size);
             if (r.begin == r.end)
                 return;
-            auto first = std::find_if(regions.begin(), regions.end(), [&](auto p) { return p.begin == r.begin; });
-            auto last = std::find_if(regions.begin(), regions.end(), [&](auto p) { return p.end == r.end; });
+            auto first = std::find_if(regions.begin(), regions.end(), [&](const auto& p) { return p.begin == r.begin; });
+            auto last = std::find_if(regions.begin(), regions.end(), [&](const auto& p) { return p.end == r.end; });
             if (first == regions.end() || last == regions.end())
                 throw std::logic_error("Unprotected buffer partition boundary");
             for (auto it = first;; ++it) {
@@ -89,11 +93,29 @@ namespace skyline::gpu {
                     break;
             }
         }
+        void MarkGpuWrite(size_t offset, size_t size) {
+            auto range = Aligned(offset, size);
+            if (range.begin == range.end)
+                return;
+            AssignExisting(offset, size, Owner::Gpu);
+            for (auto& region : regions)
+                if (region.begin < range.end && range.begin < region.end) {
+                    region.producer.reset();
+                    region.pendingWrite = true;
+                }
+        }
+        void AttachProducer(const std::shared_ptr<FenceCycle>& cycle) {
+            for (auto& region : regions)
+                if (region.pendingWrite) {
+                    region.producer = cycle;
+                    region.pendingWrite = false;
+                }
+        }
         bool Has(Owner owner, size_t offset, size_t size) const {
             auto r = Aligned(offset, size);
             if (r.begin == r.end)
                 return false;
-            return std::any_of(regions.begin(), regions.end(), [&](auto p) { return p.owner == owner && p.begin < r.end && r.begin < p.end; });
+            return std::any_of(regions.begin(), regions.end(), [&](const auto& p) { return p.owner == owner && p.begin < r.end && r.begin < p.end; });
         }
         bool Has(Owner owner) const {
             return Has(owner, 0, total);
@@ -105,7 +127,7 @@ namespace skyline::gpu {
             auto r = Aligned(offset, size);
             if (r.begin == r.end)
                 return;
-            auto first = std::find_if(accesses.begin(), accesses.end(), [&](auto p) { return p.end >= r.begin; });
+            auto first = std::find_if(accesses.begin(), accesses.end(), [&](const auto& p) { return p.end >= r.begin; });
             if (first == accesses.end() || first->begin > r.end) {
                 accesses.insert(first, r);
                 return;

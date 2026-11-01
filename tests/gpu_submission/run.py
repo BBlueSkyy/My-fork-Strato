@@ -27,7 +27,10 @@ with tempfile.TemporaryDirectory(prefix="strato-submission-") as directory:
     (directory / "gpu").mkdir()
     (directory / "gpu/fence_cycle.h").write_text(source("app/src/main/cpp/skyline/gpu/fence_cycle.h"))
     executor = ROOT / "app/src/main/cpp/skyline/gpu/interconnect/command_executor.cpp"
-    (directory / "executor.inc").write_text(function(source(str(executor.relative_to(ROOT))), "void CommandExecutor::SubmitInternal()"))
+    executor_body = function(source(str(executor.relative_to(ROOT))), "void CommandExecutor::SubmitInternal()")
+    if os.environ.get("HOST_BARRIER_NEGATIVE_CONTROL"):
+        executor_body = executor_body.replace("RecordStagedReadbackBarrier(commandBuffer);", "static_cast<void>(commandBuffer);")
+    (directory / "executor.inc").write_text(executor_body)
     texture = ROOT / "app/src/main/cpp/skyline/gpu/texture/texture.cpp"
     (directory / "texture.inc").write_text(function(source(str(texture.relative_to(ROOT))), "void Texture::SynchronizeHostInline("))
     buffer_header = source("app/src/main/cpp/skyline/gpu/buffer.h")
@@ -35,8 +38,9 @@ with tempfile.TemporaryDirectory(prefix="strato-submission-") as directory:
     buffer_source = source("app/src/main/cpp/skyline/gpu/buffer.cpp")
     (directory / "buffer.inc").write_text("\n".join(function(buffer_source, signature) for signature in (
         "void Buffer::WaitOnFence(", "void Buffer::SynchronizeHost(",
-        "void Buffer::SynchronizeHostRegion(", "void Buffer::SynchronizeHostForGpu()")))
+        "void Buffer::SynchronizeHostRegion(", "void Buffer::SynchronizeHostForGpu()", "void Buffer::AttachStagedProducerCycle(")))
     command = [os.environ.get("CXX", "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
+               "-DHAS_EXECUTION_WAIT=" + str(int("WaitForExecution(" in source("app/src/main/cpp/skyline/gpu/fence_cycle.h"))),
                "-I" + str(HERE / "stubs"), "-I" + str(directory), "-I" + str(ROOT / "app/src/main/cpp/skyline"),
                str(HERE / "tests.cpp"), "-o", str(directory / "tests")]
     sanitizer = os.environ.get("SANITIZE", "undefined")

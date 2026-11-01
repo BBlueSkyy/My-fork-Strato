@@ -19,11 +19,23 @@ namespace skyline::gpu {
         std::mutex completionMutex;
         std::function<void()> complete;
         void Wait() {
-            ++waits;
             std::scoped_lock lock{completionMutex};
-            if (!done && complete)
-                complete();
-            done = true;
+            if (!done) {
+                ++waits;
+                if (complete)
+                    complete();
+                done = true;
+            }
+        }
+        bool cancelled{};
+        bool PollExecution() const {
+            return done.load();
+        }
+        bool WaitForExecution() {
+            if (cancelled)
+                return false;
+            Wait();
+            return true;
         }
         bool Poll() {
             return done;
@@ -105,6 +117,14 @@ namespace skyline::gpu {
             TrapHandle handle;
         };
         std::vector<StagedTrap> stagedTraps;
+#if HAS_REGION_PRODUCERS
+        struct StagedReadbackDependency {
+            std::shared_ptr<FenceCycle> cycle;
+            bool executionOnly{};
+        };
+        StagedReadbackDependency GetStagedReadbackDependency(vk::DeviceSize, vk::DeviceSize);
+        void AttachStagedProducerCycle(const std::shared_ptr<FenceCycle>&);
+#endif
         void RebuildStagedTraps();
         void PrepareStagedRange(vk::DeviceSize, vk::DeviceSize);
         void ProtectStagedRange(size_t, size_t, bool);
@@ -270,6 +290,9 @@ struct Fixture {
         (void)off;
         (void)size;
         b->MarkGpuDirtyImplStaged();
+#endif
+#if HAS_REGION_PRODUCERS
+        b->AttachStagedProducerCycle(cycle);
 #endif
         b->cycle = cycle;
     }

@@ -70,8 +70,8 @@ are unchanged. Direct imports keep their original synchronization path.
 `SynchronizeHostForGpu` consumes the submission's access union, so deferring a CPU
 write outside GPU region A does not merely move its wait to an unrelated A-only
 submission. An unknown access falls back to the full backing. Backing mutation,
-coalescence and actual GPU-owned CPU demands still retain the existing full cycle
-and its predecessor chain. This does not relax FenceCycle or Vulkan barriers.
+coalescence and at b741bec1 actual GPU-owned CPU demands still retained the full cycle
+and its predecessor chain; the producer-completion follow-up below refines this. This does not relax FenceCycle or Vulkan barriers.
 
 Coalescence publishes CPU-owned siblings before copying a whole source backing,
 including a CPU-dirty source made immutable by a read-only DMA use. Pending
@@ -165,3 +165,91 @@ immutability. Actual CPU→GPU authority changes still re-arm traps and preserve
 partial bytes. EnsureBounds also avoids allocation when no boundary is inserted;
 allocation-failure injection reproduced that redundant reserve independently.
 These results demonstrate removed host work, not recovered device FPS.
+
+## Follow-up: producing submission vs lifetime completion
+
+The second follow-up stores a producer identity and pending-writer flag per
+partition. Every declared GPU writer invalidates that region's previous producer;
+Buffer::UpdateCycle binds only pending written regions to the submitting cycle.
+Splits copy producer identity; coalescence still waits/migrates the whole backing
+and conservatively marks pending delegated writes. No detached snapshot can later
+overwrite a newer CPU/GPU owner. Unknown/unbound producers keep the original full
+cycle fallback. CPU backing mutation, recreation and destruction retain full Wait.
+
+A second reproduced dependency is internal to FenceCycle: after its own Vulkan
+fence succeeds, full Wait can still wait semaphoreUnsignalCycle, the later consumer
+needed to retire/reuse the binary semaphore. A data waiter sharing the full-wait
+mutex therefore stalls behind later work. WaitForExecution/PollExecution track
+actual producing-submission completion separately, including its real Vulkan
+queue/semaphore ordering. They never retire semaphore/dependency lifetimes or
+make the fence reusable. The original full chain, semaphore wait and dependency
+destruction remain in Wait/Poll. Raw fence waits, full polling and cancellation
+share executionMutex so a successful poll/cancel cannot permit a concurrent reset
+while a data waiter is still inside Vulkan. An unsubmitted cancellation never
+sets the data-ready flag. Lifetime completion of a submitted cycle still waits
+its own fence even when a predecessor was canceled.
+
+Staged-writer submissions append an explicit ALL_COMMANDS/MEMORY_WRITE ->
+HOST/HOST_READ memory barrier after all commands and before their fence. The node
+is allocated before publishing producer cycles. Fence completion alone is not a
+host memory-visibility guarantee; the Vulkan dependency is necessary. Direct
+imports keep their existing path. Reference: Khronos Vulkan specification,
+Synchronization and Cache Control, Fences / host access types:
+https://docs.vulkan.org/spec/latest/chapters/synchronization.html
+
+New negative controls and passing checks (including duplicate demands sharing
+one raw producing-fence wait, and the updated query-range host facade):
+
+- A completed writer of A plus a different-page writer of B pending: the b24f875
+  path blocks the CPU A read; the new path reads current A without waiting B,
+  retains B's full lifetime cycle and still blocks a demand for B.
+- Actual FenceCycle producer completion vs gated later semaphore consumer:
+  original data wait blocks behind retirement; new data wait returns while full
+  retirement and attached lifetime remain pending.
+- Regressions prove a canceled predecessor cannot skip the current submitted
+  fence; full polling and cancellation cannot reset a fence during a raw data
+  wait; canceled pre-submission producers do not publish data.
+- Canceled regional writer leaves bytes/authority unchanged; a replacing writer
+  recovers correctly. Existing mixed writes, aliases, traps, allocation failures,
+  coalescence and concurrency remain covered (20 replacement failures now reached).
+- Removing the new host-visibility node in the test-only negative control rejects
+  the submission. Actual native Vulkan executes that exact production barrier.
+
+Additional command (same Vulkan include/loader environment as above):
+
+```
+ASAN_OPTIONS=detect_leaks=0 python3 tests/buffer_regions/run_execution_native.py
+```
+
+This harness compiles the real FenceCycle and AtomicForwardList, real Vulkan-Hpp,
+the exact production host-read barrier, with only platform exception/lock facades.
+A native producer signals a binary semaphore; its consumer is gated. Data readback
+returns with that consumer's fence still unsignalled; every one of 8,192 producer
+and consumer bytes matches, dependency lifetime remains until full retirement,
+and synchronization validation reports zero errors under ASan/UBSan. The regional
+Buffer native copy/readback harness also continues to pass. These results do not
+measure Zelda frame rate or prove recovery of the reported 2–3 FPS.
+
+### Why there is no speculative asynchronous download queue
+
+Reviewed Eden CommitAsyncFlushesHigh/PopAsyncBuffers and all current Buffer guest
+sync callers. Eden stages GPU copies and later publishes intersections that still
+have authority. Strato already host-maps the staged backing. Its Buffer demands
+currently arrive in a synchronous NCE fault or an immediate programmatic read;
+there is no exact earlier consumer declaration to schedule against. Executor's
+waiter already overlaps GPU execution with independent CPU work. A memcpy worker
+waiting that same producer would neither make producer data available earlier nor
+shorten the CPU's required wait. Downloading every GPU-dirty region, or guessing
+from past faults, could add traffic for results never consumed. The final device
+logs have no fault offsets/horizon to justify that policy.
+
+Accordingly no worker, staging queue, prediction, new device instrumentation or
+extra memory copy is added. Mandatory producer execution is still awaited;
+completed producer data can now be consumed before unrelated region writers and
+semaphore retirement, with shared completion state for duplicate demands. A true
+advance-download queue remains unimplemented until an actual advance consumer and
+measurable overlap can be established. The host-visibility barrier can itself
+require cache maintenance; its device cost and the region-metadata cost must be
+validated alongside the eliminated waits. This limitation is explicit, not a claimed
+asynchronous speedup. Device FPS, pacing and correctness remain pending testing
+of this functional build with the four performance options OFF.

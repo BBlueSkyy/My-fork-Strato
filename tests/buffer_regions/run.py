@@ -21,9 +21,12 @@ with tempfile.TemporaryDirectory(prefix='strato-regional-buffer-') as directory:
     source=read('gpu/buffer.cpp');regional='void Buffer::RebuildStagedTraps()' in source
     signatures=['void Buffer::SetupStagedTraps()', 'void Buffer::WaitOnFence()', 'bool Buffer::PollFence()', 'void Buffer::Invalidate()', 'void Buffer::SynchronizeHost(', 'bool Buffer::SynchronizeGuest(', 'void Buffer::MarkGpuDirtyImplStaged(']
     signatures+=['void Buffer::RebuildStagedTraps()', 'void Buffer::PrepareStagedRange(', 'void Buffer::ProtectStagedRange(', 'void Buffer::MarkStagedCpuWrite(', 'void Buffer::RefreshStagedDirtyState()', 'bool Buffer::HasStagedCpuWrites()', 'void Buffer::SynchronizeHostRegion(', 'bool Buffer::SynchronizeGuestRegion(', 'void Buffer::SynchronizeHostForGpu()', 'void Buffer::MarkGpuDirtyImpl(', 'void Buffer::MarkGpuDirty(', 'bool Buffer::WriteImplStaged(', 'void Buffer::CopyFromImplStaged(', 'void Buffer::ReadImplStaged(', 'void Buffer::SynchronizeGuestImmediate('] if regional else []
+    producers='void Buffer::AttachStagedProducerCycle(' in source
+    if producers:
+        signatures+=['void Buffer::AttachStagedProducerCycle(', 'Buffer::StagedReadbackDependency Buffer::GetStagedReadbackDependency(']
     if regional:
         (td/'coalesce.inc').write_text('namespace skyline::gpu {\n'+function(read('gpu/buffer_manager.cpp'),'BufferManager::LockedBuffer BufferManager::CoalesceBuffers(')+'\n}')
     (td/'buffer.inc').write_text('namespace skyline::gpu {\n'+'\n'.join(function(source,s) for s in signatures)+'\n}')
-    command=[os.environ.get('CXX','c++'),'-std=c++20','-pthread','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-return-type','-Wno-invalid-'+'offsetof','-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all','-DHAS_BUFFER_REGIONS='+str(int(regional)),'-I'+str(here),'-I'+str(td),'-I'+str(cpp),str(here/'tests.cpp'),'-o',str(td/'test')]
+    command=[os.environ.get('CXX','c++'),'-std=c++20','-pthread','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-return-type','-Wno-invalid-'+'offsetof','-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all','-DHAS_BUFFER_REGIONS='+str(int(regional)),'-DHAS_REGION_PRODUCERS='+str(int(producers)),'-I'+str(here),'-I'+str(td),'-I'+str(cpp),str(here/'tests.cpp'),'-o',str(td/'test')]
     if os.environ.get('VULKAN'):command+=['-DWITH_VULKAN','-I'+os.environ['VULKAN_HEADERS_INCLUDE_DIR'],os.environ.get('VULKAN_LOADER_LIBRARY','-lvulkan')]
     subprocess.run(command,check=True);subprocess.run([str(td/'test'),*os.sys.argv[1:]],check=True,timeout=60)

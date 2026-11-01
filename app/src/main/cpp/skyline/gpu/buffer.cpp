@@ -40,7 +40,7 @@ namespace skyline::gpu {
                         auto buffer{weakThis.lock()};
                         if (!buffer)
                             return;
-                        std::shared_ptr<FenceCycle> waited{};
+                        StagedReadbackDependency waited{};
                         bool completed{}, measure{};
                         std::chrono::nanoseconds elapsed{};
                         for (;;) {
@@ -56,17 +56,19 @@ namespace skyline::gpu {
                                     return;
                                 if (!buffer->AllCpuBackingWritesBlocked() && !buffer->stagedRegions.Has(BufferRegionState::Owner::Gpu, begin, end - begin))
                                     return;
-                                if (waited && buffer->cycle == waited) {
-                                    buffer->cycle = {};
-                                    return;
-                                }
-                                waited = buffer->cycle;
+                                waited = buffer->GetStagedReadbackDependency(begin, end - begin);
+                                if (!waited.cycle && buffer->AllCpuBackingWritesBlocked() && buffer->cycle && !buffer->cycle->Poll())
+                                    waited = {buffer->cycle, false};
                                 measure = buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold;
                             }
-                            if (!waited)
+                            if (!waited.cycle)
                                 return;
                             const auto start{measure ? util::GetTimeNs() : 0};
-                            waited->Wait();
+                            if (waited.executionOnly) {
+                                if (!waited.cycle->WaitForExecution())
+                                    throw std::runtime_error("Canceled buffer producer");
+                            } else
+                                waited.cycle->Wait();
                             elapsed = measure ? std::chrono::nanoseconds(util::GetTimeNs() - start) : std::chrono::nanoseconds{};
                             completed = true;
                         }
@@ -81,7 +83,7 @@ namespace skyline::gpu {
                         if (!buffer->guest || !buffer->stagedRegions.Has(BufferRegionState::Owner::Gpu, begin, end - begin))
                             return true;
                         std::unique_lock resourceLock{*buffer, std::try_to_lock};
-                        if (!resourceLock || buffer->cycle)
+                        if (!resourceLock || buffer->GetStagedReadbackDependency(begin, end - begin).cycle)
                             return false;
                         return buffer->SynchronizeGuestRegion(true, false, begin, end - begin);
                     },
@@ -102,7 +104,7 @@ namespace skyline::gpu {
                         if (gpuDirty && buffer->accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold &&
                             *buffer->gpu.state.settings->enableFastGpuReadbackHack) {
                             // Preserve unrelated CPU ownership even in the existing unsafe shortcut.
-                            for (const auto r : buffer->stagedRegions.Regions())
+                            for (const auto& r : buffer->stagedRegions.Regions())
                                 if (r.owner == BufferRegionState::Owner::Gpu && r.begin < end && begin < r.end) {
                                     const auto lo{std::max(begin, r.begin)}, hi{std::min(end, r.end)};
                                     std::memcpy(buffer->mirror.data() + lo, buffer->backing->data() + lo, hi - lo);
@@ -115,7 +117,9 @@ namespace skyline::gpu {
                             return true;
                         }
                         std::unique_lock resourceLock{*buffer, std::try_to_lock};
-                        if (!resourceLock || buffer->cycle)
+                        if (!resourceLock || buffer->GetStagedReadbackDependency(begin, end - begin).cycle)
+                            return false;
+                        if (buffer->AllCpuBackingWritesBlocked() && buffer->cycle && !buffer->cycle->Poll())
                             return false;
                         if (!buffer->SynchronizeGuestRegion(true, false, begin, end - begin))
                             return false;
@@ -136,6 +140,26 @@ namespace skyline::gpu {
         stagedTraps = std::move(next);
         for (const auto& entry : previous)
             gpu.state.process->trap.DeleteTrap(entry.handle);
+    }
+
+    void Buffer::AttachStagedProducerCycle(const std::shared_ptr<FenceCycle>& producer) {
+        std::scoped_lock stateLock{stateMutex};
+        stagedRegions.AttachProducer(producer);
+    }
+
+    Buffer::StagedReadbackDependency Buffer::GetStagedReadbackDependency(vk::DeviceSize offset, vk::DeviceSize size) {
+        const auto range{stagedRegions.Aligned(offset, size)};
+        if (range.begin == range.end)
+            return {};
+        // Unknown/pending writers keep the original whole-cycle contract.
+        for (const auto& region : stagedRegions.Regions())
+            if (region.owner == BufferRegionState::Owner::Gpu && region.begin < range.end && range.begin < region.end &&
+                (region.pendingWrite || !region.producer))
+                return cycle && !cycle->Poll() ? StagedReadbackDependency{cycle, false} : StagedReadbackDependency{};
+        for (const auto& region : stagedRegions.Regions())
+            if (region.owner == BufferRegionState::Owner::Gpu && region.begin < range.end && range.begin < region.end && !region.producer->PollExecution())
+                return {region.producer, true};
+        return {};
     }
 
     void Buffer::PrepareStagedRange(vk::DeviceSize offset, vk::DeviceSize size) {
@@ -432,6 +456,7 @@ namespace skyline::gpu {
             RefreshStagedDirtyState();
             AdvanceSequence();
         }
+        stagedRegions.MarkGpuWrite(offset, size);
         BlockAllCpuBackingWrites(offset, size);
     }
 
@@ -551,7 +576,7 @@ namespace skyline::gpu {
         const auto range{stagedRegions.Aligned(offset, size)};
         WaitOnFence(); // A backing mutation still needs all prior GPU users.
         AdvanceSequence();
-        for (const auto r : stagedRegions.Regions())
+        for (const auto& r : stagedRegions.Regions())
             if (r.owner == BufferRegionState::Owner::Cpu && r.begin < range.end && range.begin < r.end) {
                 if (!skipTrap)
                     ProtectStagedRange(r.begin, r.end, false);
@@ -571,13 +596,19 @@ namespace skyline::gpu {
         std::scoped_lock stateLock{stateMutex};
         if (!stagedRegions.Has(BufferRegionState::Owner::Gpu, offset, size))
             return true;
-        if (nonBlocking && !PollFence())
-            return false;
         if (!skipTrap)
             PrepareStagedRange(offset, size);
         auto range{stagedRegions.Aligned(offset, size)};
-        WaitOnFence();
-        for (const auto r : stagedRegions.Regions())
+        for (auto dependency = GetStagedReadbackDependency(offset, size); dependency.cycle; dependency = GetStagedReadbackDependency(offset, size)) {
+            if (nonBlocking)
+                return false;
+            if (dependency.executionOnly) {
+                if (!dependency.cycle->WaitForExecution())
+                    throw std::runtime_error("Canceled buffer producer");
+            } else
+                dependency.cycle->Wait();
+        }
+        for (const auto& r : stagedRegions.Regions())
             if (r.owner == BufferRegionState::Owner::Gpu && r.begin < range.end && range.begin < r.end) {
                 const auto lo{std::max(r.begin, range.begin)}, hi{std::min(r.end, range.end)};
                 std::memcpy(mirror.data() + lo, backing->data() + lo, hi - lo);

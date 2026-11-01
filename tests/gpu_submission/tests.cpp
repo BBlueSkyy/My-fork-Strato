@@ -128,7 +128,10 @@ using skyline::exception;
 #include "texture.inc"
 struct Buffer {
     std::shared_ptr<FenceCycle> cycle;
-    bool guest{true}, isDirect{};
+    bool guest{true}, isDirect{}, currentExecutionGpuDirty{};
+    bool NeedsStagedReadbackBarrier() const {
+        return !isDirect && currentExecutionGpuDirty;
+    }
     enum class DirtyState { CpuDirty, Clean, GpuDirty } dirtyState{DirtyState::Clean};
     std::recursive_mutex stateMutex;
     Texture::Gpu gpu;
@@ -140,6 +143,7 @@ struct Buffer {
     void SynchronizeHost(bool skipTrap = false);
     void SynchronizeHostRegion(bool, vk::DeviceSize, vk::DeviceSize);
     void SynchronizeHostForGpu();
+    void AttachStagedProducerCycle(const std::shared_ptr<FenceCycle>& producer);
     void PrepareStagedRange(vk::DeviceSize offset, vk::DeviceSize size) {
         stagedRegions.EnsureBounds(offset, size);
     }
@@ -161,6 +165,11 @@ struct Slot {
     void WaitReady() {}
 };
 static void RecordFullBarrier(int) {}
+static unsigned hostReadBarriers{};
+[[maybe_unused]] static void RecordStagedReadbackBarrier(int&) {
+    ++hostReadBarriers;
+}
+struct GPU {};
 struct CommandExecutor {
     bool renderPass{};
     Slot storage;
@@ -171,6 +180,10 @@ struct CommandExecutor {
     void FinishRenderPass() {}
     void RotateRecordSlot() {}
     void SubmitInternal();
+    template <class F> void AddOutsideRpCommand(F f) {
+        GPU gpu;
+        f(slot->commandBuffer, cycle, gpu);
+    }
 };
 #include "executor.inc"
 
@@ -232,7 +245,151 @@ static void bufferNullAndSelfCyclesDoNotWait() {
     }
 }
 
+static bool WaitProducerExecution(FenceCycle& cycle) {
+#if HAS_EXECUTION_WAIT
+    return cycle.WaitForExecution();
+#else
+    cycle.Wait();
+    return true;
+#endif
+}
+static void executionAvailabilityPrecedesSemaphoreRetirement() {
+    vk::raii::Device writerDevice, consumerDevice;
+    auto writer = std::make_shared<FenceCycle>(writerDevice, vk::Fence{}, vk::Semaphore{});
+    auto consumer = std::make_shared<FenceCycle>(consumerDevice, vk::Fence{}, vk::Semaphore{});
+    writer->NotifySubmitted();
+    consumer->NotifySubmitted();
+    writer->RecordSemaphoreWaitUsage([&](vk::Semaphore) { return consumer; });
+    auto object = std::make_shared<int>(42);
+    std::weak_ptr<int> lifetime = object;
+    writer->AttachObject(object);
+    object.reset();
+    writerDevice.signal();
+    auto retirement = std::async(std::launch::async, [&] { writer->Wait(true); });
+    consumerDevice.enteredFuture().get();
+    auto data = std::async(std::launch::async, [&] { check(WaitProducerExecution(*writer), "completed producer execution is available"); });
+    const bool independent = ready(data);
+    const bool retained = !writer->Poll() && !lifetime.expired();
+    consumerDevice.signal();
+    data.get();
+    retirement.get();
+    check(independent, "producer data wait does not block behind semaphore consumer retirement mutex");
+    check(retained, "data availability does not retire fence/semaphore/dependency lifetime");
+    check(lifetime.expired(), "full retirement still releases dependencies after consumer completes");
+}
+#if HAS_EXECUTION_WAIT
+static void canceledExecutionDoesNotPublish() {
+    vk::raii::Device device;
+    FenceCycle cycle{device, {}, {}};
+    std::promise<void> entered;
+    auto start = entered.get_future();
+    auto data = std::async(std::launch::async, [&] {
+        entered.set_value();
+        return cycle.WaitForExecution();
+    });
+    start.get();
+    cycle.Cancel();
+    check(data.wait_for(250ms) == std::future_status::ready && !data.get(), "canceled pre-submission producer is not data-ready");
+    check(!cycle.PollExecution(), "cancellation does not set execution data-ready flag");
+}
+#endif
+static void canceledPredecessorDoesNotRetireLiveFence() {
+    vk::raii::Device oldDevice, currentDevice;
+    auto old = std::make_shared<FenceCycle>(oldDevice, vk::Fence{}, vk::Semaphore{});
+    FenceCycle current{currentDevice, {}, {}};
+    current.ChainCycle(old);
+    old->Cancel();
+    current.NotifySubmitted();
+    auto retirement = std::async(std::launch::async, [&] { current.Wait(true); });
+    const bool retained = retirement.wait_for(50ms) == std::future_status::timeout;
+    currentDevice.signal();
+    retirement.get();
+    check(retained, "canceled predecessor never skips own submitted fence retirement");
+}
+static void pollCannotResetFenceDuringDataWait() {
+    vk::raii::Device device;
+    FenceCycle cycle{device, {}, {}};
+    cycle.NotifySubmitted();
+    std::promise<void> inDriver, release;
+    auto gate = release.get_future().share();
+    device.onWaitReturn = [&] {
+        inDriver.set_value();
+        gate.wait();
+    };
+    auto data = std::async(std::launch::async, [&] { return WaitProducerExecution(cycle); });
+    device.signal();
+    inDriver.get_future().get();
+    bool reusable = cycle.Poll(false);
+    if (reusable) {
+        FenceCycle reset{cycle};
+        reset.Cancel();
+    }
+    release.set_value();
+    check(data.get(), "data wait observes real fence completion");
+    cycle.Wait();
+    check(!reusable && !device.unsafeResets, "full poll cannot publish reusable fence before raw data wait returns");
+}
+static void stagedWriterPublishesHostVisibility() {
+    for (bool direct : {false, true}) {
+        vk::raii::Device device;
+        auto current = std::make_shared<FenceCycle>(device, vk::Fence{}, vk::Semaphore{});
+        auto buffer = std::make_shared<Buffer>();
+        buffer->isDirect = direct;
+        buffer->currentExecutionGpuDirty = true;
+        CommandExecutor executor;
+        executor.cycle = current;
+        executor.attachedBuffers.push_back({buffer});
+        auto before = hostReadBarriers;
+        executor.SubmitInternal();
+        current->Cancel();
+        check(hostReadBarriers - before == unsigned(!direct), "staged writer submission adds host visibility and direct imports retain old path");
+    }
+}
+static void cancellationCannotResetInflightDataWait() {
+    vk::raii::Device device;
+    FenceCycle cycle{device, {}, {}};
+    cycle.NotifySubmitted();
+    std::promise<void> inDriver, release;
+    auto gate = release.get_future().share();
+    device.onWaitReturn = [&] {
+        inDriver.set_value();
+        gate.wait();
+    };
+    auto data = std::async(std::launch::async, [&] { return WaitProducerExecution(cycle); });
+    device.signal();
+    inDriver.get_future().get();
+    auto cancel = std::async(std::launch::async, [&] { cycle.Cancel(); });
+    const bool protectedWait = cancel.wait_for(50ms) == std::future_status::timeout;
+    if (!protectedWait) {
+        FenceCycle reset{cycle};
+        reset.Cancel();
+    }
+    release.set_value();
+    data.get();
+    cancel.get();
+    check(protectedWait && !device.unsafeResets, "cancellation serializes active raw fence wait before permitting reset");
+}
+static void duplicateProducerDemandsShareCompletion() {
+    vk::raii::Device device;
+    FenceCycle cycle{device, {}, {}};
+    cycle.NotifySubmitted();
+    auto first = std::async(std::launch::async, [&] { return WaitProducerExecution(cycle); });
+    device.enteredFuture().get();
+    auto second = std::async(std::launch::async, [&] { return WaitProducerExecution(cycle); });
+    device.signal();
+    check(first.get() && second.get() && device.totalWaits == 1, "duplicate data demands share one raw producer wait");
+    cycle.Wait();
+}
 int main() {
+    duplicateProducerDemandsShareCompletion();
+    cancellationCannotResetInflightDataWait();
+    stagedWriterPublishesHostVisibility();
+    canceledPredecessorDoesNotRetireLiveFence();
+    pollCannotResetFenceDuringDataWait();
+    executionAvailabilityPrecedesSemaphoreRetirement();
+#if HAS_EXECUTION_WAIT
+    canceledExecutionDoesNotPublish();
+#endif
     submittedWaitIgnoresGpuCompletion();
     submissionRacingGpuWaitDoesNotTakeCompletionMutex();
     cancellationWakesSubmissionWait();

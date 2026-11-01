@@ -23,6 +23,13 @@ namespace skyline::gpu::interconnect {
         );
     }
 
+    static void RecordStagedReadbackBarrier(vk::raii::CommandBuffer& commandBuffer) {
+        // Fence completion alone does not make shader/transfer writes host-visible.
+        commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eHost, {},
+                                      vk::MemoryBarrier{.srcAccessMask = vk::AccessFlagBits::eMemoryWrite, .dstAccessMask = vk::AccessFlagBits::eHostRead}, {},
+                                      {});
+    }
+
     CommandRecordThread::CommandRecordThread(const DeviceState &state)
         : state{state},
           incoming{1U << *state.settings->executorSlotCountScale},
@@ -734,6 +741,13 @@ namespace skyline::gpu::interconnect {
             RecordFullBarrier(slot->commandBuffer);
         }
 
+        bool stagedReadbackBarrier{};
+        for (const auto& attachedBuffer : ranges::views::concat(attachedBuffers, preserveAttachedBuffers))
+            stagedReadbackBarrier |= attachedBuffer->RequiresCycleAttach() && attachedBuffer->NeedsStagedReadbackBarrier();
+        // Allocate the final node before publishing this cycle to any buffer.
+        if (stagedReadbackBarrier)
+            AddOutsideRpCommand(
+                [](vk::raii::CommandBuffer& commandBuffer, const std::shared_ptr<FenceCycle>&, GPU&) { RecordStagedReadbackBarrier(commandBuffer); });
         for (const auto &attachedBuffer : ranges::views::concat(attachedBuffers, preserveAttachedBuffers)) {
             if (attachedBuffer->RequiresCycleAttach()) {
                 attachedBuffer->SynchronizeHostForGpu(); // Synchronize attached buffers from the CPU without using a staging buffer

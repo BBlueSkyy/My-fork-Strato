@@ -30,13 +30,13 @@ Repeated binding must re-arm protection after real CPU ownership changes; bounda
 
 ## Stage 2: regional producers
 
-- [ ] Trace submission assignment, pending writers, coalescence and full-cycle lifetime requirements.
-- [ ] Reproduce GPU A complete / different-page writer B pending: CPU A download must retain A only; B demand must wait B.
-- [ ] Implement only if lifecycle, writer replacement and conservative fallback contracts can be proved.
-- [ ] Run native Vulkan/ASan/UBSan plus submission/SSBO regressions, review and publish independently.
+- [x] Trace submission assignment, pending writers, coalescence and full-cycle lifetime requirements.
+- [x] Reproduce GPU A complete / different-page writer B pending: CPU A download must retain A only; B demand must wait B.
+- [x] Implement only if lifecycle, writer replacement and conservative fallback contracts can be proved.
+- [x] Native Vulkan/ASan/UBSan, submission/SSBO/query regressions and independent review passed; publish the regional-producer/data-completion stage with this checkpoint.
 
 ## Stage 3: early/async downloads
 
-- [ ] Compare existing consumer callsites and executor completion with Eden generation-safe publication.
-- [ ] Identify an exact advance demand and demonstrable independent CPU work before adding a queue or staging copy.
-- [ ] If absent, document the missing horizon and why a worker memcpy/history-based prefetch is not justified; keep the safe demand path.
+- [x] Compare existing consumer callsites and executor completion with Eden generation-safe publication.
+- [x] No exact advance-demand caller exists; reject worker-only memcpy and speculative history-based staging.
+- [x] If absent, document the missing horizon and why a worker memcpy/history-based prefetch is not justified; keep the safe demand path.

@@ -100,6 +100,63 @@ static void StableGpuDirtyProtection() {
     Check(f.Load(37) == 0x72, "new GPU writer did not re-arm CPU-dirty page");
     std::puts("PASS stable GPU ownership avoids protection/reserve work; ownership changes still trap");
 }
+static void DifferentRegionWriterDoesNotDelayOldData() {
+    Fixture f;
+    auto b = f.buffer;
+    auto writerA = std::make_shared<gpu::FenceCycle>();
+    writerA->done = true;
+    f.GpuWrite(0, 2040, writerA);
+    std::memset(b->backing->data(), 0x65, 4096);
+    auto writerB = std::make_shared<gpu::FenceCycle>();
+    std::promise<void> release;
+    auto gate = release.get_future().share();
+    writerB->complete = [&] {
+        gate.wait();
+        std::memset(b->backing->data() + 4096, 0x76, 4096);
+    };
+    f.GpuWrite(4096, 2040, writerB);
+    auto read = std::async(std::launch::async, [&] { return f.Load(37); });
+    const bool independent = read.wait_for(200ms) == std::future_status::ready;
+    if (!independent) {
+        release.set_value();
+        read.get();
+        Check(false, "CPU A read waited later writer of disjoint B");
+    }
+    auto value = read.get();
+    Check(value == 0x65 && !writerB->waits && b->cycle == writerB, "regional read consumed unrelated writer/lifetime cycle");
+    auto demandB = std::async(std::launch::async, [&] { return f.Load(5000); });
+    const bool required = demandB.wait_for(50ms) == std::future_status::timeout;
+    release.set_value();
+    Check(demandB.get() == 0x76 && required, "CPU B read skipped its required writer");
+    std::puts("PASS distinct writer generations: CPU A does not wait later GPU B; B demand keeps mandatory wait");
+}
+#if HAS_REGION_PRODUCERS
+static void CanceledRegionalProducerRetainsAuthority() {
+    Fixture f;
+    auto b = f.buffer;
+    auto failed = std::make_shared<gpu::FenceCycle>();
+    failed->cancelled = true;
+    f.GpuWrite(0, 2040, failed);
+    bool rejected{};
+    try {
+        std::scoped_lock lock{*b};
+        b->SynchronizeGuestRegion(false, false, 0, 2040);
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    Check(rejected && f.mirror[37] == 0x11 && b->stagedRegions.Has(gpu::BufferRegionState::Owner::Gpu, 0, 2040),
+          "canceled producer published stale data or cleared authority");
+    auto retry = std::make_shared<gpu::FenceCycle>();
+    retry->complete = [&] { std::memset(b->backing->data(), 0x7e, 4096); };
+    f.GpuWrite(0, 2040, retry);
+    {
+        std::scoped_lock lock{*b};
+        b->SynchronizeGuestRegion(false, false, 0, 2040);
+    }
+    Check(f.mirror[37] == 0x7e && retry->waits == 1, "replacement producer recovery failed");
+    std::puts("PASS canceled regional producer never publishes stale bytes; replacement writer recovers authority");
+}
+#endif
 static void DemandReadAndZeroSize() {
     Fixture f;
     auto b = f.buffer;
@@ -532,6 +589,10 @@ int main() {
         UnrelatedCpuPageDoesNotWait();
 #if HAS_BUFFER_REGIONS
         StableGpuDirtyProtection();
+        DifferentRegionWriterDoesNotDelayOldData();
+#if HAS_REGION_PRODUCERS
+        CanceledRegionalProducerRetainsAuthority();
+#endif
         DemandReadAndZeroSize();
         ZeroWriteRetainsProtection();
         RequiredFaultAndSharedTrap();

@@ -208,6 +208,13 @@ namespace skyline::gpu {
         void SynchronizeHostRegion(bool skipTrap, vk::DeviceSize offset, vk::DeviceSize size);
         bool SynchronizeGuestRegion(bool skipTrap, bool nonBlocking, vk::DeviceSize offset, vk::DeviceSize size);
 
+        struct StagedReadbackDependency {
+            std::shared_ptr<FenceCycle> cycle;
+            bool executionOnly{};
+        };
+        StagedReadbackDependency GetStagedReadbackDependency(vk::DeviceSize offset, vk::DeviceSize size);
+        void AttachStagedProducerCycle(const std::shared_ptr<FenceCycle>& producer);
+
         void MarkGpuDirtyImpl(vk::DeviceSize offset = 0, vk::DeviceSize size = VK_WHOLE_SIZE);
 
       public:
@@ -217,6 +224,8 @@ namespace skyline::gpu {
             if (cycle && cycle != newCycle)
                 cycle->WaitSubmit();
             newCycle->ChainCycle(cycle);
+            if (!isDirect && guest)
+                AttachStagedProducerCycle(newCycle);
             cycle = newCycle;
         }
 
@@ -364,6 +373,10 @@ namespace skyline::gpu {
         /*
          * @note The buffer **must** be locked prior to calling this
          */
+        bool NeedsStagedReadbackBarrier() const {
+            return !isDirect && currentExecutionGpuDirty;
+        }
+
         bool IsCurrentExecutionGpuDirty() {
             return currentExecutionGpuDirty;
         }

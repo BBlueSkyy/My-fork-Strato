@@ -20,6 +20,9 @@ namespace skyline::gpu {
     struct FenceCycle {
       private:
         std::atomic_flag signalled{}; //!< If the underlying fence has been signalled since the creation of this FenceCycle, this doesn't necessarily mean the dependencies have been destroyed
+        std::atomic<bool> executionComplete{}; //!< Producer data available, independently of semaphore retirement
+        std::atomic<bool> cancelled{};
+        std::mutex executionMutex;           //!< Never held while waiting for semaphore consumers
         std::atomic_flag alreadyDestroyed{}; //!< If the cycle's dependencies are already destroyed, this prevents multiple destructions
         const vk::raii::Device &device;
         std::recursive_timed_mutex mutex;
@@ -38,6 +41,27 @@ namespace skyline::gpu {
         AtomicForwardList<std::shared_ptr<FenceCycle>> chainedCycles; //!< A list of all chained FenceCycles, this is used to express multi-fence dependencies
         SharedSpinLock chainMutex;
 
+        // executionMutex must be held. Only a real Vulkan completion sets this flag.
+        void WaitFenceExecutionLocked() {
+            if (executionComplete.load(std::memory_order_acquire))
+                return;
+            vk::Result waitResult;
+            while ((waitResult = (*device).waitForFences(1, &fence, false, std::numeric_limits<u64>::max(), *device.getDispatcher())) != vk::Result::eSuccess) {
+                if (waitResult == vk::Result::eTimeout)
+                    // Retry if the waiting time out
+                    continue;
+
+                if (waitResult == vk::Result::eErrorInitializationFailed)
+                    // eErrorInitializationFailed occurs on Mali GPU drivers due to them using the ppoll() syscall which isn't correctly restarted after a
+                    // signal, we need to manually retry waiting in that case
+                    continue;
+
+                throw exception("An error occurred while waiting for fence {}: {}", fmt::ptr(static_cast<VkFence>(fence)), vk::to_string(waitResult));
+            }
+
+            executionComplete.store(true, std::memory_order_release);
+        }
+
         /**
          * @brief Destroy all the dependencies of this cycle
          */
@@ -51,7 +75,8 @@ namespace skyline::gpu {
         }
 
       public:
-        FenceCycle(const vk::raii::Device &device, vk::Fence fence, vk::Semaphore semaphore, bool signalled = false) : signalled{signalled}, device{device}, fence{fence}, semaphore{semaphore}, nextSemaphoreSubmitWait{!signalled} {
+        FenceCycle(const vk::raii::Device& device, vk::Fence fence, vk::Semaphore semaphore, bool signalled = false)
+            : signalled{signalled}, executionComplete{signalled}, device{device}, fence{fence}, semaphore{semaphore}, nextSemaphoreSubmitWait{!signalled} {
             if (!signalled)
                 device.resetFences(fence);
         }
@@ -69,7 +94,11 @@ namespace skyline::gpu {
          */
         void Cancel() {
             {
+                // Cancellation must not publish a reusable fence while a host
+                // data wait still accesses the Vulkan handle.
+                std::unique_lock executionLock{executionMutex};
                 std::scoped_lock lock{submitMutex};
+                cancelled.store(true, std::memory_order_release);
                 signalled.test_and_set(std::memory_order_release);
             }
             submitCondition.notify_all();
@@ -123,6 +152,29 @@ namespace skyline::gpu {
             });
         }
 
+        /** Data-only completion. Does not release dependencies, recycle the fence,
+         * or wait for later semaphore consumers. Backing mutations still use Wait(). */
+        bool PollExecution() const {
+            return executionComplete.load(std::memory_order_acquire);
+        }
+
+        bool WaitForExecution() {
+            if (PollExecution())
+                return true;
+            if (cancelled.load(std::memory_order_acquire))
+                return false;
+            // The producing submission's fence covers its Vulkan dependencies.
+            // Host lifetime chains and later semaphore consumers are retired by Wait().
+            WaitSubmit();
+            std::unique_lock lock{executionMutex};
+            if (PollExecution())
+                return true;
+            if (cancelled.load(std::memory_order_acquire))
+                return false;
+            WaitFenceExecutionLocked();
+            return true;
+        }
+
         /**
          * @brief Wait on a fence cycle till it has been signalled
          * @param shouldDestroy If true, the dependencies of this cycle will be destroyed after the fence is signalled
@@ -152,17 +204,9 @@ namespace skyline::gpu {
                 return;
             }
 
-            vk::Result waitResult;
-            while ((waitResult = (*device).waitForFences(1, &fence, false, std::numeric_limits<u64>::max(), *device.getDispatcher())) != vk::Result::eSuccess) {
-                if (waitResult == vk::Result::eTimeout)
-                    // Retry if the waiting time out
-                    continue;
-
-                if (waitResult == vk::Result::eErrorInitializationFailed)
-                    // eErrorInitializationFailed occurs on Mali GPU drivers due to them using the ppoll() syscall which isn't correctly restarted after a signal, we need to manually retry waiting in that case
-                    continue;
-
-                throw exception("An error occurred while waiting for fence {}: {}", fmt::ptr(static_cast<VkFence>(fence)), vk::to_string(waitResult));
+            {
+                std::unique_lock executionLock{executionMutex};
+                WaitFenceExecutionLocked();
             }
 
             if (semaphoreUnsignalCycle)
@@ -214,8 +258,14 @@ namespace skyline::gpu {
             if (!submitted.load(std::memory_order_acquire))
                 return false;
 
+            // A successful full poll permits fence reuse. It cannot race a raw
+            // data-only Vulkan wait that has not returned yet.
+            std::unique_lock executionLock{executionMutex, std::try_to_lock};
+            if (!executionLock)
+                return false;
             auto status{(*device).getFenceStatus(fence, *device.getDispatcher())};
             if (status == vk::Result::eSuccess) {
+                executionComplete.store(true, std::memory_order_release);
                 if (semaphoreUnsignalCycle && !semaphoreUnsignalCycle->Poll())
                     return false;
 

@@ -107,12 +107,21 @@ struct BufferBinding {
 struct GuestBuffer {
     memory::Buffer allocation{64};
     bool blocked{}, dirty{};
-    void BlockSequencedCpuBackingWrites() { blocked = true; }
-    void MarkGpuDirty(int &) { dirty = true; }
+    void BlockSequencedCpuBackingWrites(u64 offset, u64 size) {
+        Require(offset + size <= allocation.size_bytes(), "blocked query range");
+        blocked = true;
+    }
+    void MarkGpuDirty(int&, u64 offset, u64 size) {
+        Require(offset + size <= allocation.size_bytes(), "dirty query range");
+        dirty = true;
+    }
 };
 struct BufferView {
     std::shared_ptr<GuestBuffer> buffer;
-    u64 offset{};
+    u64 offset{}, size{};
+    u64 GetOffset() const {
+        return offset;
+    }
     BufferBinding GetBinding(GPU &) const { return {buffer->allocation.vkBuffer, offset}; }
     GuestBuffer *GetBuffer() { return buffer.get(); }
 };
@@ -365,6 +374,7 @@ void skyline::gpu::CachedMappedBufferView::Update(interconnect::InterconnectCont
     auto found = ctx.guest.find(address);
     if (found == ctx.guest.end()) { view.reset(); return; }
     view = found->second;
+    view->size = size;
     Require(view->offset + size <= view->buffer->allocation.size_bytes(), "guest report range");
 }
 #include "queries_header.inc"
