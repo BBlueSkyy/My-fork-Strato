@@ -202,6 +202,8 @@ namespace skyline::gpu::interconnect {
             incoming.Process([this, renderDocApi, &gpu](Slot *slot) {
                 idle = false;
                 VkInstance instance{*gpu.vkInstance};
+                if (slot->capture && !renderDocApi)
+                    LOGI("MINIRD_PACMAN RenderDoc layer not loaded; text trace remains available");
                 if (renderDocApi && slot->capture)
                     renderDocApi->StartFrameCapture(RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE(instance), nullptr);
 
