@@ -28,6 +28,9 @@ namespace skyline::gpu::diagnostic {
         std::atomic<bool> requestRenderDoc{false};
         std::atomic<bool> snapshotsEnabled{false};
         std::atomic<bool> scanMode{false};
+        // 0=normal capture, 1=renderpass split, 2=split + Vulkan barrier.
+        std::atomic<std::uint32_t> executorExperimentMode{0};
+        std::atomic<std::uint64_t> executorExperimentSteps{0};
         std::atomic<std::uint32_t> presentedFrames{0};
         std::uint32_t droppedEvents{};
         std::array<std::uint32_t, MaxScanIntervals + 1> sceneOrdinals{};
@@ -71,6 +74,12 @@ namespace skyline::gpu::diagnostic {
         bool ScanEnabled() const {
             return Active() && scanMode.load(std::memory_order_acquire);
         }
+        std::uint32_t ExecutorExperimentMode() const {
+            return Active() ? executorExperimentMode.load(std::memory_order_relaxed) : 0;
+        }
+        void ExecutorExperimentStep() {
+            executorExperimentSteps.fetch_add(1, std::memory_order_relaxed);
+        }
         std::uint32_t PresentedFrames() const {
             return presentedFrames.load(std::memory_order_relaxed);
         }
@@ -79,13 +88,14 @@ namespace skyline::gpu::diagnostic {
             return destination;
         }
         void Start(std::filesystem::path folder, bool enableSnapshots = false,
-                   bool enableScan = false) {
+                   bool enableScan = false, std::uint32_t experimentMode = 0) {
             std::lock_guard lock{mutex};
             destination = std::move(folder);
             events.clear();
             events.reserve(MaxEvents);
             droppedEvents = 0;
             sceneOrdinals.fill(0);
+            executorExperimentSteps.store(0, std::memory_order_relaxed);
             ++generation;
             scanRequested = scanPending = scanCompleted = scanKept = 0;
             scanAnomalous = scanFailed = 0;
@@ -94,8 +104,9 @@ namespace skyline::gpu::diagnostic {
             reservedSnapshots = pendingSnapshots = writtenSnapshots = failedSnapshots = 0;
             presentationsFinished = false;
             presentedFrames.store(0, std::memory_order_relaxed);
-            snapshotsEnabled.store(enableSnapshots || enableScan, std::memory_order_release);
-            scanMode.store(enableScan, std::memory_order_release);
+            snapshotsEnabled.store((enableSnapshots || enableScan) && !experimentMode, std::memory_order_release);
+            scanMode.store(enableScan && !experimentMode, std::memory_order_release);
+            executorExperimentMode.store(experimentMode, std::memory_order_release);
             requestRenderDoc.store(true, std::memory_order_relaxed);
             active.store(true, std::memory_order_release);
         }
@@ -178,7 +189,7 @@ namespace skyline::gpu::diagnostic {
         void CompletePresentation() {
             if (!Active()) return;
             if (presentedFrames.fetch_add(1, std::memory_order_acq_rel) + 1 <
-                (scanMode.load() ? MaxScanIntervals : MaxPresentedFrames)) return;
+                ((scanMode.load() || executorExperimentMode.load()) ? MaxScanIntervals : MaxPresentedFrames)) return;
             std::lock_guard lock{mutex};
             if (!active.exchange(false, std::memory_order_acq_rel)) return;
             presentationsFinished = true;
@@ -191,11 +202,13 @@ namespace skyline::gpu::diagnostic {
             }
             std::ofstream complete{destination / "capture_complete.txt", std::ios::trunc};
             if (complete)
-                complete << "recorded_presentations=" << (scanMode.load() ? MaxScanIntervals : MaxPresentedFrames) << '\n'
+                complete << "recorded_presentations=" << ((scanMode.load() || executorExperimentMode.load()) ? MaxScanIntervals : MaxPresentedFrames) << '\n'
                          << "events_written=" << events.size() << '\n'
                          << "dropped_events=" << droppedEvents << '\n'
                          << "snapshot_mode=" << snapshotsEnabled.load() << '\n'
-                         << "hdr_scan_mode=" << scanMode.load() << '\n';
+                         << "hdr_scan_mode=" << scanMode.load() << '\n'
+                         << "executor_experiment_mode=" << executorExperimentMode.load() << '\n'
+                         << "executor_experiment_draws=" << executorExperimentSteps.load() << '\n';
             MaybeFinishSnapshotsLocked();
         }
     };
