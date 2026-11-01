@@ -21,8 +21,8 @@ namespace skyline::hle {
             std::memcpy(&callerLr, guest.hostSp, sizeof(callerLr));
 
         AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
-            "CrysisAbortEntry: {} callerLR=0x{:X} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X}",
-            symbol.name, callerLr, guest.gpr.x0, guest.gpr.x1, guest.gpr.x2, guest.gpr.x3, guest.gpr.x4));
+            "CrysisAbortEntry: {} callerLR=0x{:X} nzcv=0x{:08X} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X}",
+            symbol.name, callerLr, guest.nzcv, guest.gpr.x0, guest.gpr.x1, guest.gpr.x2, guest.gpr.x3, guest.gpr.x4));
 
         // Compare bytes actually mapped for the current Program update with the
         // separately extracted base NSO. A nominal code-span address is not proof
