@@ -46,6 +46,11 @@ jobs:
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
+      - name: Test conservative Compute SSBO ranges
+        run: |
+          python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
+          python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
@@ -56,8 +61,27 @@ jobs:
       - name: Rename ARM64 DevRelease APK
         run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
 
+      - name: Verify ARM64 DevRelease APK
+        env:
+          APK_PATH: strato-pr${{ github.event.number }}-arm64-release.apk
+        run: |
+          test -s "$APK_PATH"
+          python3 - <<'PYAPK'
+          import os, struct, zipfile
+          with zipfile.ZipFile(os.environ["APK_PATH"]) as apk:
+              libraries = [name for name in apk.namelist() if name.startswith("lib/") and name.endswith(".so")]
+              assert libraries, "APK has no native libraries"
+              assert all(name.split("/")[1] == "arm64-v8a" for name in libraries), libraries
+              for name in libraries:
+                  header = apk.read(name)[:20]
+                  assert header[:6] == b"\x7fELF\x02\x01", name
+                  assert struct.unpack_from("<H", header, 18)[0] == 183, name
+              print("Verified nonempty DevRelease APK with", len(libraries), "AArch64 ELF libraries")
+          PYAPK
+
       - name: Upload ARM64 DevRelease APK
         uses: actions/upload-artifact@v4
         with:
+          if-no-files-found: error
           name: strato-pr${{ github.event.number }}-arm64-release.apk
           path: strato-pr${{ github.event.number }}-arm64-release.apk
