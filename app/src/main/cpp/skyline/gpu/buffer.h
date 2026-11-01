@@ -12,6 +12,7 @@
 #include "usage_tracker.h"
 #include "megabuffer.h"
 #include "memory_manager.h"
+#include "buffer_readback_probe.h"
 
 namespace skyline::gpu {
     using GuestBuffer = span<u8>; //!< The CPU mapping for the guest buffer, multiple mappings for buffers aren't supported since overlaps cannot be reconciled
@@ -51,6 +52,9 @@ namespace skyline::gpu {
         std::optional<GuestBuffer> guest;
         std::shared_ptr<FenceCycle> cycle{}; //!< A fence cycle for when any host operation mutating the buffer has completed, it must be waited on prior to any mutations to the backing
         size_t id;
+#if STRATO_BUFFER_READBACK_PROBE
+        buffer_readback_probe::WriteSnapshot diagnosticLastAnnotation{}; //!< Last annotation, not proof of the last writer. Resource lock required.
+#endif
         bool isDirect{}; //!< Indicates if a buffer is directly mapped from the guest
 
         IntervalList<size_t> directTrackedWrites; //!< (Direct) A list of tracking intervals for the buffer, this is used to determine when to read from `directTrackedShadow`
@@ -268,6 +272,9 @@ namespace skyline::gpu {
          * @note The buffer **must** be locked prior to calling this
          */
         void MarkGpuDirty(UsageTracker &usageTracker);
+        /** Diagnostic annotation only; the resource must be locked. */
+        void DiagnoseGpuWrite(buffer_readback_probe::WriteSource source, vk::DeviceSize offset, vk::DeviceSize size,
+                              const std::shared_ptr<FenceCycle> &writeCycle);
 
         /** @return Sequenced-write generation; the buffer must be locked. */
         u64 GetWriteGeneration() const { return writeGeneration; }

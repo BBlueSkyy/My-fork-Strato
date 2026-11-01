@@ -27,6 +27,7 @@ common = (gpu / 'interconnect/common/common.cpp').read_text()
 methods += function(common, 'void CachedMappedBufferView::Update(')
 methods += function(common, 'void CachedMappedBufferView::PurgeCaches(')
 methods += function((gpu / 'buffer.cpp').read_text(), 'BufferBinding BufferView::GetBinding(')
+methods += function((gpu / 'buffer.cpp').read_text(), 'vk::DeviceSize BufferView::GetOffset(')
 facade = r'''
 #include <algorithm>
 #include <array>
@@ -44,6 +45,9 @@ facade = r'''
 #include <variant>
 #include <vector>
 #include <shader_compiler/storage_buffer_range.h>
+#include <gpu/buffer_readback_probe.h>
+namespace buffer_readback_probe=skyline::gpu::buffer_readback_probe;
+namespace vk {using DeviceSize=uint64_t;}
 using u8=uint8_t; using u32=uint32_t; using u64=uint64_t;
 constexpr size_t PAGE_SIZE=4096;
 #define LOGI(...) ((void)0)
@@ -72,6 +76,7 @@ struct BufferView {
  operator bool()const{return delegate&&size;}
  Buffer*GetBuffer()const{return delegate->GetBuffer();}
  BufferBinding GetBinding(GPU&)const;
+ u64 GetOffset()const;
  BufferBinding TryMegaBuffer(auto&,auto&,auto&);
 };
 using DynamicBufferBinding=std::variant<BufferBinding,BufferView>;
@@ -85,6 +90,7 @@ struct Buffer {
  void PopulateReadBarrier(auto,auto&,auto&){++barriers;}
  bool SequencedCpuBackingWritesBlocked(){return true;}
  void MarkGpuDirty(auto&){++dirty;}
+ void DiagnoseGpuWrite(auto source,u64 offset,u64 size,auto&){buffer_readback_probe::RecordWrite(1,physical.size(),source,offset,size);}
  void BlockSequencedCpuBackingWrites(){++blocked;}
 };
 BufferBinding BufferView::TryMegaBuffer(auto&,auto&,auto&){return GetBuffer()->mega?BufferBinding{2,128,size}:BufferBinding{};}
@@ -170,5 +176,5 @@ int main(){
 '''
 with tempfile.TemporaryDirectory(prefix='ssbo-host-') as td:
     td=Path(td);src=td/'test.cpp';src.write_text(facade+methods+cases);exe=td/'test'
-    subprocess.run([os.environ.get('CXX','c++'),'-std=c++20','-O1','-pthread','-fsanitize=undefined','-fno-sanitize-recover=all','-I'+str(a.compiler.resolve()/'include'),str(src),'-o',str(exe)],check=True)
+    subprocess.run([os.environ.get('CXX','c++'),'-std=c++20','-O1','-pthread','-DSTRATO_BUFFER_READBACK_PROBE='+os.environ.get('PROBE_ENABLED','0'),'-I'+str(gpu.parent),'-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(a.compiler.resolve()/'include'),str(src),'-o',str(exe)],check=True)
     subprocess.run([exe],check=True,timeout=30)

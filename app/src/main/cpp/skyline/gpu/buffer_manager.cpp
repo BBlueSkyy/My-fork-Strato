@@ -113,8 +113,12 @@ namespace skyline::gpu {
                 if (srcBuffer->dirtyState == Buffer::DirtyState::GpuDirty) {
                     if (srcBuffer.lock.IsFirstUsage() && newBuffer->dirtyState != Buffer::DirtyState::GpuDirty)
                         copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->mirror.data(), srcBuffer->backing->data());
-                    else
+                    else {
+#if STRATO_BUFFER_READBACK_PROBE
+                        newBuffer->DiagnoseGpuWrite(buffer_readback_probe::WriteSource::Coalesce, 0, newBuffer->mirror.size(), {});
+#endif
                         newBuffer->MarkGpuDirtyImpl();
+                    }
 
                     // Since we don't synchost source buffers and the source buffers here are GPU dirty their mirrors will be out of date, meaning the backing contents of this source buffer's region in the new buffer from the initial synchost call will be incorrect. By copying backings directly here we can ensure that no writes are lost and that if the newly created buffer needs to turn GPU dirty during recreation no copies need to be done since the backing is as up to date as the mirror at a minimum.
                     copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->backing->data(), srcBuffer->backing->data());
@@ -127,6 +131,9 @@ namespace skyline::gpu {
                 }
             } else {
                 if (srcBuffer->RefreshGpuWritesActiveDirect(false, {})) {
+#if STRATO_BUFFER_READBACK_PROBE
+                    newBuffer->DiagnoseGpuWrite(buffer_readback_probe::WriteSource::Coalesce, 0, newBuffer->mirror.size(), {});
+#endif
                     newBuffer->MarkGpuDirtyImpl();
                 } else if (srcBuffer->directTrackedShadowActive) {
                     newBuffer->EnableTrackedShadowDirect();

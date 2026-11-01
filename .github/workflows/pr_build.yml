@@ -60,6 +60,8 @@ jobs:
           python3 tests/buffer_trap_dependencies/run_probe.py --deps app/libraries
           SANITIZE=address,undefined python3 tests/gpu_submission/run.py
           python3 tests/gpu_submission/run_trace.py
+          PROBE_ENABLED=1 python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
+          PROBE_ENABLED=1 python3 tests/gpu_queries/run.py
 
       - name: Android Assemble
         env:

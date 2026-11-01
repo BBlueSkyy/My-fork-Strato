@@ -13,6 +13,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <gpu/buffer_readback_probe.h>
 
 using u8 = uint8_t;
 using u32 = uint32_t;
@@ -109,12 +110,14 @@ struct GuestBuffer {
     bool blocked{}, dirty{};
     void BlockSequencedCpuBackingWrites() { blocked = true; }
     void MarkGpuDirty(int &) { dirty = true; }
+    void DiagnoseGpuWrite(auto source,u64 offset,u64 size,auto&){skyline::gpu::buffer_readback_probe::RecordWrite(1,64,source,offset,size);}
 };
 struct BufferView {
     std::shared_ptr<GuestBuffer> buffer;
     u64 offset{};
     BufferBinding GetBinding(GPU &) const { return {buffer->allocation.vkBuffer, offset}; }
     GuestBuffer *GetBuffer() { return buffer.get(); }
+    u64 GetOffset() const {return offset;}
 };
 namespace interconnect { struct InterconnectContext; }
 struct CachedMappedBufferView {

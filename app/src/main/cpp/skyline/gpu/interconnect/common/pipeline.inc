@@ -79,6 +79,11 @@ namespace skyline::gpu::interconnect {
                 dstStageMask |= dstStage;
             }
 
+#if STRATO_BUFFER_READBACK_PROBE
+            view.GetBuffer()->DiagnoseGpuWrite(dstStage == vk::PipelineStageFlagBits::eComputeShader
+                ? buffer_readback_probe::WriteSource::StorageCompute : buffer_readback_probe::WriteSource::StorageGraphics,
+                view.GetOffset(), view.size, ctx.executor.cycle);
+#endif
             view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
         } else {
             if (auto megaBufferBinding{view.TryMegaBuffer(ctx.executor.cycle, ctx.gpu.megaBufferAllocator, ctx.executor.executionTag)})
@@ -126,6 +131,11 @@ namespace skyline::gpu::interconnect {
                 srcStageMask |= vk::PipelineStageFlagBits::eAllCommands;
                 dstStageMask |= dstStage;
             }
+#if STRATO_BUFFER_READBACK_PROBE
+            view.GetBuffer()->DiagnoseGpuWrite(dstStage == vk::PipelineStageFlagBits::eComputeShader
+                ? buffer_readback_probe::WriteSource::ImageCompute : buffer_readback_probe::WriteSource::ImageGraphics,
+                view.GetOffset(), view.size, ctx.executor.cycle);
+#endif
             view.GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
         }
 

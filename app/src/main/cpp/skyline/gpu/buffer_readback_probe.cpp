@@ -29,6 +29,7 @@ namespace skyline::gpu::buffer_readback_probe {
         }
         std::string Print(const Row &row) { return PrintValues(row, Names); }
         using WaitRow = std::array<Value, WaitMetricCount>;
+        using WriteRow = std::array<Value, WriteSourceCount>;
     } // namespace
     struct Session::State {
         std::mutex mutex;
@@ -39,13 +40,17 @@ namespace skyline::gpu::buffer_readback_probe {
         std::array<Row, 512> before{};
         WaitRow beforeWaitTotal{};
         std::array<WaitRow, 512> beforeWait{};
+        WriteRow beforeWriteTotal{};
+        std::array<WriteRow, 512> beforeWrite{};
         uint64_t previous{Now()};
         State() {
             beforeTotal = ReadRow(totals);
             beforeWaitTotal = ReadRow(waitTotals);
+            beforeWriteTotal = ReadRow(writeTotals);
             for (unsigned i{}; i < 512; ++i) {
                 before[i] = ReadRow(entries[i].phases);
                 beforeWait[i] = ReadRow(entries[i].waits);
+                beforeWrite[i] = ReadRow(entries[i].writes);
             }
         }
         void Report() {
@@ -68,12 +73,24 @@ namespace skyline::gpu::buffer_readback_probe {
             Log("BufferReadback v3 phases start={} end={} sample_every=16 calls,0,completed_thread_ns (root phases "
                 "disjoint; samples includes phases): {}",
                 previous, now, PrintValues(waitDelta, WaitNames));
+            WriteRow writeDelta;
+            for (unsigned p{}; p < WriteSourceCount; ++p) {
+                auto v = Read(writeTotals[p]);
+                writeDelta[p] = Delta(v, beforeWriteTotal[p]);
+                beforeWriteTotal[p] = v;
+            }
+            Log("BufferReadback v3 annotations start={} end={} calls,potential_bound_bytes,0 (not actual writes; "
+                "incomplete coverage): {} invalid_bounds_all={}",
+                previous, now, PrintValues(writeDelta, WriteNames), invalidWriteBounds.load());
             previous = now;
             // Heap-owned snapshots keep the reporter's native stack bounded.
             struct Hot {
                 uint64_t rank{}, id{}, size{};
                 Row delta{};
                 WaitRow waitDelta{};
+                WriteRow writeDelta{};
+                uint64_t lastOffset{}, lastSize{};
+                uint64_t sampledSource{}, sampledOffset{}, sampledSize{};
             };
             std::array<Hot, 4> hot{};
             unsigned active{};
@@ -96,11 +113,28 @@ namespace skyline::gpu::buffer_readback_probe {
                     waitDelta[p] = Delta(v, beforeWait[i][p]);
                     beforeWait[i][p] = v;
                 }
+                WriteRow writeDelta;
+                for (unsigned p{}; p < WriteSourceCount; ++p) {
+                    auto v = Read(entries[i].writes[p]);
+                    changed |= v != beforeWrite[i][p];
+                    writeDelta[p] = Delta(v, beforeWrite[i][p]);
+                    beforeWrite[i][p] = v;
+                }
                 if (!changed)
                     continue;
                 ++active;
                 auto rank = std::max(delta[DirtyPrepare].ns + delta[ReadbackWait].ns, waitDelta[WaitPartCount].ns);
-                Hot next{rank, key - 1, entries[i].size.load(), delta, waitDelta};
+                Hot next{rank,
+                         key - 1,
+                         entries[i].size.load(),
+                         delta,
+                         waitDelta,
+                         writeDelta,
+                         entries[i].lastWriteOffset.load(),
+                         entries[i].lastWriteSize.load(),
+                         entries[i].sampledSource.load(),
+                         entries[i].sampledOffset.load(),
+                         entries[i].sampledSize.load()};
                 if (rank > hot.back().rank) {
                     hot.back() = next;
                     std::sort(hot.begin(), hot.end(), [](const auto &a, const auto &b) { return a.rank > b.rank; });
@@ -112,6 +146,11 @@ namespace skyline::gpu::buffer_readback_probe {
                         row.rank, Print(row.delta));
                     Log("BufferReadback v3 hot id={} size={} {}", row.id, row.size,
                         PrintValues(row.waitDelta, WaitNames));
+                    Log("BufferReadback v3 writers id={} size={} last_offset_snapshot={} last_bound_snapshot={} "
+                        "sampled_source={} sampled_offset={} sampled_bound={} {}",
+                        row.id, row.size, row.lastOffset, row.lastSize,
+                        row.sampledSource < WriteSourceCount ? WriteNames[row.sampledSource] : "unknown",
+                        row.sampledOffset, row.sampledSize, PrintValues(row.writeDelta, WriteNames));
                 }
             Log("BufferReadback v2 coverage active_ids={} top_dirty_ids_only=4 dropped_records_all={} (restart app per "
                 "capture; IDs belong to one BufferManager)",

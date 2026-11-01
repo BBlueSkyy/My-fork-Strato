@@ -31,6 +31,10 @@ namespace skyline::gpu::interconnect {
             // GPU dirtiness will be handled on the CopyFrom end as it's not always necessary
             srcBuf.GetBuffer()->BlockAllCpuBackingWrites();
             dstBuf.GetBuffer()->BlockAllCpuBackingWrites();
+#if STRATO_BUFFER_READBACK_PROBE
+            dstBuf.GetBuffer()->DiagnoseGpuWrite(buffer_readback_probe::WriteSource::DmaCopy,
+                dstBuf.GetOffset(), srcBuf.size, executor.cycle);
+#endif
 
             executor.AddOutsideRpCommand([srcBuf, dstBuf](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) {
                 commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, vk::MemoryBarrier{
@@ -63,6 +67,10 @@ namespace skyline::gpu::interconnect {
         executor.AttachBuffer(clearBuf);
 
         clearBuf.GetBuffer()->BlockSequencedCpuBackingWrites();
+#if STRATO_BUFFER_READBACK_PROBE
+        clearBuf.GetBuffer()->DiagnoseGpuWrite(buffer_readback_probe::WriteSource::DmaFill,
+            clearBuf.GetOffset(), clearBuf.size, executor.cycle);
+#endif
         clearBuf.GetBuffer()->MarkGpuDirty(executor.usageTracker);
 
         executor.AddOutsideRpCommand([clearBuf, value](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) {

@@ -59,6 +59,26 @@ static void ProducerFailureRecovery() {
     f.Write(37,0x9a);Check(f.mirror[0]==0x64&&f.mirror[37]==0x9a,"producer recovery lost preserved data");
     std::puts("PASS failed producer retains GPU authority/cycle; retry restores data before partial store");
 }
+static void AnnotationDoesNotSynchronize() {
+    Fixture f;auto b=f.buffer;auto producer=f.Pending(true);
+    {std::scoped_lock lock{*b};b->DiagnoseGpuWrite(gpu::buffer_readback_probe::WriteSource::Query, 32, 16, producer);}
+    Check(b->cycle==producer&&producer->waits==0&&b->dirtyState==Buffer::DirtyState::GpuDirty,
+          "diagnostic annotation changed data authority or waited");
+#if STRATO_BUFFER_READBACK_PROBE
+    Check(b->diagnosticLastAnnotation.cycle==producer->GetDiagnosticId(),"annotation cycle identity lost");
+    Check(!gpu::buffer_readback_probe::Find(1,4096,false),"first annotation incorrectly admitted resource");
+#endif
+    f.Write(37,0x9a);
+#if STRATO_BUFFER_READBACK_PROBE
+    auto entry=gpu::buffer_readback_probe::Find(1,4096,false);
+    Check(entry&&entry->sampledSource.load()==static_cast<unsigned>(gpu::buffer_readback_probe::WriteSource::Query)
+          &&entry->sampledOffset.load()==32&&entry->sampledSize.load()==16,
+          "pre-admission binding snapshot missing from first sampled wait");
+    Check(gpu::buffer_readback_probe::Read(entry->writes[static_cast<unsigned>(gpu::buffer_readback_probe::WriteSource::Query)]).calls==0,
+          "retaining initial annotation invented another write event");
+#endif
+    std::puts("PASS production write annotation preserves cycle, dirty state and wait policy");
+}
 #ifdef WITH_VULKAN
 #include "vulkan.inc"
 static void NativePendingReader() {
@@ -117,7 +137,7 @@ static void NativePendingWriter() {
 int main(){
     struct sigaction action{};action.sa_sigaction=Fault;action.sa_flags=SA_SIGINFO;sigemptyset(&action.sa_mask);
     Check(!sigaction(SIGSEGV,&action,nullptr),"sigaction failed");
-    try{CleanStoreDoesNotWait();DirtyProducerStillWaits();ProducerFailureRecovery();
+    try{AnnotationDoesNotSynchronize();CleanStoreDoesNotWait();DirtyProducerStillWaits();ProducerFailureRecovery();
 #ifdef WITH_VULKAN
     NativePendingReader();NativePendingWriter();
 #endif

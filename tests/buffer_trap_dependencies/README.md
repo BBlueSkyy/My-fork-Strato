@@ -128,3 +128,36 @@ accounting. Native mode uses the production FenceCycle with a real VkEvent-gated
 writer, copy and readback, comparing every byte with synchronization validation.
 Host mutex/list interfaces are test facades; native Vulkan calls and FenceCycle
 logic are real. No Android/Turnip performance result is inferred from llvmpipe.
+
+## v3 annotated writers and cycle comparison
+
+`v3 annotations` / `v3 writers` add `calls,potential_bound_bytes,0` by source:
+storage/image buffers (compute or graphics), transform feedback, query, DMA
+copy/fill, inline GPU update and dirty coalescence. Query width is4 or16 bytes;
+bindings describe a *potential* range, not actual shader-written bytes. Offsets
+use GetOffset including delegated displacement after coalescence. Invalid bounds
+increment invalid_bounds_all and invalidate only the diagnostic cycle annotation;
+they never change the operation, its bytes or dirty state.
+
+Per-buffer event counters and last_offset/last_bound snapshots begin at dirty
+admission; annotations made earlier appear only in globals. An initial cached
+binding may therefore have zero per-ID event counts forever. To retain that
+clue, the buffer keeps a last-annotation snapshot under its existing resource
+lock. Each sampled wait captures it together with the selected cycle, so
+sampled_source/offset/bound can expose a one-shot binding made before admission
+without inventing another write event. The reporter reads snapshot fields
+independently: the printed tuple is approximate at a window boundary and must
+not be used as an exact access history or a spatial-overlap proof.
+
+same_annotation_cycle / different_annotation_cycle / unknown_annotation_cycle
+classify sampled waits by cycle identity relative to that last annotated intent.
+Unique diagnostic IDs avoid raw-pointer reuse. They do **not** identify the true
+last writer: cached bindings can write again with no annotation, conservative
+bindings can write nothing, and a recorded intent can be abandoned on failure.
+Coalescence uses an unknown cycle. No policy consumes these measurements.
+
+For the next capture, restart the app; same scene/save/Turnip24.0.99; both hacks,
+maximum clocks and Free Guest OFF initially. Save complete v2/v3 lines. The
+phase split establishes whether submit/chain/mutex/driver/semaphore completion
+dominates; writer/range clues guide a follow-up dependency/range proof. No safe
+regional or last-writer-only bypass is established by the current captures.

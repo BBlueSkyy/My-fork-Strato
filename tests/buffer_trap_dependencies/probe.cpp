@@ -46,11 +46,18 @@ int main() {
     for (unsigned i{}; i < 32; ++i)
         samples += bp::SampleWait(81, 65536);
     assert(samples == 2);
+    bp::RecordWrite(81, 65536, bp::WriteSource::Query, 512, 16);
+    auto annotated = bp::Read(e->writes[static_cast<unsigned>(bp::WriteSource::Query)]);
+    assert(annotated.calls == 1 && annotated.bytes == 16);
+    assert(e->lastWriteOffset.load() == 512 && e->lastWriteSize.load() == 16);
+    bp::RecordWrite(81, 65536, bp::WriteSource::Query, 65530, 16);
+    assert(bp::invalidWriteBounds.load() == 1);
     {
         bp::Session session(false, false, false, false);
         bp::Record(81, 65536, bp::DirtyPrepare, 1000000);
+        bp::RecordWrite(81, 65536, bp::WriteSource::StorageCompute, 256, 4608);
         {
-            bp::WaitTrace trace{81, 65536, true};
+            bp::WaitTrace trace{81, 65536, true, 7, {7,bp::WriteSource::Query,512,16}};
             {
                 bp::FenceWaitScope root{&trace};
                 root.Entry(false, false);
@@ -59,6 +66,8 @@ int main() {
             }
             trace.Finish();
             assert(trace.depth == 0 && trace.nodes == 2 && trace.unsubmitted && !trace.alreadySignalled);
+            assert(e->sampledSource.load()==static_cast<unsigned>(bp::WriteSource::Query));
+            assert(e->sampledOffset.load()==512 && e->sampledSize.load()==16);
         }
         // A valid split-counter snapshot must emit late fields even with no new call.
         bp::totals[bp::Download].bytes.fetch_add(31);
@@ -68,13 +77,20 @@ int main() {
         session.Stop();
     }
     alive = true;
-    bool hot{}, late{}, phases{};
+    bool hot{}, late{}, phases{}, writers{};
     for (const auto &text : logs) {
         hot |= text.find("hot id=81 size=65536") != std::string::npos;
         late |= text.find("download=0,31,13") != std::string::npos;
         phases |= text.find("BufferReadback v3 hot id=81 size=65536") != std::string::npos && text.find("unsubmitted=1,0,0") != std::string::npos;
+        writers |= text.find("BufferReadback v3 writers id=81 size=65536") != std::string::npos && text.find("storage_compute=1,4608,0") != std::string::npos;
     }
-    assert(hot && late && phases);
+    assert(hot && late && phases && writers);
+    for (auto cycles : {std::pair{7U,7U},std::pair{9U,7U},std::pair{9U,0U}}) {
+        bp::WaitTrace trace{81,65536,true,cycles.first,{cycles.second,bp::WriteSource::Query,512,16}};
+        trace.Finish();
+    }
+    for(unsigned metric=bp::WaitPartCount+4;metric<bp::WaitMetricCount;++metric)
+        assert(bp::Read(bp::waitTotals[metric]).calls>=1);
     for (uint64_t i = 4000; i < 5000; ++i)
         bp::Record(i, 4096, bp::Download, 20, 4096);
     assert(bp::dropped.load() > 0);

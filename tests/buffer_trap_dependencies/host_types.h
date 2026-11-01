@@ -12,6 +12,7 @@
 #include <mutex>
 #include <span>
 #include <vector>
+namespace vk {using DeviceSize=uint64_t;}
 namespace skyline {
     using u8 = uint8_t;
     using i64 = int64_t;

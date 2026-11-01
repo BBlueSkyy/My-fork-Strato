@@ -9,6 +9,10 @@
 namespace skyline {using ContextTag=uint64_t;}
 namespace skyline::gpu {
     struct FenceCycle {
+#if STRATO_BUFFER_READBACK_PROBE
+        uint64_t diagnosticId{buffer_readback_probe::nextCycleId.fetch_add(1)};
+        uint64_t GetDiagnosticId() const {return diagnosticId;}
+#endif
         std::atomic<unsigned> waits{};
         bool done{};
         std::function<void()> complete;
@@ -43,11 +47,13 @@ namespace skyline::gpu {
         DirtyState dirtyState{DirtyState::Clean};
         GPU &gpu;
         const size_t id{1};
+        buffer_readback_probe::WriteSnapshot diagnosticLastAnnotation{};
         std::optional<span<u8>> guest;
         span<u8> mirror;
         std::shared_ptr<Backing> backing = std::make_shared<Backing>();
         std::optional<TrapHandle> trapHandle;
         std::shared_ptr<FenceCycle> cycle;
+        void DiagnoseGpuWrite(buffer_readback_probe::WriteSource, size_t, size_t, const std::shared_ptr<FenceCycle>&);
         std::recursive_mutex stateMutex;
         std::mutex mutex;
         bool isDirect{}, blocked{};

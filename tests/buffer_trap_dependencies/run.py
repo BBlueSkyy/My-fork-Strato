@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='strato-readback-traps-') as td:
     (td/'routing.inc').write_text('bool RouteGuest(int signal,siginfo_t *info,ArmContext *ctx) {return '+call(source,'void NCE::SignalHandler(')+';}\n')
     source=read('gpu/buffer.cpp',os.environ.get('BUFFER_BASELINE_REF'))
     functions=[]
-    for signature in ['void Buffer::SetupStagedTraps()', 'void Buffer::unlock()', 'void Buffer::WaitOnFence()', 'bool Buffer::PollFence()', 'void Buffer::Invalidate()', 'void Buffer::SynchronizeHost(', 'bool Buffer::SynchronizeGuest(', 'void Buffer::MarkGpuDirtyImplStaged()']:
+    for signature in ['void Buffer::DiagnoseGpuWrite(', 'void Buffer::SetupStagedTraps()', 'void Buffer::unlock()', 'void Buffer::WaitOnFence()', 'bool Buffer::PollFence()', 'void Buffer::Invalidate()', 'void Buffer::SynchronizeHost(', 'bool Buffer::SynchronizeGuest(', 'void Buffer::MarkGpuDirtyImplStaged()']:
         start=source.index(signature);end=source.index('{',start)+1;depth=1
         while depth:
             depth+=(source[end]=='{')-(source[end]=='}');end+=1

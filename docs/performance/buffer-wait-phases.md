@@ -45,3 +45,26 @@ Risks/checks: root vs nested accounting; simultaneous waiter owns mutex; cancell
 failed waits; trace pointer lifetime and no recursion through reporting; sampling/table
 coverage; counters disabled in normal builds; aliases/recreation unmodified. Android,
 Turnip behavior and title FPS require another actual device capture. Do not monitor CI.
+
+Published phase step:034f1bc, same Draft#415. Production FenceCycle root phases,
+per-call recursive trace and unchanged synchronization passed source review,
+ASan/UBSan host submission/trace/reporter/buffer tests and native Vulkan writer,
+copy/readback validation. Tests observe phase entry with a test-side clock wrapper,
+using real monotonic timestamps; no production scheduling seam was added.
+
+Writer step: annotations are diagnostic intent only, with conservative ranges and
+unique cycle identities. Per-ID events start after table admission; last-annotation
+snapshots captured under the buffer resource lock retain earlier one-shot bindings
+without inflating event counts. Snapshot fields printed by the reporter are not
+transactional. No writer generation, alias ownership, cycle attachment or dependency
+ordering changes. Existing SSBO binding and query regression bodies compile and run
+with probe ON/OFF; buffer annotation bodies preserve dirty state/cycle without waiting.
+
+No performance fix for the dominant GPU-dirty path is established yet. Regional
+tracking lacks actual fault/write intervals. Producer-only waits lack a complete
+writer history (cached descriptors/transform feedback/inline updates/coalescence).
+Earlier readback cannot consume bytes before the producing commands complete;
+splitting a submission may help only if the new phase capture shows unrelated tail
+work, and introduces measurable submission/ordering costs. The next v3 capture is
+required before choosing any such structural optimization. No FPS improvement or
+APK build success is claimed, and no Actions status is consulted.

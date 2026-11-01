@@ -38,6 +38,9 @@ namespace skyline::gpu {
         AtomicForwardList<std::shared_ptr<void>> dependencies; //!< A list of all dependencies on this fence cycle
         AtomicForwardList<std::shared_ptr<FenceCycle>> chainedCycles; //!< A list of all chained FenceCycles, this is used to express multi-fence dependencies
         SharedSpinLock chainMutex;
+#if STRATO_BUFFER_READBACK_PROBE
+        const uint64_t diagnosticId{buffer_readback_probe::nextCycleId.fetch_add(1, std::memory_order_relaxed)};
+#endif
 
         /**
          * @brief Destroy all the dependencies of this cycle
@@ -52,6 +55,9 @@ namespace skyline::gpu {
         }
 
       public:
+#if STRATO_BUFFER_READBACK_PROBE
+        uint64_t GetDiagnosticId() const { return diagnosticId; }
+#endif
         FenceCycle(const vk::raii::Device &device, vk::Fence fence, vk::Semaphore semaphore, bool signalled = false) : signalled{signalled}, device{device}, fence{fence}, semaphore{semaphore}, nextSemaphoreSubmitWait{!signalled} {
             if (!signalled)
                 device.resetFences(fence);

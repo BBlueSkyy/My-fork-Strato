@@ -35,6 +35,7 @@ with tempfile.TemporaryDirectory(prefix='strato-gpu-queries-') as directory:
         'void QueryResolveHelperShader::PrepareForTransfer(')))
     subprocess.run(['g++', '-std=c++20', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
                     '-Wno-unused-parameter', '-fsanitize=address,undefined',
+                    '-DSTRATO_BUFFER_READBACK_PROBE='+os.environ.get('PROBE_ENABLED','0'), '-I'+str(GPU.parent),
                     '-fno-sanitize-recover=all', '-I' + str(directory),
                     str(ROOT / 'tests/gpu_queries/tests.cpp'), '-o', str(directory / 'tests')], check=True)
     environment = dict(os.environ)

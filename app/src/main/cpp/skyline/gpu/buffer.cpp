@@ -38,11 +38,16 @@ namespace skyline::gpu {
                 // If this mutex would cause other callbacks to be blocked then we should block on this mutex in advance
                 std::shared_ptr<FenceCycle> waitCycle{};
                 bool diagnosticGpuDirty{};
+                buffer_readback_probe::WriteSnapshot diagnosticAnnotation{};
                 do {
                     if (waitCycle) {
                         i64 startNs{buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold ? util::GetTimeNs() : 0};
                         buffer_readback_probe::Scope diagnosticWait{buffer->id, buffer->mirror.size(), diagnosticGpuDirty ? buffer_readback_probe::DirtyPrepare : buffer_readback_probe::CurrentPrepare};
-                        buffer_readback_probe::WaitTrace diagnosticTrace{buffer->id, buffer->mirror.size(), diagnosticGpuDirty && buffer_readback_probe::SampleWait(buffer->id, buffer->mirror.size())};
+                        uint64_t diagnosticSelectedCycle{};
+#if STRATO_BUFFER_READBACK_PROBE
+                        diagnosticSelectedCycle = waitCycle->GetDiagnosticId();
+#endif
+                        buffer_readback_probe::WaitTrace diagnosticTrace{buffer->id, buffer->mirror.size(), diagnosticGpuDirty && buffer_readback_probe::SampleWait(buffer->id, buffer->mirror.size()), diagnosticSelectedCycle, diagnosticAnnotation};
                         waitCycle->Wait(false, diagnosticTrace.Enabled() ? &diagnosticTrace : nullptr);
                         diagnosticTrace.Finish();
                         diagnosticWait.End();
@@ -72,6 +77,9 @@ namespace skyline::gpu {
                         waitCycle = {};
                     } else {
                         waitCycle = buffer->cycle;
+#if STRATO_BUFFER_READBACK_PROBE
+                        diagnosticAnnotation = buffer->diagnosticLastAnnotation;
+#endif
                     }
                 } while (waitCycle);
             }
@@ -442,6 +450,15 @@ namespace skyline::gpu {
         if (mirror.valid())
             munmap(mirror.data(), mirror.size());
         WaitOnFence();
+    }
+
+    void Buffer::DiagnoseGpuWrite(buffer_readback_probe::WriteSource source, vk::DeviceSize offset, vk::DeviceSize size,
+                                  const std::shared_ptr<FenceCycle> &writeCycle) {
+#if STRATO_BUFFER_READBACK_PROBE
+        const bool valid{buffer_readback_probe::RecordWrite(id, mirror.size(), source, offset, size)};
+        diagnosticLastAnnotation = {valid && writeCycle ? writeCycle->GetDiagnosticId() : 0,
+                                    valid ? source : buffer_readback_probe::WriteSource::Count, offset, size};
+#endif
     }
 
     void Buffer::MarkGpuDirty(UsageTracker &usageTracker) {

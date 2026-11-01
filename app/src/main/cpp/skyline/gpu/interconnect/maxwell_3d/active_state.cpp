@@ -211,6 +211,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         dstStageMask |=  vk::PipelineStageFlagBits::eTransformFeedbackEXT;
                     }
 
+#if STRATO_BUFFER_READBACK_PROBE
+                    view->GetBuffer()->DiagnoseGpuWrite(buffer_readback_probe::WriteSource::TransformFeedback,
+                        view->GetOffset(), view->size, ctx.executor.cycle);
+#endif
                     view->GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
                     builder.SetTransformFeedbackBuffer(index, *view);
                     return;
