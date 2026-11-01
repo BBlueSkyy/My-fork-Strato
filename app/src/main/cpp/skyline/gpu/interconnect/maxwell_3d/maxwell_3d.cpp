@@ -913,7 +913,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         // surrounding the observed reduction in saturated HDR pixels.
         if (pacmanSceneTarget && pacmanSceneOrdinal && pacmanPipeline &&
             (pacmanCap.ScanEnabled()
-                 ? *pacmanSceneOrdinal == 100
+                 ? *pacmanSceneOrdinal == 16
                  : (*pacmanSceneOrdinal == 1 || *pacmanSceneOrdinal == 16 ||
                     *pacmanSceneOrdinal == 32 || *pacmanSceneOrdinal == 48 ||
                     *pacmanSceneOrdinal == 64 || *pacmanSceneOrdinal == 80 ||
