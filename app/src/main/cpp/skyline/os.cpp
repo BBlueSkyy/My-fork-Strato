@@ -3,6 +3,7 @@
 
 #include <common/readback_probe_session.h>
 #include "gpu.h"
+#include <common/settings.h>
 #include "audio.h"
 #include "nce.h"
 #include <jit/jit32.h>
