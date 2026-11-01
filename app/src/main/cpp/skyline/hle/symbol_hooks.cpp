@@ -2,10 +2,31 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <cxxabi.h>
+#include <cstring>
+#include <kernel/types/KProcess.h>
+#include <nce/guest.h>
+#include <os.h>
 #include "symbol_hooks.h"
 #include "symbol_hook_table.h"
 
 namespace skyline::hle {
+    void TraceCrysisAbortEntry(const DeviceState &state, const HookedSymbol &symbol) {
+        // All registrations are Crysis-specific, but guard this entry point too.
+        if (!state.process || !state.thread || !state.process->is64bit() ||
+            state.process->npdm.aci0.programId != 0x0100E66010ADE000ULL)
+            return;
+
+        const auto &guest{static_cast<const kernel::type::KNceThread &>(*state.thread).ctx};
+        u64 callerLr{};
+        // EntryExitHook stores the original guest LR in a dedicated 16-byte
+        // slot referenced by hostSp, before saving the volatile guest registers.
+        if (guest.hostSp)
+            std::memcpy(&callerLr, guest.hostSp, sizeof(callerLr));
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+            "CrysisAbortEntry: {} callerLR=0x{:X} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X}",
+            symbol.name, callerLr, guest.gpr.x0, guest.gpr.x1, guest.gpr.x2, guest.gpr.x3, guest.gpr.x4));
+    }
+
     std::string Demangle(const std::string_view mangledName) {
         int status{};
         size_t length{};
