@@ -25,6 +25,18 @@ namespace skyline::nce {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
+        // Probe is synthesized only after matching Crysis v1.6.0 main's
+        // exact entry signature. The trampoline saves/restores all volatile
+        // registers and executes the displaced STR LR before returning.
+        if (svcId == CrysisMemoryCallbackProbeSvc && state.process &&
+            state.process->npdm.aci0.programId == 0x0100E66010ADE000ULL) {
+            const auto &gpr{ctx->gpr};
+            AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+                "CrysisNVNMemory: event={} minSize=0x{:X} ({}) cmdBuffer=0x{:X} data=0x{:X}",
+                gpr.x1, gpr.x2, gpr.x2, gpr.x0, gpr.x3));
+            TRACE_EVENT_BEGIN("guest", "Guest");
+            return;
+        }
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
@@ -351,7 +363,9 @@ namespace skyline::nce {
             auto instructionOffset{static_cast<size_t>(instruction - start)};
 
             if (svc.Verify()) {
-                size += 7;
+                // The synthetic Crysis callback probe must replay its
+                // original STR LR in addition to the seven SVC stub words.
+                size += svc.value == CrysisMemoryCallbackProbeSvc ? 8 : 7;
                 offsets.push_back(instructionOffset);
             } else if (mrs.Verify()) {
                 if (mrs.srcReg == TpidrroEl0 || mrs.srcReg == TpidrEl0) {
@@ -419,6 +433,8 @@ namespace skyline::nce {
                 *patch = instructions::BL(static_cast<i32>(startOffset() + guest::SaveCtxSize + TrampolineSize)).raw;
                 patch++;
                 *patch++ = 0xF84107FE; // LDR LR, [SP], #16
+                if (svc.value == CrysisMemoryCallbackProbeSvc)
+                    *patch++ = 0xF81F0FFE; // Original callback prologue: STR LR, [SP, #-16]!
                 *patch = instructions::B(static_cast<i32>(endOffset() + offset + 1)).raw;
                 patch++;
             } else if (mrs.Verify()) {
