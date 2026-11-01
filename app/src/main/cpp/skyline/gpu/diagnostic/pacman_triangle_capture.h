@@ -33,6 +33,7 @@ namespace skyline::gpu::diagnostic {
         std::array<std::uint32_t, MaxScanIntervals + 1> sceneOrdinals{};
         std::uint32_t scanRequested{}, scanPending{}, scanCompleted{}, scanKept{};
         std::uint32_t scanAnomalous{}, scanFailed{};
+        bool scanBaselineCaptured{};
         std::uint64_t generation{};
         std::size_t reservedBytes{};
         std::uint32_t reservedSnapshots{};
