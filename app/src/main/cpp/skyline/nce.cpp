@@ -5,6 +5,7 @@
 #include <cxxabi.h>
 #include <linux/elf.h>
 #include "common/signal.h"
+#include "common/fault_access.h"
 #include "common/trace.h"
 #include "os.h"
 #include "jvm.h"
@@ -150,7 +151,8 @@ namespace skyline::nce {
 
         if (signal == SIGSEGV)
             // If we get a guest access violation then we want to handle any accesses that may be from a trapped region
-            if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
+            if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), fault_access::MayWrite(signal, info->si_code,
+                    {reinterpret_cast<const std::byte *>(ctx->uc_mcontext.__reserved), sizeof(ctx->uc_mcontext.__reserved)})))
                 return;
 
         if (signal != SIGINT) {
@@ -181,7 +183,8 @@ namespace skyline::nce {
     }
 
     void NCE::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
-        if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
+        if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), fault_access::MayWrite(signal, info->si_code,
+                    {reinterpret_cast<const std::byte *>(ctx->uc_mcontext.__reserved), sizeof(ctx->uc_mcontext.__reserved)})))
             return;
 
         bool runningUnderDebugger{[]() {

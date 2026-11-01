@@ -166,6 +166,7 @@ namespace skyline {
                         break;
                     }
                     entry.protection = TrapProtection::WriteOnly; // We only need to trap writes to this entry
+                    allNone = false; // The readback still requires the next CPU write to fault.
                 }
                 if (lockCallback)
                     continue; // We need to retry the loop because a callback was blocking
