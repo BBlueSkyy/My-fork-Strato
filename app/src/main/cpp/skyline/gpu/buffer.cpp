@@ -47,6 +47,16 @@ namespace skyline::gpu {
                     }
 
                     std::scoped_lock lock{*buffer};
+                    {
+                        std::scoped_lock stateLock{buffer->stateMutex};
+                        // Acquiring the resource may have waited for submission to
+                        // release AllWrites. A current mirror can now be changed
+                        // without waiting for GPU readers of the separate backing.
+                        // Keep their cycle: SynchronizeHost still needs it before
+                        // uploading those guest writes to the backing.
+                        if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty)
+                            return;
+                    }
                     if (waitCycle && buffer->cycle == waitCycle) {
                         buffer->cycle = {};
                         waitCycle = {};
