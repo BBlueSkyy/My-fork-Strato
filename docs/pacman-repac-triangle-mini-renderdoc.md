@@ -79,3 +79,62 @@ capture and targeted regression test. Keep this PR draft, unmerged.
 Source integration only; no Android toolchain build or Moto G100 test was
 performed when the source was authored. GitHub Actions results should be
 checked separately.
+
+
+## Device capture 001: observed data (2026-11-01)
+
+Files: `capture_001.zip` (959,293 bytes of plain-text GPU events before ZIP)
+and `emulation.log`. PAC-MAN WORLD Re-PAC v1.0.2, handheld,
+Adreno 650, Qualcomm proprietary 0.777.0, Vulkan 1.1.276.
+
+- Six presentations, 1,580 direct draws, 53 unique shader combinations.
+  No dropped events. No indirect or inline draws during this window.
+- Two full draw intervals have 395 draws each; a third has the same count.
+  Intervals 3 and 4 split one sequence at the asynchronous present boundary
+  (184 + 211); **these are not complete independent guest frames**.
+- Per complete sequence: approximately 183 depth-only draws to a
+  2048×2048 depth target, followed by a 1280×720 scene/color pass and
+  postprocessing. Guest topologies 4 and 7, mostly indexed. All
+  `flipY=false`; front-face mostly counterclockwise. No evidence of a
+  global flip regression from this data.
+- Three alternating 1920×1080 VI sources. Source format IDs alternate
+  between 37 (R8G8B8A8 UNORM) and 43 (R8G8B8A8 sRGB), with a
+  1280×720 crop. This is a potential format identity to compare, **not
+  an established cause of the triangle**.
+- The RenderDoc layer is absent. Text metadata alone cannot identify
+  the first draw producing the bad pixel.
+- The log contains an audio latency error unrelated to any verified
+  graphics failure; it contains no identified Vulkan failure.
+
+### Stage 2: scene image checkpoints (same Draft PR)
+
+Create an empty `gpu_capture/pacman_world/ENABLE_SCENE_SNAPSHOTS`
+marker **before** arming a new `ARM_CAPTURE` marker. Keep the game at the
+affected beach scene. As in stage 1, `ARM_CAPTURE` is automatically consumed.
+
+An opt-in readback now samples the actual 1280×720 scene color target
+**after** direct scene draws 1, 16, 64 and 176, within approximate
+presentation intervals 1 and 2. Only full-resolution 2D, single-layer,
+single-mip, uncompressed color RTs with transfer-src and eligible Vulkan
+layout are sampled. Maximum eight images, 8 MiB each and 64 MiB overall.
+There is no fixed shader hash or game ID in the selection.
+
+This diagnostics-only path ends a render pass for GPU-ordered readback,
+which can change scheduling/timing while armed. It is **not a test of
+performance or proof of semantically identical rendering under capture**.
+Outside manual capture, the code does not touch render passes.
+
+For stage 2, upload:
+- The entire new `capture_###` ZIP, including `scene_*.raw` and
+  `scene_*.txt`.
+- Both `capture_complete.txt` and `snapshot_readbacks_done.txt`:
+  the first only closes the metadata window; the latter confirms that
+  GPU fence completion and asynchronous file writes have finished.
+- The corresponding `emulation.log` and screenshot or video clearly
+  showing whether the **captured** scene was bad or good.
+
+Compare per-draw images and earliest divergence; refine the binary
+search with new draw ordinals if necessary. No rendering fix should be
+committed before evidence ties a specific GPU operation to the defect.
+
+**Stage 2 build and phone execution have not been validated yet.**
