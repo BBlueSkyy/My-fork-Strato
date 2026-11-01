@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <common/readback_probe.h>
 #include <adrenotools/driver.h>
 #include <gpu.h>
 #include <kernel/memory.h>
@@ -30,6 +31,7 @@ namespace skyline::gpu {
             if (!buffer)
                 return;
 
+            readback_probe::Context diagnosticContext{readback_probe::Domain::Buffer,buffer->id};
             std::unique_lock stateLock{buffer->stateMutex};
             if (buffer->AllCpuBackingWritesBlocked() || buffer->dirtyState == DirtyState::GpuDirty) {
                 stateLock.unlock(); // If the lock isn't unlocked, a deadlock from threads waiting on the other lock can occur
@@ -39,7 +41,9 @@ namespace skyline::gpu {
                 do {
                     if (waitCycle) {
                         i64 startNs{buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold ? util::GetTimeNs() : 0};
+                        readback_probe::Scope diagnosticWait{readback_probe::Metric::ProducerWait};
                         waitCycle->Wait();
+                        diagnosticWait.End();
                         if (startNs)
                             buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(util::GetTimeNs() - startNs);
 
@@ -61,6 +65,9 @@ namespace skyline::gpu {
             auto buffer{weakThis.lock()};
             if (!buffer)
                 return true;
+
+            readback_probe::Context diagnosticContext{readback_probe::Domain::Buffer,buffer->id};
+            readback_probe::Scope diagnosticTrap{readback_probe::Metric::BufferReadTrap};
 
             std::unique_lock stateLock{buffer->stateMutex, std::try_to_lock};
             if (!stateLock)
@@ -85,11 +92,15 @@ namespace skyline::gpu {
             if (!buffer)
                 return true;
 
+            readback_probe::Context diagnosticContext{readback_probe::Domain::Buffer,buffer->id};
+            readback_probe::Scope diagnosticTrap{readback_probe::Metric::BufferWriteTrap};
+
             std::unique_lock stateLock{buffer->stateMutex, std::try_to_lock};
             if (!stateLock)
                 return false;
 
             if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty) {
+                readback_probe::Record(readback_probe::Metric::CpuDirty,0,buffer->mirror.size());
                 buffer->dirtyState = DirtyState::CpuDirty;
                 return true;
             }
@@ -97,6 +108,7 @@ namespace skyline::gpu {
             if (buffer->accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold && *buffer->gpu.state.settings->enableFastGpuReadbackHack) {
                 // As opposed to skipping readback as we do for textures, with buffers we can still perform the readback but just without syncinc the GPU
                 // While the read data may be invalid it's still better than nothing and works in most cases
+                readback_probe::Scope diagnosticCopy{readback_probe::Metric::BufferHack,buffer->mirror.size()};
                 memcpy(buffer->mirror.data(), buffer->backing->data(), buffer->mirror.size());
                 buffer->dirtyState = *buffer->gpu.state.settings->enableFastReadbackWrites ? DirtyState::CpuDirty : DirtyState::Clean;
                 return true;
@@ -365,6 +377,7 @@ namespace skyline::gpu {
         if (dirtyState == DirtyState::CpuDirty)
             SynchronizeHost(true); // Will transition the Buffer to Clean
 
+        readback_probe::Record(readback_probe::Metric::GpuDirty,0,mirror.size());
         dirtyState = DirtyState::GpuDirty;
 
         BlockAllCpuBackingWrites();
@@ -436,6 +449,7 @@ namespace skyline::gpu {
         TRACE_EVENT("gpu", "Buffer::WaitOnFence");
 
         if (cycle) {
+            readback_probe::Scope diagnosticWait{readback_probe::Metric::ProducerWait};
             cycle->Wait();
             cycle = nullptr;
         }
@@ -454,6 +468,7 @@ namespace skyline::gpu {
     }
 
     void Buffer::Invalidate() {
+        readback_probe::Scope diagnosticScope{readback_probe::Metric::Invalidate};
         if (trapHandle) {
             gpu.state.process->trap.DeleteTrap(*trapHandle);
             trapHandle = {};
@@ -467,6 +482,7 @@ namespace skyline::gpu {
         if (!guest || isDirect)
             return;
 
+        readback_probe::Context diagnosticContext{readback_probe::Domain::Buffer,id};
         TRACE_EVENT("gpu", "Buffer::SynchronizeHost");
 
         {
@@ -483,6 +499,7 @@ namespace skyline::gpu {
                 gpu.state.process->trap.TrapRegions(*trapHandle, true); // Trap any future CPU writes to this buffer, must be done before the memcpy so that any modifications during the copy are tracked
         }
 
+        readback_probe::Scope diagnosticCopy{readback_probe::Metric::BufferUpload,mirror.size()};
         std::memcpy(backing->data(), mirror.data(), mirror.size());
     }
 
@@ -490,6 +507,8 @@ namespace skyline::gpu {
         if (!guest || isDirect)
             return false;
 
+        readback_probe::Context diagnosticContext{readback_probe::Domain::Buffer,id};
+        readback_probe::Record(readback_probe::Metric::ReadbackRequest);
         TRACE_EVENT("gpu", "Buffer::SynchronizeGuest");
 
         {
@@ -502,7 +521,10 @@ namespace skyline::gpu {
                 return false; // If the fence is not signalled and non-blocking behaviour is requested then bail out
 
             WaitOnFence();
-            std::memcpy(mirror.data(), backing->data(), mirror.size());
+            {
+                readback_probe::Scope diagnosticCopy{readback_probe::Metric::BufferReadback,mirror.size()};
+                std::memcpy(mirror.data(), backing->data(), mirror.size());
+            }
 
             dirtyState = DirtyState::Clean;
         }

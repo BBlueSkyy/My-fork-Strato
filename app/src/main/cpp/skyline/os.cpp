@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <common/readback_probe_session.h>
 #include "gpu.h"
 #include "audio.h"
 #include "nce.h"
@@ -64,6 +65,11 @@ namespace skyline::kernel {
           serviceManager(state) {}
 
     void OS::Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType) {
+#if STRATO_READBACK_DIAGNOSTICS
+        // One reporter per emulation execution, independent of GPU channel count.
+        readback_probe::Session diagnosticSession{*state.settings->enableFastGpuReadbackHack,
+            *state.settings->enableFastReadbackWrites,*state.settings->forceMaxGpuClocks,*state.settings->freeGuestTextureMemory};
+#endif
         auto romFile{std::make_shared<vfs::OsBacking>(romFd)};
         keyStore = std::make_shared<crypto::KeyStore>(privateAppFilesPath + "keys/");
 
@@ -150,6 +156,9 @@ namespace skyline::kernel {
             LOGI("Starting main HOS thread");
             thread->Start(true);
             process->Kill(true, true, true);
+#if STRATO_READBACK_DIAGNOSTICS
+            diagnosticSession.Stop(); // Final report/join while logger and its thread metadata are alive.
+#endif
             skyline::AsyncLogger::Finalize(true);
         }
     }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <common/readback_probe.h>
 #include <gpu.h>
 #include <loader/loader.h>
 #include <vulkan/vulkan.hpp>
@@ -79,6 +80,7 @@ namespace skyline::gpu {
     }
 
     void CommandScheduler::SubmitCommandBuffer(const vk::raii::CommandBuffer &commandBuffer, std::shared_ptr<FenceCycle> cycle, span<vk::Semaphore> waitSemaphores, span<vk::Semaphore> signalSemaphores) {
+        readback_probe::CycleContext diagnosticCycle{reinterpret_cast<uintptr_t>(cycle.get())};
         boost::container::small_vector<vk::Semaphore, 3> fullWaitSemaphores{waitSemaphores.begin(), waitSemaphores.end()};
         boost::container::small_vector<vk::PipelineStageFlags, 3> fullWaitStages{waitSemaphores.size(), vk::PipelineStageFlagBits::eAllCommands};
 
@@ -93,7 +95,10 @@ namespace skyline::gpu {
 
         {
             try {
+                readback_probe::Scope diagnosticMutex{readback_probe::Metric::QueueMutex};
                 std::scoped_lock lock{gpu.queueMutex};
+                diagnosticMutex.End();
+                readback_probe::Scope diagnosticSubmit{readback_probe::Metric::QueueSubmit};
                 gpu.vkQueue.submit(vk::SubmitInfo{
                     .commandBufferCount = 1,
                     .pCommandBuffers = &*commandBuffer,

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <common/readback_probe.h>
 #include <condition_variable>
 #include <vulkan/vulkan_raii.hpp>
 #include <common.h>
@@ -110,6 +111,7 @@ namespace skyline::gpu {
             if (signalled.test(std::memory_order_acquire) || submitted.load(std::memory_order_acquire))
                 return;
 
+            readback_probe::Scope diagnosticSubmit{readback_probe::Metric::SubmitWait};
             {
                 std::shared_lock chainLock{chainMutex};
 
@@ -136,6 +138,8 @@ namespace skyline::gpu {
                 return;
             }
 
+            readback_probe::CycleContext diagnosticCycle{reinterpret_cast<uintptr_t>(this)};
+            readback_probe::Scope diagnosticFence{readback_probe::Metric::FenceWait};
             {
                 std::shared_lock lock{chainMutex};
                 chainedCycles.Iterate([shouldDestroy](auto &cycle) {
@@ -144,7 +148,9 @@ namespace skyline::gpu {
             }
 
             WaitSubmit();
+            readback_probe::Scope diagnosticMutex{readback_probe::Metric::FenceMutex};
             std::unique_lock lock{mutex};
+            diagnosticMutex.End();
 
             if (signalled.test(std::memory_order_relaxed)) {
                 if (shouldDestroy)
@@ -152,6 +158,7 @@ namespace skyline::gpu {
                 return;
             }
 
+            readback_probe::Scope diagnosticDriver{readback_probe::Metric::DriverWait};
             vk::Result waitResult;
             while ((waitResult = (*device).waitForFences(1, &fence, false, std::numeric_limits<u64>::max(), *device.getDispatcher())) != vk::Result::eSuccess) {
                 if (waitResult == vk::Result::eTimeout)
@@ -165,6 +172,7 @@ namespace skyline::gpu {
                 throw exception("An error occurred while waiting for fence {}: {}", fmt::ptr(static_cast<VkFence>(fence)), vk::to_string(waitResult));
             }
 
+            diagnosticDriver.End();
             if (semaphoreUnsignalCycle)
                 semaphoreUnsignalCycle->Wait();
 

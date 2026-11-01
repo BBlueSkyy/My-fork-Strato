@@ -4,6 +4,7 @@ import os
 import pathlib
 import subprocess
 import tempfile
+import shlex
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 HERE = pathlib.Path(__file__).resolve().parent
@@ -41,5 +42,6 @@ with tempfile.TemporaryDirectory(prefix="strato-submission-") as directory:
     sanitizer = os.environ.get("SANITIZE", "undefined")
     if sanitizer:
         command += ["-fsanitize=" + sanitizer, "-fno-sanitize-recover=all", "-g"]
+    command += shlex.split(os.environ.get("CXXFLAGS", ""))
     subprocess.run(command, check=True)
     subprocess.run([str(directory / "tests")], check=True, timeout=30)

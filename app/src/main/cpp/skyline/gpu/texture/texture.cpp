@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <common/readback_probe.h>
 #include <gpu.h>
 #include <kernel/memory.h>
 #include <kernel/types/KProcess.h>
@@ -201,6 +202,7 @@ namespace skyline::gpu {
             if (!texture || texture->aliasStale.load())
                 return;
 
+            readback_probe::Context diagnosticContext{readback_probe::Domain::Texture,reinterpret_cast<uintptr_t>(texture.get())};
             std::unique_lock stateLock{texture->stateMutex};
             if (texture->dirtyState == DirtyState::GpuDirty) {
                 stateLock.unlock(); // If the lock isn't unlocked, a deadlock from threads waiting on the other lock can occur
@@ -211,7 +213,9 @@ namespace skyline::gpu {
                     // We need to do a loop here since we can't wait with the texture locked but not doing so means that the texture could have it's cycle changed which we wouldn't wait on, loop until we are sure the cycle hasn't changed to avoid that
                     if (waitCycle) {
                         i64 startNs{texture->accumulatedGuestWaitCounter > SkipReadbackHackWaitCountThreshold ? util::GetTimeNs() : 0};
+                        readback_probe::Scope diagnosticWait{readback_probe::Metric::ProducerWait};
                         waitCycle->Wait();
+                        diagnosticWait.End();
                         if (startNs)
                             texture->accumulatedGuestWaitTime += std::chrono::nanoseconds(util::GetTimeNs() - startNs);
 
@@ -233,6 +237,9 @@ namespace skyline::gpu {
             auto texture{weakThis.lock()};
             if (!texture)
                 return true;
+
+            readback_probe::Context diagnosticContext{readback_probe::Domain::Texture,reinterpret_cast<uintptr_t>(texture.get())};
+            readback_probe::Scope diagnosticTrap{readback_probe::Metric::TextureReadTrap};
 
             std::unique_lock stateLock{texture->stateMutex, std::try_to_lock};
             if (!stateLock)
@@ -263,6 +270,9 @@ namespace skyline::gpu {
             if (!texture)
                 return true;
 
+            readback_probe::Context diagnosticContext{readback_probe::Domain::Texture,reinterpret_cast<uintptr_t>(texture.get())};
+            readback_probe::Scope diagnosticTrap{readback_probe::Metric::TextureWriteTrap};
+
             std::unique_lock stateLock{texture->stateMutex, std::try_to_lock};
             if (!stateLock)
                 return false;
@@ -273,6 +283,7 @@ namespace skyline::gpu {
             }
 
             if (!texture->HasAliases() && texture->accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *texture->gpu.state.settings->enableFastGpuReadbackHack && !texture->memoryFreed) {
+                readback_probe::Record(readback_probe::Metric::TextureHack,0,texture->surfaceSize);
                 texture->dirtyState = DirtyState::Clean;
                 return true;
             }
@@ -301,6 +312,8 @@ namespace skyline::gpu {
 
         if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
             throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
+        readback_probe::Context diagnosticContext{readback_probe::Domain::Texture,reinterpret_cast<uintptr_t>(this)};
+        readback_probe::Scope diagnosticUpload{readback_probe::Metric::TextureUpload,surfaceSize};
         auto pointer{mirror.data()};
 
         WaitOnBacking();
@@ -546,6 +559,7 @@ namespace skyline::gpu {
     }
 
     void Texture::CopyToGuest(u8 *hostBuffer) {
+        readback_probe::Scope diagnosticScope{readback_probe::Metric::TextureConvert};
         if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
             throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
         auto guestOutput{mirror.data()};
@@ -787,6 +801,7 @@ namespace skyline::gpu {
         TRACE_EVENT("gpu", "Texture::WaitOnFence");
 
         if (cycle) {
+            readback_probe::Scope diagnosticProducer{readback_probe::Metric::ProducerWait};
             cycle->Wait();
             cycle = nullptr;
         }
@@ -1071,6 +1086,7 @@ namespace skyline::gpu {
     }
 
     void Texture::ReconcileAliases() {
+        readback_probe::Scope diagnosticScope{readback_probe::Metric::AliasReconcile};
         if (aliasRetired.load())
             throw exception("Cannot reconcile a retired non-reversible texture alias");
         auto group{aliasGroup.load()};
@@ -1311,6 +1327,8 @@ namespace skyline::gpu {
         if (!guest)
             return;
 
+        readback_probe::Context diagnosticContext{readback_probe::Domain::Texture,reinterpret_cast<uintptr_t>(this)};
+        readback_probe::Record(readback_probe::Metric::ReadbackRequest);
         TRACE_EVENT("gpu", "Texture::SynchronizeGuest");
 
         {
@@ -1335,6 +1353,7 @@ namespace skyline::gpu {
             // If the texture has differing formats on the guest and host, we don't support converting back in that case as it may involve recompression of a decompressed texture
             return;
 
+        readback_probe::Scope diagnosticReadback{readback_probe::Metric::TextureReadback};
         WaitOnBacking();
 
         if (tiling == vk::ImageTiling::eOptimal || !std::holds_alternative<memory::Image>(backing)) {
@@ -1345,7 +1364,9 @@ namespace skyline::gpu {
             auto lCycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commandBuffer) {
                 CopyIntoStagingBuffer(commandBuffer, downloadStagingBuffer);
             })};
-            lCycle->Wait(); // We block till the copy is complete
+            readback_probe::Scope diagnosticTransfer{readback_probe::Metric::TransferWait};
+            lCycle->Wait();
+            diagnosticTransfer.End(); // We block till the copy is complete
 
             CopyToGuest(downloadStagingBuffer->data());
         } else if (tiling == vk::ImageTiling::eLinear) {
@@ -1358,6 +1379,7 @@ namespace skyline::gpu {
 
         {
             std::scoped_lock lock{stateMutex};
+            readback_probe::Record(readback_probe::Metric::TextureDownload,0,surfaceSize);
             gpuReadbackSerial = gpuWriteSerial;
             if (alias) {
                 dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;

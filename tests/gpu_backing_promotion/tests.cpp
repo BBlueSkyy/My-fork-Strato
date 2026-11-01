@@ -1,3 +1,4 @@
+#include <common/readback_probe.h>
 // SPDX-License-Identifier: MPL-2.0
 #include <algorithm>
 #include <atomic>
@@ -1514,6 +1515,40 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         gpu.scheduler.Complete();
     }
 
+    void CheckProbeReadTrap(GPU &gpu) {
+        for (bool freeGuest : {false,true}) for (bool legacyWrite : {true,false}) {
+            TextureManager manager{gpu};
+            std::vector<u8> bytes(65536,0x77),expected{bytes};
+            GuestTexture descriptor;
+            descriptor.format=format::R8G8B8A8Unorm;
+            descriptor.dimensions=vk::Extent3D{128,128,1};
+            descriptor.layerCount=1;descriptor.layerStride=65536;
+            descriptor.mipLevelCount=descriptor.viewMipCount=1;
+            descriptor.viewType=vk::ImageViewType::e2DArray;
+            descriptor.mappings.push_back(span<u8>{bytes});
+            auto view{manager.FindOrCreate(descriptor)};
+            auto texture{view->texture};
+            *gpu.state.settings->freeGuestTextureMemory=freeGuest;
+            WriteAliasRenderTarget(texture,{0,0,1,1});
+            EncodeAliasBase(texture,expected,{0,0,255,255});
+            assert(texture->memoryFreed==freeGuest);
+            auto &trap{gpu.state.process->trap};
+            auto &callbacks{trap.callbacks[*texture->trapHandle]};
+            callbacks.prepare();
+            { std::scoped_lock trapLock{trap.mutex}; assert(legacyWrite?callbacks.write():callbacks.read()); }
+            assert(bytes==expected && !texture->memoryFreed);
+            assert(texture->dirtyState==(legacyWrite?Texture::DirtyState::CpuDirty:Texture::DirtyState::Clean));
+            const auto before{gpu.scheduler.submissions};
+            { std::scoped_lock lock{*texture}; texture->SynchronizeHost(false); }
+            assert(gpu.scheduler.submissions==before+(legacyWrite?1:0));
+            { std::scoped_lock trapLock{trap.mutex}; assert(callbacks.write()); }
+            bytes[13]^=0xA5;expected[13]^=0xA5;
+            AliasRead(texture);VerifyAliasHost(texture,expected);
+            gpu.scheduler.Complete();
+            *gpu.state.settings->freeGuestTextureMemory=false;
+        }
+    }
+
     void CheckAliasTraps(GPU &gpu) {
         TextureManager manager{gpu};
         std::vector<u8> bytes(90112*6,0x77),expected{bytes};
@@ -1877,6 +1912,14 @@ int main() {
                 CheckManagerOverlapLookup(gpu);
                 continue;
             }
+            if(std::getenv("TEXMAN_TRAPS_ONLY")) {
+                CheckProbeReadTrap(gpu);
+                CheckAliasTraps(gpu);
+                CheckCpuWriteBeforeSubmit(gpu);
+                CheckHistoricalAliasReadbackFailure(gpu);
+                CheckRegistrationAfterReadback(gpu);
+                continue;
+            }
             CheckSeparateLayouts(gpu);
             CheckIndependentAliases(gpu);
             if (!std::getenv("TEXMAN_SKIP_LOOKUP")) CheckManagerOverlapLookup(gpu);
@@ -1906,6 +1949,10 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if(std::getenv("TEXMAN_TRAPS_ONLY")) {
+        std::puts("PASS native texture callbacks, Free Guest ON/OFF, aliases/contention/recovery/registration; zero validation errors");
+        return 0;
+    }
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <common/readback_probe.h>
 #include <android/native_window_jni.h>
 #include <android/choreographer.h>
 #include <common/settings.h>
@@ -94,10 +95,13 @@ namespace skyline::gpu {
     }
 
     void PresentationEngine::PresentFrame(const PresentableFrame &frame) {
+        readback_probe::Context diagnosticContext{readback_probe::Domain::Presentation,0};
+        readback_probe::Scope diagnosticScope{readback_probe::Metric::PresentWork};
         std::unique_lock lock(mutex);
         surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
 
-        frame.fence.Wait(state.soc->host1x);
+        {readback_probe::Scope diagnosticFence{readback_probe::Metric::PresentFence};
+        frame.fence.Wait(state.soc->host1x);}
 
         // A retained display view may belong to an older guest representation.
         frame.textureView->texture->ReconcileAliases();
@@ -126,12 +130,15 @@ namespace skyline::gpu {
 
         auto &acquireSemaphore{acquireSemaphores[frameIndex]};
         auto &frameFence{frameFences[frameIndex]};
-        if (frameFence)
+        if (frameFence) {
+            readback_probe::Scope diagnosticFence{readback_probe::Metric::PresentFence};
             frameFence->Wait();
+        }
 
         frameIndex = (frameIndex + 1) % swapchainImageCount;
 
         std::pair<vk::Result, u32> nextImage;
+        readback_probe::Scope diagnosticAcquire{readback_probe::Metric::AcquireImage};
         while (nextImage = vkSwapchain->acquireNextImage(std::numeric_limits<u64>::max(), *acquireSemaphore, {}), nextImage.first != vk::Result::eSuccess) [[unlikely]] {
             if (nextImage.first == vk::Result::eSuboptimalKHR)
                 surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
@@ -139,6 +146,7 @@ namespace skyline::gpu {
                 throw exception("vkAcquireNextImageKHR returned an unhandled result '{}'", vk::to_string(nextImage.first));
         }
 
+        diagnosticAcquire.End();
         auto &nextImageTexture{images.at(nextImage.second)};
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
@@ -195,7 +203,10 @@ namespace skyline::gpu {
             throw exception("Retrieving the next frame's ID failed with {}", result);
 
         {
+            readback_probe::Scope diagnosticMutex{readback_probe::Metric::QueueMutex};
             std::scoped_lock queueLock{gpu.queueMutex};
+            diagnosticMutex.End();
+            readback_probe::Scope diagnosticPresent{readback_probe::Metric::PresentCall};
             std::ignore = gpu.vkQueue.presentKHR(vk::PresentInfoKHR{
                 .swapchainCount = 1,
                 .pSwapchains = &**vkSwapchain,
@@ -205,6 +216,7 @@ namespace skyline::gpu {
             }); // We don't care about suboptimal images as they are caused by not respecting the transform hint, we handle transformations externally
         }
 
+        readback_probe::Frame(false);
         if (!firstFramePresented.exchange(true))
             state.jvm->NotifyFirstFramePresented();
 
@@ -397,6 +409,8 @@ namespace skyline::gpu {
     }
 
     u64 PresentationEngine::Present(const std::shared_ptr<TextureView> &texture, i64 timestamp, i64 swapInterval, AndroidRect crop, NativeWindowScalingMode scalingMode, NativeWindowTransform transform, skyline::service::hosbinder::AndroidFence fence, const std::function<void()> &presentCallback) {
+        readback_probe::Scope diagnosticPush{readback_probe::Metric::PresentBackpressure};
+        readback_probe::Frame(true,timestamp>0?static_cast<uint64_t>(timestamp):0);
         if (!vkSurface.has_value()) {
             // We want this function to generally (not necessarily always) block when a surface is not present to implicitly pause the game
             std::unique_lock lock{mutex};

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <common/readback_probe.h>
 #include <fstream>
 #include <cxxabi.h>
 #include <linux/elf.h>
@@ -145,6 +146,11 @@ namespace skyline::nce {
     }
 
     void NCE::SignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
+#if STRATO_READBACK_DIAGNOSTICS
+        if(signal==SIGSEGV)readback_probe::ObserveFault(signal,info->si_code,
+            {reinterpret_cast<const std::byte *>(ctx->uc_mcontext.__reserved),sizeof(ctx->uc_mcontext.__reserved)},false);
+#endif
+
         auto &mctx{ctx->uc_mcontext};
         const auto &state{*reinterpret_cast<ThreadContext *>(*tls)->state};
 
@@ -181,6 +187,11 @@ namespace skyline::nce {
     }
 
     void NCE::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+#if STRATO_READBACK_DIAGNOSTICS
+        if(signal==SIGSEGV)readback_probe::ObserveFault(signal,info->si_code,
+            {reinterpret_cast<const std::byte *>(ctx->uc_mcontext.__reserved),sizeof(ctx->uc_mcontext.__reserved)},true);
+#endif
+
         if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
             return;
 

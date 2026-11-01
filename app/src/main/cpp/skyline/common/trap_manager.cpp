@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright © 2024 Strato Team and Contributors (https://github.com/strato-emu/)
 
+#include <common/readback_probe.h>
 #include <sys/mman.h>
 #include <atomic>
 #include "trace.h"
@@ -42,6 +43,7 @@ namespace skyline {
     }
 
     void TrapManager::ReprotectIntervals(const std::vector<TrapMap::Interval> &intervals, TrapProtection protection) {
+        readback_probe::Scope diagnosticScope{readback_probe::Metric::Reprotect};
         TRACE_EVENT("host", "TrapManager::ReprotectIntervals");
 
         auto reprotectIntervalsWithFunction = [&intervals](auto getProtection) {
@@ -118,12 +120,14 @@ namespace skyline {
     }
 
     bool TrapManager::HandleTrap(u8 *address, bool write) {
+        readback_probe::Scope diagnosticScope{readback_probe::Metric::TrapDispatch};
         TRACE_EVENT("host", "TrapManager::TrapHandler");
 
         LockCallback lockCallback{};
         while (true) {
             if (lockCallback) {
                 // We want to avoid a deadlock of holding trapMutex while locking the resource inside a callback while another thread holding the resource's mutex waits on trapMutex, we solve this by quitting the loop if a callback would be blocking and attempt to lock the resource externally
+                readback_probe::Scope diagnosticPrepare{readback_probe::Metric::TrapPrepare};
                 lockCallback();
                 lockCallback = {};
             }
@@ -132,8 +136,10 @@ namespace skyline {
 
             // Retrieve any callbacks for the page that was faulted
             auto [entries, intervals]{trapMap.GetAlignedRecursiveRange<constant::PageSize>(address)};
-            if (entries.empty())
-                return false; // There's no callbacks associated with this page
+            if (entries.empty()) {
+                readback_probe::Record(readback_probe::Metric::TrapUnhandled);
+                return false;
+            } // There's no callbacks associated with this page
 
             // Do callbacks for every entry in the intervals
             if (write) {
@@ -144,6 +150,7 @@ namespace skyline {
                         continue;
 
                     if (!entry.writeCallback()) {
+                        readback_probe::Record(readback_probe::Metric::TrapRetry);
                         lockCallback = entry.lockCallback;
                         break;
                     }
@@ -162,6 +169,7 @@ namespace skyline {
                     }
 
                     if (!entry.readCallback()) {
+                        readback_probe::Record(readback_probe::Metric::TrapRetry);
                         lockCallback = entry.lockCallback;
                         break;
                     }
@@ -177,6 +185,7 @@ namespace skyline {
                 // Reprotect the interval to the lowest protection level that the callbacks performed allow
                 mprotect(interval.start, interval.Size(), permission);
 
+            readback_probe::Record(readback_probe::Metric::TrapHandled);
             return true;
         }
     }

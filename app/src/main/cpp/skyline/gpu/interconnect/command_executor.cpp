@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <common/readback_probe.h>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -253,6 +254,7 @@ namespace skyline::gpu::interconnect {
     }
 
     void ExecutionWaiterThread::Run() {
+
         // Enable turbo clocks to begin with if requested
         if (*state.settings->forceMaxGpuClocks)
             adrenotools_set_turbo(true);
@@ -693,6 +695,7 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::SubmitInternal() {
+        readback_probe::Scope diagnosticScope{readback_probe::Metric::ExecutorSubmit};
         if (renderPass)
             FinishRenderPass();
 
