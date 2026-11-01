@@ -74,11 +74,17 @@ namespace skyline::gpu::diagnostic {
         bool ScanEnabled() const {
             return Active() && scanMode.load(std::memory_order_acquire);
         }
+        // A capture window closes after 60 presents, but diagnostic
+        // rendering modes must remain active until this emulator process
+        // exits (or another capture explicitly selects a different mode).
+        // Otherwise the user cannot visually verify a short A/B test.
         std::uint32_t ExecutorExperimentMode() const {
-            return Active() ? executorExperimentMode.load(std::memory_order_relaxed) : 0;
+            return executorExperimentMode.load(std::memory_order_acquire);
         }
         void ExecutorExperimentStep() {
-            executorExperimentSteps.fetch_add(1, std::memory_order_relaxed);
+            // Only count while the metadata capture window is open.
+            if (Active())
+                executorExperimentSteps.fetch_add(1, std::memory_order_relaxed);
         }
         std::uint32_t PresentedFrames() const {
             return presentedFrames.load(std::memory_order_relaxed);
@@ -208,7 +214,8 @@ namespace skyline::gpu::diagnostic {
                          << "snapshot_mode=" << snapshotsEnabled.load() << '\n'
                          << "hdr_scan_mode=" << scanMode.load() << '\n'
                          << "executor_experiment_mode=" << executorExperimentMode.load() << '\n'
-                         << "executor_experiment_draws=" << executorExperimentSteps.load() << '\n';
+                         << "executor_experiment_draws=" << executorExperimentSteps.load() << '\n'
+                         << "executor_experiment_persists_after_capture=" << (executorExperimentMode.load() != 0) << '\n';
             MaybeFinishSnapshotsLocked();
         }
     };
