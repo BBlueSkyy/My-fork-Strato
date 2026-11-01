@@ -856,6 +856,28 @@ namespace skyline::gpu::interconnect::maxwell3d {
         constantBuffers.ResetQuickBind();
         TraceTriangleDraw("direct", topology, indexed, count, first, instanceCount,
                           static_cast<i32>(vertexOffset), scissor);
+        // Count color scene draws once, before publication of the actual
+        // draw node, so a pre-first-draw snapshot can show stale RT content.
+        auto &pacmanCap{diagnostic::PacmanCapture()};
+        TextureView *pacmanSceneTarget{};
+        std::optional<u32> pacmanSceneOrdinal{};
+        const auto *pacmanPipeline{activeState.GetPipeline()};
+        if (pacmanCap.SnapshotsEnabled() && !transformFeedbackEnable && pacmanPipeline &&
+            pacmanPipeline->sourcePackedState.attachmentBlendStates[0].colorWriteMask) {
+            for (auto *view : activeState.GetColorAttachments()) {
+                if (view && view->texture &&
+                    view->texture->dimensions.width == 1280 &&
+                    view->texture->dimensions.height == 720) {
+                    pacmanSceneTarget = view;
+                    break;
+                }
+            }
+            if (pacmanSceneTarget)
+                pacmanSceneOrdinal = pacmanCap.NextSceneOrdinal();
+            if (pacmanSceneOrdinal && *pacmanSceneOrdinal == 1)
+                ctx.executor.CapturePacmanSceneStep(
+                    pacmanSceneTarget, 0, "before_first_scene_color_draw");
+        }
         ctx.executor.AddCheckpoint("Before draw");
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
@@ -885,34 +907,21 @@ namespace skyline::gpu::interconnect::maxwell3d {
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
-        // The first 1,580-event trace established a repeating 1280x720
-        // color scene pass after the depth-only 2048x2048 pass. Sample
-        // post-draw images at logarithmic milestones, without shader hashes.
-        auto &pacmanCap{diagnostic::PacmanCapture()};
-        if (pacmanCap.SnapshotsEnabled() && !transformFeedbackEnable) {
-            TextureView *sceneTarget{};
-            for (auto *view : activeState.GetColorAttachments()) {
-                if (view && view->texture &&
-                    view->texture->dimensions.width == 1280 &&
-                    view->texture->dimensions.height == 720) {
-                    sceneTarget = view;
-                    break;
-                }
-            }
-            const auto *pipeline{activeState.GetPipeline()};
-            if (sceneTarget && pipeline &&
-                pipeline->sourcePackedState.attachmentBlendStates[0].colorWriteMask) {
-                const auto ordinal{pacmanCap.NextSceneOrdinal()};
-                if (ordinal && (*ordinal == 1 || *ordinal == 16 || *ordinal == 64 ||
-                                *ordinal == 176)) {
-                    const auto &p{pipeline->sourcePackedState};
-                    ctx.executor.CapturePacmanSceneStep(
-                        sceneTarget, *ordinal,
-                        fmt::format("guest_top={} count={} indexed={} vs={:016X} fs={:016X}",
-                                    static_cast<u32>(topology), count, indexed,
-                                    p.shaderHashes[1], p.shaderHashes[5]));
-                }
-            }
+        // Captures 001/002 found that the repeated scene has 101 eligible
+        // 1280x720 color draws, not 176. Earlier 176 was unreachable.
+        // The first snapshot is before draw 1, with remaining milestones
+        // surrounding the observed reduction in saturated HDR pixels.
+        if (pacmanSceneTarget && pacmanSceneOrdinal && pacmanPipeline &&
+            (*pacmanSceneOrdinal == 1 || *pacmanSceneOrdinal == 16 ||
+             *pacmanSceneOrdinal == 32 || *pacmanSceneOrdinal == 48 ||
+             *pacmanSceneOrdinal == 64 || *pacmanSceneOrdinal == 80 ||
+             *pacmanSceneOrdinal == 100)) {
+            const auto &p{pacmanPipeline->sourcePackedState};
+            ctx.executor.CapturePacmanSceneStep(
+                pacmanSceneTarget, *pacmanSceneOrdinal,
+                fmt::format("guest_top={} count={} indexed={} vs={:016X} fs={:016X}",
+                            static_cast<u32>(topology), count, indexed,
+                            p.shaderHashes[1], p.shaderHashes[5]));
         }
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
