@@ -83,11 +83,13 @@ namespace skyline::gpu::diagnostic {
         bool TakeRenderDocRequest() {
             return Active() && requestRenderDoc.exchange(false, std::memory_order_acq_rel);
         }
-        // First two complete scene intervals; each draw can claim one ordinal.
+        // One complete scene interval: eight images reserved for before/after
+        // the first draw and the seven observed milestones up to draw 100.
+        // Never assume host presentation indices are guest frame boundaries.
         std::optional<std::uint32_t> NextSceneOrdinal() {
             if (!SnapshotsEnabled()) return {};
             const auto interval{PresentedFrames()};
-            if (interval != 1 && interval != 2) return {};
+            if (interval != 1) return {};
             std::lock_guard lock{mutex};
             if (!Active()) return {};
             return ++sceneOrdinals[interval];
