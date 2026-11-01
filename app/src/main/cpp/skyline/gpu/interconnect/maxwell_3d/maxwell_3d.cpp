@@ -903,8 +903,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (sceneTarget && pipeline &&
                 pipeline->sourcePackedState.attachmentBlendStates[0].colorWriteMask) {
                 const auto ordinal{pacmanCap.NextSceneOrdinal()};
-                if (ordinal && (*ordinal == 1 || *ordinal == 8 || *ordinal == 16 ||
-                                *ordinal == 32 || *ordinal == 64 || *ordinal == 128 ||
+                if (ordinal && (*ordinal == 1 || *ordinal == 16 || *ordinal == 64 ||
                                 *ordinal == 176)) {
                     const auto &p{pipeline->sourcePackedState};
                     ctx.executor.CapturePacmanSceneStep(
