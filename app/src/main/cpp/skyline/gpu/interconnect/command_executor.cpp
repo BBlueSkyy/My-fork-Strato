@@ -704,16 +704,33 @@ namespace skyline::gpu::interconnect {
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
         }
 
-        if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
-            Submit();
-
-        // Strictly opt-in differential test at the original flush threshold.
-        // Mode 1: end each render pass without submitting the command buffer.
-        // Mode 2: same split, plus a Vulkan all-commands memory barrier.
-        // If 0 fixes the artifact but mode 1/2 do not, investigate queue
-        // submission/cycle timing and lifetime rather than renderpass reuse.
+        // After the first two experiments proved ineffective, test the
+        // remaining major difference of threshold=0: SubmitInternal.
+        // Mode 3 submits only after a real 1280x720 color-scene draw;
+        // earlier depth and later postprocess draws retain threshold 256.
+        // No shader, texture data or default scheduling is changed.
         auto &pacmanDiagnostic{diagnostic::PacmanCapture()};
         const auto testMode{pacmanDiagnostic.ExecutorExperimentMode()};
+        bool sceneSubmit{};
+        if (testMode == 3 && !gotoNext) {
+            for (auto *view : colorAttachments) {
+                if (view && view->texture &&
+                    view->texture->dimensions.width == 1280 &&
+                    view->texture->dimensions.height == 720) {
+                    sceneSubmit = true;
+                    break;
+                }
+            }
+        }
+        if (!gotoNext && (slot->nodes.size() > *state.settings->executorFlushThreshold ||
+                          sceneSubmit)) {
+            if (sceneSubmit)
+                pacmanDiagnostic.ExecutorExperimentStep();
+            Submit();
+        }
+
+        // Mode 1: end each renderpass without submitting.
+        // Mode 2: same split plus an all-commands Vulkan memory barrier.
         if (testMode == 1) {
             BreakRenderPass();
             pacmanDiagnostic.ExecutorExperimentStep();
