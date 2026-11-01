@@ -39,6 +39,9 @@ namespace skyline::service {
 
     class ServiceManager;
 
+    // Temporary Crysis diagnostics, collected without emitting per-call logs.
+    void DumpRecentIpcCallsForCurrentThread();
+
     /**
      * @brief The base class for the HOS service interfaces hosted by sysmodules
      */
