@@ -281,3 +281,62 @@ timing, report it as inconclusive.
 No change to the default threshold, no permanent barrier, no game-
 specific shader hash, no GPU feature disabled; PR stays Draft,
 unmerged. The experimental APK and device behavior are unverified.
+
+
+## Stage 5 results and Stage 6 selective scene-submit experiment
+
+Two complete on-device runs confirmed that both previously published
+controls **did not fix** the inverted triangle:
+- Mode 1 (renderpass splitting without additional submissions):
+  14,691 instrumented operations, triangle still visible.
+- Mode 2 (renderpass splitting plus a full Vulkan barrier):
+  15,120 instrumented operations, triangle still visible.
+
+The result makes standalone renderpass splitting or the tested Vulkan
+barrier insufficient. It does **not** prove a specific root cause.
+The important difference still untested is the actual invocation of
+`CommandExecutor::Submit()` (which finalizes renderpass execution,
+flushes deferred callbacks, rotates command recording slots,
+updates resource dependencies, and changes driver submission timing).
+
+### Stage 6: selectively submit scene draws while keeping threshold=256
+
+A third temporary diagnostic mode was added to the **same Draft PR**:
+- Leave the in-app `Executor Flush Threshold` at **256**.
+- Remove `ENABLE_EXECUTOR_RP_SPLIT_TEST`,
+  `ENABLE_EXECUTOR_BARRIER_TEST` and `ENABLE_HDR_SCAN`.
+- Create an empty
+  `gpu_capture/pacman_world/ENABLE_EXECUTOR_SCENE_SUBMIT_TEST` file.
+- Create a new `gpu_capture/pacman_world/ARM_CAPTURE` file, enter the
+  same beach scene, and observe whether the inverted triangle remains.
+- This experiment lasts up to **60 host presentation intervals**.
+  The recorded mode in `capture_complete.txt` must be **3**,
+  and `executor_experiment_draws` counts only the targeted scene
+  submissions (rather than all draws).
+- Archive the capture and `emulation.log`, and also report the
+  visual state of the triangle *during the armed experiment*.
+
+For mode 3, `AddSubpass()` submits after an eligible
+**1280×720 color-target draw**, while all other draws retain the
+standard batching behavior at 256. Unlike mode 1/2, this engages the
+actual `SubmitInternal()` machinery. The dimensions are an observed
+diagnostic filter, **not a permanent game-specific fix**. If a draw
+would normally choose a next-subpass continuation (`gotoNext`),
+the experiment honors the existing no-flush restriction.
+No global waits or permanent changes to memory synchronization are made.
+
+If mode 3 fixes the artifact, investigate the resource dependency
+between the depth-only pass, the HDR scene target and subsequent
+sampling, and narrow the submission frequency until the responsible
+producer→consumer boundary is identified. If mode 3 also fails,
+evaluate submission fences around depth and postprocess passes,
+resource lifetime, CPU/GPU pacing, and shader/driver timing; do not
+apply global `Threshold=0` as a final workaround.
+
+Even if the graphics happen to improve with the temporary mode,
+its frame pacing/FPS may drop. A **permanent patch is not warranted**
+until a precise dependency, state transition or resource-lifetime
+fault is identified, reproduced and regression-tested.
+
+Stage 6 code is published but the new ARM64 APK and on-device result
+are **not yet validated**. Keep PR Draft, no merge.
