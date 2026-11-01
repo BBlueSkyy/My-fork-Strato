@@ -14,6 +14,7 @@
 #include <gpu/diagnostic/pacman_triangle_capture.h>
 #include <filesystem>
 #include <fstream>
+#include <cstring>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -458,7 +459,8 @@ namespace skyline::gpu::interconnect {
                         std::ofstream meta{metaPath, std::ios::trunc};
                         if (meta)
                             meta << "interval=" << interval << " scan_id=" << scanId
-                                 << " draw_ordinal=100 format=B10G11R11UfloatPack32"
+                                 << " draw_ordinal=" << ordinal
+                                 << " format=B10G11R11UfloatPack32"
                                  << " width=1280 height=720 over_100_pixels=" << above100
                                  << " threshold_pixels=512\n";
                         meta.close();
