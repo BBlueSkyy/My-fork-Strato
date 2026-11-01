@@ -874,7 +874,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
             if (pacmanSceneTarget)
                 pacmanSceneOrdinal = pacmanCap.NextSceneOrdinal();
-            if (pacmanSceneOrdinal && *pacmanSceneOrdinal == 1)
+            if (pacmanSceneOrdinal && *pacmanSceneOrdinal == 1 && !pacmanCap.ScanEnabled())
                 ctx.executor.CapturePacmanSceneStep(
                     pacmanSceneTarget, 0, "before_first_scene_color_draw");
         }
@@ -912,10 +912,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
         // The first snapshot is before draw 1, with remaining milestones
         // surrounding the observed reduction in saturated HDR pixels.
         if (pacmanSceneTarget && pacmanSceneOrdinal && pacmanPipeline &&
-            (*pacmanSceneOrdinal == 1 || *pacmanSceneOrdinal == 16 ||
-             *pacmanSceneOrdinal == 32 || *pacmanSceneOrdinal == 48 ||
-             *pacmanSceneOrdinal == 64 || *pacmanSceneOrdinal == 80 ||
-             *pacmanSceneOrdinal == 100)) {
+            (pacmanCap.ScanEnabled()
+                 ? *pacmanSceneOrdinal == 100
+                 : (*pacmanSceneOrdinal == 1 || *pacmanSceneOrdinal == 16 ||
+                    *pacmanSceneOrdinal == 32 || *pacmanSceneOrdinal == 48 ||
+                    *pacmanSceneOrdinal == 64 || *pacmanSceneOrdinal == 80 ||
+                    *pacmanSceneOrdinal == 100))) {
             const auto &p{pacmanPipeline->sourcePackedState};
             ctx.executor.CapturePacmanSceneStep(
                 pacmanSceneTarget, *pacmanSceneOrdinal,
