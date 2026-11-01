@@ -5,6 +5,8 @@
 #include <array>
 #include <cxxabi.h>
 #include <limits>
+#include <mutex>
+#include <string_view>
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
 #include "base_service.h"
@@ -14,6 +16,7 @@ namespace skyline::service {
         // Temporary, release-compatible diagnostic for Crysis Remastered only.
         constexpr u64 CrysisProgramId{0x0100E66010ADE000ULL};
         constexpr size_t RecentIpcCapacity{48};
+        constexpr size_t RecentFailureCapacity{64};
 
         struct RecentIpcCall {
             const char *function{};
@@ -26,7 +29,29 @@ namespace skyline::service {
         thread_local size_t recentIpcNext{};
         thread_local size_t recentIpcCount{};
 
+        struct RecentFailure {
+            const char *source{};
+            u32 command{};
+            u32 result{};
+            u32 count{1};
+        };
+
+        std::mutex failureMutex;
+        std::array<RecentFailure, RecentFailureCapacity> failures{};
+        size_t failureNext{};
+        size_t failureCount{};
+
+        bool IsFrequentGraphicsCall(std::string_view function) {
+            return function == "INvDrvServices::Ioctl" ||
+                   function == "INvDrvServices::Ioctl2" ||
+                   function == "IHOSBinderDriver::TransactParcel";
+        }
+
         void RecordRecentIpcCall(const char *function, u32 commandId, u32 result) {
+            // Frequent successful rendering calls otherwise overwrite all startup evidence.
+            if (!result && IsFrequentGraphicsCall(function))
+                return;
+
             if (recentIpcCount) {
                 auto &previous{recentIpcCalls[(recentIpcNext + RecentIpcCapacity - 1) % RecentIpcCapacity]};
                 if (previous.function == function && previous.commandId == commandId && previous.result == result) {
@@ -42,13 +67,46 @@ namespace skyline::service {
         }
     }
 
+    void RecordCrysisDiagnosticFailure(const char *source, u32 command, u32 result) {
+        if (!result)
+            return;
+        std::scoped_lock lock{failureMutex};
+        if (failureCount) {
+            auto &previous{failures[(failureNext + RecentFailureCapacity - 1) % RecentFailureCapacity]};
+            if (std::string_view{previous.source} == source && previous.command == command && previous.result == result) {
+                if (previous.count != std::numeric_limits<u32>::max())
+                    ++previous.count;
+                return;
+            }
+        }
+        failures[failureNext] = {source, command, result, 1};
+        failureNext = (failureNext + 1) % RecentFailureCapacity;
+        failureCount = std::min(failureCount + 1, RecentFailureCapacity);
+    }
+
     void DumpRecentIpcCallsForCurrentThread() {
-        LOGI("CrysisIPC: last {} distinct IPC calls on aborting guest thread (oldest first)", recentIpcCount);
+        LOGI("CrysisIPC: last {} non-rendering IPC entries on aborting guest thread (oldest first)", recentIpcCount);
         const size_t start{(recentIpcNext + RecentIpcCapacity - recentIpcCount) % RecentIpcCapacity};
         for (size_t index{}; index < recentIpcCount; ++index) {
             const auto &call{recentIpcCalls[(start + index) % RecentIpcCapacity]};
             LOGI("CrysisIPC: [{}/{}] {} cmd=0x{:X} result=0x{:X} repeat={}",
                  index + 1, recentIpcCount, call.function, call.commandId, call.result, call.repeats);
+        }
+
+        std::array<RecentFailure, RecentFailureCapacity> snapshot{};
+        size_t count{};
+        {
+            std::scoped_lock lock{failureMutex};
+            count = failureCount;
+            const size_t first{(failureNext + RecentFailureCapacity - count) % RecentFailureCapacity};
+            for (size_t index{}; index < count; ++index)
+                snapshot[index] = failures[(first + index) % RecentFailureCapacity];
+        }
+        LOGI("CrysisFailure: last {} IPC/NVDRV errors across guest threads (oldest first)", count);
+        for (size_t index{}; index < count; ++index) {
+            const auto &entry{snapshot[index]};
+            LOGI("CrysisFailure: [{}/{}] {} cmd=0x{:X} result=0x{:X} repeat={}",
+                 index + 1, count, entry.source, entry.command, entry.result, entry.count);
         }
     }
 
@@ -79,8 +137,11 @@ namespace skyline::service {
         TRACE_EVENT("service", perfetto::StaticString{function.name});
         try {
             auto result{function(session, request, response)};
-            if (state.process && state.process->npdm.aci0.programId == CrysisProgramId)
+            if (state.process && state.process->npdm.aci0.programId == CrysisProgramId) {
                 RecordRecentIpcCall(function.name, functionId, result.raw);
+                if (result.raw)
+                    RecordCrysisDiagnosticFailure(function.name, functionId, result.raw);
+            }
             if (result.raw)
                 LOGD("{} returned 0x{:X}", function.name, result.raw);
             return result;
