@@ -1,6 +1,7 @@
 #pragma once
 // SPDX-License-Identifier: MPL-2.0
 #include "host_types.h"
+#include <gpu/buffer_readback_probe.h>
 #include <array>
 #include <cassert>
 #include <cstdio>

@@ -52,7 +52,12 @@ jobs:
           python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
 
       - name: Test buffer trap reader dependencies
-        run: ASAN_OPTIONS=detect_leaks=0:handle_segv=0 python3 tests/buffer_trap_dependencies/run.py
+        env:
+          ASAN_OPTIONS: detect_leaks=0:handle_segv=0
+        run: |
+          PROBE_ENABLED=0 python3 tests/buffer_trap_dependencies/run.py
+          PROBE_ENABLED=1 python3 tests/buffer_trap_dependencies/run.py
+          python3 tests/buffer_trap_dependencies/run_probe.py --deps app/libraries
 
       - name: Android Assemble
         env:
@@ -60,7 +65,7 @@ jobs:
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache -PbufferReadbackProbe=true assembleDevRelease
       - name: Rename ARM64 DevRelease APK
         run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
 

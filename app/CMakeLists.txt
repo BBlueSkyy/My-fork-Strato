@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(Skyline LANGUAGES C CXX ASM VERSION 0.3)
 
+option(STRATO_BUFFER_READBACK_PROBE "Focused buffer readback attribution" OFF)
 set(BUILD_TESTS OFF CACHE BOOL "Build Tests" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "Build Testing" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build Shared Libraries" FORCE)
@@ -200,6 +201,7 @@ add_library(skyline SHARED
         ${source_DIR}/emu_jni.cpp
         ${source_DIR}/loader_jni.cpp
         ${source_DIR}/nsp_jni.cpp
+        ${source_DIR}/skyline/gpu/buffer_readback_probe.cpp
         ${source_DIR}/skyline/common.cpp
         ${source_DIR}/skyline/common/exception.cpp
         ${source_DIR}/skyline/common/signal.cpp
@@ -494,6 +496,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/ntc/IEnsureNetworkClockAvailabilityService.cpp
         ${source_DIR}/skyline/services/ngc/INgcServiceForApplication.cpp
         )
+target_compile_definitions(skyline PRIVATE STRATO_BUFFER_READBACK_PROBE=$<BOOL:${STRATO_BUFFER_READBACK_PROBE}>)
 target_include_directories(skyline PRIVATE ${source_DIR}/skyline)
 set_source_files_properties(${source_DIR}/skyline/loader/zbic_zstd.c PROPERTIES COMPILE_OPTIONS "-Wno-everything")
 # target_precompile_headers(skyline PRIVATE ${source_DIR}/skyline/common.h) # PCH will currently break Intellisense

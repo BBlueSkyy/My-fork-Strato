@@ -42,3 +42,29 @@ Moto tests: Zelda, Marvel Cosmic Invasion (no magenta), SpongeBob (boot/menu),
 initially both readback hacks, maximum clocks and Free Guest OFF. Compare real
 progress duration and graphics alongside presentation cadence; no FPS or normal
 simulation speed claim until device validation.
+
+Step2: publish focused per-buffer attribution while preserving safe sync policy.
+The existing logs expose aggregate cost but cannot identify a hot allocation or
+prove that its latest cycle covers only unrelated readers. The new opt-in probe
+records state-specific preparation waits, SynchronizeGuest/Host waits and copy
+bytes/time, plus the existing unsafe shortcut and step1 recheck opportunities.
+Top-four dirty resources per window and explicit table coverage narrow the next
+capture. No dirty-state decisions, fence/barrier policy, NCE routing or copy
+ranges change. Default production builds have the probe disabled; this Draft's
+ARM64 DevRelease workflow enables it for the requested capture.
+
+Essential tests: production-body host callbacks with ASan/UBSan, probe ON/OFF;
+producer failure/retry; reporter/counter tests with actual fmt/logger declarations;
+native Vulkan gated readers AND writers with synchronization validation and
+byte comparisons. The tests use shared guest/mirror mappings (real aliases),
+but do not establish arbitrary BufferManager/TextureManager alias concurrency.
+There is no full Android NDK build or Moto G100 access locally. The workflow
+requests ARM64 DevRelease and verifies/uploads the APK when successful; Actions
+is deliberately not monitored. A dispatched build is not a confirmed APK.
+
+No evidence yet establishes a safe way to match all savings of the unsafe hack:
+those copies deliberately bypass producer completion. Step1's eliminated wait
+is proven in the controlled dependency test, not established as dominant on the
+device. Step2 is diagnostic, not another performance claim. Do not enable MAPERR
+read routing, regional dirtiness or last-writer-only waits without the additional
+ordering/range proof. Compiler, SSBO #409 and independent Drafts remain intact.

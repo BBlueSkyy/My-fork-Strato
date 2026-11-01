@@ -8,6 +8,7 @@
 #include <common/trace.h>
 #include <common/settings.h>
 #include "buffer.h"
+#include "buffer_readback_probe.h"
 
 namespace skyline::gpu {
     void Buffer::ResetMegabufferState() {
@@ -36,10 +37,13 @@ namespace skyline::gpu {
 
                 // If this mutex would cause other callbacks to be blocked then we should block on this mutex in advance
                 std::shared_ptr<FenceCycle> waitCycle{};
+                bool diagnosticGpuDirty{};
                 do {
                     if (waitCycle) {
                         i64 startNs{buffer->accumulatedGuestWaitCounter > FastReadbackHackWaitCountThreshold ? util::GetTimeNs() : 0};
+                        buffer_readback_probe::Scope diagnosticWait{buffer->id, buffer->mirror.size(), diagnosticGpuDirty ? buffer_readback_probe::DirtyPrepare : buffer_readback_probe::CurrentPrepare};
                         waitCycle->Wait();
+                        diagnosticWait.End();
                         if (startNs)
                             buffer->accumulatedGuestWaitTime += std::chrono::nanoseconds(util::GetTimeNs() - startNs);
 
@@ -54,8 +58,12 @@ namespace skyline::gpu {
                         // without waiting for GPU readers of the separate backing.
                         // Keep their cycle: SynchronizeHost still needs it before
                         // uploading those guest writes to the backing.
-                        if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty)
+                        if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty) {
+                            if (buffer->cycle && !waitCycle)
+                                buffer_readback_probe::Record(buffer->id, buffer->mirror.size(), buffer_readback_probe::Released);
                             return;
+                        }
+                        diagnosticGpuDirty = buffer->dirtyState == DirtyState::GpuDirty;
                     }
                     if (waitCycle && buffer->cycle == waitCycle) {
                         buffer->cycle = {};
@@ -107,6 +115,7 @@ namespace skyline::gpu {
             if (buffer->accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold && *buffer->gpu.state.settings->enableFastGpuReadbackHack) {
                 // As opposed to skipping readback as we do for textures, with buffers we can still perform the readback but just without syncinc the GPU
                 // While the read data may be invalid it's still better than nothing and works in most cases
+                buffer_readback_probe::Scope diagnosticHack{buffer->id, buffer->mirror.size(), buffer_readback_probe::Hack, buffer->mirror.size()};
                 memcpy(buffer->mirror.data(), buffer->backing->data(), buffer->mirror.size());
                 buffer->dirtyState = *buffer->gpu.state.settings->enableFastReadbackWrites ? DirtyState::CpuDirty : DirtyState::Clean;
                 return true;
@@ -485,7 +494,9 @@ namespace skyline::gpu {
                 return;
 
             dirtyState = DirtyState::Clean;
+            buffer_readback_probe::Scope diagnosticWait{id, mirror.size(), buffer_readback_probe::UploadWait, 0, static_cast<bool>(cycle)};
             WaitOnFence();
+            diagnosticWait.End();
 
             AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
 
@@ -493,6 +504,7 @@ namespace skyline::gpu {
                 gpu.state.process->trap.TrapRegions(*trapHandle, true); // Trap any future CPU writes to this buffer, must be done before the memcpy so that any modifications during the copy are tracked
         }
 
+        buffer_readback_probe::Scope diagnosticCopy{id, mirror.size(), buffer_readback_probe::Upload, mirror.size()};
         std::memcpy(backing->data(), mirror.data(), mirror.size());
     }
 
@@ -511,8 +523,13 @@ namespace skyline::gpu {
             if (nonBlocking && !PollFence())
                 return false; // If the fence is not signalled and non-blocking behaviour is requested then bail out
 
+            buffer_readback_probe::Scope diagnosticWait{id, mirror.size(), buffer_readback_probe::ReadbackWait, 0, static_cast<bool>(cycle)};
             WaitOnFence();
-            std::memcpy(mirror.data(), backing->data(), mirror.size());
+            diagnosticWait.End();
+            {
+                buffer_readback_probe::Scope diagnosticCopy{id, mirror.size(), buffer_readback_probe::Download, mirror.size()};
+                std::memcpy(mirror.data(), backing->data(), mirror.size());
+            }
 
             dirtyState = DirtyState::Clean;
         }

@@ -34,6 +34,7 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags "-std=c++20"
+                arguments "-DSTRATO_BUFFER_READBACK_PROBE=" + (project.findProperty("bufferReadbackProbe") == "true" ? "ON" : "OFF")
             }
         }
 

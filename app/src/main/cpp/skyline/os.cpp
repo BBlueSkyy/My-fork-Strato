@@ -2,6 +2,8 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include "gpu.h"
+#include <common/settings.h>
+#include <gpu/buffer_readback_probe.h>
 #include "audio.h"
 #include "nce.h"
 #include <jit/jit32.h>
@@ -64,6 +66,9 @@ namespace skyline::kernel {
           serviceManager(state) {}
 
     void OS::Execute(int romFd, std::vector<int> dlcFds, int updateFd, loader::RomFormat romType) {
+#if STRATO_BUFFER_READBACK_PROBE
+        gpu::buffer_readback_probe::Session diagnosticSession{*state.settings->enableFastGpuReadbackHack, *state.settings->enableFastReadbackWrites, *state.settings->forceMaxGpuClocks, *state.settings->freeGuestTextureMemory};
+#endif
         auto romFile{std::make_shared<vfs::OsBacking>(romFd)};
         keyStore = std::make_shared<crypto::KeyStore>(privateAppFilesPath + "keys/");
 
@@ -150,6 +155,9 @@ namespace skyline::kernel {
             LOGI("Starting main HOS thread");
             thread->Start(true);
             process->Kill(true, true, true);
+#if STRATO_BUFFER_READBACK_PROBE
+            diagnosticSession.Stop();
+#endif
             skyline::AsyncLogger::Finalize(true);
         }
     }

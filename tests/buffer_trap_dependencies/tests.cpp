@@ -29,6 +29,11 @@ static void CleanStoreDoesNotWait() {
     std::puts("PASS clean mirror store proceeds; GPU backing remains unchanged; later upload retains reader wait");
 }
 static void DirtyProducerStillWaits() {
+#if STRATO_BUFFER_READBACK_PROBE
+    namespace bp=gpu::buffer_readback_probe;
+    const auto waitsBefore=bp::Read(bp::totals[bp::DirtyPrepare]);
+    const auto downloadsBefore=bp::Read(bp::totals[bp::Download]);
+#endif
     Fixture f;auto b=f.buffer;auto producer=f.Pending(true);
     std::promise<void> release,entered;auto gate=release.get_future().share();
     producer->complete=[&]{entered.set_value();gate.wait();std::memset(b->backing->data(),0x64,4096);};
@@ -36,7 +41,23 @@ static void DirtyProducerStillWaits() {
     entered.get_future().wait();const bool retained=store.wait_for(100ms)==std::future_status::timeout;
     release.set_value();store.get();Check(retained&&producer->waits==1,"mandatory producer dependency skipped");
     Check(f.mirror[0]==0x64&&f.mirror[37]==0x9a,"GPU-dirty preservation/readback changed");
+#if STRATO_BUFFER_READBACK_PROBE
+    const auto waitsAfter=bp::Read(bp::totals[bp::DirtyPrepare]);
+    const auto downloadsAfter=bp::Read(bp::totals[bp::Download]);
+    Check(waitsAfter.calls==waitsBefore.calls+1&&waitsAfter.ns>waitsBefore.ns,"producer wait attribution missing");
+    Check(downloadsAfter.calls==downloadsBefore.calls+1&&downloadsAfter.bytes==downloadsBefore.bytes+4096,"mandatory download attribution missing");
+#endif
     std::puts("PASS GPU-dirty producer wait and mandatory readback retained");
+}
+static void ProducerFailureRecovery() {
+    Fixture f;auto b=f.buffer;auto producer=f.Pending(true);
+    producer->complete=[]{throw std::runtime_error("producer failed");};
+    bool failed{};try{f.process.trap.HandleTrap(f.guest,true);}catch(const std::runtime_error&){failed=true;}
+    Check(failed&&b->cycle==producer&&b->dirtyState==Buffer::DirtyState::GpuDirty,"failed producer lost authority/dependency");
+    producer->complete=[&]{std::memset(b->backing->data(),0x64,4096);};
+    Check(f.process.trap.HandleTrap(f.guest,true),"producer retry failed");
+    f.Write(37,0x9a);Check(f.mirror[0]==0x64&&f.mirror[37]==0x9a,"producer recovery lost preserved data");
+    std::puts("PASS failed producer retains GPU authority/cycle; retry restores data before partial store");
 }
 #ifdef WITH_VULKAN
 #include "vulkan.inc"
@@ -74,13 +95,31 @@ static void NativePendingReader() {
     std::puts("PASS native pending GPU reader sees original bytes; CPU mirror store independent; upload waits; next GPU reader sees updated bytes; zero Vulkan validation errors");
 }
 
+static void NativePendingWriter() {
+    Vulkan vk;NativeBuffer backing(vk);Fixture f;auto b=f.buffer;b->backing->external=backing.data;
+    VkEvent event{};VkEventCreateInfo ec{};ec.sType=VK_STRUCTURE_TYPE_EVENT_CREATE_INFO;VkCheck(vkCreateEvent(vk.device,&ec,nullptr,&event));
+    auto cmd=vk.Begin();vkCmdWaitEvents(cmd,1,&event,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,nullptr,0,nullptr,0,nullptr);
+    vkCmdFillBuffer(cmd,backing.buffer,0,4096,0x64646464);
+    Barrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);
+    auto fence=vk.Submit(cmd);auto producer=std::make_shared<gpu::FenceCycle>();b->cycle=producer;b->dirtyState=Buffer::DirtyState::GpuDirty;
+    producer->complete=[&]{VkCheck(vkWaitForFences(vk.device,1,&fence,true,UINT64_MAX));};
+    f.process.trap.TrapRegions(*b->trapHandle,false);
+    auto store=std::async(std::launch::async,[&]{f.Write(37,0x9a);});
+    const bool retained=store.wait_for(100ms)==std::future_status::timeout;
+    VkCheck(vkSetEvent(vk.device,event));store.get();vk.Retire(cmd,fence);vkDestroyEvent(vk.device,event,nullptr);
+    Check(retained&&producer->waits==1,"native GPU writer dependency skipped");
+    for(size_t i{};i<4096;++i)Check(f.mirror[i]==(i==37?0x9a:0x64),"native required readback lost data");
+    Check(!validationErrors,"native writer validation errors");
+    std::puts("PASS native pending GPU writer blocks CPU store; mandatory GPU-dirty readback preserves bytes; zero validation errors");
+}
+
 #endif
 int main(){
     struct sigaction action{};action.sa_sigaction=Fault;action.sa_flags=SA_SIGINFO;sigemptyset(&action.sa_mask);
     Check(!sigaction(SIGSEGV,&action,nullptr),"sigaction failed");
-    try{CleanStoreDoesNotWait();DirtyProducerStillWaits();
+    try{CleanStoreDoesNotWait();DirtyProducerStillWaits();ProducerFailureRecovery();
 #ifdef WITH_VULKAN
-    NativePendingReader();
+    NativePendingReader();NativePendingWriter();
 #endif
     }catch(const std::exception&e){std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}
 }

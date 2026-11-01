@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix='strato-readback-traps-') as td:
             depth+=(source[end]=='{')-(source[end]=='}');end+=1
         functions.append(source[start:end])
     (td/'buffer.inc').write_text('namespace skyline::gpu {\n'+'\n'.join(functions)+'\n}')
-    command=[os.environ.get('CXX','c++'),'-std=c++20','-pthread','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-invalid-offsetof','-Wno-return-type','-O1','-g','-fsanitize='+os.environ.get('SANITIZERS','address,undefined'),'-fno-sanitize-recover=all','-I'+str(here),'-I'+str(td),'-I'+str(cpp),str(here/'tests.cpp'),'-o',str(td/'test')]
+    command=[os.environ.get('CXX','c++'),'-DSTRATO_BUFFER_READBACK_PROBE='+os.environ.get('PROBE_ENABLED','1'),'-std=c++20','-pthread','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-invalid-offsetof','-Wno-return-type','-O1','-g','-fsanitize='+os.environ.get('SANITIZERS','address,undefined'),'-fno-sanitize-recover=all','-I'+str(here),'-I'+str(td),'-I'+str(cpp),str(here/'tests.cpp'),'-o',str(td/'test')]
     if os.environ.get('VULKAN'):
         command += ['-DWITH_VULKAN','-I'+os.environ['VULKAN_HEADERS_INCLUDE_DIR'],os.environ.get('VULKAN_LOADER_LIBRARY','-lvulkan')]
     subprocess.run(command,check=True)
