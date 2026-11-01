@@ -7,6 +7,9 @@
 #include <common/signal.h>
 #include <jvm.h>
 #include <gpu.h>
+#include <os.h>
+#include <gpu/diagnostic/pacman_triangle_capture.h>
+#include <filesystem>
 #include <soc.h>
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
@@ -143,6 +146,48 @@ namespace skyline::gpu {
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
         texture->SynchronizeHost();
+        // Opt-in, one-shot trace: capture what will actually be presented.
+        // The marker is checked only once per eight presentations when idle.
+        {
+            namespace fs = std::filesystem;
+            auto &capture{diagnostic::PacmanCapture()};
+            static unsigned poll{};
+            if (!capture.Active() && (++poll % 8 == 0)) {
+                const fs::path root{fs::path(state.os->publicAppFilesPath) /
+                                    "gpu_capture" / "pacman_world"};
+                std::error_code ec;
+                fs::create_directories(root, ec);
+                if (!ec && fs::exists(root / "ARM_CAPTURE", ec) && !ec) {
+                    for (unsigned i{1}; i <= 999; ++i) {
+                        const auto folder{root / fmt::format("capture_{:03}", i)};
+                        ec.clear();
+                        if (fs::exists(folder, ec) || ec)
+                            continue;
+                        if (!fs::create_directory(folder, ec) || ec)
+                            continue;
+                        if (!fs::remove(root / "ARM_CAPTURE", ec) || ec)
+                            break;
+                        capture.Start(folder);
+                        LOGI("MINIRD_PACMAN armed capture in {}", folder.string());
+                        break;
+                    }
+                }
+            }
+            if (capture.Active()) {
+                capture.Record(fmt::format(
+                    "PRESENT interval={} source={} extent={}x{}x{} format={} crop={},{},{},{} transform={} swapchain={}x{}",
+                    capture.PresentedFrames(), fmt::ptr(texture.get()),
+                    texture->dimensions.width, texture->dimensions.height,
+                    texture->dimensions.depth,
+                    static_cast<u32>(texture->format->vkFormat),
+                    frame.crop.left, frame.crop.top, frame.crop.right, frame.crop.bottom,
+                    static_cast<u32>(frame.transform),
+                    swapchainExtent.width, swapchainExtent.height));
+                capture.CompletePresentation();
+                if (!capture.Active())
+                    LOGI("MINIRD_PACMAN capture_complete.txt written (metadata only)");
+            }
+        }
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,
