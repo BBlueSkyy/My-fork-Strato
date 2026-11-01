@@ -87,14 +87,9 @@ namespace skyline::service {
     }
 
     void DumpRecentIpcCallsForCurrentThread() {
-        LOGI("CrysisIPC: last {} non-rendering IPC entries on aborting guest thread (oldest first)", recentIpcCount);
-        const size_t start{(recentIpcNext + RecentIpcCapacity - recentIpcCount) % RecentIpcCapacity};
-        for (size_t index{}; index < recentIpcCount; ++index) {
-            const auto &call{recentIpcCalls[(start + index) % RecentIpcCapacity]};
-            LOGI("CrysisIPC: [{}/{}] {} cmd=0x{:X} result=0x{:X} repeat={}",
-                 index + 1, recentIpcCount, call.function, call.commandId, call.result, call.repeats);
-        }
-
+        // Capture the shared history first; dump it before less informative successful IPCs.
+        // LOGI queues messages asynchronously, which can lose the tail when a guest aborts.
+        // LogSync writes and flushes each message before returning from SetTerminateResult.
         std::array<RecentFailure, RecentFailureCapacity> snapshot{};
         size_t count{};
         {
@@ -104,12 +99,27 @@ namespace skyline::service {
             for (size_t index{}; index < count; ++index)
                 snapshot[index] = failures[(first + index) % RecentFailureCapacity];
         }
-        LOGI("CrysisFailure: last {} IPC/NVDRV errors across guest threads (oldest first)", count);
+
+        constexpr auto level{AsyncLogger::LogLevel::Info};
+        AsyncLogger::LogSync(level, fmt::format(
+            "CrysisFailure: last {} IPC/NVDRV/BSD errors across guest threads (oldest first)", count));
         for (size_t index{}; index < count; ++index) {
             const auto &entry{snapshot[index]};
-            LOGI("CrysisFailure: [{}/{}] {} cmd=0x{:X} result=0x{:X} repeat={}",
-                 index + 1, count, entry.source, entry.command, entry.result, entry.count);
+            AsyncLogger::LogSync(level, fmt::format(
+                "CrysisFailure: [{}/{}] {} cmd=0x{:X} result=0x{:X} repeat={}",
+                index + 1, count, entry.source, entry.command, entry.result, entry.count));
         }
+
+        AsyncLogger::LogSync(level, fmt::format(
+            "CrysisIPC: last {} non-rendering IPC entries on aborting guest thread (oldest first)", recentIpcCount));
+        const size_t start{(recentIpcNext + RecentIpcCapacity - recentIpcCount) % RecentIpcCapacity};
+        for (size_t index{}; index < recentIpcCount; ++index) {
+            const auto &call{recentIpcCalls[(start + index) % RecentIpcCapacity]};
+            AsyncLogger::LogSync(level, fmt::format(
+                "CrysisIPC: [{}/{}] {} cmd=0x{:X} result=0x{:X} repeat={}",
+                index + 1, recentIpcCount, call.function, call.commandId, call.result, call.repeats));
+        }
+        AsyncLogger::LogSync(level, "CrysisDiag: END");
     }
 
     const std::string &BaseService::GetName() {
