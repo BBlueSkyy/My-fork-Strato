@@ -167,8 +167,11 @@ namespace skyline::gpu {
                             continue;
                         if (!fs::remove(root / "ARM_CAPTURE", ec) || ec)
                             break;
-                        capture.Start(folder);
-                        LOGI("MINIRD_PACMAN armed capture in {}", folder.string());
+                        ec.clear();
+                        const bool sceneSnapshots{fs::exists(root / "ENABLE_SCENE_SNAPSHOTS", ec) && !ec};
+                        capture.Start(folder, sceneSnapshots);
+                        LOGI("MINIRD_PACMAN armed in {} scene_snapshots={}",
+                             folder.string(), sceneSnapshots);
                         break;
                     }
                 }
