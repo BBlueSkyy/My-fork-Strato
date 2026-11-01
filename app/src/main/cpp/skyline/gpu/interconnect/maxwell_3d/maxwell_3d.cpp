@@ -84,10 +84,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 "top={} cull={} cw={} flipY={} discard={} depth_test={} depth_write={} "
                 "depth_func={} stencil={} ndc_gl={} restart={} blend0={} color_mask0={}",
                 static_cast<u32>(p.topology), static_cast<u32>(p.cullMode),
-                p.frontFaceClockwise, p.flipYEnable, p.rasterizerDiscardEnable,
-                p.depthTestEnable, p.depthWriteEnable, p.depthFunc,
-                p.stencilTestEnable, p.openGlNdc, p.primitiveRestartEnabled,
-                p.attachmentBlendStates[0].blendEnable,
+                static_cast<bool>(p.frontFaceClockwise),
+                static_cast<bool>(p.flipYEnable),
+                static_cast<bool>(p.rasterizerDiscardEnable),
+                static_cast<bool>(p.depthTestEnable),
+                static_cast<bool>(p.depthWriteEnable),
+                static_cast<u32>(p.depthFunc),
+                static_cast<bool>(p.stencilTestEnable),
+                static_cast<bool>(p.openGlNdc),
+                static_cast<bool>(p.primitiveRestartEnabled),
+                static_cast<bool>(p.attachmentBlendStates[0].blendEnable),
                 static_cast<u32>(p.attachmentBlendStates[0].colorWriteMask));
         }
         std::string targets;
