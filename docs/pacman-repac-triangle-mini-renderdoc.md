@@ -177,3 +177,39 @@ Full numeric results and SHA256 fingerprints:
 
 **Not a rendering fix.** Stage-3 Android compilation and capture
 validation are pending. Preserve Draft, do not merge.
+
+
+## Stage 4: automated opt-in HDR anomaly detection (after third capture)
+
+The third capture produced eight successful 1280×720 GPU snapshots:
+one before the first scene draw and seven through draw 100. The earliest
+pre-draw image was **clean of extreme HDR values**, whereas the second
+capture began with over ten thousand RGB pixels above 100. Only 298 raw
+pixels changed between pre-draw and post-draw 1 in the third capture.
+
+To scan across more rendered scenes without requiring exact timing, create
+an empty `gpu_capture/pacman_world/ENABLE_HDR_SCAN` file and then
+re-create `gpu_capture/pacman_world/ARM_CAPTURE`. The HDR scan marker
+takes precedence over `ENABLE_SCENE_SNAPSHOTS` when both exist. It
+samples after 1280×720 HDR scene color draw 16, which distinguishes the
+previous bad and good runs. It can run for up to 60 host present intervals,
+uses no more than 4 in-flight readbacks, and writes up to five RAW frames
+(a baseline plus selected severe-HDR matches). Threshold: at least 512
+pixels with any R/G/B HDR channel >100, verified against the previous
+bad (~10,541) and good (0) samples.
+
+After capture, upload `hdr_scan.csv`, `hdr_scan_done.txt`,
+`capture_complete.txt`, `hdr_scan_*.raw`, `hdr_scan_*.txt`,
+`gpu_events.txt` and `emulation.log`. Wait for the done marker
+before archiving the files. For another fixed-checkpoint capture,
+remove `ENABLE_HDR_SCAN` and keep `ENABLE_SCENE_SNAPSHOTS`.
+
+This scan does **not** automatically diagnose a black-only triangle:
+it searches specifically for the extraordinary HDR signal present in
+the previous bad run. It can affect timing; a clean scan cannot
+conclusively eliminate synchronization, shaders or driver causes.
+No rendering correction has been made.
+
+Third capture metrics and instructions:
+`docs/pacman-repac-capture-003-analysis.md`.
+Build and phone execution of this stage remain unverified.
