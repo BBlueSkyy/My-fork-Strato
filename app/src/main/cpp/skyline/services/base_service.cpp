@@ -71,8 +71,10 @@ namespace skyline::service {
         if (!result)
             return;
         std::scoped_lock lock{failureMutex};
-        if (failureCount) {
-            auto &previous{failures[(failureNext + RecentFailureCapacity - 1) % RecentFailureCapacity]};
+        // Merge matching failure identities even when separate IOCTLs interleave them.
+        // This ring preserves distinct anomalies instead of filling with repeated errors.
+        for (size_t i{}; i < failureCount; ++i) {
+            auto &previous{failures[i]};
             if (std::string_view{previous.source} == source && previous.command == command && previous.result == result) {
                 if (previous.count != std::numeric_limits<u32>::max())
                     ++previous.count;
