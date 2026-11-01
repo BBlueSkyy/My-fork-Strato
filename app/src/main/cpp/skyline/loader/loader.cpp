@@ -19,7 +19,8 @@ namespace skyline::loader {
         // NCE patching is only required for 64-bit executables
         const bool needsNcePatching{is64bit};
         // Only enable symbol hooking for 64-bit executables
-        const bool enableSymbolHooking{is64bit};
+        const bool enableSymbolHooking{is64bit && dynamicallyLinked &&
+            name == "sdk.nso" && process->npdm.aci0.programId == 0x0100E66010ADE000ULL};
 
         // An AArch32 guest never executes through NCE. Installing its raw signal
         // handler in that process would intercept signals from Android's ART JIT
