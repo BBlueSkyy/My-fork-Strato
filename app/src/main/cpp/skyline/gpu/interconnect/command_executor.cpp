@@ -427,7 +427,7 @@ namespace skyline::gpu::interconnect {
                 tex->CopyIntoStagingBuffer(cmd, staging);
             });
             pacmanSceneReadbacks.emplace_back(
-                [staging, folder, scanId, epoch, interval] {
+                [staging, folder, scanId, epoch, interval, ordinal] {
                     // VK_FORMAT_B10G11R11_UFLOAT_PACK32: threshold >100
                     // corresponds to packed R/G11 >1380, B10 >690.
                     // The threshold separates prior bad (>10k pixels)
