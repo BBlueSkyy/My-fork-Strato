@@ -213,3 +213,71 @@ No rendering correction has been made.
 Third capture metrics and instructions:
 `docs/pacman-repac-capture-003-analysis.md`.
 Build and phone execution of this stage remain unverified.
+
+
+## Stage 5 — Executor Flush Threshold = 0 removes the triangle
+
+**New on-device A/B from user:** `Executor Flush Threshold=0` removes
+the visible inverted triangle but loses performance, while default
+`256` shows the artifact. This is a crucial observation, not yet a
+validated source-level fix.
+
+### Relevant executor behavior
+
+`CommandExecutor::AddSubpass()` flushes after enqueueing a draw when
+`slot->nodes.size() > *state.settings->executorFlushThreshold`
+and `!gotoNext`. With threshold 0, nearly every 3D draw causes
+`Submit()`. `SubmitInternal()` finishes the render pass, calls
+`RecordFullBarrier()`, binds/updates attached texture and buffer
+dependencies, then `RotateRecordSlot()`. Thus threshold 0 changes
+**render-pass boundaries, GPU barriers, host resource bookkeeping,
+submission ordering and pacing simultaneously**. It does not by itself
+prove a missing Vulkan barrier or shader/compiler defect.
+
+### Two isolation experiments added to this Draft PR
+
+Use **Executor Flush Threshold = 256** for both tests. At the affected
+scene, put an empty `ARM_CAPTURE` marker alongside exactly one of:
+
+1. `ENABLE_EXECUTOR_RP_SPLIT_TEST` — end the render pass after every
+   `AddSubpass()`, without forcing a Vulkan submission. Separates
+   pass lifetime/load-store/dependencies from actual submit frequency.
+2. `ENABLE_EXECUTOR_BARRIER_TEST` — do the same per-draw split **plus**
+   an all-commands Vulkan memory barrier within the command buffer,
+   again without forcing submission. Separates missing intra-command
+   memory visibility from submit/CPU scheduling effects.
+
+Create the marker in `gpu_capture/pacman_world/` and then create
+`ARM_CAPTURE`; re-arm separately for the next test. The experiment
+ends after **60 host presentations** and produces
+`gpu_events.txt` and `capture_complete.txt` with
+`executor_experiment_mode=1` or `2` and the count of affected
+subpass enqueue operations.
+
+Use only one test marker at a time; remove any `ENABLE_HDR_SCAN`
+marker to avoid confusion. In code the experiment takes precedence
+over both the HDR scan and stage-3 image capture, and no raw images are
+copied. Tests deliberately perturb renderpass boundaries and may
+reduce performance; neither mode is intended as a permanent hack.
+
+**Interpret carefully:**
+- If split-only fixes: investigate renderpass load/store preservation,
+  attachment dependencies and subpass coalescing, under threshold 256.
+- If split-only fails but barrier fixes: investigate Vulkan memory
+  dependency/access/stage masks and guest attachment transitions.
+- If neither fixes but threshold 0 does: investigate differences
+  introduced by `SubmitInternal()`, texture/buffer cycle dependencies,
+  execution order, descriptors/resource lifetime and timing.
+- If both fix: more targeted tests are required; an unnecessary global
+  barrier is not a safe final solution.
+
+Reproduce on-device with the **same driver, scene and settings**,
+ideally several game reloads per configuration since earlier
+captures differed between runs. Record whether the visible inverted
+triangle persisted during each experiment; a text log alone cannot
+determine that. If the experiment itself suppresses corruption due to
+timing, report it as inconclusive.
+
+No change to the default threshold, no permanent barrier, no game-
+specific shader hash, no GPU feature disabled; PR stays Draft,
+unmerged. The experimental APK and device behavior are unverified.
