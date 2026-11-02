@@ -493,6 +493,8 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/ts/ISession.cpp
         ${source_DIR}/skyline/services/ntc/IEnsureNetworkClockAvailabilityService.cpp
         ${source_DIR}/skyline/services/ngc/INgcServiceForApplication.cpp
+        ${source_DIR}/skyline/services/ngc/content_reader.cpp
+        ${source_DIR}/skyline/services/ngc/ngc_dictionary.cpp
         )
 target_include_directories(skyline PRIVATE ${source_DIR}/skyline)
 set_source_files_properties(${source_DIR}/skyline/loader/zbic_zstd.c PROPERTIES COMPILE_OPTIONS "-Wno-everything")
