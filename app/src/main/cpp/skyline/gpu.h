@@ -6,6 +6,7 @@
 #include <adrenotools/driver.h>
 #include "gpu/trait_manager.h"
 #include "gpu/texture/mini_capture.h"
+#include "gpu/texture/origin_capture.h"
 #include "gpu/memory_manager.h"
 #include "gpu/command_scheduler.h"
 #include "gpu/presentation_engine.h"
@@ -75,6 +76,7 @@ namespace skyline::gpu {
 
         // Destroy captures before allocator/device members (reverse member order).
         texture::diagnostic::MiniCapture miniCapture;
+        texture::diagnostic::OriginCapture originCapture;
 
         GPU(const DeviceState &state);
 
