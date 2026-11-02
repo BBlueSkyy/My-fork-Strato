@@ -80,7 +80,7 @@ namespace skyline::soc::host1x {
             switch (surfaceConfig.outPixelFormat) {
                 case vic::VideoPixelFormat::Y8__V8U8_N420:
                 case vic::VideoPixelFormat::Y8__U8V8_N420:
-                    vic::WriteNv12Surface(state, config, registers.outputSurface, frame.get());
+                    vic::WriteNv12Surface(state, config, registers.outputSurface, frame.get(), trace);
                     dispatched = true;
                     break;
                 case vic::VideoPixelFormat::A8B8G8R8:
@@ -88,7 +88,7 @@ namespace skyline::soc::host1x {
                 case vic::VideoPixelFormat::R8G8B8A8:
                 case vic::VideoPixelFormat::A8R8G8B8:
                 case vic::VideoPixelFormat::X8R8G8B8:
-                    vic::WriteRgbaSurface(state, config, registers.outputSurface, frame.get());
+                    vic::WriteRgbaSurface(state, config, registers.outputSurface, frame.get(), trace);
                     dispatched = true;
                     break;
                 default:
