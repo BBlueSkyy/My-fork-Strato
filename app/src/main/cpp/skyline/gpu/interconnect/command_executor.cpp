@@ -711,7 +711,7 @@ namespace skyline::gpu::interconnect {
         const auto drawSignature{std::exchange(pacmanNextDrawSignature, std::string{})};
         bool sceneSubmit{}, hasColor{}, hdrScene{}, viOutput{};
         const bool postProbeMode{testMode >= 7 && testMode <= 12};
-        if (testMode >= 3 && testMode <= 11) {
+        if (testMode >= 3 && testMode <= 12) {
             for (auto *view : colorAttachments) {
                 if (!view || !view->texture || !view->texture->format)
                     continue;
