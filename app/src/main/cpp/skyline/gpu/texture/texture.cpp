@@ -364,11 +364,15 @@ namespace skyline::gpu {
         trace.Record(diagnosticToken, event, snapshot);
         // Writes are intent only; any later nonzero sampled-host payload is
         // independent evidence of execution/visibility.
-        if (event==texture::diagnostic::Event::WriteRecorded ||
-            event==texture::diagnostic::Event::RenderTargetIntent ||
-            event==texture::diagnostic::Event::StorageWriteIntent ||
-            event==texture::diagnostic::Event::CopyWriteIntent)
-            gpu.originCapture.Save(texture::diagnostic::OriginStage::WriteIntent,snapshot);
+        if ((event==texture::diagnostic::Event::WriteRecorded ||
+             event==texture::diagnostic::Event::RenderTargetIntent ||
+             event==texture::diagnostic::Event::StorageWriteIntent ||
+             event==texture::diagnostic::Event::CopyWriteIntent) &&
+            gpu.originCapture.Interested(reinterpret_cast<const void *>(snapshot.address),snapshot.bytes)) {
+            auto intent{snapshot};
+            intent.detail=static_cast<u32>(event); // distinguishes RT, storage, copy and serial intent.
+            gpu.originCapture.Save(texture::diagnostic::OriginStage::WriteIntent,intent);
+        }
     }
 
     void Texture::SetupGuestMappings() {
