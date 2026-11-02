@@ -15,13 +15,15 @@ namespace skyline::gpu::texture::diagnostic {
     enum class OriginStage : uint32_t {
         OverlapBefore=1, OverlapAfter, CreatedGuest, GuestBeforeUpload,
         StagingBeforeUpload, HostAfterUpload, BeforeFreeGuest, AfterFreeGuest,
-        SampledHost, WriteIntent, ReadbackGuest, AliasRecovery, UploadQueued
+        SampledHost, WriteIntent, ReadbackGuest, AliasRecovery, UploadQueued,
+        GuestBeforeReadbackWrite, ReadbackSource, GuestAfterReadbackWrite
     };
     inline constexpr const char *OriginNames[]{
         "unused", "overlap_before", "overlap_after", "created_guest",
         "guest_before_upload", "staging_before_upload", "host_after_upload",
         "before_free_guest", "after_free_guest", "sampled_host",
-        "write_intent", "readback_guest", "alias_recovery", "upload_queued"
+        "write_intent", "readback_guest", "alias_recovery", "upload_queued",
+        "guest_before_readback_write", "readback_source", "guest_after_readback_write"
     };
 
     class OriginCapture {
@@ -36,12 +38,19 @@ namespace skyline::gpu::texture::diagnostic {
         std::array<Anchor,8> anchors{};
         size_t anchorCount{};
         std::vector<Entry> records;
+        std::array<size_t,4> phaseCounts{};
+        std::array<std::atomic<uint64_t>,4> phaseOmitted{};
         std::atomic<uint64_t> missed{}, omitted{};
-        static constexpr size_t Limit{320};
+        // Independent per-phase allocations: startup/selection can never use
+        // the slots reserved for race and corrected selection.
+        static constexpr std::array<size_t,4> PhaseLimits{192,384,384,192};
         static constexpr size_t MaxBytes{64*1024};
 
         bool Admit(OriginStage stage, const Snapshot &s, uint32_t phase) {
-            if (records.size()>=Limit) { ++omitted; return false; }
+            if (phase>=PhaseLimits.size()) return false;
+            if (phaseCounts[phase]>=PhaseLimits[phase]) {
+                ++omitted; ++phaseOmitted[phase]; return false;
+            }
             size_t repeated{};
             for (const auto &e:records) {
                 if (e.stage!=stage || e.snapshot.id!=s.id || e.phase!=phase) continue;
@@ -52,7 +61,7 @@ namespace skyline::gpu::texture::diagnostic {
                 ++repeated;
             }
             const size_t maxRepeats = stage==OriginStage::WriteIntent ? 6 :
-                stage==OriginStage::SampledHost ? 2 : 1;
+                stage==OriginStage::SampledHost ? (phase==2 ? 12 : 2) : 1;
             if (repeated>=maxRepeats) return false;
             return true;
         }
@@ -64,7 +73,9 @@ namespace skyline::gpu::texture::diagnostic {
       public:
         void Start(bool enabled) {
             std::lock_guard lock{mutex};
-            active=false; anchors={}; anchorCount=0; records.clear(); missed=0; omitted=0;
+            active=false; anchors={}; anchorCount=0; records.clear(); phaseCounts={};
+            missed=0; omitted=0;
+            for(auto &count:phaseOmitted) count=0;
             active=enabled;
         }
         bool Enabled() const { return active.load(std::memory_order_relaxed); }
@@ -107,6 +118,7 @@ namespace skyline::gpu::texture::diagnostic {
                     entry.bytes.assign(ptr,ptr+size);
                 }
                 records.emplace_back(std::move(entry));
+                ++phaseCounts[phase];
                 return true;
             } catch (...) { ++omitted; return false; }
         }
@@ -118,17 +130,21 @@ namespace skyline::gpu::texture::diagnostic {
             if(!Admit(stage,s,phase)) return false;
             try {
                 records.push_back({stage,s,phase,lifecycle.CurrentFrame(),{},std::move(fn)});
+                ++phaseCounts[phase];
                 return true;
             } catch (...) { ++omitted; return false; }
         }
         bool Export(std::ostream &out) {
             std::vector<Entry> copy;
-            size_t n{};
-            { std::lock_guard lock{mutex}; active=false; copy=records; n=anchorCount; }
+            size_t n{}; std::array<size_t,4> saved{};
+            { std::lock_guard lock{mutex}; active=false; copy=records; n=anchorCount; saved=phaseCounts; }
             if(copy.empty()) return false;
             out<<"# MK8ORIGIN1; payload=CPU byte copy or explicit deferred GPU read; id/address only valid within one run\n";
             out<<"# observed_intents_are_not_GPU_execution; zero payload with invalid status is NOT a zero-valued image\n";
             out<<"# anchors="<<n<<" missed_lock="<<missed.load()<<" overflow="<<omitted.load()<<'\n';
+            for(size_t phase{};phase<4;++phase)
+                out<<"# phase="<<phase<<" records="<<saved[phase]<<" budget="<<PhaseLimits[phase]
+                   <<" overflow="<<phaseOmitted[phase].load()<<'\n';
             out<<"stage,phase,frame,id,address,guest_bytes,image,generation,write_serial,readback_serial,format,width,height,levels,layers,state,flags,detail,mip,face,size,nonzero,fnv1a64,status\n";
             for(auto &e:copy) {
                 std::vector<uint8_t> data;
@@ -153,7 +169,8 @@ namespace skyline::gpu::texture::diagnostic {
                 // layout is intentionally not decoded as if it were linear.
                 if(valid && (e.stage==OriginStage::StagingBeforeUpload ||
                              e.stage==OriginStage::HostAfterUpload ||
-                             e.stage==OriginStage::SampledHost) &&
+                             e.stage==OriginStage::SampledHost ||
+                             e.stage==OriginStage::ReadbackSource) &&
                    s.width==32 && s.height==32 && s.layers==6 && s.hostFormat==122) {
                     size_t offset{};
                     for(uint32_t mip{};mip<s.levels;++mip) {
@@ -164,6 +181,20 @@ namespace skyline::gpu::texture::diagnostic {
                             line(static_cast<int>(mip),static_cast<int>(face),data.data()+offset,faceBytes);
                             offset+=faceBytes;
                         }
+                    }
+                }
+                // Block-linear guest: each 32x32 face has 8 KiB of storage
+                // (4 KiB mip0, 1 KiB mip1 plus remaining padding/mips).
+                // Only emit these structural slices for the verified 5-mip cube.
+                if(valid && (e.stage==OriginStage::GuestBeforeReadbackWrite ||
+                             e.stage==OriginStage::GuestAfterReadbackWrite) &&
+                   s.width==32 && s.height==32 && s.levels==5 &&
+                   s.layers==6 && s.hostFormat==122 && s.detail==8192 &&
+                   data.size()>=6*8192) {
+                    for(int face{};face<6;++face) {
+                        const size_t base{static_cast<size_t>(face)*8192};
+                        line(0,face,data.data()+base,4096);
+                        line(1,face,data.data()+base+4096,1024);
                     }
                 }
             }
