@@ -384,6 +384,9 @@ namespace skyline::gpu {
             intent.detail=static_cast<u32>(event); // distinguishes RT, storage, copy and serial intent.
             gpu.originCapture.Save(texture::diagnostic::OriginStage::WriteIntent,intent);
         }
+        if (event==texture::diagnostic::Event::AliasRecover &&
+            gpu.originCapture.Interested(reinterpret_cast<const void *>(snapshot.address),snapshot.bytes))
+            gpu.originCapture.Save(texture::diagnostic::OriginStage::AliasRecovery,snapshot);
     }
 
     void Texture::SetupGuestMappings() {
