@@ -177,9 +177,23 @@ namespace skyline::gpu {
                         const bool rpBarrier{fs::exists(root / "ENABLE_EXECUTOR_BARRIER_TEST", ec) && !ec};
                         ec.clear();
                         const bool sceneSubmit{fs::exists(root / "ENABLE_EXECUTOR_SCENE_SUBMIT_TEST", ec) && !ec};
-                        // Only one marker should be present: submit-mode is
-                        // intentionally distinct from renderpass/barrier tests.
-                        const u32 experimentMode{sceneSubmit ? 3U : rpBarrier ? 2U : rpSplit ? 1U : 0U};
+                        ec.clear();
+                        const bool depthToScene{fs::exists(root / "ENABLE_EXECUTOR_DEPTH_SCENE_TEST", ec) && !ec};
+                        ec.clear();
+                        const bool sceneToPost{fs::exists(root / "ENABLE_EXECUTOR_SCENE_POST_TEST", ec) && !ec};
+                        ec.clear();
+                        const bool viTarget{fs::exists(root / "ENABLE_EXECUTOR_VI_TARGET_TEST", ec) && !ec};
+                        // One explicit experiment at a time; reject ambiguous
+                        // marker combinations rather than silently mixing A/B data.
+                        const u32 enabledTests{
+                            static_cast<u32>(rpSplit) + static_cast<u32>(rpBarrier) +
+                            static_cast<u32>(sceneSubmit) + static_cast<u32>(depthToScene) +
+                            static_cast<u32>(sceneToPost) + static_cast<u32>(viTarget)};
+                        if (enabledTests > 1)
+                            LOGW("MINIRD_PACMAN multiple executor test markers; disabling experiments");
+                        const u32 experimentMode{enabledTests > 1 ? 0U :
+                            viTarget ? 6U : sceneToPost ? 5U : depthToScene ? 4U :
+                            sceneSubmit ? 3U : rpBarrier ? 2U : rpSplit ? 1U : 0U};
                         capture.Start(folder, sceneSnapshots || scanHdr, scanHdr, experimentMode);
                         LOGI("MINIRD_PACMAN armed in {} scene_snapshots={} hdr_scan={} executor_test={}",
                              folder.string(), sceneSnapshots || scanHdr, scanHdr, experimentMode);
