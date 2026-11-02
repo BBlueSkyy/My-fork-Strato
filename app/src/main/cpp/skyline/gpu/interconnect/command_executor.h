@@ -5,6 +5,9 @@
 
 #include <gpu/texture/backing_promotion.h>
 #include "common/common.h"
+#include <cstdint>
+#include <string>
+#include <utility>
 
 #include <boost/container/stable_vector.hpp>
 #include <renderdoc_app.h>
