@@ -69,7 +69,23 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                      bool indexed, u32 count, u32 first, u32 instances,
                                      i32 vertexOffset, const vk::Rect2D &scissor) {
         auto &cap{diagnostic::PacmanCapture()};
-        if (!cap.Active() || cap.ScanEnabled() || cap.ExecutorExperimentMode()) return;
+        const auto diagnosticMode{cap.ExecutorExperimentMode()};
+        // Capture the specific draw's shader IDs right before AddSubpass.
+        // No dynamic allocations during ordinary gameplay; after the
+        // metadata window ends even a persistent test stops logging.
+        if (cap.Active() && diagnosticMode >= 7 && diagnosticMode <= 11) {
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto &p{pipeline->sourcePackedState};
+                ctx.executor.SetPacmanDrawSignature(fmt::format(
+                    "kind={} vs={:016X} fs={:016X} guest_top={} indexed={} count={} first={} "
+                    "instances={} scissor={}x{}",
+                    kind, p.shaderHashes[1], p.shaderHashes[5],
+                    static_cast<u32>(topology), indexed, count, first, instances,
+                    scissor.extent.width, scissor.extent.height));
+            }
+            return;
+        }
+        if (!cap.Active() || cap.ScanEnabled() || diagnosticMode) return;
         if (cap.TakeRenderDocRequest()) {
             ctx.executor.captureNextExecution = true;
             cap.Record("RENDERDOC next_execution_requested; requires external RenderDoc layer");
