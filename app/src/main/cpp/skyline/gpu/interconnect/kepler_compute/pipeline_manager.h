@@ -20,6 +20,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
         struct ShaderStage {
             vk::ShaderModule module;
             Shader::Info info;
+            std::vector<u32> diagnosticSpirv; //!< Temporary, released after pipeline creation
+            size_t diagnosticSpirvBytes{};
         };
 
         struct DescriptorInfo {

@@ -15,6 +15,7 @@
 #include <shader_compiler/runtime_info.h>
 #include <shader_compiler/backend/bindings.h>
 #include <common.h>
+#include "compute_diagnostics.h"
 
 namespace skyline::gpu {
     /**
@@ -47,6 +48,11 @@ namespace skyline::gpu {
         span<u8> ProcessShaderBinary(bool spv, u64 hash, span<u8> binary);
 
       public:
+        ComputeDiagnosticStore computeDiagnostics;
+
+        span<const u8> GetComputeDiagnosticGuest(u64 hash, span<u8> binary) const;
+        std::string ComputeDiagnosticProfile() const;
+
         using ConstantBufferRead = std::function<u32(u32 index, u32 offset)>; //!< A function which reads a constant buffer at the specified offset and returns the value
         using GetTextureType = std::function<Shader::TextureType(u32 handle)>; //!< A function which determines the type of a texture from its handle by checking the corresponding TIC
         using IsTexturePixelFormatInteger = std::function<bool(u32 handle)>; //!< A function which determines whether a TIC uses an integer pixel format
@@ -72,7 +78,7 @@ namespace skyline::gpu {
 
         Shader::IR::Program ParseComputeShader(u64 hash, span<u8> binary, u32 baseOffset, u32 textureConstantBufferIndex, u32 localMemorySize, u32 sharedMemorySize, std::array<u32, 3> workgroupDimensions, const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc);
 
-        vk::ShaderModule CompileShader(const Shader::RuntimeInfo &runtimeInfo, Shader::IR::Program &program, Shader::Backend::Bindings &bindings, u64 hash = 0);
+        vk::ShaderModule CompileShader(const Shader::RuntimeInfo &runtimeInfo, Shader::IR::Program &program, Shader::Backend::Bindings &bindings, u64 hash = 0, const std::function<void(span<const u32>)> &captureSpirv = {});
 
         void ResetPools();
     };
