@@ -86,7 +86,9 @@ namespace skyline::signal {
         SignalException signalException;
         signalException.signal = signal;
         signalException.pc = reinterpret_cast<void *>(context->uc_mcontext.pc);
-        if (signal == SIGSEGV)
+        // SIGBUS also reports a faulting memory address; retain it for texture
+        // mirror/readback diagnostics instead of logging only the host PC.
+        if (info && (signal == SIGSEGV || signal == SIGBUS))
             signalException.fault = info->si_addr;
 
         signalException.frames.push_back(reinterpret_cast<void *>(context->uc_mcontext.pc));
