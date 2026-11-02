@@ -51,6 +51,18 @@ namespace skyline::gpu::texture::diagnostic {
             if (phaseCounts[phase]>=PhaseLimits[phase]) {
                 ++omitted; ++phaseOmitted[phase]; return false;
             }
+            // Secondary records may not consume the final capacity needed to
+            // locate the first meaningful host sample or a destructive readback.
+            const bool critical{stage==OriginStage::SampledHost ||
+                stage==OriginStage::GuestBeforeReadbackWrite ||
+                stage==OriginStage::ReadbackSource ||
+                stage==OriginStage::GuestAfterReadbackWrite};
+            const size_t secondaryLimit{
+                phase==1 ? 320U : phase==2 ? 256U : phase==3 ? 96U : PhaseLimits[phase]
+            };
+            if (!critical && phaseCounts[phase]>=secondaryLimit) {
+                ++omitted; ++phaseOmitted[phase]; return false;
+            }
             size_t repeated{};
             for (const auto &e:records) {
                 if (e.stage!=stage || e.snapshot.id!=s.id || e.phase!=phase) continue;
