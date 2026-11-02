@@ -232,6 +232,7 @@ namespace skyline::gpu::interconnect {
         // the next queued Vulkan subpass. Never used to alter shaders.
         std::string pacmanNextDrawSignature;
         std::uint64_t pacmanPostCandidateSerial{};
+        std::uintptr_t pacmanLastHdrProducerIdentity{};
 
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
