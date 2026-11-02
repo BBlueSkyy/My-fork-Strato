@@ -43,8 +43,14 @@ namespace skyline::gpu::texture::diagnostic {
         bool Admit(OriginStage stage, const Snapshot &s, uint32_t phase) {
             if (records.size()>=Limit) { ++omitted; return false; }
             size_t repeated{};
-            for (const auto &e:records)
-                if (e.stage==stage && e.snapshot.id==s.id && e.phase==phase) ++repeated;
+            for (const auto &e:records) {
+                if (e.stage!=stage || e.snapshot.id!=s.id || e.phase!=phase) continue;
+                // For sampled-host snapshots retain the first observation of
+                // each new writer serial instead of two identical early reads.
+                if (stage==OriginStage::SampledHost &&
+                    e.snapshot.writeSerial==s.writeSerial) return false;
+                ++repeated;
+            }
             const size_t maxRepeats = stage==OriginStage::WriteIntent ? 6 :
                 stage==OriginStage::SampledHost ? 2 : 1;
             if (repeated>=maxRepeats) return false;
@@ -131,7 +137,7 @@ namespace skyline::gpu::texture::diagnostic {
                        <<s.id<<','<<s.address<<','<<s.bytes<<','<<s.image<<','<<s.generation<<','
                        <<s.writeSerial<<','<<s.readbackSerial<<','<<s.hostFormat<<','
                        <<s.width<<','<<s.height<<','<<s.levels<<','<<s.layers<<','
-                       <<s.state<<','<<s.flags<<','<<mip<<','<<face<<','<<bytes<<','
+                       <<s.state<<','<<s.flags<<','<<s.detail<<','<<mip<<','<<face<<','<<bytes<<','
                        <<nonzero<<','<<Hash(ptr,bytes)<<','<<(valid?"ok":"invalid_deferred")<<'\n';
                 };
                 line(-1,-1,data.data(),data.size());
