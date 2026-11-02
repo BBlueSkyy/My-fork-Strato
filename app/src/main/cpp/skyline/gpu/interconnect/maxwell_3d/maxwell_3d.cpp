@@ -65,6 +65,50 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
 
+    void Maxwell3D::TraceSyntheticIndexOverride(const char *source, bool guestIndexed,
+                                               u32 guestCount, u32 guestFirst) {
+        auto &cap{diagnostic::PacmanCapture()};
+        if (cap.ExecutorExperimentMode() != 18)
+            return;
+
+        // Probe a specific cache contract, independently of postprocess slots.
+        // Ordinary rendering remains unchanged until the device establishes
+        // whether this defect is active in PAC-MAN's affected draw sequence.
+        activeState.InvalidateIndexBuffer();
+        pacmanSyntheticIndexPending = true;
+        pacmanIndexOverrideSubmission = ctx.executor.submissionNumber;
+        cap.ExecutorIndexInvalidationStep();
+        if (!cap.Active())
+            return;
+        const auto *pipeline{activeState.GetPipeline()};
+        cap.Record(fmt::format(
+            "SYNTHETIC_INDEX_OVERRIDE source={} guest_indexed={} guest_count={} guest_first={} "
+            "sub={} cycle={} vs={:016X} fs={:016X} index_invalidated=true",
+            source, guestIndexed, guestCount, guestFirst, ctx.executor.submissionNumber,
+            fmt::ptr(ctx.executor.cycle.get()), pipeline ? pipeline->sourcePackedState.shaderHashes[1] : 0,
+            pipeline ? pipeline->sourcePackedState.shaderHashes[5] : 0));
+    }
+
+    void Maxwell3D::TraceGuestIndexRebind(const StateUpdateBuilder &builder, bool guestIndexed, const char *source) {
+        auto &cap{diagnostic::PacmanCapture()};
+        if (cap.ExecutorExperimentMode() != 18 || !cap.Active() ||
+            !guestIndexed || !pacmanSyntheticIndexPending)
+            return;
+        const bool emitted{builder.HasIndexBufferBinding()};
+        const auto *pipeline{activeState.GetPipeline()};
+        cap.Record(fmt::format(
+            "GUEST_INDEX_REBIND source={} emitted={} sub={} override_sub={} same_submission={} "
+            "cycle={} vs={:016X} fs={:016X} note=prepared_binding_command",
+            source, emitted, ctx.executor.submissionNumber, pacmanIndexOverrideSubmission,
+            ctx.executor.submissionNumber == pacmanIndexOverrideSubmission,
+            fmt::ptr(ctx.executor.cycle.get()), pipeline ? pipeline->sourcePackedState.shaderHashes[1] : 0,
+            pipeline ? pipeline->sourcePackedState.shaderHashes[5] : 0));
+        if (emitted) {
+            cap.ExecutorIndexRebindStep();
+            pacmanSyntheticIndexPending = false;
+        }
+    }
+
     void Maxwell3D::TraceTriangleDraw(const char *kind, engine::DrawTopology topology,
                                      bool indexed, u32 count, u32 first, u32 instances,
                                      i32 vertexOffset, const vk::Rect2D &scissor) {
@@ -196,6 +240,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     ctx.executor.AttachDependency(inlineIndexBuffer);
 
     builder.SetIndexBuffer(BufferBinding{inlineIndexBuffer->vkBuffer, 0}, ConvertInlineIndexSize(indexSize));
+    TraceSyntheticIndexOverride("inline", true, count, 0);
 
     RefreshRenderCondition();
     auto stateUpdater{builder.Build()};
@@ -831,8 +876,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
         PrepareDraw(builder, topology, indexed, false, first, count, srcStageMask, dstStageMask);
+        TraceGuestIndexRebind(builder, indexed, "direct");
 
         if (directState.inputAssembly.NeedsQuadConversion()) {
+            const auto guestCount{count}, guestFirst{first};
             count = conversion::quads::GetIndexCount(count);
             first = 0;
 
@@ -840,6 +887,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 // Use an index buffer to emulate quad lists with a triangle list input topology
                 vk::DeviceSize offset{UpdateQuadConversionBuffer(count, first)};
                 builder.SetIndexBuffer(BufferBinding{quadConversionBuffer->vkBuffer, offset}, vk::IndexType::eUint32);
+                TraceSyntheticIndexOverride("nonindexed_quad", false, guestCount, guestFirst);
                 indexed = true;
             }
         }
@@ -958,6 +1006,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
         PrepareDraw(builder, topology, indexed, true, 0, 0, srcStageMask, dstStageMask);
+        TraceGuestIndexRebind(builder, indexed, "indirect");
 
         if (directState.inputAssembly.NeedsQuadConversion())
             throw exception("Quad conversion is not supported for indirect draws!");

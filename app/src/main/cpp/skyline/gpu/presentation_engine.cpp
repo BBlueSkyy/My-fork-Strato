@@ -200,6 +200,7 @@ namespace skyline::gpu {
                         const bool postSlots34{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_SLOTS_3_4_TEST")};
                         const bool postCallbacks{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_CALLBACKS_TEST")};
                         const bool postGraphicsState{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_GRAPHICS_STATE_TEST")};
+                        const bool indexRebind{hasDiagnosticMarker("ENABLE_EXECUTOR_INDEX_REBIND_TEST")};
                         // Reject mixed experiments: overlapping markers would
                         // otherwise make the apparent A/B result ambiguous.
                         const u32 enabledTests{
@@ -211,10 +212,11 @@ namespace skyline::gpu {
                             static_cast<u32>(postSlot4) + static_cast<u32>(postControl) +
                             static_cast<u32>(postSlots13) + static_cast<u32>(postSlots23) +
                             static_cast<u32>(postSlots34) + static_cast<u32>(postCallbacks) +
-                            static_cast<u32>(postGraphicsState)};
+                            static_cast<u32>(postGraphicsState) + static_cast<u32>(indexRebind)};
                         if (enabledTests > 1)
                             LOGW("MINIRD_PACMAN multiple executor test markers; disabling experiments");
                         const u32 experimentMode{enabledTests > 1 ? 0U :
+                            indexRebind ? 18U :
                             postGraphicsState ? 17U :
                             postCallbacks ? 16U :
                             postSlots34 ? 15U : postSlots23 ? 14U : postSlots13 ? 13U :

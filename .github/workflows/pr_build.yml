@@ -21,7 +21,9 @@ jobs:
           submodules: recursive
 
       - name: Test executor diagnostic isolation
-        run: python3 tests/gpu_executor_diagnostics/run.py
+        run: |
+          python3 tests/gpu_executor_diagnostics/run.py
+          python3 tests/gpu_index_binding/run.py
     
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2

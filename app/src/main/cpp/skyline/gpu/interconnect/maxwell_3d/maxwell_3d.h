@@ -92,6 +92,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         const u32 &sampleCounterEnable;
         std::shared_ptr<memory::Buffer> quadConversionBuffer{};
         bool quadConversionBufferAttached{};
+        bool pacmanSyntheticIndexPending{};
+        size_t pacmanIndexOverrideSubmission{};
         BufferView indirectBufferView;
         std::shared_ptr<memory::Buffer> inlineIndexBuffer{};
         Queries queries;
@@ -129,6 +131,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         vk::Rect2D GetDrawScissor();
 
         // Bounded diagnostics; inert until gpu_capture/pacman_world/ARM_CAPTURE.
+        void TraceSyntheticIndexOverride(const char *source, bool guestIndexed,
+                                         u32 guestCount, u32 guestFirst);
+        void TraceGuestIndexRebind(const StateUpdateBuilder &builder, bool guestIndexed, const char *source);
+
         void TraceTriangleDraw(const char *kind, engine::DrawTopology topology,
                                bool indexed, u32 count, u32 first, u32 instances,
                                i32 vertexOffset, const vk::Rect2D &scissor);

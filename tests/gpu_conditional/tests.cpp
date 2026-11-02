@@ -205,6 +205,8 @@ struct Maxwell3D {
     size_t UpdateQuadConversionBuffer(u32,u32) { return 0; }
     void PrepareDraw(StateUpdateBuilder &, engine::DrawTopology, bool, bool, u32,u32,u32 &,u32 &) {}
     void TraceTriangleDraw(const char *, engine::DrawTopology, bool, u32, u32, u32, i32, const vk::Rect2D &) {}
+    void TraceSyntheticIndexOverride(const char *, bool, u32, u32) {}
+    void TraceGuestIndexRebind(const StateUpdateBuilder &, bool, const char *) {}
     void Draw(engine::DrawTopology, bool, bool, u32,u32,u32,u32,u32);
 #include "members.inc"
     Maxwell3D() {
