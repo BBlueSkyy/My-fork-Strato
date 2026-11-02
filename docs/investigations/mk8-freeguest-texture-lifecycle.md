@@ -86,3 +86,78 @@ New producer-only mode intercepts render-target subpasses (including helper blit
 Use a **fresh session**. On black selection select **Producer: capture black selection**, then change character and back to refresh work. After a race, on the corrected selection select **Producer: capture correct selection**, again refresh character and wait two seconds. Select the existing **Mini: export both captures**. Do not mix the old Mini arm buttons with producer mode, and export before stopping CSV recording. If no producer is observed, export fails rather than inventing a valid capture; report this with the log. Startup-only writers may require arming before entering selection on a follow-up run.
 
 MK8MINI2 adds `operation,role` before the previous numeric metadata. Role 1=target before, 2=target after, 3=sampled input. Operation low bit identifies clear (1) vs general subpass (0). The old TIC column for producer inputs contains the sampled-array ordinal (first/second), not a TIC index. Target rows use zero. The frame and write serial describe CPU preparation, not GPU completion; packet order identifies recorded placement. All payloads use the existing queued upload/producer ordering, General layout and scoped barriers. Export rejects incomplete or changed-backing pairs. Use `tools/decode_mk8_mini.py` to retain raw payloads and metadata; 32x32 float cubes also receive previews, other source formats remain raw. Compare source zero-byte counts and target before/after per operation before choosing the next scope.
+
+
+## Origin stage — automatic startup through returned selection
+
+The prior captures show that the six-layer 32x32 R11G11B10 cubemap enters the
+observed black-selection producers with all zero bytes, while the same backing
+and generation has data after the race. **This is an observation-only diagnostic,
+not a fix.** An independent, capped recorder is now activated at title startup
+for MK8 (`0100152000022000`) only when Free Guest Texture Memory is ON.
+
+This collector watches **shape plus CPU-mapping overlap**, not the runtime ID
+244 or a hardcoded memory address: format B10G11R11_UFLOAT_PACK32, 32x32,
+six layers, five mips, one guest mapping. It tracks up to eight distinct
+mapping intervals and at most 160 evidence entries. Source textures overlapping
+those intervals are in scope, even if their formats/dimensions differ.
+Everything else is excluded. Non-blocking recorder contention and capacity
+omissions are reported in the CSV header. Because the first cubemap appears
+during startup, no manual arming is needed.
+
+The CSV stages distinguish:
+- `overlap_before/after`: mirror bytes around attempted synchronization of
+  overlapping producers at new texture materialization. If memory had already
+  been freed, a zero-sized metadata row is emitted, **not** a fake zero image.
+- `created_guest`, `guest_before_upload`, `staging_before_upload`:
+  actual guest mirror bytes and the CPU-prepared staging bytes. The latter is
+  mip-major and can be compared by face/mip via separate CSV rows; block-linear
+  guest bytes are **not** incorrectly decoded as linear images.
+- `host_after_upload`: an extra image-to-buffer copy immediately after
+  `CopyFromStagingBuffer` **within the same inline submission**, with the
+  producing cycle waited for **only during export**. Independent uploads via
+  `SynchronizeHost` are not covered by this particular host-after-upload hook.
+- `before_free_guest/after_free_guest`: mirror bytes before the normal
+  `FreeMemory` call and metadata afterward. The diagnostic does not change
+  `MADV_REMOVE`, guest-memory policy, dirty flags or texture ownership. A
+  `FreeGuest` event does not guarantee `MADV_REMOVE` succeeded.
+- `write_intent`: writer path enum in `detail`, write serial and generation.
+  This is **not** proof a conditional GPU write executed.
+- `sampled_host`: at most two writer-serial-distinct host snapshots for each
+  tracked cube in each selected phase, obtained before consuming draws. This can
+  locate a first changed image during the race if it is subsequently sampled;
+  it cannot observe every compute/storage producer or every frame.
+- `readback_guest`: guest bytes after a successfully completed ordinary
+  readback.
+
+For CSV rows, `size=0` means metadata only, never a captured black texture.
+`nonzero=0` is meaningful only when `size>0` and `status=ok`.
+`invalid_deferred` denotes an image copy that could not be resolved, not
+zero pixels. Hashes use FNV-1a 64-bit and are not a substitute for bytewise
+shader-output analysis. A per-face/mip digest is emitted for native-format
+linear staging and host buffers. IDs, pointers, frames and writer serials are
+run-specific.
+
+### One targeted device run
+
+1. Start MK8 in a **fresh process** with Free Guest ON and the same Vulkan
+   driver as the failing run. No Mini/Producer arm is required.
+2. Before the first character selection, set phase `1: First selection`.
+   Observe the black model; before the race starts, set `2: Race`.
+3. Run the race briefly, then set `3: Returned selection` **before**
+   returning to the selection screen. Observe the correctly rendered model.
+4. While the game is still running, select
+   **Origin: export automatic startup/race evidence** and save the CSV.
+   Export disables this **origin-only** recorder; other diagnostic exports
+   remain separately available. Send this new CSV alone initially.
+
+This run tests whether guest/staging already contains zeros, whether an inline
+Vulkan upload preserves supplied bytes, whether overlapping FreeGuest calls
+precede missing guest bytes, and whether a later tracked GPU writer correlates
+with the first nonzero host sample. It does **not** prove the system call succeeded,
+that a render-target intent executed, or that the extra Vulkan readbacks have
+no effect on timing. Never compare FPS from this capture run. It does not
+replace the previous MK8MINI1/2 evidence and does not investigate NVDEC.
+
+The instrumentation is temporary and should be removed before any real
+performance comparison or production merge. No root cause is claimed.
