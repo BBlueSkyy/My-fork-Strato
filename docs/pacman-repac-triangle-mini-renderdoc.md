@@ -479,3 +479,84 @@ then fix the proven contract violation with regression tests.
 
 **Stage 7 Android build / device validation not yet confirmed.**
 No merge; Draft PR #414 remains the investigation branch.
+
+
+## Stage 8 — HDR→postprocess producer/consumer correlation and submit isolation
+
+### Confirmed prior outcome
+
+The user tested all three Stage 7 modes at `Executor Flush Threshold=256`.
+Each flag was confirmed by its own ZIP and log:
+
+| Marker | Mode | Additional submits in 60 presents | Visible result |
+|---|---:|---:|---|
+| `ENABLE_EXECUTOR_DEPTH_SCENE_TEST` | 4 | 60 | Triangle remains |
+| `ENABLE_EXECUTOR_SCENE_POST_TEST` | 5 | 240 | **Triangle disappears** |
+| `ENABLE_EXECUTOR_VI_TARGET_TEST` | 6 | 59 | Triangle remains |
+
+The mode-5 fix is **diagnostic only**. A sharp A/B points to extra
+real `Submit()` calls after a non-HDR color draw following an HDR
+1280×720 color draw; this `Submit()` happens **after the current
+postprocess draw is queued**, not directly at the producer/consumer
+handoff. Do not claim that a particular memory barrier is missing.
+
+### New targeted modes, same Draft PR #414
+
+Fully stop the Strato application between tests. Leave the emulator's
+`Executor Flush Threshold` at **256**. In
+`gpu_capture/pacman_world/`, create a **new empty**
+`ARM_CAPTURE` and **exactly one** of these marker files:
+
+| Marker | Mode | Behavior |
+|---|---:|---|
+| `ENABLE_EXECUTOR_POST_TRACE` | 7 | Full HDR→post candidate submission (mode-5 equivalent), with detailed traces |
+| `ENABLE_EXECUTOR_POST_SLOT_1_TEST` | 8 | Submit only every 1st of four successive candidates |
+| `ENABLE_EXECUTOR_POST_SLOT_2_TEST` | 9 | Submit only every 2nd of four successive candidates |
+| `ENABLE_EXECUTOR_POST_SLOT_3_TEST` | 10 | Submit only every 3rd of four successive candidates |
+| `ENABLE_EXECUTOR_POST_SLOT_4_TEST` | 11 | Submit only every 4th of four successive candidates |
+| `ENABLE_EXECUTOR_POST_CONTROL` | 12 | Observe candidates with the **normal** 256 batching; no forced submissions |
+
+Modes 7 and 12 should be tested first, to obtain comparable **good and
+bad** trace data. Then use specific slot tests only after verifying
+candidate IDs and order. If a run includes extra/missing candidates, a
+slot may shift relative to the guest frame: modulo-four selection is a
+diagnostic sampling heuristic, **not** a stable shader- or frame-ID
+selector. A negative slot run cannot rule out an exact transition if
+the candidate sequence shifts.
+
+The GPU trace now records each `POST_CANDIDATE`, including:
+- `ordinal` and `slot` within the **executor's sequence of
+  postprocess candidates**;
+- selected flag, `goto_next` status and whether a normal threshold
+  flush would already have submitted;
+- executor identity, submission ID, render-pass ID and current
+  `FenceCycle` identity;
+- color-attachment texture IDs, dimensions, formats, Vulkan layouts
+  and their recorded cycles;
+- first eight sampled-image IDs, dimensions, formats, layouts and
+  cycles, plus total sampled count and input-attachment count;
+- shader hashes (`vs`/`fs`), topology and draw type from the
+  matching Maxwell3D guest draw when available;
+- most recently observed HDR producer texture identity and whether
+  an input is **that exact Texture object**. A different object can
+  still alias the same guest memory, so false does not mean that
+  no data dependency exists.
+
+The trace is bounded to the first 60 host presentations. The selected
+rendering mode persists until exiting the application. Captures
+include `capture_complete.txt` with
+`executor_experiment_mode=7..12` and
+`executor_experiment_persists_after_capture=1`.
+`executor_experiment_draws` counts extra submissions, so mode 12
+should report **zero** extra submissions, while
+`POST_CANDIDATE` metadata still appears.
+
+Send the full ZIP (`gpu_events.txt`, `capture_complete.txt`),
+matching `emulation.log` and the visible result/FPS per run.
+
+**Only after** identifying a stable producer→consumer boundary should
+a permanent patch alter memory dependency state, queue ordering or
+resource lifetime. Preserve the existing diagnostic modes and the
+confirmed working mode 5. Default code is unaffected when unarmed.
+Stage 8 source integration is published; ARM64 build and device
+validation remain unconfirmed until checked. Do not merge.
