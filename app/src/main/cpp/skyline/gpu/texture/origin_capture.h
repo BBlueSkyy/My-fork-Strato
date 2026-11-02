@@ -37,7 +37,7 @@ namespace skyline::gpu::texture::diagnostic {
         size_t anchorCount{};
         std::vector<Entry> records;
         std::atomic<uint64_t> missed{}, omitted{};
-        static constexpr size_t Limit{160};
+        static constexpr size_t Limit{320};
         static constexpr size_t MaxBytes{64*1024};
 
         bool Admit(OriginStage stage, const Snapshot &s, uint32_t phase) {
@@ -100,13 +100,15 @@ namespace skyline::gpu::texture::diagnostic {
             if(!lock) { ++missed; return false; }
             const auto phase{lifecycle.CurrentPhase()};
             if(!Admit(stage,s,phase)) return false;
-            Entry entry{stage,s,phase,lifecycle.CurrentFrame(),{},{}};
-            if(size) {
-                const auto *ptr{static_cast<const uint8_t *>(data)};
-                entry.bytes.assign(ptr,ptr+size);
-            }
-            records.emplace_back(std::move(entry));
-            return true;
+            try {
+                Entry entry{stage,s,phase,lifecycle.CurrentFrame(),{},{}};
+                if(size) {
+                    const auto *ptr{static_cast<const uint8_t *>(data)};
+                    entry.bytes.assign(ptr,ptr+size);
+                }
+                records.emplace_back(std::move(entry));
+                return true;
+            } catch (...) { ++omitted; return false; }
         }
         bool SaveDeferred(OriginStage stage, Snapshot s, std::function<std::vector<uint8_t>()> fn) {
             if(!Enabled()) return false;
@@ -114,8 +116,10 @@ namespace skyline::gpu::texture::diagnostic {
             if(!lock) { ++missed; return false; }
             const auto phase{lifecycle.CurrentPhase()};
             if(!Admit(stage,s,phase)) return false;
-            records.push_back({stage,s,phase,lifecycle.CurrentFrame(),{},std::move(fn)});
-            return true;
+            try {
+                records.push_back({stage,s,phase,lifecycle.CurrentFrame(),{},std::move(fn)});
+                return true;
+            } catch (...) { ++omitted; return false; }
         }
         bool Export(std::ostream &out) {
             std::vector<Entry> copy;
@@ -127,8 +131,12 @@ namespace skyline::gpu::texture::diagnostic {
             out<<"# anchors="<<n<<" missed_lock="<<missed.load()<<" overflow="<<omitted.load()<<'\n';
             out<<"stage,phase,frame,id,address,guest_bytes,image,generation,write_serial,readback_serial,format,width,height,levels,layers,state,flags,detail,mip,face,size,nonzero,fnv1a64,status\n";
             for(auto &e:copy) {
-                auto data{e.deferred ? e.deferred() : std::move(e.bytes)};
-                const bool valid{!e.deferred || !data.empty()};
+                std::vector<uint8_t> data;
+                bool valid{true};
+                try {
+                    data=e.deferred ? e.deferred() : std::move(e.bytes);
+                    valid=!e.deferred || !data.empty();
+                } catch (...) { valid=false; }
                 const auto &s{e.snapshot};
                 auto line=[&](int mip, int face, const uint8_t *ptr, size_t bytes) {
                     size_t nonzero{};
