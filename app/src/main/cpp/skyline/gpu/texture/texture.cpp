@@ -200,17 +200,21 @@ namespace skyline::gpu {
         s.readbackSerial=diagnosticReadbackSerial.load();
         s.state=static_cast<u32>(dirtyState);
         if (!origin.CanRecord(texture::diagnostic::OriginStage::HostAfterUpload,s)) return;
-        auto staging{gpu.memory.AllocateStagingBuffer(surfaceSize)};
-        // This transfer is only enabled in the MK8 diagnostic build/target.
-        // It immediately follows the real upload in the same command buffer.
-        CopyIntoStagingBuffer(commands,staging);
-        captureCycle->AttachObjects(staging,shared_from_this());
-        origin.SaveDeferred(texture::diagnostic::OriginStage::HostAfterUpload,s,
-            [captureCycle,staging] {
-                captureCycle->Wait(); // Only executed by the export worker.
-                if (captureCycle->IsCancelled()) return std::vector<uint8_t>{};
-                return std::vector<uint8_t>(staging->data(),staging->data()+staging->size());
-            });
+        try {
+            auto staging{gpu.memory.AllocateStagingBuffer(surfaceSize)};
+            // The extra transfer immediately follows the real upload in the
+            // same command buffer. It does not change authority or dirty flags.
+            CopyIntoStagingBuffer(commands,staging);
+            captureCycle->AttachObjects(staging,shared_from_this());
+            origin.SaveDeferred(texture::diagnostic::OriginStage::HostAfterUpload,s,
+                [captureCycle,staging] {
+                    captureCycle->Wait(); // Only executed by the export worker.
+                    if (captureCycle->IsCancelled()) return std::vector<uint8_t>{};
+                    return std::vector<uint8_t>(staging->data(),staging->data()+staging->size());
+                });
+        } catch (...) {
+            LOGW("MK8 origin host-after-upload snapshot omitted");
+        }
     }
 
     bool Texture::MiniProducerCandidate() const {
@@ -232,13 +236,15 @@ namespace skyline::gpu {
             snapshot.readbackSerial=diagnosticReadbackSerial.load();
             snapshot.state=static_cast<u32>(dirtyState);
             if (gpu.originCapture.CanRecord(texture::diagnostic::OriginStage::SampledHost,snapshot)) {
+              try {
                 auto originStaging{gpu.memory.AllocateStagingBuffer(surfaceSize)};
+                auto originRecorded{std::make_shared<std::atomic<bool>>(false)};
                 const auto originImage{GetBacking()};
                 const vk::ImageSubresourceRange originRange{format->vkAspect,0,levelCount,0,layerCount};
                 auto originRegions{GetBufferImageCopies()};
                 auto originCycle{executor.cycle};
                 originCycle->AttachObjects(originStaging,shared_from_this());
-                executor.AddOutsideRpCommand([originImage,originRange,originRegions=std::move(originRegions),originStaging]
+                executor.AddOutsideRpCommand([originImage,originRange,originRegions=std::move(originRegions),originStaging,originRecorded]
                     (vk::raii::CommandBuffer &commands,const std::shared_ptr<FenceCycle> &,GPU &) {
                     const vk::ImageMemoryBarrier before{
                         .srcAccessMask=vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
@@ -259,13 +265,18 @@ namespace skyline::gpu {
                             .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
                             .buffer=originStaging->vkBuffer,.offset=0,.size=originStaging->size()
                         },{});
+                    originRecorded->store(true,std::memory_order_release);
                 });
                 gpu.originCapture.SaveDeferred(texture::diagnostic::OriginStage::SampledHost,snapshot,
-                    [originCycle,originStaging] {
+                    [originCycle,originStaging,originRecorded] {
                         originCycle->Wait();
-                        if (originCycle->IsCancelled()) return std::vector<uint8_t>{};
+                        if (originCycle->IsCancelled() || !originRecorded->load(std::memory_order_acquire))
+                            return std::vector<uint8_t>{};
                         return std::vector<uint8_t>(originStaging->data(),originStaging->data()+originStaging->size());
                     });
+              } catch (...) {
+                  LOGW("MK8 origin sampled-host snapshot omitted");
+              }
             }
         }
         if ((!requestedPhase && !miniCapture.Armed()) || !guest || !diagnosticBase.id) return;
