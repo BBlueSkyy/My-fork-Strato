@@ -55,6 +55,38 @@ int main() {
     assert(text.find(",1,0,1024,1,")!=std::string::npos);
     assert(!capture.Enabled());
 
+    // Exhaust only the race phase. The corrected-selection budget must
+    // remain intact even when hundreds of race producers are observed.
+    OriginCapture perPhase;
+    perPhase.Start(true);
+    assert(lifecycle.SetPhase(2));
+    for (uint64_t i{};i<381;++i) {
+        Snapshot write{};
+        write.id=i+1000;
+        assert(perPhase.Save(OriginStage::WriteIntent,write));
+    }
+    Snapshot paired{cube};
+    paired.detail=8192;
+    std::array<uint8_t,49152> before{}, after{};
+    before[0]=99; before[4096]=42; before[8192]=18;
+    std::array<uint8_t,32736> source{};
+    assert(perPhase.Save(OriginStage::GuestBeforeReadbackWrite,paired,before.data(),before.size()));
+    assert(perPhase.Save(OriginStage::ReadbackSource,paired,source.data(),source.size()));
+    assert(perPhase.Save(OriginStage::GuestAfterReadbackWrite,paired,after.data(),after.size()));
+    assert(!perPhase.Save(OriginStage::WriteIntent,Snapshot{.id=99999}));
+    assert(lifecycle.SetPhase(3));
+    assert(perPhase.Save(OriginStage::SampledHost,paired,staging.data(),staging.size()));
+    std::ostringstream phasedOut;
+    assert(perPhase.Export(phasedOut));
+    const auto phaseCsv{phasedOut.str()};
+    assert(phaseCsv.find("# phase=2 records=384 budget=384")!=std::string::npos);
+    assert(phaseCsv.find("# phase=3 records=1 budget=192")!=std::string::npos);
+    assert(phaseCsv.find("guest_before_readback_write,2,")!=std::string::npos);
+    assert(phaseCsv.find("guest_after_readback_write,2,")!=std::string::npos);
+    assert(phaseCsv.find("readback_source,2,")!=std::string::npos);
+    assert(phaseCsv.find(",0,0,4096,1,")!=std::string::npos);
+    assert(phaseCsv.find(",1,0,1024,1,")!=std::string::npos);
+
     OriginCapture invalid;
     invalid.Start(true);
     invalid.Watch(mapping.data(),mapping.size());
