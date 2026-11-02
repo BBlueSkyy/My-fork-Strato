@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include "gpu.h"
+#include "common/settings.h"
 #include "gpu/texture/lifecycle_trace.h"
 #include "audio.h"
 #include "nce.h"
