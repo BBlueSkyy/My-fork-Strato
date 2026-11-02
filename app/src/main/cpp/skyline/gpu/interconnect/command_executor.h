@@ -223,6 +223,11 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
         std::vector<std::function<void()>> pacmanSceneReadbacks; // after GPU fence, diagnostic only
+        // Diagnostic-only pass sequence hints, tracked per executor/channel.
+        // These survive Submit(): the first draw of the next pass must be
+        // matched against the previous pass even if the command slot rotated.
+        bool pacmanSawDepthPass{};
+        bool pacmanSawHdrScenePass{};
 
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
