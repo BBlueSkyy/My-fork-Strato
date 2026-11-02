@@ -119,6 +119,7 @@ namespace skyline::kernel {
         } catch (const std::bad_alloc &) {
             LOGW("MK8 texture diagnostic disabled: recorder allocation failed");
         }
+        state.gpu->originCapture.Start(gpu::texture::diagnostic::lifecycle.Enabled());
         state.gpu->Initialise();
 
         auto &process{state.process};
