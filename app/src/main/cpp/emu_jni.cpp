@@ -2,6 +2,8 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <csignal>
+#include <fstream>
+#include "skyline/gpu/texture/lifecycle_trace.h"
 #include <limits>
 #include <pthread.h>
 #include <android/asset_manager_jni.h>
@@ -364,4 +366,25 @@ extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_settings_NativeSetti
     if (!settings)
         return; // We don't mind if we miss settings updates while settings haven't been initialized
     settings->Update();
+}
+
+// Temporary diagnostic entry points; no GPU operations on the UI/export threads.
+extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_nativeMk8TexturePhase(JNIEnv *, jobject, jint phase) {
+    auto &trace{skyline::gpu::texture::diagnostic::lifecycle};
+    return phase == -1 ? trace.Available() : trace.SetPhase(static_cast<uint32_t>(phase));
+}
+
+extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_nativeExportMk8TextureTrace(JNIEnv *, jobject, jint fd) {
+    try {
+        auto &trace{skyline::gpu::texture::diagnostic::lifecycle};
+        if (!trace.Available() || fd < 0) return false;
+        trace.Freeze();
+        std::ofstream out{"/proc/self/fd/" + std::to_string(fd)};
+        if (!out) return false;
+        trace.Export(out);
+        out.flush();
+        return out.good();
+    } catch (...) {
+        return false; // Diagnostic/export failure must not terminate the emulator.
+    }
 }

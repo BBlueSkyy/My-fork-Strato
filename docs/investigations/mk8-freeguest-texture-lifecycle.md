@@ -1,0 +1,57 @@
+# MK8 initial black character models: temporary lifecycle trace
+
+Base: master `ab2011a42f629a6c458ade02fb4104a6d249cb69`. No PR #400 code is imported or modified. ARM64 DevRelease configuration and workflows are unchanged. This branch changes observation only; it does not fix the black models.
+
+## Evidence so far
+
+`SubmitInternal` calls `SynchronizeHostInline(..., true)` for every attached texture. With Free Guest ON, even a sampled-only native image can transition CpuDirty/Clean -> GpuDirty and have its guest memory discarded. With Free Guest OFF, the existing `everUsedAsGpuWrite` guard prevents that transition. Existing ownership policy can deliberately keep a host-only copy; the classification alone does **not** prove lost bytes or the cause of the black models.
+
+The host test in `tests/gpu_submission` runs the actual synchronization body and verifies both the original ON/OFF behavior and the ownership diagnostic. The device must establish which views are black, whether they were populated, and what changed after the race. No device run or three-phase result is claimed here.
+
+## Moto G100 collection
+
+1. Keep Free Guest Texture Memory ON, with the same driver and other settings as the failing run. Enable on-screen controls or the performance overlay. Start MK8 from a fresh process. Startup is phase 0; the recorder is enabled only for program NCA title `0100152000022000` with Free Guest ON.
+2. **Before opening the first character selection**, long-press the controller visibility icon (or performance overlay). Select `1: First selection`. Enter selection and keep the same character/camera for 2–3 seconds. Take a screenshot/video showing the black model.
+3. Before starting/loading the race, open the same diagnostic menu and select `2: Race`. Run a few seconds.
+4. Before returning to character selection, select `3: Returned selection`. Return, choose the same character and keep the same camera for 2–3 seconds. Take a screenshot/video showing the correct model.
+5. Long-press again; choose `Export trace and stop recording`. Save the CSV using Android's file picker. Send that CSV with the ordinary emulation log, screenshots/video, game version and driver. Export freezes the trace; restart emulation for another attempt. Phase markers are monotonic and repeated taps do not move their first boundary.
+
+No ADB, log spam, GPU wait or readback is added for collection. Export copies the bounded trace on an IO worker, then formats/writes the CSV after releasing the recorder mutex. A phase/frame marker labels guest presentation requests, not a precise host display-completion timestamp.
+
+## Schema and limits
+
+Four independent budgets of 8,192 rows (startup + three phases), at most two examples per event/texture/phase, except up to sixteen mapping fragments. Record storage is allocated once before guest execution. Events do not allocate, format text, read texture bytes or perform I/O. Both recorder and state snapshots use try-lock; contention never waits. The trace is temporary and incurs bounded CPU/memory overhead; FPS impact still requires device measurement.
+
+Every event includes a lifetime-unique texture ID, first guest CPU mapping address/size, initial guest format, current host format, dimensions, serials and flags. Separate Mapping rows enumerate fragments (index in detail). Mapping addresses are CPU mappings of guest memory, **not GPU IOVAs**. DescriptorIova has the TIC index in detail and GPU IOVA in peer; it is emitted during descriptor resolution, so cached TIC hits may reuse an earlier row.
+
+Resource-locked snapshots additionally include image handle, backing generation, layout and fence-cycle identity. State-only trap/descriptor events set flag 16 and omit those resource fields. Metadata-only Mapping/View rows set flag 32; their dynamic fields are invalid. VkImage/alias/fence pointers can be reused; correlate with texture ID, generation and time. SampleRead/StorageRead/StorageWriteIntent rows include the active view format, aspect, mip/layer range, view type and packed swizzle (four 4-bit Vulkan component-swizzle enums, R in low bits). Storage events record the identity mapping actually selected by GetView(true). A binding event reflects descriptor preparation; cached descriptors may not generate a new event on every draw.
+
+States: 0 Clean, 1 CpuDirty, 2 GpuDirty. Flags: 1 guest freed, 2 alias stale, 4 read-only alias, 8 retired, 16 state-only, 32 metadata-only. Ownership events have the previous state in detail. HostSyncRequest/InlineSyncRequest have the original requested gpuDirty boolean in detail. GuestSyncRequest detail: bit 0 cpuDirty, bit 1 skipTrap. ClearRequest detail: view aspects plus bit 16 for conditional rendering.
+
+SampleRead/StorageRead/CopyRead are reads. RenderTargetIntent/StorageWriteIntent/CopyWriteIntent and WriteRecorded come from explicit write paths, independent of generic synchronization ownership. CopyFromRecorded denotes a submitted presentation/image copy. Intent/recorded commands are **not evidence that a conditional shader instruction actually executed**. UploadRecorded refers to an upload queued/recorded in the existing command path, not GPU completion. ReadbackComplete is emitted after the existing readback and guest encoding return. FreeGuest is emitted only after the existing FreeMemory call returns (not proof that the OS reclaimed every page).
+
+The CSV reports contention, overflow, duplicate-limit and snapshot-miss counters separately per phase. Suppression retains only initial examples, so absence of a later event is inconclusive. `write_serial=0` at an ownership transition is direct cumulative evidence that RecordGpuWrite has not run on that texture yet; it still does not establish corrupted content.
+
+NullIndex/NullFormat/NullMapping identify null-texture fallback reads explicitly, with TIC index in detail and IOVA in peer when available. Host-only textures receive IDs too.
+
+Run `python3 tools/analyze_mk8_texture_trace.py trace.csv` for phase counts and candidate IDs. Compare identical IDs and overlapping mapping intervals, view metadata, FreeGuest, ReadbackComplete, AliasMember/AliasRecover and new texture creation across phases. Never equate a recycled address with a continuing texture lifetime.
+
+## Targeted Mini RenderDoc fallback preparation
+
+Do this only if the device lifecycle trace cannot establish the failing transition. This branch prepares the target/protocol; it does not automatically capture GPU image bytes or claim to have a failing/correct capture.
+
+- Use the phase-1 and phase-3 screenshots to pick the same character pose/camera. Select candidate texture IDs/mapping intervals from the trace; identify their current VkImages and view ranges separately in each phase.
+- Arm exactly one defective frame and one correct frame, with at most sixteen candidate sampled views plus their color/depth targets. Record draw order, shader hashes, TIC index/IOVA, exact view format/aspect/swizzle/mip/layer and binding/writer provenance. Include a presented-frame reference and the last producer of each candidate.
+- Copy only the selected host subresources to dedicated staging buffers after their actual producers, preserve layouts and submission/lifetime dependencies, and never call SynchronizeGuest or republish guest memory to obtain the capture. No all-texture dump or continuous readback. A deliberately armed capture may stall and is excluded from FPS comparisons.
+- Compare raw bytes and decoded channels for sampled inputs and the target before/after the character draw. If inputs match but outputs diverge, investigate shader/RT/depth state instead of changing Free Guest. If one candidate is already black/uninitialized, trace its last successful upload/producer and first eviction/recovery. Return to ordinary tracing after the two captures.
+
+Actual Mini RenderDoc implementation/arming requires those candidate/frame targets from the first device run. The existing RenderDoc integration captures executor submissions, not automatically a whole presented frame; do not label one submission a complete frame capture.
+
+## Verification
+
+- `bash tests/mk8_texture_trace/run.sh`: bounded recorder, independent phases, deduplication, overflow, export/freeze and concurrent writers, ASan/UBSan (LeakSanitizer disabled in this host).
+- `python3 tests/gpu_submission/run.py`: actual inline synchronization and submission/lifetime controls, UBSan.
+- `python3 tests/gpu_sampled_layout/run.py`: layout round trips, aliases, retained TIC/retry controls, ASan/UBSan (LeakSanitizer disabled in this host).
+- `python3 tests/gpu_conditional/run.py` and `python3 tests/gpu_draw_texture/run.py`: existing conditional-rendering/draw-texture controls. Host facades recognize diagnostic hooks; the conditional facade also recognizes the current master index-cache invalidation API.
+- CSV analyzer checked against an export from the actual recorder.
+- Full Vulkan backing-promotion suite requires Boost/Vulkan development headers and a Vulkan ICD; these are missing in this host. Local Android build also cannot download Gradle here. Existing PR CI remains the ARM64 DevRelease build authority.

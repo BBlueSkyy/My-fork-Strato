@@ -537,12 +537,15 @@ namespace skyline::gpu {
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();
+        for (const auto &overlap : matches)
+            texture->TraceLifecycle(texture::diagnostic::Event::Overlap, 0, overlap->diagnosticBase.id);
         texture->aliasReadOnly = requestedReadOnlyAlias;
         if (separateGroup) {
             std::scoped_lock metadata{separateGroup->mutex};
             separateGroup->members.emplace_back(texture);
             texture->aliasGroup.store(separateGroup);
             texture->aliasStale = separateGroup->guestGeneration != separateGroup->generation;
+            texture->TraceLifecycle(texture::diagnostic::Event::AliasMember);
         }
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto firstChanged{textures.size()};

@@ -399,6 +399,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ctx.executor.AttachDependency(destination);
         ctx.executor.AttachTexture(source);
         ctx.executor.AttachTexture(dest);
+        source->texture->TraceLifecycle(texture::diagnostic::Event::CopyRead);
+        dest->texture->TraceLifecycle(texture::diagnostic::Event::CopyWriteIntent);
         dest->texture->MarkGpuDirty(ctx.executor.usageTracker);
 
         RefreshRenderCondition();
@@ -671,6 +673,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (auto view{requestedColor}) {
                 ctx.executor.AttachTexture(&*view);
 
+                view->texture->TraceLifecycle(texture::diagnostic::Event::ClearRequest,
+                    static_cast<u32>(view->range.aspectMask) | (renderCondition.enabled ? 0x10000U : 0U));
                 bool partialClear{!(clearSurface.rEnable && clearSurface.gEnable && clearSurface.bEnable && clearSurface.aEnable)};
                 if (!(view->range.aspectMask & vk::ImageAspectFlagBits::eColor))
                     LOGW("Colour RT used in clear lacks colour aspect"); // TODO: Drop this check after texman rework

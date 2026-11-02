@@ -161,6 +161,7 @@ struct TransformFeedbackBufferState {
     bool MayWriteBuffer(Buffer *) const;
 };
 struct ActiveState {
+    void InvalidateIndexBuffer() {} // Current master draw preparation invalidates cached index state.
     struct State { TransformFeedbackBufferState value; TransformFeedbackBufferState &Get() { return value; } };
     std::array<State, 2> transformFeedbackBuffers;
     std::vector<TextureView *> GetColorAttachments() { return {}; }

@@ -174,6 +174,7 @@ namespace skyline::gpu::interconnect {
         auto view{texture->GetView()};
 
         if (texture->texture) {
+            texture->texture->TraceLifecycle(texture::diagnostic::Event::SampleRead, handle.textureIndex, 0, false, texture);
             texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
         }
 
@@ -211,6 +212,7 @@ namespace skyline::gpu::interconnect {
         auto view{texture->GetView(true)};
 
         if (texture->texture) {
+            texture->texture->TraceLifecycle(desc.is_written ? texture::diagnostic::Event::StorageWriteIntent : texture::diagnostic::Event::StorageRead, handle.textureIndex, 0, false, texture);
             texture->texture->TransitionLayout(vk::ImageLayout::eGeneral);
             texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 

@@ -32,6 +32,7 @@ import android.util.TypedValue
 import android.view.*
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.getSystemService
 import androidx.core.view.isGone
@@ -203,6 +204,32 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     /**
      * @param play If the audio should be playing or be stopped till it is resumed by calling this again
      */
+    private external fun nativeMk8TexturePhase(phase : Int) : Boolean
+    private external fun nativeExportMk8TextureTrace(fd : Int) : Boolean
+
+    private val mk8TraceExport = registerForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+        if (uri != null) lifecycleScope.launch(Dispatchers.IO) {
+            val saved = try {
+                contentResolver.openFileDescriptor(uri, "wt")?.use { nativeExportMk8TextureTrace(it.fd) } ?: false
+            } catch (_ : Exception) { false }
+            runOnUiThread {
+                Toast.makeText(this@EmulationActivity, if (saved) "MK8 texture trace saved" else "Could not save MK8 texture trace", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun showMk8TextureDiagnostic() : Boolean {
+        if (!nativeMk8TexturePhase(-1)) return false
+        MaterialAlertDialogBuilder(this)
+            .setTitle("MK8 texture diagnostic")
+            .setItems(arrayOf("1: First selection (mark before entering)", "2: Race (mark before loading)", "3: Returned selection (mark before returning)", "Export trace and stop recording")) { _, which ->
+                if (which == 3) mk8TraceExport.launch("mk8-texture-lifecycle-${System.currentTimeMillis()}.csv")
+                else Toast.makeText(this, if (nativeMk8TexturePhase(which + 1)) "MK8 phase ${which + 1} marked" else "Phase rejected: restart for a new trace", Toast.LENGTH_LONG).show()
+            }
+            .show()
+        return true
+    }
+
     private external fun changeAudioStatus(play : Boolean)
 
     private external fun nativeSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int)
@@ -711,7 +738,10 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         binding.onScreenControllerToggle.apply {
             isGone = binding.onScreenControllerView.isGone
             setOnClickListener { binding.onScreenControllerView.isInvisible = !binding.onScreenControllerView.isInvisible }
+            setOnLongClickListener { showMk8TextureDiagnostic() }
         }
+
+        binding.perfStats.setOnLongClickListener { showMk8TextureDiagnostic() }
 
         binding.onScreenControllerView.isInvisible = isControllerConnected()
 

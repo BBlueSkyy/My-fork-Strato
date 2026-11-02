@@ -163,7 +163,67 @@ namespace skyline::gpu {
         return texture.TryLock();
     }
 
+    void Texture::TraceLifecycle(texture::diagnostic::Event event, u32 detail, u64 peer, bool stateOnly, const TextureView *view) {
+        auto &trace{texture::diagnostic::lifecycle};
+        if (!diagnosticBase.id || !trace.Enabled()) return;
+        // Never introduce a trap/resource lock inversion or wait for a snapshot.
+        std::unique_lock stateLock{stateMutex, std::try_to_lock};
+        if (!stateLock) { trace.MissSnapshot(); return; }
+        auto snapshot{diagnosticBase};
+        snapshot.state = static_cast<u32>(dirtyState);
+        snapshot.flags = (memoryFreed ? 1U : 0U) | (aliasStale.load() ? 2U : 0U) |
+            (aliasReadOnly.load() ? 4U : 0U) | (aliasRetired.load() ? 8U : 0U) | (stateOnly ? 16U : 0U) | (!guest ? 64U : 0U);
+        snapshot.alias = reinterpret_cast<uintptr_t>(aliasGroup.load().get());
+        snapshot.writeSerial = diagnosticWriteSerial.load();
+        snapshot.readbackSerial = diagnosticReadbackSerial.load();
+        snapshot.detail = detail;
+        snapshot.peer = peer;
+        if (!stateOnly) {
+            snapshot.cycle = reinterpret_cast<uintptr_t>(cycle.get());
+            snapshot.generation = backingGeneration;
+            snapshot.layout = static_cast<u32>(layout);
+            snapshot.image = std::bit_cast<u64>(static_cast<VkImage>(GetBacking()));
+            snapshot.levels = levelCount;
+            snapshot.layers = layerCount;
+        }
+        if (view) {
+            snapshot.hostFormat = static_cast<u32>(view->format ? view->format->vkFormat : format->vkFormat);
+            snapshot.mip = view->range.baseMipLevel; snapshot.levelCount = view->range.levelCount;
+            snapshot.layer = view->range.baseArrayLayer; snapshot.layerCount = view->range.layerCount;
+            snapshot.aspect = static_cast<u32>(view->range.aspectMask);
+            snapshot.viewType = static_cast<u32>(view->type);
+            const auto mapping{texture::diagnostic::UsesIdentityMapping(event) ? vk::ComponentMapping{} : view->mapping};
+            snapshot.swizzle = static_cast<u32>(mapping.r) | (static_cast<u32>(mapping.g) << 4) |
+                (static_cast<u32>(mapping.b) << 8) | (static_cast<u32>(mapping.a) << 12);
+        }
+        trace.Record(diagnosticToken, event, snapshot);
+    }
+
     void Texture::SetupGuestMappings() {
+        using texture::diagnostic::Event;
+        auto &trace{texture::diagnostic::lifecycle};
+        if (trace.Enabled()) {
+            diagnosticBase.id = trace.NewId();
+            diagnosticBase.address = reinterpret_cast<uintptr_t>(guest->mappings.front().data());
+            diagnosticBase.bytes = guest->mappings.front().size();
+            diagnosticBase.guestFormat = static_cast<u32>(guest->format->vkFormat);
+            diagnosticBase.hostFormat = static_cast<u32>(format->vkFormat);
+            diagnosticBase.width = dimensions.width;
+            diagnosticBase.height = dimensions.height;
+            diagnosticBase.depth = dimensions.depth;
+            diagnosticBase.levels = levelCount;
+            diagnosticBase.layers = layerCount;
+            TraceLifecycle(Event::Create, static_cast<u32>(guest->mappings.size()));
+            u32 index{};
+            for (const auto &mapping : guest->mappings) {
+                auto snapshot{diagnosticBase};
+                snapshot.address = reinterpret_cast<uintptr_t>(mapping.data());
+                snapshot.bytes = mapping.size();
+                snapshot.detail = index++;
+                snapshot.flags = 32;
+                trace.Record(diagnosticToken, Event::Mapping, snapshot);
+            }
+        }
         auto &mappings{guest->mappings};
         if (mappings.size() == 1) {
             auto mapping{mappings.front()};
@@ -254,6 +314,7 @@ namespace skyline::gpu {
                 aliasLock = std::unique_lock{group->operationMutex, std::try_to_lock};
                 if (!aliasLock) return false; // trapMutex must never wait on an alias operation.
             }
+            texture->TraceLifecycle(texture::diagnostic::Event::CpuReadTrap, 0, 0, true);
             texture->SynchronizeGuest(false, true); // We can skip trapping since the caller will do it
             return true;
         }, [weakThis] {
@@ -267,8 +328,10 @@ namespace skyline::gpu {
             if (!stateLock)
                 return false;
 
+            texture->TraceLifecycle(texture::diagnostic::Event::CpuWriteTrap, 0, 0, true);
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty) {
                 texture->dirtyState = DirtyState::CpuDirty;
+                texture->TraceLifecycle(texture::diagnostic::Event::CpuDirty, 0, 0, true);
                 return true; // If the texture is already CPU dirty or we can transition it to being CPU dirty then we don't need to do anything
             }
 
@@ -587,6 +650,7 @@ namespace skyline::gpu {
     }
 
     void Texture::FreeGuest() {
+        TraceLifecycle(texture::diagnostic::Event::FreeGuestAttempt);
         // A read-only alias may need the guest representation again after another
         // alias becomes the writer. Preserve those bytes without changing the
         // global Free Guest Texture Memory policy for ordinary textures.
@@ -596,6 +660,7 @@ namespace skyline::gpu {
         if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
             gpu.state.process->memory.FreeMemory(mirror);
             memoryFreed = true;
+            TraceLifecycle(texture::diagnostic::Event::FreeGuest);
         }
     }
 
@@ -611,7 +676,17 @@ namespace skyline::gpu {
           usage(usage),
           levelCount(levelCount),
           layerCount(layerCount),
-          sampleCount(sampleCount) {}
+          sampleCount(sampleCount) {
+        auto &trace{texture::diagnostic::lifecycle};
+        if (trace.Enabled()) {
+            diagnosticBase.id = trace.NewId();
+            diagnosticBase.hostFormat = static_cast<u32>(format->vkFormat);
+            diagnosticBase.width = dimensions.width; diagnosticBase.height = dimensions.height;
+            diagnosticBase.depth = dimensions.depth;
+            diagnosticBase.levels = levelCount; diagnosticBase.layers = layerCount;
+            TraceLifecycle(texture::diagnostic::Event::Create);
+        }
+    }
 
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits) {
         auto bcnSupport{traits.bcnSupport};
@@ -735,6 +810,7 @@ namespace skyline::gpu {
     }
 
     Texture::~Texture() {
+        TraceLifecycle(texture::diagnostic::Event::Destroy);
         SynchronizeGuest(true);
         if (trapHandle)
             gpu.state.process->trap.DeleteTrap(*trapHandle);
@@ -1056,6 +1132,7 @@ namespace skyline::gpu {
         for (auto &texture : eligible) {
             texture->aliasStale = !newestEligible || texture != newest;
             texture->aliasGroup.store(group);
+            texture->TraceLifecycle(texture::diagnostic::Event::AliasMember, 0, newest->diagnosticBase.id);
         }
         return group;
     }
@@ -1100,6 +1177,7 @@ namespace skyline::gpu {
         dirtyState = DirtyState::CpuDirty;
         memoryFreed = false;
         aliasStale = false;
+        TraceLifecycle(texture::diagnostic::Event::AliasRecover, 0, writer ? writer->diagnosticBase.id : 0);
         // SynchronizeHost uploads lazily on attachment. Failure leaves CpuDirty,
         // so the upload can be retried without losing the authoritative writer.
     }
@@ -1143,6 +1221,8 @@ namespace skyline::gpu {
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+        diagnosticWriteSerial = gpuWriteSerial;
+        TraceLifecycle(texture::diagnostic::Event::WriteRecorded);
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};
@@ -1167,6 +1247,7 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeHost(bool gpuDirty) {
+        TraceLifecycle(texture::diagnostic::Event::HostSyncRequest, gpuDirty);
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
         auto alias{aliasGroup.load()};
@@ -1187,6 +1268,7 @@ namespace skyline::gpu {
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 // If a texture is Clean then we can just transition it to being GPU dirty and retrap it
                 dirtyState = DirtyState::GpuDirty;
+                TraceLifecycle(texture::diagnostic::Event::HostGpuOwnership, static_cast<u32>(DirtyState::Clean));
                 gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
@@ -1195,12 +1277,14 @@ namespace skyline::gpu {
             }
 
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
+            if (gpuDirty) TraceLifecycle(texture::diagnostic::Event::HostGpuOwnership, static_cast<u32>(DirtyState::CpuDirty));
             gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
         // From this point on Clean -> CPU dirty state transitions can occur, GPU dirty -> * transitions will always require the full lock to be held and thus won't occur
 
         try {
+            TraceLifecycle(texture::diagnostic::Event::UploadBegin);
             auto stagingBuffer{SynchronizeHostImpl()};
             if (stagingBuffer) {
                 if (cycle) cycle->WaitSubmit();
@@ -1242,6 +1326,7 @@ namespace skyline::gpu {
             throw;
         }
 
+        TraceLifecycle(texture::diagnostic::Event::UploadRecorded);
         {
             std::scoped_lock lock{stateMutex};
 
@@ -1251,6 +1336,7 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeHostInline(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &pCycle, bool gpuDirty) {
+        TraceLifecycle(texture::diagnostic::Event::InlineSyncRequest, gpuDirty);
         if (!guest)
             return;
 
@@ -1272,6 +1358,7 @@ namespace skyline::gpu {
             std::scoped_lock lock{stateMutex};
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 dirtyState = DirtyState::GpuDirty;
+                TraceLifecycle(texture::diagnostic::Event::InlineGpuOwnership, static_cast<u32>(DirtyState::Clean));
                 gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
@@ -1280,9 +1367,11 @@ namespace skyline::gpu {
             }
 
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
+            if (gpuDirty) TraceLifecycle(texture::diagnostic::Event::InlineGpuOwnership, static_cast<u32>(DirtyState::CpuDirty));
             gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
+        TraceLifecycle(texture::diagnostic::Event::UploadBegin);
         auto stagingBuffer{SynchronizeHostImpl()};
         if (stagingBuffer) {
             CopyFromStagingBuffer(commandBuffer, stagingBuffer);
@@ -1291,6 +1380,7 @@ namespace skyline::gpu {
             cycle = pCycle;
         }
 
+        TraceLifecycle(texture::diagnostic::Event::UploadRecorded);
         {
             std::scoped_lock lock{stateMutex};
 
@@ -1300,6 +1390,7 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeGuest(bool cpuDirty, bool skipTrap) {
+        TraceLifecycle(texture::diagnostic::Event::GuestSyncRequest, (cpuDirty ? 1U : 0U) | (skipTrap ? 2U : 0U));
         // Read-only aliases are reconstructed from authoritative guest bytes.
         // They must never become a GPU -> guest encoding source.
         if (aliasReadOnly.load())
@@ -1330,11 +1421,14 @@ namespace skyline::gpu {
             } // Group writer remains authoritative until the encoded readback succeeds.
         }
 
-        if (layout == vk::ImageLayout::eUndefined || format != guest->format)
+        if (layout == vk::ImageLayout::eUndefined || format != guest->format) {
+            TraceLifecycle(texture::diagnostic::Event::ReadbackSkipped);
             // If the state of the host texture is undefined then so can the guest
             // If the texture has differing formats on the guest and host, we don't support converting back in that case as it may involve recompression of a decompressed texture
             return;
+        }
 
+        TraceLifecycle(texture::diagnostic::Event::ReadbackBegin);
         WaitOnBacking();
 
         if (tiling == vk::ImageTiling::eOptimal || !std::holds_alternative<memory::Image>(backing)) {
@@ -1359,11 +1453,13 @@ namespace skyline::gpu {
         {
             std::scoped_lock lock{stateMutex};
             gpuReadbackSerial = gpuWriteSerial;
+            diagnosticReadbackSerial = gpuReadbackSerial;
             if (alias) {
                 dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
                 memoryFreed = false;
             }
         }
+        TraceLifecycle(texture::diagnostic::Event::ReadbackComplete);
         if (auto group{aliasGroup.load()}) {
             std::scoped_lock metadata{group->mutex};
             if (group->writerIdentity == this)
@@ -1588,6 +1684,15 @@ namespace skyline::gpu {
             PromoteBackingForView(pFormat->vkFormat);
         }
 
+        if (diagnosticBase.id && texture::diagnostic::lifecycle.Enabled()) {
+            auto snapshot{diagnosticBase};
+            snapshot.hostFormat = static_cast<u32>(pFormat->vkFormat);
+            snapshot.mip = range.baseMipLevel; snapshot.levelCount = range.levelCount;
+            snapshot.layer = range.baseArrayLayer; snapshot.layerCount = range.layerCount;
+            snapshot.detail = static_cast<u32>(range.aspectMask);
+            snapshot.flags = 32;
+            texture::diagnostic::lifecycle.Record(diagnosticToken, texture::diagnostic::Event::View, snapshot);
+        }
         return std::make_shared<TextureView>(shared_from_this(), type, range, pFormat, mapping);
     }
 
@@ -1597,6 +1702,7 @@ namespace skyline::gpu {
         if (source->cycle)
             source->cycle->WaitSubmit();
 
+        source->TraceLifecycle(texture::diagnostic::Event::CopyFromRead, 0, diagnosticBase.id);
         WaitOnBacking();
         source->WaitOnBacking();
         WaitOnFence();
@@ -1713,8 +1819,10 @@ namespace skyline::gpu {
             else
                 return submitFunc({});
         }()};
+        const auto sourceDiagnosticId{source->diagnosticBase.id};
         newCycle->AttachObjects(std::move(source), shared_from_this());
         cycle = newCycle;
+        TraceLifecycle(texture::diagnostic::Event::CopyFromRecorded, 0, sourceDiagnosticId);
     }
 
     bool Texture::ValidateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage) {
@@ -1723,8 +1831,10 @@ namespace skyline::gpu {
 
     void Texture::UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage) {
         // Reject a read-only alias before mutating render-pass/write tracking.
-        if (renderPassUsage == texture::RenderPassUsage::RenderTarget)
+        if (renderPassUsage == texture::RenderPassUsage::RenderTarget) {
+            TraceLifecycle(texture::diagnostic::Event::RenderTargetIntent, renderPassIndex);
             RecordGpuWrite();
+        }
 
         lastRenderPassUsage = renderPassUsage;
         lastRenderPassIndex = renderPassIndex;

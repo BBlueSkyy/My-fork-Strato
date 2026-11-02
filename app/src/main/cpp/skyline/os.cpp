@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include "gpu.h"
+#include "gpu/texture/lifecycle_trace.h"
 #include "audio.h"
 #include "nce.h"
 #include <jit/jit32.h>
@@ -109,6 +110,14 @@ namespace skyline::kernel {
                 throw exception("Failed to provision application save data: {}", saveProvisionResult.raw);
         }
 
+        // Diagnostic build only: title-scoped, before guest/texture threads start.
+        try {
+            gpu::texture::diagnostic::lifecycle.Start(state.loader->programNca &&
+                state.loader->programNca->header.titleId == 0x0100152000022000ULL &&
+                *state.settings->freeGuestTextureMemory);
+        } catch (const std::bad_alloc &) {
+            LOGW("MK8 texture diagnostic disabled: recorder allocation failed");
+        }
         state.gpu->Initialise();
 
         auto &process{state.process};
