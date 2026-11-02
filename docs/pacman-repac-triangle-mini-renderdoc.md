@@ -1,16 +1,17 @@
 # PAC-MAN WORLD Re-PAC — inverted/giant triangle diagnostic (stage 1)
 
-Latest result: graphics-state-only mode 17 removes the triangle without forced
-submits or added query commands. See [Stage 12](pacman-repac-stage12-index-state-contract.md)
-for the targeted index-binding contract test, [Stage 11](pacman-repac-stage11-callback-analysis.md)
+Latest result: index-only mode 18 removes the triangle and confirms original
+nonindexed-quad overrides followed by guest index rebinds, with no forced submits
+or broad callbacks. See [structural correction](pacman-repac-index-binding-fix.md),
+[Stage 12](pacman-repac-stage12-index-state-contract.md) for the targeted contract test,
+and [Stage 11](pacman-repac-stage11-callback-analysis.md)
 for graphics-state isolation, and [Stage 10](pacman-repac-stage10-submit-contract.md)
-for the original callback experiment. Keep threshold 256 and
-the PR Draft; no root-cause rendering correction has been established.
+for the original callback experiment. Keep threshold 256 and the PR Draft;
+final marker-free APK validation is pending.
 
-This diagnostic is **not a graphical fix** and not a full RenderDoc replayer. It
-instruments the real Maxwell3D draw paths and the source passed to Android
-presentation. It does not alter shaders, index buffers, topology, depth/cull
-behavior, resource management, barriers or synchronization.
+The following sections retain the original diagnostic history, not a full
+RenderDoc replayer. The final structural change is documented above; early
+statements about unknown causes describe the evidence available at that stage.
 
 ## Reproduction
 

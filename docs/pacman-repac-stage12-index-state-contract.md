@@ -1,5 +1,12 @@
 # PAC-MAN Re-PAC — Stage 12: synthetic index-binding contract
 
+**Result received:** mode 18 removes the triangle, with 1,652 original
+nonindexed four-vertex quads, 294 prepared guest index rebinds (236 in the same
+submission), zero forced submits, zero broad callback refreshes and zero dropped
+events. See [structural correction](pacman-repac-index-binding-fix.md) for the
+causal evidence and marker-free implementation. The sections below retain the
+original probe design and pending-evidence statements as historical context.
+
 ## Verified graphics-state-only result
 
 Starting HEAD: `2ca42b938d2a800e8dc20675855460cf91980f27`, Draft #414.
