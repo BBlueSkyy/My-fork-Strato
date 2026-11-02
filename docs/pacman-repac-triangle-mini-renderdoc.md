@@ -1,7 +1,9 @@
 # PAC-MAN WORLD Re-PAC — inverted/giant triangle diagnostic (stage 1)
 
-Latest paired results and the callback-only submission-contract experiment:
-[Stage 10](pacman-repac-stage10-submit-contract.md). Keep threshold 256 and
+Latest result: callback-only mode 16 removes the triangle without forced
+submits. See [Stage 11](pacman-repac-stage11-callback-analysis.md) for the
+graphics-state-only discriminator and [Stage 10](pacman-repac-stage10-submit-contract.md)
+for the original callback experiment. Keep threshold 256 and
 the PR Draft; no root-cause rendering correction has been established.
 
 This diagnostic is **not a graphical fix** and not a full RenderDoc replayer. It

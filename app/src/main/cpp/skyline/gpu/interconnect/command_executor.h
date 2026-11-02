@@ -20,6 +20,10 @@
 #include "common/spin_lock.h"
 
 namespace skyline::gpu::interconnect {
+    // Registration labels only select an opt-in diagnostic subset. Ordinary
+    // Submit still invokes every flush callback in registration order.
+    enum class FlushCallbackKind { General, GraphicsState };
+
     constexpr bool EnableGpuCheckpoints{false}; //!< Whether to enable GPU debugging checkpoints (WILL DECREASE PERF SIGNIFICANTLY)
 
     /*
@@ -241,6 +245,7 @@ namespace skyline::gpu::interconnect {
         std::array<std::uintptr_t, 8> pacmanTrackedTextures{};
         u32 pacmanTrackedTextureCount{};
         bool pacmanFlushingCallbacks{};
+        std::optional<size_t> pacmanGraphicsFlushCallbackIndex;
 
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
@@ -407,7 +412,8 @@ namespace skyline::gpu::interconnect {
         /**
          * @brief Adds a persistent callback that will be called at the start of Execute in order to flush data required for recording
          */
-        void AddFlushCallback(std::function<void()> &&callback);
+        void AddFlushCallback(std::function<void()> &&callback,
+                              FlushCallbackKind kind = FlushCallbackKind::General);
 
         /**
          * @brief Adds a persistent callback that will be called after any non-Maxwell 3D engine changes the active pipeline

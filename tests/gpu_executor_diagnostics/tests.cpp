@@ -46,6 +46,7 @@ struct Node {
         : next{std::is_same_v<T, node::NextSubpassFunctionNode>}, function{std::move(function)} {}
 };
 namespace diagnostic = skyline::gpu::diagnostic;
+enum class FlushCallbackKind { General, GraphicsState };
 
 struct CommandExecutor {
     struct SubpassHooks { SubpassFunction before; };
@@ -56,6 +57,7 @@ struct CommandExecutor {
     struct Settings { u32 *executorFlushThreshold; } settings{&threshold};
     struct State { Settings *settings; } state{&settings};
     std::vector<std::function<void()>> flushCallbacks;
+    std::optional<std::size_t> pacmanGraphicsFlushCallbackIndex;
     std::vector<std::shared_ptr<int>> retainedResources;
     bool gotoNext{}, pacmanSawDepthPass{}, pacmanSawHdrScenePass{}, pacmanFlushingCallbacks{};
     std::uintptr_t pacmanLastHdrProducerIdentity{};
@@ -65,6 +67,7 @@ struct CommandExecutor {
     u32 renderPassIndex{3}, rotations{}, resets{}, submitCalls{}, breaks{}, barriers{};
     std::shared_ptr<int> cycle{std::make_shared<int>(0)};
     std::string pacmanNextDrawSignature;
+#include "registration_declaration.inc"
 
     bool CreateRenderPassWithSubpass(vk::Rect2D, span<TextureView *>, span<TextureView *>,
                                     span<TextureView *>, TextureView *, bool,
@@ -88,6 +91,16 @@ struct CommandExecutor {
                     SubpassHookFactory hookFactory = {});
 };
 #include "production.inc"
+
+// Historical production registration accepts only a callback. Compile that
+// exact body too; its inability to select GraphicsState is a behavioral failure.
+template<class Executor>
+void Register(Executor &executor, std::function<void()> callback, FlushCallbackKind kind = FlushCallbackKind::General) {
+    if constexpr (requires { executor.AddFlushCallback(std::move(callback), kind); })
+        executor.AddFlushCallback(std::move(callback), kind);
+    else
+        executor.AddFlushCallback(std::move(callback));
+}
 
 void Check(bool condition, const char *message) {
     if (!condition) throw std::runtime_error(message);
@@ -200,12 +213,15 @@ int main(int argc, char **argv) {
             f.Candidate();
             Check(calls == 1, "next selected candidate was suppressed after callback exception");
         });
-        test("natural threshold submits in mode16", [&] {
-            capture.Start(folder, false, false, 16);
-            Fixture f; f.executor.threshold = 0;
-            for (u32 i{}; i < 4; ++i) f.Candidate();
-            Check(f.executor.submitCalls == 8 && f.executor.rotations == 8 && f.executor.executionTag == 49,
-                  "mode16 suppressed ordinary natural submissions");
+        test("natural threshold submits in callback diagnostic modes", [&] {
+            for (u32 mode : {16U, 17U}) {
+                capture.Start(folder, false, false, mode);
+                Fixture f; f.executor.threshold = 0;
+                Register(f.executor, [] {}, FlushCallbackKind::GraphicsState);
+                for (u32 i{}; i < 4; ++i) f.Candidate();
+                Check(f.executor.submitCalls == 8 && f.executor.rotations == 8 && f.executor.executionTag == 49,
+                      "callback diagnostic suppressed ordinary natural submissions");
+            }
         });
         test("callback-appended work participates in the natural threshold", [&] {
             capture.Start(folder, false, false, 16);
@@ -245,12 +261,12 @@ int main(int argc, char **argv) {
                   "nested threshold crossing did not submit once after callback completion");
             Check(f.executor.slot->nodes.empty(), "outer natural Submit left nested draws queued");
         });
-        test("gotoNext protects mode16 refresh and mode15 submit", [&] {
-            for (u32 mode : {15U, 16U}) {
+        test("gotoNext protects callback modes and mode15 submit", [&] {
+            for (u32 mode : {15U, 16U, 17U}) {
                 capture.Start(folder, false, false, mode);
                 Fixture f; f.executor.gotoNext = true; f.executor.threshold = 0;
                 u32 calls{};
-                f.executor.flushCallbacks.push_back([&] { ++calls; });
+                Register(f.executor, [&] { ++calls; }, FlushCallbackKind::GraphicsState);
                 for (u32 i{}; i < 4; ++i) f.Candidate();
                 Check(calls == 0 && f.executor.submitCalls == 0, "next-subpass path intervened");
             }
@@ -284,6 +300,81 @@ int main(int argc, char **argv) {
                   "mode16 callback refreshes were counted as extra submits");
             for (u32 i{}; i < 4; ++i) f.Candidate();
             Check(calls == 4 && f.executor.submitCalls == 0, "callback intervention stopped when metadata capture closed");
+        });
+        test("registered graphics callback is selected by kind at shuffled index", [&] {
+            capture.Start(folder, false, false, 17);
+            Fixture f;
+            u32 graphicsCalls{}, generalCalls{};
+            std::vector<u64> selected;
+            const auto general{[&] {
+                ++generalCalls;
+                f.executor.slot->nodes.emplace_back(std::in_place_type<node::SubpassFunctionNode>, [] {});
+                f.executor.slot->pendingPostRenderPassNodes.emplace_back(std::in_place_type<node::SubpassFunctionNode>, [] {});
+            }};
+            Register(f.executor, general);
+            Register(f.executor, general);
+            Register(f.executor, [&] {
+                ++graphicsCalls;
+                selected.push_back(f.executor.pacmanPostCandidateSerial);
+                Check(f.executor.pacmanNextDrawSignature.empty(), "draw signature was not consumed before graphics refresh");
+            }, FlushCallbackKind::GraphicsState);
+            Register(f.executor, general);
+            Check(f.executor.pacmanGraphicsFlushCallbackIndex == 2, "registration did not track graphics callback at index2");
+            for (u32 i{}; i < 4; ++i) {
+                f.Draw(f.hdr);
+                f.executor.pacmanNextDrawSignature = "fullscreen indexed draw";
+                f.Draw(f.post);
+            }
+            Check(graphicsCalls == 2 && generalCalls == 0 && selected == std::vector<u64>{3, 4},
+                  "mode17 did not select only graphics state at slots3 and4");
+            Check(f.executor.slot->nodes.size() == 8 && f.executor.slot->pendingPostRenderPassNodes.empty(),
+                  "mode17 invoked node-publishing general callbacks");
+            Check(f.executor.submitCalls == 0 && f.executor.submissionNumber == 0 && f.executor.rotations == 0 &&
+                  f.executor.resets == 0 && f.executor.executionTag == 41, "mode17 submitted, rotated, reset or changed tag");
+        });
+        test("mode16 still invokes all four classified callbacks", [&] {
+            capture.Start(folder, false, false, 16);
+            Fixture f;
+            std::array<u32, 4> calls{};
+            for (u32 i{}; i < calls.size(); ++i)
+                Register(f.executor, [&, i] { ++calls[i]; }, i == 2 ? FlushCallbackKind::GraphicsState : FlushCallbackKind::General);
+            for (u32 i{}; i < 4; ++i) f.Candidate();
+            Check(calls == std::array<u32, 4>{2, 2, 2, 2} && f.executor.submitCalls == 0,
+                  "classification changed mode16 full callback bundle");
+        });
+        test("mode17 missing graphics registration does not count an intervention", [&] {
+            capture.Start(folder, false, false, 17);
+            Fixture f;
+            u32 calls{};
+            Register(f.executor, [&] { ++calls; });
+            for (u32 i{}; i < 4; ++i) f.Candidate();
+            for (u32 i{}; i < 60; ++i) capture.CompletePresentation();
+            std::ifstream metadataFile{folder / "capture_complete.txt"};
+            const std::string metadata{std::istreambuf_iterator<char>{metadataFile}, {}};
+            Check(calls == 0 && f.executor.submitCalls == 0 && !f.executor.pacmanGraphicsFlushCallbackIndex,
+                  "mode17 used a general callback when no graphics callback was registered");
+            Check(metadata.find("executor_callback_refreshes=0\n") != std::string::npos,
+                  "unavailable graphics refresh incremented intervention counter");
+        });
+        test("mode17 graphics refresh persists after60 presents and counts separately", [&] {
+            capture.Start(folder, true, true, 17);
+            Fixture f;
+            u32 calls{};
+            Register(f.executor, [&] { ++calls; }, FlushCallbackKind::GraphicsState);
+            for (u32 i{}; i < 4; ++i) f.Candidate();
+            for (u32 i{}; i < 59; ++i) capture.CompletePresentation();
+            Check(capture.Active(), "mode17 capture closed before60 presents");
+            capture.CompletePresentation();
+            Check(!capture.Active() && capture.ExecutorExperimentMode() == 17 && !capture.SnapshotsEnabled() && !capture.ScanEnabled(),
+                  "mode17 capture bound, persistence or readback policy changed");
+            std::ifstream metadataFile{folder / "capture_complete.txt"};
+            const std::string metadata{std::istreambuf_iterator<char>{metadataFile}, {}};
+            Check(metadata.find("executor_callback_refreshes=2\n") != std::string::npos &&
+                  metadata.find("executor_experiment_draws=0\n") != std::string::npos &&
+                  metadata.find("executor_experiment_mode=17\n") != std::string::npos,
+                  "mode17 completion metadata did not separate graphics refreshes from submits");
+            for (u32 i{}; i < 4; ++i) f.Candidate();
+            Check(calls == 4 && f.executor.submitCalls == 0, "mode17 stopped intervening after capture closed");
         });
         std::cout << passed << " passed, " << failed << " failed\n";
         return failed ? 1 : 0;

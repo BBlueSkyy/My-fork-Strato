@@ -80,6 +80,15 @@ the corrupted execution. They are not included as speculative fixes.
 
 ## Device acceptance and interpretation
 
+**Device result received:** mode 16 was valid and the user confirmed that the
+triangle disappeared, with 29 FPS shown in the screenshot. There were 122
+callback refreshes, zero forced submits and no cycle/tag changes across those
+refreshes. The callback bundle added query-related work. The detailed findings
+and the next single graphics-state-only test are in
+[Stage 11](pacman-repac-stage11-callback-analysis.md).
+
+The following procedure and hypotheses describe the original Stage 10 test.
+
 One new test is sufficient for the next decision: threshold **256**, same driver
 and scene, full app restart, only `ENABLE_EXECUTOR_POST_CALLBACKS_TEST` plus a
 fresh `ARM_CAPTURE` under `gpu_capture/pacman_world/`. Expected mode **16**.

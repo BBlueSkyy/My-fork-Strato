@@ -6,7 +6,7 @@ Requires Python 3 and a C++20 compiler with UBSan. `CXX` selects the compiler.
 git while retaining the same fixture and assertions.
 
 The runner extracts the complete, unchanged production
-`CommandExecutor::AddSubpass()` and includes the real
+`CommandExecutor::AddSubpass()` and `AddFlushCallback()` and includes the real
 `pacman_triangle_capture.h`. The tests exercise diagnostic mode selection,
 post-candidate counting, draw publication before callbacks, preservation of
 callback-appended nodes/resources, natural threshold submissions, the
@@ -14,6 +14,10 @@ next-subpass and callback-reentry guards, modes0 through15, and mode16 persisten
 after 60 presents.
 Threshold cases cover both callback-appended query nodes and nested draws:
 submission must wait until the callback bundle exits, then include its new work.
+Mode17 cases register a graphics callback at a shuffled index and verify only
+that callback runs, general callbacks cannot publish query nodes, unavailable
+graphics callbacks do not count as interventions, and mode16 still runs all
+four callbacks. Both modes retain their selection after the capture closes.
 
 The renderpass builder is a facade with an explicit next-subpass result.
 Vulkan objects are metadata-only facades; formatting is a no-op. `Submit()` is

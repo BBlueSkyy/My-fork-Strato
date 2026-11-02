@@ -710,8 +710,8 @@ namespace skyline::gpu::interconnect {
         // this prevents accidental association with subsequent engine work.
         const auto drawSignature{std::exchange(pacmanNextDrawSignature, std::string{})};
         bool sceneSubmit{}, callbackRefresh{}, hasColor{}, hdrScene{}, viOutput{};
-        const bool postProbeMode{testMode >= 7 && testMode <= 16};
-        if (testMode >= 3 && testMode <= 16) {
+        const bool postProbeMode{testMode >= 7 && testMode <= 17};
+        if (testMode >= 3 && testMode <= 17) {
             for (auto *view : colorAttachments) {
                 if (!view || !view->texture || !view->texture->format)
                     continue;
@@ -768,7 +768,8 @@ namespace skyline::gpu::interconnect {
                                       (testMode == 13 && (slotIndex == 1 || slotIndex == 3)) ||
                                       (testMode == 14 && (slotIndex == 2 || slotIndex == 3)) ||
                                       (testMode == 15 && (slotIndex == 3 || slotIndex == 4));
-                        callbackRefresh = testMode == 16 && (slotIndex == 3 || slotIndex == 4);
+                        callbackRefresh = (testMode == 16 || testMode == 17) &&
+                                          (slotIndex == 3 || slotIndex == 4);
                         if (pacmanDiagnostic.Active()) {
                             // Observe only the inputs/outputs of the two narrowed
                             // candidates. Store identities, never extend lifetimes
@@ -840,29 +841,40 @@ namespace skyline::gpu::interconnect {
             }
         }
         bool naturalFlush{slot->nodes.size() > *state.settings->executorFlushThreshold};
+        if (callbackRefresh && testMode == 17 &&
+            (!pacmanGraphicsFlushCallbackIndex || *pacmanGraphicsFlushCallbackIndex >= flushCallbacks.size())) {
+            if (pacmanDiagnostic.Active())
+                pacmanDiagnostic.Record(fmt::format(
+                    "EXECUTOR_CALLBACKS_UNAVAILABLE mode=17 candidate={} reason=no_graphics_registration",
+                    pacmanPostCandidateSerial));
+            callbackRefresh = false;
+        }
         if (!gotoNext && callbackRefresh && !pacmanFlushingCallbacks) {
-            // Differential experiment: execute precisely Submit's callback
-            // bundle, retaining the current slot, resources and execution tag.
-            // Engine callbacks can publish deferred work: guard reentry and
-            // report the surrounding state instead of calling this a pure
-            // descriptor refresh or assuming the command list stays identical.
+            // Mode 16 runs Submit's complete callback bundle. Mode 17 runs
+            // only its explicitly labeled graphics-state callback, excluding
+            // engine/query, compute and channel-sequence effects. Neither
+            // intervention rotates the slot or changes the execution tag.
             const auto callbackExecutionTag{executionTag};
             const auto traceCallbacks{[&](std::string_view phase) {
                 if (pacmanDiagnostic.Active())
                     pacmanDiagnostic.Record(fmt::format(
-                        "EXECUTOR_CALLBACKS phase={} candidate={} exec={} sub={} rp={} "
+                        "EXECUTOR_CALLBACKS phase={} mode={} candidate={} exec={} sub={} rp={} "
                         "cycle={} execution_tag_unchanged={} nodes={} pending_post_rp={} callbacks={} "
-                        "natural_flush={} threshold={}",
-                        phase, pacmanPostCandidateSerial, fmt::ptr(this), submissionNumber,
+                        "callbacks_selected={} natural_flush={} threshold={}",
+                        phase, testMode, pacmanPostCandidateSerial, fmt::ptr(this), submissionNumber,
                         renderPassIndex, fmt::ptr(cycle.get()), executionTag == callbackExecutionTag,
                         slot->nodes.size(), slot->pendingPostRenderPassNodes.size(),
-                        flushCallbacks.size(), naturalFlush, *state.settings->executorFlushThreshold));
+                        flushCallbacks.size(), testMode == 17 ? size_t{1} : flushCallbacks.size(),
+                        naturalFlush, *state.settings->executorFlushThreshold));
             }};
             traceCallbacks("before");
             pacmanFlushingCallbacks = true;
             try {
-                for (const auto &flushCallback : flushCallbacks)
-                    flushCallback();
+                if (testMode == 17)
+                    flushCallbacks[*pacmanGraphicsFlushCallbackIndex]();
+                else
+                    for (const auto &flushCallback : flushCallbacks)
+                        flushCallback();
             } catch (...) {
                 pacmanFlushingCallbacks = false;
                 throw;
@@ -882,7 +894,7 @@ namespace skyline::gpu::interconnect {
         // In callback-only mode a callback can itself enqueue a draw. Let
         // the outer invocation finish its bundle before threshold submission.
         if (!gotoNext && !pacmanFlushingCallbacks && (naturalFlush || sceneSubmit)) {
-            if (testMode == 16 && naturalFlush && pacmanDiagnostic.Active())
+            if ((testMode == 16 || testMode == 17) && naturalFlush && pacmanDiagnostic.Active())
                 pacmanDiagnostic.Record(fmt::format(
                     "EXECUTOR_NATURAL_SUBMIT exec={} sub={} candidate={} nodes={} threshold={}",
                     fmt::ptr(this), submissionNumber, pacmanPostCandidateSerial,
@@ -1002,8 +1014,10 @@ namespace skyline::gpu::interconnect {
         }
     }
 
-    void CommandExecutor::AddFlushCallback(std::function<void()> &&callback) {
+    void CommandExecutor::AddFlushCallback(std::function<void()> &&callback, FlushCallbackKind kind) {
         flushCallbacks.emplace_back(std::forward<decltype(callback)>(callback));
+        if (kind == FlushCallbackKind::GraphicsState)
+            pacmanGraphicsFlushCallbackIndex = flushCallbacks.size() - 1;
     }
 
     void CommandExecutor::AddPipelineChangeCallback(std::function<void()> &&callback) {

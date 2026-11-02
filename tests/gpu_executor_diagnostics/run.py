@@ -24,7 +24,10 @@ with tempfile.TemporaryDirectory(prefix="strato-executor-diagnostics-") as direc
     # Optional historical source verifies the identical assertions against HEAD.
     source = (subprocess.check_output(["git", "show", os.environ["STRATO_TEST_REF"] + ":" + SOURCE], cwd=ROOT, text=True)
               if "STRATO_TEST_REF" in os.environ else (ROOT / SOURCE).read_text())
-    (directory / "production.inc").write_text(function(source, "void CommandExecutor::AddSubpass("))
+    registration = function(source, "void CommandExecutor::AddFlushCallback(")
+    (directory / "registration_declaration.inc").write_text(
+        registration[:registration.index("{")].replace("CommandExecutor::", "") + ";")
+    (directory / "production.inc").write_text(registration + "\n" + function(source, "void CommandExecutor::AddSubpass("))
     binary = directory / "tests"
     subprocess.run([os.environ.get("CXX", "g++"), "-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
                     "-Wno-unused-parameter", "-fsanitize=undefined", "-fno-sanitize-recover=all",
