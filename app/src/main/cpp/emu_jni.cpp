@@ -2,7 +2,8 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <csignal>
-#include <fstream>
+#include <ostream>
+#include "skyline/gpu/texture/diagnostic_fd_output.h"
 #include "skyline/gpu/texture/lifecycle_trace.h"
 #include <limits>
 #include <pthread.h>
@@ -377,12 +378,17 @@ extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_native
 extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_nativeExportMk8TextureTrace(JNIEnv *, jobject, jint fd) {
     try {
         auto &trace{skyline::gpu::texture::diagnostic::lifecycle};
-        if (!trace.Available() || fd < 0) return false;
+        if (!trace.Available() || fd < 0) {
+            LOGW("MK8 trace export unavailable: active={} fd={}", trace.Available(), fd);
+            return false;
+        }
         trace.Freeze();
-        std::ofstream out{"/proc/self/fd/" + std::to_string(fd)};
-        if (!out) return false;
+        LOGI("MK8 trace export: rows={} fd={}", trace.Count(), fd);
+        skyline::gpu::texture::diagnostic::FdOutputBuffer buffer{fd};
+        std::ostream out{&buffer};
         trace.Export(out);
         out.flush();
+        if (!out.good()) LOGW("MK8 trace export write failed: errno={}", errno);
         return out.good();
     } catch (...) {
         return false; // Diagnostic/export failure must not terminate the emulator.
