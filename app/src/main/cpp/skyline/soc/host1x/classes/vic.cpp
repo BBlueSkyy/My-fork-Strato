@@ -58,7 +58,7 @@ namespace skyline::soc::host1x {
                      static_cast<u32>(config.slotStructs[0].surfaceConfig.slotPixelFormat), enabledSlots,
                      static_cast<bool>(frame), static_cast<u32>(surfaceConfig.outPixelFormat),
                      u32{surfaceConfig.outLumaWidth} + 1, u32{surfaceConfig.outLumaHeight} + 1,
-                     static_cast<u32>(surfaceConfig.outBlkKind), surfaceConfig.outBlkHeight,
+                     static_cast<u32>(surfaceConfig.outBlkKind), static_cast<u32>(surfaceConfig.outBlkHeight),
                      registers.outputSurface.luma.Address());
 
             LOGD("VIC execute, input luma: 0x{:X}, frame: {}, format: {}, dimensions: {}x{}, layout: {}, output luma: 0x{:X}",
