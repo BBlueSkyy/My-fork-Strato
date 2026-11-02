@@ -19,6 +19,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Test executor diagnostic isolation
+        run: python3 tests/gpu_executor_diagnostics/run.py
     
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2

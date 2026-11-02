@@ -709,9 +709,9 @@ namespace skyline::gpu::interconnect {
         // One Maxwell3D draw signature is consumed for every AddSubpass;
         // this prevents accidental association with subsequent engine work.
         const auto drawSignature{std::exchange(pacmanNextDrawSignature, std::string{})};
-        bool sceneSubmit{}, hasColor{}, hdrScene{}, viOutput{};
-        const bool postProbeMode{testMode >= 7 && testMode <= 15};
-        if (testMode >= 3 && testMode <= 15) {
+        bool sceneSubmit{}, callbackRefresh{}, hasColor{}, hdrScene{}, viOutput{};
+        const bool postProbeMode{testMode >= 7 && testMode <= 16};
+        if (testMode >= 3 && testMode <= 16) {
             for (auto *view : colorAttachments) {
                 if (!view || !view->texture || !view->texture->format)
                     continue;
@@ -768,7 +768,25 @@ namespace skyline::gpu::interconnect {
                                       (testMode == 13 && (slotIndex == 1 || slotIndex == 3)) ||
                                       (testMode == 14 && (slotIndex == 2 || slotIndex == 3)) ||
                                       (testMode == 15 && (slotIndex == 3 || slotIndex == 4));
+                        callbackRefresh = testMode == 16 && (slotIndex == 3 || slotIndex == 4);
                         if (pacmanDiagnostic.Active()) {
+                            // Observe only the inputs/outputs of the two narrowed
+                            // candidates. Store identities, never extend lifetimes
+                            // or dereference an identity after its object is gone.
+                            if (slotIndex == 3 || slotIndex == 4) {
+                                const auto watch{[&](TextureView *view) {
+                                    if (!view || !view->texture) return;
+                                    const auto identity{reinterpret_cast<std::uintptr_t>(view->texture.get())};
+                                    for (u32 i{}; i < pacmanTrackedTextureCount; ++i)
+                                        if (pacmanTrackedTextures[i] == identity) return;
+                                    if (pacmanTrackedTextureCount < pacmanTrackedTextures.size())
+                                        pacmanTrackedTextures[pacmanTrackedTextureCount++] = identity;
+                                    else
+                                        pacmanDiagnostic.Record("TEXTURE_TRACK_LIMIT capacity=8");
+                                }};
+                                for (auto *view : sampledImages) watch(view);
+                                for (auto *view : colorAttachments) watch(view);
+                            }
                             std::string targets, inputs;
                             bool sampledSameHdrIdentity{};
                             u32 n{};
@@ -803,14 +821,14 @@ namespace skyline::gpu::interconnect {
                                 "goto_next={} natural_flush={} present_interval={} "
                                 "exec={} sub={} rp={} own_cycle={} colors={} "
                                 "sampled_count={} sampled_first8={} input_attachments={} "
-                                "targets={} last_hdr_texture=0x{:X} sampled_same_hdr={} draw={}",
-                                candidate, slotIndex, testMode, sceneSubmit, gotoNext,
+                                "targets={} last_hdr_texture=0x{:X} sampled_same_hdr={} callback_refresh={} draw={}",
+                                candidate, slotIndex, testMode, sceneSubmit || callbackRefresh, gotoNext,
                                 slot->nodes.size() > *state.settings->executorFlushThreshold,
                                 pacmanDiagnostic.PresentedFrames(), fmt::ptr(this),
                                 submissionNumber, renderPassIndex, fmt::ptr(cycle.get()),
                                 colorAttachments.size(), sampledImages.size(), inputs,
                                 inputAttachments.size(), targets,
-                                pacmanLastHdrProducerIdentity, sampledSameHdrIdentity,
+                                pacmanLastHdrProducerIdentity, sampledSameHdrIdentity, callbackRefresh,
                                 drawSignature));
                         }
                     }
@@ -821,8 +839,54 @@ namespace skyline::gpu::interconnect {
                 }
             }
         }
-        const bool naturalFlush{slot->nodes.size() > *state.settings->executorFlushThreshold};
-        if (!gotoNext && (naturalFlush || sceneSubmit)) {
+        bool naturalFlush{slot->nodes.size() > *state.settings->executorFlushThreshold};
+        if (!gotoNext && callbackRefresh && !pacmanFlushingCallbacks) {
+            // Differential experiment: execute precisely Submit's callback
+            // bundle, retaining the current slot, resources and execution tag.
+            // Engine callbacks can publish deferred work: guard reentry and
+            // report the surrounding state instead of calling this a pure
+            // descriptor refresh or assuming the command list stays identical.
+            const auto callbackExecutionTag{executionTag};
+            const auto traceCallbacks{[&](std::string_view phase) {
+                if (pacmanDiagnostic.Active())
+                    pacmanDiagnostic.Record(fmt::format(
+                        "EXECUTOR_CALLBACKS phase={} candidate={} exec={} sub={} rp={} "
+                        "cycle={} execution_tag_unchanged={} nodes={} pending_post_rp={} callbacks={} "
+                        "natural_flush={} threshold={}",
+                        phase, pacmanPostCandidateSerial, fmt::ptr(this), submissionNumber,
+                        renderPassIndex, fmt::ptr(cycle.get()), executionTag == callbackExecutionTag,
+                        slot->nodes.size(), slot->pendingPostRenderPassNodes.size(),
+                        flushCallbacks.size(), naturalFlush, *state.settings->executorFlushThreshold));
+            }};
+            traceCallbacks("before");
+            pacmanFlushingCallbacks = true;
+            try {
+                for (const auto &flushCallback : flushCallbacks)
+                    flushCallback();
+            } catch (...) {
+                pacmanFlushingCallbacks = false;
+                throw;
+            }
+            pacmanFlushingCallbacks = false;
+            // Callback-published work remains in this slot and must count
+            // toward the ordinary threshold once the callback bundle exits.
+            naturalFlush = slot->nodes.size() > *state.settings->executorFlushThreshold;
+            pacmanDiagnostic.ExecutorCallbackStep();
+            traceCallbacks("after");
+        }
+        if (!gotoNext && naturalFlush && pacmanFlushingCallbacks && pacmanDiagnostic.Active())
+            pacmanDiagnostic.Record(fmt::format(
+                "EXECUTOR_CALLBACK_DEFERRED_NATURAL_SUBMIT exec={} candidate={} nodes={} threshold={}",
+                fmt::ptr(this), pacmanPostCandidateSerial, slot->nodes.size(),
+                *state.settings->executorFlushThreshold));
+        // In callback-only mode a callback can itself enqueue a draw. Let
+        // the outer invocation finish its bundle before threshold submission.
+        if (!gotoNext && !pacmanFlushingCallbacks && (naturalFlush || sceneSubmit)) {
+            if (testMode == 16 && naturalFlush && pacmanDiagnostic.Active())
+                pacmanDiagnostic.Record(fmt::format(
+                    "EXECUTOR_NATURAL_SUBMIT exec={} sub={} candidate={} nodes={} threshold={}",
+                    fmt::ptr(this), submissionNumber, pacmanPostCandidateSerial,
+                    slot->nodes.size(), *state.settings->executorFlushThreshold));
             if (sceneSubmit) {
                 pacmanDiagnostic.ExecutorExperimentStep();
                 if (pacmanDiagnostic.Active())
@@ -974,6 +1038,58 @@ namespace skyline::gpu::interconnect {
         return nextCheckpointId++;
     }
 
+    void CommandExecutor::TracePacmanTextureSync(Texture *texture, std::string_view phase) {
+        auto &capture{diagnostic::PacmanCapture()};
+        if (!pacmanTrackedTextureCount || !capture.Active())
+            return;
+        const auto identity{reinterpret_cast<std::uintptr_t>(texture)};
+        bool tracked{};
+        for (u32 index{}; index < pacmanTrackedTextureCount && index < pacmanTrackedTextures.size(); ++index)
+            tracked |= pacmanTrackedTextures[index] == identity;
+        if (!tracked)
+            return;
+
+        // The executor already owns this live texture's resource lock. Trap
+        // callbacks can still change dirty state, so copy that state briefly
+        // under its own mutex and release it before formatting or recording.
+        u32 dirtyState{};
+        bool memoryFreed{};
+        u64 writeSerial{}, readbackSerial{};
+        {
+            std::scoped_lock lock{texture->stateMutex};
+            dirtyState = static_cast<u32>(texture->dirtyState);
+            memoryFreed = texture->memoryFreed;
+            writeSerial = texture->gpuWriteSerial;
+            readbackSerial = texture->gpuReadbackSerial;
+        }
+        const auto alias{texture->aliasGroup.load()};
+        std::string mappings;
+        size_t mappingCount{};
+        if (texture->guest) {
+            mappingCount = texture->guest->mappings.size();
+            for (size_t index{}; index < mappingCount && index < 4; ++index) {
+                const auto mapping{texture->guest->mappings[index]};
+                mappings += fmt::format("[ptr={} bytes={}]", fmt::ptr(mapping.data()), mapping.size());
+            }
+        }
+        capture.Record(fmt::format(
+            "TEXTURE_SUBMIT_SYNC phase={} exec={} sub={} tex={} image={} generation={} "
+            "cycle={} own_cycle={} dimensions={}x{}x{} fmt={} layout={} "
+            "dirty={} memory_freed={} write_serial={} readback_serial={} "
+            "alias_group={} alias_stale={} last_rp={} last_usage={} "
+            "pending_stages={} read_stages={} mapping_count={} mappings_first4={}",
+            phase, fmt::ptr(this), submissionNumber, fmt::ptr(texture),
+            fmt::ptr(static_cast<VkImage>(texture->GetBacking())), texture->backingGeneration,
+            fmt::ptr(texture->cycle.get()), fmt::ptr(cycle.get()),
+            texture->dimensions.width, texture->dimensions.height, texture->dimensions.depth,
+            static_cast<u32>(texture->format->vkFormat), static_cast<u32>(texture->layout),
+            dirtyState, memoryFreed, writeSerial, readbackSerial,
+            fmt::ptr(alias.get()), texture->aliasStale.load(), texture->lastRenderPassIndex,
+            static_cast<u32>(texture->lastRenderPassUsage),
+            static_cast<VkPipelineStageFlags>(texture->pendingStageMask),
+            static_cast<VkPipelineStageFlags>(texture->readStageMask), mappingCount, mappings));
+    }
+
     void CommandExecutor::SubmitInternal() {
         if (renderPass)
             FinishRenderPass();
@@ -1003,7 +1119,17 @@ namespace skyline::gpu::interconnect {
                     chainedCycles.emplace_back(previousCycle.get());
                 }
 
+                const bool traceTextureSync{pacmanTrackedTextureCount && diagnostic::PacmanCapture().Active()};
+                if (traceTextureSync)
+                    TracePacmanTextureSync(texture.operator->(), "before");
                 texture->SynchronizeHostInline(slot->commandBuffer, cycle, true);
+                if (traceTextureSync) {
+                    // Only the staged inline upload changes the texture's cycle
+                    // here. A pre-existing self cycle makes that inference ambiguous.
+                    const auto phase{previousCycle == cycle ? "after_inline_upload_unknown" :
+                        texture->cycle == cycle ? "after_inline_upload" : "after_no_inline_upload"};
+                    TracePacmanTextureSync(texture.operator->(), phase);
+                }
                 // Retain any lifetime dependency introduced during synchronization.
                 // A TextureView already keeps the texture itself alive.
                 if (texture->cycle != previousCycle)
@@ -1043,6 +1169,10 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::Submit(std::function<void()> &&callback, bool wait) {
+        if (pacmanFlushingCallbacks && diagnostic::PacmanCapture().Active())
+            diagnostic::PacmanCapture().Record(fmt::format(
+                "EXECUTOR_CALLBACK_REENTRANT_SUBMIT exec={} sub={} nodes={}",
+                fmt::ptr(this), submissionNumber, slot->nodes.size()));
         for (const auto &flushCallback : flushCallbacks)
             flushCallback();
 

@@ -1,5 +1,9 @@
 # PAC-MAN WORLD Re-PAC — inverted/giant triangle diagnostic (stage 1)
 
+Latest paired results and the callback-only submission-contract experiment:
+[Stage 10](pacman-repac-stage10-submit-contract.md). Keep threshold 256 and
+the PR Draft; no root-cause rendering correction has been established.
+
 This diagnostic is **not a graphical fix** and not a full RenderDoc replayer. It
 instruments the real Maxwell3D draw paths and the source passed to Android
 presentation. It does not alter shaders, index buffers, topology, depth/cull

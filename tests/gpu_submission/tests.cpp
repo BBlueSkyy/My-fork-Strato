@@ -6,6 +6,7 @@
 #include <list>
 #include <vector>
 #include <cstring>
+#include <string_view>
 
 using skyline::gpu::FenceCycle;
 using namespace std::chrono_literals;
@@ -148,6 +149,10 @@ struct Slot {
     void WaitReady() {}
 };
 static void RecordFullBarrier(int) {}
+namespace diagnostic {
+struct Capture { bool Active() const { return false; } };
+static Capture &PacmanCapture() { static Capture capture; return capture; }
+}
 struct CommandExecutor {
     bool renderPass{};
     Slot storage;
@@ -155,6 +160,8 @@ struct CommandExecutor {
     std::shared_ptr<FenceCycle> cycle;
     std::vector<std::shared_ptr<Texture>> attachedTextures, preserveAttachedTextures;
     std::vector<BufferView> attachedBuffers, preserveAttachedBuffers;
+    unsigned pacmanTrackedTextureCount{};
+    void TracePacmanTextureSync(Texture *, std::string_view) {}
     void FinishRenderPass() {}
     void RotateRecordSlot() {}
     void SubmitInternal();

@@ -11,6 +11,11 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <skyline/gpu/diagnostic/pacman_triangle_capture.h>
+namespace diagnostic = skyline::gpu::diagnostic;
+// Capture is unarmed in conditional-rendering tests. Keep production draw
+// instrumentation compiled; formatting and image readback are host boundaries.
+namespace fmt { template<class... T> std::string format(const char *, T &&...) { return {}; } }
 using u8 = uint8_t;
 using u32 = uint32_t;
 using u64 = uint64_t;
@@ -47,7 +52,7 @@ struct BufferBinding { u64 buffer{}, offset{}, size{}; };
 struct GPU;
 namespace engine { enum class DrawTopology { Triangles }; }
 namespace conversion::quads { inline u32 GetIndexCount(u32 count) { return count; } }
-struct TextureView {};
+struct TextureView { struct Texture { struct { u32 width{}, height{}; } dimensions; }; std::shared_ptr<Texture> texture; };
 struct StateUpdater { void RecordAll(GPU &, vk::raii::CommandBuffer &) {} };
 struct BufferBinding;
 struct StateUpdateBuilder { template<class T> explicit StateUpdateBuilder(T &) {} void SetIndexBuffer(BufferBinding, vk::IndexType) {} StateUpdater Build() { return {}; } };
@@ -119,6 +124,7 @@ struct Executor {
     int usageTracker{};
     template<class F> void RunWithTextureBackingRetry(F function) { function(); }
     void AddCheckpoint(const char *) {}
+    void CapturePacmanSceneStep(TextureView *, u32, const std::string &) {}
     template<class F, class T, class C, class H> void AddSubpass(F function, vk::Rect2D, T, std::initializer_list<int>, C, TextureView *, bool, u32, u32, H hook) { hook(0); AddOutsideRpCommand([function](auto &cb, const auto &cycle, auto &gpu) { function(cb, cycle, gpu, 0, 0); }); }
     GPU *gpu{};
     std::vector<std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)>> commands;
@@ -146,6 +152,7 @@ struct CachedMappedBufferView {
 };
 struct Queries { enum class CounterType { Occulusion }; int PrepareDraw(InterconnectContext &, CounterType, bool, u32) { return 0; } void Flush(InterconnectContext &) {} };
 struct Pipeline {
+    struct PackedState { struct BlendState { u32 colorWriteMask{}; }; std::array<BlendState, 8> attachmentBlendStates; std::array<u64, 6> shaderHashes{}; } sourcePackedState;
     struct Desc { bool is_written{}; u32 count{}; };
     struct Stage { std::vector<Desc> storageBufferDescs, storageTexelBufferDescs; u32 uniformTexelBufferDescTotalCount{}; };
     struct { std::array<Stage, 3> stages; } descriptorInfo;
@@ -165,6 +172,7 @@ struct ActiveState {
     std::array<State, 2> transformFeedbackBuffers;
     std::vector<TextureView *> GetColorAttachments() { return {}; }
     TextureView *GetDepthAttachment() { return nullptr; }
+    Pipeline *GetPipeline() { return nullptr; }
     bool MayWriteTransformFeedbackBuffer(Buffer *);
 };
 #include "writers.inc"
@@ -196,6 +204,7 @@ struct Maxwell3D {
     vk::Rect2D GetDrawScissor() { return {}; }
     size_t UpdateQuadConversionBuffer(u32,u32) { return 0; }
     void PrepareDraw(StateUpdateBuilder &, engine::DrawTopology, bool, bool, u32,u32,u32 &,u32 &) {}
+    void TraceTriangleDraw(const char *, engine::DrawTopology, bool, u32, u32, u32, i32, const vk::Rect2D &) {}
     void Draw(engine::DrawTopology, bool, bool, u32,u32,u32,u32,u32);
 #include "members.inc"
     Maxwell3D() {

@@ -6,7 +6,9 @@
 #include <gpu/texture/backing_promotion.h>
 #include "common/common.h"
 #include <cstdint>
+#include <array>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <boost/container/stable_vector.hpp>
@@ -236,6 +238,9 @@ namespace skyline::gpu::interconnect {
         std::string pacmanNextDrawSignature;
         std::uint64_t pacmanPostCandidateSerial{};
         std::uintptr_t pacmanLastHdrProducerIdentity{};
+        std::array<std::uintptr_t, 8> pacmanTrackedTextures{};
+        u32 pacmanTrackedTextureCount{};
+        bool pacmanFlushingCallbacks{};
 
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
@@ -259,6 +264,8 @@ namespace skyline::gpu::interconnect {
          * @note It is the responsibility of the caller to handle resetting of command buffers, fence cycle and megabuffers
          */
         void SubmitInternal();
+
+        void TracePacmanTextureSync(Texture *texture, std::string_view phase);
 
         /**
          * @brief Resets all the internal state, this must be called before starting a new submission as it clears everything from a past submission

@@ -51,6 +51,23 @@ the root cause.
 
 ## Stage 9 follow-up: paired slot tests
 
+### Paired results now verified (2026-11-02)
+
+The supplied pair 1+3 run recorded mode 13, 244 candidates, 122 extra
+submissions, 60 presents and zero dropped events; the user still observed
+the residual triangle. Pair 3+4 recorded mode 15, 236 candidates, 118 extra
+submissions, 60 presents and zero dropped events; the user observed correct
+graphics. Both diagnostic modes persisted after capture completion, and
+neither run had a candidate with a natural threshold flush or `goto_next`.
+
+Thus 3+4 is sufficient in this execution. This does not prove that the
+two passes directly depend on each other, that the HDR object is corrupt,
+or that a particular barrier is missing. The submission-contract audit
+and the one new callback-only discriminator are documented in
+[Stage 10](pacman-repac-stage10-submit-contract.md).
+
+The following subsection records the original Stage 9 test procedure.
+
 The same Draft PR #414 adds three opt-in markers, all with
 `Executor Flush Threshold=256`, re-armed `ARM_CAPTURE`, and a
 complete Strato process restart for each independent experiment:
