@@ -183,15 +183,30 @@ namespace skyline::gpu {
                         const bool sceneToPost{fs::exists(root / "ENABLE_EXECUTOR_SCENE_POST_TEST", ec) && !ec};
                         ec.clear();
                         const bool viTarget{fs::exists(root / "ENABLE_EXECUTOR_VI_TARGET_TEST", ec) && !ec};
-                        // One explicit experiment at a time; reject ambiguous
-                        // marker combinations rather than silently mixing A/B data.
+                        const auto hasDiagnosticMarker{[&](const char *filename) {
+                            ec.clear();
+                            return fs::exists(root / filename, ec) && !ec;
+                        }};
+                        const bool postTrace{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_TRACE")};
+                        const bool postSlot1{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_SLOT_1_TEST")};
+                        const bool postSlot2{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_SLOT_2_TEST")};
+                        const bool postSlot3{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_SLOT_3_TEST")};
+                        const bool postSlot4{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_SLOT_4_TEST")};
+                        const bool postControl{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_CONTROL")};
+                        // Reject mixed experiments: overlapping markers would
+                        // otherwise make the apparent A/B result ambiguous.
                         const u32 enabledTests{
                             static_cast<u32>(rpSplit) + static_cast<u32>(rpBarrier) +
                             static_cast<u32>(sceneSubmit) + static_cast<u32>(depthToScene) +
-                            static_cast<u32>(sceneToPost) + static_cast<u32>(viTarget)};
+                            static_cast<u32>(sceneToPost) + static_cast<u32>(viTarget) +
+                            static_cast<u32>(postTrace) + static_cast<u32>(postSlot1) +
+                            static_cast<u32>(postSlot2) + static_cast<u32>(postSlot3) +
+                            static_cast<u32>(postSlot4) + static_cast<u32>(postControl)};
                         if (enabledTests > 1)
                             LOGW("MINIRD_PACMAN multiple executor test markers; disabling experiments");
                         const u32 experimentMode{enabledTests > 1 ? 0U :
+                            postControl ? 12U : postSlot4 ? 11U : postSlot3 ? 10U :
+                            postSlot2 ? 9U : postSlot1 ? 8U : postTrace ? 7U :
                             viTarget ? 6U : sceneToPost ? 5U : depthToScene ? 4U :
                             sceneSubmit ? 3U : rpBarrier ? 2U : rpSplit ? 1U : 0U};
                         capture.Start(folder, sceneSnapshots || scanHdr, scanHdr, experimentMode);
