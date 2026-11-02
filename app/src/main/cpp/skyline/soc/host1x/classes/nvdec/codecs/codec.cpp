@@ -109,6 +109,17 @@ namespace skyline::soc::host1x::nvdec {
                 continue;
             }
             frame->pts = static_cast<i64>(metadata.surfaceKey);
+            if (trace && pushedFrames == 0 && frame->data[0] && frame->width > 0 &&
+                frame->height > 0 && frame->linesize[0] >= frame->width) {
+                const auto probe{video_diag::ProbePlane(frame->data[0],
+                                                       static_cast<size_t>(frame->linesize[0]),
+                                                       static_cast<size_t>(frame->width),
+                                                       static_cast<size_t>(frame->height))};
+                LOGI("[VideoDiag] ffmpeg-luma seq={} stream={} surface=0x{:X} format={} size={}x{} min={} max={} bright={} hash=0x{:X}",
+                     sequence, streamId, metadata.surfaceKey, frame->format, frame->width, frame->height,
+                     static_cast<u32>(probe.minimum), static_cast<u32>(probe.maximum),
+                     probe.aboveDark, probe.hash);
+            }
 
             LOGD("NVDEC decoded presentation frame, submitted surface: 0x{:X}, format: {}, dimensions: {}x{}, linesizes: [{}, {}, {}]",
                  static_cast<u64>(frame->pts), frame->format, frame->width, frame->height,
