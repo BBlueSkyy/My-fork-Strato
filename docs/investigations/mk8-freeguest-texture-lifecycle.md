@@ -55,3 +55,7 @@ Actual Mini RenderDoc implementation/arming requires those candidate/frame targe
 - `python3 tests/gpu_conditional/run.py` and `python3 tests/gpu_draw_texture/run.py`: existing conditional-rendering/draw-texture controls. Host facades recognize diagnostic hooks; the conditional facade also recognizes the current master index-cache invalidation API.
 - CSV analyzer checked against an export from the actual recorder.
 - Full Vulkan backing-promotion suite requires Boost/Vulkan development headers and a Vulkan ICD; these are missing in this host. Local Android build also cannot download Gradle here. Existing PR CI remains the ARM64 DevRelease build authority.
+
+## Empty Android export follow-up
+
+The submitted ZIP contained a zero-byte CSV, including no header. That establishes an export failure, not absence of lifecycle events. Replace procfs descriptor reopening with direct writes to the borrowed document-provider fd, including interrupted/short write handling, and test a write-only pipe plus failure reporting. Export emits one row-count/status log per attempt so an unavailable recorder can be distinguished from a write failure. No texture lifecycle policy is changed. Device confirmation remains required.
