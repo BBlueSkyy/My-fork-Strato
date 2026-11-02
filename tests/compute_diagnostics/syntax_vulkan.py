@@ -21,6 +21,7 @@ shader_start = shader_source.index("    vk::ShaderModule ShaderManager::CompileS
 shader_end = shader_source.index("    void ShaderManager::ResetPools()", shader_start)
 shader_production = shader_source[shader_start:shader_end]
 stubs = r'''
+#include <utility>
 #include <vulkan/vulkan_raii.hpp>
 #include <fmt/format.h>
 #include <gpu/compute_diagnostics.h>
@@ -104,7 +105,8 @@ with tempfile.TemporaryDirectory() as temporary:
         os.environ.get("CXX", "g++"), "-std=c++20", "-fsyntax-only", "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS",
         "-DVULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1", "-DVULKAN_HPP_NO_SETTERS",
         "-DVULKAN_HPP_NO_SMART_HANDLE", "-DVULKAN_HPP_ENABLE_DYNAMIC_LOADER_TOOL=0",
-        "-I" + sys.argv[1], "-I" + temporary, "-I" + str(root / "app/libraries/fmt/include"),
+        "-I" + sys.argv[1], "-I" + str(root / "app/libraries/vkhpp/Vulkan-Headers/include"),
+        "-I" + temporary, "-I" + str(root / "app/libraries/fmt/include"),
         "-I" + str(root / "app/src/main/cpp/skyline"), "-I" + str(root / "app/libraries"), str(cpp),
     ], check=True)
 print("production compute creation boundary: Vulkan-Hpp syntax PASS")
