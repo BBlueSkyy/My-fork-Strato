@@ -403,7 +403,7 @@ extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_native
         auto gpu{os ? os->state.gpu : nullptr};
         if (!gpu || !lifecycle.Enabled()) return false;
         auto &miniCapture{gpu->miniCapture};
-        if (action==1 || action==3) return miniCapture.Arm(action);
+        if (action==1 || action==3 || action==11 || action==13) return miniCapture.Arm(action);
         if (action!=4 || fd<0) return false;
         FdOutputBuffer buffer{fd}; std::ostream out{&buffer};
         return miniCapture.Export(out);

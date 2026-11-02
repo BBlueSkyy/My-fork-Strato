@@ -520,7 +520,8 @@ namespace skyline::gpu {
 
       public:
         // Caller owns the resource lock; trap callbacks pass stateOnly=true.
-        void QueueMiniCapture(interconnect::CommandExecutor &executor, const TextureView &view, u32 tic);
+        bool MiniProducerCandidate() const;
+        void QueueMiniCapture(interconnect::CommandExecutor &executor, const TextureView &view, u32 tic, u32 phase = 0, u64 operation = 0, u32 role = 0);
         void TraceLifecycle(texture::diagnostic::Event event, u32 detail = 0, u64 peer = 0, bool stateOnly = false, const TextureView *view = nullptr);
         std::shared_ptr<FenceCycle> cycle; //!< A fence cycle for when any host operation mutating the texture has completed, it must be waited on prior to any mutations to the backing
         std::optional<GuestTexture> guest;

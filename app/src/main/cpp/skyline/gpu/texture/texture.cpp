@@ -165,16 +165,23 @@ namespace skyline::gpu {
         return texture.TryLock();
     }
 
-    void Texture::QueueMiniCapture(interconnect::CommandExecutor &executor, const TextureView &view, u32 tic) {
+    bool Texture::MiniProducerCandidate() const {
+        return guest && diagnosticBase.id && backingImageType==vk::ImageType::e2D && sampleCount==vk::SampleCountFlagBits::e1 && dimensions.width==32 && dimensions.height==32 && dimensions.depth==1 &&
+            layerCount==6 && format->vkFormat==vk::Format::eB10G11R11UfloatPack32 && layout==vk::ImageLayout::eGeneral;
+    }
+
+    void Texture::QueueMiniCapture(interconnect::CommandExecutor &executor, const TextureView &view, u32 tic, u32 requestedPhase, u64 operation, u32 role) {
         using namespace texture::diagnostic;
         auto &miniCapture{gpu.miniCapture};
-        if (!miniCapture.Armed() || !guest || !diagnosticBase.id) return;
-        // Data-driven diagnostic filter, not a game/rendering workaround.
-        if (dimensions.width != 32 || dimensions.height != 32 || dimensions.depth != 1 ||
-            layerCount != 6 || format->vkFormat != vk::Format::eB10G11R11UfloatPack32 ||
-            layout != vk::ImageLayout::eGeneral || surfaceSize > 256 * 1024) return;
+        if ((!requestedPhase && !miniCapture.Armed()) || !guest || !diagnosticBase.id) return;
+        // Producer inputs may use another color format; retain raw bytes and metadata.
+        if (requestedPhase) {
+            if (backingImageType!=vk::ImageType::e2D || guest->GetImageType()!=vk::ImageType::e2D || guest->format!=format ||
+                sampleCount!=vk::SampleCountFlagBits::e1 || dimensions.depth!=1 || dimensions.width>256 || dimensions.height>256 || layerCount>6 ||
+                format->vkAspect!=vk::ImageAspectFlagBits::eColor || layout!=vk::ImageLayout::eGeneral || surfaceSize>256*1024) return;
+        } else if (!MiniProducerCandidate() || surfaceSize>256*1024) return;
         const auto frame{lifecycle.CurrentFrame()};
-        const auto phase{miniCapture.Reserve(diagnosticBase.id, frame)};
+        const auto phase{requestedPhase ? requestedPhase : miniCapture.Reserve(diagnosticBase.id, frame)};
         if (!phase) return;
         auto staging{gpu.memory.AllocateStagingBuffer(surfaceSize)};
         std::memset(staging->data(), 0, staging->size());
@@ -192,6 +199,7 @@ namespace skyline::gpu {
         snapshot.swizzle = static_cast<u32>(view.mapping.r) | (static_cast<u32>(view.mapping.g) << 4) |
             (static_cast<u32>(view.mapping.b) << 8) | (static_cast<u32>(view.mapping.a) << 12);
         snapshot.writeSerial = diagnosticWriteSerial.load();
+        snapshot.peer=operation; snapshot.state=role;
         // Initialize copies before the consuming draw, after earlier queued producers.
         // SubmitInternal's existing upload remains before all command nodes.
         captureCycle->AttachObjects(staging, shared_from_this());

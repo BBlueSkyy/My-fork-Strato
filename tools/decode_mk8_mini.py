@@ -20,24 +20,33 @@ def decode(path, output):
     output.mkdir(parents=True, exist_ok=True)
     manifest = []
     with path.open('rb') as source:
-        if source.readline() != b'MK8MINI1\n':
+        header=source.readline()
+        producer=header==b'MK8MINI2\n'
+        if header not in (b'MK8MINI1\n', b'MK8MINI2\n'):
             raise ValueError('Unsupported Mini capture header')
         while line := source.readline():
-            if len(manifest) >= 16:
+            if len(manifest) >= (64 if producer else 16):
                 raise ValueError('Too many captured images')
             values = list(map(int, line.decode('ascii').strip().split(',')))
             keys = 'phase frame id address image generation format width height levels layers tic mip view_levels layer view_layers swizzle write_serial bytes'.split()
+            if producer: keys=['operation','role']+keys
             if len(values) != len(keys):
                 raise ValueError('Invalid image header')
             row = dict(zip(keys, values))
-            if row['phase'] not in (1, 3) or row['format'] != 122 or row['width'] != 32 or row['height'] != 32 or row['layers'] != 6 or not 1 <= row['levels'] <= 6:
-                raise ValueError('Unexpected cubemap layout')
-            expected = sum(max(1, 32 >> level)**2 * 4 * 6 for level in range(row['levels']))
-            if row['bytes'] != expected:
-                raise ValueError('Size differs from packed mip/layer layout')
-            data = source.read(expected)
-            if len(data) != expected or source.read(1) != b'\n':
-                raise ValueError('Truncated image payload')
+            if row['phase'] not in (1,3) or not 0 < row['bytes'] <= 256*1024:
+                raise ValueError('Invalid phase or image size')
+            if not (1 <= row['width'] <= 256 and 1 <= row['height'] <= 256 and 1 <= row['layers'] <= 6 and 1 <= row['levels'] <= 9):
+                raise ValueError('Invalid image dimensions')
+            expected=row['bytes']
+            data=source.read(expected)
+            if len(data)!=expected or source.read(1)!=b'\n': raise ValueError('Truncated image payload')
+            prefix=f"op{row.get('operation',0)}-role{row.get('role',0)}-phase{row['phase']}-id{row['id']}-tic{row['tic']}"
+            row['nonzero_bytes']=sum(b!=0 for b in data)
+            if producer: row['producer_kind']='clear' if row['operation'] & 1 else 'subpass'
+            if row['format']!=122 or row['width']!=32 or row['height']!=32 or row['layers']!=6:
+                name=prefix+'.bin'; (output/name).write_bytes(data);row['raw']=name;manifest.append(row);continue
+            packed=sum(max(1,32>>level)**2*4*6 for level in range(row['levels']))
+            if packed!=expected: raise ValueError('Unexpected packed float mip/layer size')
             words = struct.unpack('<' + 'I' * (expected // 4), data)
             rgb = [(channel(w & 2047, 6), channel((w >> 11) & 2047, 6), channel(w >> 22, 5)) for w in words]
             finite = [v for pixel in rgb for v in pixel if math.isfinite(v)]
@@ -52,7 +61,7 @@ def decode(path, output):
                 image = Image.new('RGB', (32, 32))
                 image.putdata([color(p) for p in rgb[face*1024:(face+1)*1024]])
                 sheet.paste(image, (face*32, 0))
-            name = f"phase{row['phase']}-id{row['id']}-tic{row['tic']}.png"
+            name = prefix+".png"
             sheet.resize((768, 128), Image.Resampling.NEAREST).save(output / name)
             (output / name.replace('.png', '.bin')).write_bytes(data)
             row['preview'] = name

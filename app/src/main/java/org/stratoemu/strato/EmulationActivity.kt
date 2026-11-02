@@ -234,9 +234,10 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         if (!nativeMk8TexturePhase(-1)) return false
         MaterialAlertDialogBuilder(this)
             .setTitle("MK8 texture diagnostic")
-            .setItems(arrayOf("1: First selection (mark before entering)", "2: Race (mark before loading)", "3: Returned selection (mark before returning)", "Export trace and stop recording", "Mini: capture black selection now", "Mini: capture correct selection now", "Mini: export both captures")) { _, which ->
+            .setItems(arrayOf("1: First selection (mark before entering)", "2: Race (mark before loading)", "3: Returned selection (mark before returning)", "Export trace and stop recording", "Mini: capture black selection now", "Mini: capture correct selection now", "Mini: export both captures", "Producer: capture black selection", "Producer: capture correct selection")) { _, which ->
                 if (which == 3) mk8TraceExport.launch("mk8-texture-lifecycle-${System.currentTimeMillis()}.csv")
                 else if (which == 4 || which == 5) Toast.makeText(this, if (nativeMk8Mini(if (which == 4) 1 else 3, -1)) "Mini armed: keep the character visible for 2 seconds" else "Mini capture already used or recorder stopped", Toast.LENGTH_LONG).show()
+                else if (which == 7 || which == 8) Toast.makeText(this, if (nativeMk8Mini(if (which == 7) 11 else 13, -1)) "Producer capture armed: keep character visible" else "Restart for a new producer capture", Toast.LENGTH_LONG).show()
                 else if (which == 6) mk8MiniExport.launch("mk8-mini-${System.currentTimeMillis()}.mcap")
                 else Toast.makeText(this, if (nativeMk8TexturePhase(which + 1)) "MK8 phase ${which + 1} marked" else "Phase rejected: restart for a new trace", Toast.LENGTH_LONG).show()
             }
