@@ -125,7 +125,7 @@ namespace skyline::gpu::texture::diagnostic {
             out<<"# MK8ORIGIN1; payload=CPU byte copy or explicit deferred GPU read; id/address only valid within one run\n";
             out<<"# observed_intents_are_not_GPU_execution; zero payload with invalid status is NOT a zero-valued image\n";
             out<<"# anchors="<<n<<" missed_lock="<<missed.load()<<" overflow="<<omitted.load()<<'\n';
-            out<<"stage,phase,frame,id,address,guest_bytes,image,generation,write_serial,readback_serial,format,width,height,levels,layers,state,flags,mip,face,size,nonzero,fnv1a64,status\n";
+            out<<"stage,phase,frame,id,address,guest_bytes,image,generation,write_serial,readback_serial,format,width,height,levels,layers,state,flags,detail,mip,face,size,nonzero,fnv1a64,status\n";
             for(auto &e:copy) {
                 auto data{e.deferred ? e.deferred() : std::move(e.bytes)};
                 const bool valid{!e.deferred || !data.empty()};
