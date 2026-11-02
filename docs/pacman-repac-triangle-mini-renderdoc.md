@@ -393,3 +393,89 @@ If mode 3 still fails after a complete A/B game run with the corrected
 persistent test, treat selective *scene-only* submissions as
 insufficient and prioritize the omitted depth, postprocess and
 presentation producer→consumer boundaries. No root-cause fix yet.
+
+
+## Stage 7 — identify which extra GPU submission matters (2026-11-01)
+
+**Confirmed A/B:** The user reproduced a clean PAC-MAN scene (the inverted
+triangle disappeared) with `Executor Flush Threshold=256` and the
+persisting `ENABLE_EXECUTOR_SCENE_SUBMIT_TEST` flag. Its latest
+`capture_001.zip` verifies:
+
+- `executor_experiment_mode=3`;
+- `executor_experiment_draws=6004` over 60 host presentations;
+- `executor_experiment_persists_after_capture=1`;
+- no dropped trace events; user additionally supplied an on-screen
+  screenshot of the correctly rendered beach scene (~27 FPS).
+
+The success is strong evidence that **extra command buffer submissions**
+change the outcome. The previous renderpass-only and barrier+split
+tests did not fix the corruption. Do not assume the precise bug is
+a fence, a texture alias, the Vulkan driver or a shader without a
+narrower controlled test.
+
+**Correction of prior wording:** Mode 3 matched *any* 1280×720 color
+attachment, not only HDR `B10G11R11_UFLOAT_PACK32`. It may thus submit
+postprocess draws in addition to the primary HDR scene. Stage 7
+splits these behaviors into smaller opt-in tests.
+
+### Three new marker options
+
+For each test, leave **Executor Flush Threshold = 256** in settings.
+Fully terminate the Strato app between tests. In
+`gpu_capture/pacman_world/`, leave only one experiment marker with
+a freshly created empty `ARM_CAPTURE`. There must be NO other
+`ENABLE_EXECUTOR_*` or `ENABLE_HDR_SCAN` markers.
+
+1. `ENABLE_EXECUTOR_DEPTH_SCENE_TEST` — **mode 4**. After seeing
+   a depth-only 2048×2048 draw, submit immediately **after the first
+   following** 1280×720 **HDR** color draw. This is a diagnostic
+   approximation to the depth→HDR transition. It does not submit
+   *before* the HDR draw, because the current draw's allocator-backed
+   state is already prepared when `AddSubpass()` executes.
+2. `ENABLE_EXECUTOR_SCENE_POST_TEST` — **mode 5**. After seeing a
+   1280×720 HDR color draw, submit after the **first non-HDR color
+   draw** targeting a size other than the 1920×1080 VI-sized target.
+   This approximates the HDR scene→postprocessing transition.
+3. `ENABLE_EXECUTOR_VI_TARGET_TEST` — **mode 6**. After seeing the
+   HDR scene, submit after the **first color draw to a 1920×1080
+   image**, which matches the observed VI backing dimensions.
+   This is **not necessarily** the actual `PresentFrame()` boundary.
+   If no such draw is issued by the 3D executor, the experiment
+   will have **zero** targeted submissions; interpret as unavailable,
+   not as a genuine negative test.
+
+The broad successful mode 3 (`ENABLE_EXECUTOR_SCENE_SUBMIT_TEST`)
+remains available as a positive A/B reference.
+
+All three modes:
+- Keep every unselected draw on the normal threshold=256 schedule.
+- Submit only *after* an eligible first draw at the identified phase
+  transition (never in the middle of preparing a draw).
+- Honor existing `gotoNext` protection against illegal mid-subpass
+  submission.
+- Keep the selected mode active after the 60-present metadata capture
+  until the Strato app process exits; no diagnostic runs unarmed.
+- Produce `capture_complete.txt` with
+  `executor_experiment_mode=4`, `5` or `6`,
+  `executor_experiment_draws`, and
+  `executor_experiment_persists_after_capture=1`.
+- Record each forced submission in `gpu_events.txt` as
+  `EXECUTOR_BOUNDARY_SUBMIT`, and any ineligible `gotoNext`
+  candidate as `EXECUTOR_BOUNDARY_SKIPPED`.
+
+Observe gameplay for enough time to confirm whether the triangle
+reappears. Send each capture ZIP, corresponding `emulation.log`, the
+visual result and optionally average FPS. If
+`executor_experiment_draws=0`, that test did not exercise the
+intended transition and cannot disprove its relevance.
+
+We should not ship these test hooks or a permanent extra submit as a
+final fix. Even a working one-submit-per-frame diagnostic may mask
+incorrect resource ordering or lifetime. After a boundary is
+identified, inspect `SubmitInternal()`'s specific texture/buffer
+dependencies, queue ordering, synchronization and frame ownership,
+then fix the proven contract violation with regression tests.
+
+**Stage 7 Android build / device validation not yet confirmed.**
+No merge; Draft PR #414 remains the investigation branch.
