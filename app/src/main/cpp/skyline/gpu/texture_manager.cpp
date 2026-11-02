@@ -17,6 +17,18 @@ namespace skyline::gpu {
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
+        // Identify the run-specific cube by structure, never by texture ID or
+        // a captured CPU address. Arm before reconciling smaller overlapping
+        // render targets so we also observe their pre-/post-sync contents.
+        if (gpu.originCapture.Enabled() && guestTexture.format &&
+            guestTexture.format->vkFormat==vk::Format::eB10G11R11UfloatPack32 &&
+            guestTexture.dimensions.width==32 && guestTexture.dimensions.height==32 &&
+            guestTexture.dimensions.depth==1 && guestTexture.layerCount==6 &&
+            guestTexture.mipLevelCount==5 && guestTexture.mappings.size()==1 &&
+            !guestTexture.mappings.front().empty())
+            gpu.originCapture.Watch(guestTexture.mappings.front().data(),
+                                    guestTexture.mappings.front().size());
+
         // Never dereference an empty guest mapping sequence or try to resolve
         // invalid physical spans through the Texman overlap table.
         if (guestTexture.mappings.empty() || guestTexture.mappings.front().empty() || !guestTexture.MappingsValid())
@@ -528,15 +540,19 @@ namespace skyline::gpu {
                     matches.push_back(entry.texture);
             });
 
-        for (auto &texture : matches)
+        for (auto &texture : matches) {
+            texture->TraceOrigin(texture::diagnostic::OriginStage::OverlapBefore,nullptr,0,true);
             if (!separateGroup || texture->aliasGroup.load() != separateGroup)
                 texture->SynchronizeGuest(false, true);
+            texture->TraceOrigin(texture::diagnostic::OriginStage::OverlapAfter,nullptr,0,true);
+        }
 
         // Create a texture as we cannot find one that matches
 
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();
+        texture->TraceOrigin(texture::diagnostic::OriginStage::CreatedGuest,nullptr,0,true);
         for (const auto &overlap : matches)
             texture->TraceLifecycle(texture::diagnostic::Event::Overlap, 0, overlap->diagnosticBase.id);
         texture->aliasReadOnly = requestedReadOnlyAlias;
