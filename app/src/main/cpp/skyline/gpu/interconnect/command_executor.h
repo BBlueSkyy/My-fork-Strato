@@ -228,6 +228,10 @@ namespace skyline::gpu::interconnect {
         // matched against the previous pass even if the command slot rotated.
         bool pacmanSawDepthPass{};
         bool pacmanSawHdrScenePass{};
+        // Debug-only correlation between the guest Maxwell draw and
+        // the next queued Vulkan subpass. Never used to alter shaders.
+        std::string pacmanNextDrawSignature;
+        std::uint64_t pacmanPostCandidateSerial{};
 
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
@@ -274,6 +278,11 @@ namespace skyline::gpu::interconnect {
         // Queues a GPU-ordered post-draw color-RT readback (only when manually armed).
         void CapturePacmanSceneStep(TextureView *target, u32 sceneDrawOrdinal,
                                     std::string_view drawDescription);
+        // Set immediately before AddSubpass by Maxwell3D for the bounded
+        // postprocess-boundary diagnostic; consumed by AddSubpass.
+        void SetPacmanDrawSignature(std::string signature) {
+            pacmanNextDrawSignature = std::move(signature);
+        }
         UsageTracker usageTracker;
 
         CommandExecutor(const DeviceState &state);
