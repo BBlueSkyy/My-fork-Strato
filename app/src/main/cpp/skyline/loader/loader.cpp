@@ -19,7 +19,8 @@ namespace skyline::loader {
         // NCE patching is only required for 64-bit executables
         const bool needsNcePatching{is64bit};
         // Only enable symbol hooking for 64-bit executables
-        const bool enableSymbolHooking{is64bit};
+        const bool enableSymbolHooking{is64bit && dynamicallyLinked &&
+            name == "sdk.nso" && process->npdm.aci0.programId == 0x0100E66010ADE000ULL};
 
         // An AArch32 guest never executes through NCE. Installing its raw signal
         // handler in that process would intercept signals from Android's ART JIT
@@ -39,6 +40,35 @@ namespace skyline::loader {
 
         if (!util::IsPageAligned(executable.text.offset) || !util::IsPageAligned(executable.ro.offset) || !util::IsPageAligned(executable.data.offset))
             throw exception("Section offsets are not aligned with page size: 0x{:X}, 0x{:X}, 0x{:X}", executable.text.offset, executable.ro.offset, executable.data.offset);
+
+        // Temporary, exact-layout diagnostic: route the first instruction of
+        // the updated Crysis NVN memory callback through the existing NCE SVC
+        // trampoline, then replay its original STR LR with unchanged semantics.
+        // The byte signature prevents applying this to the base or other builds.
+        if (needsNcePatching && name == "main.nso" &&
+            process->npdm.aci0.programId == 0x0100E66010ADE000ULL) {
+            constexpr size_t CallbackOffset{0x28469E0};
+            constexpr size_t CallOffset{CallbackOffset + 0x2C};
+            if (executable.text.contents.size() >= CallOffset + sizeof(u32)) {
+                auto readInstruction = [&](size_t address) {
+                    u32 word{};
+                    std::memcpy(&word, executable.text.contents.data() + address, sizeof(word));
+                    return word;
+                };
+                if (readInstruction(CallbackOffset) == 0xF81F0FFE &&
+                    readInstruction(CallbackOffset + 4) == 0x7100043F &&
+                    readInstruction(CallbackOffset + 8) == 0x54000080 &&
+                    readInstruction(CallOffset) == 0x94072D15) {
+                    constexpr u32 ProbeInstruction{0xD4000001U |
+                        (static_cast<u32>(nce::CrysisMemoryCallbackProbeSvc) << 5)};
+                    std::memcpy(executable.text.contents.data() + CallbackOffset,
+                                &ProbeInstruction, sizeof(ProbeInstruction));
+                    LOGI("CrysisNVNProbe: enabled callback-entry probe at main+0x{:X}", CallbackOffset);
+                } else {
+                    LOGW("CrysisNVNProbe: callback signature mismatch; no probe installed");
+                }
+            }
+        }
 
         // Use an empty PatchData if we don't need to patch
         auto patch{needsNcePatching ? state.nce->GetPatchData(executable.text.contents) : nce::NCE::PatchData{}};

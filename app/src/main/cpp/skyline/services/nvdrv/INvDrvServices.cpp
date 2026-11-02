@@ -7,11 +7,14 @@
 #include "driver.h"
 #include "devices/nvdevice.h"
 
-#define NVRESULT(x) [&response](NvResult err) {         \
-        if (err != NvResult::Success)                   \
-            LOGD("IOCTL Failed: 0x{:X}", err); \
-        response.Push<NvResult>(err);                   \
-        return Result{};                                \
+#define NVRESULT(x) [&response, this](NvResult err) {                                      \
+        if (err != NvResult::Success) {                                                   \
+            LOGD("IOCTL Failed: 0x{:X}", err);                                            \
+            if (state.process && state.process->npdm.aci0.programId == 0x0100E66010ADE000ULL) \
+                RecordCrysisDiagnosticFailure("NVDRV", 0, static_cast<u32>(err));         \
+        }                                                                                \
+        response.Push<NvResult>(err);                                                     \
+        return Result{};                                                                  \
     } (x)
 
 namespace skyline::service::nvdrv {
@@ -64,10 +67,10 @@ namespace skyline::service::nvdrv {
         auto buf{GetMainIoctlBuffer(ioctl,
                                     !request.inputBuf.empty() ? request.inputBuf.at(0) : span<u8>{},
                                     !request.outputBuf.empty() ? request.outputBuf.at(0) : span<u8>{})};
-        if (!buf)
-            return NVRESULT(buf);
-        else
-            return NVRESULT(driver.Ioctl(fd, ioctl, *buf));
+        const NvResult result{buf ? driver.Ioctl(fd, ioctl, *buf) : buf.result};
+        if (result != NvResult::Success && state.process && state.process->npdm.aci0.programId == 0x0100E66010ADE000ULL)
+            RecordCrysisDiagnosticFailure("NVDRV::Ioctl", ioctl.raw, static_cast<u32>(result));
+        return NVRESULT(result);
     }
 
     Result INvDrvServices::Close(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -111,10 +114,10 @@ namespace skyline::service::nvdrv {
         auto buf{GetMainIoctlBuffer(ioctl,
                                     !request.inputBuf.empty() ? request.inputBuf.at(0) : span<u8>{},
                                     !request.outputBuf.empty() ? request.outputBuf.at(0) : span<u8>{})};
-        if (!buf)
-            return NVRESULT(buf);
-        else
-            return NVRESULT(driver.Ioctl2(fd, ioctl, *buf, inlineBuf));
+        const NvResult result{buf ? driver.Ioctl2(fd, ioctl, *buf, inlineBuf) : buf.result};
+        if (result != NvResult::Success && state.process && state.process->npdm.aci0.programId == 0x0100E66010ADE000ULL)
+            RecordCrysisDiagnosticFailure("NVDRV::Ioctl2", ioctl.raw, static_cast<u32>(result));
+        return NVRESULT(result);
     }
 
     Result INvDrvServices::Ioctl3(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -127,10 +130,10 @@ namespace skyline::service::nvdrv {
         auto buf{GetMainIoctlBuffer(ioctl,
                                     !request.inputBuf.empty() ? request.inputBuf.at(0) : span<u8>{},
                                     !request.outputBuf.empty() ? request.outputBuf.at(0) : span<u8>{})};
-        if (!buf)
-            return NVRESULT(buf);
-        else
-            return NVRESULT(driver.Ioctl3(fd, ioctl, *buf, inlineBuf));
+        const NvResult result{buf ? driver.Ioctl3(fd, ioctl, *buf, inlineBuf) : buf.result};
+        if (result != NvResult::Success && state.process && state.process->npdm.aci0.programId == 0x0100E66010ADE000ULL)
+            RecordCrysisDiagnosticFailure("NVDRV::Ioctl3", ioctl.raw, static_cast<u32>(result));
+        return NVRESULT(result);
     }
 
     Result INvDrvServices::GetStatus(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {

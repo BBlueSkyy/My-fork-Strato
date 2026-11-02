@@ -89,6 +89,53 @@ namespace skyline::service::am {
         auto result{request.Pop<Result>()};
         LOGI("App set termination result: {} (module {}, description {})", result.raw,
              static_cast<u32>(result.module), static_cast<u32>(result.id));
+        if (state.process->npdm.aci0.programId == 0x0100E66010ADE000ULL) {
+            // The NCE SVC trampoline saves guest SP on the host stack just below
+            // ThreadContext::hostSp. Its per-SVC stub pushes the guest LR at that SP.
+            // Capture this before the abort occurs, without hooking or altering guest code.
+            if (state.process->is64bit()) {
+                const auto &guest{static_cast<const kernel::type::KNceThread &>(*state.thread).ctx};
+                if (guest.hostSp) {
+                    u64 guestSp{};
+                    std::memcpy(&guestSp, guest.hostSp - sizeof(u64), sizeof(guestSp));
+                    AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+                        "CrysisGuestAbort: saved guest SP=0x{:X}, TLS hostSp={:p}",
+                        guestSp, static_cast<const void *>(guest.hostSp)));
+
+                    const u64 codeBase{reinterpret_cast<u64>(state.process->memory.code.guest.data())};
+                    const u64 codeSize{state.process->memory.code.guest.size()};
+                    size_t candidates{};
+                    // These are *stack candidates*, not a validated frame-pointer unwind.
+                    // Read at most 0x200 bytes, stopping at the first unmapped slot.
+                    if (guestSp && guestSp % alignof(u64) == 0) {
+                        for (u64 offset{}; offset < 0x200 && candidates < 12; offset += sizeof(u64)) {
+                            if (guestSp > std::numeric_limits<u64>::max() - offset)
+                                break;
+                            const u64 address{guestSp + offset};
+                            auto range{span<u8>{reinterpret_cast<u8 *>(address), sizeof(u64)}};
+                            if (!state.process->memory.AddressSpaceContains(range) ||
+                                !state.process->memory.IsRangeMapped(range))
+                                break;
+
+                            u64 value{};
+                            std::memcpy(&value,
+                                        state.process->memory.TranslateVirtualPointer<const u8 *>(address),
+                                        sizeof(value));
+                            if (value < codeBase || value - codeBase >= codeSize || (value & 3))
+                                continue;
+                            AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+                                "CrysisGuestAbort: code-address candidate stack+0x{:X}=0x{:X} (code+0x{:X})",
+                                offset, value, value - codeBase));
+                            ++candidates;
+                        }
+                    }
+                    AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+                        "CrysisGuestAbort: {} bounded code-address candidates; not a verified guest backtrace",
+                        candidates));
+                }
+            }
+            DumpRecentIpcCallsForCurrentThread();
+        }
         if (!state.process->is64bit()) {
             const auto &guest{static_cast<const kernel::type::KJit32Thread &>(*state.thread).ctx};
             LOGI("Guest AArch32 termination call: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}",

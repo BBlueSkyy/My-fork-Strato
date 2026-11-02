@@ -11,6 +11,7 @@
 #include "kernel/types/KProcess.h"
 #include "kernel/svc.h"
 #include "nce/guest.h"
+#include "nce/crysis_nvn_probe.h"
 #include "nce/instructions.h"
 #include "nce.h"
 
@@ -21,10 +22,179 @@ namespace skyline::nce {
         return killAllThreads ? "ExitProcess" : "ExitThread";
     }
 
+    void NCE::TraceCrysisNvn(u16 svcId, ThreadContext *ctx) {
+        auto readable = [&](u64 address, size_t length) {
+            if (!address || !length || address > std::numeric_limits<u64>::max() - length)
+                return false;
+            auto range{span<u8>{reinterpret_cast<u8 *>(address), length}};
+            if (!state.process->memory.AddressSpaceContains(range) ||
+                !state.process->memory.IsRangeMapped(range))
+                return false;
+            for (u64 cursor{address}; cursor < address + length;) {
+                const auto chunk{state.process->memory.GetChunk(reinterpret_cast<u8 *>(cursor))};
+                if (!chunk || !chunk->second.permission.r)
+                    return false;
+                const u64 base{reinterpret_cast<u64>(chunk->first)};
+                if (base > cursor || chunk->second.size > std::numeric_limits<u64>::max() - base)
+                    return false;
+                const u64 end{base + chunk->second.size};
+                if (end <= cursor)
+                    return false;
+                cursor = std::min<u64>(end, address + length);
+            }
+            return true;
+        };
+        auto read = [&](u64 address, void *out, size_t length) {
+            if (!readable(address, length))
+                return false;
+            std::memcpy(out, state.process->memory.TranslateVirtualPointer<const u8 *>(address), length);
+            return true;
+        };
+
+        CrysisNvnEntry entry{};
+        entry.svc = svcId;
+        entry.timeNs = util::GetTimeNs();
+        entry.threadId = state.thread ? state.thread->id : 0;
+        entry.buffer = ctx->gpr.x0;
+        entry.args = {ctx->gpr.x1, ctx->gpr.x2, ctx->gpr.x3};
+        // WriteTrampoline stores guest SP at hostSp-8. The diagnostic stub
+        // pushes Q31 then LR; savedSp points at LR, before replay.
+        u64 savedSp{};
+        if (ctx->hostSp) {
+            std::memcpy(&savedSp, ctx->hostSp - sizeof(u64), sizeof(savedSp));
+            read(savedSp, &entry.callerLr, sizeof(entry.callerLr));
+        }
+
+        {
+            std::lock_guard lock{crysisNvnMutex};
+            // A lifecycle SVC can only be installed for the full verified SDK
+            // Build ID and signatures. Without one, retain legacy callback
+            // logging but do not interpret an unknown SDK's private layout.
+            if (svcId == CrysisMemoryCallbackProbeSvc && !crysisNvnSequence)
+                return;
+            entry.mapped = read(entry.buffer, entry.raw.data(), sizeof(entry.raw));
+            if (svcId != CrysisMemoryCallbackProbeSvc) {
+                entry.sequence = ++crysisNvnSequence;
+                ++crysisNvnCounts[svcId - crysis::SdkProbes.front().svc];
+                crysisNvnHistory[(entry.sequence - 1) % crysisNvnHistory.size()] = entry;
+                return;
+            }
+        }
+        std::array<CrysisNvnEntry, 64> history;
+        std::array<u64, 4> counts;
+        u64 sequence;
+        {
+            std::lock_guard lock{crysisNvnMutex};
+            history = crysisNvnHistory;
+            counts = crysisNvnCounts;
+            sequence = crysisNvnSequence;
+        }
+
+        const auto decoded{crysis::Decode(entry.raw)};
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+            "CrysisNVNUsage: mapped={} cmdValid={} size=0x{:X} used=0x{:X} free=0x{:X} ctrlValid={} size=0x{:X} used=0x{:X} free=0x{:X}",
+            entry.mapped, entry.mapped && decoded.command.valid, decoded.command.size, decoded.command.used, decoded.command.free,
+            entry.mapped && decoded.control.valid, decoded.control.size, decoded.control.used, decoded.control.free));
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+            "CrysisNVNCursors: start=0x{:X} cursor=0x{:X} end=0x{:X} segment=0x{:X} gpuBase=0x{:X} reservedWords={} flags=0x{:X}",
+            entry.raw[10], entry.raw[3], entry.raw[4], entry.raw[5], entry.raw[12],
+            static_cast<u32>(entry.raw[14]), entry.raw[13]));
+        std::array<u64, 14> stack{};
+        const u64 entrySp{savedSp <= std::numeric_limits<u64>::max() - 32 ? savedSp + 32 : 0};
+        const bool stackMapped{read(entrySp, stack.data(), sizeof(stack))};
+        std::string stackWords;
+        if (stackMapped)
+            for (size_t i{}; i < stack.size(); ++i)
+                stackWords += fmt::format(" +{:X}=0x{:X}", i * sizeof(u64), stack[i]);
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+            "CrysisNVNCall: callerLR=0x{:X} entrySP=0x{:X} x4=0x{:X} stackMapped={}{}",
+            entry.callerLr, entrySp, ctx->gpr.x4, stackMapped, stackWords));
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+            "CrysisNVNHistory: total={} AddCommand={} AddControl={} Begin={} End={} pre-call snapshots; last {} operations across threads",
+            sequence, counts[0], counts[1], counts[2], counts[3], std::min<u64>(sequence, history.size())));
+        for (u64 i{sequence > history.size() ? sequence - history.size() : 0}; i < sequence; ++i) {
+            const auto &record{history[i % history.size()]};
+            const auto usage{crysis::Decode(record.raw)};
+            const auto name{crysis::SdkProbes[record.svc - crysis::SdkProbes.front().svc].name};
+            AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+                "CrysisNVNHistory: seq={} ns={} thread={} op={} cmd=0x{:X} LR=0x{:X} args=0x{:X}/0x{:X}/0x{:X} mapped={} valid={} start=0x{:X} cursor=0x{:X} end=0x{:X} used=0x{:X} free=0x{:X} recording={}",
+                record.sequence, record.timeNs, record.threadId, name, record.buffer, record.callerLr,
+                record.args[0], record.args[1], record.args[2], record.mapped, record.mapped && usage.command.valid,
+                record.raw[10], record.raw[3], record.raw[4], usage.command.used, usage.command.free,
+                record.raw[13] & 0xFF));
+        }
+
+        // Check complete configured guest ranges without reading megabytes or
+        // changing protection. This is CPU backing evidence, not GPU-VA proof.
+        std::array<u64, 4> backing{};
+        if (ctx->gpr.x3 <= std::numeric_limits<u64>::max() - 0x1A8 &&
+            read(ctx->gpr.x3 + 0x1A8, backing.data(), sizeof(backing))) {
+            AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+                "CrysisNVNBacking: commandReadable={} controlReadable={} (complete configured CPU ranges)",
+                readable(backing[0], backing[2]), readable(backing[1], backing[3])));
+        }
+        if (entry.mapped && decoded.command.valid && decoded.command.used >= 256) {
+            std::array<u32, 64> tail{};
+            const u64 address{entry.raw[3] - sizeof(tail)};
+            if (read(address, tail.data(), sizeof(tail))) {
+                std::string words;
+                for (auto word : tail)
+                    words += fmt::format(" {:08X}", word);
+                AsyncLogger::LogSync(AsyncLogger::LogLevel::Info,
+                    fmt::format("CrysisNVNTail: address=0x{:X} words={}", address, words));
+            }
+        }
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, "CrysisNVNHistory: END");
+    }
+
     void NCE::SvcHandler(u16 svcId, ThreadContext *ctx) {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
+        if (svcId >= CrysisMemoryCallbackProbeSvc && svcId <= crysis::SdkProbes.back().svc &&
+            state.process && state.process->npdm.aci0.programId == 0x0100E66010ADE000ULL) {
+            state.nce->TraceCrysisNvn(svcId, ctx);
+            if (svcId != CrysisMemoryCallbackProbeSvc) {
+                TRACE_EVENT_BEGIN("guest", "Guest");
+                return;
+            }
+        }
+        // Probe is synthesized only after matching Crysis v1.6.0 main's
+        // exact entry signature. The trampoline saves/restores all volatile
+        // registers and executes the displaced STR LR before returning.
+        if (svcId == CrysisMemoryCallbackProbeSvc && state.process &&
+            state.process->npdm.aci0.programId == 0x0100E66010ADE000ULL) {
+            const auto &gpr{ctx->gpr};
+            AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+                "CrysisNVNMemory: event={} minSize=0x{:X} ({}) cmdBuffer=0x{:X} data=0x{:X}",
+                gpr.x1, gpr.x2, gpr.x2, gpr.x0, gpr.x3));
+
+            // Updated main.nso stores the original command/control backing
+            // pointers and configured sizes in the wrapper at data+0x1A8.
+            // Read only on the verified title-specific callback and only when
+            // the complete 32-byte guest range is mapped.
+            constexpr u64 BackingOffset{0x1A8};
+            std::array<u64, 4> backing{};
+            if (gpr.x3 && gpr.x3 <= std::numeric_limits<u64>::max() -
+                                                 BackingOffset - sizeof(backing)) {
+                const auto address{gpr.x3 + BackingOffset};
+                auto range{span<u8>{reinterpret_cast<u8 *>(address), sizeof(backing)}};
+                if (state.process->memory.AddressSpaceContains(range) &&
+                    state.process->memory.IsRangeMapped(range)) {
+                    std::memcpy(backing.data(),
+                                state.process->memory.TranslateVirtualPointer<const u8 *>(address),
+                                sizeof(backing));
+                    AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+                        "CrysisNVNState: cmdBacking=0x{:X} ctrlBacking=0x{:X} configuredCmd=0x{:X} ({}) configuredCtrl=0x{:X} ({})",
+                        backing[0], backing[1], backing[2], backing[2], backing[3], backing[3]));
+                } else {
+                    AsyncLogger::LogSync(AsyncLogger::LogLevel::Info,
+                        "CrysisNVNState: wrapper backing fields not mapped");
+                }
+            }
+            TRACE_EVENT_BEGIN("guest", "Guest");
+            return;
+        }
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
@@ -351,7 +521,9 @@ namespace skyline::nce {
             auto instructionOffset{static_cast<size_t>(instruction - start)};
 
             if (svc.Verify()) {
-                size += 7;
+                // Diagnostic stubs preserve Q31 around legacy SaveCtx's
+                // FPSR/FPCR overlap, then replay the displaced instruction.
+                size += crysis::ReplayInstruction(svc.value) ? 10 : 7;
                 offsets.push_back(instructionOffset);
             } else if (mrs.Verify()) {
                 if (mrs.srcReg == TpidrroEl0 || mrs.srcReg == TpidrEl0) {
@@ -406,6 +578,8 @@ namespace skyline::nce {
                 *instruction = instructions::B(static_cast<i32>(endOffset() + offset), true).raw;
 
                 /* Save Context */
+                if (crysis::ReplayInstruction(svc.value))
+                    *patch++ = 0x3C9F0FFF; // STR Q31, [SP, #-16]!
                 *patch++ = 0xF81F0FFE; // STR LR, [SP, #-16]!
                 *patch = instructions::BL(static_cast<i32>(startOffset())).raw;
                 patch++;
@@ -419,6 +593,10 @@ namespace skyline::nce {
                 *patch = instructions::BL(static_cast<i32>(startOffset() + guest::SaveCtxSize + TrampolineSize)).raw;
                 patch++;
                 *patch++ = 0xF84107FE; // LDR LR, [SP], #16
+                if (const auto replay{crysis::ReplayInstruction(svc.value)}) {
+                    *patch++ = 0x3CC107FF; // LDR Q31, [SP], #16
+                    *patch++ = replay; // Verified, position-independent original prologue.
+                }
                 *patch = instructions::B(static_cast<i32>(endOffset() + offset + 1)).raw;
                 patch++;
             } else if (mrs.Verify()) {
@@ -513,7 +691,7 @@ namespace skyline::nce {
             if (std::holds_alternative<hle::OverrideHook>(entry.hook))
                 size += EmitTrampolineSize + 1;
             else if (std::holds_alternative<hle::EntryExitHook>(entry.hook))
-                size += 4 + EmitTrampolineSize + 1 + EmitTrampolineSize + 4 + 1;
+                size += 6 + EmitTrampolineSize + 1 + EmitTrampolineSize + 6 + 1;
         }
         return size * sizeof(u32);
     }
