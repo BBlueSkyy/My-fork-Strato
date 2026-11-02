@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the actual predicate methods and GLSL comparison expression on a host GPU interface."""
+"""Exercise production draw/predicate methods through host command and memory facades."""
 import os
 import pathlib
 import subprocess
@@ -28,13 +28,22 @@ with tempfile.TemporaryDirectory(prefix='strato-gpu-conditional-') as directory:
     declarations = declarations.replace('        void RefreshRenderCondition();', '')
     (directory / 'members.inc').write_text(declarations)
     methods = [source[source.index("    Maxwell3D::RenderConditionResources::RenderConditionResources("):source.index("    Maxwell3D::Maxwell3D(")]]
-    for name in ('ClearRenderCondition', 'SetRenderCondition', 'CheckRenderCondition', 'RefreshRenderCondition', 'FlushQueries', 'InvalidateRenderConditionAfterDraw', 'Draw'):
+    for name in ('ClearRenderCondition', 'SetRenderCondition', 'CheckRenderCondition', 'RefreshRenderCondition', 'FlushQueries', 'InvalidateRenderConditionAfterDraw', 'TraceSyntheticIndexOverride', 'Draw'):
         for prefix in ('void', 'bool'):
             signature = f'{prefix} Maxwell3D::{name}('
             if signature in source:
                 methods.append(function(source, signature))
     pipeline = (GPU / 'interconnect/maxwell_3d/pipeline_manager.cpp').read_text()
     active = (GPU / 'interconnect/maxwell_3d/active_state.cpp').read_text()
+    # Keep the actual dirty flag/cache-purge semantics, without the unrelated
+    # register manager (the index-view and PrepareDraw boundaries are facades).
+    dirty = (ROOT / 'app/src/main/cpp/skyline/common/dirty_tracking.h').read_text()
+    (directory / 'dirty.inc').write_text(
+        'namespace skyline::dirty {\n'
+        'template<size_t, size_t, size_t> class Manager;\n' +
+        function(dirty, 'struct Handle {') + ';\n' +
+        dirty[dirty.index('    class ManualDirty {};'):])
+    (directory / 'invalidate.inc').write_text(function(active, 'void ActiveState::InvalidateIndexBuffer('))
     (directory / 'writers.inc').write_text('\n'.join([
         function(pipeline, 'void Pipeline::InheritDescriptorBufferViews('),
         function(pipeline, 'bool Pipeline::MayWriteBuffer('),

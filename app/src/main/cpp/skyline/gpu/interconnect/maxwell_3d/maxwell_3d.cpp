@@ -71,10 +71,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (cap.ExecutorExperimentMode() != 18)
             return;
 
-        // Probe a specific cache contract, independently of postprocess slots.
-        // Ordinary rendering remains unchanged until the device establishes
-        // whether this defect is active in PAC-MAN's affected draw sequence.
-        activeState.InvalidateIndexBuffer();
+        // The draw path already invalidated the guest binding. Mode 18 now
+        // observes that structural correction without changing rendering.
         pacmanSyntheticIndexPending = true;
         pacmanIndexOverrideSubmission = ctx.executor.submissionNumber;
         cap.ExecutorIndexInvalidationStep();
@@ -240,6 +238,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
     ctx.executor.AttachDependency(inlineIndexBuffer);
 
     builder.SetIndexBuffer(BufferBinding{inlineIndexBuffer->vkBuffer, 0}, ConvertInlineIndexSize(indexSize));
+    // The host binding replaced guest state without changing guest registers.
+    activeState.InvalidateIndexBuffer();
     TraceSyntheticIndexOverride("inline", true, count, 0);
 
     RefreshRenderCondition();
@@ -887,6 +887,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 // Use an index buffer to emulate quad lists with a triangle list input topology
                 vk::DeviceSize offset{UpdateQuadConversionBuffer(count, first)};
                 builder.SetIndexBuffer(BufferBinding{quadConversionBuffer->vkBuffer, offset}, vk::IndexType::eUint32);
+                // The next indexed guest draw must restore its own binding.
+                activeState.InvalidateIndexBuffer();
                 TraceSyntheticIndexOverride("nonindexed_quad", false, guestCount, guestFirst);
                 indexed = true;
             }

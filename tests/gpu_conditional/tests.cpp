@@ -9,13 +9,17 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #include <skyline/gpu/diagnostic/pacman_triangle_capture.h>
 namespace diagnostic = skyline::gpu::diagnostic;
 // Capture is unarmed in conditional-rendering tests. Keep production draw
 // instrumentation compiled; formatting and image readback are host boundaries.
-namespace fmt { template<class... T> std::string format(const char *, T &&...) { return {}; } }
+namespace fmt {
+template<class... T> std::string format(const char *, T &&...) { return {}; }
+template<class T> const void *ptr(T *value) { return value; }
+}
 using u8 = uint8_t;
 using u32 = uint32_t;
 using u64 = uint64_t;
@@ -51,11 +55,19 @@ struct DescriptorAllocator { struct ActiveDescriptorSet { u64 handle; u64 operat
 struct BufferBinding { u64 buffer{}, offset{}, size{}; };
 struct GPU;
 namespace engine { enum class DrawTopology { Triangles }; }
-namespace conversion::quads { inline u32 GetIndexCount(u32 count) { return count; } }
+namespace conversion::quads { inline u32 GetIndexCount(u32 count) { return count / 4 * 6; } }
 struct TextureView { struct Texture { struct { u32 width{}, height{}; } dimensions; }; std::shared_ptr<Texture> texture; };
-struct StateUpdater { void RecordAll(GPU &, vk::raii::CommandBuffer &) {} };
+struct StateUpdater {
+    std::optional<BufferBinding> indexBinding;
+    void RecordAll(GPU &, vk::raii::CommandBuffer &);
+};
 struct BufferBinding;
-struct StateUpdateBuilder { template<class T> explicit StateUpdateBuilder(T &) {} void SetIndexBuffer(BufferBinding, vk::IndexType) {} StateUpdater Build() { return {}; } };
+struct StateUpdateBuilder {
+    std::optional<BufferBinding> indexBinding;
+    template<class T> explicit StateUpdateBuilder(T &) {}
+    void SetIndexBuffer(BufferBinding binding, vk::IndexType) { indexBinding = binding; }
+    StateUpdater Build() { return {indexBinding}; }
+};
 struct Buffer : std::enable_shared_from_this<Buffer> {
     memory::Buffer allocation{64}; u64 generation{}; bool blocked{}, dirty{}, currentDirty{}, locked{};
     u64 GetWriteGeneration() const { return generation; }
@@ -108,7 +120,10 @@ struct ConditionalCompare {
     DescriptorAllocator::ActiveDescriptorSet CreateDescriptorSet(GPU &, u64 buffer) { auto handle = nextHandle++; descriptors[handle] = buffer; return {handle}; }
     void Compare(vk::raii::CommandBuffer &, u64 set, bool notEqual, bool nonZero = false) { compares++; auto memory = Get(descriptors.at(set)); ShaderMain(memory->words.data(), notEqual, nonZero); }
 };
-struct GPU { std::function<void()> writer; struct { bool supportsConditionalRendering{true}; bool supportsTransformFeedback{}; struct { bool relaxedRenderPassCompatibility{true}; } quirks; } traits; struct { memory::Buffer AllocateBuffer(size_t size) { return memory::Buffer(size); } } memory; struct { ConditionalCompare conditionalCompareHelperShader; } helperShaders; };
+struct GPU { BufferBinding boundIndexBuffer; std::function<void()> writer; struct { bool supportsConditionalRendering{true}; bool supportsTransformFeedback{}; struct { bool relaxedRenderPassCompatibility{true}; } quirks; } traits; struct { memory::Buffer AllocateBuffer(size_t size) { return memory::Buffer(size); } } memory; struct { ConditionalCompare conditionalCompareHelperShader; } helperShaders; };
+void StateUpdater::RecordAll(GPU &gpu, vk::raii::CommandBuffer &) {
+    if (indexBinding) gpu.boundIndexBuffer = *indexBinding;
+}
 static GPU *recordingGPU;
 void vk::raii::CommandBuffer::draw(u32,u32,u32,u32) { if (enabled && recordingGPU->writer) recordingGPU->writer(); }
 void vk::raii::CommandBuffer::drawIndexed(u32,u32,u32,i32,u32) { draw(0,0,0,0); }
@@ -120,6 +135,8 @@ struct Allocator {
 };
 struct Executor {
     u64 executionTag{1}, tag{1}; int submits{};
+    u64 submissionNumber{};
+    std::shared_ptr<FenceCycle> cycle{std::make_shared<FenceCycle>()};
     Allocator allocatorStorage; Allocator *allocator{&allocatorStorage};
     int usageTracker{};
     template<class F> void RunWithTextureBackingRetry(F function) { function(); }
@@ -167,14 +184,29 @@ struct TransformFeedbackBufferState {
     Registers *engine{&registers}; CachedMappedBufferView view;
     bool MayWriteBuffer(Buffer *) const;
 };
+#include "dirty.inc"
+// The production dirty wrapper decides whether to Flush. Mapping and emitting
+// the retained guest view are a sentinel facade; gpu_index_binding separately
+// exercises the actual IndexBufferState Flush/Refresh and mapped-view methods.
+struct IndexCacheSentinel : skyline::dirty::RefreshableManualDirty, skyline::dirty::CachedManualDirty {
+    BufferBinding mappedView{700, 12, 64};
+    bool purged{};
+    explicit IndexCacheSentinel(skyline::dirty::Handle) {}
+    void Flush(StateUpdateBuilder &builder) { builder.SetIndexBuffer(mappedView, vk::IndexType::eUint32); }
+    bool Refresh(StateUpdateBuilder &) { return false; }
+    void PurgeCaches() { mappedView = {}; purged = true; }
+};
 struct ActiveState {
     struct State { TransformFeedbackBufferState value; TransformFeedbackBufferState &Get() { return value; } };
     std::array<State, 2> transformFeedbackBuffers;
+    skyline::dirty::ManualDirtyState<IndexCacheSentinel> indexBuffer;
     std::vector<TextureView *> GetColorAttachments() { return {}; }
     TextureView *GetDepthAttachment() { return nullptr; }
     Pipeline *GetPipeline() { return nullptr; }
     bool MayWriteTransformFeedbackBuffer(Buffer *);
+    void InvalidateIndexBuffer();
 };
+#include "invalidate.inc"
 #include "writers.inc"
 struct UsageTracker { struct Intervals { void Insert(int) {} } dirtyIntervals, sequencedIntervals; };
 struct GenerationBuffer {
@@ -196,16 +228,23 @@ struct Maxwell3D {
     InterconnectContext ctx; Queries queries;
     ActiveState activeState; Pipeline pipeline;
     Pipeline *activeDescriptorPipeline{&pipeline};
-    struct { struct { bool NeedsQuadConversion() { return false; } } inputAssembly; } directState;
+    struct { struct { bool quadConversion{}; bool NeedsQuadConversion() { return quadConversion; } } inputAssembly; } directState;
     struct { void ResetQuickBind() {} } constantBuffers;
     std::shared_ptr<memory::Buffer> quadConversionBuffer;
     std::vector<TextureView *> activeDescriptorSetSampledImages;
     u32 sampleCounterEnable{};
     vk::Rect2D GetDrawScissor() { return {}; }
-    size_t UpdateQuadConversionBuffer(u32,u32) { return 0; }
-    void PrepareDraw(StateUpdateBuilder &, engine::DrawTopology, bool, bool, u32,u32,u32 &,u32 &) {}
+    size_t UpdateQuadConversionBuffer(u32 count,u32) {
+        if (!quadConversionBuffer) quadConversionBuffer = std::make_shared<memory::Buffer>(count * sizeof(u32));
+        return 0;
+    }
+    void PrepareDraw(StateUpdateBuilder &builder, engine::DrawTopology, bool indexed, bool, u32,u32,u32 &,u32 &) {
+        if (indexed) activeState.indexBuffer.Update(builder);
+    }
     void TraceTriangleDraw(const char *, engine::DrawTopology, bool, u32, u32, u32, i32, const vk::Rect2D &) {}
-    void TraceSyntheticIndexOverride(const char *, bool, u32, u32) {}
+    bool pacmanSyntheticIndexPending{};
+    u64 pacmanIndexOverrideSubmission{};
+    void TraceSyntheticIndexOverride(const char *, bool, u32, u32);
     void TraceGuestIndexRebind(const StateUpdateBuilder &, bool, const char *) {}
     void Draw(engine::DrawTopology, bool, bool, u32,u32,u32,u32,u32);
 #include "members.inc"
@@ -241,6 +280,49 @@ struct EngineMaxwell3D {
 int main() {
     int failures{};
     auto test = [&](const char *name, auto body) { try { body(); std::cout << "PASS " << name << '\n'; } catch (const std::exception &e) { ++failures; std::cerr << "FAIL " << name << ": " << e.what() << '\n'; } };
+    test("unarmed nonindexed quad dirties the retained guest index cache", [] {
+        auto &capture = diagnostic::PacmanCapture();
+        Check(!capture.Active() && capture.ExecutorExperimentMode() == 0, "regression requires unarmed capture and no experiment marker");
+        Maxwell3D maxwell;
+        maxwell.Draw(engine::DrawTopology::Triangles, false, true, 6,0,1,0,0);
+        maxwell.ctx.executor.Record();
+        const auto guest = maxwell.ctx.gpu.boundIndexBuffer;
+        maxwell.directState.inputAssembly.quadConversion = true;
+        maxwell.Draw(engine::DrawTopology::Triangles, false, false, 4,0,1,0,0);
+        maxwell.ctx.executor.Record();
+        Check(maxwell.quadConversionBuffer && maxwell.ctx.gpu.boundIndexBuffer.buffer == maxwell.quadConversionBuffer->vkBuffer,
+              "full production Draw did not install the synthetic quad binding");
+        maxwell.directState.inputAssembly.quadConversion = false;
+        // This PrepareDraw is a facade calling the production dirty wrapper.
+        // A clean wrapper would skip Flush and leave the synthetic binding.
+        maxwell.Draw(engine::DrawTopology::Triangles, false, true, 6,0,1,0,0);
+        maxwell.ctx.executor.Record();
+        const auto rebound = maxwell.ctx.gpu.boundIndexBuffer;
+        Check(rebound.buffer == guest.buffer && rebound.offset == guest.offset && rebound.size == guest.size,
+              "unarmed quad override left the actual dirty wrapper clean; next indexed draw retained synthetic binding");
+        Check(!maxwell.activeState.indexBuffer.Get().purged,
+              "index invalidation purged the retained mapped-view sentinel");
+        Check(maxwell.ctx.executor.submits == 0, "index restoration forced a submission");
+    });
+    test("ordinary and already-indexed draw paths preserve a clean index cache", [] {
+        for (const auto &[indexed, quad] : std::array<std::pair<bool, bool>, 3>{{{false,false}, {true,false}, {true,true}}}) {
+            Maxwell3D maxwell;
+            maxwell.Draw(engine::DrawTopology::Triangles, false, true, 6,0,1,0,0);
+            maxwell.ctx.executor.Record();
+            const BufferBinding untouched{999, 24, 32};
+            maxwell.ctx.gpu.boundIndexBuffer = untouched;
+            maxwell.directState.inputAssembly.quadConversion = quad;
+            maxwell.Draw(engine::DrawTopology::Triangles, false, indexed, 4,0,1,0,0);
+            maxwell.ctx.executor.Record();
+            maxwell.directState.inputAssembly.quadConversion = false;
+            maxwell.Draw(engine::DrawTopology::Triangles, false, true, 6,0,1,0,0);
+            maxwell.ctx.executor.Record();
+            const auto retained = maxwell.ctx.gpu.boundIndexBuffer;
+            Check(retained.buffer == untouched.buffer && retained.offset == untouched.offset && retained.size == untouched.size,
+                  "ordinary/already-indexed path dirtied the cache and emitted an unnecessary guest binding");
+            Check(!maxwell.activeState.indexBuffer.Get().purged, "ordinary/already-indexed path purged the cached view");
+        }
+    });
     test("equal compares high 32 bits", [] {
         Maxwell3D maxwell; maxwell.Map(0x100, 1ULL << 32); maxwell.Map(0x110, 0);
         maxwell.SetRenderCondition(0x100, 0x110, Maxwell3D::RenderConditionMode::Equal); maxwell.ctx.executor.Record();
