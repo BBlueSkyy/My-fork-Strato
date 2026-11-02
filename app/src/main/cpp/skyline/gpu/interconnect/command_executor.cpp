@@ -737,6 +737,16 @@ namespace skyline::gpu::interconnect {
                     pacmanSawHdrScenePass = false;
                 }
                 if (hdrScene) {
+                    for (auto *view : colorAttachments)
+                        if (view && view->texture && view->texture->format &&
+                            view->texture->dimensions.width == 1280 &&
+                            view->texture->dimensions.height == 720 &&
+                            view->texture->format->vkFormat ==
+                                vk::Format::eB10G11R11UfloatPack32) {
+                            pacmanLastHdrProducerIdentity =
+                                reinterpret_cast<std::uintptr_t>(view->texture.get());
+                            break;
+                        }
                     if (testMode == 4 && pacmanSawDepthPass)
                         sceneSubmit = true;
                     pacmanSawDepthPass = false;
@@ -757,6 +767,7 @@ namespace skyline::gpu::interconnect {
                                        slotIndex == testMode - 7);
                         if (pacmanDiagnostic.Active()) {
                             std::string targets, inputs;
+                            bool sampledSameHdrIdentity{};
                             u32 n{};
                             for (auto *view : colorAttachments) {
                                 if (n++ >= 4) break;
@@ -774,6 +785,9 @@ namespace skyline::gpu::interconnect {
                                 if (n++ >= 8) break;
                                 if (view && view->texture && view->texture->format) {
                                     auto &t{*view->texture};
+                                    if (reinterpret_cast<std::uintptr_t>(view->texture.get()) ==
+                                        pacmanLastHdrProducerIdentity)
+                                        sampledSameHdrIdentity = true;
                                     inputs += fmt::format(
                                         "[tex={} {}x{} fmt={} layout={} cycle={}]",
                                         fmt::ptr(view->texture.get()), t.dimensions.width,
@@ -786,13 +800,15 @@ namespace skyline::gpu::interconnect {
                                 "goto_next={} natural_flush={} present_interval={} "
                                 "exec={} sub={} rp={} own_cycle={} colors={} "
                                 "sampled_count={} sampled_first8={} input_attachments={} "
-                                "targets={} duplicate_sampled={} draw={}",
+                                "targets={} last_hdr_texture=0x{:X} sampled_same_hdr={} draw={}",
                                 candidate, slotIndex, testMode, sceneSubmit, gotoNext,
                                 slot->nodes.size() > *state.settings->executorFlushThreshold,
                                 pacmanDiagnostic.PresentedFrames(), fmt::ptr(this),
                                 submissionNumber, renderPassIndex, fmt::ptr(cycle.get()),
                                 colorAttachments.size(), sampledImages.size(), inputs,
-                                inputAttachments.size(), targets, inputs, drawSignature));
+                                inputAttachments.size(), targets,
+                                pacmanLastHdrProducerIdentity, sampledSameHdrIdentity,
+                                drawSignature));
                         }
                     }
                     // The event has been consumed even if its slot was not
