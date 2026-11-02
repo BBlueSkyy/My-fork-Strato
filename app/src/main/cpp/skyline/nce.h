@@ -19,6 +19,21 @@ namespace skyline::nce {
 
         std::vector<hle::HookedSymbol> hookedSymbols; //!< The list of symbols that are hooked, these have a specific ordering that is hardcoded into the hooked functions
 
+        // Diagnostic-only, per-process fixed history. No guest function calls
+        // or logging in the lifecycle probes; dump only at the fatal callback.
+        struct CrysisNvnEntry {
+            u64 sequence{}, timeNs{}, threadId{}, buffer{}, callerLr{};
+            std::array<u64, 3> args{};
+            std::array<u64, 15> raw{};
+            u16 svc{};
+            bool mapped{};
+        };
+        std::mutex crysisNvnMutex;
+        std::array<CrysisNvnEntry, 64> crysisNvnHistory{};
+        u64 crysisNvnSequence{};
+        std::array<u64, 4> crysisNvnCounts{};
+        void TraceCrysisNvn(u16 svcId, ThreadContext *ctx);
+
         static void SvcHandler(u16 svcId, ThreadContext *ctx);
 
         /**

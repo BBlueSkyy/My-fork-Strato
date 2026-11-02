@@ -4,6 +4,7 @@
 #include <lz4.h>
 #include <limits>
 #include <nce.h>
+#include <nce/crysis_nvn_probe.h>
 #include <os.h>
 #include <mods/ips.h>
 #include <mods/pchtxt.h>
@@ -160,6 +161,10 @@ namespace skyline::loader {
         }
 
         PrintRoContentsInfo(executable.ro.contents);
+
+        if (nce::crysis::InstallSdkProbes(executable.text.contents, titleId, name,
+                std::span<const u8>{reinterpret_cast<const u8 *>(header.buildId.data()), sizeof(header.buildId)}))
+            LOGI("CrysisNVNProbe: verified update SDK; enabled bounded AddCommand/AddControl/Begin/End history");
 
         return loader->LoadExecutable(process, state, executable, offset, name, dynamicallyLinked);
     }
