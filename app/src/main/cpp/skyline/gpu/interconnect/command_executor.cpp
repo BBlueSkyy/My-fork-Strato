@@ -704,29 +704,71 @@ namespace skyline::gpu::interconnect {
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
         }
 
-        // After the first two experiments proved ineffective, test the
-        // remaining major difference of threshold=0: SubmitInternal.
-        // Mode 3 submits only after a real 1280x720 color-scene draw;
-        // earlier depth and later postprocess draws retain threshold 256.
-        // No shader, texture data or default scheduling is changed.
+        // Distinguish the *actual* additional Submit() that made PAC-MAN
+        // correct at threshold=256 from renderpass splits and barriers.
+        // Mode 3 retains the confirmed broad 1280x720 color-submit test.
+        // Modes 4-6 submit only at the first eligible draw immediately
+        // after an observed pass-class transition. The current draw is
+        // already enqueued; submitting before AddSubpass/PrepareDraw would
+        // invalidate its StateUpdater and allocator-backed draw parameters.
         auto &pacmanDiagnostic{diagnostic::PacmanCapture()};
         const auto testMode{pacmanDiagnostic.ExecutorExperimentMode()};
         bool sceneSubmit{};
-        if (testMode == 3 && !gotoNext) {
+        bool hasColor{}, hdrScene{}, viOutput{};
+        if (testMode >= 3 && testMode <= 6) {
             for (auto *view : colorAttachments) {
-                if (view && view->texture &&
-                    view->texture->dimensions.width == 1280 &&
-                    view->texture->dimensions.height == 720) {
-                    sceneSubmit = true;
-                    break;
+                if (!view || !view->texture || !view->texture->format)
+                    continue;
+                auto &t{*view->texture};
+                hasColor = true;
+                const auto w{t.dimensions.width}, h{t.dimensions.height};
+                if (w == 1280 && h == 720) {
+                    if (testMode == 3) sceneSubmit = true;
+                    if (t.format->vkFormat == vk::Format::eB10G11R11UfloatPack32)
+                        hdrScene = true;
+                }
+                if (w == 1920 && h == 1080)
+                    viOutput = true; // Observed VI allocation, not guaranteed present pass.
+            }
+            if (testMode >= 4) {
+                const bool depthOnly{
+                    !hasColor && depthStencilAttachment && depthStencilAttachment->texture &&
+                    depthStencilAttachment->texture->dimensions.width == 2048 &&
+                    depthStencilAttachment->texture->dimensions.height == 2048
+                };
+                if (depthOnly) {
+                    pacmanSawDepthPass = true;
+                    pacmanSawHdrScenePass = false;
+                }
+                if (hdrScene) {
+                    if (testMode == 4 && pacmanSawDepthPass)
+                        sceneSubmit = true; // First HDR draw following the depth-only phase.
+                    pacmanSawDepthPass = false;
+                    pacmanSawHdrScenePass = true;
+                } else if (hasColor && pacmanSawHdrScenePass) {
+                    if (testMode == 5 && !viOutput)
+                        sceneSubmit = true; // First non-HDR scene/postprocess color draw.
+                    if (testMode == 6 && viOutput)
+                        sceneSubmit = true; // First color draw targeting 1920x1080 VI-sized image.
+                    if (sceneSubmit || testMode == 5)
+                        pacmanSawHdrScenePass = false;
                 }
             }
         }
-        if (!gotoNext && (slot->nodes.size() > *state.settings->executorFlushThreshold ||
-                          sceneSubmit)) {
-            if (sceneSubmit)
+        const bool naturalFlush{slot->nodes.size() > *state.settings->executorFlushThreshold};
+        if (!gotoNext && (naturalFlush || sceneSubmit)) {
+            if (sceneSubmit) {
                 pacmanDiagnostic.ExecutorExperimentStep();
+                pacmanDiagnostic.Record(fmt::format(
+                    "EXECUTOR_BOUNDARY_SUBMIT mode={} natural_flush={} submit={} hdr={} vi={} color={} "
+                    "prev_depth={} prev_hdr={}",
+                    testMode, naturalFlush, submissionNumber, hdrScene, viOutput,
+                    hasColor, pacmanSawDepthPass, pacmanSawHdrScenePass));
+            }
             Submit();
+        } else if (gotoNext && sceneSubmit) {
+            pacmanDiagnostic.Record(fmt::format(
+                "EXECUTOR_BOUNDARY_SKIPPED mode={} reason=next_subpass", testMode));
         }
 
         // Mode 1: end each renderpass without submitting.
