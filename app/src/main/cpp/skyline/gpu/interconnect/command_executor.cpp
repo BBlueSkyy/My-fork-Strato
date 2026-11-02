@@ -704,18 +704,14 @@ namespace skyline::gpu::interconnect {
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
         }
 
-        // Distinguish the *actual* additional Submit() that made PAC-MAN
-        // correct at threshold=256 from renderpass splits and barriers.
-        // Mode 3 retains the confirmed broad 1280x720 color-submit test.
-        // Modes 4-6 submit only at the first eligible draw immediately
-        // after an observed pass-class transition. The current draw is
-        // already enqueued; submitting before AddSubpass/PrepareDraw would
-        // invalidate its StateUpdater and allocator-backed draw parameters.
         auto &pacmanDiagnostic{diagnostic::PacmanCapture()};
         const auto testMode{pacmanDiagnostic.ExecutorExperimentMode()};
-        bool sceneSubmit{};
-        bool hasColor{}, hdrScene{}, viOutput{};
-        if (testMode >= 3 && testMode <= 6) {
+        // One Maxwell3D draw signature is consumed for every AddSubpass;
+        // this prevents accidental association with subsequent engine work.
+        const auto drawSignature{std::exchange(pacmanNextDrawSignature, std::string{})};
+        bool sceneSubmit{}, hasColor{}, hdrScene{}, viOutput{};
+        const bool postProbeMode{testMode >= 7 && testMode <= 11};
+        if (testMode >= 3 && testMode <= 11) {
             for (auto *view : colorAttachments) {
                 if (!view || !view->texture || !view->texture->format)
                     continue;
@@ -728,7 +724,7 @@ namespace skyline::gpu::interconnect {
                         hdrScene = true;
                 }
                 if (w == 1920 && h == 1080)
-                    viOutput = true; // Observed VI allocation, not guaranteed present pass.
+                    viOutput = true;
             }
             if (testMode >= 4) {
                 const bool depthOnly{
@@ -742,15 +738,66 @@ namespace skyline::gpu::interconnect {
                 }
                 if (hdrScene) {
                     if (testMode == 4 && pacmanSawDepthPass)
-                        sceneSubmit = true; // First HDR draw following the depth-only phase.
+                        sceneSubmit = true;
                     pacmanSawDepthPass = false;
                     pacmanSawHdrScenePass = true;
                 } else if (hasColor && pacmanSawHdrScenePass) {
                     if (testMode == 5 && !viOutput)
-                        sceneSubmit = true; // First non-HDR scene/postprocess color draw.
+                        sceneSubmit = true;
                     if (testMode == 6 && viOutput)
-                        sceneSubmit = true; // First color draw targeting 1920x1080 VI-sized image.
-                    if (sceneSubmit || testMode == 5)
+                        sceneSubmit = true;
+                    if (postProbeMode && !viOutput) {
+                        // The successful broad mode 5 submitted ~four times
+                        // per host presentation. These slots are diagnostic,
+                        // not a claim that host presents equal guest frames.
+                        const auto candidate{++pacmanPostCandidateSerial};
+                        const auto slotIndex{static_cast<u32>((candidate - 1) % 4) + 1};
+                        sceneSubmit = testMode == 7 ||
+                                      (testMode >= 8 && testMode <= 11 &&
+                                       slotIndex == testMode - 7);
+                        if (pacmanDiagnostic.Active()) {
+                            std::string targets, inputs;
+                            u32 n{};
+                            for (auto *view : colorAttachments) {
+                                if (n++ >= 4) break;
+                                if (view && view->texture && view->texture->format) {
+                                    auto &t{*view->texture};
+                                    targets += fmt::format(
+                                        "[tex={} {}x{} fmt={} layout={} cycle={}]",
+                                        fmt::ptr(view->texture.get()), t.dimensions.width,
+                                        t.dimensions.height, static_cast<u32>(t.format->vkFormat),
+                                        static_cast<u32>(t.layout), fmt::ptr(t.cycle.get()));
+                                } else targets += "[null]";
+                            }
+                            n = 0;
+                            for (auto *view : sampledImages) {
+                                if (n++ >= 8) break;
+                                if (view && view->texture && view->texture->format) {
+                                    auto &t{*view->texture};
+                                    inputs += fmt::format(
+                                        "[tex={} {}x{} fmt={} layout={} cycle={}]",
+                                        fmt::ptr(view->texture.get()), t.dimensions.width,
+                                        t.dimensions.height, static_cast<u32>(t.format->vkFormat),
+                                        static_cast<u32>(t.layout), fmt::ptr(t.cycle.get()));
+                                } else inputs += "[null]";
+                            }
+                            pacmanDiagnostic.Record(fmt::format(
+                                "POST_CANDIDATE ordinal={} slot={} mode={} selected={} "
+                                "goto_next={} natural_flush={} present_interval={} "
+                                "exec={} sub={} rp={} own_cycle={} colors={} "
+                                "sampled_count={} sampled_first8={} input_attachments={} "
+                                "targets={} duplicate_sampled={} draw={}",
+                                candidate, slotIndex, testMode, sceneSubmit, gotoNext,
+                                slot->nodes.size() > *state.settings->executorFlushThreshold,
+                                pacmanDiagnostic.PresentedFrames(), fmt::ptr(this),
+                                submissionNumber, renderPassIndex, fmt::ptr(cycle.get()),
+                                colorAttachments.size(), sampledImages.size(), inputs,
+                                inputAttachments.size(), targets, inputs, drawSignature));
+                        }
+                    }
+                    // The event has been consumed even if its slot was not
+                    // selected, preventing repeated submissions for one draw.
+                    if (sceneSubmit || testMode == 5 || postProbeMode)
                         pacmanSawHdrScenePass = false;
                 }
             }
@@ -759,14 +806,15 @@ namespace skyline::gpu::interconnect {
         if (!gotoNext && (naturalFlush || sceneSubmit)) {
             if (sceneSubmit) {
                 pacmanDiagnostic.ExecutorExperimentStep();
-                pacmanDiagnostic.Record(fmt::format(
-                    "EXECUTOR_BOUNDARY_SUBMIT mode={} natural_flush={} submit={} hdr={} vi={} color={} "
-                    "prev_depth={} prev_hdr={}",
-                    testMode, naturalFlush, submissionNumber, hdrScene, viOutput,
-                    hasColor, pacmanSawDepthPass, pacmanSawHdrScenePass));
+                if (pacmanDiagnostic.Active())
+                    pacmanDiagnostic.Record(fmt::format(
+                        "EXECUTOR_BOUNDARY_SUBMIT mode={} natural_flush={} submit={} "
+                        "hdr={} vi={} color={} post_candidate={}",
+                        testMode, naturalFlush, submissionNumber, hdrScene, viOutput,
+                        hasColor, pacmanPostCandidateSerial));
             }
             Submit();
-        } else if (gotoNext && sceneSubmit) {
+        } else if (gotoNext && sceneSubmit && pacmanDiagnostic.Active()) {
             pacmanDiagnostic.Record(fmt::format(
                 "EXECUTOR_BOUNDARY_SKIPPED mode={} reason=next_subpass", testMode));
         }
