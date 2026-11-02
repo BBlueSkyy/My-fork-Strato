@@ -73,7 +73,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         // Capture the specific draw's shader IDs right before AddSubpass.
         // No dynamic allocations during ordinary gameplay; after the
         // metadata window ends even a persistent test stops logging.
-        if (cap.Active() && diagnosticMode >= 7 && diagnosticMode <= 12) {
+        if (cap.Active() && diagnosticMode >= 7 && diagnosticMode <= 15) {
             if (auto *pipeline{activeState.GetPipeline()}) {
                 const auto &p{pipeline->sourcePackedState};
                 ctx.executor.SetPacmanDrawSignature(fmt::format(
