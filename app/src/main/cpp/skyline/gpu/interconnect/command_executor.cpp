@@ -710,8 +710,8 @@ namespace skyline::gpu::interconnect {
         // this prevents accidental association with subsequent engine work.
         const auto drawSignature{std::exchange(pacmanNextDrawSignature, std::string{})};
         bool sceneSubmit{}, hasColor{}, hdrScene{}, viOutput{};
-        const bool postProbeMode{testMode >= 7 && testMode <= 12};
-        if (testMode >= 3 && testMode <= 12) {
+        const bool postProbeMode{testMode >= 7 && testMode <= 15};
+        if (testMode >= 3 && testMode <= 15) {
             for (auto *view : colorAttachments) {
                 if (!view || !view->texture || !view->texture->format)
                     continue;
@@ -764,7 +764,10 @@ namespace skyline::gpu::interconnect {
                         const auto slotIndex{static_cast<u32>((candidate - 1) % 4) + 1};
                         sceneSubmit = testMode == 7 ||
                                       (testMode >= 8 && testMode <= 11 &&
-                                       slotIndex == testMode - 7);
+                                       slotIndex == testMode - 7) ||
+                                      (testMode == 13 && (slotIndex == 1 || slotIndex == 3)) ||
+                                      (testMode == 14 && (slotIndex == 2 || slotIndex == 3)) ||
+                                      (testMode == 15 && (slotIndex == 3 || slotIndex == 4));
                         if (pacmanDiagnostic.Active()) {
                             std::string targets, inputs;
                             bool sampledSameHdrIdentity{};
