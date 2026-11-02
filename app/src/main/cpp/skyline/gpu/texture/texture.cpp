@@ -307,9 +307,9 @@ namespace skyline::gpu {
         // Actual guest-to-host upload, not a mere texture attachment.
         if (auto match{soc::host1x::video_diag::MatchVicOutput(guest->mappings)};
             match && soc::host1x::video_diag::SampleTextureEvent())
-            LOGI("[VideoDiag] texture-upload-source texture={} vicIova=0x{:X} vicSerial={} width={} height={} guestSize={} mirrorSize={} tileMode={} levelCount={}",
+            LOGI("[VideoDiag] texture-upload-source texture={} vicIova=0x{:X} vicSerial={} width={} height={} mirrorSize={} tileMode={} levelCount={}",
                  static_cast<const void *>(this), match->iova, match->serial,
-                 dimensions.width, dimensions.height, guest->GetSize(), mirror.size(),
+                 dimensions.width, dimensions.height, mirror.size(),
                  static_cast<u32>(guest->tileConfig.mode), levelCount);
 
         WaitOnBacking();
