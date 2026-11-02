@@ -1,4 +1,6 @@
 #include "gpu/texture/lifecycle_trace.h"
+#include "gpu/texture/diagnostic_fd_output.h"
+#include <fcntl.h>
 #include <cassert>
 #include <sstream>
 #include <thread>
@@ -8,6 +10,25 @@ int main(int argc, char **argv) {
     assert(UsesIdentityMapping(Event::StorageRead));
     assert(UsesIdentityMapping(Event::StorageWriteIntent));
     assert(!UsesIdentityMapping(Event::SampleRead));
+    // A provider may return a pipe instead of a reopenable filesystem path.
+    int descriptors[2];
+    assert(pipe(descriptors) == 0);
+    {
+        FdOutputBuffer buffer{descriptors[1]};
+        std::ostream out{&buffer};
+        out << "CSV header\n1,2,3\n";
+        assert(out.good());
+    }
+    assert(fcntl(descriptors[1], F_GETFD) >= 0); // borrowed, never closed by the writer
+    close(descriptors[1]);
+    char received[64]{};
+    const auto bytes = read(descriptors[0], received, sizeof(received));
+    assert(std::string(received, bytes) == "CSV header\n1,2,3\n");
+    close(descriptors[0]);
+    FdOutputBuffer invalid{-1};
+    std::ostream failed{&invalid};
+    failed << "CSV";
+    assert(!failed.good());
     Recorder<8> trace;
     Token token;
     Snapshot state{};
