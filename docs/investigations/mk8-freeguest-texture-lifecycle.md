@@ -99,7 +99,7 @@ for MK8 (`0100152000022000`) only when Free Guest Texture Memory is ON.
 This collector watches **shape plus CPU-mapping overlap**, not the runtime ID
 244 or a hardcoded memory address: format B10G11R11_UFLOAT_PACK32, 32x32,
 six layers, five mips, one guest mapping. It tracks up to eight distinct
-mapping intervals and at most 160 evidence entries. Source textures overlapping
+mapping intervals and at most 320 evidence entries. Source textures overlapping
 those intervals are in scope, even if their formats/dimensions differ.
 Everything else is excluded. Non-blocking recorder contention and capacity
 omissions are reported in the CSV header. Because the first cubemap appears
