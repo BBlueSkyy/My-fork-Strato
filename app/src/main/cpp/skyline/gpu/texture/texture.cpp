@@ -165,6 +165,54 @@ namespace skyline::gpu {
         return texture.TryLock();
     }
 
+
+    void Texture::TraceOrigin(texture::diagnostic::OriginStage stage, const void *bytes, size_t size, bool guestMirror) {
+        auto &origin{gpu.originCapture};
+        if (!guest || !diagnosticBase.id || !origin.Enabled() ||
+            !origin.Interested(reinterpret_cast<const void *>(diagnosticBase.address), diagnosticBase.bytes))
+            return;
+        std::scoped_lock lock{stateMutex};
+        auto s{diagnosticBase};
+        s.image=std::bit_cast<u64>(static_cast<VkImage>(GetBacking()));
+        s.generation=backingGeneration;
+        s.writeSerial=diagnosticWriteSerial.load();
+        s.readbackSerial=diagnosticReadbackSerial.load();
+        s.state=static_cast<u32>(dirtyState);
+        s.flags=(memoryFreed ? 1U : 0U) | (aliasStale.load() ? 2U : 0U) |
+            (aliasReadOnly.load() ? 4U : 0U) | (aliasRetired.load() ? 8U : 0U);
+        if (guestMirror && !memoryFreed && !mirror.empty() && mirror.size()<=64*1024) {
+            bytes=mirror.data(); size=mirror.size();
+        }
+        // A freed mirror is recorded as metadata only. Never fault guest pages
+        // back in merely to obtain a diagnostic snapshot.
+        origin.Save(stage,s,bytes,size);
+    }
+
+    void Texture::CaptureOriginHost(const vk::raii::CommandBuffer &commands,
+                                    const std::shared_ptr<FenceCycle> &captureCycle) {
+        auto &origin{gpu.originCapture};
+        if (!MiniProducerCandidate() || !origin.Enabled() ||
+            !origin.Interested(reinterpret_cast<const void *>(diagnosticBase.address),diagnosticBase.bytes))
+            return;
+        auto s{diagnosticBase};
+        s.image=std::bit_cast<u64>(static_cast<VkImage>(GetBacking()));
+        s.generation=backingGeneration; s.writeSerial=diagnosticWriteSerial.load();
+        s.readbackSerial=diagnosticReadbackSerial.load();
+        s.state=static_cast<u32>(dirtyState);
+        if (!origin.CanRecord(texture::diagnostic::OriginStage::HostAfterUpload,s)) return;
+        auto staging{gpu.memory.AllocateStagingBuffer(surfaceSize)};
+        // This transfer is only enabled in the MK8 diagnostic build/target.
+        // It immediately follows the real upload in the same command buffer.
+        CopyIntoStagingBuffer(commands,staging);
+        captureCycle->AttachObjects(staging,shared_from_this());
+        origin.SaveDeferred(texture::diagnostic::OriginStage::HostAfterUpload,s,
+            [captureCycle,staging] {
+                captureCycle->Wait(); // Only executed by the export worker.
+                if (captureCycle->IsCancelled()) return std::vector<uint8_t>{};
+                return std::vector<uint8_t>(staging->data(),staging->data()+staging->size());
+            });
+    }
+
     bool Texture::MiniProducerCandidate() const {
         return guest && diagnosticBase.id && backingImageType==vk::ImageType::e2D && sampleCount==vk::SampleCountFlagBits::e1 && dimensions.width==32 && dimensions.height==32 && dimensions.depth==1 &&
             layerCount==6 && format->vkFormat==vk::Format::eB10G11R11UfloatPack32 && layout==vk::ImageLayout::eGeneral;
@@ -173,6 +221,53 @@ namespace skyline::gpu {
     void Texture::QueueMiniCapture(interconnect::CommandExecutor &executor, const TextureView &view, u32 tic, u32 requestedPhase, u64 operation, u32 role) {
         using namespace texture::diagnostic;
         auto &miniCapture{gpu.miniCapture};
+        // Automatic, bounded snapshots in the existing sampled-binding order.
+        // Independent of manual MK8MINI1/2 arming and of the lifecycle CSV limit.
+        if (!requestedPhase && MiniProducerCandidate() && gpu.originCapture.Enabled() &&
+            texture::diagnostic::lifecycle.CurrentPhase()!=0 &&
+            gpu.originCapture.Interested(reinterpret_cast<const void *>(diagnosticBase.address),diagnosticBase.bytes)) {
+            auto snapshot{diagnosticBase};
+            snapshot.image=std::bit_cast<u64>(static_cast<VkImage>(GetBacking()));
+            snapshot.generation=backingGeneration; snapshot.writeSerial=diagnosticWriteSerial.load();
+            snapshot.readbackSerial=diagnosticReadbackSerial.load();
+            snapshot.state=static_cast<u32>(dirtyState);
+            if (gpu.originCapture.CanRecord(texture::diagnostic::OriginStage::SampledHost,snapshot)) {
+                auto originStaging{gpu.memory.AllocateStagingBuffer(surfaceSize)};
+                const auto originImage{GetBacking()};
+                const vk::ImageSubresourceRange originRange{format->vkAspect,0,levelCount,0,layerCount};
+                auto originRegions{GetBufferImageCopies()};
+                auto originCycle{executor.cycle};
+                originCycle->AttachObjects(originStaging,shared_from_this());
+                executor.AddOutsideRpCommand([originImage,originRange,originRegions=std::move(originRegions),originStaging]
+                    (vk::raii::CommandBuffer &commands,const std::shared_ptr<FenceCycle> &,GPU &) {
+                    const vk::ImageMemoryBarrier before{
+                        .srcAccessMask=vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                        .dstAccessMask=vk::AccessFlagBits::eTransferRead,
+                        .oldLayout=vk::ImageLayout::eGeneral,.newLayout=vk::ImageLayout::eGeneral,
+                        .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                        .image=originImage,.subresourceRange=originRange
+                    };
+                    commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,vk::PipelineStageFlagBits::eTransfer,{}, {},{},before);
+                    commands.copyImageToBuffer(originImage,vk::ImageLayout::eGeneral,originStaging->vkBuffer,
+                        vk::ArrayProxy(static_cast<u32>(originRegions.size()),originRegions.data()));
+                    auto after{before}; after.srcAccessMask=vk::AccessFlagBits::eTransferRead;
+                    after.dstAccessMask=vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+                    commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eAllCommands,{}, {},{},after);
+                    commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eHost,{}, {},
+                        vk::BufferMemoryBarrier{
+                            .srcAccessMask=vk::AccessFlagBits::eTransferWrite,.dstAccessMask=vk::AccessFlagBits::eHostRead,
+                            .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                            .buffer=originStaging->vkBuffer,.offset=0,.size=originStaging->size()
+                        },{});
+                });
+                gpu.originCapture.SaveDeferred(texture::diagnostic::OriginStage::SampledHost,snapshot,
+                    [originCycle,originStaging] {
+                        originCycle->Wait();
+                        if (originCycle->IsCancelled()) return std::vector<uint8_t>{};
+                        return std::vector<uint8_t>(originStaging->data(),originStaging->data()+originStaging->size());
+                    });
+            }
+        }
         if ((!requestedPhase && !miniCapture.Armed()) || !guest || !diagnosticBase.id) return;
         // Producer inputs may use another color format; retain raw bytes and metadata.
         if (requestedPhase) {
@@ -267,6 +362,13 @@ namespace skyline::gpu {
                 (static_cast<u32>(mapping.b) << 8) | (static_cast<u32>(mapping.a) << 12);
         }
         trace.Record(diagnosticToken, event, snapshot);
+        // Writes are intent only; any later nonzero sampled-host payload is
+        // independent evidence of execution/visibility.
+        if (event==texture::diagnostic::Event::WriteRecorded ||
+            event==texture::diagnostic::Event::RenderTargetIntent ||
+            event==texture::diagnostic::Event::StorageWriteIntent ||
+            event==texture::diagnostic::Event::CopyWriteIntent)
+            gpu.originCapture.Save(texture::diagnostic::OriginStage::WriteIntent,snapshot);
     }
 
     void Texture::SetupGuestMappings() {
@@ -437,6 +539,7 @@ namespace skyline::gpu {
         auto pointer{mirror.data()};
 
         WaitOnBacking();
+        TraceOrigin(texture::diagnostic::OriginStage::GuestBeforeUpload,nullptr,0,true);
 
         u8 *bufferData;
         auto stagingBuffer{[&]() -> std::shared_ptr<memory::StagingBuffer> {
@@ -566,6 +669,9 @@ namespace skyline::gpu {
             }
         }
 
+        if (stagingBuffer)
+            TraceOrigin(texture::diagnostic::OriginStage::StagingBeforeUpload,
+                        stagingBuffer->data(),surfaceSize);
         return stagingBuffer;
     }
 
@@ -728,8 +834,10 @@ namespace skyline::gpu {
             return;
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
         if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
+            TraceOrigin(texture::diagnostic::OriginStage::BeforeFreeGuest,nullptr,0,true);
             gpu.state.process->memory.FreeMemory(mirror);
             memoryFreed = true;
+            TraceOrigin(texture::diagnostic::OriginStage::AfterFreeGuest);
             TraceLifecycle(texture::diagnostic::Event::FreeGuest);
         }
     }
@@ -1447,10 +1555,12 @@ namespace skyline::gpu {
             CopyFromStagingBuffer(commandBuffer, stagingBuffer);
             pCycle->AttachObjects(stagingBuffer, shared_from_this());
             pCycle->ChainCycle(cycle);
+            CaptureOriginHost(commandBuffer,pCycle);
             cycle = pCycle;
         }
 
         TraceLifecycle(texture::diagnostic::Event::UploadRecorded);
+        TraceOrigin(texture::diagnostic::OriginStage::UploadQueued);
         {
             std::scoped_lock lock{stateMutex};
 
@@ -1530,6 +1640,7 @@ namespace skyline::gpu {
             }
         }
         TraceLifecycle(texture::diagnostic::Event::ReadbackComplete);
+        TraceOrigin(texture::diagnostic::OriginStage::ReadbackGuest,nullptr,0,true);
         if (auto group{aliasGroup.load()}) {
             std::scoped_lock metadata{group->mutex};
             if (group->writerIdentity == this)
