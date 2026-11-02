@@ -2,6 +2,8 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu.h>
+#include <gpu/interconnect/command_executor.h>
+#include "mini_capture.h"
 #include <kernel/memory.h>
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
@@ -161,6 +163,66 @@ namespace skyline::gpu {
 
     bool TextureView::try_lock() {
         return texture.TryLock();
+    }
+
+    void Texture::QueueMiniCapture(interconnect::CommandExecutor &executor, const TextureView &view, u32 tic) {
+        using namespace texture::diagnostic;
+        auto &miniCapture{gpu.miniCapture};
+        if (!miniCapture.Armed() || !guest || !diagnosticBase.id) return;
+        // Data-driven diagnostic filter, not a game/rendering workaround.
+        if (dimensions.width != 32 || dimensions.height != 32 || dimensions.depth != 1 ||
+            layerCount != 6 || format->vkFormat != vk::Format::eB10G11R11UfloatPack32 ||
+            layout != vk::ImageLayout::eGeneral || surfaceSize > 256 * 1024) return;
+        const auto frame{lifecycle.CurrentFrame()};
+        const auto phase{miniCapture.Reserve(diagnosticBase.id, frame)};
+        if (!phase) return;
+        auto staging{gpu.memory.AllocateStagingBuffer(surfaceSize)};
+        std::memset(staging->data(), 0, staging->size());
+        const auto image{GetBacking()};
+        const vk::ImageSubresourceRange range{format->vkAspect, 0, levelCount, 0, layerCount};
+        auto regions{GetBufferImageCopies()};
+        auto captureCycle{executor.cycle};
+        auto recorded{std::make_shared<std::atomic<bool>>(false)};
+        auto snapshot{diagnosticBase};
+        snapshot.image = std::bit_cast<u64>(static_cast<VkImage>(image));
+        snapshot.generation = backingGeneration; snapshot.hostFormat = static_cast<u32>(format->vkFormat);
+        snapshot.levels = levelCount; snapshot.layers = layerCount; snapshot.detail = tic;
+        snapshot.mip = view.range.baseMipLevel; snapshot.levelCount = view.range.levelCount;
+        snapshot.layer = view.range.baseArrayLayer; snapshot.layerCount = view.range.layerCount;
+        snapshot.swizzle = static_cast<u32>(view.mapping.r) | (static_cast<u32>(view.mapping.g) << 4) |
+            (static_cast<u32>(view.mapping.b) << 8) | (static_cast<u32>(view.mapping.a) << 12);
+        snapshot.writeSerial = diagnosticWriteSerial.load();
+        // Initialize copies before the consuming draw, after earlier queued producers.
+        // SubmitInternal's existing upload remains before all command nodes.
+        captureCycle->AttachObjects(staging, shared_from_this());
+        executor.AddOutsideRpCommand([image, range, regions = std::move(regions), staging, recorded]
+            (vk::raii::CommandBuffer &commands, const std::shared_ptr<FenceCycle> &, GPU &) {
+            const vk::ImageMemoryBarrier before{
+                .srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                .oldLayout = vk::ImageLayout::eGeneral, .newLayout = vk::ImageLayout::eGeneral,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = image, .subresourceRange = range,
+            };
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, before);
+            commands.copyImageToBuffer(image, vk::ImageLayout::eGeneral, staging->vkBuffer,
+                vk::ArrayProxy(static_cast<u32>(regions.size()), regions.data()));
+            auto after{before}; after.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+            after.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, after);
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {}, {},
+                vk::BufferMemoryBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite, .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .buffer = staging->vkBuffer, .offset = 0, .size = staging->size(),
+                }, {});
+            recorded->store(true, std::memory_order_release);
+        });
+        miniCapture.Commit(phase, frame, snapshot, [captureCycle, staging, recorded] {
+            captureCycle->Wait(); // Export worker only; no resource or recorder locks held.
+            if (captureCycle->IsCancelled() || !recorded->load(std::memory_order_acquire)) return std::vector<uint8_t>{};
+            return std::vector<uint8_t>(staging->data(), staging->data() + staging->size());
+        });
     }
 
     void Texture::TraceLifecycle(texture::diagnostic::Event event, u32 detail, u64 peer, bool stateOnly, const TextureView *view) {

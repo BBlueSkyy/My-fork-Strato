@@ -59,3 +59,20 @@ Actual Mini RenderDoc implementation/arming requires those candidate/frame targe
 ## Empty Android export follow-up
 
 The submitted ZIP contained a zero-byte CSV, including no header. That establishes an export failure, not absence of lifecycle events. Replace procfs descriptor reopening with direct writes to the borrowed document-provider fd, including interrupted/short write handling, and test a write-only pipe plus failure reporting. Export emits one row-count/status log per attempt so an unavailable recorder can be distinguished from a write failure. No texture lifecycle policy is changed. Device confirmation remains required.
+
+## Targeted Mini input capture implementation
+
+The first device CSV has 25,786 rows. Phase 2 saturates at presentation counter 2715, so it does not cover the subsequent race. IDs 273/873/885 are run-specific candidates, not permanent selectors. The new Mini recorder is independent of that CSV capacity. It selects native 32x32, six-layer B10G11R11 unsigned-float images from sampled bindings, at most eight distinct images for each manually armed window. It copies all backing mips/layers into dedicated staging before the next consuming draw, after prior queued producers and existing SubmitInternal uploads. It inserts no guest readback or dirty-state transition and preserves General layout with scoped transfer barriers. This is a candidate-input snapshot, not an entire RenderDoc frame; it does not capture shader binaries, RT/depth output or every draw. Presentation counter is a window label, not proof of a whole displayed frame boundary.
+
+Capture ownership belongs to GPU, declared last so closures/staging are destroyed before device/allocator. JNI holds the owning OS/session (including DeviceState and GPU) alive during export. Export on the IO worker waits the producing cycle and rejects cancelled/unrecorded work; no wait is added during ordinary gameplay. Explicit capture can break a render pass, allocate staging and affect timing, so use ordinary runs to assess FPS. The cancelled flag observes fence cancellation only; it changes no cancellation or submission behavior.
+
+### Collect the two inputs
+
+1. Start a fresh MK8 session with Free Guest ON. Reach the black character selection.
+2. Long-press the control visibility icon or FPS display. Choose **Mini: capture black selection now**. Keep the character visible for two seconds; if necessary change character and back to force bindings to refresh.
+3. Enter a race, return to the now-correct selection, and use the same character/camera. Choose **Mini: capture correct selection now**; keep visible for two seconds.
+4. Choose **Mini: export both captures**, save the `.mcap` file to Downloads while the game is running, and send it with screenshots and the ordinary log. Export Mini **before** exporting the lifecycle CSV, since that CSV action stops recording. Each side may be armed only once per session.
+
+Both sides must have at least one candidate. An incomplete export reports failure and must not be treated as valid evidence. IDs and addresses may differ in another run; compare shape, TIC/view metadata, backing generation and decoded pixels. Eight images/side and 256 KiB/image bound the GPU allocations. The raw container begins `MK8MINI1`, then one numeric CSV metadata line per image, exactly `bytes` payload bytes, and one newline. The payload order follows GetBufferImageCopies: mip-major, six tightly packed array layers per mip. `tools/decode_mk8_mini.py input.mcap output_dir` verifies the framing/size, saves raw inputs, six-face contact sheets and numeric min/max/zero/nonfinite counts. Fixed display tonemapping is identical for both phases.
+
+Host validation covers bounds/window/dedup/export framing, packed-float decoding and fence cancellation observation. Android compilation and real Vulkan image-copy validation remain CI/device checks; no corrected rendering or cause is claimed.

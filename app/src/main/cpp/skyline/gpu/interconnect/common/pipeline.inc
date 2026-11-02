@@ -175,6 +175,7 @@ namespace skyline::gpu::interconnect {
 
         if (texture->texture) {
             texture->texture->TraceLifecycle(texture::diagnostic::Event::SampleRead, handle.textureIndex, 0, false, texture);
+            texture->texture->QueueMiniCapture(ctx.executor, *texture, handle.textureIndex);
             texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
         }
 

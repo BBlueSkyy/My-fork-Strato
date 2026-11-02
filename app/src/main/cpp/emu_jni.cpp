@@ -5,6 +5,7 @@
 #include <ostream>
 #include "skyline/gpu/texture/diagnostic_fd_output.h"
 #include "skyline/gpu/texture/lifecycle_trace.h"
+#include "skyline/gpu/texture/mini_capture.h"
 #include <limits>
 #include <pthread.h>
 #include <android/asset_manager_jni.h>
@@ -393,4 +394,18 @@ extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_native
     } catch (...) {
         return false; // Diagnostic/export failure must not terminate the emulator.
     }
+}
+
+extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_nativeMk8Mini(JNIEnv *, jobject, jint action, jint fd) {
+    try {
+        using namespace skyline::gpu::texture::diagnostic;
+        auto os{OsWeak.lock()}; // Also keep the DeviceState referenced by GPU alive.
+        auto gpu{os ? os->state.gpu : nullptr};
+        if (!gpu || !lifecycle.Enabled()) return false;
+        auto &miniCapture{gpu->miniCapture};
+        if (action==1 || action==3) return miniCapture.Arm(action);
+        if (action!=4 || fd<0) return false;
+        FdOutputBuffer buffer{fd}; std::ostream out{&buffer};
+        return miniCapture.Export(out);
+    } catch (...) { return false; }
 }

@@ -257,6 +257,7 @@ int main() {
     submittedWaitIgnoresGpuCompletion();
     submissionRacingGpuWaitDoesNotTakeCompletionMutex();
     cancellationWakesSubmissionWait();
+    { vk::raii::Device device; auto cycle = std::make_shared<FenceCycle>(device, vk::Fence{}, vk::Semaphore{}); check(!cycle->IsCancelled(), "fresh fence is not cancelled"); cycle->Cancel(); check(cycle->IsCancelled(), "cancelled capture fence cannot publish pixels"); }
     cancellationWakesCompletionWaitBeforeSubmission();
     stagedUploadWaitsForPriorSubmission();
     bufferWaitsForPriorSubmission(false);

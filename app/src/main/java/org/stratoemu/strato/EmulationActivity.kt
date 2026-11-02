@@ -204,6 +204,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     /**
      * @param play If the audio should be playing or be stopped till it is resumed by calling this again
      */
+    private external fun nativeMk8Mini(action : Int, fd : Int) : Boolean
     private external fun nativeMk8TexturePhase(phase : Int) : Boolean
     private external fun nativeExportMk8TextureTrace(fd : Int) : Boolean
 
@@ -218,12 +219,25 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         }
     }
 
+    private val mk8MiniExport = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        if (uri != null) lifecycleScope.launch(Dispatchers.IO) {
+            val saved = try {
+                contentResolver.openFileDescriptor(uri, "wt")?.use { nativeMk8Mini(4, it.fd) } ?: false
+            } catch (_ : Exception) { false }
+            runOnUiThread {
+                Toast.makeText(this@EmulationActivity, if (saved) "MK8 Mini capture saved" else "Mini capture failed: capture both screens before exporting CSV", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     private fun showMk8TextureDiagnostic() : Boolean {
         if (!nativeMk8TexturePhase(-1)) return false
         MaterialAlertDialogBuilder(this)
             .setTitle("MK8 texture diagnostic")
-            .setItems(arrayOf("1: First selection (mark before entering)", "2: Race (mark before loading)", "3: Returned selection (mark before returning)", "Export trace and stop recording")) { _, which ->
+            .setItems(arrayOf("1: First selection (mark before entering)", "2: Race (mark before loading)", "3: Returned selection (mark before returning)", "Export trace and stop recording", "Mini: capture black selection now", "Mini: capture correct selection now", "Mini: export both captures")) { _, which ->
                 if (which == 3) mk8TraceExport.launch("mk8-texture-lifecycle-${System.currentTimeMillis()}.csv")
+                else if (which == 4 || which == 5) Toast.makeText(this, if (nativeMk8Mini(if (which == 4) 1 else 3, -1)) "Mini armed: keep the character visible for 2 seconds" else "Mini capture already used or recorder stopped", Toast.LENGTH_LONG).show()
+                else if (which == 6) mk8MiniExport.launch("mk8-mini-${System.currentTimeMillis()}.mcap")
                 else Toast.makeText(this, if (nativeMk8TexturePhase(which + 1)) "MK8 phase ${which + 1} marked" else "Phase rejected: restart for a new trace", Toast.LENGTH_LONG).show()
             }
             .show()

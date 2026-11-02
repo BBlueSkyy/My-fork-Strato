@@ -5,6 +5,7 @@
 
 #include <adrenotools/driver.h>
 #include "gpu/trait_manager.h"
+#include "gpu/texture/mini_capture.h"
 #include "gpu/memory_manager.h"
 #include "gpu/command_scheduler.h"
 #include "gpu/presentation_engine.h"
@@ -71,6 +72,9 @@ namespace skyline::gpu {
 
         static constexpr size_t DebugTracingBufferSize{0x80000}; //!< 512KiB
         memory::Buffer debugTracingBuffer; //!< General use buffer for debug tracing, first 4 bytes are allocated for checkpoints
+
+        // Destroy captures before allocator/device members (reverse member order).
+        texture::diagnostic::MiniCapture miniCapture;
 
         GPU(const DeviceState &state);
 

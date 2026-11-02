@@ -71,6 +71,7 @@ namespace skyline::gpu::texture::diagnostic {
         void Freeze() { std::lock_guard lock{mutex}; enabled=false; }
         bool Enabled() const { return enabled.load(std::memory_order_relaxed); }
         uint64_t NewId() { return Enabled() ? nextId.fetch_add(1, std::memory_order_relaxed) : 0; }
+        uint64_t CurrentFrame() const { return frame.load(std::memory_order_relaxed); }
         void Frame() { if (Enabled()) frame.fetch_add(1, std::memory_order_relaxed); }
         void MissSnapshot() { if (Enabled()) ++snapshotMiss[phase.load()]; }
         bool SetPhase(uint32_t value) {
