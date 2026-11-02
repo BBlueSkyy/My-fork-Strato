@@ -560,3 +560,48 @@ resource lifetime. Preserve the existing diagnostic modes and the
 confirmed working mode 5. Default code is unaffected when unarmed.
 Stage 8 source integration is published; ARM64 build and device
 validation remain unconfirmed until checked. Do not merge.
+
+
+## Cross-game validation candidates (reported 2026-11-01)
+
+User reports a visually similar inverted-triangle corruption in two more
+Nintendo Switch games:
+
+- **Marsupilami: Hoobadventure** (Unity).
+- **Prince of Persia: The Lost Crown**.
+
+These are **new visual reports only**. Neither title has an attached
+diagnostic log or controlled Flush Threshold A/B in this investigation,
+so do **not** claim that either shares PAC-MAN's HDR-to-postprocessing
+dependency fault. In particular, do not infer the same Vulkan image
+dimensions/format, shaders, content pipeline, or game engine.
+
+### Minimal controlled validation per title
+
+1. Use the same Strato fork and driver, identical level/camera and
+   settings. Record a screenshot and a short log at the default
+   `Executor Flush Threshold=256`.
+2. Retest with `Executor Flush Threshold=0` and compare both
+   graphical correctness and FPS. A positive result is evidence of
+   submission-sensitive execution, but **not** proof of identical
+   underlying cause. Fully restart the game between A/B runs.
+3. Return to threshold 256. Only after step 2, optionally test the
+   previously successful PAC-MAN
+   `ENABLE_EXECUTOR_SCENE_POST_TEST` with `ARM_CAPTURE`.
+   **Interpret `executor_experiment_draws=0` as an invalid/non-
+   matching experiment**: its activation filter hardcodes the
+   PAC-MAN-observed `1280x720` HDR source and expected pass pattern.
+   Another title can use different dimensions/formats; a negative
+   visual result with no candidate submissions proves nothing.
+4. If all outcomes suggest the same root mechanism, introduce
+   **metadata-only, general pass classification** first, by tracking
+   actual resource producer/consumer identity, render attachment
+   dimensions/formats and command execution cycles. Do not
+   generalize by removing safeguards or globally inserting submits.
+
+Cross-game regression criteria for an eventual structural correction:
+PAC-MAN Re-PAC, Marsupilami Hoobadventure and Prince of Persia
+The Lost Crown should render correctly with **threshold 256**,
+without forced per-draw submissions or performance regressions.
+Keep Stage 8 PAC-MAN diagnostics isolated; any general code change
+must be proven on each game's actual trace. No merge.
