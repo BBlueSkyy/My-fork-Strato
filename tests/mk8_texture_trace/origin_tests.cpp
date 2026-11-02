@@ -60,10 +60,16 @@ int main() {
     OriginCapture perPhase;
     perPhase.Start(true);
     assert(lifecycle.SetPhase(2));
-    for (uint64_t i{};i<381;++i) {
+    for (uint64_t i{};i<256;++i) {
         Snapshot write{};
         write.id=i+1000;
         assert(perPhase.Save(OriginStage::WriteIntent,write));
+    }
+    assert(!perPhase.Save(OriginStage::WriteIntent,Snapshot{.id=77777}));
+    for (uint64_t i{};i<125;++i) {
+        Snapshot sampled{};
+        sampled.id=i+3000;
+        assert(perPhase.Save(OriginStage::SampledHost,sampled));
     }
     Snapshot paired{cube};
     paired.detail=8192;
