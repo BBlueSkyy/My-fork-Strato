@@ -520,6 +520,8 @@ namespace skyline::gpu {
 
       public:
         // Caller owns the resource lock; trap callbacks pass stateOnly=true.
+        void TraceOrigin(texture::diagnostic::OriginStage stage, const void *bytes = nullptr, size_t size = 0, bool guestMirror = false);
+        void CaptureOriginHost(const vk::raii::CommandBuffer &commands, const std::shared_ptr<FenceCycle> &captureCycle);
         bool MiniProducerCandidate() const;
         void QueueMiniCapture(interconnect::CommandExecutor &executor, const TextureView &view, u32 tic, u32 phase = 0, u64 operation = 0, u32 role = 0);
         void TraceLifecycle(texture::diagnostic::Event event, u32 detail = 0, u64 peer = 0, bool stateOnly = false, const TextureView *view = nullptr);
