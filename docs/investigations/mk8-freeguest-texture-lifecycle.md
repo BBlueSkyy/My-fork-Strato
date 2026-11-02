@@ -161,3 +161,58 @@ replace the previous MK8MINI1/2 evidence and does not investigate NVDEC.
 
 The instrumentation is temporary and should be removed before any real
 performance comparison or production merge. No root cause is claimed.
+
+
+### Focused readback overwrite probe (following first device origin CSV)
+
+The first `MK8ORIGIN1` CSV contained 590 exported rows but only 320
+internal entries, exhausting the **global** cap before race/return. On
+the observed original cubemap mapping, one producer's 4,096-byte guest
+readback at frame 3164 had 4,091 nonzero bytes, followed by the
+overlapping 49,152-byte cubemap readback returning zero guest bytes;
+other face readbacks followed. This is strong **ordering evidence**,
+not yet proof that the second write overwrote the first producer's
+physical pages, nor a proof of what caused the earlier black selection.
+
+To make this falsifiable, the collector now reserves independent
+entry budgets per manual phase: 192 startup, 384 black selection, 384
+race and 192 returned selection. Its CSV header reports per-phase
+counts and omissions; a saturated phase cannot consume another phase's
+slots. No runtime ID or address is used for filtering.
+
+On a structurally identified 32x32, six-layer, five-mip native
+B10G11R11 cubemap, `SynchronizeGuest()` now records **directly**
+around the pre-existing `CopyToGuest()` call:
+
+- `guest_before_readback_write`: a complete snapshot of the existing
+  guest mirror *immediately before* the normal host-to-guest encoding;
+- `readback_source`: the 32,736-byte linear Vulkan readback source
+  just before the encoding (no new GPU synchronization is requested);
+- `guest_after_readback_write`: the same guest mirror *immediately
+  after* the existing encoding, with no other emulator operation
+  inserted between the two observations except the recording.
+
+For both guest snapshots, per-face subrows include the 4,096-byte
+block-linear mip0 and the first 1,024 bytes of mip1 at their measured
+8,192-byte face stride. The surrounding block-linear padding is
+represented in the complete 49,152-byte row, not misinterpreted as
+pixels. In any stage, `size=0` denotes metadata-only and cannot be
+used to conclude the texture was black.
+
+**Interpretation:** if the *same readback call* changes a shared face
+from nonzero to zero, then a destructive write is demonstrated at that
+call site. It would still not explain why the cubemap was all-zero
+before its initial upload; the first-selection issue may have more
+than one contributing synchronization error. If before and after
+remain zero, the earlier apparent overwrite ordering is not proved.
+
+Sampled-host snapshots in phase 2 now allow up to 12 writer-serial-
+distinct records per cube, rather than just two. They remain
+nonblocking deferred GPU copies, not a continuous GPU trace; a producer
+may be missed. The new native tests include per-phase overflow
+isolation and before/source/after checks.
+
+**Collection:** use the same fresh-launch sequence described above,
+then export only **Origin: export automatic startup/race evidence**
+*after reaching the corrected selection*. No Mini/Producer mode needed.
+Do not change Free Guest or merge this diagnostic branch.
