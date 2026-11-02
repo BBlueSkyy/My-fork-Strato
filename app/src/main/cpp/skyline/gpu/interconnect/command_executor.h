@@ -5,6 +5,11 @@
 
 #include <gpu/texture/backing_promotion.h>
 #include "common/common.h"
+#include <cstdint>
+#include <array>
+#include <string>
+#include <string_view>
+#include <utility>
 
 #include <boost/container/stable_vector.hpp>
 #include <renderdoc_app.h>
@@ -15,6 +20,10 @@
 #include "common/spin_lock.h"
 
 namespace skyline::gpu::interconnect {
+    // Registration labels only select an opt-in diagnostic subset. Ordinary
+    // Submit still invokes every flush callback in registration order.
+    enum class FlushCallbackKind { General, GraphicsState };
+
     constexpr bool EnableGpuCheckpoints{false}; //!< Whether to enable GPU debugging checkpoints (WILL DECREASE PERF SIGNIFICANTLY)
 
     /*
@@ -222,6 +231,21 @@ namespace skyline::gpu::interconnect {
         std::vector<std::function<void()>> subpassBoundaryCallbacks; //!< Called immediately before leaving the current subpass
 
         std::vector<std::function<void()>> pendingDeferredActions;
+        std::vector<std::function<void()>> pacmanSceneReadbacks; // after GPU fence, diagnostic only
+        // Diagnostic-only pass sequence hints, tracked per executor/channel.
+        // These survive Submit(): the first draw of the next pass must be
+        // matched against the previous pass even if the command slot rotated.
+        bool pacmanSawDepthPass{};
+        bool pacmanSawHdrScenePass{};
+        // Debug-only correlation between the guest Maxwell draw and
+        // the next queued Vulkan subpass. Never used to alter shaders.
+        std::string pacmanNextDrawSignature;
+        std::uint64_t pacmanPostCandidateSerial{};
+        std::uintptr_t pacmanLastHdrProducerIdentity{};
+        std::array<std::uintptr_t, 8> pacmanTrackedTextures{};
+        u32 pacmanTrackedTextureCount{};
+        bool pacmanFlushingCallbacks{};
+        std::optional<size_t> pacmanGraphicsFlushCallbackIndex;
 
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
@@ -246,6 +270,8 @@ namespace skyline::gpu::interconnect {
          */
         void SubmitInternal();
 
+        void TracePacmanTextureSync(Texture *texture, std::string_view phase);
+
         /**
          * @brief Resets all the internal state, this must be called before starting a new submission as it clears everything from a past submission
          */
@@ -265,6 +291,14 @@ namespace skyline::gpu::interconnect {
         size_t submissionNumber{};
         ContextTag executionTag{};
         bool captureNextExecution{};
+        // Queues a GPU-ordered post-draw color-RT readback (only when manually armed).
+        void CapturePacmanSceneStep(TextureView *target, u32 sceneDrawOrdinal,
+                                    std::string_view drawDescription);
+        // Set immediately before AddSubpass by Maxwell3D for the bounded
+        // postprocess-boundary diagnostic; consumed by AddSubpass.
+        void SetPacmanDrawSignature(std::string signature) {
+            pacmanNextDrawSignature = std::move(signature);
+        }
         UsageTracker usageTracker;
 
         CommandExecutor(const DeviceState &state);
@@ -378,7 +412,8 @@ namespace skyline::gpu::interconnect {
         /**
          * @brief Adds a persistent callback that will be called at the start of Execute in order to flush data required for recording
          */
-        void AddFlushCallback(std::function<void()> &&callback);
+        void AddFlushCallback(std::function<void()> &&callback,
+                              FlushCallbackKind kind = FlushCallbackKind::General);
 
         /**
          * @brief Adds a persistent callback that will be called after any non-Maxwell 3D engine changes the active pipeline

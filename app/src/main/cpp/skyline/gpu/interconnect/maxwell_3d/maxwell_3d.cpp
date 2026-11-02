@@ -9,6 +9,7 @@
 #include <soc/gm20b/channel.h>
 #include "common/utils.h"
 #include "maxwell_3d.h"
+#include <gpu/diagnostic/pacman_triangle_capture.h>
 #include "common.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
@@ -46,7 +47,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             textures.MarkAllDirty();
             quadConversionBufferAttached = false;
             constantBuffers.DisableQuickBind();
-        });
+        }, FlushCallbackKind::GraphicsState);
 
         ctx.executor.AddSubpassBoundaryCallback([this] {
             queries.Pause(ctx);
@@ -61,6 +62,134 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         if (gpu.traits.supportsConditionalRendering)
             renderConditionResources = std::make_shared<RenderConditionResources>(gpu);
+    }
+
+
+    void Maxwell3D::TraceSyntheticIndexOverride(const char *source, bool guestIndexed,
+                                               u32 guestCount, u32 guestFirst) {
+        auto &cap{diagnostic::PacmanCapture()};
+        if (cap.ExecutorExperimentMode() != 18)
+            return;
+
+        // The draw path already invalidated the guest binding. Mode 18 now
+        // observes that structural correction without changing rendering.
+        pacmanSyntheticIndexPending = true;
+        pacmanIndexOverrideSubmission = ctx.executor.submissionNumber;
+        cap.ExecutorIndexInvalidationStep();
+        if (!cap.Active())
+            return;
+        const auto *pipeline{activeState.GetPipeline()};
+        cap.Record(fmt::format(
+            "SYNTHETIC_INDEX_OVERRIDE source={} guest_indexed={} guest_count={} guest_first={} "
+            "sub={} cycle={} vs={:016X} fs={:016X} index_invalidated=true",
+            source, guestIndexed, guestCount, guestFirst, ctx.executor.submissionNumber,
+            fmt::ptr(ctx.executor.cycle.get()), pipeline ? pipeline->sourcePackedState.shaderHashes[1] : 0,
+            pipeline ? pipeline->sourcePackedState.shaderHashes[5] : 0));
+    }
+
+    void Maxwell3D::TraceGuestIndexRebind(const StateUpdateBuilder &builder, bool guestIndexed, const char *source) {
+        auto &cap{diagnostic::PacmanCapture()};
+        if (cap.ExecutorExperimentMode() != 18 || !cap.Active() ||
+            !guestIndexed || !pacmanSyntheticIndexPending)
+            return;
+        const bool emitted{builder.HasIndexBufferBinding()};
+        const auto *pipeline{activeState.GetPipeline()};
+        cap.Record(fmt::format(
+            "GUEST_INDEX_REBIND source={} emitted={} sub={} override_sub={} same_submission={} "
+            "cycle={} vs={:016X} fs={:016X} note=prepared_binding_command",
+            source, emitted, ctx.executor.submissionNumber, pacmanIndexOverrideSubmission,
+            ctx.executor.submissionNumber == pacmanIndexOverrideSubmission,
+            fmt::ptr(ctx.executor.cycle.get()), pipeline ? pipeline->sourcePackedState.shaderHashes[1] : 0,
+            pipeline ? pipeline->sourcePackedState.shaderHashes[5] : 0));
+        if (emitted) {
+            cap.ExecutorIndexRebindStep();
+            pacmanSyntheticIndexPending = false;
+        }
+    }
+
+    void Maxwell3D::TraceTriangleDraw(const char *kind, engine::DrawTopology topology,
+                                     bool indexed, u32 count, u32 first, u32 instances,
+                                     i32 vertexOffset, const vk::Rect2D &scissor) {
+        auto &cap{diagnostic::PacmanCapture()};
+        const auto diagnosticMode{cap.ExecutorExperimentMode()};
+        // Capture the specific draw's shader IDs right before AddSubpass.
+        // No dynamic allocations during ordinary gameplay; after the
+        // metadata window ends even a persistent test stops logging.
+        if (cap.Active() && diagnosticMode >= 7 && diagnosticMode <= 17) {
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto &p{pipeline->sourcePackedState};
+                ctx.executor.SetPacmanDrawSignature(fmt::format(
+                    "kind={} vs={:016X} fs={:016X} guest_top={} indexed={} count={} first={} "
+                    "instances={} scissor={}x{}",
+                    kind, p.shaderHashes[1], p.shaderHashes[5],
+                    static_cast<u32>(topology), indexed, count, first, instances,
+                    scissor.extent.width, scissor.extent.height));
+            }
+            return;
+        }
+        if (!cap.Active() || cap.ScanEnabled() || diagnosticMode) return;
+        if (cap.TakeRenderDocRequest()) {
+            ctx.executor.captureNextExecution = true;
+            cap.Record("RENDERDOC next_execution_requested; requires external RenderDoc layer");
+        }
+        std::string shaders;
+        std::string fixed{"pipeline_unavailable"};
+        if (auto *pipeline{activeState.GetPipeline()}) {
+            const auto &p{pipeline->sourcePackedState};
+            for (const auto hash : p.shaderHashes)
+                shaders += fmt::format("{:016X},", hash);
+            fixed = fmt::format(
+                "top={} cull={} cw={} flipY={} discard={} depth_test={} depth_write={} "
+                "depth_func={} stencil={} ndc_gl={} restart={} blend0={} color_mask0={}",
+                static_cast<u32>(p.topology), static_cast<u32>(p.cullMode),
+                static_cast<bool>(p.frontFaceClockwise),
+                static_cast<bool>(p.flipYEnable),
+                static_cast<bool>(p.rasterizerDiscardEnable),
+                static_cast<bool>(p.depthTestEnable),
+                static_cast<bool>(p.depthWriteEnable),
+                static_cast<u32>(p.depthFunc),
+                static_cast<bool>(p.stencilTestEnable),
+                static_cast<bool>(p.openGlNdc),
+                static_cast<bool>(p.primitiveRestartEnabled),
+                static_cast<bool>(p.attachmentBlendStates[0].blendEnable),
+                static_cast<u32>(p.attachmentBlendStates[0].colorWriteMask));
+        }
+        std::string targets;
+        for (auto *view : activeState.GetColorAttachments()) {
+            if (view && view->texture)
+                targets += fmt::format("[{}:{}x{} f={}]",
+                    fmt::ptr(view), view->texture->dimensions.width,
+                    view->texture->dimensions.height,
+                    static_cast<u32>(view->texture->format->vkFormat));
+            else
+                targets += "[null]";
+        }
+        auto *depth{activeState.GetDepthAttachment()};
+        std::string z{"null"};
+        if (depth && depth->texture)
+            z = fmt::format("[{}:{}x{} f={}]", fmt::ptr(depth),
+                depth->texture->dimensions.width, depth->texture->dimensions.height,
+                static_cast<u32>(depth->texture->format->vkFormat));
+        std::string sampled;
+        u32 i{};
+        for (auto *view : activeDescriptorSetSampledImages) {
+            if (i++ >= 8) break;
+            if (view && view->texture)
+                sampled += fmt::format("[{}:{}x{} f={}]",
+                    fmt::ptr(view), view->texture->dimensions.width,
+                    view->texture->dimensions.height,
+                    static_cast<u32>(view->texture->format->vkFormat));
+            else
+                sampled += "[null]";
+        }
+        cap.Record(fmt::format(
+            "DRAW interval={} kind={} guest_top={} indexed={} count={} first={} "
+            "instances={} vertex_offset={} scissor={},{} {}x{} {} shaders={} "
+            "colors={} depth={} sampled_count={} sampled_first8={}",
+            cap.PresentedFrames(), kind, static_cast<u32>(topology), indexed,
+            count, first, instances, vertexOffset, scissor.offset.x,
+            scissor.offset.y, scissor.extent.width, scissor.extent.height,
+            fixed, shaders, targets, z, activeDescriptorSetSampledImages.size(), sampled));
     }
 
     vk::DeviceSize Maxwell3D::UpdateQuadConversionBuffer(u32 count, u32 firstVertex) {
@@ -109,6 +238,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
     ctx.executor.AttachDependency(inlineIndexBuffer);
 
     builder.SetIndexBuffer(BufferBinding{inlineIndexBuffer->vkBuffer, 0}, ConvertInlineIndexSize(indexSize));
+    // The host binding replaced guest state without changing guest registers.
+    activeState.InvalidateIndexBuffer();
+    TraceSyntheticIndexOverride("inline", true, count, 0);
 
     RefreshRenderCondition();
     auto stateUpdater{builder.Build()};
@@ -126,7 +258,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
     vk::Rect2D scissor{GetDrawScissor()};
     constantBuffers.ResetQuickBind();
 
-    ctx.executor.AddCheckpoint("Before inline index draw");
+    TraceTriangleDraw("inline", topology, true, count, 0, instanceCount, 0, scissor);
+     ctx.executor.AddCheckpoint("Before inline index draw");
     ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
         drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
 
@@ -743,8 +876,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
         PrepareDraw(builder, topology, indexed, false, first, count, srcStageMask, dstStageMask);
+        TraceGuestIndexRebind(builder, indexed, "direct");
 
         if (directState.inputAssembly.NeedsQuadConversion()) {
+            const auto guestCount{count}, guestFirst{first};
             count = conversion::quads::GetIndexCount(count);
             first = 0;
 
@@ -752,6 +887,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 // Use an index buffer to emulate quad lists with a triangle list input topology
                 vk::DeviceSize offset{UpdateQuadConversionBuffer(count, first)};
                 builder.SetIndexBuffer(BufferBinding{quadConversionBuffer->vkBuffer, offset}, vk::IndexType::eUint32);
+                // The next indexed guest draw must restore its own binding.
+                activeState.InvalidateIndexBuffer();
+                TraceSyntheticIndexOverride("nonindexed_quad", false, guestCount, guestFirst);
                 indexed = true;
             }
         }
@@ -782,6 +920,30 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
 
         constantBuffers.ResetQuickBind();
+        TraceTriangleDraw("direct", topology, indexed, count, first, instanceCount,
+                          static_cast<i32>(vertexOffset), scissor);
+        // Count color scene draws once, before publication of the actual
+        // draw node, so a pre-first-draw snapshot can show stale RT content.
+        auto &pacmanCap{diagnostic::PacmanCapture()};
+        TextureView *pacmanSceneTarget{};
+        std::optional<u32> pacmanSceneOrdinal{};
+        const auto *pacmanPipeline{activeState.GetPipeline()};
+        if (pacmanCap.SnapshotsEnabled() && !transformFeedbackEnable && pacmanPipeline &&
+            pacmanPipeline->sourcePackedState.attachmentBlendStates[0].colorWriteMask) {
+            for (auto *view : activeState.GetColorAttachments()) {
+                if (view && view->texture &&
+                    view->texture->dimensions.width == 1280 &&
+                    view->texture->dimensions.height == 720) {
+                    pacmanSceneTarget = view;
+                    break;
+                }
+            }
+            if (pacmanSceneTarget)
+                pacmanSceneOrdinal = pacmanCap.NextSceneOrdinal();
+            if (pacmanSceneOrdinal && *pacmanSceneOrdinal == 1 && !pacmanCap.ScanEnabled())
+                ctx.executor.CapturePacmanSceneStep(
+                    pacmanSceneTarget, 0, "before_first_scene_color_draw");
+        }
         ctx.executor.AddCheckpoint("Before draw");
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
@@ -811,6 +973,24 @@ namespace skyline::gpu::interconnect::maxwell3d {
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
+        // Captures 001/002 found that the repeated scene has 101 eligible
+        // 1280x720 color draws, not 176. Earlier 176 was unreachable.
+        // The first snapshot is before draw 1, with remaining milestones
+        // surrounding the observed reduction in saturated HDR pixels.
+        if (pacmanSceneTarget && pacmanSceneOrdinal && pacmanPipeline &&
+            (pacmanCap.ScanEnabled()
+                 ? *pacmanSceneOrdinal == 16
+                 : (*pacmanSceneOrdinal == 1 || *pacmanSceneOrdinal == 16 ||
+                    *pacmanSceneOrdinal == 32 || *pacmanSceneOrdinal == 48 ||
+                    *pacmanSceneOrdinal == 64 || *pacmanSceneOrdinal == 80 ||
+                    *pacmanSceneOrdinal == 100))) {
+            const auto &p{pacmanPipeline->sourcePackedState};
+            ctx.executor.CapturePacmanSceneStep(
+                pacmanSceneTarget, *pacmanSceneOrdinal,
+                fmt::format("guest_top={} count={} indexed={} vs={:016X} fs={:016X}",
+                            static_cast<u32>(topology), count, indexed,
+                            p.shaderHashes[1], p.shaderHashes[5]));
+        }
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
     
@@ -828,6 +1008,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
 
         PrepareDraw(builder, topology, indexed, true, 0, 0, srcStageMask, dstStageMask);
+        TraceGuestIndexRebind(builder, indexed, "indirect");
 
         if (directState.inputAssembly.NeedsQuadConversion())
             throw exception("Quad conversion is not supported for indirect draws!");
@@ -865,6 +1046,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto scissor{GetDrawScissor()};
         constantBuffers.ResetQuickBind();
 
+        TraceTriangleDraw("indirect", topology, indexed, count, 0, 0,
+                          static_cast<i32>(stride), scissor);
         ctx.executor.AddCheckpoint("Before indirect draw");
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);

@@ -19,6 +19,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Test executor and index-binding regressions
+        run: |
+          python3 tests/gpu_executor_diagnostics/run.py
+          python3 tests/gpu_index_binding/run.py
+          python3 tests/gpu_conditional/run.py
     
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2

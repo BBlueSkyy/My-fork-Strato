@@ -11,6 +11,10 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <gpu/diagnostic/pacman_triangle_capture.h>
+#include <filesystem>
+#include <fstream>
+#include <cstring>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -202,6 +206,8 @@ namespace skyline::gpu::interconnect {
             incoming.Process([this, renderDocApi, &gpu](Slot *slot) {
                 idle = false;
                 VkInstance instance{*gpu.vkInstance};
+                if (slot->capture && !renderDocApi)
+                    LOGI("MINIRD_PACMAN RenderDoc layer not loaded; text trace remains available");
                 if (renderDocApi && slot->capture)
                     renderDocApi->StartFrameCapture(RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE(instance), nullptr);
 
@@ -380,6 +386,141 @@ namespace skyline::gpu::interconnect {
 
     static bool ViewsEqual(vk::ImageView a, TextureView *b) {
         return (!a && !b) || (a && b && b->GetView() == a);
+    }
+
+
+    void CommandExecutor::CapturePacmanSceneStep(TextureView *target, u32 ordinal,
+                                                  std::string_view drawDescription) {
+        auto &cap{diagnostic::PacmanCapture()};
+        if (!cap.SnapshotsEnabled() || !target || !target->texture)
+            return;
+        auto tex{target->texture};
+        // The first capture established that the scene color pass is 1280x720.
+        // Check dimensions and image-copy prerequisites, never alter the RT.
+        if (tex->dimensions.width != 1280 || tex->dimensions.height != 720 ||
+            tex->dimensions.depth != 1 || tex->levelCount != 1 ||
+            tex->layerCount != 1 || tex->sampleCount != vk::SampleCountFlagBits::e1 ||
+            !tex->surfaceSize || !tex->format ||
+            !(tex->format->vkAspect & vk::ImageAspectFlagBits::eColor) ||
+            tex->format->IsCompressed() ||
+            !(tex->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+            (tex->layout != vk::ImageLayout::eGeneral &&
+             tex->layout != vk::ImageLayout::eTransferSrcOptimal)) {
+            cap.Record(fmt::format(
+                "SCENE_SNAPSHOT_SKIPPED ordinal={} tex={} layout={} usage={} size={}",
+                ordinal, fmt::ptr(tex.get()), vk::to_string(tex->layout),
+                static_cast<u32>(tex->usage), tex->surfaceSize));
+            return;
+        }
+        if (cap.ScanEnabled()) {
+            if (tex->format->vkFormat != vk::Format::eB10G11R11UfloatPack32)
+                return; // Raw packed-float scan is only valid for this format.
+            const auto ticket{cap.ReserveScan(tex->surfaceSize)};
+            if (!ticket) return;
+            const auto [scanId, epoch]{*ticket};
+            const auto interval{cap.PresentedFrames()};
+            const auto folder{cap.CaptureDirectory()};
+            BreakRenderPass(); // Explicitly armed: never split a normal draw.
+            auto staging{gpu.memory.AllocateStagingBuffer(tex->surfaceSize)};
+            AddCommand([tex, staging](vk::raii::CommandBuffer &cmd,
+                                       const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                cycle->AttachObjects(tex, staging);
+                tex->CopyIntoStagingBuffer(cmd, staging);
+            });
+            pacmanSceneReadbacks.emplace_back(
+                [staging, folder, scanId, epoch, interval, ordinal] {
+                    // VK_FORMAT_B10G11R11_UFLOAT_PACK32: threshold >100
+                    // corresponds to packed R/G11 >1380, B10 >690.
+                    // The threshold separates prior bad (>10k pixels)
+                    // and good (zero pixels) captures. Detection only;
+                    // no shader or rendering decisions depend on it.
+                    auto *bytes{static_cast<const u8 *>(staging->data())};
+                    std::uint32_t above100{};
+                    for (std::size_t i{}; i < 1280ULL * 720; ++i) {
+                        std::uint32_t word{};
+                        std::memcpy(&word, bytes + i * 4, sizeof(word));
+                        if ((word & 0x7FFU) > 1380U ||
+                            ((word >> 11) & 0x7FFU) > 1380U ||
+                            ((word >> 22) & 0x3FFU) > 690U)
+                            ++above100;
+                    }
+                    auto &capture{diagnostic::PacmanCapture()};
+                    const bool keep{capture.KeepScanImage(epoch, above100)};
+                    bool ok{true};
+                    if (keep) {
+                        const auto stem{fmt::format("hdr_scan_{:02}_i{}", scanId, interval)};
+                        const auto rawPath{folder / (stem + ".raw")};
+                        const auto metaPath{folder / (stem + ".txt")};
+                        std::ofstream raw{rawPath, std::ios::binary | std::ios::trunc};
+                        if (raw)
+                            raw.write(reinterpret_cast<const char *>(bytes),
+                                      static_cast<std::streamsize>(staging->size()));
+                        raw.close();
+                        std::ofstream meta{metaPath, std::ios::trunc};
+                        if (meta)
+                            meta << "interval=" << interval << " scan_id=" << scanId
+                                 << " draw_ordinal=" << ordinal
+                                 << " format=B10G11R11UfloatPack32"
+                                 << " width=1280 height=720 over_100_pixels=" << above100
+                                 << " threshold_pixels=512\n";
+                        meta.close();
+                        ok = raw.good() && meta.good();
+                    }
+                    capture.ScanFinished(epoch, scanId, above100, ok);
+                    if (above100 >= 512)
+                        LOGI("MINIRD_PACMAN HDR scan match sample={} pixels_above_100={} saved={}",
+                             scanId, above100, keep && ok);
+                });
+            return;
+        }
+        const auto idOpt{cap.ReserveSnapshot(tex->surfaceSize)};
+        if (!idOpt)
+            return;
+        const auto id{*idOpt};
+        const auto interval{cap.PresentedFrames()};
+        const auto folder{cap.CaptureDirectory()};
+        const auto rawPath{folder / fmt::format(
+            "scene_{:02}_i{}_draw{:03}_1280x720.raw", id, interval, ordinal)};
+        const auto metaPath{folder / fmt::format("scene_{:02}.txt", id)};
+        const auto description{std::string{drawDescription}};
+        const auto details{fmt::format(
+            "id={} interval={} scene_draw_ordinal={} texture={} "
+            "dimensions=1280x720 format={} layout={} size={} "
+            "executor={} submission={} draw={} note=post_draw_gpu_ordered\n",
+            id, interval, ordinal, fmt::ptr(tex.get()),
+            vk::to_string(tex->format->vkFormat), vk::to_string(tex->layout),
+            tex->surfaceSize, fmt::ptr(this), submissionNumber, description)};
+
+        // Ends the current render pass, then copies the target. This is a
+        // deliberate diagnostic-only split, never performed in normal play.
+        BreakRenderPass();
+        auto staging{gpu.memory.AllocateStagingBuffer(tex->surfaceSize)};
+        AddCommand([tex, staging](vk::raii::CommandBuffer &cmd,
+                                   const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+            cycle->AttachObjects(tex, staging);
+            tex->CopyIntoStagingBuffer(cmd, staging);
+        });
+        pacmanSceneReadbacks.emplace_back([staging, rawPath, metaPath, details, id] {
+            std::ofstream out{rawPath, std::ios::binary | std::ios::trunc};
+            if (out)
+                out.write(reinterpret_cast<const char *>(staging->data()),
+                          static_cast<std::streamsize>(staging->size()));
+            out.close();
+            const bool rawGood{out.good()};
+            std::ofstream info{metaPath, std::ios::trunc};
+            if (info)
+                info << details;
+            info.close();
+            const bool ok{rawGood && info.good()};
+            diagnostic::PacmanCapture().SnapshotFinished(ok);
+            if (ok)
+                LOGI("MINIRD_PACMAN scene snapshot {} written", id);
+            else
+                LOGE("MINIRD_PACMAN scene snapshot {} failed", id);
+        });
+        cap.Record(fmt::format(
+            "SCENE_SNAPSHOT_RESERVED id={} interval={} ordinal={} tex={} bytes={}",
+            id, interval, ordinal, fmt::ptr(tex.get()), tex->surfaceSize));
     }
 
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
@@ -563,8 +704,225 @@ namespace skyline::gpu::interconnect {
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
         }
 
-        if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
+        auto &pacmanDiagnostic{diagnostic::PacmanCapture()};
+        const auto testMode{pacmanDiagnostic.ExecutorExperimentMode()};
+        // One Maxwell3D draw signature is consumed for every AddSubpass;
+        // this prevents accidental association with subsequent engine work.
+        const auto drawSignature{std::exchange(pacmanNextDrawSignature, std::string{})};
+        bool sceneSubmit{}, callbackRefresh{}, hasColor{}, hdrScene{}, viOutput{};
+        const bool postProbeMode{testMode >= 7 && testMode <= 17};
+        if (testMode >= 3 && testMode <= 17) {
+            for (auto *view : colorAttachments) {
+                if (!view || !view->texture || !view->texture->format)
+                    continue;
+                auto &t{*view->texture};
+                hasColor = true;
+                const auto w{t.dimensions.width}, h{t.dimensions.height};
+                if (w == 1280 && h == 720) {
+                    if (testMode == 3) sceneSubmit = true;
+                    if (t.format->vkFormat == vk::Format::eB10G11R11UfloatPack32)
+                        hdrScene = true;
+                }
+                if (w == 1920 && h == 1080)
+                    viOutput = true;
+            }
+            if (testMode >= 4) {
+                const bool depthOnly{
+                    !hasColor && depthStencilAttachment && depthStencilAttachment->texture &&
+                    depthStencilAttachment->texture->dimensions.width == 2048 &&
+                    depthStencilAttachment->texture->dimensions.height == 2048
+                };
+                if (depthOnly) {
+                    pacmanSawDepthPass = true;
+                    pacmanSawHdrScenePass = false;
+                }
+                if (hdrScene) {
+                    for (auto *view : colorAttachments)
+                        if (view && view->texture && view->texture->format &&
+                            view->texture->dimensions.width == 1280 &&
+                            view->texture->dimensions.height == 720 &&
+                            view->texture->format->vkFormat ==
+                                vk::Format::eB10G11R11UfloatPack32) {
+                            pacmanLastHdrProducerIdentity =
+                                reinterpret_cast<std::uintptr_t>(view->texture.get());
+                            break;
+                        }
+                    if (testMode == 4 && pacmanSawDepthPass)
+                        sceneSubmit = true;
+                    pacmanSawDepthPass = false;
+                    pacmanSawHdrScenePass = true;
+                } else if (hasColor && pacmanSawHdrScenePass) {
+                    if (testMode == 5 && !viOutput)
+                        sceneSubmit = true;
+                    if (testMode == 6 && viOutput)
+                        sceneSubmit = true;
+                    if (postProbeMode && !viOutput) {
+                        // The successful broad mode 5 submitted ~four times
+                        // per host presentation. These slots are diagnostic,
+                        // not a claim that host presents equal guest frames.
+                        const auto candidate{++pacmanPostCandidateSerial};
+                        const auto slotIndex{static_cast<u32>((candidate - 1) % 4) + 1};
+                        sceneSubmit = testMode == 7 ||
+                                      (testMode >= 8 && testMode <= 11 &&
+                                       slotIndex == testMode - 7) ||
+                                      (testMode == 13 && (slotIndex == 1 || slotIndex == 3)) ||
+                                      (testMode == 14 && (slotIndex == 2 || slotIndex == 3)) ||
+                                      (testMode == 15 && (slotIndex == 3 || slotIndex == 4));
+                        callbackRefresh = (testMode == 16 || testMode == 17) &&
+                                          (slotIndex == 3 || slotIndex == 4);
+                        if (pacmanDiagnostic.Active()) {
+                            // Observe only the inputs/outputs of the two narrowed
+                            // candidates. Store identities, never extend lifetimes
+                            // or dereference an identity after its object is gone.
+                            if (slotIndex == 3 || slotIndex == 4) {
+                                const auto watch{[&](TextureView *view) {
+                                    if (!view || !view->texture) return;
+                                    const auto identity{reinterpret_cast<std::uintptr_t>(view->texture.get())};
+                                    for (u32 i{}; i < pacmanTrackedTextureCount; ++i)
+                                        if (pacmanTrackedTextures[i] == identity) return;
+                                    if (pacmanTrackedTextureCount < pacmanTrackedTextures.size())
+                                        pacmanTrackedTextures[pacmanTrackedTextureCount++] = identity;
+                                    else
+                                        pacmanDiagnostic.Record("TEXTURE_TRACK_LIMIT capacity=8");
+                                }};
+                                for (auto *view : sampledImages) watch(view);
+                                for (auto *view : colorAttachments) watch(view);
+                            }
+                            std::string targets, inputs;
+                            bool sampledSameHdrIdentity{};
+                            u32 n{};
+                            for (auto *view : colorAttachments) {
+                                if (n++ >= 4) break;
+                                if (view && view->texture && view->texture->format) {
+                                    auto &t{*view->texture};
+                                    targets += fmt::format(
+                                        "[tex={} {}x{} fmt={} layout={} cycle={}]",
+                                        fmt::ptr(view->texture.get()), t.dimensions.width,
+                                        t.dimensions.height, static_cast<u32>(t.format->vkFormat),
+                                        static_cast<u32>(t.layout), fmt::ptr(t.cycle.get()));
+                                } else targets += "[null]";
+                            }
+                            n = 0;
+                            for (auto *view : sampledImages) {
+                                if (n++ >= 8) break;
+                                if (view && view->texture && view->texture->format) {
+                                    auto &t{*view->texture};
+                                    if (reinterpret_cast<std::uintptr_t>(view->texture.get()) ==
+                                        pacmanLastHdrProducerIdentity)
+                                        sampledSameHdrIdentity = true;
+                                    inputs += fmt::format(
+                                        "[tex={} {}x{} fmt={} layout={} cycle={}]",
+                                        fmt::ptr(view->texture.get()), t.dimensions.width,
+                                        t.dimensions.height, static_cast<u32>(t.format->vkFormat),
+                                        static_cast<u32>(t.layout), fmt::ptr(t.cycle.get()));
+                                } else inputs += "[null]";
+                            }
+                            pacmanDiagnostic.Record(fmt::format(
+                                "POST_CANDIDATE ordinal={} slot={} mode={} selected={} "
+                                "goto_next={} natural_flush={} present_interval={} "
+                                "exec={} sub={} rp={} own_cycle={} colors={} "
+                                "sampled_count={} sampled_first8={} input_attachments={} "
+                                "targets={} last_hdr_texture=0x{:X} sampled_same_hdr={} callback_refresh={} draw={}",
+                                candidate, slotIndex, testMode, sceneSubmit || callbackRefresh, gotoNext,
+                                slot->nodes.size() > *state.settings->executorFlushThreshold,
+                                pacmanDiagnostic.PresentedFrames(), fmt::ptr(this),
+                                submissionNumber, renderPassIndex, fmt::ptr(cycle.get()),
+                                colorAttachments.size(), sampledImages.size(), inputs,
+                                inputAttachments.size(), targets,
+                                pacmanLastHdrProducerIdentity, sampledSameHdrIdentity, callbackRefresh,
+                                drawSignature));
+                        }
+                    }
+                    // The event has been consumed even if its slot was not
+                    // selected, preventing repeated submissions for one draw.
+                    if (sceneSubmit || testMode == 5 || postProbeMode)
+                        pacmanSawHdrScenePass = false;
+                }
+            }
+        }
+        bool naturalFlush{slot->nodes.size() > *state.settings->executorFlushThreshold};
+        if (callbackRefresh && testMode == 17 &&
+            (!pacmanGraphicsFlushCallbackIndex || *pacmanGraphicsFlushCallbackIndex >= flushCallbacks.size())) {
+            if (pacmanDiagnostic.Active())
+                pacmanDiagnostic.Record(fmt::format(
+                    "EXECUTOR_CALLBACKS_UNAVAILABLE mode=17 candidate={} reason=no_graphics_registration",
+                    pacmanPostCandidateSerial));
+            callbackRefresh = false;
+        }
+        if (!gotoNext && callbackRefresh && !pacmanFlushingCallbacks) {
+            // Mode 16 runs Submit's complete callback bundle. Mode 17 runs
+            // only its explicitly labeled graphics-state callback, excluding
+            // engine/query, compute and channel-sequence effects. Neither
+            // intervention rotates the slot or changes the execution tag.
+            const auto callbackExecutionTag{executionTag};
+            const auto traceCallbacks{[&](std::string_view phase) {
+                if (pacmanDiagnostic.Active())
+                    pacmanDiagnostic.Record(fmt::format(
+                        "EXECUTOR_CALLBACKS phase={} mode={} candidate={} exec={} sub={} rp={} "
+                        "cycle={} execution_tag_unchanged={} nodes={} pending_post_rp={} callbacks={} "
+                        "callbacks_selected={} natural_flush={} threshold={}",
+                        phase, testMode, pacmanPostCandidateSerial, fmt::ptr(this), submissionNumber,
+                        renderPassIndex, fmt::ptr(cycle.get()), executionTag == callbackExecutionTag,
+                        slot->nodes.size(), slot->pendingPostRenderPassNodes.size(),
+                        flushCallbacks.size(), testMode == 17 ? size_t{1} : flushCallbacks.size(),
+                        naturalFlush, *state.settings->executorFlushThreshold));
+            }};
+            traceCallbacks("before");
+            pacmanFlushingCallbacks = true;
+            try {
+                if (testMode == 17)
+                    flushCallbacks[*pacmanGraphicsFlushCallbackIndex]();
+                else
+                    for (const auto &flushCallback : flushCallbacks)
+                        flushCallback();
+            } catch (...) {
+                pacmanFlushingCallbacks = false;
+                throw;
+            }
+            pacmanFlushingCallbacks = false;
+            // Callback-published work remains in this slot and must count
+            // toward the ordinary threshold once the callback bundle exits.
+            naturalFlush = slot->nodes.size() > *state.settings->executorFlushThreshold;
+            pacmanDiagnostic.ExecutorCallbackStep();
+            traceCallbacks("after");
+        }
+        if (!gotoNext && naturalFlush && pacmanFlushingCallbacks && pacmanDiagnostic.Active())
+            pacmanDiagnostic.Record(fmt::format(
+                "EXECUTOR_CALLBACK_DEFERRED_NATURAL_SUBMIT exec={} candidate={} nodes={} threshold={}",
+                fmt::ptr(this), pacmanPostCandidateSerial, slot->nodes.size(),
+                *state.settings->executorFlushThreshold));
+        // In callback-only mode a callback can itself enqueue a draw. Let
+        // the outer invocation finish its bundle before threshold submission.
+        if (!gotoNext && !pacmanFlushingCallbacks && (naturalFlush || sceneSubmit)) {
+            if ((testMode == 16 || testMode == 17) && naturalFlush && pacmanDiagnostic.Active())
+                pacmanDiagnostic.Record(fmt::format(
+                    "EXECUTOR_NATURAL_SUBMIT exec={} sub={} candidate={} nodes={} threshold={}",
+                    fmt::ptr(this), submissionNumber, pacmanPostCandidateSerial,
+                    slot->nodes.size(), *state.settings->executorFlushThreshold));
+            if (sceneSubmit) {
+                pacmanDiagnostic.ExecutorExperimentStep();
+                if (pacmanDiagnostic.Active())
+                    pacmanDiagnostic.Record(fmt::format(
+                        "EXECUTOR_BOUNDARY_SUBMIT mode={} natural_flush={} submit={} "
+                        "hdr={} vi={} color={} post_candidate={}",
+                        testMode, naturalFlush, submissionNumber, hdrScene, viOutput,
+                        hasColor, pacmanPostCandidateSerial));
+            }
             Submit();
+        } else if (gotoNext && sceneSubmit && pacmanDiagnostic.Active()) {
+            pacmanDiagnostic.Record(fmt::format(
+                "EXECUTOR_BOUNDARY_SKIPPED mode={} reason=next_subpass", testMode));
+        }
+
+        // Mode 1: end each renderpass without submitting.
+        // Mode 2: same split plus an all-commands Vulkan memory barrier.
+        if (testMode == 1) {
+            BreakRenderPass();
+            pacmanDiagnostic.ExecutorExperimentStep();
+        } else if (testMode == 2) {
+            AddFullBarrier();
+            pacmanDiagnostic.ExecutorExperimentStep();
+        }
     }
 
     void CommandExecutor::AddOutsideRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function) {
@@ -656,8 +1014,10 @@ namespace skyline::gpu::interconnect {
         }
     }
 
-    void CommandExecutor::AddFlushCallback(std::function<void()> &&callback) {
+    void CommandExecutor::AddFlushCallback(std::function<void()> &&callback, FlushCallbackKind kind) {
         flushCallbacks.emplace_back(std::forward<decltype(callback)>(callback));
+        if (kind == FlushCallbackKind::GraphicsState)
+            pacmanGraphicsFlushCallbackIndex = flushCallbacks.size() - 1;
     }
 
     void CommandExecutor::AddPipelineChangeCallback(std::function<void()> &&callback) {
@@ -692,6 +1052,58 @@ namespace skyline::gpu::interconnect {
         return nextCheckpointId++;
     }
 
+    void CommandExecutor::TracePacmanTextureSync(Texture *texture, std::string_view phase) {
+        auto &capture{diagnostic::PacmanCapture()};
+        if (!pacmanTrackedTextureCount || !capture.Active())
+            return;
+        const auto identity{reinterpret_cast<std::uintptr_t>(texture)};
+        bool tracked{};
+        for (u32 index{}; index < pacmanTrackedTextureCount && index < pacmanTrackedTextures.size(); ++index)
+            tracked |= pacmanTrackedTextures[index] == identity;
+        if (!tracked)
+            return;
+
+        // The executor already owns this live texture's resource lock. Trap
+        // callbacks can still change dirty state, so copy that state briefly
+        // under its own mutex and release it before formatting or recording.
+        u32 dirtyState{};
+        bool memoryFreed{};
+        u64 writeSerial{}, readbackSerial{};
+        {
+            std::scoped_lock lock{texture->stateMutex};
+            dirtyState = static_cast<u32>(texture->dirtyState);
+            memoryFreed = texture->memoryFreed;
+            writeSerial = texture->gpuWriteSerial;
+            readbackSerial = texture->gpuReadbackSerial;
+        }
+        const auto alias{texture->aliasGroup.load()};
+        std::string mappings;
+        size_t mappingCount{};
+        if (texture->guest) {
+            mappingCount = texture->guest->mappings.size();
+            for (size_t index{}; index < mappingCount && index < 4; ++index) {
+                const auto mapping{texture->guest->mappings[index]};
+                mappings += fmt::format("[ptr={} bytes={}]", fmt::ptr(mapping.data()), mapping.size());
+            }
+        }
+        capture.Record(fmt::format(
+            "TEXTURE_SUBMIT_SYNC phase={} exec={} sub={} tex={} image={} generation={} "
+            "cycle={} own_cycle={} dimensions={}x{}x{} fmt={} layout={} "
+            "dirty={} memory_freed={} write_serial={} readback_serial={} "
+            "alias_group={} alias_stale={} last_rp={} last_usage={} "
+            "pending_stages={} read_stages={} mapping_count={} mappings_first4={}",
+            phase, fmt::ptr(this), submissionNumber, fmt::ptr(texture),
+            fmt::ptr(static_cast<VkImage>(texture->GetBacking())), texture->backingGeneration,
+            fmt::ptr(texture->cycle.get()), fmt::ptr(cycle.get()),
+            texture->dimensions.width, texture->dimensions.height, texture->dimensions.depth,
+            static_cast<u32>(texture->format->vkFormat), static_cast<u32>(texture->layout),
+            dirtyState, memoryFreed, writeSerial, readbackSerial,
+            fmt::ptr(alias.get()), texture->aliasStale.load(), texture->lastRenderPassIndex,
+            static_cast<u32>(texture->lastRenderPassUsage),
+            static_cast<VkPipelineStageFlags>(texture->pendingStageMask),
+            static_cast<VkPipelineStageFlags>(texture->readStageMask), mappingCount, mappings));
+    }
+
     void CommandExecutor::SubmitInternal() {
         if (renderPass)
             FinishRenderPass();
@@ -721,7 +1133,17 @@ namespace skyline::gpu::interconnect {
                     chainedCycles.emplace_back(previousCycle.get());
                 }
 
+                const bool traceTextureSync{pacmanTrackedTextureCount && diagnostic::PacmanCapture().Active()};
+                if (traceTextureSync)
+                    TracePacmanTextureSync(texture.operator->(), "before");
                 texture->SynchronizeHostInline(slot->commandBuffer, cycle, true);
+                if (traceTextureSync) {
+                    // Only the staged inline upload changes the texture's cycle
+                    // here. A pre-existing self cycle makes that inference ambiguous.
+                    const auto phase{previousCycle == cycle ? "after_inline_upload_unknown" :
+                        texture->cycle == cycle ? "after_inline_upload" : "after_no_inline_upload"};
+                    TracePacmanTextureSync(texture.operator->(), phase);
+                }
                 // Retain any lifetime dependency introduced during synchronization.
                 // A TextureView already keeps the texture itself alive.
                 if (texture->cycle != previousCycle)
@@ -761,6 +1183,10 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::Submit(std::function<void()> &&callback, bool wait) {
+        if (pacmanFlushingCallbacks && diagnostic::PacmanCapture().Active())
+            diagnostic::PacmanCapture().Record(fmt::format(
+                "EXECUTOR_CALLBACK_REENTRANT_SUBMIT exec={} sub={} nodes={}",
+                fmt::ptr(this), submissionNumber, slot->nodes.size()));
         for (const auto &flushCallback : flushCallbacks)
             flushCallback();
 
@@ -786,6 +1212,12 @@ namespace skyline::gpu::interconnect {
             SubmitInternal();
             submissionNumber++;
         }
+
+        // Our staging buffer can be read only after this slot's cycle completes.
+        // The completion waiter was enqueued before SubmitInternal().
+        for (auto &readback : pacmanSceneReadbacks)
+            waiterThread.Queue(nullptr, std::move(readback));
+        pacmanSceneReadbacks.clear();
 
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission

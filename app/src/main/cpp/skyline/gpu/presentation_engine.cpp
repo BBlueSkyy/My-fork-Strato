@@ -7,6 +7,9 @@
 #include <common/signal.h>
 #include <jvm.h>
 #include <gpu.h>
+#include <os.h>
+#include <gpu/diagnostic/pacman_triangle_capture.h>
+#include <filesystem>
 #include <soc.h>
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
@@ -143,6 +146,106 @@ namespace skyline::gpu {
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
         texture->SynchronizeHost();
+        // Opt-in, one-shot trace: capture what will actually be presented.
+        // The marker is checked only once per eight presentations when idle.
+        {
+            namespace fs = std::filesystem;
+            auto &capture{diagnostic::PacmanCapture()};
+            static unsigned poll{};
+            if (!capture.Active() && (++poll % 8 == 0)) {
+                const fs::path root{fs::path(state.os->publicAppFilesPath) /
+                                    "gpu_capture" / "pacman_world"};
+                std::error_code ec;
+                fs::create_directories(root, ec);
+                if (!ec && fs::exists(root / "ARM_CAPTURE", ec) && !ec) {
+                    for (unsigned i{1}; i <= 999; ++i) {
+                        const auto folder{root / fmt::format("capture_{:03}", i)};
+                        ec.clear();
+                        if (fs::exists(folder, ec) || ec)
+                            continue;
+                        if (!fs::create_directory(folder, ec) || ec)
+                            continue;
+                        if (!fs::remove(root / "ARM_CAPTURE", ec) || ec)
+                            break;
+                        ec.clear();
+                        const bool sceneSnapshots{fs::exists(root / "ENABLE_SCENE_SNAPSHOTS", ec) && !ec};
+                        ec.clear();
+                        const bool scanHdr{fs::exists(root / "ENABLE_HDR_SCAN", ec) && !ec};
+                        ec.clear();
+                        const bool rpSplit{fs::exists(root / "ENABLE_EXECUTOR_RP_SPLIT_TEST", ec) && !ec};
+                        ec.clear();
+                        const bool rpBarrier{fs::exists(root / "ENABLE_EXECUTOR_BARRIER_TEST", ec) && !ec};
+                        ec.clear();
+                        const bool sceneSubmit{fs::exists(root / "ENABLE_EXECUTOR_SCENE_SUBMIT_TEST", ec) && !ec};
+                        ec.clear();
+                        const bool depthToScene{fs::exists(root / "ENABLE_EXECUTOR_DEPTH_SCENE_TEST", ec) && !ec};
+                        ec.clear();
+                        const bool sceneToPost{fs::exists(root / "ENABLE_EXECUTOR_SCENE_POST_TEST", ec) && !ec};
+                        ec.clear();
+                        const bool viTarget{fs::exists(root / "ENABLE_EXECUTOR_VI_TARGET_TEST", ec) && !ec};
+                        const auto hasDiagnosticMarker{[&](const char *filename) {
+                            ec.clear();
+                            return fs::exists(root / filename, ec) && !ec;
+                        }};
+                        const bool postTrace{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_TRACE")};
+                        const bool postSlot1{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_SLOT_1_TEST")};
+                        const bool postSlot2{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_SLOT_2_TEST")};
+                        const bool postSlot3{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_SLOT_3_TEST")};
+                        const bool postSlot4{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_SLOT_4_TEST")};
+                        const bool postControl{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_CONTROL")};
+                        // Stage 9: keep the partially effective slot 3, add
+                        // exactly one other slot to isolate residual artifacts.
+                        const bool postSlots13{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_SLOTS_1_3_TEST")};
+                        const bool postSlots23{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_SLOTS_2_3_TEST")};
+                        const bool postSlots34{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_SLOTS_3_4_TEST")};
+                        const bool postCallbacks{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_CALLBACKS_TEST")};
+                        const bool postGraphicsState{hasDiagnosticMarker("ENABLE_EXECUTOR_POST_GRAPHICS_STATE_TEST")};
+                        const bool indexRebind{hasDiagnosticMarker("ENABLE_EXECUTOR_INDEX_REBIND_TEST")};
+                        // Reject mixed experiments: overlapping markers would
+                        // otherwise make the apparent A/B result ambiguous.
+                        const u32 enabledTests{
+                            static_cast<u32>(rpSplit) + static_cast<u32>(rpBarrier) +
+                            static_cast<u32>(sceneSubmit) + static_cast<u32>(depthToScene) +
+                            static_cast<u32>(sceneToPost) + static_cast<u32>(viTarget) +
+                            static_cast<u32>(postTrace) + static_cast<u32>(postSlot1) +
+                            static_cast<u32>(postSlot2) + static_cast<u32>(postSlot3) +
+                            static_cast<u32>(postSlot4) + static_cast<u32>(postControl) +
+                            static_cast<u32>(postSlots13) + static_cast<u32>(postSlots23) +
+                            static_cast<u32>(postSlots34) + static_cast<u32>(postCallbacks) +
+                            static_cast<u32>(postGraphicsState) + static_cast<u32>(indexRebind)};
+                        if (enabledTests > 1)
+                            LOGW("MINIRD_PACMAN multiple executor test markers; disabling experiments");
+                        const u32 experimentMode{enabledTests > 1 ? 0U :
+                            indexRebind ? 18U :
+                            postGraphicsState ? 17U :
+                            postCallbacks ? 16U :
+                            postSlots34 ? 15U : postSlots23 ? 14U : postSlots13 ? 13U :
+                            postControl ? 12U : postSlot4 ? 11U : postSlot3 ? 10U :
+                            postSlot2 ? 9U : postSlot1 ? 8U : postTrace ? 7U :
+                            viTarget ? 6U : sceneToPost ? 5U : depthToScene ? 4U :
+                            sceneSubmit ? 3U : rpBarrier ? 2U : rpSplit ? 1U : 0U};
+                        capture.Start(folder, sceneSnapshots || scanHdr, scanHdr, experimentMode);
+                        LOGI("MINIRD_PACMAN armed in {} scene_snapshots={} hdr_scan={} executor_test={}",
+                             folder.string(), sceneSnapshots || scanHdr, scanHdr, experimentMode);
+                        break;
+                    }
+                }
+            }
+            if (capture.Active()) {
+                capture.Record(fmt::format(
+                    "PRESENT interval={} source={} extent={}x{}x{} format={} crop={},{},{},{} transform={} swapchain={}x{}",
+                    capture.PresentedFrames(), fmt::ptr(texture.get()),
+                    texture->dimensions.width, texture->dimensions.height,
+                    texture->dimensions.depth,
+                    static_cast<u32>(texture->format->vkFormat),
+                    frame.crop.left, frame.crop.top, frame.crop.right, frame.crop.bottom,
+                    static_cast<u32>(frame.transform),
+                    swapchainExtent.width, swapchainExtent.height));
+                capture.CompletePresentation();
+                if (!capture.Active())
+                    LOGI("MINIRD_PACMAN capture_complete.txt written (metadata only)");
+            }
+        }
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,

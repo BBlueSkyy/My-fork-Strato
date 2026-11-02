@@ -353,6 +353,16 @@ namespace skyline::gpu::interconnect {
             return {head};
         }
 
+        // Observes commands already prepared for this draw. No Vulkan state
+        // is queried or changed; used by the opt-in index-binding diagnostic.
+        bool HasIndexBufferBinding() const {
+            for (const auto *cmd = head; cmd; cmd = cmd->next)
+                if (cmd->record == &SetIndexBufferCmd::Record ||
+                    cmd->record == &SetIndexBufferDynamicCmd::Record)
+                    return true;
+            return false;
+        }
+
         void SetVertexBuffer(u32 index, const BufferBinding &binding, bool ext = false, vk::DeviceSize stride = 0) {
             if (index != vertexBatchBindNextBinding || vertexBatchBind->header.record != &SetVertexBuffersCmd::Record || vertexBatchBind->cmd.base.ext != ext) {
                 FlushVertexBatchBind();
