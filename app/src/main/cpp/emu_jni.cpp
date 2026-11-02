@@ -396,6 +396,24 @@ extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_native
     }
 }
 
+extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_nativeExportMk8Origin(JNIEnv *, jobject, jint fd) {
+    try {
+        using namespace skyline::gpu::texture::diagnostic;
+        auto os{OsWeak.lock()};
+        auto gpu{os ? os->state.gpu : nullptr};
+        if (!gpu || fd < 0) return false;
+        FdOutputBuffer buffer{fd};
+        std::ostream out{&buffer};
+        const bool captured{gpu->originCapture.Export(out)};
+        out.flush();
+        if (!out.good()) LOGW("MK8 origin export failed: errno={}",errno);
+        return captured && out.good();
+    } catch (...) {
+        LOGW("MK8 origin export failed with exception");
+        return false;
+    }
+}
+
 extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_nativeMk8Mini(JNIEnv *, jobject, jint action, jint fd) {
     try {
         using namespace skyline::gpu::texture::diagnostic;
