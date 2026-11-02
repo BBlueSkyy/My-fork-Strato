@@ -4,6 +4,7 @@
 #pragma once
 
 #include "lifecycle_trace.h"
+#include "origin_capture.h"
 
 #include "alias_group.h"
 
