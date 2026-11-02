@@ -1,8 +1,9 @@
 # PAC-MAN WORLD Re-PAC — inverted/giant triangle diagnostic (stage 1)
 
-Latest result: callback-only mode 16 removes the triangle without forced
-submits. See [Stage 11](pacman-repac-stage11-callback-analysis.md) for the
-graphics-state-only discriminator and [Stage 10](pacman-repac-stage10-submit-contract.md)
+Latest result: graphics-state-only mode 17 removes the triangle without forced
+submits or added query commands. See [Stage 12](pacman-repac-stage12-index-state-contract.md)
+for the targeted index-binding contract test, [Stage 11](pacman-repac-stage11-callback-analysis.md)
+for graphics-state isolation, and [Stage 10](pacman-repac-stage10-submit-contract.md)
 for the original callback experiment. Keep threshold 256 and
 the PR Draft; no root-cause rendering correction has been established.
 

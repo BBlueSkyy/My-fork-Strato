@@ -2,6 +2,11 @@
 
 ## Starting point and confirmed result
 
+**Follow-up:** the user confirmed that mode 17 also removes the triangle.
+Its 122 single-callback refreshes added no nodes/pending nodes and preserved
+submission, cycle and tag. The narrowed index-cache contract investigation is
+recorded in [Stage 12](pacman-repac-stage12-index-state-contract.md).
+
 Continue Draft #414 at `04915dd58586ff8bc17fc23c4821084157d59ff8`.
 Preserve the branch, all diagnostics, threshold 256 and no merge.
 
