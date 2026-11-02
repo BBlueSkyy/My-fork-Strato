@@ -178,6 +178,9 @@ namespace skyline::gpu {
         s.writeSerial=diagnosticWriteSerial.load();
         s.readbackSerial=diagnosticReadbackSerial.load();
         s.state=static_cast<u32>(dirtyState);
+        if (stage==texture::diagnostic::OriginStage::GuestBeforeReadbackWrite ||
+            stage==texture::diagnostic::OriginStage::GuestAfterReadbackWrite)
+            s.detail=guest->GetLayerStride();
         s.flags=(memoryFreed ? 1U : 0U) | (aliasStale.load() ? 2U : 0U) |
             (aliasReadOnly.load() ? 4U : 0U) | (aliasRetired.load() ? 8U : 0U);
         if (guestMirror && !memoryFreed && !mirror.empty() && mirror.size()<=64*1024) {
@@ -1628,6 +1631,10 @@ namespace skyline::gpu {
 
         TraceLifecycle(texture::diagnostic::Event::ReadbackBegin);
         WaitOnBacking();
+        const bool originCubeReadback{
+            MiniProducerCandidate() && levelCount==5 && gpu.originCapture.Enabled() &&
+            gpu.originCapture.Interested(reinterpret_cast<const void *>(diagnosticBase.address), diagnosticBase.bytes)
+        };
 
         if (tiling == vk::ImageTiling::eOptimal || !std::holds_alternative<memory::Image>(backing)) {
             if (!downloadStagingBuffer)
@@ -1639,14 +1646,29 @@ namespace skyline::gpu {
             })};
             lCycle->Wait(); // We block till the copy is complete
 
+            // A paired observation of the *same* shared guest backing, directly
+            // around the existing encoding. This is not a guest sync request.
+            if (originCubeReadback) {
+                TraceOrigin(texture::diagnostic::OriginStage::GuestBeforeReadbackWrite,nullptr,0,true);
+                TraceOrigin(texture::diagnostic::OriginStage::ReadbackSource,
+                            downloadStagingBuffer->data(),surfaceSize);
+            }
             CopyToGuest(downloadStagingBuffer->data());
         } else if (tiling == vk::ImageTiling::eLinear) {
             // We can optimize linear texture sync on a UMA by mapping the texture onto the CPU and copying directly from it rather than using a staging buffer
             WaitOnFence();
+            if (originCubeReadback) {
+                TraceOrigin(texture::diagnostic::OriginStage::GuestBeforeReadbackWrite,nullptr,0,true);
+                TraceOrigin(texture::diagnostic::OriginStage::ReadbackSource,
+                            std::get<memory::Image>(backing).data(),surfaceSize);
+            }
             CopyToGuest(std::get<memory::Image>(backing).data());
         } else {
             throw exception("Host -> Guest synchronization of images tiled as '{}' isn't implemented", vk::to_string(tiling));
         }
+
+        if (originCubeReadback)
+            TraceOrigin(texture::diagnostic::OriginStage::GuestAfterReadbackWrite,nullptr,0,true);
 
         {
             std::scoped_lock lock{stateMutex};
