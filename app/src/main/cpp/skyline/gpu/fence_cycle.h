@@ -26,6 +26,7 @@ namespace skyline::gpu {
         std::mutex submitMutex; //!< Independent of the mutex held during GPU fence waits
         std::condition_variable submitCondition;
         std::atomic<bool> submitted{}; //!< If the fence has been submitted to the GPU
+        std::atomic<bool> cancelled{}; //!< Cancelled is distinct from a completed GPU fence.
         vk::Fence fence;
         vk::Semaphore semaphore; //!< Semaphore that will be signalled upon GPU completion of the fence
         bool semaphoreSubmitWait{}; //!< If the semaphore needs to be waited on (on GPU) before the fence's command buffer begins. Used to ensure fences that wouldn't otherwise be unsignalled are unsignalled
@@ -65,6 +66,15 @@ namespace skyline::gpu {
         }
 
         /**
+         * @brief True only when Cancel() has signalled this cycle without
+         * implying successful GPU command execution. Used by diagnostic
+         * readbacks to reject unexecuted staging-buffer data.
+         */
+        bool IsCancelled() const {
+            return cancelled.load(std::memory_order_acquire);
+        }
+
+        /**
          * @brief Signals this fence regardless of if the underlying fence has been signalled or not
          */
         void Cancel() {
@@ -75,6 +85,7 @@ namespace skyline::gpu {
                 // of inventing a signal for the next cycle to consume.
                 if (!submitted.load(std::memory_order_acquire))
                     nextSemaphoreSubmitWait = semaphoreSubmitWait;
+                cancelled.store(true, std::memory_order_release);
                 signalled.test_and_set(std::memory_order_release);
             }
             submitCondition.notify_all();
