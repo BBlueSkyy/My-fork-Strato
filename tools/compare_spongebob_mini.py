@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare two SBMINI2 boots only when their draw identities actually match."""
+"""Compare first-draw signatures across SBMINI2/3; not proof of identical full passes."""
 import argparse
 import tempfile
 from pathlib import Path
@@ -24,13 +24,15 @@ def compare(a: Path, b: Path):
         seen1 = {signature(op, inputs1): op for op in ops1}
         seen2 = {signature(op, inputs2): op for op in ops2}
         common = sorted(set(seen1) & set(seen2), key=str)
-        print(f"Boot 1: {len(ops1)} draws; Boot 2: {len(ops2)} draws; matching draw signatures: {len(common)}")
+        print(f"Boot 1: {len(ops1)} captures; Boot 2: {len(ops2)} captures; matching first-draw signatures: {len(common)}")
         if not common:
             print("INCONCLUSIVE: no matching pipeline/shader/draw/target signature.")
             return False
         for sig in common:
             op1, op2 = seen1[sig], seen2[sig]
-            print(f"match pipeline={sig[0]} shaders={[x for x in sig[1] if x != '0000000000000000']}")
+            print(f"match FIRST DRAW pipeline={sig[0]} shaders={[x for x in sig[1] if x != '0000000000000000']}")
+            if op1.get("capture_scope") == "natural_render_pass" or op2.get("capture_scope") == "natural_render_pass":
+                print("  WARNING: matching first draw does NOT prove identical whole-pass draw sequences; compare SB_PASS_DRAW logs.")
             print(f"  boot1 op={op1['operation']} target new NaNs={op1.get('target_new_nan_pixels','unknown')}")
             print(f"  boot2 op={op2['operation']} target new NaNs={op2.get('target_new_nan_pixels','unknown')}")
             for role in range(3, 7):
