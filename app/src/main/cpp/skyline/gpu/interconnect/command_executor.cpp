@@ -709,10 +709,14 @@ namespace skyline::gpu::interconnect {
             .size = static_cast<u32>(bytes),
         };
         gpu.spongeBobMini.Add(info, [captureCycle, staging, recorded, bytes] {
-            if (captureCycle->IsCancelled()) return std::vector<u8>{};
-            captureCycle->Wait(); // Android export worker only, not the rendering thread.
-            if (captureCycle->IsCancelled() || !recorded->load(std::memory_order_acquire))
+            // Avoid waiting on an unsubmitted slot if the user exports before
+            // the current render pass/command executor is flushed.
+            if (captureCycle->IsCancelled() ||
+                !recorded->load(std::memory_order_acquire) ||
+                !captureCycle->Poll(false))
                 return std::vector<u8>{};
+            captureCycle->Wait(); // Already signalled; Android IO worker only.
+            if (captureCycle->IsCancelled()) return std::vector<u8>{};
             return std::vector<u8>(staging->data(), staging->data() + bytes);
         });
     }
