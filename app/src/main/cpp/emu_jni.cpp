@@ -361,9 +361,13 @@ extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_native
         auto os{OsWeak.lock()};
         auto gpu{os ? os->state.gpu : nullptr};
         if (!gpu) return JNI_FALSE;
-        if (action == 1) {
-            const bool armed{gpu->spongeBobMini.Arm()};
-            LOGI("[SB_MINI] capture arm result={}", armed);
+        if (action == 1 || action == 3) {
+            // Action 1 prefers a scene/HDR producer; action 3 preserves the
+            // original unfiltered natural-pass capture for fallback.
+            const bool preferScene{action == 1};
+            const bool armed{gpu->spongeBobMini.Arm(preferScene)};
+            LOGI("[SB_MINI] capture arm mode={} result={}",
+                preferScene ? "scene_or_hdr" : "unfiltered", armed);
             return armed ? JNI_TRUE : JNI_FALSE;
         }
         if (action != 2 || fd < 0) return JNI_FALSE;
