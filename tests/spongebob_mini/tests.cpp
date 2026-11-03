@@ -78,4 +78,19 @@ int main() {
         excessive.EndNaturalPass();
     }
     assert(!excessive.Arm());
+
+    // The scene filter should be explicit and reversible. Skipped overlay
+    // candidates must not consume a snapshot slot or start a render pass.
+    SpongeBobMini selection;
+    assert(selection.Arm(false));
+    assert(!selection.PreferScenePass());
+    assert(selection.SkippedOverlayPass() == 1);
+    assert(selection.SkippedOverlayPass() == 2);
+    assert(selection.Begin() == 1);
+    selection.EndNaturalPass();
+    assert(selection.Arm(true));
+    assert(selection.PreferScenePass());
+    assert(selection.SkippedOverlayPass() == 1); // reset on re-arm
+    assert(selection.Begin() == 2);
+    selection.EndNaturalPass();
 }
