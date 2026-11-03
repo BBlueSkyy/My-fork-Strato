@@ -929,7 +929,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                 BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers[i], desc, arrayIdx)};
                                 return GetImageBufferBinding(ctx, textures, handle, desc.format, desc.is_written,
                                                                      texelBufferViews[texelBufferCacheIdx++],
-                                                                     stage.stage, srcStageMask, dstStageMask);
+                                                                     stage.stage, srcStageMask, dstStageMask,
+                                                                     sourcePackedState.shaderHashes[1], sourcePackedState.shaderHashes[5]);
                              });
 
             writeImageDescs(vk::DescriptorType::eCombinedImageSampler, stage.combinedImageSamplerDescs, stage.combinedImageSamplerDescTotalCount,
