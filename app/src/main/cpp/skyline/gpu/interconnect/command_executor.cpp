@@ -36,6 +36,7 @@ namespace skyline::gpu::interconnect {
         w.height = image.dimensions.height;
         if (draw) {
             w.pipeline = draw->pipelineHash;
+            w.channelSequence = draw->channelSequence;
             w.vertexShader = draw->shaderHashes[1];
             w.fragmentShader = draw->shaderHashes[5];
         }
@@ -774,7 +775,25 @@ namespace skyline::gpu::interconnect {
         });
     }
 
-    void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory, span<TextureView *> storageWrites, span<TextureView *> storageReads, const texture::diagnostic::SpongeBobMiniDrawInfo *sbDrawInfo) {
+    void CommandExecutor::TraceSbComputeWriter(TextureView *view, u64 computeShader, u64 channelSequence) {
+        if (!view || !gpu.spongeBobMini.Armed()) return;
+        auto writer{SbDescribeWriter(view, nullptr, renderPassIndex, 4)};
+        writer.computeShader = computeShader;
+        writer.channelSequence = channelSequence;
+        gpu.spongeBobMini.NotePossibleWriter(writer);
+    }
+
+    void CommandExecutor::TraceSbGuestMemoryWriter(span<u8> mapping, u32 kind) {
+        if (!gpu.spongeBobMini.Armed() || mapping.empty()) return;
+        texture::diagnostic::SpongeBobWriter writer{};
+        writer.guestFirstBegin = reinterpret_cast<uintptr_t>(mapping.data());
+        writer.guestFirstSize = mapping.size();
+        writer.renderPassIndex = renderPassIndex;
+        writer.kind = kind;
+        gpu.spongeBobMini.NotePossibleWriter(writer);
+    }
+
+    void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory, span<TextureView *> storageWrites, span<TextureView *> storageReads, const texture::diagnostic::SpongeBobMiniDrawInfo *sbDrawInfo, u32 sbProducerKind) {
         // An explicit Android UI action arms one operation; normal draws only
         // perform the cheap atomic check. Never scan or capture while disarmed.
         TextureView *sbTarget{};
@@ -843,14 +862,19 @@ namespace skyline::gpu::interconnect {
                 const auto logWriterHistory{[&](TextureView *view, u32 role) {
                     const auto key{SbDescribeWriter(view, nullptr, renderPassIndex, 0)};
                     const auto prior{gpu.spongeBobMini.FindPriorWriters(key)};
-                    LOGI("[SB_PRODUCER] role={} writerCandidates={} exact={} truncated={} earliestOrdinal={} latestOrdinal={} latestRp={} latestKind={} latestFmt={} latestDim={}x{} latestPipeline={:016X} latestVS={:016X} latestFS={:016X}",
-                        role, prior.matchingEvents, prior.exactTexture, prior.truncated,
-                        prior.earliest.ordinal, prior.latest.ordinal,
-                        prior.latest.renderPassIndex, prior.latest.kind, prior.latest.format,
-                        prior.latest.width, prior.latest.height, prior.latest.pipeline,
-                        prior.latest.vertexShader, prior.latest.fragmentShader);
+                    LOGI("[SB_PRODUCER] role={} writerCandidates={} exact={} evicted={} earliestOrdinal={} earliestKind={} earliestRp={} latestOrdinal={} latestKind={} latestRp={} fmt={} dimensions={}x{} shaderCandidateCount={} lastShaderOrdinal={} lastShaderKind={} lastShaderRp={} lastPipeline={:016X} lastVS={:016X} lastFS={:016X} lastCS={:016X}",
+                        role, prior.matchingEvents, prior.exactTexture, prior.resourcesEvicted,
+                        prior.earliest.ordinal, prior.earliest.kind, prior.earliest.renderPassIndex,
+                        prior.latest.ordinal, prior.latest.kind, prior.latest.renderPassIndex,
+                        prior.latest.format, prior.latest.width, prior.latest.height,
+                        prior.identifiedEvents, prior.latestIdentified.ordinal,
+                        prior.latestIdentified.kind, prior.latestIdentified.renderPassIndex,
+                        prior.latestIdentified.pipeline, prior.latestIdentified.vertexShader,
+                        prior.latestIdentified.fragmentShader, prior.latestIdentified.computeShader);
                 }};
-                LOGI("[SB_PRODUCER] history_total={}", gpu.spongeBobMini.RecordedPossibleWriters());
+                LOGI("[SB_PRODUCER] history_total={} tracked_resources={} evicted_resources={}",
+                    gpu.spongeBobMini.RecordedPossibleWriters(),
+                    gpu.spongeBobMini.TrackedResources(), gpu.spongeBobMini.EvictedResources());
                 logWriterHistory(sbTarget, 1);
                 for (u32 i{}; i < sbInputs.size(); ++i)
                     logWriterHistory(sbInputs[i], i + 3);
@@ -894,9 +918,11 @@ namespace skyline::gpu::interconnect {
         // No texture state, memory contents, or Vulkan commands are changed.
         if (gpu.spongeBobMini.Armed()) {
             for (auto *view : colorAttachments)
-                if (view) gpu.spongeBobMini.NotePossibleWriter(SbDescribeWriter(view, sbDrawInfo, renderPassIndex, 1));
+                if (view) gpu.spongeBobMini.NotePossibleWriter(SbDescribeWriter(view, sbDrawInfo, renderPassIndex,
+                    sbDrawInfo ? 1U : (sbProducerKind ? sbProducerKind : 6U)));
             for (auto *view : storageWrites)
-                if (view) gpu.spongeBobMini.NotePossibleWriter(SbDescribeWriter(view, sbDrawInfo, renderPassIndex, 2));
+                if (view) gpu.spongeBobMini.NotePossibleWriter(SbDescribeWriter(view, sbDrawInfo, renderPassIndex,
+                    sbDrawInfo ? 2U : (sbProducerKind ? sbProducerKind : 6U)));
         }
 
         SubpassHooks hooks{};
