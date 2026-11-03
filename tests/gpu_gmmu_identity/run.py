@@ -4,6 +4,9 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"gpu_gmmu_segment"))
+from gmmu_segment_fixture import diagnostics
 
 root = Path(__file__).resolve().parents[2]
 
@@ -20,7 +23,7 @@ header = (root/'app/src/main/cpp/skyline/common/address_space.h').read_text()
 source = (root/'app/src/main/cpp/skyline/common/address_space.inc').read_text()
 with tempfile.TemporaryDirectory(prefix='strato-region-residency-') as directory:
     directory = Path(directory)
-    (directory/'identity.inc').write_text(function(header, 'bool SameMappingLocked(') + '\n' + function(header, 'std::vector<std::pair<VaType, VaType>> ChangedMappingRangesLocked(') + '\n' + function(header, 'TrackedTranslation TranslateRangeTracked(', True) + '\n' + function(header, 'void Map(', True) + '\n' + function(header, 'void Unmap(', True))
+    (directory/'identity.inc').write_text(diagnostics(header)+function(header, 'bool SameMappingLocked(') + '\n' + function(header, 'std::vector<std::pair<VaType, VaType>> ChangedMappingRangesLocked(') + '\n' + function(header, 'TrackedTranslation TranslateRangeTracked(', True) + '\n' + function(header, 'void Map(', True) + '\n' + function(header, 'void Unmap(', True))
     (directory/'map.inc').write_text(function(source,'MAP_MEMBER(void)::MapLocked(') + '\n' + function(source,'MAP_MEMBER(void)::UnmapLocked('))
     (directory/'translation.inc').write_text(function(header, 'std::pair<span<u8>, size_t> LookupBlockLocked(', True) + '\n' +
         function(header, 'TranslatedAddressRange TranslateRange(', True))

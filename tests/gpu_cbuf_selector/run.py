@@ -5,6 +5,9 @@ from pathlib import Path
 import subprocess
 import shutil
 import tempfile
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"gpu_gmmu_segment"))
+from gmmu_segment_fixture import diagnostics
 ROOT = Path(__file__).resolve().parents[2]
 GPU = ROOT/'app/src/main/cpp/skyline/gpu/interconnect'
 replay_ref=os.environ.get('CBUF_CASTLE_REPLAY_REF')
@@ -41,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix='strato-cbuf-selector-') as tmp:
     (tmp/'macro.inc').write_text(macro[macro.index('namespace skyline'):])
     address=(ROOT/'app/src/main/cpp/skyline/common/address_space.h').read_text()
     address_source=(ROOT/'app/src/main/cpp/skyline/common/address_space.inc').read_text()
-    (tmp/'identity.inc').write_text('\n'.join(function(address,s,d) for s,d in [('bool SameMappingLocked(',False),('std::vector<std::pair<VaType, VaType>> ChangedMappingRangesLocked(',False),('TrackedTranslation TranslateRangeTracked(',True),('void Map(',True),('void Unmap(',True)]))
+    (tmp/'identity.inc').write_text(diagnostics(address)+'\n'.join(function(address,s,d) for s,d in [('bool SameMappingLocked(',False),('std::vector<std::pair<VaType, VaType>> ChangedMappingRangesLocked(',False),('TrackedTranslation TranslateRangeTracked(',True),('void Map(',True),('void Unmap(',True)]))
     (tmp/'translation.inc').write_text(function(address,'std::pair<span<u8>, size_t> LookupBlockLocked(',True)+'\n'+function(address,'TranslatedAddressRange TranslateRange(',True)+'\n'+function(address,'std::pair<span<u8>, VaType> LookupBlock(',True))
     (tmp/'map.inc').write_text(function(address_source,'MAP_MEMBER(void)::MapLocked(')+'\n'+function(address_source,'MAP_MEMBER(void)::UnmapLocked('))
     (tmp/'slow.inc').write_text(function(address_source,'MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl('))

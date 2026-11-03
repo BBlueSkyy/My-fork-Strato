@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include <common/mapping_identity.h>
 #include <algorithm>
+#include <array>
 #include <mutex>
 #include <stdexcept>
 #include <cassert>
@@ -12,6 +13,7 @@
 #include <vector>
 using u8 = uint8_t;
 using skyline::MappingIdentity;
+using u64 = uint64_t;
 using VaType = size_t;
 using PaType = u8 *;
 constexpr u8 *UnmappedPa=nullptr;

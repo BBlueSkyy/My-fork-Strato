@@ -46,7 +46,7 @@ struct BufferManager {
     }
 };
 namespace interconnect {
-struct CommandExecutor {u64 tag{1};void AttachLockedBuffer(std::shared_ptr<Buffer>,ContextLock<Buffer>&&) {}};
+struct CommandExecutor {u64 submissionNumber{},diagnosticBackingRetries{},diagnosticCbufRetries{};u64 tag{1};void AttachLockedBuffer(std::shared_ptr<Buffer>,ContextLock<Buffer>&&) {}};
 struct InterconnectContext {
     struct As{translation_test::Gmmu gmmu;};
     struct{std::shared_ptr<As> asCtx{std::make_shared<As>()};u64 channelSequenceNumber{7};}channelCtx;

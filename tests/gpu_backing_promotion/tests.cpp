@@ -604,6 +604,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             using Node=std::variant<RenderPassNode,RenderPassEndNode,SubpassFunctionNode,NextSubpassFunctionNode>;
         }
         struct CommandExecutor {
+            u64 diagnosticBackingRetries{}, diagnosticCbufRetries{};
             MappingIdentity::Epoch textureMappingEpoch;
             void TrackTextureMapping(const MappingIdentity::Snapshot &);
             void StartTextureMapping(const MappingIdentity::Epoch &);
@@ -2623,15 +2624,22 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         std::puts("PASS: production nested RT refresh/clear getters and tracked TIC pool replacement preserve independent Vulkan image bytes");
     }
 
-    void CheckSegmentTailBytes(GPU &gpu,bool eviction) {
+    void CheckSegmentTailBytes(GPU &gpu,bool eviction,bool adjacent=false) {
         *gpu.state.settings->freeGuestTextureMemory=eviction;
         constexpr size_t base=0x405E20000,big=0x20000,selector=0x405E31400,offset=big+selector-base;
-        std::vector<u8> bytes(2*big),expected;
+        std::vector<u8> bytes(3*big),expected;
         for(size_t i{};i<bytes.size();++i) bytes[i]=static_cast<u8>((i*7+i/257+17)%251);
         expected=bytes;
         segment_test::Gmmu memory;memory.blocks={{0,nullptr,{}}};
-        memory.Map(base-big,bytes.data(),2*big);
-        memory.Unmap(base-big,big+4096);
+        if(adjacent) {
+            for(size_t i{};i<5;++i) memory.Map(base-big+i*0x10000,bytes.data()+i*0x10000,0x10000);
+            memory.Unmap(base,0x10000);memory.Unmap(base+0x10000,0x10000);
+            memory.Map(base,bytes.data()+big,0x10000);
+            memory.Map(base+0x10000,bytes.data()+big+0x10000,0x10000);
+        } else {
+            memory.Map(base-big,bytes.data(),2*big);
+            memory.Unmap(base-big,big+4096);
+        }
         const auto revision=memory.MappingRevision();
         memory.Map(base+4096,bytes.data()+big+4096,big-4096);
         assert(memory.MappingRevision()==revision);
@@ -2654,7 +2662,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(bytes==expected); // Includes removed-page bytes and every exclusive tail byte.
         gpu.scheduler.Complete();assert(!validationErrors);
         *gpu.state.settings->freeGuestTextureMemory=false;
-        std::printf("PASS: production two-level GMMU tail, captured selector, Vulkan upload/write/readback, exclusive bytes, no-op generations and reuse (FreeGuest=%d)\n",eviction);
+        std::printf("PASS: production two-level GMMU tail, captured selector, Vulkan upload/write/readback, exclusive bytes, no-op generations and reuse (FreeGuest=%d adjacent=%d)\n",eviction,adjacent);
     }
 
     void CheckTranslatedCacheBytes(GPU &gpu,bool eviction) {
@@ -3168,7 +3176,7 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
-            if (std::getenv("TEXMAN_SEGMENT_PROBE")) { for(bool eviction : {false,true}) CheckSegmentTailBytes(gpu,eviction); continue; }
+            if (std::getenv("TEXMAN_SEGMENT_PROBE")) { for(bool eviction : {false,true}) for(bool adjacent : {false,true}) CheckSegmentTailBytes(gpu,eviction,adjacent); continue; }
             if (std::getenv("TEXMAN_MAPPING_PROBE")) { for(bool eviction : {false,true}) CheckTranslatedCacheBytes(gpu,eviction); CheckRetainedMappingTargets(gpu); CheckTranslationPublicationRetry(gpu); continue; }
             if (std::getenv("TEXMAN_BC_PROBE")) { CheckRegionFootprintBounds(gpu); CheckCompressedRegionUpload(gpu); continue; }
             if (std::getenv("TEXMAN_WAIT_PROBE")) { CheckRegionTrapPreparation(gpu); CheckRegionWaitLocks(gpu); CheckRegionWriterDuringTransfer(gpu); continue; }
@@ -3187,7 +3195,7 @@ int main() {
                 CheckRetainedRegionBindings(gpu);
                 for (bool eviction : {false,true}) for (bool reverse : {false,true}) CheckRegionCpuCallbacks(gpu,eviction,reverse);
                 CheckRegionIncompatibleDrain(gpu);
-                for(bool eviction : {false,true}) CheckSegmentTailBytes(gpu,eviction);
+                for(bool eviction : {false,true}) for(bool adjacent : {false,true}) CheckSegmentTailBytes(gpu,eviction,adjacent);
                 CheckRegionMipLayers(gpu);
                 CheckExpandedRegionLayouts(gpu);
                 for(bool eviction : {false,true}) CheckTranslatedCacheBytes(gpu,eviction);

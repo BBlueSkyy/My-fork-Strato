@@ -25,6 +25,9 @@ def function(text, signature, default_arguments=False):
     return text[start:end]
 
 
+sys.path.insert(0, str(ROOT / "tests/gpu_gmmu_segment"))
+from gmmu_segment_fixture import diagnostics
+
 with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as directory:
     directory = pathlib.Path(directory)
     address_header = (ROOT / "app/src/main/cpp/skyline/common/address_space.h").read_text()
@@ -39,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         return source[start:end]
     (directory / "gmmu_translation.inc").write_text(address_function(address_header,"std::pair<span<u8>, size_t> LookupBlockLocked(",True)+"\n"+
         address_function(address_header,"TranslatedAddressRange TranslateRange(",True))
-    (directory / "gmmu_identity.inc").write_text(address_function(address_header,"bool SameMappingLocked(")+"\n"+
+    (directory / "gmmu_identity.inc").write_text(diagnostics(address_header)+address_function(address_header,"bool SameMappingLocked(")+"\n"+
         address_function(address_header,"std::vector<std::pair<VaType, VaType>> ChangedMappingRangesLocked(")+"\n"+
         address_function(address_header,"TrackedTranslation TranslateRangeTracked(",True)+"\n"+
         address_function(address_header,"void Map(",True)+"\n"+address_function(address_header,"void Unmap(",True))
