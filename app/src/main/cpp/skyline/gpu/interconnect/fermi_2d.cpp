@@ -172,7 +172,8 @@ namespace skyline::gpu::interconnect {
                 std::array<TextureView *, 1> sampledImages{srcTextureView.get()};
                 executor.AddSubpass(std::move(executionCallback), {{static_cast<i32>(dstRectX), static_cast<i32>(dstRectY)}, {dstRectWidth, dstRectHeight} },
                                     sampledImages, {}, {dst}, {}, false,
-                                    vk::PipelineStageFlagBits::eAllGraphics, vk::PipelineStageFlagBits::eAllGraphics, {}, {dst});
+                                    vk::PipelineStageFlagBits::eAllGraphics, vk::PipelineStageFlagBits::eAllGraphics,
+                                    {}, {dst}, {}, nullptr, 5); // Fermi2D helper blit, no guest shader hash
             }
         );
         executor.AddCheckpoint("After blit");
