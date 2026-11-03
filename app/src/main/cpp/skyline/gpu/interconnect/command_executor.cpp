@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <bit>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -604,7 +605,151 @@ namespace skyline::gpu::interconnect {
         cycle->AttachObject(dependency);
     }
 
+
+    bool CommandExecutor::SbMiniEligible(TextureView *view, bool output) const {
+        if (!view || !view->texture) return false;
+        const auto &texture{*view->texture};
+        if (!texture.guest || texture.replaced || texture.aliasRetired.load() ||
+            texture.layout != vk::ImageLayout::eGeneral ||
+            texture.backingImageType != vk::ImageType::e2D ||
+            texture.sampleCount != vk::SampleCountFlagBits::e1 ||
+            texture.format->vkAspect != vk::ImageAspectFlagBits::eColor ||
+            !(texture.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+            !texture.format->blockWidth || !texture.format->blockHeight || !texture.format->bpb ||
+            view->range.baseMipLevel >= texture.levelCount ||
+            view->range.baseArrayLayer >= texture.layerCount ||
+            view->range.baseMipLevel >= 32)
+            return false;
+        const u32 width{std::max(1U, texture.dimensions.width >> view->range.baseMipLevel)};
+        const u32 height{std::max(1U, texture.dimensions.height >> view->range.baseMipLevel)};
+        if (output && (width < 320 || height < 240)) return false;
+        if (!width || !height) return false;
+        const u32 roiWidth{std::min(width, 64U)};
+        const u32 roiHeight{std::min(height, 64U)};
+        const size_t bytes{util::DivideCeil<size_t>(roiWidth, texture.format->blockWidth) *
+            util::DivideCeil<size_t>(roiHeight, texture.format->blockHeight) * texture.format->bpb};
+        return bytes && bytes <= 64 * 1024;
+    }
+
+    void CommandExecutor::QueueSbMiniImage(TextureView *view, u64 operation, u32 role, bool afterRenderPass) {
+        if (!SbMiniEligible(view, role < 3)) return;
+        auto texture{view->texture->shared_from_this()};
+        const u32 mip{view->range.baseMipLevel}, layer{view->range.baseArrayLayer};
+        const u32 width{std::max(1U, texture->dimensions.width >> mip)};
+        const u32 height{std::max(1U, texture->dimensions.height >> mip)};
+        const u32 roiWidth{std::min(width, 64U)}, roiHeight{std::min(height, 64U)};
+        const u32 blockWidth{texture->format->blockWidth}, blockHeight{texture->format->blockHeight};
+        const u32 x{role < 3 ? (width - roiWidth) / 2 / blockWidth * blockWidth : 0U};
+        const u32 y{role < 3 ? (height - roiHeight) / 2 / blockHeight * blockHeight : 0U};
+        const size_t bytes{util::DivideCeil<size_t>(roiWidth, blockWidth) *
+            util::DivideCeil<size_t>(roiHeight, blockHeight) * texture->format->bpb};
+        auto staging{gpu.memory.AllocateStagingBuffer(bytes)};
+        const auto image{texture->GetBacking()};
+        const auto generation{texture->backingGeneration};
+        const auto hostFormat{static_cast<u32>(texture->format->vkFormat)};
+        const auto guestFormat{static_cast<u32>(texture->guest->format->vkFormat)};
+        const auto writeSerial{texture->gpuWriteSerial};
+        const auto captureCycle{cycle};
+        const auto recorded{std::make_shared<std::atomic<bool>>(false)};
+        captureCycle->AttachObjects(staging, texture);
+
+        const vk::ImageSubresourceRange range{
+            vk::ImageAspectFlagBits::eColor, mip, 1, layer, 1
+        };
+        const vk::BufferImageCopy copy{
+            .bufferOffset = 0,
+            .bufferRowLength = 0, .bufferImageHeight = 0,
+            .imageSubresource = {vk::ImageAspectFlagBits::eColor, mip, layer, 1},
+            .imageOffset = {static_cast<i32>(x), static_cast<i32>(y), 0},
+            .imageExtent = {roiWidth, roiHeight, 1}
+        };
+        auto recorder{[image, range, copy, staging, recorded, bytes]
+            (vk::raii::CommandBuffer &commands, const std::shared_ptr<FenceCycle> &, GPU &) {
+            const vk::ImageMemoryBarrier before{
+                .srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                .oldLayout = vk::ImageLayout::eGeneral, .newLayout = vk::ImageLayout::eGeneral,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = image, .subresourceRange = range,
+            };
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, before);
+            commands.copyImageToBuffer(image, vk::ImageLayout::eGeneral, staging->vkBuffer, copy);
+            auto after{before};
+            after.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+            after.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, after);
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                vk::PipelineStageFlagBits::eHost, {}, {},
+                vk::BufferMemoryBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .buffer = staging->vkBuffer, .offset = 0, .size = bytes,
+                }, {});
+            recorded->store(true, std::memory_order_release);
+        }};
+
+        if (afterRenderPass) AddPostRpCommand(std::move(recorder));
+        else AddOutsideRpCommand(std::move(recorder));
+
+        texture::diagnostic::SpongeBobMiniInfo info{
+            .operation = operation, .role = role,
+            .image = std::bit_cast<u64>(static_cast<VkImage>(image)),
+            .generation = generation, .writeSerial = writeSerial,
+            .hostFormat = hostFormat, .guestFormat = guestFormat,
+            .width = width, .height = height, .x = x, .y = y,
+            .regionWidth = roiWidth, .regionHeight = roiHeight,
+            .mip = mip, .layer = layer, .blockWidth = blockWidth,
+            .blockHeight = blockHeight, .bytesPerBlock = texture->format->bpb,
+            .size = static_cast<u32>(bytes),
+        };
+        gpu.spongeBobMini.Add(info, [captureCycle, staging, recorded, bytes] {
+            if (captureCycle->IsCancelled()) return std::vector<u8>{};
+            captureCycle->Wait(); // Android export worker only, not the rendering thread.
+            if (captureCycle->IsCancelled() || !recorded->load(std::memory_order_acquire))
+                return std::vector<u8>{};
+            return std::vector<u8>(staging->data(), staging->data() + bytes);
+        });
+    }
+
     void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory, span<TextureView *> storageWrites, span<TextureView *> storageReads) {
+        // An explicit Android UI action arms one operation; normal draws only
+        // perform the cheap atomic check. Never scan or capture while disarmed.
+        TextureView *sbTarget{};
+        boost::container::small_vector<TextureView *, 4> sbInputs;
+        if (gpu.spongeBobMini.Armed()) {
+            for (auto *candidate : colorAttachments)
+                if (SbMiniEligible(candidate, true)) { sbTarget = candidate; break; }
+            if (sbTarget) {
+                for (auto *candidate : sampledImages) {
+                    if (SbMiniEligible(candidate, false)) {
+                        sbInputs.push_back(candidate);
+                        if (sbInputs.size() == 4) break;
+                    }
+                }
+            }
+        }
+        u64 sbOperation{};
+        if (sbTarget && !sbInputs.empty()) {
+            // Attach before allocating snapshots. Existing alias reconciliation
+            // exceptions must propagate into the executor's regular retry path.
+            AttachTexture(sbTarget);
+            for (auto *candidate : sbInputs) AttachTexture(candidate);
+            sbOperation = gpu.spongeBobMini.Begin();
+            if (sbOperation) {
+                try {
+                    QueueSbMiniImage(sbTarget, sbOperation, 1, false);
+                    for (size_t i{}; i < sbInputs.size(); ++i)
+                        QueueSbMiniImage(sbInputs[i], sbOperation, static_cast<u32>(i + 3), false);
+                } catch (const std::exception &e) {
+                    LOGW("[SB_MINI] before capture unavailable: {}", e.what());
+                }
+            }
+        }
         PreflightTextureUses(storageReads, {});
         bool gotoNext{CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask, storageWrites)};
 
@@ -625,6 +770,13 @@ namespace skyline::gpu::interconnect {
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
         }
 
+        if (sbOperation) {
+            try {
+                QueueSbMiniImage(sbTarget, sbOperation, 2, true);
+            } catch (const std::exception &e) {
+                LOGW("[SB_MINI] render-target output capture unavailable: {}", e.what());
+            }
+        }
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
             Submit();
     }
