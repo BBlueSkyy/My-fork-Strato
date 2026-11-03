@@ -3,6 +3,7 @@
 
 // Explicit, bounded Vulkan image snapshots for title-screen investigation.
 // Does not acquire GPU locks, discard guest bytes, or change resource authority.
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
