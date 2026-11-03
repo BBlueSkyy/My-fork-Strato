@@ -7,6 +7,7 @@
 
 using skyline::gpu::texture::diagnostic::SpongeBobMini;
 using skyline::gpu::texture::diagnostic::SpongeBobMiniInfo;
+using skyline::gpu::texture::diagnostic::SpongeBobWriter;
 
 static SpongeBobMiniInfo Info(uint64_t operation, uint32_t role, uint8_t value) {
     (void)value;
@@ -93,4 +94,45 @@ int main() {
     assert(selection.SkippedOverlayPass() == 1); // reset on re-arm
     assert(selection.Begin() == 2);
     selection.EndNaturalPass();
+
+    // Writer history is passive, bounded and never records after disarm.
+    SpongeBobMini producer;
+    SpongeBobWriter key{.textureKey = 42, .generation = 7,
+                         .guestFirstBegin = 0x10000, .guestFirstSize = 0x4000};
+    producer.NotePossibleWriter(key);
+    assert(producer.RecordedPossibleWriters() == 0);
+    assert(producer.Arm());
+    auto writer{key};
+    writer.pipeline = 0xABCD;
+    writer.vertexShader = 0x1100;
+    writer.fragmentShader = 0x2200;
+    writer.renderPassIndex = 8;
+    writer.kind = 1;
+    producer.NotePossibleWriter(writer);
+    auto found{producer.FindPriorWriters(key)};
+    assert(found.matchingEvents == 1 && found.exactTexture && !found.truncated);
+    assert(found.latest.pipeline == 0xABCD && found.latest.ordinal == 1);
+
+    // Alias matching is weaker than exact texture/generation matching.
+    auto alias{key};
+    alias.textureKey = 99;
+    alias.generation = 1;
+    alias.guestFirstBegin = 0x11000;
+    alias.guestFirstSize = 0x2000;
+    found = producer.FindPriorWriters(alias);
+    assert(found.matchingEvents == 1 && !found.exactTexture);
+    alias.guestFirstBegin = 0x50000;
+    assert(!producer.FindPriorWriters(alias).matchingEvents);
+
+    // After beginning capture, the previous writer history is frozen.
+    assert(producer.Begin() == 1);
+    producer.NotePossibleWriter(writer);
+    assert(producer.RecordedPossibleWriters() == 1);
+    producer.EndNaturalPass();
+    assert(producer.Arm());
+    assert(producer.RecordedPossibleWriters() == 0); // Fresh arm = new provenance window.
+    for (unsigned i{}; i < 260; ++i) producer.NotePossibleWriter(writer);
+    found = producer.FindPriorWriters(key);
+    assert(found.truncated && found.matchingEvents == 256);
+    assert(found.earliest.ordinal == 5 && found.latest.ordinal == 260);
 }
