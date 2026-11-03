@@ -8,8 +8,14 @@ spec = importlib.util.spec_from_file_location("decode_spongebob_mini", module_pa
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
-def record(op, role, data):
+def record(op, role, data, version=1, shader=0x1100):
     values = [op,role,42,7,15,37,37,512,512,224,224,64,64,0,0,1,1,4,len(data)]
+    if version == 2:
+        values += [0xABCDEF,345,0x100,0x200,0,0,0,shader,
+                   1,3,1,0,6,1,0 if role == 3 else 0xffffffff,
+                   17 if role == 3 else 0xffffffff,
+                   1 if role == 3 else 0,
+                   0x12345678 if role == 3 else 0]
     return (",".join(map(str, values))+"\n").encode() + data + b"\n"
 
 with tempfile.TemporaryDirectory() as temp:
@@ -34,4 +40,24 @@ with tempfile.TemporaryDirectory() as temp:
             pass
         else:
             raise AssertionError("invalid capture decoded successfully")
+    # New version embeds a stable pipeline key, six shader hashes and TIC/IOVA.
+    capture.write_bytes(b"SBMINI2\n" + record(1,1,before,2) +
+                        record(1,3,source,2) + record(1,2,after,2))
+    rows2, comparisons2 = module.decode(capture, root / "decoded-v2")
+    assert len(rows2) == 3
+    assert comparisons2[0]["pipeline_hash"] == "0000000000abcdef"
+    assert comparisons2[0]["shader_hashes"][5] == "0000000000001100"
+    assert next(row for row in rows2 if row["role"] == 3)["tic_iova"] == 0x12345678
+    assert comparisons2[0]["target_changed_bytes"] == len(before)
+
+    # A mismatch of shader hashes across images in the same draw is invalid.
+    capture.write_bytes(b"SBMINI2\n" + record(1,1,before,2) +
+                        record(1,3,source,2,shader=0x777) + record(1,2,after,2))
+    try:
+        module.decode(capture, root / "invalid-metadata")
+    except ValueError as exc:
+        assert "Conflicting metadata" in str(exc)
+    else:
+        raise AssertionError("mixed shader metadata accepted")
+
 print("PASS: SpongeBob Mini decoder")
