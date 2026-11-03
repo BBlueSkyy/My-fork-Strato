@@ -1056,7 +1056,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                       return GetImageBufferBinding(ctx, textures, handle, desc.format, desc.is_written,
                                                                                    texelBufferViews[usage.entirePipelineIdx + arrayIdx],
                                                                                    stageDescInfo.stage,
-                                                                                   srcStageMask, dstStageMask);
+                                                                                   srcStageMask, dstStageMask,
+                                                                                   sourcePackedState.shaderHashes[1], sourcePackedState.shaderHashes[5]);
                                                   });
 
         writeDescs.operator()<true, false, false>(vk::DescriptorType::eCombinedImageSampler, cbufUsageInfo.combinedImageSamplers, stageDescInfo.combinedImageSamplerDescs,
