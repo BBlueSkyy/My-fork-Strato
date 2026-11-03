@@ -11,12 +11,14 @@ spec.loader.exec_module(module)
 
 def record(op, role, data, version=1, shader=0x1100, fmt=37):
     values = [op,role,42,7,15,fmt,fmt,512,512,224,224,64,64,0,0,1,1,4,len(data)]
-    if version == 2:
+    if version in (2, 3):
         values += [0xABCDEF,345,0x100,0x200,0,0,0,shader,
                    1,3,1,0,6,1,0 if role == 3 else 0xffffffff,
                    17 if role == 3 else 0xffffffff,
                    1 if role == 3 else 0,
                    0x12345678 if role == 3 else 0]
+    if version == 3:
+        values += [1] # Natural render pass; not an isolated draw.
     return (",".join(map(str, values))+"\n").encode() + data + b"\n"
 
 with tempfile.TemporaryDirectory() as temp:
@@ -50,6 +52,13 @@ with tempfile.TemporaryDirectory() as temp:
     assert comparisons2[0]["shader_hashes"][5] == "0000000000001100"
     assert next(row for row in rows2 if row["role"] == 3)["tic_iova"] == 0x12345678
     assert comparisons2[0]["target_changed_bytes"] == len(before)
+
+    capture.write_bytes(b"SBMINI3\n" + record(1,1,before,3) +
+                        record(1,3,source,3) + record(1,2,after,3))
+    rows_pass, ops_pass = module.decode(capture, root / "decoded-pass")
+    assert ops_pass[0]["capture_scope"] == "natural_render_pass"
+    assert ops_pass[0]["target_changed_bytes"] == len(before)
+    assert rows_pass[0]["capture_scope"] == 1
 
     # A mismatch of shader hashes across images in the same draw is invalid.
     capture.write_bytes(b"SBMINI2\n" + record(1,1,before,2) +
