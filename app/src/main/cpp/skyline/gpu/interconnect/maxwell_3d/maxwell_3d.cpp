@@ -14,7 +14,7 @@
 namespace skyline::gpu::interconnect::maxwell3d {
     texture::diagnostic::SpongeBobMiniDrawInfo Maxwell3D::MakeSbMiniDrawInfo(
         u32 kind, engine::DrawTopology topology, bool indexed,
-        u32 first, u32 count, u32 instances) {
+        u32 first, u32 count, u32 instances, bool collectTicBindings) {
         texture::diagnostic::SpongeBobMiniDrawInfo info{};
         auto *pipeline{activeState.GetPipeline()};
         const auto &packed{pipeline->sourcePackedState};
@@ -29,12 +29,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
         info.instances = instances;
         info.depthTest = packed.depthTestEnable ? 1 : 0;
         info.conditional = activeRenderCondition.enabled ? 1 : 0;
-        info.sampledBindings.reserve(activeDescriptorSetSampledImages.size());
-        for (auto *view : activeDescriptorSetSampledImages) {
-            auto tic{textures.FindCachedTicForView(view)};
-            info.sampledBindings.push_back({
-                .ticIndex = tic.index, .iova = tic.iova, .matchingEntries = tic.matches,
-            });
+        // The per-view TIC cache scan is only needed for the first sampled
+        // draw. Later draws in the same pass require only the cheap hashes.
+        if (collectTicBindings) {
+            info.sampledBindings.reserve(activeDescriptorSetSampledImages.size());
+            for (auto *view : activeDescriptorSetSampledImages) {
+                auto tic{textures.FindCachedTicForView(view)};
+                info.sampledBindings.push_back({
+                    .ticIndex = tic.index, .iova = tic.iova, .matchingEntries = tic.matches,
+                });
+            }
         }
         return info;
     }
@@ -155,7 +159,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     std::optional<texture::diagnostic::SpongeBobMiniDrawInfo> sbMiniDraw;
     if (ctx.gpu.spongeBobMini.NeedsDrawInfo()) {
-        sbMiniDraw.emplace(MakeSbMiniDrawInfo(2, topology, true, 0, count, instanceCount));
+        sbMiniDraw.emplace(MakeSbMiniDrawInfo(2, topology, true, 0, count, instanceCount, ctx.gpu.spongeBobMini.Armed()));
         sbMiniDraw->scissorX = scissor.offset.x;
         sbMiniDraw->scissorY = scissor.offset.y;
         sbMiniDraw->scissorWidth = scissor.extent.width;
@@ -831,7 +835,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         constantBuffers.ResetQuickBind();
         std::optional<texture::diagnostic::SpongeBobMiniDrawInfo> sbMiniDraw;
         if (ctx.gpu.spongeBobMini.NeedsDrawInfo()) {
-            sbMiniDraw.emplace(MakeSbMiniDrawInfo(1, topology, indexed, first, count, instanceCount));
+            sbMiniDraw.emplace(MakeSbMiniDrawInfo(1, topology, indexed, first, count, instanceCount, ctx.gpu.spongeBobMini.Armed()));
         sbMiniDraw->scissorX = scissor.offset.x;
         sbMiniDraw->scissorY = scissor.offset.y;
         sbMiniDraw->scissorWidth = scissor.extent.width;
@@ -924,7 +928,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         std::optional<texture::diagnostic::SpongeBobMiniDrawInfo> sbMiniDraw;
         if (ctx.gpu.spongeBobMini.NeedsDrawInfo()) {
-            sbMiniDraw.emplace(MakeSbMiniDrawInfo(3, topology, indexed, 0, count, 1));
+            sbMiniDraw.emplace(MakeSbMiniDrawInfo(3, topology, indexed, 0, count, 1, ctx.gpu.spongeBobMini.Armed()));
         sbMiniDraw->scissorX = scissor.offset.x;
         sbMiniDraw->scissorY = scissor.offset.y;
         sbMiniDraw->scissorWidth = scissor.extent.width;
