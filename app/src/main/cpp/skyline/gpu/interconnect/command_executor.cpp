@@ -926,9 +926,19 @@ namespace skyline::gpu::interconnect {
             for (auto *view : colorAttachments)
                 if (view) gpu.spongeBobMini.NotePossibleWriter(SbDescribeWriter(view, sbDrawInfo, renderPassIndex,
                     sbDrawInfo ? 1U : (sbProducerKind ? sbProducerKind : 6U)));
-            for (auto *view : storageWrites)
-                if (view) gpu.spongeBobMini.NotePossibleWriter(SbDescribeWriter(view, sbDrawInfo, renderPassIndex,
-                    sbDrawInfo ? 2U : (sbProducerKind ? sbProducerKind : 6U)));
+            for (auto *view : storageWrites) {
+                if (!view) continue;
+                // Fermi2D and some graphics helpers expose the SAME texture
+                // as a colour attachment and storage writer. Record one
+                // candidate per subpass/resource, not two fictitious writes.
+                const bool alreadyCounted{std::any_of(colorAttachments.begin(), colorAttachments.end(),
+                    [view](TextureView *color) {
+                        return color && color->texture.get() == view->texture.get();
+                    })};
+                if (!alreadyCounted)
+                    gpu.spongeBobMini.NotePossibleWriter(SbDescribeWriter(view, sbDrawInfo, renderPassIndex,
+                        sbDrawInfo ? 2U : (sbProducerKind ? sbProducerKind : 6U)));
+            }
         }
 
         SubpassHooks hooks{};
