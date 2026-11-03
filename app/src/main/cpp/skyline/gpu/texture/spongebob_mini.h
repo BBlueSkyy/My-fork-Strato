@@ -40,6 +40,7 @@ namespace skyline::gpu::texture::diagnostic {
         uint32_t drawKind{}, topology{}, indexed{}, first{}, count{}, instances{};
         uint32_t sampledOrdinal{UINT32_MAX}, ticIndex{UINT32_MAX}, matchingTics{};
         uint64_t ticIova{};
+        uint32_t captureScope{1}; // 1 = naturally ended render pass (SBMINI3)
     };
 
     class SpongeBobMini {
@@ -125,7 +126,7 @@ namespace skyline::gpu::texture::diagnostic {
                 if (bytes.size() != entry.info.size) return false;
                 payloads.emplace_back(std::move(bytes));
             }
-            out << "SBMINI2\n";
+            out << "SBMINI3\n";
             for (size_t i{}; i < copy.size(); ++i) {
                 const auto &m{copy[i].info};
                 out << m.operation << ',' << m.role << ',' << m.image << ','
@@ -139,7 +140,8 @@ namespace skyline::gpu::texture::diagnostic {
                 out << ',' << m.drawKind << ',' << m.topology << ',' << m.indexed
                     << ',' << m.first << ',' << m.count << ',' << m.instances
                     << ',' << m.sampledOrdinal << ',' << m.ticIndex
-                    << ',' << m.matchingTics << ',' << m.ticIova << '\n';
+                    << ',' << m.matchingTics << ',' << m.ticIova
+                    << ',' << m.captureScope << '\n';
                 out.write(reinterpret_cast<const char *>(payloads[i].data()), payloads[i].size());
                 out.put('\n');
             }
