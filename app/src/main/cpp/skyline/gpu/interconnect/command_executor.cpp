@@ -16,6 +16,32 @@
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
+    static texture::diagnostic::SpongeBobWriter SbDescribeWriter(
+        TextureView *view, const texture::diagnostic::SpongeBobMiniDrawInfo *draw,
+        u32 passIndex, u32 kind) {
+        texture::diagnostic::SpongeBobWriter w{};
+        if (!view || !view->texture) return w;
+        const auto &image{*view->texture};
+        w.textureKey = reinterpret_cast<uintptr_t>(view->texture.get());
+        w.generation = image.backingGeneration;
+        if (image.guest && !image.guest->mappings.empty()) {
+            const auto &first{image.guest->mappings.front()};
+            w.guestFirstBegin = reinterpret_cast<uintptr_t>(first.data());
+            w.guestFirstSize = first.size();
+        }
+        w.renderPassIndex = passIndex;
+        w.kind = kind;
+        w.format = static_cast<u32>(image.format->vkFormat);
+        w.width = image.dimensions.width;
+        w.height = image.dimensions.height;
+        if (draw) {
+            w.pipeline = draw->pipelineHash;
+            w.vertexShader = draw->shaderHashes[1];
+            w.fragmentShader = draw->shaderHashes[5];
+        }
+        return w;
+    }
+
     static void RecordFullBarrier(vk::raii::CommandBuffer &commandBuffer) {
         commandBuffer.pipelineBarrier(
             vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, {}, vk::MemoryBarrier{
