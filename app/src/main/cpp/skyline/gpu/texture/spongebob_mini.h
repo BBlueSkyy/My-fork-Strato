@@ -53,16 +53,21 @@ namespace skyline::gpu::texture::diagnostic {
         uint64_t generation{};
         uintptr_t guestFirstBegin{};
         size_t guestFirstSize{};
-        uint64_t pipeline{}, vertexShader{}, fragmentShader{};
-        uint64_t ordinal{};
-        uint32_t renderPassIndex{}, kind{}; // 1=color, 2=storage, 3=clear
+        uint64_t pipeline{}, vertexShader{}, fragmentShader{}, computeShader{};
+        uint64_t ordinal{}, channelSequence{};
+        // 1=graphics, 2=storage-image subpass, 3=color clear,
+        // 4=compute storage image, 5=Fermi2D blit, 6=unclassified
+        // subpass, 7=Maxwell3D clear, 8=depth clear, 9=DMA copy,
+        // 10=DMA fill. These are possible writers, not pixel proof.
+        uint32_t renderPassIndex{}, kind{};
         uint32_t format{}, width{}, height{};
     };
 
     struct SpongeBobWriterMatch {
-        SpongeBobWriter earliest{}, latest{};
-        uint32_t matchingEvents{};
+        SpongeBobWriter earliest{}, latest{}, latestIdentified{};
+        uint64_t matchingEvents{}, identifiedEvents{};
         bool exactTexture{}, truncated{};
+        uint64_t resourcesEvicted{};
     };
 
     class SpongeBobMini {
@@ -80,11 +85,18 @@ namespace skyline::gpu::texture::diagnostic {
         bool frozen{};
         uint64_t operations{};
         std::vector<Entry> entries;
-        // Fixed-size ring: writer tracing begins only after an explicit arm.
-        // No GPU copies, allocations, or fence waits on the write path.
-        static constexpr size_t MaxWriters{256};
-        std::array<SpongeBobWriter, MaxWriters> writers{};
-        uint64_t writerCount{};
+        // Fixed-size PER-RESOURCE summaries: 1111+ writes to a few textures
+        // must not evict the first/last writer of those textures. Diagnostic
+        // activity starts only after the user arms it. No dynamic allocations
+        // or GPU operations on the record path; only a bounded mutex section.
+        struct WriterHistory {
+            SpongeBobWriter earliest{}, latest{}, latestIdentified{};
+            uint64_t count{}, identifiedCount{};
+        };
+        static constexpr size_t MaxTrackedResources{512};
+        std::array<WriterHistory, MaxTrackedResources> history{};
+        uint64_t writerCount{}, resourcesEvicted{};
+        size_t trackedResources{};
         static constexpr uint64_t MaxOperations{3};
         static constexpr size_t MaxEntries{MaxOperations * 6};
 
@@ -95,54 +107,107 @@ namespace skyline::gpu::texture::diagnostic {
         bool PreferScenePass() const { return preferScenePass.load(std::memory_order_acquire); }
         uint64_t SkippedOverlayPass() { return ++skippedOverlayPasses; }
 
+        static bool HasShaderIdentity(const SpongeBobWriter &w) {
+            return w.pipeline || w.vertexShader || w.fragmentShader || w.computeShader;
+        }
+
         void NotePossibleWriter(SpongeBobWriter writer) {
             if (!Armed()) return;
             std::lock_guard lock{mutex};
-            if (!armed.load(std::memory_order_relaxed)) return;
+            if (!armed.load(std::memory_order_relaxed) ||
+                (!writer.textureKey && !writer.guestFirstBegin)) return;
+
             writer.ordinal = ++writerCount;
-            writers[(writerCount - 1) % MaxWriters] = writer;
+            WriterHistory *existing{}, *freeSlot{}, *oldest{};
+            for (auto &slot : history) {
+                if (!slot.count) {
+                    if (!freeSlot) freeSlot = &slot;
+                    continue;
+                }
+                const auto &key{slot.earliest};
+                if (writer.textureKey
+                    ? key.textureKey == writer.textureKey && key.generation == writer.generation
+                    : !key.textureKey && key.guestFirstBegin == writer.guestFirstBegin) {
+                    existing = &slot;
+                    break;
+                }
+                if (!oldest || slot.latest.ordinal < oldest->latest.ordinal)
+                    oldest = &slot;
+            }
+            if (!existing) {
+                existing = freeSlot ? freeSlot : oldest;
+                if (!existing) return;
+                if (freeSlot) ++trackedResources;
+                else ++resourcesEvicted;
+                *existing = WriterHistory{};
+                existing->earliest = writer;
+            }
+            existing->latest = writer;
+            ++existing->count;
+            if (HasShaderIdentity(writer)) {
+                existing->latestIdentified = writer;
+                ++existing->identifiedCount;
+            }
         }
 
         SpongeBobWriterMatch FindPriorWriters(SpongeBobWriter resource) const {
-            SpongeBobWriterMatch match{};
             std::lock_guard lock{mutex};
-            match.truncated = writerCount > MaxWriters;
-            const auto available{std::min<uint64_t>(writerCount, MaxWriters)};
-            const auto physicalOverlap{[](const SpongeBobWriter &a, const SpongeBobWriter &b) {
-                if (!a.guestFirstBegin || !b.guestFirstBegin || !a.guestFirstSize || !b.guestFirstSize)
-                    return false;
+            SpongeBobWriterMatch match{};
+            match.resourcesEvicted = resourcesEvicted;
+            match.truncated = resourcesEvicted != 0;
+            const auto overlaps{[](const SpongeBobWriter &a, const SpongeBobWriter &b) {
+                if (!a.guestFirstBegin || !b.guestFirstBegin ||
+                    !a.guestFirstSize || !b.guestFirstSize) return false;
                 if (a.guestFirstSize > std::numeric_limits<uintptr_t>::max() - a.guestFirstBegin ||
                     b.guestFirstSize > std::numeric_limits<uintptr_t>::max() - b.guestFirstBegin)
                     return false;
                 return a.guestFirstBegin < b.guestFirstBegin + b.guestFirstSize &&
                        b.guestFirstBegin < a.guestFirstBegin + a.guestFirstSize;
             }};
-            // Prefer exact texture+generation matches. A first guest mapping
-            // overlap is weaker evidence of aliases, not guaranteed identity.
-            for (int pass{}; pass != 2; ++pass) {
-                match.matchingEvents = 0;
-                for (uint64_t i{}; i < available; ++i) {
-                    const auto &candidate{writers[(writerCount - available + i) % MaxWriters]};
-                    const bool exact{candidate.textureKey == resource.textureKey &&
-                                     candidate.generation == resource.generation};
-                    if ((pass == 0 && !exact) ||
-                        (pass == 1 && (exact || !physicalOverlap(candidate, resource))))
-                        continue;
-                    if (!match.matchingEvents) match.earliest = candidate;
-                    match.latest = candidate;
-                    ++match.matchingEvents;
-                }
-                if (match.matchingEvents) {
-                    match.exactTexture = pass == 0;
-                    break;
+            const auto merge{[&](const WriterHistory &slot) {
+                if (!match.matchingEvents || slot.earliest.ordinal < match.earliest.ordinal)
+                    match.earliest = slot.earliest;
+                if (!match.matchingEvents || slot.latest.ordinal > match.latest.ordinal)
+                    match.latest = slot.latest;
+                if (slot.identifiedCount &&
+                    (!match.identifiedEvents ||
+                     slot.latestIdentified.ordinal > match.latestIdentified.ordinal))
+                    match.latestIdentified = slot.latestIdentified;
+                match.matchingEvents += slot.count;
+                match.identifiedEvents += slot.identifiedCount;
+            }};
+            if (resource.textureKey) {
+                for (const auto &slot : history) {
+                    if (slot.count && slot.earliest.textureKey == resource.textureKey &&
+                        slot.earliest.generation == resource.generation) {
+                        merge(slot);
+                        match.exactTexture = true;
+                        return match;
+                    }
                 }
             }
+            // Only weaker alias hints when an exact texture/backing was not
+            // observed. First guest mapping overlap is not complete alias
+            // reconciliation and cannot establish actual pixel writes.
+            for (const auto &slot : history)
+                if (slot.count && overlaps(slot.earliest, resource))
+                    merge(slot);
             return match;
         }
 
         uint64_t RecordedPossibleWriters() const {
             std::lock_guard lock{mutex};
             return writerCount;
+        }
+
+        size_t TrackedResources() const {
+            std::lock_guard lock{mutex};
+            return trackedResources;
+        }
+
+        uint64_t EvictedResources() const {
+            std::lock_guard lock{mutex};
+            return resourcesEvicted;
         }
 
         void EndNaturalPass() { tracingNaturalPass.store(false, std::memory_order_release); }
@@ -153,6 +218,9 @@ namespace skyline::gpu::texture::diagnostic {
             preferScenePass.store(preferScene, std::memory_order_release);
             skippedOverlayPasses.store(0, std::memory_order_release);
             writerCount = 0;
+            resourcesEvicted = 0;
+            trackedResources = 0;
+            history = {};
             armed.store(true, std::memory_order_release);
             return true;
         }
