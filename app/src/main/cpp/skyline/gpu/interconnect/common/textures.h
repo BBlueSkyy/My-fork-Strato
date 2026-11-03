@@ -71,6 +71,9 @@ namespace skyline::gpu::interconnect {
 
         vk::raii::BufferView *GetTextureBufferView(InterconnectContext &ctx, u32 index, CachedMappedBufferView &cachedView);
 
-        vk::raii::BufferView *GetImageBufferView(InterconnectContext &ctx, u32 index, Shader::ImageFormat format, CachedMappedBufferView &cachedView);
+        vk::raii::BufferView *GetImageBufferView(InterconnectContext &ctx, u32 index, Shader::ImageFormat format, CachedMappedBufferView &cachedView,
+                                                 u64 vertexOrComputeHash = 0, u64 fragmentHash = 0,
+                                                 vk::PipelineStageFlagBits shaderStage = vk::PipelineStageFlagBits::eFragmentShader,
+                                                 bool isWritten = false);
     };
 }
