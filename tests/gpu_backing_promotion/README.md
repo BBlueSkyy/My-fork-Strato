@@ -123,3 +123,10 @@ only temporary host compile inputs, never production code.
 
 See [region-stage-b.md](../../docs/region-stage-b.md). Full physical allocation
 identity and sparse images remain blocked; do not label Stage B complete.
+
+The `TEXMAN_SEGMENT_PROBE=1` case uses the actual production mmap-backed two-level
+segment table, independently of the older vector-derived GMMU table facade. It
+covers partial demotion followed by an unchanged remap at the captured Castle
+selector, Vulkan upload/write/download, retained exclusive guest bytes, stable
+generations and no redundant image allocation (FreeGuest and format-list modes).
+It is also included in `TEXMAN_AUTHORITY_PROBE=1`.

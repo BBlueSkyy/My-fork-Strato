@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -75,12 +76,53 @@ namespace skyline::soc::gm20b::engine {
 struct MacroEngineBase {
     std::function<void(u32,u32)> send;
     void CallMethodFromMacro(u32 method,u32 value){send(method,value);}
-    u32 ReadMethodFromMacro(u32){return 0;}
+    std::function<u32(u32)> read{};
+    u32 ReadMethodFromMacro(u32 method){return read ? read(method) : 0;}
 };
 #include "macro_class.inc"
 }
 #include "macro.inc"
+void ReplayCapturedCastleMacro() {
+    using namespace skyline::gpu::interconnect;
+    using namespace maxwell3d;
+    using namespace skyline::soc::gm20b::engine;
+    constexpr u64 address=0x405E31400;
+    // All instructions through the failing Send are contiguous in the captured
+    // entryCode/pcCode records. No guessed instruction or argument is needed.
+    const std::array<u32,23> words{0x3470A15,0x401,0x4A210,0x55007,0x301,0x2004211,0x21005212,0x61801022,
+        0x1841,0x3470A11,0x61801022,0x2041,0x3488A11,0x61801022,0x1A31,0x6380151,0x40000041,
+        0x2304042,0x46004042,0x19C08112,0x2410911,0x618008A2,0x44041};
+    std::array<u32,256> code{};std::copy(words.begin(),words.end(),code.begin()+115);
+    std::array<u32,5> args{1,0x692F,0x5E30030,0,0x405E314};
+    for(bool resident:{false,true})for(unsigned purges:{0U,3U}) {
+        InterconnectContext ctx;auto &memory=ctx.channelCtx.asCtx->gmmu;memory.blocks={{0,nullptr,{}}};
+        DirtyManager manager;engine::ConstantBufferSelector selector{};ConstantBuffers buffers{manager,{selector}};
+        std::vector<u8> bytes(0x10000);for(size_t i{};i<bytes.size();++i)bytes[i]=static_cast<u8>((i*11+i/29)%251);
+        if(resident)memory.Map(address,bytes.data(),bytes.size());
+        const auto revision=memory.MappingRevision();
+        for(unsigned i{};i<purges;++i)buffers.MarkAllDirty();
+        bool sentBind{},failed{};
+        MacroEngineBase target{[&](u32 method,u32 value) {
+            if(method==0x8E0){selector.size=value;buffers.MarkAllDirty();}
+            if(method==0x8E1){selector.address=(selector.address&0xFFFFFFFFULL)|(static_cast<u64>(value)<<32);buffers.MarkAllDirty();}
+            if(method==0x8E2){selector.address=(selector.address&0xFFFFFFFF00000000ULL)|value;buffers.MarkAllDirty();}
+            if(method==0x904){
+                assert(value==0x11 && selector.address==address && selector.size==0x10000);sentBind=true;
+                buffers.Bind(ctx,engine::ShaderStage::Vertex,1);
+            }
+        }};
+        // The captured path implies a nonzero result for mask & 0x692F. Its
+        // exact prior register value is absent; 1 chooses that observed path.
+        target.read=[](u32 method){assert(method==0xD1D);return 1;};
+        MacroInterpreter interpreter{span<u32>{code}};
+        try{interpreter.Execute(115,span<u32>{args},&target);}catch(const std::runtime_error &e){failed=std::string(e.what())=="Constant buffer selector is not mapped";}
+        assert(sentBind && failed==!resident && memory.MappingRevision()==revision);
+        if(resident){const auto view=buffers.boundConstantBuffers[0][1].view;assert(view.size==bytes.size() && std::equal(bytes.begin(),bytes.end(),view.bytes));}
+    }
+    std::puts("PASS: captured MME words/arguments generate exact selector/bind; resident bytes succeed and absent mappings reject with/without purges");
+}
 int main() {
+    if(std::getenv("CBUF_CASTLE_REPLAY_REF")){ReplayCapturedCastleMacro();return 0;}
     using namespace skyline::gpu::interconnect;
     using namespace maxwell3d;
     InterconnectContext ctx;auto &gmmu=ctx.channelCtx.asCtx->gmmu;gmmu.blocks={{0,nullptr,{}}};
@@ -152,5 +194,6 @@ int main() {
     state.Flush(ctx,64);assert(state.view->size==64);
     state.Refresh(ctx,128);assert(state.view->size==128);
     assert(std::equal(bytes.begin(),bytes.begin()+128,state.view.view.bytes));
+    ReplayCapturedCastleMacro();
     std::puts("PASS: production selector/cache data, clamp, unmapped rejection, bounded diagnosis and unchanged exception");
 }

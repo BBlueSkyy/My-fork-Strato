@@ -9,6 +9,7 @@
 #include <utility>
 #include <condition_variable>
 #include <cstring>
+#include <sys/mman.h>
 #include <gpu/texture/backing_promotion.h>
 #include <gpu/texture/region_authority.h>
 #include <gpu/texture/mapping_cache.h>
@@ -71,6 +72,7 @@ namespace util {
 #define TRACE_EVENT(...)
 
 #include "gmmu_fixture.inc"
+#include "segment_fixture.inc"
 
 unsigned validationErrors{};
 VKAPI_ATTR VkBool32 VKAPI_CALL ValidationMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -2621,6 +2623,40 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         std::puts("PASS: production nested RT refresh/clear getters and tracked TIC pool replacement preserve independent Vulkan image bytes");
     }
 
+    void CheckSegmentTailBytes(GPU &gpu,bool eviction) {
+        *gpu.state.settings->freeGuestTextureMemory=eviction;
+        constexpr size_t base=0x405E20000,big=0x20000,selector=0x405E31400,offset=big+selector-base;
+        std::vector<u8> bytes(2*big),expected;
+        for(size_t i{};i<bytes.size();++i) bytes[i]=static_cast<u8>((i*7+i/257+17)%251);
+        expected=bytes;
+        segment_test::Gmmu memory;memory.blocks={{0,nullptr,{}}};
+        memory.Map(base-big,bytes.data(),2*big);
+        memory.Unmap(base-big,big+4096);
+        const auto revision=memory.MappingRevision();
+        memory.Map(base+4096,bytes.data()+big+4096,big-4096);
+        assert(memory.MappingRevision()==revision);
+        auto [mapping,at]=memory.LookupBlock(selector);
+        assert(mapping.valid() && mapping.data()+at==bytes.data()+offset);
+        TextureManager manager{gpu};
+        auto descriptor=PartialDescriptor(mapping.data()+at);
+        auto view=manager.FindOrCreate(descriptor);
+        AliasRead(view->texture);const auto read=DownloadPartial(view->texture);
+        assert(std::equal(read.begin(),read.end(),expected.begin()+offset));
+        WriteAliasRenderTarget(view->texture,{0,1,0,1});
+        const auto allocations=gpu.memory.count;
+        memory.Map(base+4096,bytes.data()+big+4096,big-4096);
+        assert(memory.MappingRevision()==revision);
+        assert(manager.FindOrCreate(descriptor)->texture==view->texture && gpu.memory.count==allocations);
+        const auto gpuBytes=DownloadPartial(view->texture);
+        const std::array<u8,4> green{0,255,0,255};
+        for(size_t i{};i<8192;++i) {assert(gpuBytes[i]==green[i%4]);expected[offset+i]=green[i%4];}
+        {std::scoped_lock lock{*view->texture};view->texture->SynchronizeGuest(false,true);}
+        assert(bytes==expected); // Includes removed-page bytes and every exclusive tail byte.
+        gpu.scheduler.Complete();assert(!validationErrors);
+        *gpu.state.settings->freeGuestTextureMemory=false;
+        std::printf("PASS: production two-level GMMU tail, captured selector, Vulkan upload/write/readback, exclusive bytes, no-op generations and reuse (FreeGuest=%d)\n",eviction);
+    }
+
     void CheckTranslatedCacheBytes(GPU &gpu,bool eviction) {
         *gpu.state.settings->freeGuestTextureMemory=eviction;
         std::vector<u8> p(5*4096,0x2D),q(5*4096,0x73);TextureManager manager{gpu};
@@ -2713,6 +2749,12 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         });
         (void)gpu;
         assert(attempts==2 && executor.submissions==1);
+        const auto before=executor.submissions;unsigned stableAttempts{};
+        executor.RunWithTextureBackingRetry([&] {
+            ++stableAttempts;executor.TrackTextureMapping(receipt);
+            auto publication=executor.AcquireRegionPublication({});
+        });
+        assert(stableAttempts==1 && executor.submissions==before);
         std::puts("PASS: changed translation rejects publication, retries once and clears cancelled preparation receipts");
     }
 
@@ -3126,6 +3168,7 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_SEGMENT_PROBE")) { for(bool eviction : {false,true}) CheckSegmentTailBytes(gpu,eviction); continue; }
             if (std::getenv("TEXMAN_MAPPING_PROBE")) { for(bool eviction : {false,true}) CheckTranslatedCacheBytes(gpu,eviction); CheckRetainedMappingTargets(gpu); CheckTranslationPublicationRetry(gpu); continue; }
             if (std::getenv("TEXMAN_BC_PROBE")) { CheckRegionFootprintBounds(gpu); CheckCompressedRegionUpload(gpu); continue; }
             if (std::getenv("TEXMAN_WAIT_PROBE")) { CheckRegionTrapPreparation(gpu); CheckRegionWaitLocks(gpu); CheckRegionWriterDuringTransfer(gpu); continue; }
@@ -3144,6 +3187,7 @@ int main() {
                 CheckRetainedRegionBindings(gpu);
                 for (bool eviction : {false,true}) for (bool reverse : {false,true}) CheckRegionCpuCallbacks(gpu,eviction,reverse);
                 CheckRegionIncompatibleDrain(gpu);
+                for(bool eviction : {false,true}) CheckSegmentTailBytes(gpu,eviction);
                 CheckRegionMipLayers(gpu);
                 CheckExpandedRegionLayouts(gpu);
                 for(bool eviction : {false,true}) CheckTranslatedCacheBytes(gpu,eviction);
@@ -3200,7 +3244,7 @@ int main() {
     }
     assert(!validationErrors);
     if (std::getenv("TEXMAN_AUTHORITY_PROBE") || std::getenv("TEXMAN_LOCK_ORDER_PROBE") ||
-        std::getenv("TEXMAN_MAPPING_PROBE") || std::getenv("TEXMAN_LAYOUT_PROBE") || std::getenv("TEXMAN_WAIT_PROBE") || std::getenv("TEXMAN_BC_PROBE")) return 0;
+        std::getenv("TEXMAN_SEGMENT_PROBE") || std::getenv("TEXMAN_MAPPING_PROBE") || std::getenv("TEXMAN_LAYOUT_PROBE") || std::getenv("TEXMAN_WAIT_PROBE") || std::getenv("TEXMAN_BC_PROBE")) return 0;
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;

@@ -9,6 +9,7 @@ import pathlib
 import shlex
 import subprocess
 import tempfile
+import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GPU = ROOT / "app/src/main/cpp/skyline/gpu"
@@ -50,6 +51,9 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     for original in ("translation", "identity", "slow", "map"):
         fixture=fixture.replace('"'+original+'.inc"','"gmmu_'+original+'.inc"')
     (directory/"gmmu_fixture.inc").write_text("namespace translation_test {\n"+fixture+"\n}\n")
+    sys.path.insert(0, str(ROOT / "tests/gpu_gmmu_segment"))
+    from gmmu_segment_fixture import write_fixture
+    write_fixture(directory, ref=os.environ.get("TEXMAN_SEGMENT_BASELINE_REF"))
     source = (GPU / "texture/texture.cpp").read_text()
     baseline = os.environ.get("TEXMAN_BASELINE_VIEWS_REF")
     view_source = subprocess.check_output(["git", "show", baseline + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"],
