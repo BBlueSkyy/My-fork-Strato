@@ -6,6 +6,7 @@
 #include <gpu/texture_manager.h>
 #include <gpu/buffer_manager.h>
 #include <gpu/texture/format.h>
+#include <atomic>
 #include "textures.h"
 
 namespace skyline::gpu::interconnect {
@@ -522,7 +523,9 @@ namespace skyline::gpu::interconnect {
         }
     }
 
-    vk::raii::BufferView *Textures::GetImageBufferView(InterconnectContext &ctx, u32 index, Shader::ImageFormat shaderFormat, CachedMappedBufferView &cachedView) {
+    vk::raii::BufferView *Textures::GetImageBufferView(InterconnectContext &ctx, u32 index, Shader::ImageFormat shaderFormat, CachedMappedBufferView &cachedView,
+                                                       u64 vertexOrComputeHash, u64 fragmentHash,
+                                                       vk::PipelineStageFlagBits shaderStage, bool isWritten) {
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
         if (index >= textureHeaders.size())
             return nullptr;
@@ -543,6 +546,22 @@ namespace skyline::gpu::interconnect {
         size_t sizeBytes{elementCount * format->second};
 
         cachedView.Update(ctx, textureHeader.Iova(), sizeBytes);
+        // Diagnostic only: do not manufacture a full view for a noncontiguous
+        // GMMU mapping. Record the extent actually bound to the shader.
+        // This identifies a potential undersized texel-buffer descriptor,
+        // not proof that a shader accessed bytes beyond the shorter view.
+        const size_t boundBytes{cachedView.view ? cachedView.view.size : 0};
+        if (sizeBytes > boundBytes) {
+            static std::atomic<u64> incompleteBindings{};
+            const auto hit{incompleteBindings.fetch_add(1, std::memory_order_relaxed) + 1};
+            if (hit <= 24 || (hit & (hit - 1)) == 0) {
+                LOGW("[SB_IMAGEBUF] hit={} tic={} iova=0x{:X} shaderFormat={} vkFormat={} stage={} written={} requested=0x{:X} bound=0x{:X} missing=0x{:X} shaderA={:016X} shaderFS={:016X}",
+                     hit, index, textureHeader.Iova(), static_cast<u32>(shaderFormat),
+                     static_cast<u32>(format->first), static_cast<u32>(shaderStage),
+                     isWritten, sizeBytes, boundBytes, sizeBytes - boundBytes,
+                     vertexOrComputeHash, fragmentHash);
+            }
+        }
         if (!cachedView.view) {
             LOGW("Unmapped image buffer in pool: 0x{:X}", textureHeader.Iova());
             return nullptr;
