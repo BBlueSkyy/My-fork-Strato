@@ -769,6 +769,32 @@ namespace skyline::gpu::interconnect {
                 }
             }
         }
+        // The title-screen trace repeatedly caught compositing passes that
+        // sample only a 1x1 white texel and never modify the measured ROI.
+        // In preferred scene mode, skip these overlays while retaining the
+        // original broad selection as an explicit fallback. HDR color outputs
+        // (VK_FORMAT_B10G11R11_UFLOAT_PACK32) remain eligible even when their
+        // sampled inputs are small; resource producers can use solid inputs.
+        if (sbTarget && !sbInputs.empty() && gpu.spongeBobMini.PreferScenePass()) {
+            const bool hdrTarget{
+                sbTarget->texture->format->vkFormat == vk::Format::eB10G11R11UfloatPack32
+            };
+            const bool hasSubstantialInput{std::any_of(sbInputs.begin(), sbInputs.end(),
+                [](TextureView *view) {
+                    const auto &texture{*view->texture};
+                    return std::max(1U, texture.dimensions.width >> view->range.baseMipLevel) >= 16 ||
+                           std::max(1U, texture.dimensions.height >> view->range.baseMipLevel) >= 16;
+                })};
+            if (!hdrTarget && !hasSubstantialInput) {
+                const auto skipped{gpu.spongeBobMini.SkippedOverlayPass()};
+                if (skipped <= 12 || (skipped & (skipped - 1)) == 0) {
+                    LOGI("[SB_MINI] skipped_overlay_pass={} target_fmt={} input_count={} reason=no_substantial_sampled_images",
+                        skipped, static_cast<u32>(sbTarget->texture->format->vkFormat),
+                        sbInputs.size());
+                }
+                sbTarget = nullptr;
+            }
+        }
         u64 sbOperation{};
         if (sbTarget && !sbInputs.empty()) {
             // Attach before allocating snapshots. Existing alias reconciliation
