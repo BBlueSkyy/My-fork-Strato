@@ -181,6 +181,7 @@ namespace skyline {
             MappingIdentity::Snapshot identity;
             bool fullyResident{};
         };
+        MappingIdentity::Description InspectMappingIdentity(VaType address) const { return mappingIdentity.Inspect(address); }
         uint64_t MappingRevision() const { return mappingIdentity.Revision(); }
         MappingIdentity::Epoch ReadMappingEpoch() const { return mappingIdentity.ReadEpoch(); }
 

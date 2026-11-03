@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
 #include "macro_state.h"
 #include "soc/gm20b/engines/engine.h"
 #include "macro_interpreter.h"
@@ -20,7 +21,36 @@ namespace skyline::soc::gm20b::engine {
         // The first argument is stored in register 1
         registers[1] = *argument++;
 
-        while (Step());
+        diagnosticSendFailed = false;
+        try {
+            while (Step());
+        } catch (...) {
+            try {
+                static std::atomic<u32> failures{};
+                if (failures.fetch_add(1, std::memory_order_relaxed) < 2) {
+                    const auto pcAddress{reinterpret_cast<uintptr_t>(opcode)};
+                    const auto codeBegin{reinterpret_cast<uintptr_t>(macroCode.data())};
+                    const bool pcValid{pcAddress >= codeBegin && pcAddress - codeBegin < macroCode.size_bytes()};
+                    const size_t pc{pcValid ? (pcAddress - codeBegin) / sizeof(u32) : macroCode.size()};
+                    const auto argAddress{reinterpret_cast<uintptr_t>(argument)};
+                    const auto argBegin{reinterpret_cast<uintptr_t>(args.data())};
+                    const bool argValid{argAddress >= argBegin && argAddress - argBegin <= args.size_bytes()};
+                    LOGE("MME_DIAG failure entry={} pc={} pcValid={} argCount={} consumed={} argValid={} sendFailed={} method=0x{:X} argument=0x{:X} carry={}",
+                        offset, pc, pcValid, args.size(), argValid ? (argAddress - argBegin) / sizeof(u32) : 0,
+                        argValid, diagnosticSendFailed, diagnosticMethod, diagnosticArgument, carryFlag);
+                    LOGE("MME_DIAG registers r0=0x{:X} r1=0x{:X} r2=0x{:X} r3=0x{:X} r4=0x{:X} r5=0x{:X} r6=0x{:X} r7=0x{:X}",
+                        registers[0], registers[1], registers[2], registers[3], registers[4], registers[5], registers[6], registers[7]);
+                    for (size_t i{}; i < std::min<size_t>(args.size(), 16); ++i)
+                        LOGE("MME_DIAG argument index={} raw=0x{:X}", i, args[i]);
+                    for (size_t i{offset}; i < macroCode.size() && i - offset < 16; ++i)
+                        LOGE("MME_DIAG entryCode index={} raw=0x{:X}", i, macroCode[i]);
+                    if (pcValid)
+                        for (size_t i{pc > 8 ? pc - 8 : 0}; i < macroCode.size() && i <= pc + 8; ++i)
+                            LOGE("MME_DIAG pcCode index={} raw=0x{:X}", i, macroCode[i]);
+                }
+            } catch (...) {} // A logger failure must not replace the engine exception.
+            throw;
+        }
     }
 
     __attribute__((always_inline)) bool MacroInterpreter::Step(Opcode *delayedOpcode) {
@@ -200,7 +230,14 @@ namespace skyline::soc::gm20b::engine {
     }
 
     __attribute__((always_inline)) void MacroInterpreter::Send(u32 pArgument) {
-        engine->CallMethodFromMacro(methodAddress.address, pArgument);
+        try {
+            engine->CallMethodFromMacro(methodAddress.address, pArgument);
+        } catch (...) {
+            diagnosticSendFailed = true;
+            diagnosticMethod = methodAddress.address;
+            diagnosticArgument = pArgument;
+            throw;
+        }
         methodAddress.address += methodAddress.increment;
     }
 

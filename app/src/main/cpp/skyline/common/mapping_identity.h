@@ -174,6 +174,20 @@ namespace skyline {
             state->cells.clear();
             ++state->revision;
         }
+        // Failure-only diagnostic: observe existing identity without minting a
+        // receipt, changing history or touching the translation's backing bytes.
+        struct Description { uint64_t revision{}, generation{}, begin{}, end{}; };
+        Description Inspect(uint64_t address) const {
+            std::shared_lock lock{state->mutex};
+            const auto revision{state->revision.load(std::memory_order_relaxed)};
+            auto entry{state->cells.upper_bound(address)};
+            if (entry != state->cells.begin()) {
+                --entry;
+                if (entry->second.end > address)
+                    return {revision, entry->second.generation->value, entry->first, entry->second.end};
+            }
+            return {revision, 0, address, address}; // No tracked identity, not an absent-page assertion.
+        }
         uint64_t Revision() const { return state->revision.load(std::memory_order_acquire); }
         Epoch ReadEpoch() const { return Epoch{state, Revision()}; }
         Snapshot Capture(uint64_t begin, uint64_t size) {
