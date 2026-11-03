@@ -92,6 +92,15 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
          */
         void HandleMethod(u32 method, u32 argument);
 
+        // Temporary ring: selector register and per-stage bind writes only.
+        struct SelectorMethodEvent {
+            u32 method{}, supplied{}, effective{}, previous{}, shadowMode{}, selectorSize{};
+            u64 selectorAddress{}, gmmuRevision{}, submission{}, backingRetries{}, cbufRetries{};
+        };
+        std::array<SelectorMethodEvent, 48> selectorMethodHistory{};
+        u64 selectorMethodEvents{};
+        void DumpSelectorMethodHistory() noexcept;
+
       public:
         /**
          * @url https://github.com/devkitPro/deko3d/blob/master/source/maxwell/engine_3d.def

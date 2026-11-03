@@ -272,3 +272,33 @@ and Vulkan segment probe successfully. No production blocker was found; the
 reduced owner and absent device mapping history remain explicit limitations.
 The corrected functional ARM64 DevRelease candidate is requested only after
 these gates; it is not another diagnostic APK. Actions completion is not awaited.
+
+## Final bounded selector/mapping history capture
+
+The functional ARM64 candidate containing the independently valid segment-table
+fix still crashed at the same SMO selector (`0x405E31400`), so the preceding
+mapping cause remains unknown. No B1a rollback or gameplay fix is claimed here.
+
+The GMMU's existing map lock protects a fixed ring of the last 32 completed
+Map/Unmap operations intersecting `[0x405E00000, 0x405F00000)`.
+Both no-op and changed operations record their requested extent, sparse flag,
+numerical host address, revision, and the selector's resident extent before
+and after. This cannot reconstruct an earlier event overwritten by the ring,
+a rejected operation, or a backing change that bypasses GMMU Map/Unmap.
+The address scope is diagnostic-only and must be removed after investigation.
+
+The Maxwell engine records 48 selector/bind method writes (`0x8E0`-`0x8E2`,
+and per-stage bind groups), including supplied/effective arguments after MME
+shadow replay, previous register word, selector address/size, GMMU revision,
+executor submission number, and the two scalar retry counters. The history
+is printed on a failing macro bind only, at most twice per process.
+The CBUF failure reporter also prints the mapping history and retry counters
+as `CBUF_TRACE`; existing `CBUF_DIAG`, `MME_DIAG` and original exceptions
+are unchanged. No guest bytes, synthetic mapping, GPU wait or compensating
+retry is introduced.
+
+Map events and GPU submission events come from different threads and are not
+a globally ordered transaction log; only their individual ordering is guaranteed.
+Use a single first-crash full log and compare the producer method and earlier
+Map/Unmap data. If this still does not prove causality, stop generating diagnostic
+APKs and consider the controlled B1a rollback before proceeding to Stage C.

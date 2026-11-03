@@ -87,6 +87,19 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
             LOGE("CBUF_DIAG probe requested=0x{:X} remaining=0x{:X} revisions={}/{}; generation=0 means untracked, null means nonresident/sparse, remaining may be bounded/truncated",
                 requested, remaining, revision, gmmu.MappingRevision());
+            LOGE("CBUF_TRACE executor submissions={} backingRetries={} gpuDirtyCbufRetries={}",
+                ctx.executor.submissionNumber, ctx.executor.diagnosticBackingRetries, ctx.executor.diagnosticCbufRetries);
+            const auto mappings{gmmu.SnapshotDiagnosticMappings()};
+            const auto mapCount{std::min<u64>(mappings.total, mappings.events.size())};
+            LOGE("CBUF_TRACE gmmu events={} saved={} scope=[0x405E00000,0x405F00000)",
+                mappings.total, mapCount);
+            for (u64 i{}; i < mapCount; ++i) {
+                const auto &event{mappings.events[(mappings.total - mapCount + i) % mappings.events.size()]};
+                LOGE("CBUF_TRACE gmmu serial={} kind={} address=0x{:X} size=0x{:X} sourcePhysical=0x{:X} changed={} sparse={} revision={} probeResident={}/{} probePhysical=0x{:X}/0x{:X} probeAvailable=0x{:X}/0x{:X}",
+                    event.serial, event.kind, event.address, event.bytes, event.sourcePhysical, event.changed,
+                    event.sparse, event.revision, event.beforeResident, event.afterResident,
+                    event.beforePhysical, event.afterPhysical, event.beforeAvailable, event.afterAvailable);
+            }
         } catch (...) {} // Diagnosis must never replace the original exception.
     }
 

@@ -276,6 +276,8 @@ namespace skyline::gpu::interconnect {
         LinearAllocatorState<> *allocator;
         ContextTag tag; //!< The tag associated with this command executor, any tagged resource locking must utilize this tag
         size_t submissionNumber{};
+        // Temporary single-GPFIFO diagnostic counters (no extra submissions).
+        u64 diagnosticBackingRetries{}, diagnosticCbufRetries{};
         ContextTag executionTag{};
         bool captureNextExecution{};
         UsageTracker usageTracker;
@@ -464,9 +466,13 @@ namespace skyline::gpu::interconnect {
                         regionOperationUses.clear();
                         regionOperationActive = false;
                     },
-                        [this](const auto &request) { this->HandleTextureBackingPromotion(request); });
+                        [this](const auto &request) {
+                            ++diagnosticBackingRetries;
+                            this->HandleTextureBackingPromotion(request);
+                        });
                     return;
                 } catch (const GpuDirtyConstantBufferReadRequest &) {
+                    ++diagnosticCbufRetries;
                     Submit();
                 }
             }

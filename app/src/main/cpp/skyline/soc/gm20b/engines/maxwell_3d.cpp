@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 // Copyright © 2018-2020 fincs (https://github.com/devkitPro/deko3d)
 
+#include <atomic>
 #include <boost/preprocessor/repeat.hpp>
 #include <gpu/interconnect/command_executor.h>
 #include <soc/gm20b/channel.h>
@@ -136,6 +137,7 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
             return;
         }
 
+        const auto suppliedArgument{argument};
         if (shadowRegisters.mme->shadowRamControl == type::MmeShadowRamControl::MethodTrack || shadowRegisters.mme->shadowRamControl == type::MmeShadowRamControl::MethodTrackWithFilter) [[unlikely]]
             shadowRegisters.raw[method] = argument;
         else if (shadowRegisters.mme->shadowRamControl == type::MmeShadowRamControl::MethodReplay) [[unlikely]]
@@ -145,6 +147,18 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
         bool redundant{registers.raw[method] == argument};
         u32 origRegisterValue{registers.raw[method]};
         registers.raw[method] = argument;
+        // Record before the bind callback can throw. No logging on success.
+        const bool selectorWrite{method >= 0x8E0 && method <= 0x8E2};
+        const bool bindWrite{method >= 0x904 && method <= 0x924 && ((method - 0x904) % 8 == 0)};
+        if (selectorWrite || bindWrite) [[unlikely]] {
+            const auto &selector{*registers.constantBufferSelector};
+            const auto &executor{channelCtx.executor};
+            selectorMethodHistory[selectorMethodEvents++ % selectorMethodHistory.size()] = {
+                method, suppliedArgument, argument, origRegisterValue,
+                static_cast<u32>(shadowRegisters.mme->shadowRamControl), selector.size,
+                static_cast<u64>(selector.address), channelCtx.asCtx->gmmu.MappingRevision(),
+                executor.submissionNumber, executor.diagnosticBackingRetries, executor.diagnosticCbufRetries};
+        }
 
         if (batchEnableState.raw) {
             if (batchEnableState.constantBufferActive) {
@@ -569,8 +583,30 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
             HandleMethod(method, argument);
     }
 
+    void Maxwell3D::DumpSelectorMethodHistory() noexcept {
+        try {
+            static std::atomic<u32> reports{};
+            if (reports.fetch_add(1, std::memory_order_relaxed) >= 2) return;
+            const auto count{std::min<u64>(selectorMethodEvents, selectorMethodHistory.size())};
+            LOGE("CBUF_TRACE selector methods={} saved={} (effective argument after shadow replay)", selectorMethodEvents, count);
+            for (u64 i{}; i < count; ++i) {
+                const auto &event{selectorMethodHistory[(selectorMethodEvents - count + i) % selectorMethodHistory.size()]};
+                LOGE("CBUF_TRACE selector method=0x{:X} supplied=0x{:X} effective=0x{:X} old=0x{:X} shadow={} selector=0x{:X} size=0x{:X} revision={} submit={} backingRetries={} gpuDirtyRetries={}",
+                    event.method, event.supplied, event.effective, event.previous, event.shadowMode,
+                    event.selectorAddress, event.selectorSize, event.gmmuRevision, event.submission,
+                    event.backingRetries, event.cbufRetries);
+            }
+        } catch (...) {} // Diagnostics must not hide the original exception.
+    }
+
     void Maxwell3D::CallMethodFromMacro(u32 method, u32 argument) {
-        HandleMethod(method, argument);
+        try {
+            HandleMethod(method, argument);
+        } catch (...) {
+            if (method >= 0x904 && method <= 0x924 && ((method - 0x904) % 8 == 0))
+                DumpSelectorMethodHistory();
+            throw;
+        }
     }
 
     u32 Maxwell3D::ReadMethodFromMacro(u32 method) {
