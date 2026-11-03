@@ -23,6 +23,8 @@ namespace skyline::gpu::texture::diagnostic {
         uint64_t pipelineHash{}, channelSequence{};
         std::array<uint64_t, 6> shaderHashes{}; // Maxwell 3D pipeline stage order.
         uint32_t kind{}, topology{}, indexed{}, first{}, count{}, instances{};
+        int32_t scissorX{}, scissorY{};
+        uint32_t scissorWidth{}, scissorHeight{}, conditional{}, depthTest{};
         std::vector<SpongeBobMiniBinding> sampledBindings;
     };
 
@@ -47,6 +49,7 @@ namespace skyline::gpu::texture::diagnostic {
         };
         mutable std::mutex mutex;
         std::atomic<bool> armed{};
+        std::atomic<bool> tracingNaturalPass{};
         bool frozen{};
         uint64_t operations{};
         std::vector<Entry> entries;
@@ -55,10 +58,14 @@ namespace skyline::gpu::texture::diagnostic {
 
       public:
         bool Armed() const { return armed.load(std::memory_order_relaxed); }
+        bool TracingNaturalPass() const { return tracingNaturalPass.load(std::memory_order_acquire); }
+        bool NeedsDrawInfo() const { return Armed() || TracingNaturalPass(); }
+
+        void EndNaturalPass() { tracingNaturalPass.store(false, std::memory_order_release); }
 
         bool Arm() {
             std::lock_guard lock{mutex};
-            if (frozen || armed || operations >= MaxOperations) return false;
+            if (frozen || armed || tracingNaturalPass || operations >= MaxOperations) return false;
             armed.store(true, std::memory_order_release);
             return true;
         }
@@ -68,6 +75,7 @@ namespace skyline::gpu::texture::diagnostic {
             std::lock_guard lock{mutex};
             if (frozen || !armed || operations >= MaxOperations) return 0;
             armed.store(false, std::memory_order_release);
+            tracingNaturalPass.store(true, std::memory_order_release);
             return ++operations;
         }
 
@@ -89,7 +97,7 @@ namespace skyline::gpu::texture::diagnostic {
                 std::lock_guard lock{mutex};
                 // Verify all record pairs before freezing. The Android export
                 // action may be pressed while the last command is still queued.
-                if (armed || entries.empty()) return false;
+                if (armed || tracingNaturalPass || entries.empty()) return false;
                 for (uint64_t op{1}; op <= operations; ++op) {
                     const Entry *before{}, *after{};
                     unsigned inputs{};
