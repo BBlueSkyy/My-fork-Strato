@@ -839,6 +839,22 @@ namespace skyline::gpu::interconnect {
             // exceptions must propagate into the executor's regular retry path.
             AttachTexture(sbTarget);
             for (auto *candidate : sbInputs) AttachTexture(candidate);
+            if (gpu.spongeBobMini.Armed()) {
+                const auto logWriterHistory{[&](TextureView *view, u32 role) {
+                    const auto key{SbDescribeWriter(view, nullptr, renderPassIndex, 0)};
+                    const auto prior{gpu.spongeBobMini.FindPriorWriters(key)};
+                    LOGI("[SB_PRODUCER] role={} writerCandidates={} exact={} truncated={} earliestOrdinal={} latestOrdinal={} latestRp={} latestKind={} latestFmt={} latestDim={}x{} latestPipeline={:016X} latestVS={:016X} latestFS={:016X}",
+                        role, prior.matchingEvents, prior.exactTexture, prior.truncated,
+                        prior.earliest.ordinal, prior.latest.ordinal,
+                        prior.latest.renderPassIndex, prior.latest.kind, prior.latest.format,
+                        prior.latest.width, prior.latest.height, prior.latest.pipeline,
+                        prior.latest.vertexShader, prior.latest.fragmentShader);
+                }};
+                LOGI("[SB_PRODUCER] history_total={}", gpu.spongeBobMini.RecordedPossibleWriters());
+                logWriterHistory(sbTarget, 1);
+                for (u32 i{}; i < sbInputs.size(); ++i)
+                    logWriterHistory(sbInputs[i], i + 3);
+            }
             sbOperation = gpu.spongeBobMini.Begin();
             if (sbOperation) {
                 sbNaturalPassOperation = sbOperation;
@@ -872,6 +888,16 @@ namespace skyline::gpu::interconnect {
         }
         PreflightTextureUses(storageReads, {});
         bool gotoNext{CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask, storageWrites)};
+
+        // Passive trace while armed, BEFORE the chosen render pass begins.
+        // These are possible GPU writers, not a guarantee of pixel output.
+        // No texture state, memory contents, or Vulkan commands are changed.
+        if (gpu.spongeBobMini.Armed()) {
+            for (auto *view : colorAttachments)
+                if (view) gpu.spongeBobMini.NotePossibleWriter(SbDescribeWriter(view, sbDrawInfo, renderPassIndex, 1));
+            for (auto *view : storageWrites)
+                if (view) gpu.spongeBobMini.NotePossibleWriter(SbDescribeWriter(view, sbDrawInfo, renderPassIndex, 2));
+        }
 
         SubpassHooks hooks{};
         if (hookFactory)
