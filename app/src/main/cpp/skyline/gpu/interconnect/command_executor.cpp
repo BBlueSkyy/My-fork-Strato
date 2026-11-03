@@ -419,6 +419,7 @@ namespace skyline::gpu::interconnect {
         if (splitRenderPass) {
             // We need to create a render pass if one doesn't already exist or the current one isn't compatible
             if (renderPass != nullptr) {
+                EndSbNaturalPass("natural_split");
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
                 renderPassIndex++;
@@ -447,8 +448,18 @@ namespace skyline::gpu::interconnect {
         return gotoNext;
     }
 
+    void CommandExecutor::EndSbNaturalPass(const char *why) {
+        if (!sbNaturalPassOperation) return;
+        LOGI("[SB_PASS_END] operation={} draws={} reason={} renderPassIndex={}",
+            sbNaturalPassOperation, sbNaturalPassDraws, why, renderPassIndex);
+        sbNaturalPassOperation = 0;
+        sbNaturalPassDraws = 0;
+        gpu.spongeBobMini.EndNaturalPass();
+    }
+
     void CommandExecutor::FinishRenderPass() {
         if (renderPass) {
+            EndSbNaturalPass("natural_end");
             for (auto &callback : subpassBoundaryCallbacks)
                 callback();
 
@@ -631,7 +642,7 @@ namespace skyline::gpu::interconnect {
         return bytes && bytes <= 64 * 1024;
     }
 
-    void CommandExecutor::QueueSbMiniImage(TextureView *view, u64 operation, u32 role, const texture::diagnostic::SpongeBobMiniDrawInfo &draw, u32 sampledOrdinal) {
+    void CommandExecutor::QueueSbMiniImage(TextureView *view, u64 operation, u32 role, const texture::diagnostic::SpongeBobMiniDrawInfo &draw, u32 sampledOrdinal, bool postNaturalPass) {
         if (!SbMiniEligible(view, role < 3)) return;
         auto texture{view->texture->shared_from_this()};
         const u32 mip{view->range.baseMipLevel}, layer{view->range.baseArrayLayer};
@@ -694,9 +705,11 @@ namespace skyline::gpu::interconnect {
             recorded->store(true, std::memory_order_release);
         }};
 
-        // Caller ends the render pass explicitly after the selected draw;
-        // before and after copies are each bounded by the same single draw.
-        AddOutsideRpCommand(std::move(recorder));
+        // At pass start, no render pass is active; recording a pre-pass copy
+        // cannot split one. The post-pass image copy is queued until the
+        // renderer's OWN natural render-pass boundary; no forced Finish/Submit.
+        if (postNaturalPass) AddPostRpCommand(std::move(recorder));
+        else AddOutsideRpCommand(std::move(recorder));
 
         texture::diagnostic::SpongeBobMiniInfo info{
             .operation = operation, .role = role,
@@ -740,7 +753,9 @@ namespace skyline::gpu::interconnect {
         TextureView *sbTarget{};
         boost::container::small_vector<TextureView *, 4> sbInputs;
         boost::container::small_vector<u32, 4> sbInputOrdinals;
-        if (sbDrawInfo && gpu.spongeBobMini.Armed()) {
+        // Do not split an already-open render pass to start a diagnostic.
+        // Wait for the next naturally empty render-pass slot.
+        if (sbDrawInfo && gpu.spongeBobMini.Armed() && renderPass == nullptr) {
             for (auto *candidate : colorAttachments)
                 if (SbMiniEligible(candidate, true)) { sbTarget = candidate; break; }
             if (sbTarget) {
@@ -762,6 +777,8 @@ namespace skyline::gpu::interconnect {
             for (auto *candidate : sbInputs) AttachTexture(candidate);
             sbOperation = gpu.spongeBobMini.Begin();
             if (sbOperation) {
+                sbNaturalPassOperation = sbOperation;
+                sbNaturalPassDraws = 0;
                 LOGI("[SB_DRAW] op={} pipeline={:016X} seq={} kind={} topology={} indexed={} first={} count={} instances={} shader0={:016X} shader1={:016X} shader2={:016X} shader3={:016X} shader4={:016X} shader5={:016X}",
                     sbOperation, sbDrawInfo->pipelineHash, sbDrawInfo->channelSequence,
                     sbDrawInfo->kind, sbDrawInfo->topology, sbDrawInfo->indexed,
@@ -811,15 +828,30 @@ namespace skyline::gpu::interconnect {
 
         if (sbOperation) {
             try {
-                // Delimit the *selected draw*, rather than reading back at
-                // an arbitrarily later render-pass boundary. Active only for
-                // an explicitly armed diagnostics session.
-                FinishRenderPass();
-                QueueSbMiniImage(sbTarget, sbOperation, 2, *sbDrawInfo, UINT32_MAX);
-                Submit(); // Ensures the two snapshots belong to a submitted cycle.
+                // The RP remains open: the copy is deferred after the
+                // *natural* RP-end node, so later draws are included.
+                QueueSbMiniImage(sbTarget, sbOperation, 2, *sbDrawInfo, UINT32_MAX, true);
             } catch (const std::exception &e) {
-                LOGW("[SB_MINI] isolated-draw output capture unavailable: {}", e.what());
-                throw; // Do not silently continue with an incomplete execution.
+                LOGW("[SB_MINI] post-natural-pass capture unavailable: {}", e.what());
+                throw;
+            }
+        }
+        if (sbNaturalPassOperation) {
+            const auto sequence{++sbNaturalPassDraws};
+            if (sequence <= 128 || (sequence & (sequence - 1)) == 0) {
+                if (sbDrawInfo) {
+                    LOGI("[SB_PASS_DRAW] op={} ordinal={} rp={} pipeline={:016X} shaderVS={:016X} shaderFS={:016X} kind={} indexed={} first={} count={} instances={} scissor={},{},{},{} conditional={} depthTest={}",
+                        sbNaturalPassOperation, sequence, renderPassIndex,
+                        sbDrawInfo->pipelineHash, sbDrawInfo->shaderHashes[1],
+                        sbDrawInfo->shaderHashes[5], sbDrawInfo->kind, sbDrawInfo->indexed,
+                        sbDrawInfo->first, sbDrawInfo->count, sbDrawInfo->instances,
+                        sbDrawInfo->scissorX, sbDrawInfo->scissorY,
+                        sbDrawInfo->scissorWidth, sbDrawInfo->scissorHeight,
+                        sbDrawInfo->conditional, sbDrawInfo->depthTest);
+                } else {
+                    LOGI("[SB_PASS_NON_SHADER] op={} ordinal={} rp={} reason=subpass_without_draw_metadata",
+                        sbNaturalPassOperation, sequence, renderPassIndex);
+                }
             }
         }
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
