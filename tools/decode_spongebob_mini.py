@@ -8,9 +8,13 @@ import hashlib
 import json
 from pathlib import Path
 
-FIELDS = (
+FIELDS_V1 = (
     "operation role image generation write_serial host_format guest_format "
     "width height x y roi_width roi_height mip layer block_width block_height bpb bytes"
+).split()
+FIELDS_V2 = FIELDS_V1 + (
+    "pipeline_hash channel_sequence shader0 shader1 shader2 shader3 shader4 shader5 "
+    "draw_kind topology indexed first count instances sampled_ordinal tic_index matching_tics tic_iova"
 ).split()
 MAX_ROWS = 18
 MAX_BYTES = 65536
@@ -20,15 +24,17 @@ def decode(capture: Path, output: Path):
     output.mkdir(parents=True, exist_ok=True)
     records = []
     with capture.open("rb") as source:
-        if source.readline() != b"SBMINI1\n":
+        magic = source.readline()
+        if magic not in (b"SBMINI1\n", b"SBMINI2\n"):
             raise ValueError("Unsupported Mini capture format")
+        fields = FIELDS_V2 if magic == b"SBMINI2\n" else FIELDS_V1
         while line := source.readline():
             if len(records) == MAX_ROWS or len(line) > 1024:
                 raise ValueError("Unbounded capture records")
             parts = line.rstrip(b"\n").split(b",")
-            if len(parts) != len(FIELDS):
+            if len(parts) != len(fields):
                 raise ValueError("Invalid record metadata")
-            row = dict(zip(FIELDS, (int(value) for value in parts)))
+            row = dict(zip(fields, (int(value) for value in parts)))
             if not (1 <= row["operation"] <= 3 and 1 <= row["role"] <= 6 and
                     1 <= row["bytes"] <= MAX_BYTES and
                     1 <= row["roi_width"] <= 64 and 1 <= row["roi_height"] <= 64 and
@@ -84,8 +90,30 @@ def decode(capture: Path, output: Path):
         after = entries[2]["_data"]
         if len(before) != len(after):
             raise ValueError("Target before/after length mismatch")
+        meta = entries[1]
+        if magic == b"SBMINI2\n":
+            for row in entries.values():
+                if any(row[key] != meta[key] for key in (
+                    "pipeline_hash", "channel_sequence", "shader0", "shader1", "shader2",
+                    "shader3", "shader4", "shader5", "draw_kind", "topology", "indexed",
+                    "first", "count", "instances"
+                )):
+                    raise ValueError("Conflicting metadata within one draw operation")
+            if (entries[1]["image"] != entries[2]["image"] or
+                    entries[1]["generation"] != entries[2]["generation"]):
+                raise ValueError("Target backing changed within one draw")
         results.append({
             "operation": operation,
+            **({
+                "pipeline_hash": f"{meta['pipeline_hash']:016x}",
+                "shader_hashes": [f"{meta[f'shader{i}']:016x}" for i in range(6)],
+                "draw_kind": meta["draw_kind"],
+                "topology": meta["topology"],
+                "indexed": meta["indexed"],
+                "first": meta["first"],
+                "count": meta["count"],
+                "instances": meta["instances"],
+            } if magic == b"SBMINI2\n" else {}),
             "input_count": sum(role >= 3 for role in entries),
             "target_changed_bytes": sum(a != b for a, b in zip(before, after)),
             "target_bytes": len(before),
