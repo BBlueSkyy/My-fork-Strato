@@ -151,6 +151,8 @@ int main() {
     assert(!found.truncated && found.exactTexture && found.matchingEvents == 2001);
     assert(found.latest.kind == 7 && found.latest.ordinal == 2001);
     assert(found.identifiedEvents == 1);
+    assert(found.firstIdentified.ordinal == 1 &&
+           found.firstIdentified.fragmentShader == 0x2200);
     assert(found.latestIdentified.ordinal == 1 &&
            found.latestIdentified.fragmentShader == 0x2200);
 
