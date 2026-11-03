@@ -69,6 +69,13 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
 
         ctx.executor.CommitTextureWrites(storageWrites);
+        // Passive correlation of storage-image writes with the actual compute
+        // shader selected for this dispatch. This does not add GPU commands.
+        if (ctx.gpu.spongeBobMini.Armed()) {
+            for (auto *view : storageWrites)
+                ctx.executor.TraceSbComputeWriter(view, pipeline->sourcePackedState.shaderHash,
+                                                   ctx.channelCtx.channelSequenceNumber);
+        }
         ctx.executor.AddCheckpoint("Before dispatch");
         ctx.executor.AddOutsideRpCommand([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
