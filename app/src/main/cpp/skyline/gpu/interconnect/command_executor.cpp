@@ -675,7 +675,8 @@ namespace skyline::gpu::interconnect {
             };
             commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
                 vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, before);
-            commands.copyImageToBuffer(image, vk::ImageLayout::eGeneral, staging->vkBuffer, copy);
+            commands.copyImageToBuffer(image, vk::ImageLayout::eGeneral, staging->vkBuffer,
+                vk::ArrayProxy<const vk::BufferImageCopy>(1, &copy));
             auto after{before};
             after.srcAccessMask = vk::AccessFlagBits::eTransferRead;
             after.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
