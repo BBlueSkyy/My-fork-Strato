@@ -631,7 +631,7 @@ namespace skyline::gpu::interconnect {
         return bytes && bytes <= 64 * 1024;
     }
 
-    void CommandExecutor::QueueSbMiniImage(TextureView *view, u64 operation, u32 role, bool afterRenderPass) {
+    void CommandExecutor::QueueSbMiniImage(TextureView *view, u64 operation, u32 role, const texture::diagnostic::SpongeBobMiniDrawInfo &draw, u32 sampledOrdinal) {
         if (!SbMiniEligible(view, role < 3)) return;
         auto texture{view->texture->shared_from_this()};
         const u32 mip{view->range.baseMipLevel}, layer{view->range.baseArrayLayer};
@@ -694,8 +694,9 @@ namespace skyline::gpu::interconnect {
             recorded->store(true, std::memory_order_release);
         }};
 
-        if (afterRenderPass) AddPostRpCommand(std::move(recorder));
-        else AddOutsideRpCommand(std::move(recorder));
+        // Caller ends the render pass explicitly after the selected draw;
+        // before and after copies are each bounded by the same single draw.
+        AddOutsideRpCommand(std::move(recorder));
 
         texture::diagnostic::SpongeBobMiniInfo info{
             .operation = operation, .role = role,
@@ -707,6 +708,18 @@ namespace skyline::gpu::interconnect {
             .mip = mip, .layer = layer, .blockWidth = blockWidth,
             .blockHeight = blockHeight, .bytesPerBlock = texture->format->bpb,
             .size = static_cast<u32>(bytes),
+            .pipelineHash = draw.pipelineHash, .channelSequence = draw.channelSequence,
+            .shaderHashes = draw.shaderHashes,
+            .drawKind = draw.kind, .topology = draw.topology,
+            .indexed = draw.indexed, .first = draw.first,
+            .count = draw.count, .instances = draw.instances,
+            .sampledOrdinal = sampledOrdinal,
+            .ticIndex = sampledOrdinal < draw.sampledBindings.size()
+                ? draw.sampledBindings[sampledOrdinal].ticIndex : UINT32_MAX,
+            .matchingTics = sampledOrdinal < draw.sampledBindings.size()
+                ? draw.sampledBindings[sampledOrdinal].matchingEntries : 0,
+            .ticIova = sampledOrdinal < draw.sampledBindings.size()
+                ? draw.sampledBindings[sampledOrdinal].iova : 0,
         };
         gpu.spongeBobMini.Add(info, [captureCycle, staging, recorded, bytes] {
             // Avoid waiting on an unsubmitted slot if the user exports before
@@ -721,18 +734,21 @@ namespace skyline::gpu::interconnect {
         });
     }
 
-    void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory, span<TextureView *> storageWrites, span<TextureView *> storageReads) {
+    void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory, span<TextureView *> storageWrites, span<TextureView *> storageReads, const texture::diagnostic::SpongeBobMiniDrawInfo *sbDrawInfo) {
         // An explicit Android UI action arms one operation; normal draws only
         // perform the cheap atomic check. Never scan or capture while disarmed.
         TextureView *sbTarget{};
         boost::container::small_vector<TextureView *, 4> sbInputs;
-        if (gpu.spongeBobMini.Armed()) {
+        boost::container::small_vector<u32, 4> sbInputOrdinals;
+        if (sbDrawInfo && gpu.spongeBobMini.Armed()) {
             for (auto *candidate : colorAttachments)
                 if (SbMiniEligible(candidate, true)) { sbTarget = candidate; break; }
             if (sbTarget) {
-                for (auto *candidate : sampledImages) {
+                for (u32 ordinal{}; ordinal < sampledImages.size(); ++ordinal) {
+                    auto *candidate{sampledImages[ordinal]};
                     if (SbMiniEligible(candidate, false)) {
                         sbInputs.push_back(candidate);
+                        sbInputOrdinals.push_back(ordinal);
                         if (sbInputs.size() == 4) break;
                     }
                 }
@@ -746,14 +762,28 @@ namespace skyline::gpu::interconnect {
             for (auto *candidate : sbInputs) AttachTexture(candidate);
             sbOperation = gpu.spongeBobMini.Begin();
             if (sbOperation) {
+                LOGI("[SB_DRAW] op={} pipeline={:016X} seq={} kind={} topology={} indexed={} first={} count={} instances={} shader0={:016X} shader1={:016X} shader2={:016X} shader3={:016X} shader4={:016X} shader5={:016X}",
+                    sbOperation, sbDrawInfo->pipelineHash, sbDrawInfo->channelSequence,
+                    sbDrawInfo->kind, sbDrawInfo->topology, sbDrawInfo->indexed,
+                    sbDrawInfo->first, sbDrawInfo->count, sbDrawInfo->instances,
+                    sbDrawInfo->shaderHashes[0], sbDrawInfo->shaderHashes[1],
+                    sbDrawInfo->shaderHashes[2], sbDrawInfo->shaderHashes[3],
+                    sbDrawInfo->shaderHashes[4], sbDrawInfo->shaderHashes[5]);
                 LOGI("[SB_MINI] selected operation={} target={} dimensions={}x{} input_count={} format={}",
                     sbOperation, static_cast<const void *>(sbTarget->texture.get()),
                     sbTarget->texture->dimensions.width, sbTarget->texture->dimensions.height,
                     sbInputs.size(), static_cast<int>(sbTarget->texture->format->vkFormat));
                 try {
-                    QueueSbMiniImage(sbTarget, sbOperation, 1, false);
-                    for (size_t i{}; i < sbInputs.size(); ++i)
-                        QueueSbMiniImage(sbInputs[i], sbOperation, static_cast<u32>(i + 3), false);
+                    QueueSbMiniImage(sbTarget, sbOperation, 1, *sbDrawInfo, UINT32_MAX);
+                    for (size_t i{}; i < sbInputs.size(); ++i) {
+                        const auto ordinal{sbInputOrdinals[i]};
+                        const auto &binding{sbDrawInfo->sampledBindings[ordinal]};
+                        LOGI("[SB_BIND] op={} role={} ordinal={} tic={} iova={:X} matches={} format={}",
+                            sbOperation, i + 3, ordinal, binding.ticIndex,
+                            binding.iova, binding.matchingEntries,
+                            static_cast<u32>(sbInputs[i]->format->vkFormat));
+                        QueueSbMiniImage(sbInputs[i], sbOperation, static_cast<u32>(i + 3), *sbDrawInfo, ordinal);
+                    }
                 } catch (const std::exception &e) {
                     LOGW("[SB_MINI] before capture unavailable: {}", e.what());
                 }
@@ -781,9 +811,15 @@ namespace skyline::gpu::interconnect {
 
         if (sbOperation) {
             try {
-                QueueSbMiniImage(sbTarget, sbOperation, 2, true);
+                // Delimit the *selected draw*, rather than reading back at
+                // an arbitrarily later render-pass boundary. Active only for
+                // an explicitly armed diagnostics session.
+                FinishRenderPass();
+                QueueSbMiniImage(sbTarget, sbOperation, 2, *sbDrawInfo, UINT32_MAX);
+                Submit(); // Ensures the two snapshots belong to a submitted cycle.
             } catch (const std::exception &e) {
-                LOGW("[SB_MINI] render-target output capture unavailable: {}", e.what());
+                LOGW("[SB_MINI] isolated-draw output capture unavailable: {}", e.what());
+                throw; // Do not silently continue with an incomplete execution.
             }
         }
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
