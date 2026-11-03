@@ -107,3 +107,19 @@ Focused probes: `TEXMAN_LAYOUT_PROBE=1`, `TEXMAN_BC_PROBE=1`,
 limits and device acceptance: [region-layout-expansion.md](../../docs/region-layout-expansion.md).
 Sparse residence provenance: `python3 tests/gpu_region_residency/run.py`; this
 proves rejection/translation metadata, not partial sparse GPU sequencing.
+
+## Stage B1a: exact GMMU translations and cached image bindings
+
+`TEXMAN_MAPPING_PROBE=1 python3 tests/gpu_backing_promotion/run.py` runs real
+Vulkan P→Q→P bytes, pending old-reader retention, two cached descriptor aliases,
+failed cache lifetime attachment, stable remap/no-op, retained RT refresh and
+TIC pool replacement. Both FreeGuest/format-list modes run. The authority probe
+includes these cases and the translation-change publication/cancellation gate.
+
+Negative controls: `TEXMAN_MAPPING_CACHE_BASELINE=1`,
+`TEXMAN_MAPPING_RT_BASELINE=1`, or `TEXMAN_MAPPING_POOL_BASELINE=1`, each combined
+with `TEXMAN_MAPPING_PROBE=1`, must fail the relevant oracle. These controls alter
+only temporary host compile inputs, never production code.
+
+See [region-stage-b.md](../../docs/region-stage-b.md). Full physical allocation
+identity and sparse images remain blocked; do not label Stage B complete.

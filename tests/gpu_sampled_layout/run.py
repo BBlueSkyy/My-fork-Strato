@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
             "void CopyLinearToBlockLinear(Dimensions dimensions",
             "void CopyLinearToBlockLinear(const GuestTexture &guest")) + "\n}\n")
     start = textures.index("            constexpr size_t CubeFaceCount", textures.index("TextureView *Textures::GetTexture("))
-    end = textures.index("            auto mappings{", start)
+    end = textures.index("            auto translation{", start)
     # This is the unchanged complete production dimensions/type/tiling setup.
     (build / "tic-construction.inc").write_text(textures[start:end])
     manager = (GPU / "texture_manager.cpp").read_text()

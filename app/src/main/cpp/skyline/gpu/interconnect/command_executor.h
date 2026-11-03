@@ -5,6 +5,7 @@
 
 #include <gpu/texture/backing_promotion.h>
 #include <gpu/texture/region_authority.h>
+#include <common/mapping_identity.h>
 #include <boost/container/small_vector.hpp>
 #include "common/common.h"
 
@@ -162,10 +163,12 @@ namespace skyline::gpu::interconnect {
      */
     class CommandExecutor {
       private:
+        MappingIdentity::Epoch textureMappingEpoch;
         bool regionOperationActive{};
         boost::container::small_vector<Texture *, 8> regionOperationUses;
         void TrackRegionUse(Texture &texture);
         struct RegionPublication {
+            MappingIdentity::Guard mappings;
             boost::container::small_vector<std::unique_lock<std::recursive_mutex>, 8> states;
             boost::container::small_vector<std::unique_lock<std::recursive_mutex>, 4> metadata;
         };
@@ -320,6 +323,10 @@ namespace skyline::gpu::interconnect {
          */
         void AttachDependency(const std::shared_ptr<void> &dependency);
 
+        // Receipt is a descriptor translation, not a physical Texture identity.
+        void TrackTextureMapping(const MappingIdentity::Snapshot &snapshot);
+        void StartTextureMapping(const MappingIdentity::Epoch &epoch);
+
         /**
          * @brief Adds a command that needs to be executed inside a subpass configured with certain attachments
          * @param exclusiveSubpass If this subpass should be the only subpass in a render pass
@@ -444,13 +451,16 @@ namespace skyline::gpu::interconnect {
             for (;;) {
                 try {
                     texture::RetryBackingPromotion([&] {
+                        textureMappingEpoch = {};
                         regionOperationActive = true;
                         try { operation(); }
                         catch (...) {
+                            textureMappingEpoch = {};
                             regionOperationUses.clear();
                             regionOperationActive = false;
                             throw;
                         }
+                        textureMappingEpoch = {};
                         regionOperationUses.clear();
                         regionOperationActive = false;
                     },

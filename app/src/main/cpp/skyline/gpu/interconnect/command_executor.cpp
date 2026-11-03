@@ -477,6 +477,22 @@ namespace skyline::gpu::interconnect {
             texture->unlock();
     }
 
+    void CommandExecutor::TrackTextureMapping(const MappingIdentity::Snapshot &snapshot) {
+        if (!regionOperationActive || !snapshot) return;
+        // Read the epoch before validating the receipt. A change after either
+        // step is rejected by the publication lease, before new nodes/writers.
+        const auto epoch{snapshot.ReadEpoch()};
+        if (!snapshot.IsCurrent()) throw TextureAliasReconciliationRequest{};
+        StartTextureMapping(epoch);
+    }
+
+    void CommandExecutor::StartTextureMapping(const MappingIdentity::Epoch &epoch) {
+        if (!regionOperationActive || !epoch) return;
+        if (textureMappingEpoch && !textureMappingEpoch.SameVersion(epoch))
+            throw TextureAliasReconciliationRequest{};
+        textureMappingEpoch = epoch;
+    }
+
     void CommandExecutor::TrackRegionUse(Texture &texture) {
         if (!regionOperationActive || !texture.regionTracked.load(std::memory_order_relaxed)) return;
         if (std::find(regionOperationUses.begin(), regionOperationUses.end(), &texture) == regionOperationUses.end())
@@ -499,6 +515,8 @@ namespace skyline::gpu::interconnect {
             auto group{resource->regionAuthority.load()};
             if (std::find(groups.begin(), groups.end(), group) == groups.end()) groups.push_back(std::move(group));
         }
+        publication.mappings = textureMappingEpoch.Acquire();
+        if (!publication.mappings) throw TextureAliasReconciliationRequest{};
         std::sort(groups.begin(), groups.end(), [](const auto &a, const auto &b) { return std::less<texture::RegionAuthority *>{}(a.get(), b.get()); });
         for (const auto &group : groups) publication.metadata.emplace_back(group->mutex);
         for (auto resource : resources) {

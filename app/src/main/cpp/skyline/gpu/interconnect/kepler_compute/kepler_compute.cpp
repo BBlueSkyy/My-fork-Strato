@@ -32,6 +32,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         if (ctx.gpu.traits.quirks.brokenComputeShaders)
             return;
 
+        ctx.executor.StartTextureMapping(ctx.channelCtx.asCtx->gmmu.ReadMappingEpoch());
         TRACE_EVENT("gpu", "KeplerCompute::Dispatch");
 
         StateUpdateBuilder builder{*ctx.executor.allocator};

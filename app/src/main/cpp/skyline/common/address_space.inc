@@ -235,18 +235,18 @@ namespace skyline {
 
         auto predecessor{std::prev(successor)};
 
-        u8 *blockPhys{predecessor->phys + (virt - predecessor->virt)};
-        VaType blockSize{std::min(successor->virt - virt, size)};
+        u8 *blockPhys{predecessor->phys && !predecessor->extraInfo.sparseMapped ? predecessor->phys + (virt - predecessor->virt) : nullptr};
+        VaType blockSize{successor == this->blocks.end() ? size : std::min(successor->virt - virt, size)};
 
         while (size) {
             if (fullyResident && (!predecessor->phys || predecessor->extraInfo.sparseMapped)) *fullyResident = false;
-            if (predecessor->phys) {
+            if (predecessor->phys && !predecessor->extraInfo.sparseMapped) {
                 span cpuBlock{blockPhys, blockSize};
                 if (cpuAccessCallback)
                     cpuAccessCallback(cpuBlock);
 
                 // Batch contiguous ranges into one
-                if (!ranges.empty() && ranges.back().data() + ranges.back().size() == cpuBlock.data())
+                if (!ranges.empty() && ranges.back().valid() && ranges.back().data() + ranges.back().size() == cpuBlock.data())
                     ranges.back() = {ranges.back().data(), ranges.back().size() + cpuBlock.size()};
                 else
                     ranges.push_back(cpuBlock);
@@ -259,7 +259,7 @@ namespace skyline {
             if (size) {
                 predecessor = successor++;
                 blockPhys = predecessor->phys;
-                blockSize = std::min(successor->virt - predecessor->virt, size);
+                blockSize = successor == this->blocks.end() ? size : std::min(successor->virt - predecessor->virt, size);
             }
         }
 

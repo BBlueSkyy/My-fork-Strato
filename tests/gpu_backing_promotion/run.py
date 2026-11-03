@@ -26,6 +26,30 @@ def function(text, signature, default_arguments=False):
 
 with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as directory:
     directory = pathlib.Path(directory)
+    address_header = (ROOT / "app/src/main/cpp/skyline/common/address_space.h").read_text()
+    address_source = (ROOT / "app/src/main/cpp/skyline/common/address_space.inc").read_text()
+    def address_function(source, signature, defaults=False):
+        start = source.index(signature)
+        brace = source.index(") {", start) + 2 if defaults else source.index("{", start)
+        end, depth = brace + 1, 1
+        while depth:
+            depth += (source[end] == "{") - (source[end] == "}")
+            end += 1
+        return source[start:end]
+    (directory / "gmmu_translation.inc").write_text(address_function(address_header,"std::pair<span<u8>, size_t> LookupBlockLocked(",True)+"\n"+
+        address_function(address_header,"TranslatedAddressRange TranslateRange(",True))
+    (directory / "gmmu_identity.inc").write_text(address_function(address_header,"bool SameMappingLocked(")+"\n"+
+        address_function(address_header,"std::vector<std::pair<VaType, VaType>> ChangedMappingRangesLocked(")+"\n"+
+        address_function(address_header,"TrackedTranslation TranslateRangeTracked(",True)+"\n"+
+        address_function(address_header,"void Map(",True)+"\n"+address_function(address_header,"void Unmap(",True))
+    (directory / "gmmu_slow.inc").write_text(address_function(address_source,"MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl("))
+    (directory / "gmmu_map.inc").write_text(address_function(address_source,"MAP_MEMBER(void)::MapLocked(")+"\n"+
+        address_function(address_source,"MAP_MEMBER(void)::UnmapLocked("))
+    fixture=(ROOT/"tests/gpu_gmmu_identity/tests.cpp").read_text()
+    fixture=fixture[fixture.index("using skyline::MappingIdentity;"):fixture.index("int main()")]
+    for original in ("translation", "identity", "slow", "map"):
+        fixture=fixture.replace('"'+original+'.inc"','"gmmu_'+original+'.inc"')
+    (directory/"gmmu_fixture.inc").write_text("namespace translation_test {\n"+fixture+"\n}\n")
     source = (GPU / "texture/texture.cpp").read_text()
     baseline = os.environ.get("TEXMAN_BASELINE_VIEWS_REF")
     view_source = subprocess.check_output(["git", "show", baseline + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"],
@@ -125,20 +149,38 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "request_range.inc").write_text(function(manager, "const vk::ImageSubresourceRange requestedRange") + ";")
     (directory / "request_validation.inc").write_text(function(manager, "if (!texture::SubresourceRangeFits("))
     (directory / "unrepresentable.inc").write_text(function(manager, "if (unrepresentableMatch || separateGroup)"))
+    texture_cache_source = (GPU / "interconnect/common/textures.cpp").read_text()
+    cache_begin = texture_cache_source.index("        if (textureHeaderCache.size()", texture_cache_source.index("TextureView *Textures::GetTexture("))
+    cache_end = texture_cache_source.index("        if (index >= textureHeaders.size())", cache_begin)
+    cache_prefix = texture_cache_source[cache_begin:cache_end]
+    if os.environ.get("TEXMAN_MAPPING_CACHE_BASELINE"):
+        cache_prefix = cache_prefix.replace("textureHeaderCache[index].texture.Current()", "static_cast<bool>(textureHeaderCache[index].texture.view)")
+    (directory / "mapping_cache_lookup.inc").write_text(cache_prefix)
+    rt_source=(GPU/"interconnect/maxwell_3d/pipeline_state.cpp").read_text()
+    rt_refresh=function(rt_source,"void PipelineState::RefreshTextureMappings(")
+    if os.environ.get("TEXMAN_MAPPING_RT_BASELINE"):
+        rt_refresh="void PipelineState::RefreshTextureMappings(InterconnectContext &ctx) { (void)ctx; }"
+    (directory/"mapping_rt.inc").write_text(rt_refresh+"\n"+
+        function(rt_source,"std::shared_ptr<TextureView> PipelineState::GetColorRenderTargetForClear(")+"\n"+
+        function(rt_source,"std::shared_ptr<TextureView> PipelineState::GetDepthRenderTargetForClear("))
+    pool_lookup=function(texture_cache_source,"span<TextureImageControl> Textures::GetTextureHeaders(")
+    if os.environ.get("TEXMAN_MAPPING_POOL_BASELINE"):
+        pool_lookup="span<TextureImageControl> Textures::GetTextureHeaders(InterconnectContext &ctx) { return texturePool.UpdateGet(ctx).textureHeaders; }"
+    (directory/"mapping_pool.inc").write_text(function(texture_cache_source,"void TexturePoolState::Flush(")+"\n"+pool_lookup)
     executor = (GPU / "interconnect/command_executor.cpp").read_text()
     (directory / "alias_retry.inc").write_text(function(executor,"void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &"))
     (directory / "graph.inc").write_text(function(executor,"static bool ViewsEqual(") + "\n" +
         function(executor,"bool CommandExecutor::CreateRenderPassWithSubpass(") + "\n" +
         function(executor,"void CommandExecutor::AddSubpass("))
-    (directory / "region_hold.inc").write_text(function(executor,"void CommandExecutor::TrackRegionUse("))
+    (directory / "region_hold.inc").write_text(function(executor,"void CommandExecutor::TrackTextureMapping(")+"\n"+function(executor,"void CommandExecutor::StartTextureMapping(")+"\n"+function(executor,"void CommandExecutor::TrackRegionUse("))
     (directory / "region_publication.inc").write_text(function(executor,"CommandExecutor::RegionPublication CommandExecutor::AcquireRegionPublication("))
     (directory / "region_operation.inc").write_text(function((GPU / "interconnect/command_executor.h").read_text(),
         "template<typename Operation>\n        void RunWithTextureBackingRetry("))
     (directory / "preflight.inc").write_text(function(executor,"void CommandExecutor::PreflightTextureUses("))
     (directory / "commit.inc").write_text(function(executor,"void CommandExecutor::CommitTextureWrites("))
     draw = (GPU / "interconnect/maxwell_3d/maxwell_3d.cpp").read_text()
-    first = draw.index("         const auto regionEpoch", draw.index("void Maxwell3D::PrepareDraw("))
-    (directory / "epoch.inc").write_text(draw[first:draw.index("         Pipeline *oldPipeline",first)])
+    refresh=function(draw,"void Maxwell3D::RefreshTextureMappings(")
+    (directory / "epoch.inc").write_text(refresh[refresh.index("{")+1:-1])
     (directory / "attach.inc").write_text(function(executor,"bool CommandExecutor::AttachTexture("))
     (directory / "retry.inc").write_text(function(executor,
         "void CommandExecutor::HandleTextureBackingPromotion("))

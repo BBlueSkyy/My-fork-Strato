@@ -157,6 +157,7 @@ struct Maxwell3D {
     Queries queries;
     u32 sampleCounterEnable{};
     void RefreshRenderCondition() {}
+    void RefreshTextureMappings() {} // Mapping/RT refresh is exercised with real Vulkan in the backing suite.
     Samplers samplers;
     Textures textures;
     ActiveState activeState;

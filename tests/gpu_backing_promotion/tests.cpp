@@ -11,6 +11,7 @@
 #include <cstring>
 #include <gpu/texture/backing_promotion.h>
 #include <gpu/texture/region_authority.h>
+#include <gpu/texture/mapping_cache.h>
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
 #include <gpu/texture/pitch_linear.h>
@@ -68,6 +69,8 @@ namespace util {
 }
 
 #define TRACE_EVENT(...)
+
+#include "gmmu_fixture.inc"
 
 unsigned validationErrors{};
 VKAPI_ATTR VkBool32 VKAPI_CALL ValidationMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -599,10 +602,14 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             using Node=std::variant<RenderPassNode,RenderPassEndNode,SubpassFunctionNode,NextSubpassFunctionNode>;
         }
         struct CommandExecutor {
+            MappingIdentity::Epoch textureMappingEpoch;
+            void TrackTextureMapping(const MappingIdentity::Snapshot &);
+            void StartTextureMapping(const MappingIdentity::Epoch &);
             bool regionOperationActive{};
             std::vector<Texture *> regionOperationUses;
             void TrackRegionUse(Texture &);
             struct RegionPublication {
+                MappingIdentity::Guard mappings;
                 std::vector<std::unique_lock<std::recursive_mutex>> states, metadata;
             };
             RegionPublication AcquireRegionPublication(span<TextureView *>);
@@ -630,10 +637,12 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             bool AttachTexture(TextureView *);
             void PreflightTextureUses(span<TextureView *>, span<TextureView *>);
             void CommitTextureWrites(span<TextureView *>);
+            std::vector<std::shared_ptr<void>> mappingDependencies;
+            void AttachDependency(const std::shared_ptr<void> &object) { mappingDependencies.push_back(object); }
             unsigned submissions{};
             std::function<void()> onSubmit;
             void Submit() {
-                regionOperationUses.clear(); ++submissions; if (onSubmit) onSubmit();
+                textureMappingEpoch = {}; regionOperationUses.clear(); ++submissions; if (onSubmit) onSubmit();
                 slot->nodes.clear(); renderPass=nullptr; lastSubpassColorAttachments.clear();
                 lastSubpassInputAttachments.clear(); lastSubpassDepthStencilAttachment=nullptr; ++renderPassIndex;
             }
@@ -2256,7 +2265,10 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         const auto nativeView{a->GetView()}, storageView{a->GetView(true)};
         const auto backing{a->texture->GetBacking()};
         struct RetainedDescriptorState {
-            u64 descriptorRegionEpoch{};
+            u64 descriptorRegionEpoch{}, descriptorMappingEpoch{};
+            struct As { struct { uint64_t value{}; uint64_t MappingRevision() const { return value; } MappingIdentity::Epoch ReadMappingEpoch() const { return {}; } } gmmu; };
+            struct { struct { std::shared_ptr<As> asCtx{std::make_shared<As>()}; } channelCtx; interconnect::CommandExecutor executor; } ctx;
+            struct { void MarkAllDirty() {} } textures,samplers;
             void *activeDescriptorPipeline{reinterpret_cast<void *>(1)};
             struct { unsigned invalidations{}; void MarkAllDirty() { ++invalidations; } } activeState;
             struct { bool quick{true}; void DisableQuickBind() { quick=false; } } constantBuffers;
@@ -2526,6 +2538,182 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         for(size_t i{};i<8192;++i) assert(data[i]==(i<4096 ? red[i%4] : blue[i%4]));
         gpu.scheduler.Complete();assert(!validationErrors);
         std::puts("PASS: new peer writer during unlocked transfer is retried; resident versions name actual copied bytes");
+    }
+
+    namespace mapping_pipeline {
+        struct As { translation_test::Gmmu gmmu; };
+        struct InterconnectContext {
+            struct {std::shared_ptr<As> asCtx{std::make_shared<As>()};} channelCtx;
+            interconnect::CommandExecutor executor;
+            TextureManager &manager;
+        };
+        struct Target {
+            bool dirty{true};size_t address{0x1000};std::shared_ptr<TextureView> view;
+            void MarkDirty(bool) {dirty=true;}
+            Target &UpdateGet(InterconnectContext &ctx,int) {
+                if(dirty) {
+                    auto translated=ctx.channelCtx.asCtx->gmmu.TranslateRangeTracked(address,8192);
+                    assert(translated.fullyResident && translated.mappings.size()==1);
+                    ctx.executor.TrackTextureMapping(translated.identity);
+                    view=ctx.manager.FindOrCreate(PartialDescriptor(translated.mappings[0].data()));dirty=false;
+                }
+                return *this;
+            }
+        };
+        struct PipelineState {
+            uint64_t textureMappingRevision{};int packedState{};
+            std::array<Target,2> colorRenderTargets;Target depthRenderTarget;
+            void RefreshTextureMappings(InterconnectContext &);
+            std::shared_ptr<TextureView> GetColorRenderTargetForClear(InterconnectContext &,size_t);
+            std::shared_ptr<TextureView> GetDepthRenderTargetForClear(InterconnectContext &);
+        };
+        #include "mapping_rt.inc"
+        struct TextureImageControl {uint32_t imageAddress;};
+        struct TexturePoolState {
+            struct Engine {struct {uint64_t offset{0x8000};uint32_t maximumIndex{};}texHeaderPool;} registers;
+            Engine *engine{&registers};
+            MappingIdentity::Snapshot mapping;span<TextureImageControl> textureHeaders;
+            void Flush(InterconnectContext &);
+        };
+        struct Textures {
+            struct Pool {TexturePoolState value;bool dirty{true};
+                TexturePoolState &Get() {return value;}
+                void MarkDirty(bool) {dirty=true;}
+                TexturePoolState &UpdateGet(InterconnectContext &ctx) {if(dirty) {value.Flush(ctx);dirty=false;}return value;}
+            }texturePool;
+            struct Entry {texture::MappingCacheEntry<TextureView> texture;};
+            std::vector<Entry> textureHeaderCache;
+            span<TextureImageControl> GetTextureHeaders(InterconnectContext &);
+        };
+        #include "mapping_pool.inc"
+    }
+    void CheckRetainedMappingTargets(GPU &gpu) {
+        std::vector<u8> p(5*4096,0x2D),q(5*4096,0x73);TextureManager manager{gpu};
+        mapping_pipeline::InterconnectContext ctx{{},{},manager};
+        auto &gmmu=ctx.channelCtx.asCtx->gmmu;gmmu.blocks={{0,nullptr,{}}};
+        gmmu.Map(0x1000,p.data()+4096,8192);gmmu.Map(0x3000,q.data()+4096,8192);
+        mapping_pipeline::PipelineState state;
+        auto a=state.GetColorRenderTargetForClear(ctx,0);WriteAliasRenderTarget(a->texture,{1,0,0,1});
+        state.GetDepthRenderTargetForClear(ctx);
+        gmmu.Map(0x1000,q.data()+4096,8192);
+        auto b=state.GetColorRenderTargetForClear(ctx,0);WriteAliasRenderTarget(b->texture,{0,1,0,1});
+        const auto data=DownloadPartial(b->texture),old=DownloadPartial(a->texture);
+        const std::array<u8,4> red{255,0,0,255},green{0,255,0,255};
+        for(size_t i{};i<8192;++i) {assert(data[i]==green[i%4]);assert(old[i]==red[i%4]);}
+        assert(state.GetDepthRenderTargetForClear(ctx)->texture==b->texture);
+        mapping_pipeline::TextureImageControl hp{0x3000},hq{0x1000};
+        gmmu.Map(0x8000,reinterpret_cast<u8 *>(&hp),sizeof(hp));
+        mapping_pipeline::Textures headers;
+        headers.texturePool.value.registers.texHeaderPool.maximumIndex=3;
+        assert(headers.GetTextureHeaders(ctx).size()==1 && headers.GetTextureHeaders(ctx)[0].imageAddress==0x3000);
+        // Another index still holds the old raw-view owner during pool retranslation.
+        headers.textureHeaderCache.push_back({{a,{}}});
+        gmmu.Map(0x8000,reinterpret_cast<u8 *>(&hq),sizeof(hq));
+        const auto address=headers.GetTextureHeaders(ctx)[0].imageAddress;
+        assert(address==0x1000 && headers.textureHeaderCache.empty() && !ctx.executor.mappingDependencies.empty());
+        gmmu.Map(address,p.data()+4096,8192);
+        auto restored=state.GetColorRenderTargetForClear(ctx,0);WriteAliasRenderTarget(restored->texture,{0,0,1,1});
+        const auto blueBytes=DownloadPartial(restored->texture),qBytes=DownloadPartial(b->texture);
+        const std::array<u8,4> blue{0,0,255,255};
+        for(size_t i{};i<8192;++i) {assert(blueBytes[i]==blue[i%4]);assert(qBytes[i]==green[i%4]);}
+        gmmu.Unmap(0x8000,sizeof(hp));assert(headers.GetTextureHeaders(ctx).empty());
+        gpu.scheduler.Complete();assert(!validationErrors);
+        std::puts("PASS: production nested RT refresh/clear getters and tracked TIC pool replacement preserve independent Vulkan image bytes");
+    }
+
+    void CheckTranslatedCacheBytes(GPU &gpu,bool eviction) {
+        *gpu.state.settings->freeGuestTextureMemory=eviction;
+        std::vector<u8> p(5*4096,0x2D),q(5*4096,0x73);TextureManager manager{gpu};
+        translation_test::Gmmu gmmu;
+        gmmu.blocks={{0,nullptr,{}}};
+        gmmu.Map(0x1000,p.data()+4096,8192);
+        texture::MappingCacheEntry<TextureView> store;
+        struct CacheEntry { u32 tic{}; texture::MappingCacheEntry<TextureView> texture; u64 sequenceNumber{}; };
+        std::vector<CacheEntry> textureHeaderCache(2);
+        const std::vector<u32> textureHeaders{7,7};
+        auto retainCycle{gpu.scheduler.AllocateCommandBuffer().GetFenceCycle()};
+        bool failRetention{};
+        auto retain=[&](const auto &view) { if(failRetention) throw std::bad_alloc{};retainCycle->AttachObject(view); };
+        interconnect::CommandExecutor executor;
+        struct Context { struct {u64 channelSequenceNumber{1};} channelCtx; interconnect::CommandExecutor &executor; } ctx{{1},executor};
+        auto cachedLookup=[&](u32 index)->TextureView * {
+            #include "mapping_cache_lookup.inc"
+            return nullptr;
+        };
+        auto bind=[&](size_t index) {
+            if(!cachedLookup(static_cast<u32>(index))) {
+                if(!store.Current()) {
+                    auto translation=gmmu.TranslateRangeTracked(0x1000,8192);
+                    if(!translation.fullyResident) throw std::runtime_error("nonresident translation remains rejected");
+                    auto descriptor=PartialDescriptor(translation.mappings.front().data());
+                    descriptor.mappings.clear();
+                    for(const auto &mapping : translation.mappings) descriptor.mappings.push_back({mapping.data(),mapping.size()});
+                    store.Replace(manager.FindOrCreate(descriptor),translation.identity,retain);
+                }
+                textureHeaderCache[index].texture.Replace(store.view,store.mapping,retain);
+                textureHeaderCache[index].tic=textureHeaders[index];
+                textureHeaderCache[index].sequenceNumber=ctx.channelCtx.channelSequenceNumber;
+            }
+            executor.TrackTextureMapping(textureHeaderCache[index].texture.mapping);
+            return textureHeaderCache[index].texture.view;
+        };
+        auto a=bind(0);assert(bind(1)==a);const auto oldImage=a->texture->GetBacking();
+        WriteAliasRenderTarget(a->texture,{1,0,0,1});
+        auto oldRead{gpu.memory.AllocateStagingBuffer(a->texture->surfaceSize)};
+        auto pendingRead{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &cmd) { a->texture->CopyIntoStagingBuffer(cmd,oldRead); })};
+        pendingRead->AttachObjects(a,oldRead);pendingRead->ChainCycle(a->texture->cycle);
+        const auto oldReceipt=textureHeaderCache[0].texture.mapping;
+        const auto beforeWaits=a->texture->cycle->gpuWaits;
+        gmmu.Map(0x1000,q.data()+4096,8192);
+        assert(a->texture->cycle->gpuWaits==beforeWaits && !oldReceipt.IsCurrent());
+        bool failed{};
+        auto b=bind(0);assert(bind(1)==b && !a->texture->replaced);
+        AliasRead(b->texture);const auto newBytes=DownloadPartial(b->texture);
+        assert(std::all_of(newBytes.begin(),newBytes.end(),[](u8 value) {return value==0x73;}));
+        WriteAliasRenderTarget(b->texture,{0,1,0,1});
+        pendingRead->Wait();
+        const std::array<u8,4> red{255,0,0,255},green{0,255,0,255};
+        for(size_t i{};i<8192;++i) assert(oldRead->data()[i]==red[i%4]);
+        assert(a->texture->GetBacking()==oldImage);
+        gmmu.Map(0x1000,p.data()+4096,8192);
+        failRetention=true;failed=false;
+        try { bind(0); } catch(const std::bad_alloc &) { failed=true; }
+        failRetention=false;
+        assert(failed && store.view==b && textureHeaderCache[0].texture.view==b && textureHeaderCache[1].texture.view==b);
+        auto reused=bind(0);assert(reused->texture==a->texture && !oldReceipt.IsCurrent());
+        AliasRead(reused->texture);const auto oldBytes=DownloadPartial(reused->texture);
+        for(size_t i{};i<8192;++i) assert(oldBytes[i]==red[i%4]);
+        const auto epoch=gmmu.mappingIdentity.Revision();gmmu.Map(0x1000,p.data()+4096,8192);
+        assert(gmmu.mappingIdentity.Revision()==epoch && textureHeaderCache[0].texture.Current());
+        // IOVA removal cannot retire a still-valid physical writer at Q.
+        gmmu.Unmap(0x1000,8192);failed=false;
+        try { bind(0); } catch(const std::runtime_error &) { failed=true; }
+        assert(failed && !textureHeaderCache[0].texture.Current());
+        { std::scoped_lock lock{*b->texture};b->texture->SynchronizeGuest(false,true); }
+        for(size_t i{};i<8192;++i) assert(q[4096+i]==green[i%4]);
+        retainCycle->Cancel();gpu.scheduler.Complete();assert(!validationErrors);
+        *gpu.state.settings->freeGuestTextureMemory=false;
+        std::printf("PASS: real Vulkan GMMU P->Q->P bytes, unchanged remap, two descriptor aliases, pending old reader, failed retention and physical writer preservation (FreeGuest=%d)\n",eviction);
+    }
+
+    void CheckTranslationPublicationRetry(GPU &gpu) {
+        MappingIdentity identity;
+        auto receipt=identity.Capture(0x1000,8192);
+        interconnect::CommandExecutor executor;unsigned attempts{};
+        bool cancelled{};
+        try { executor.RunWithTextureBackingRetry([&] { executor.TrackTextureMapping(receipt);throw std::bad_alloc{}; }); }
+        catch(const std::bad_alloc &) {cancelled=true;}
+        assert(cancelled && !executor.textureMappingEpoch && !executor.regionOperationActive && executor.regionOperationUses.empty());
+        executor.onSubmit=[&] { receipt=identity.Capture(0x1000,8192); };
+        executor.RunWithTextureBackingRetry([&] {
+            ++attempts;
+            executor.TrackTextureMapping(receipt);
+            if(attempts==1) { auto mutation=identity.Invalidate(0x1000,4096); }
+            auto publication=executor.AcquireRegionPublication({});
+        });
+        (void)gpu;
+        assert(attempts==2 && executor.submissions==1);
+        std::puts("PASS: changed translation rejects publication, retries once and clears cancelled preparation receipts");
     }
 
     void CheckRegionFootprintBounds(GPU &gpu) {
@@ -2938,6 +3126,7 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_MAPPING_PROBE")) { for(bool eviction : {false,true}) CheckTranslatedCacheBytes(gpu,eviction); CheckRetainedMappingTargets(gpu); CheckTranslationPublicationRetry(gpu); continue; }
             if (std::getenv("TEXMAN_BC_PROBE")) { CheckRegionFootprintBounds(gpu); CheckCompressedRegionUpload(gpu); continue; }
             if (std::getenv("TEXMAN_WAIT_PROBE")) { CheckRegionTrapPreparation(gpu); CheckRegionWaitLocks(gpu); CheckRegionWriterDuringTransfer(gpu); continue; }
             if (std::getenv("TEXMAN_LAYOUT_PROBE")) { CheckExpandedRegionLayouts(gpu); continue; }
@@ -2957,6 +3146,9 @@ int main() {
                 CheckRegionIncompatibleDrain(gpu);
                 CheckRegionMipLayers(gpu);
                 CheckExpandedRegionLayouts(gpu);
+                for(bool eviction : {false,true}) CheckTranslatedCacheBytes(gpu,eviction);
+                CheckRetainedMappingTargets(gpu);
+                CheckTranslationPublicationRetry(gpu);
                 CheckRegionFootprintBounds(gpu);
                 CheckCompressedRegionUpload(gpu);
                 CheckRegionTrapPreparation(gpu);
@@ -3008,7 +3200,7 @@ int main() {
     }
     assert(!validationErrors);
     if (std::getenv("TEXMAN_AUTHORITY_PROBE") || std::getenv("TEXMAN_LOCK_ORDER_PROBE") ||
-        std::getenv("TEXMAN_LAYOUT_PROBE") || std::getenv("TEXMAN_WAIT_PROBE") || std::getenv("TEXMAN_BC_PROBE")) return 0;
+        std::getenv("TEXMAN_MAPPING_PROBE") || std::getenv("TEXMAN_LAYOUT_PROBE") || std::getenv("TEXMAN_WAIT_PROBE") || std::getenv("TEXMAN_BC_PROBE")) return 0;
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;

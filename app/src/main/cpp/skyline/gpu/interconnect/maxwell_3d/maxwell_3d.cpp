@@ -223,16 +223,27 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return scissor;
     }
 
-     void Maxwell3D::PrepareDraw(StateUpdateBuilder &builder,
-                                 engine::DrawTopology topology, bool indexed, bool estimateIndexBufferSize, u32 firstIndex, u32 count,
-                                 vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+    void Maxwell3D::RefreshTextureMappings() {
+         ctx.executor.StartTextureMapping(ctx.channelCtx.asCtx->gmmu.ReadMappingEpoch());
          const auto regionEpoch{texture::regionInvalidationSequence.load(std::memory_order_relaxed)};
-         if (descriptorRegionEpoch != regionEpoch) {
+         const auto mappingEpoch{ctx.channelCtx.asCtx->gmmu.MappingRevision()};
+         if (descriptorRegionEpoch != regionEpoch || descriptorMappingEpoch != mappingEpoch) {
+             if (descriptorMappingEpoch != mappingEpoch) {
+                 textures.MarkAllDirty();
+                 samplers.MarkAllDirty();
+             }
+             descriptorMappingEpoch = mappingEpoch;
              descriptorRegionEpoch = regionEpoch;
              activeDescriptorPipeline = nullptr;
              activeState.MarkAllDirty();
              constantBuffers.DisableQuickBind();
          }
+    }
+
+     void Maxwell3D::PrepareDraw(StateUpdateBuilder &builder,
+                                 engine::DrawTopology topology, bool indexed, bool estimateIndexBufferSize, u32 firstIndex, u32 count,
+                                 vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+         RefreshTextureMappings();
          Pipeline *oldPipeline{activeState.GetPipeline()};
          samplers.Update(ctx, samplerBinding.value == engine::SamplerBinding::Value::ViaHeaderBinding);
          activeState.Update(ctx, textures, samplers, constantBuffers.boundConstantBuffers,
@@ -325,6 +336,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                  const engine::WindowOrigin &origin,
                                  const engine::SurfaceClip &clip, size_t colorTargetIndex) {
         ctx.executor.RunWithTextureBackingRetry([&] {
+        RefreshTextureMappings();
         TRACE_EVENT("gpu", "Maxwell3D::DrawTexture");
 
         // DRAW_TEXTURE uses its own texture/sampler IDs, not the shaders or
@@ -625,6 +637,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     void Maxwell3D::Clear(engine::ClearSurface &clearSurface) {
         ctx.executor.RunWithTextureBackingRetry([&] {
+        RefreshTextureMappings();
         auto scissor{GetClearScissor()};
         if (scissor.extent.width == 0 || scissor.extent.height == 0)
             return;
