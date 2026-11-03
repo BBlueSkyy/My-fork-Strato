@@ -89,7 +89,7 @@ namespace skyline::gpu {
                 const bool notPublished{source->gpuReadbackSerial < writeBefore};
                 const auto outcomeNumber{notPublished ? ++overlapDiagnostic.notPublished : ++overlapDiagnostic.published};
                 if (ShouldLogOverlapDiagnostic(outcomeNumber, notPublished ? 64 : 16)) {
-                    const auto *descriptor{source->guest.get()};
+                    const auto *descriptor{source->guest ? &*source->guest : nullptr};
                     LOGI("[SB_TEXDIAG] overlap candidate={} outcome={} outcome_count={} published={} no_readback={} src={} dimensions={}x{}x{} mips={} layers={} host_fmt={} guest_fmt={} layout={} undefined={} format_mismatch={} regional={} stale={} readonly={} was_freed={} dirty_before={} dirty_after={} write_before={} readback_before={} readback_after={}",
                         candidateNumber, notPublished ? "no_readback" : "readback_done", outcomeNumber,
                         overlapDiagnostic.published.load(), overlapDiagnostic.notPublished.load(),
