@@ -118,8 +118,10 @@ namespace skyline::gpu::interconnect {
                                                  Shader::ImageFormat format, bool isWritten,
                                                  CachedMappedBufferView &cachedView,
                                                  vk::PipelineStageFlagBits dstStage,
-                                                 vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        auto *bufferView{textures.GetImageBufferView(ctx, handle.textureIndex, format, cachedView)};
+                                                 vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
+                                                 u64 vertexOrComputeHash, u64 fragmentHash) {
+        auto *bufferView{textures.GetImageBufferView(ctx, handle.textureIndex, format, cachedView,
+                                                      vertexOrComputeHash, fragmentHash, dstStage, isWritten)};
         if (!bufferView)
             return {};
 
