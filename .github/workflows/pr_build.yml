@@ -15,6 +15,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # checkout uses git submodule update --recursive; parallelize its clones.
+      - name: Configure parallel submodule checkout
+        run: git config --global submodule.fetchJobs 8
+
       - name: Git Checkout
         uses: actions/checkout@v4
         with:
