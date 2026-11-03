@@ -68,28 +68,29 @@ namespace skyline::gpu::texture::diagnostic {
             std::vector<Entry> copy;
             {
                 std::lock_guard lock{mutex};
-                // Never wait while holding a capture lock. Preserve data if an
-                // export fails, so the user can retry after the GPU submits.
+                // Verify all record pairs before freezing. The Android export
+                // action may be pressed while the last command is still queued.
                 if (armed || entries.empty()) return false;
+                for (uint64_t op{1}; op <= operations; ++op) {
+                    const Entry *before{}, *after{};
+                    unsigned inputs{};
+                    for (const auto &entry : entries) {
+                        if (entry.info.operation != op) continue;
+                        if (entry.info.role == 1) before = &entry;
+                        if (entry.info.role == 2) after = &entry;
+                        if (entry.info.role >= 3) ++inputs;
+                    }
+                    if (!before || !after || !inputs ||
+                        before->info.image != after->info.image ||
+                        before->info.generation != after->info.generation ||
+                        before->info.size != after->info.size)
+                        return false;
+                }
                 frozen = true;
                 copy = entries;
             }
-            for (uint64_t op{1}; op <= operations; ++op) {
-                const Entry *before{}, *after{};
-                unsigned inputs{};
-                for (const auto &entry : copy) {
-                    if (entry.info.operation != op) continue;
-                    if (entry.info.role == 1) before = &entry;
-                    if (entry.info.role == 2) after = &entry;
-                    if (entry.info.role >= 3) ++inputs;
-                }
-                if (!before || !after || !inputs ||
-                    before->info.image != after->info.image ||
-                    before->info.generation != after->info.generation ||
-                    before->info.size != after->info.size)
-                    return false;
-            }
 
+            // No resource or controller lock is held across GPU fence waits.
             std::vector<std::vector<uint8_t>> payloads;
             payloads.reserve(copy.size());
             for (const auto &entry : copy) {
