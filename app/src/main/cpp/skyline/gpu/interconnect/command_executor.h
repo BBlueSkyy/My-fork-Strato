@@ -257,7 +257,13 @@ namespace skyline::gpu::interconnect {
          */
         // Explicit SpongeBob diagnostic only; no hot-path scan when disarmed.
         bool SbMiniEligible(TextureView *view, bool output) const;
-        void QueueSbMiniImage(TextureView *view, u64 operation, u32 role, const texture::diagnostic::SpongeBobMiniDrawInfo &draw, u32 sampledOrdinal);
+        // A passive, bounded list of draws within the naturally ending pass.
+        u64 sbNaturalPassOperation{};
+        u32 sbNaturalPassDraws{};
+        void EndSbNaturalPass(const char *why);
+        void QueueSbMiniImage(TextureView *view, u64 operation, u32 role,
+            const texture::diagnostic::SpongeBobMiniDrawInfo &draw, u32 sampledOrdinal,
+            bool postNaturalPass = false);
 
         void SubmitInternal();
 
