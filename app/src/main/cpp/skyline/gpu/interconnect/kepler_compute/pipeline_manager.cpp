@@ -236,7 +236,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
                                   return GetImageBufferBinding(ctx, textures, handle, desc.format, desc.is_written,
                                                                texelBufferViews[texelBufferCacheIdx++],
                                                                vk::PipelineStageFlagBits::eComputeShader,
-                                                               srcStageMask, dstStageMask);
+                                                               srcStageMask, dstStageMask,
+                                                               sourcePackedState.shaderHash, 0);
                               });
 
         writeImageDescs(vk::DescriptorType::eCombinedImageSampler, shaderStage.info.texture_descriptors,
