@@ -746,6 +746,10 @@ namespace skyline::gpu::interconnect {
             for (auto *candidate : sbInputs) AttachTexture(candidate);
             sbOperation = gpu.spongeBobMini.Begin();
             if (sbOperation) {
+                LOGI("[SB_MINI] selected operation={} target={} dimensions={}x{} input_count={} format={}",
+                    sbOperation, static_cast<const void *>(sbTarget->texture.get()),
+                    sbTarget->texture->dimensions.width, sbTarget->texture->dimensions.height,
+                    sbInputs.size(), static_cast<int>(sbTarget->texture->format->vkFormat));
                 try {
                     QueueSbMiniImage(sbTarget, sbOperation, 1, false);
                     for (size_t i{}; i < sbInputs.size(); ++i)
