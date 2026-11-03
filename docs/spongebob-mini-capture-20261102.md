@@ -55,6 +55,36 @@ New **scene/HDR preference**: skip passes whose target is *not* R11G11B10 HDR an
 
 **Do not claim that skipped passes are irrelevant to the defect; this is only a capture prioritization heuristic.**
 
+## Candidate writer provenance and truncated image buffers (next build)
+
+The scene/HDR capture has now shown a **1920×1080 RGBA8 render pass with eight draws** that changes the measured 64×64 ROI by exactly a **0.6 RGB multiplier**, preserving alpha. That is consistent with a composition/fade pass, not necessarily the creator of the earlier pink/green/purple scene. The initial image is already colored. A producer trace is preferable to repeatedly capturing this same compositing pass.
+
+### `[SB_PRODUCER]`: prior writer candidates
+
+When the user explicitly arms a capture, the command executor stores **up to 256 potential writer events** for color attachments, storage images and clears. An event includes the target texture identity/generation, first guest memory mapping, pipeline and VS/FS hashes when available, render-pass index, dimensions and format. It does **not** perform GPU readbacks, force submission, change the render pass, or persist while capture is disarmed.
+
+At selection of the next scene/HDR pass, the log prints `[SB_PRODUCER] history_total`, then one `[SB_PRODUCER] role=...` for the target (role 1) and each captured input (roles 3–6). `exact=1` means an identical Texture object plus backing generation; `exact=0` with matching events means the **first** physical guest mapping overlaps, which is only an alias hint. `writerCandidates=0` means **no matching writer was observed in the current bounded, post-arm diagnostic window**, not that no producer exists. `truncated=1` means the first part of the history was overwritten. `latestPipeline`, `latestVS`, `latestFS`, `latestRp` identify a **potential writer**, not a confirmed pixel-changing draw (conditional rendering, scissor, depth/stencil can prevent writes).
+
+The record is reset on every successful re-arm; maintain the `emulation.log` from the entire boot to interpret the sequence. The producer may be a compute operation, a CPU upload, a different alias or a pass before the user armed the capture: this trace does **not** yet cover all those sources and must not be described as a complete resource-dependency graph.
+
+### `[SB_IMAGEBUF]`: image/texel-buffer binding truncation
+
+The earlier log independently contained **16** `Split buffer mappings are not supported` warnings for `Textures::GetImageBufferView()`, with address `0x403FD0000`, requested `0x3FC000` and a smaller first mapped portion `0x200000`. Those warnings by themselves do not connect the buffer to the visible corruption.
+
+Without changing `CachedMappedBufferView::Update()` or its fallback, the new diagnostic prints `[SB_IMAGEBUF]` when **the actual view size is smaller than the requested byte count**, including TIC index, IOVA, shader image format, Vulkan format, pipeline shader hashes, pipeline stage (including compute), read/write access mode, requested bytes, bound bytes and missing bytes. First 24 occurrences and later powers of two are logged. These messages can occur before the manual capture is armed and help identify shader users during loading.
+
+**A short binding does not prove the shader actually reads the missing portion.** No speculative change to mapping length, buffer permissions, GPU dirty state, descriptor contents or the sequencing PR #400 is justified by these warnings alone.
+
+### Recommended next test
+
+1. Install the newly **successful** ARM64 DevRelease build of Draft #421.
+2. Keep Turnip 24.0.99, Free Guest OFF, and do not clear shader cache between boots.
+3. On the last loading screen before the title menu, arm **Capture next scene/HDR pass (recommended)**.
+4. Let the game continue into the corrupted menu. Export one `SBMINI3 .mcap` with the complete `emulation.log`. Capture a screenshot of the title menu.
+5. Repeat on another full boot; compare `SB_PRODUCER`, `SB_IMAGEBUF`, `SB_PASS_DRAW` and target bytes. If the filter never selects a pass, capture in the **unfiltered fallback** mode on a separate boot. Do not keep repeating an unchanged capture blindly.
+
+**What this can establish:** a preceding candidate writer and/or a truncated descriptor used by particular shaders. **What it cannot yet establish:** that either caused corrupted colors. If the data remain inconclusive, the next instrument should follow the exact image's upstream producer across aliases or storage/compute writes rather than modify the renderer speculatively.
+
 ## Code and validation
 
 The changes are exclusively in the existing PR Draft #421. The resource sequencing branch/PR #400 remains unchanged. Never merge on the basis of a diagnostic capture alone.
