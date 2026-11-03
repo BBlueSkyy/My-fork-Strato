@@ -123,11 +123,15 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private fun showSbMiniMenu() {
         MaterialAlertDialogBuilder(this)
             .setTitle("SpongeBob GPU Mini diagnostic")
-            .setItems(arrayOf("Capture next natural render pass", "Export GPU Mini capture")) { _, item ->
-                if (item == 0) {
-                    val armed = nativeSbMini(1, -1)
+            .setItems(arrayOf(
+                "Capture next scene/HDR pass (recommended)",
+                "Capture any render pass (fallback)",
+                "Export GPU Mini capture"
+            )) { _, item ->
+                if (item == 0 || item == 1) {
+                    val armed = nativeSbMini(if (item == 0) 1 else 3, -1)
                     Toast.makeText(this,
-                        if (armed) "Capture armed: leave the title screen visible"
+                        if (armed) "Capture armed: keep the game running"
                         else "Capture unavailable: finish previous capture or restart",
                         Toast.LENGTH_LONG).show()
                 } else {
