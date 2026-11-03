@@ -302,6 +302,11 @@ namespace skyline::gpu::interconnect {
         void CommitTextureWrites(span<TextureView *> writers);
         void PreflightTextureUses(span<TextureView *> reads, span<TextureView *> writers);
 
+        // Passive SpongeBob producer hints for compute and DMA paths.
+        // No allocations or Vulkan recording while the diagnostic is disarmed.
+        void TraceSbComputeWriter(TextureView *view, u64 computeShader, u64 channelSequence);
+        void TraceSbGuestMemoryWriter(span<u8> mapping, u32 kind);
+
         /**
          * @brief Attach the lifetime of a buffer view to the command buffer
          * @return If this is the first usage of the backing of this resource within this execution
@@ -348,7 +353,7 @@ namespace skyline::gpu::interconnect {
 
         using SubpassHookFactory = std::function<SubpassHooks(u32 renderPassIndex)>;
 
-        void AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, SubpassHookFactory hookFactory = {}, span<TextureView *> storageWrites = {}, span<TextureView *> storageReads = {}, const texture::diagnostic::SpongeBobMiniDrawInfo *sbDrawInfo = nullptr);
+        void AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, SubpassHookFactory hookFactory = {}, span<TextureView *> storageWrites = {}, span<TextureView *> storageReads = {}, const texture::diagnostic::SpongeBobMiniDrawInfo *sbDrawInfo = nullptr, u32 sbProducerKind = 0);
 
         /**
          * @brief Adds a subpass that clears the entirety of the specified attachment with a color value, it may utilize VK_ATTACHMENT_LOAD_OP_CLEAR for a more efficient clear when possible
