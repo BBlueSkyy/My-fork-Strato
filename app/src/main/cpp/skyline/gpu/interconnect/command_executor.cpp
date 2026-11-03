@@ -1056,7 +1056,7 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::AddClearDepthStencilSubpass(TextureView *attachment, const vk::ClearDepthStencilValue &value) {
         bool gotoNext{CreateRenderPassWithSubpass(vk::Rect2D{.extent = attachment->texture->dimensions}, {}, {}, {}, attachment)};
         if (gpu.spongeBobMini.Armed())
-            gpu.spongeBobMini.NotePossibleWriter(SbDescribeWriter(attachment, nullptr, renderPassIndex, 3));
+            gpu.spongeBobMini.NotePossibleWriter(SbDescribeWriter(attachment, nullptr, renderPassIndex, 8));
         if (sbNaturalPassOperation) {
             const auto ordinal{++sbNaturalPassDraws};
             if (ordinal <= 128 || (ordinal & (ordinal - 1)) == 0)
