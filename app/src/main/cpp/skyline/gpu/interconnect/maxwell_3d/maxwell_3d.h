@@ -112,7 +112,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         // without refreshing bindings or touching GPU/guest resources.
         texture::diagnostic::SpongeBobMiniDrawInfo MakeSbMiniDrawInfo(
             u32 kind, engine::DrawTopology topology, bool indexed,
-            u32 first, u32 count, u32 instances) const;
+            u32 first, u32 count, u32 instances);
 
         void RefreshRenderCondition();
 
