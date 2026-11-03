@@ -3,16 +3,16 @@
 ## Status
 
 Continuation of Draft #400: initial diagnostic from `de44f1fc`, captured-failure
-follow-up from `c44c1fe0`. Master inspected at `ab2011a4`. All twenty-two
-existing commits, Stage A and B1a are preserved. No B1b/B2, kernel
+follow-up from `c44c1fe0`, then bounded mapping capture at `3a35e970`. All
+twenty-five published commits, Stage A and B1a are preserved. No B1b/B2, kernel
 allocation hook, buffer/image authority unification, shader or workflow change.
 #421 is untouched.
 
-The initial Moto G100 report suggested a B1a regression. The follow-up captured
-log now supports a deterministic **host differential regression**: a lost
-unaffected segment-table tail, exposed by B1a's unchanged-map optimization. The
-production fix below restores that tail. Device crash resolution still requires
-testing; the device's preceding map/unmap sequence was not captured.
+The previous segment-table suffix correction was independently valid, but the
+device crash persisted. The new bounded capture supplies the actual adjacent
+Unmap/remap sequence and the false map-noop. The current correction fixes the
+separate main-block-vector erase endpoint in UnmapLocked, as detailed in the
+final section below. Device acceptance of this correction remains pending.
 
 The supplied `emulation(20261103-205507).log` records SMO **v1.0.0**, no update,
 Turnip **24.0.99 / Vulkan 1.3.280**, and at timestamp 149367904:
@@ -302,3 +302,105 @@ a globally ordered transaction log; only their individual ordering is guaranteed
 Use a single first-crash full log and compare the producer method and earlier
 Map/Unmap data. If this still does not prove causality, stop generating diagnostic
 APKs and consider the controlled B1a rollback before proceeding to Stage C.
+
+
+## Confirmed adjacent-Unmap inconsistency from the new capture
+
+Evidence: `emulation(20261103-233431).log`, collected with `3a35e970`.
+All 23 scoped mapping events fit in the 32-event ring. They show:
+
+1. Nine separate 64-KiB maps from `0x405E00000` through `0x405E80000`.
+   The selector's page becomes resident at map serial 3.
+2. Serial 9 removes `0x405E20000+0x10000`; serial 10 removes
+   `0x405E30000+0x10000`, and the selector becomes nonresident in the fast table.
+3. Removal continues through the remaining chunks. On restoration, serial 16
+   maps the first chunk, but serial 17 reports **map-noop** for
+   `0x405E30000+0x10000` with the same numerical source backing. Alternating
+   subsequent chunks also report map-noop. The selector stays nonresident.
+4. The final Bind fails at revision 5013. Supplied/effective selector and bind
+   words agree (shadow mode 1); submission 24647/backing retries 1540 remain
+   unchanged across the final method writes; GPU-dirty CBUF retries are zero.
+   Neither a changed macro argument nor an immediate new submission is required
+   to explain the failure.
+
+### Erase endpoint
+
+In `FlatAddressSpaceMap::UnmapLocked`, when the preceding block is already
+unmapped, every overwritten block must be removed **up to but excluding
+blockEndSuccessor**, which is the preserved end boundary or split tail.
+
+For the captured second Unmap, both blockStartSuccessor and blockEndPredecessor
+point at the block being removed (`0x405E30000`). The old
+`erase(blockStartSuccessor, blockEndPredecessor)` is the empty `[B,B)` range.
+It leaves B mapped in the main vector while the wrapper correctly clears B's
+fast-table entries. SameMappingLocked then sees the ghost association and the
+later Map incorrectly returns map-noop without restoring the fast table.
+
+The correction uses **`erase(blockStartSuccessor, blockEndSuccessor)`**. B is
+removed, its mapped successor remains intact, the later Map is a real mutation,
+the new receipt has a new generation, and the selector's actual bytes are
+accessible again. A subsequent genuinely unchanged Map still emits no mutation
+or callback. No compensating full remap, exception suppression or fabricated
+buffer is introduced.
+
+This replay uses the actual captured scoped sequence, unlike the earlier
+hypothetical segment-demotion counterexample. The earlier L2/L1 ratio correction
+is preserved; it did not address this independent main-vector inconsistency.
+
+### Valid empty erases and boundary coverage
+
+Expanded overlap testing exposed a second false check in the same Unmap helper:
+map eight pages, remove pages `[3,5)`, then remove `[2,5)`. This only moves an
+existing hole's beginning left. Its erase range is legitimately empty, but the
+old equality check threw `Multiple contiguous unmapped regions are unsupported!`.
+The guard now tests actual adjacent holes, retaining that invariant while allowing
+this valid operation. A dedicated before/after test covers dense and sparse
+prefixes and unchanged head/tail generation receipts.
+
+The former exploratory mixed-hole Unmap rejection is now represented by this
+minimal regression and a full 1,024-operation GMMU Map/Unmap/sparse oracle. It is
+no longer excluded from randomized main-vector/fast-table checking. The oracle
+also verifies sorted boundaries, no adjacent null blocks and independent bytes
+on every resident page after every operation. Callback counts/arguments are
+checked for both minimal cases; no-op maps cause no callback.
+
+### Content and preserved behavior
+
+The new Vulkan adjacency mode executes separate maps, both adjacent Unmaps and
+restoration before consuming the captured selector. It verifies independently
+computed image bytes, GPU writes, guest publication, exclusive bytes, stable
+subsequent no-op generations and valid image reuse. Both this case and the older
+segment-demotion regression run with FreeGuest OFF/ON and format-list OFF/ON.
+
+Host GMMU facades now extract the existing diagnostic structures/probe/history
+methods from the real header, and executor facades contain its diagnostic scalar
+counters. These adaptations preserve the already-published `3a35e970` capture;
+they do not stub out new instrumentation or change production map semantics.
+The sole production file changed by this correction is `common/address_space.inc`.
+
+No new waits, lock acquisitions, scans, per-draw allocations, image rebuilds,
+workflow changes, Stage C support or #421 changes. Erasing the correct vector
+range has the original container cost and removes stale block metadata; no phone
+FPS or memory measurement is claimed. Full sparse image sequencing and physical
+allocation lifetime identity remain outside this fix. The unchanged ARM64
+DevRelease workflow is requested once after the validated branch update; no
+Actions monitoring or additional diagnostic build is requested.
+
+Final adjacent-Unmap verification before publication:
+
+| Gate | Result |
+|---|---|
+| Captured sequence before fix | Expected FAIL: selector's ghost mapping survives in the main vector |
+| Hole-extension case before guard fix | Expected FAIL: valid empty erase incorrectly throws |
+| Current real GMMU/segment suite | PASS, ASan/UBSan: exact sequence, dense/sparse overlap, 1,024 main/fast page-oracle mutations, retained receipts, callback counts/arguments, sorted/canonical boundaries and 512 raw-table mutations |
+| Selector/MME fixture and identity integration | PASS, ASan/UBSan, including actual retained diagnostic methods |
+| Real Vulkan adjacency and prior segment-tail cases | PASS, FreeGuest OFF/ON × format-list OFF/ON; independent bytes and exclusive guest bytes |
+| Authority probe with ASan/UBSan | PASS; A→B→A 0/1024 in all modes, pending consumers, P→Q→P, cache/RT/pool, cancellation/retry and publication checks preserved |
+| Full backing promotion; both lock probes | PASS, zero Vulkan validation errors |
+| Mapping identity/snapshot limits, residency, texture sequence, submission, storage preflight, sampled layout, overlap materialization, framebuffer cache, pushbuffer sequence | PASS |
+
+Independent review found no blocking correctness, iterator, sparse, callback or
+fixture issue and repeated the segment suite successfully. Device confirmation
+is still required; the build request is for one corrected functional ARM64
+DevRelease candidate, not another diagnostic experiment. All 25 preceding
+commits and the #421 separation remain intact.
