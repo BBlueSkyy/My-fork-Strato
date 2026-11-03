@@ -111,6 +111,7 @@ namespace skyline::gpu {
         };
     }
 
+    inline std::function<void()> verifyRegionalWait;
     struct FenceCycle {
         const vk::raii::Device &device;
         vk::raii::Fence fence;
@@ -122,8 +123,9 @@ namespace skyline::gpu {
         static inline bool failAttachment{};
         FenceCycle(const vk::raii::Device &device, vk::raii::CommandBuffer &&commands)
             : device{device}, fence{device, vk::FenceCreateInfo{}}, commands{std::move(commands)} {}
-        void WaitSubmit() { ++submitWaits; assert(submitted); }
+        void WaitSubmit() { if (verifyRegionalWait) verifyRegionalWait(); ++submitWaits; assert(submitted); }
         void Wait(bool destroy = false) {
+            if (verifyRegionalWait) verifyRegionalWait();
             if (cancelled) return;
             assert(submitted);
             ++gpuWaits;
@@ -299,6 +301,7 @@ namespace skyline::gpu {
     struct UsageTracker { struct Intervals { unsigned count{}; void Insert(span<u8>) { ++count; } } dirtyIntervals; };
     struct TextureView;
     struct GuestTexture {
+        bool mappingsResident{true};
         NativeFormat *format{};
         vk::Extent3D dimensions{128, 128, 1};
         u32 baseArrayLayer{}, mipLevelCount{3}, layerStride{90112};
@@ -313,7 +316,7 @@ namespace skyline::gpu {
         using Mappings = std::vector<span<u8>>;
         Mappings mappings;
         bool MappingsValid() const {
-            return std::all_of(mappings.begin(), mappings.end(), [](const auto &mapping) { return mapping.valid(); });
+            return mappingsResident && std::all_of(mappings.begin(), mappings.end(), [](const auto &mapping) { return mapping.valid(); });
         }
         vk::ImageType GetImageType() const {
             if (viewType==vk::ImageViewType::e3D || dimensions.depth>1) return vk::ImageType::e3D;
@@ -365,6 +368,11 @@ namespace skyline::gpu {
         using Guest = GuestTexture;
         std::optional<Guest> guest{Guest{}};
         Texture(GPU &gpu, Guest value) : Texture(gpu,value.format->vkFormat,value.dimensions,value.mipLevelCount,value.layerCount) {
+            mipLayouts = texture::GetBlockLinearMipLayout(value.dimensions,value.format->blockHeight,value.format->blockWidth,value.format->bpb,
+                value.format->blockHeight,value.format->blockWidth,value.format->bpb,
+                value.tileConfig.blockHeight,value.tileConfig.blockDepth,value.mipLevelCount,value.tileConfig.tileWidthSpacing);
+            surfaceSize = deswizzledSurfaceSize = CalculateLevelStride(mipLayouts) * value.layerCount;
+            layerStride = deswizzledLayerStride = mipLayouts.front().linearSize;
             guest=std::move(value);
             format=guest->format;
             dirtyState=DirtyState::CpuDirty;
@@ -409,7 +417,7 @@ namespace skyline::gpu {
         std::atomic<bool> regionTracked{}, regionStale{};
         std::vector<texture::PhysicalImageBinding> regionBindings;
         std::vector<std::weak_ptr<Texture>> regionNeighbors;
-        static std::vector<texture::PhysicalImageSpan> PhysicalImageSpans(const GuestTexture &value);
+        static std::vector<texture::PhysicalImageSpan> PhysicalImageSpans(const GuestTexture &value, bool gobGranularity = false);
         static bool CanDiscardGuest(const GuestTexture &, size_t);
         static bool RegisterRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
         static void DrainRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
@@ -419,7 +427,7 @@ namespace skyline::gpu {
         bool NeedsRegionReadback() const;
         void PublishRegionGuest(span<const u8> encoded);
         void ReleaseRegionHost();
-        void RecordRegionUpload();
+        void RecordRegionUpload(span<const uint64_t> guestVersions = {});
         bool HasAliases() const { return regionTracked.load(std::memory_order_relaxed) || static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const Guest &) const;
         static bool CanMaterializeGuestLayout(const GuestTexture &);
@@ -456,6 +464,7 @@ namespace skyline::gpu {
             guest->dimensions = extent;
             guest->layerCount = layers;
             guest->mipLevelCount = levels;
+            if (extent.depth > 1) backingImageType = vk::ImageType::e3D;
             if (extent.width == extent.height && layers >= 6) flags |= vk::ImageCreateFlagBits::eCubeCompatible;
             mipLayouts = texture::GetBlockLinearMipLayout(extent, 1, 1, 4, 1, 1, 4, 1, 1, levels);
             surfaceSize = deswizzledSurfaceSize = CalculateLevelStride(mipLayouts) * layers;
@@ -464,7 +473,7 @@ namespace skyline::gpu {
             if (gpu.vkPhysicalDevice.getFormatProperties(native).optimalTilingFeatures & vk::FormatFeatureFlagBits::eStorageImage)
                 usage |= vk::ImageUsageFlagBits::eStorage;
             backing.emplace<memory::Image>(gpu.memory.AllocateImage(vk::ImageCreateInfo{
-                .flags = flags, .imageType = vk::ImageType::e2D, .format = native, .extent = dimensions,
+                .flags = flags, .imageType = backingImageType, .format = native, .extent = dimensions,
                 .mipLevels = levelCount, .arrayLayers = layerCount, .samples = sampleCount,
                 .tiling = tiling, .usage = usage,
             }));
@@ -1487,6 +1496,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(!old->texture->CanReconcileGuestLayout(different));
         assert(current->texture->CanReconcileGuestLayout(different));
         const auto before{bytes};
+        const auto historicalState{old->texture->dirtyState};
         std::shared_ptr<TextureView> next;
         bool rejected{};
         unsigned registrations{};
@@ -1501,7 +1511,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         if (authoritative && !writerReadBack) {
             assert(rejected && !next && bytes==before);
             assert(!old->texture->aliasStale && !old->texture->replaced);
-            assert(old->texture->dirtyState==(skippedReadback && !alreadyGrouped ? Texture::DirtyState::Clean : Texture::DirtyState::GpuDirty));
+            assert(old->texture->dirtyState==historicalState); // Rejected lookup cannot mutate either regional or exact-alias history.
         } else {
             assert(!rejected && next && registrations==static_cast<unsigned>(executorContext) && bytes==expected);
             assert(old->texture->aliasStale && old->texture->replaced);
@@ -2093,7 +2103,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         WriteAliasRenderTarget(b->texture,{0,1,0,1}); AliasRead(a->texture);
         auto group{a->texture->regionAuthority.load()};
         const auto backing{a->texture->GetBacking()}; const auto view{a->GetView()};
-        auto requested{PartialDescriptor(bytes.data()+5120)}; // Requires drain, not a row-compatible copy.
+        auto requested{PartialDescriptor(bytes.data()+4352)}; // Partial-GOB boundary still requires drain.
         a->lockOnAttach=true;
         interconnect::CommandExecutor executor;
         auto release=[&] {
@@ -2328,7 +2338,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         WriteAliasRenderTarget(b->texture,{0,1,0,1});
         const auto native{a->GetView()};
         const auto epoch{texture::regionInvalidationSequence.load()};
-        auto incompatible{manager.FindOrCreate(PartialDescriptor(bytes.data()+5120))}; // Mid-row origin has no direct row correspondence.
+        auto incompatible{manager.FindOrCreate(PartialDescriptor(bytes.data()+4352))}; // Partial-GOB origin has no direct copy correspondence.
         assert(incompatible && !a->texture->regionTracked && !b->texture->regionTracked);
         assert(texture::regionInvalidationSequence.load()>epoch);
         assert(a->texture->dirtyState==Texture::DirtyState::CpuDirty && b->texture->dirtyState==Texture::DirtyState::CpuDirty);
@@ -2382,6 +2392,258 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(a->texture->levelCount==2 && a->texture->layerCount==2 && a->range==range && a->GetView()==view);
         gpu.scheduler.Complete(); assert(!validationErrors);
         std::puts("PASS: dense mip/layer physical regions use matching subresources and preserve retained views");
+    }
+
+    // Independent byte-address oracle; no production swizzle/footprint helper.
+    size_t RegionAddress(size_t x, size_t y, size_t z, size_t width, size_t height,
+                         size_t blockHeight, size_t spacing) {
+        size_t columns{(width * 4 + 63) / 64};
+        const size_t alignment{size_t{1} << spacing};
+        if (spacing && columns > alignment && height > 8 * blockHeight)
+            columns = (columns + alignment - 1) / alignment * alignment;
+        const size_t blockRows{(height + blockHeight * 8 - 1) / (blockHeight * 8)};
+        const size_t gob{((z * blockRows + y / (8 * blockHeight)) * columns + x / 64) * blockHeight + (y / 8) % blockHeight};
+        return gob * 512 + ((x & 32) << 3) + ((y & 6) << 5) + ((x & 16) << 1) + ((y & 1) << 4) + (x & 15);
+    }
+    template<class Visit> void VisitRegionBytes(const GuestTexture &desc, Visit visit) {
+        size_t width{desc.dimensions.width},height{desc.dimensions.height},depth{desc.dimensions.depth};
+        size_t blockHeight{desc.tileConfig.blockHeight},levelOffset{},packed{};
+        for(size_t level{};level<desc.mipLevelCount;++level) {
+            size_t columns{(width*4+63)/64},alignment{size_t{1}<<desc.tileConfig.tileWidthSpacing};
+            if(desc.tileConfig.tileWidthSpacing && columns>alignment && height>8*desc.tileConfig.blockHeight)
+                columns=(columns+alignment-1)/alignment*alignment;
+            for(size_t layer{};layer<desc.layerCount;++layer)
+                for(size_t z{};z<depth;++z) for(size_t y{};y<height;++y) for(size_t x{};x<width*4;++x) {
+                    const auto physical{layer*desc.layerStride+levelOffset+RegionAddress(x,y,z,width,height,blockHeight,
+                        columns == (width*4+63)/64 ? 0 : desc.tileConfig.tileWidthSpacing)};
+                    const auto linear{packed+(((layer*depth+z)*height+y)*width*4+x)};
+                    visit(physical,linear);
+                }
+            packed+=width*height*depth*4*desc.layerCount;
+            levelOffset+=columns*((height+blockHeight*8-1)/(blockHeight*8))*blockHeight*512*depth;
+            width=std::max(size_t{1},width/2);height=std::max(size_t{1},height/2);depth=std::max(size_t{1},depth/2);
+            blockHeight=std::min(blockHeight,std::bit_ceil((height+7)/8));
+        }
+    }
+    void CheckExpandedRegionLayout(GPU &gpu, bool eviction, bool volume, bool spacing, bool mips, int variant = 0) {
+        *gpu.state.settings->freeGuestTextureMemory=eviction;
+        std::vector<u8> bytes(192*1024,0x2D),reference{bytes}; TextureManager manager{gpu};
+        auto da{PartialDescriptor(bytes.data()+4096)};
+        da.dimensions=vk::Extent3D{spacing ? 80U : 32U,spacing ? 24U : 32U,volume ? 4U : 1U};
+        da.viewType=volume ? vk::ImageViewType::e3D : vk::ImageViewType::e2DArray;
+        da.layerCount=volume ? 1 : 2;
+        da.mipLevelCount=da.viewMipCount=mips ? 2 : 1;
+        da.tileConfig.blockHeight=4; da.tileConfig.tileWidthSpacing=spacing ? 2 : 0;
+        da.layerStride=32768;
+        da.mappings={{bytes.data()+4096,da.layerStride*da.layerCount}};
+        auto db{da};db.tileConfig.blockHeight=2;
+        if (variant == 1) db.tileConfig.blockHeight=da.tileConfig.blockHeight;
+        if (variant == 2) { db.dimensions=vk::Extent3D{64,16,1}; db.layerCount=1; db.viewType=vk::ImageViewType::e2D; }
+        if (variant == 3) { db.dimensions.depth=1; db.layerCount=4; db.viewType=vk::ImageViewType::e2DArray; }
+        db.mappings={{bytes.data()+4608,db.layerStride*db.layerCount}};
+        auto a{manager.FindOrCreate(da)},b{manager.FindOrCreate(db)};
+        assert(a->texture->regionTracked && b->texture->regionTracked);
+        auto paint=[&](const auto &view,const auto &desc,size_t base,u8 seed) {
+            AliasRead(view->texture);std::scoped_lock lock{*view->texture};view->texture->RecordGpuWrite();
+            auto staging{gpu.memory.AllocateStagingBuffer(view->texture->surfaceSize)};
+            VisitRegionBytes(desc,[&](size_t physical,size_t linear) {
+                const auto value{static_cast<u8>((seed+linear*13+linear/37)%251)};
+                staging->data()[linear]=value;reference[base+physical]=value;
+            });
+            const auto previous{view->texture->cycle};
+            auto cycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &cmd) { view->texture->CopyFromStagingBuffer(cmd,staging); })};
+            cycle->AttachObjects(view->texture,staging);cycle->ChainCycle(previous);view->texture->cycle=cycle;
+        };
+        auto check=[&](const auto &view,const auto &desc,size_t base) {
+            AliasRead(view->texture);
+            auto staging{gpu.memory.AllocateStagingBuffer(view->texture->surfaceSize)};
+            auto cycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &cmd) { view->texture->CopyIntoStagingBuffer(cmd,staging); })};
+            cycle->AttachObjects(view->texture,staging);cycle->Wait(true);
+            VisitRegionBytes(desc,[&](size_t physical,size_t linear) { assert(staging->data()[linear]==reference[base+physical]); });
+        };
+        paint(a,da,4096,17);
+        paint(b,db,4608,31);
+        // A failed regional copy cannot commit resident versions or replace cycles.
+        for(int fault{};fault<3;++fault) {
+            const auto oldCycle{a->texture->cycle};
+            gpu.scheduler.failRecording=fault==0;FenceCycle::failAttachment=fault==1;gpu.scheduler.failSubmit=fault==2;
+            bool failed{};try { AliasRead(a->texture); } catch(const std::exception &) { failed=true; }
+            gpu.scheduler.failRecording=FenceCycle::failAttachment=gpu.scheduler.failSubmit=false;
+            assert(failed && a->texture->regionStale && a->texture->cycle==oldCycle);
+        }
+        check(a,da,4096);
+        const auto submissions{gpu.scheduler.submissions}; AliasRead(a->texture);
+        assert(submissions==gpu.scheduler.submissions);
+        // A stays GPU dirty in its exclusive cells while B's CPU callback
+        // publishes/relinquishes its rows. Repair must upload only guest cells
+        // using the full packed mip's row stride and this GOB's x/y/z.
+        const auto callback{gpu.state.process->trap.callbacks[*b->texture->trapHandle]};
+        callback.prepare();
+        { std::scoped_lock lock{gpu.state.process->trap.mutex};assert(callback.write()); }
+        std::vector<bool> aBytes(bytes.size());
+        VisitRegionBytes(da,[&](size_t physical,size_t) { aBytes[4096+physical]=true; });
+        bool changed{};
+        VisitRegionBytes(db,[&](size_t physical,size_t) {
+            if (!changed && aBytes[4608+physical]) { bytes[4608+physical]=reference[4608+physical]=0x73;changed=true; }
+        });
+        assert(changed);check(a,da,4096);check(b,db,4608);
+        paint(a,da,4096,47);check(b,db,4608);
+        { std::scoped_lock lock{*a->texture};a->texture->SynchronizeGuest(false,true); }
+        { std::scoped_lock lock{*b->texture};b->texture->SynchronizeGuest(false,true); }
+        assert(bytes==reference); // Includes padding, exclusive bytes and unused tails.
+        assert(!a->texture->memoryFreed && !b->texture->memoryFreed);
+        *gpu.state.settings->freeGuestTextureMemory=false;
+        gpu.scheduler.Complete();assert(!validationErrors);
+        std::printf("PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=%d spacing=%d mips=%d FreeGuest=%d)\n",volume,spacing,mips,eviction);
+    }
+    void CheckExpandedRegionLayouts(GPU &gpu) {
+        for(bool eviction : {false,true})
+            for(bool volume : {false,true})
+                for(bool mips : {false,true}) CheckExpandedRegionLayout(gpu,eviction,volume,false,mips);
+        for(bool eviction : {false,true}) {
+            CheckExpandedRegionLayout(gpu,eviction,false,true,false);
+            CheckExpandedRegionLayout(gpu,eviction,false,false,false,1);
+            CheckExpandedRegionLayout(gpu,eviction,false,false,false,2);
+            CheckExpandedRegionLayout(gpu,eviction,true,false,false,3);
+        }
+    }
+
+    void CheckRegionWriterDuringTransfer(GPU &gpu) {
+        std::vector<u8> bytes(6*4096,0x2D);TextureManager manager{gpu};
+        auto a{manager.FindOrCreate(PartialDescriptor(bytes.data()+4096))};
+        auto target{manager.FindOrCreate(PartialDescriptor(bytes.data()+8192))};
+        auto c{manager.FindOrCreate(PartialDescriptor(bytes.data()+12288))};
+        AliasRead(c->texture);ClearAllRegionMips(a->texture,{1,0,0,1});
+        AliasRead(c->texture); // C is a valid guest-owned peer, absent from donor locks.
+        bool changed{};
+        verifyRegionalWait=[&] {
+            if (changed) return;changed=true;
+            ClearAllRegionMips(c->texture,{0,0,1,1});
+        };
+        AliasRead(target->texture);verifyRegionalWait={};assert(changed);
+        const auto data{DownloadPartial(target->texture)};
+        const std::array<u8,4> red{255,0,0,255},blue{0,0,255,255};
+        for(size_t i{};i<8192;++i) assert(data[i]==(i<4096 ? red[i%4] : blue[i%4]));
+        gpu.scheduler.Complete();assert(!validationErrors);
+        std::puts("PASS: new peer writer during unlocked transfer is retried; resident versions name actual copied bytes");
+    }
+
+    void CheckRegionFootprintBounds(GPU &gpu) {
+        std::vector<u8> bytes(3*1024*1024,0x2D);
+        auto valid{PartialDescriptor(bytes.data())};
+        assert(!Texture::PhysicalImageSpans(valid,true).empty());
+        auto invalid{valid};invalid.mappingsResident=false;
+        assert(Texture::PhysicalImageSpans(invalid,true).empty());
+        TextureManager manager{gpu};bool rejected{};const auto allocations{gpu.memory.count};
+        try { manager.FindOrCreate(invalid); } catch(const std::exception &) { rejected=true; }
+        assert(rejected && gpu.memory.count==allocations);
+        invalid=valid;invalid.tileConfig.blockDepth=2;
+        assert(Texture::PhysicalImageSpans(invalid,true).empty());
+        invalid=valid;invalid.dimensions.width=31;
+        assert(Texture::PhysicalImageSpans(invalid,true).empty());
+        invalid=valid;invalid.mappings={{bytes.data(),256},{bytes.data()+256,7936}};
+        assert(Texture::PhysicalImageSpans(invalid,true).empty());
+        invalid=valid;invalid.mappings={{bytes.data(),4096},{bytes.data(),4096}};
+        assert(Texture::PhysicalImageSpans(invalid,true).empty());
+        valid.dimensions=vk::Extent3D{1024,512,1};valid.layerStride=2*1024*1024;
+        valid.mappings={{bytes.data(),2*1024*1024}};
+        assert(Texture::PhysicalImageSpans(valid,true).size()==4096);
+        invalid=valid;invalid.dimensions.width=1040;invalid.layerStride=3*1024*1024;invalid.mappings={{bytes.data(),bytes.size()}};
+        assert(Texture::PhysicalImageSpans(invalid,true).empty());
+        auto a{manager.FindOrCreate(valid)};
+        auto db{valid};db.tileConfig.blockHeight=2;db.mappings={{bytes.data()+512,2*1024*1024}};
+        auto b{manager.FindOrCreate(db)};
+        auto dc{valid};dc.tileConfig.blockHeight=4;dc.mappings={{bytes.data()+1024,2*1024*1024}};
+        const auto start{std::chrono::steady_clock::now()};auto c{manager.FindOrCreate(dc)};
+        assert(a->texture->regionAuthority.load()==c->texture->regionAuthority.load());
+        assert(a->texture->regionBindings.size()==4096 && b->texture->regionBindings.size()==4096 && c->texture->regionBindings.size()==4096);
+        const auto elapsed{std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-start).count()};
+        gpu.scheduler.Complete();assert(!validationErrors);
+        std::printf("PASS: resident proof, partial-GOB/Z/self-alias rejection, 4096-GOB bound and connected component extension (%lld ms)\n",static_cast<long long>(elapsed));
+    }
+
+    void CheckCompressedRegionUpload(GPU &gpu) {
+        NativeFormat bc1{vk::Format::eBc1RgbaUnormBlock,vk::ImageAspectFlagBits::eColor,4,4,8};
+        std::vector<u8> bytes(8192,0x2D),reference{bytes};TextureManager manager{gpu};
+        auto da{PartialDescriptor(bytes.data()+4096)};
+        da.format=&bc1;da.dimensions=vk::Extent3D{29,64,1};da.layerStride=1024;da.mappings={{bytes.data()+4096,1024}};
+        auto db{da};db.mappings={{bytes.data()+4608,1024}};
+        auto a{manager.FindOrCreate(da)},b{manager.FindOrCreate(db)};
+        assert(a->texture->regionTracked && b->texture->regionTracked);
+        auto paint=[&](const auto &view,size_t base,u8 seed) {
+            AliasRead(view->texture);std::scoped_lock lock{*view->texture};view->texture->RecordGpuWrite();
+            auto staging{gpu.memory.AllocateStagingBuffer(1024)};
+            for(size_t y{};y<16;++y) for(size_t x{};x<64;++x) {
+                const auto value{static_cast<u8>(seed+x*3+y*17)};
+                staging->data()[y*64+x]=value;
+                reference[base+RegionAddress(x,y,0,16,16,1,0)]=value;
+            }
+            const auto previous{view->texture->cycle};
+            auto cycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &cmd) { view->texture->CopyFromStagingBuffer(cmd,staging); })};
+            cycle->AttachObjects(view->texture,staging);cycle->ChainCycle(previous);view->texture->cycle=cycle;
+        };
+        auto check=[&](const auto &view,size_t base) {
+            AliasRead(view->texture);auto staging{gpu.memory.AllocateStagingBuffer(1024)};
+            auto cycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &cmd) { view->texture->CopyIntoStagingBuffer(cmd,staging); })};
+            cycle->AttachObjects(view->texture,staging);cycle->Wait(true);
+            for(size_t y{};y<16;++y) for(size_t x{};x<64;++x)
+                assert(staging->data()[y*64+x]==reference[base+RegionAddress(x,y,0,16,16,1,0)]);
+        };
+        paint(a,4096,17);paint(b,4608,29);check(a,4096);
+        const auto callback{gpu.state.process->trap.callbacks[*b->texture->trapHandle]};callback.prepare();
+        { std::scoped_lock lock{gpu.state.process->trap.mutex};assert(callback.write()); }
+        bytes[4608]=reference[4608]=0x71;check(a,4096);check(b,4608);
+        paint(a,4096,31);check(b,4608);
+        { std::scoped_lock lock{*a->texture};a->texture->SynchronizeGuest(false,true); }
+        { std::scoped_lock lock{*b->texture};b->texture->SynchronizeGuest(false,true); }
+        assert(bytes==reference);gpu.scheduler.Complete();assert(!validationErrors);
+        std::puts("PASS: native BC1 29x64 partial-block-width regional CPU uploads and alternating GPU bytes");
+    }
+
+    void CheckRegionTrapPreparation(GPU &gpu) {
+        std::vector<u8> bytes(5*4096,0x2D);TextureManager manager{gpu};
+        auto a{manager.FindOrCreate(PartialDescriptor(bytes.data()+4096))};
+        auto b{manager.FindOrCreate(PartialDescriptor(bytes.data()+8192))};
+        ClearAllRegionMips(a->texture,{1,0,0,1});
+        const auto callback{gpu.state.process->trap.callbacks[*a->texture->trapHandle]};
+        callback.prepare();
+        assert(a->texture->dirtyState==Texture::DirtyState::Clean);
+        assert(bytes[4096]==255 && bytes[4097]==0 && bytes[4099]==255);
+        // A new producer after preparation must cause a nonblocking retry under
+        // trapMutex, even if its fence has already completed. No readback there.
+        ClearAllRegionMips(a->texture,{0,0,1,1});
+        a->texture->cycle->Wait();a->texture->cycle.reset();
+        const auto submissions{gpu.scheduler.submissions};
+        { std::scoped_lock lock{gpu.state.process->trap.mutex};assert(!callback.write()); }
+        assert(gpu.scheduler.submissions==submissions);
+        callback.prepare();
+        { std::scoped_lock lock{gpu.state.process->trap.mutex};assert(callback.write()); }
+        assert(bytes[4096]==0 && bytes[4098]==255);
+        gpu.scheduler.Complete();assert(!validationErrors);
+        std::puts("PASS: regional trap readback occurs outside trapMutex; a later producer forces nonblocking retry");
+    }
+
+    void CheckRegionWaitLocks(GPU &gpu) {
+        std::vector<u8> bytes(5*4096,0x2D);TextureManager manager{gpu};
+        auto a{manager.FindOrCreate(PartialDescriptor(bytes.data()+4096))};
+        auto b{manager.FindOrCreate(PartialDescriptor(bytes.data()+8192))};
+        ClearAllRegionMips(a->texture,{1,0,0,1});ClearAllRegionMips(b->texture,{0,1,0,1});
+        const auto group{a->texture->regionAuthority.load()};unsigned checked{};
+        verifyRegionalWait=[&] {
+            auto available{std::async(std::launch::async,[&] {
+                std::unique_lock lock{group->mutex,std::try_to_lock};return lock.owns_lock();
+            })};
+            assert(available.get());++checked;
+        };
+        AliasRead(a->texture);
+        { std::scoped_lock lock{*a->texture};a->texture->SynchronizeGuest(false,true); }
+        const auto callback{gpu.state.process->trap.callbacks[*b->texture->trapHandle]};
+        callback.prepare();
+        { std::scoped_lock lock{gpu.state.process->trap.mutex};assert(callback.write()); }
+        AliasRead(b->texture);
+        verifyRegionalWait={};assert(checked>0);
+        gpu.scheduler.Complete();assert(!validationErrors);
+        std::puts("PASS: regional reconciliation, CPU callbacks and upload/readback release metadata before GPU waits");
     }
 
     void CheckRegionOperationBoundary(GPU &gpu) {
@@ -2649,6 +2911,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
 
 int main() {
     using namespace skyline::gpu;
+    std::setvbuf(stdout,nullptr,_IOLBF,0);
     vk::raii::Context context;
     const char *layer{"VK_LAYER_KHRONOS_validation"};
     const char *instanceExtensions[]{VK_EXT_DEBUG_UTILS_EXTENSION_NAME, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME};
@@ -2675,6 +2938,9 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_BC_PROBE")) { CheckRegionFootprintBounds(gpu); CheckCompressedRegionUpload(gpu); continue; }
+            if (std::getenv("TEXMAN_WAIT_PROBE")) { CheckRegionTrapPreparation(gpu); CheckRegionWaitLocks(gpu); CheckRegionWriterDuringTransfer(gpu); continue; }
+            if (std::getenv("TEXMAN_LAYOUT_PROBE")) { CheckExpandedRegionLayouts(gpu); continue; }
             if (std::getenv("TEXMAN_COLD_LOOKUP_PROBE")) {
                 CheckColdRegionLookups(gpu);
                 continue;
@@ -2690,6 +2956,12 @@ int main() {
                 for (bool eviction : {false,true}) for (bool reverse : {false,true}) CheckRegionCpuCallbacks(gpu,eviction,reverse);
                 CheckRegionIncompatibleDrain(gpu);
                 CheckRegionMipLayers(gpu);
+                CheckExpandedRegionLayouts(gpu);
+                CheckRegionFootprintBounds(gpu);
+                CheckCompressedRegionUpload(gpu);
+                CheckRegionTrapPreparation(gpu);
+                CheckRegionWaitLocks(gpu);
+                CheckRegionWriterDuringTransfer(gpu);
                 CheckRegionOperationBoundary(gpu);
                 CheckShortRegionPublication(gpu);
                 CheckPreparedRegionRead(gpu);
@@ -2735,7 +3007,8 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
-    if (std::getenv("TEXMAN_AUTHORITY_PROBE") || std::getenv("TEXMAN_LOCK_ORDER_PROBE")) return 0;
+    if (std::getenv("TEXMAN_AUTHORITY_PROBE") || std::getenv("TEXMAN_LOCK_ORDER_PROBE") ||
+        std::getenv("TEXMAN_LAYOUT_PROBE") || std::getenv("TEXMAN_WAIT_PROBE") || std::getenv("TEXMAN_BC_PROBE")) return 0;
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;

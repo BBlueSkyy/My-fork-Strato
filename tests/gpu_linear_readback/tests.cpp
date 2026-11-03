@@ -34,7 +34,7 @@ namespace texture {
 }
 struct Level {
     texture::Dimensions dimensions;
-    std::size_t linearSize{};
+    std::size_t linearSize{}, blockLinearSize{};
     u32 blockHeight{}, blockDepth{}, tileWidthSpacing{};
 };
 struct Texture {

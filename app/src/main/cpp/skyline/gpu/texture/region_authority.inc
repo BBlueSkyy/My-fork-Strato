@@ -1,37 +1,75 @@
 // SPDX-License-Identifier: MPL-2.0
 // Included in texture.cpp inside skyline::gpu; kept separate from image/view code.
 
-    std::vector<texture::PhysicalImageSpan> Texture::PhysicalImageSpans(const GuestTexture &value) {
-        if (!IsGuestLayoutReversible(value) || !value.MappingsValid()) return {};
+    std::vector<texture::PhysicalImageSpan> Texture::PhysicalImageSpans(const GuestTexture &value, bool gobGranularity) {
+        // Exact-alias eligibility deliberately remains separate. Planar 3D has
+        // an invertible encoder too, but never infer interleaved Z from 2D rows.
+        if (!CanMaterializeGuestLayout(value) || !value.MappingsValid() ||
+            (value.GetImageType() != vk::ImageType::e2D && value.GetImageType() != vk::ImageType::e3D) ||
+            value.tileConfig.mode != texture::TileMode::Block || value.tileConfig.blockDepth != 1) return {};
         const auto levels{texture::GetBlockLinearMipLayout(value.dimensions,
             value.format->blockHeight, value.format->blockWidth, value.format->bpb,
             value.format->blockHeight, value.format->blockWidth, value.format->bpb,
             value.tileConfig.blockHeight, 1, value.mipLevelCount, value.tileConfig.tileWidthSpacing)};
         const size_t stride{value.layerStride ? value.layerStride : value.CalculateLayerSize()};
         std::vector<texture::PhysicalImageSpan> spans;
+        auto append = [&](size_t offset, size_t size, size_t rowBytes, u32 level, u32 layer,
+                          u32 x, u32 y, u32 z, u32 width, u32 rowHeight) {
+            size_t mappingOffset{}, covered{};
+            for (const auto &mapping : value.mappings) {
+                const size_t first{std::max(mappingOffset, offset)};
+                const size_t last{std::min(mappingOffset + mapping.size(), offset + size)};
+                if (first < last) {
+                    if ((first - offset) % rowBytes || (last - first) % rowBytes) return false;
+                    const auto begin{reinterpret_cast<uintptr_t>(mapping.data()) + first - mappingOffset};
+                    if (last - first > UINTPTR_MAX - begin) return false;
+                    spans.push_back({begin, begin + last - first, first, rowBytes, level, layer,
+                        y + static_cast<u32>((first - offset) / rowBytes * rowHeight), rowHeight, x, z, width});
+                    covered += last - first;
+                }
+                mappingOffset += mapping.size();
+            }
+            return covered == size;
+        };
         for (u32 layer{}; layer < value.layerCount; ++layer) {
             size_t levelOffset{layer * stride};
             for (u32 level{}; level < levels.size(); ++level) {
                 const auto &layout{levels[level]};
                 const size_t widthBytes{util::DivideCeil<size_t>(layout.dimensions.width, value.format->blockWidth) * value.format->bpb};
-                const size_t rowHeight{8 * layout.blockHeight * value.format->blockHeight};
-                const size_t rowBytes{widthBytes * 8 * layout.blockHeight};
-                // Dense rows have no GOB/mip padding that another layout could
-                // interpret as pixels. No guessed authority over padding bytes.
-                if (layout.blockLinearSize != layout.linearSize || widthBytes % 64 ||
-                    layout.dimensions.height % rowHeight || layout.dimensions.depth != 1)
-                    return {};
-                size_t mappingOffset{};
-                for (const auto &mapping : value.mappings) {
-                    const size_t first{std::max(mappingOffset, levelOffset)};
-                    const size_t last{std::min(mappingOffset + mapping.size(), levelOffset + layout.blockLinearSize)};
-                    if (first < last) {
-                        if ((first - levelOffset) % rowBytes || (last - first) % rowBytes) return {};
-                        const auto begin{reinterpret_cast<uintptr_t>(mapping.data()) + first - mappingOffset};
-                        spans.push_back({begin, begin + last - first, first, rowBytes, level, layer,
-                            static_cast<u32>((first - levelOffset) / rowBytes * rowHeight), static_cast<u32>(rowHeight)});
-                    }
-                    mappingOffset += mapping.size();
+                const size_t rows{util::DivideCeil<size_t>(layout.dimensions.height, value.format->blockHeight)};
+                if (!gobGranularity) {
+                    const size_t rowHeight{8 * layout.blockHeight * value.format->blockHeight};
+                    const size_t rowBytes{widthBytes * 8 * layout.blockHeight};
+                    if (layout.blockLinearSize != layout.linearSize || widthBytes % 64 || layout.dimensions.height % rowHeight)
+                        return {};
+                    for (u32 z{}; z < layout.dimensions.depth; ++z)
+                        if (!append(levelOffset + z * layout.blockLinearSize / layout.dimensions.depth,
+                            layout.blockLinearSize / layout.dimensions.depth, rowBytes, level, layer,
+                            0, 0, z, layout.dimensions.width, static_cast<u32>(rowHeight))) return {};
+                } else {
+                    // Whole GOBs only: arbitrary byte/sector endpoints and
+                    // partially represented edge GOBs keep the existing drain.
+                    if (widthBytes % 64 || rows % 8 || 64 % value.format->bpb ||
+                        layout.dimensions.width % value.format->blockWidth || layout.dimensions.height % value.format->blockHeight)
+                        return {};
+                    const size_t count{(widthBytes / 64) * (rows / 8) * layout.dimensions.depth};
+                    // Bound setup, reconciliation and publication metadata for
+                    // the fallback; dense rows have no new size restriction.
+                    if (count > 4096 || spans.size() > 4096 - count) return {};
+                    const size_t columns{texture::GetBlockLinearWidthGobs(layout.dimensions,
+                        value.format->blockWidth, value.format->blockHeight, value.format->bpb,
+                        layout.blockHeight, 1, layout.tileWidthSpacing)};
+                    const size_t blockRows{util::DivideCeil<size_t>(rows, 8 * layout.blockHeight)};
+                    for (u32 z{}; z < layout.dimensions.depth; ++z)
+                        for (size_t y{}; y < rows; y += 8)
+                            for (size_t x{}; x < widthBytes; x += 64) {
+                                const size_t gob{((z * blockRows + y / (8 * layout.blockHeight)) * columns + x / 64) * layout.blockHeight + (y / 8) % layout.blockHeight};
+                                if (!append(levelOffset + gob * 512, 512, 512, level, layer,
+                                    static_cast<u32>(x / value.format->bpb * value.format->blockWidth),
+                                    static_cast<u32>(y * value.format->blockHeight), z,
+                                    static_cast<u32>(64 / value.format->bpb * value.format->blockWidth),
+                                    static_cast<u32>(8 * value.format->blockHeight))) return {};
+                            }
                 }
                 levelOffset += layout.blockLinearSize;
             }
@@ -76,17 +114,42 @@
         for (const auto &member : members) stateLocks.emplace_back(member->stateMutex);
         std::vector<std::vector<texture::PhysicalImageSpan>> spans;
         std::vector<uintptr_t> endpoints;
+        if (!members.front()->guest) return false;
         const auto &reference{*members.front()->guest};
+        bool gobGranularity{};
         for (const auto &member : members) {
             if (!member->guest || member->aliasGroup.load() || member->aliasReadOnly.load() || member->aliasRetired.load() ||
                 member->format != member->guest->format || member->format->vkFormat != reference.format->vkFormat ||
-                member->guest->dimensions != reference.dimensions || member->guest->tileConfig != reference.tileConfig ||
-                member->guest->mipLevelCount != reference.mipLevelCount || member->guest->layerCount != reference.layerCount ||
                 member->tiling != vk::ImageTiling::eOptimal || member->sampleCount != vk::SampleCountFlagBits::e1)
                 return false;
             spans.push_back(PhysicalImageSpans(*member->guest));
-            if (spans.back().empty()) return false;
-            for (const auto &span : spans.back()) { endpoints.push_back(span.begin); endpoints.push_back(span.end); }
+            gobGranularity |= spans.back().empty() || member->guest->dimensions != reference.dimensions ||
+                member->guest->tileConfig != reference.tileConfig || member->guest->mipLevelCount != reference.mipLevelCount ||
+                member->guest->layerCount != reference.layerCount;
+        }
+        // A physical overlap may cut a dense ROB at a GOB boundary even
+        // when both layouts are otherwise identical. Try the finer proof only
+        // when a dense partition boundary actually requires it.
+        if (!gobGranularity) {
+            for (const auto &memberSpans : spans)
+                for (const auto &span : memberSpans) { endpoints.push_back(span.begin); endpoints.push_back(span.end); }
+            std::sort(endpoints.begin(), endpoints.end());
+            endpoints.erase(std::unique(endpoints.begin(), endpoints.end()), endpoints.end());
+            for (const auto &memberSpans : spans)
+                for (const auto &span : memberSpans)
+                    for (auto point{std::upper_bound(endpoints.begin(), endpoints.end(), span.begin)};
+                         point != endpoints.end() && *point < span.end; ++point)
+                        gobGranularity |= (*point - span.begin) % span.rowBytes != 0;
+        }
+        if (gobGranularity) {
+            spans.clear(); endpoints.clear();
+            for (const auto &member : members) spans.push_back(PhysicalImageSpans(*member->guest, true));
+        }
+        for (auto &memberSpans : spans) {
+            if (memberSpans.empty()) return false;
+            std::sort(memberSpans.begin(), memberSpans.end(), [](const auto &a, const auto &b) { return a.begin < b.begin; });
+            if (gobGranularity)
+                for (const auto &span : memberSpans) { endpoints.push_back(span.begin); endpoints.push_back(span.end); }
         }
         std::sort(endpoints.begin(), endpoints.end());
         endpoints.erase(std::unique(endpoints.begin(), endpoints.end()), endpoints.end());
@@ -106,23 +169,31 @@
         for (size_t i{1}; i < endpoints.size(); ++i) {
             const auto begin{endpoints[i - 1]}, end{endpoints[i]};
             bool covered{};
-            size_t rowBytes{}, rowHeight{};
-            for (size_t j{}; j < members.size(); ++j)
-                for (const auto &span : spans[j]) if (span.begin <= begin && span.end >= end) {
+            size_t rowBytes{}, rowHeight{}, width{};
+            for (size_t j{}; j < members.size(); ++j) {
+                const auto candidate{std::upper_bound(spans[j].begin(), spans[j].end(), begin,
+                    [](uintptr_t address, const auto &span) { return address < span.begin; })};
+                if (candidate == spans[j].begin()) continue;
+                const auto &span{*std::prev(candidate)};
+                if (span.begin <= begin && span.end >= end) {
                     if ((begin - span.begin) % span.rowBytes || (end - begin) % span.rowBytes ||
-                        (covered && (rowBytes != span.rowBytes || rowHeight != span.rowHeight))) return false;
-                    rowBytes = span.rowBytes; rowHeight = span.rowHeight;
+                        (covered && (rowBytes != span.rowBytes || rowHeight != span.rowHeight || width != span.width))) return false;
+                    rowBytes = span.rowBytes; rowHeight = span.rowHeight; width = span.width;
                     bindings[j].push_back({group->regions.size(), span.offset + begin - span.begin, span.level, span.layer,
-                        span.y + static_cast<u32>((begin - span.begin) / span.rowBytes * span.rowHeight), span.rowBytes, span.rowHeight});
+                        span.y + static_cast<u32>((begin - span.begin) / span.rowBytes * span.rowHeight), span.rowBytes, span.rowHeight, 0, span.x, span.z, span.width});
                     covered = true;
                 }
+            }
             if (!covered) continue;
             texture::PhysicalImageRegion region{begin, end, {}, {}, {}, {}};
-            for (const auto &old : previous)
-                for (const auto &source : old->regions)
-                    if (source.begin <= begin && source.end >= end) {
-                        region = source; region.begin = begin; region.end = end;
-                    }
+            for (const auto &old : previous) {
+                const auto candidate{std::upper_bound(old->regions.begin(), old->regions.end(), begin,
+                    [](uintptr_t address, const auto &entry) { return address < entry.begin; })};
+                if (candidate != old->regions.begin()) {
+                    const auto &source{*std::prev(candidate)};
+                    if (source.end >= end) { region = source; region.begin = begin; region.end = end; }
+                }
+            }
             group->regions.push_back(std::move(region));
         }
         // All allocations precede publication. Neighbor lists are bounded by
@@ -131,9 +202,11 @@
         for (size_t i{}; i < members.size(); ++i) {
             group->members.emplace_back(members[i]);
             for (size_t j{}; j < members.size(); ++j) if (i != j) {
-                bool overlap{};
-                for (const auto &a : bindings[i]) for (const auto &b : bindings[j]) overlap |= a.region == b.region;
-                if (overlap) neighbors[i].emplace_back(members[j]);
+                auto a{bindings[i].begin()}, b{bindings[j].begin()};
+                while (a != bindings[i].end() && b != bindings[j].end()) {
+                    if (a->region == b->region) { neighbors[i].emplace_back(members[j]); break; }
+                    if (a->region < b->region) ++a; else ++b;
+                }
             }
         }
         for (size_t i{}; i < members.size(); ++i) {
@@ -141,10 +214,18 @@
             for (auto &binding : bindings[i]) {
                 const auto &region{group->regions[binding.region]};
                 binding.residentVersion = region.guestVersion;
-                if (old) for (const auto &previousBinding : members[i]->regionBindings) {
-                    const auto &previousRegion{old->regions[previousBinding.region]};
-                    if (previousRegion.begin <= region.begin && previousRegion.end >= region.end)
-                        binding.residentVersion = previousBinding.residentVersion;
+                if (old) {
+                    const auto candidate{std::upper_bound(old->regions.begin(), old->regions.end(), region.begin,
+                        [](uintptr_t address, const auto &entry) { return address < entry.begin; })};
+                    if (candidate != old->regions.begin()) {
+                        const auto previousRegion{std::prev(candidate)};
+                        const size_t previousIndex{static_cast<size_t>(previousRegion - old->regions.begin())};
+                        const auto &oldBindings{members[i]->regionBindings};
+                        const auto source{std::lower_bound(oldBindings.begin(), oldBindings.end(), previousIndex,
+                            [](const auto &entry, size_t index) { return entry.region < index; })};
+                        if (previousRegion->end >= region.end && source != oldBindings.end() && source->region == previousIndex)
+                            binding.residentVersion = source->residentVersion;
+                    }
                 }
             }
             members[i]->regionBindings = std::move(bindings[i]);
@@ -185,6 +266,7 @@
 
     void Texture::PublishRegionGuest(span<const u8> encoded) {
         auto group{regionAuthority.load()};
+        std::scoped_lock metadata{group->mutex};
         for (const auto &binding : regionBindings) {
             auto &region{group->regions[binding.region]};
             if (region.writerIdentity != this || region.hostVersion == region.guestVersion) continue;
@@ -211,11 +293,12 @@
         InvalidateRegionPeers();
     }
 
-    void Texture::RecordRegionUpload() {
+    void Texture::RecordRegionUpload(span<const uint64_t> guestVersions) {
         auto group{regionAuthority.load()};
+        size_t index{};
         for (auto &binding : regionBindings) {
             const auto &region{group->regions[binding.region]};
-            binding.residentVersion = region.guestVersion;
+            binding.residentVersion = guestVersions.empty() ? region.guestVersion : guestVersions[index++];
             if (binding.residentVersion != region.hostVersion && !regionStale.exchange(true, std::memory_order_relaxed))
                 ++texture::regionInvalidationSequence;
         }
@@ -240,6 +323,9 @@
         std::vector<std::unique_lock<Texture>> locks;
         locks.reserve(resources.size());
         for (const auto &resource : resources) locks.emplace_back(*resource);
+        std::vector<std::unique_lock<std::recursive_mutex>> stateLocks;
+        stateLocks.reserve(resources.size());
+        for (const auto &resource : resources) stateLocks.emplace_back(resource->stateMutex);
         std::unique_lock metadata{group->mutex};
         bool donorsValid{regionAuthority.load() == group};
         if (donorsValid) for (const auto &binding : regionBindings) {
@@ -257,7 +343,19 @@
         // A CPU-dirty target has no unpublished owned cells and can initialize
         // normally. A still-GPU-dirty target must retain its exclusive host rows.
         const bool initializedGuest{dirtyState == DirtyState::CpuDirty};
+        metadata.unlock();
         SynchronizeHost(false);
+        metadata.lock();
+        // A different peer may have become a writer while metadata was released.
+        // Re-acquire that producer before taking a new transfer snapshot.
+        donorsValid = regionAuthority.load() == group;
+        if (donorsValid) for (const auto &binding : regionBindings) {
+            const auto &region{group->regions[binding.region]};
+            if (region.writerIdentity && region.writerIdentity != this && binding.residentVersion != region.hostVersion &&
+                std::none_of(resources.begin(), resources.end(), [&](const auto &resource) { return resource.get() == region.writerIdentity; }))
+                donorsValid = false;
+        }
+        if (!donorsValid) { metadata.unlock(); continue; }
         std::vector<vk::BufferImageCopy> uploads;
         if (!initializedGuest) {
             const auto packed{GetBufferImageCopies()};
@@ -270,17 +368,21 @@
                 })};
                 const auto widthBytes{util::DivideCeil<size_t>(mip.dimensions.width, format->blockWidth) * format->bpb};
                 uploads.push_back(vk::BufferImageCopy{
-                    .bufferOffset = base->bufferOffset + binding.layer * mip.targetLinearSize + (binding.y / format->blockHeight) * widthBytes,
+                    .bufferOffset = base->bufferOffset + binding.layer * mip.targetLinearSize +
+                        (binding.z * util::DivideCeil<size_t>(mip.dimensions.height, format->blockHeight) + binding.y / format->blockHeight) * widthBytes +
+                        (binding.x / format->blockWidth) * format->bpb,
+                    .bufferRowLength = static_cast<u32>(util::DivideCeil<size_t>(mip.dimensions.width, format->blockWidth) * format->blockWidth),
+                    .bufferImageHeight = static_cast<u32>(util::DivideCeil<size_t>(mip.dimensions.height, format->blockHeight) * format->blockHeight),
                     .imageSubresource = {vk::ImageAspectFlagBits::eColor, binding.level, binding.layer, 1},
-                    .imageOffset = {0, static_cast<i32>(binding.y), 0},
-                    .imageExtent = {mip.dimensions.width,
+                    .imageOffset = {static_cast<i32>(binding.x), static_cast<i32>(binding.y), static_cast<i32>(binding.z)},
+                    .imageExtent = {binding.width,
                         static_cast<u32>((region.end - region.begin) / binding.rowBytes * binding.rowHeight), 1},
                 });
             }
         }
         // Only these guest-owned rows will be uploaded. The encoder's full
         // snapshot never overwrites the target's still-authoritative GPU rows.
-        auto staging{uploads.empty() ? std::shared_ptr<memory::StagingBuffer>{} : SynchronizeHostImpl()};
+
         struct Transfer { std::shared_ptr<Texture> source; std::vector<vk::ImageCopy> copies; };
         std::vector<Transfer> transfers;
         for (const auto &binding : regionBindings) {
@@ -290,17 +392,23 @@
             if (!source) throw exception("Physical texture region lost its writer");
             auto transfer{std::find_if(transfers.begin(), transfers.end(), [&](const auto &entry) { return entry.source == source; })};
             if (transfer == transfers.end()) { transfers.push_back({source, {}}); transfer = std::prev(transfers.end()); }
-            const auto origin{std::find_if(source->regionBindings.begin(), source->regionBindings.end(), [&](const auto &entry) { return entry.region == binding.region; })};
-            if (origin == source->regionBindings.end()) throw exception("Physical texture region lost its source binding");
+            const auto origin{std::lower_bound(source->regionBindings.begin(), source->regionBindings.end(), binding.region,
+                [](const auto &entry, size_t region) { return entry.region < region; })};
+            if (origin == source->regionBindings.end() || origin->region != binding.region) throw exception("Physical texture region lost its source binding");
             transfer->copies.push_back(vk::ImageCopy{
                 .srcSubresource = {vk::ImageAspectFlagBits::eColor, origin->level, origin->layer, 1},
-                .srcOffset = {0, static_cast<i32>(origin->y), 0},
+                .srcOffset = {static_cast<i32>(origin->x), static_cast<i32>(origin->y), static_cast<i32>(origin->z)},
                 .dstSubresource = {vk::ImageAspectFlagBits::eColor, binding.level, binding.layer, 1},
-                .dstOffset = {0, static_cast<i32>(binding.y), 0},
-                .extent = {std::max(1U, dimensions.width >> binding.level),
+                .dstOffset = {static_cast<i32>(binding.x), static_cast<i32>(binding.y), static_cast<i32>(binding.z)},
+                .extent = {binding.width,
                     static_cast<u32>((region.end - region.begin) / binding.rowBytes * binding.rowHeight), 1},
             });
         }
+        std::vector<uint64_t> versions;
+        versions.reserve(regionBindings.size());
+        for (const auto &binding : regionBindings) versions.push_back(group->regions[binding.region].hostVersion);
+        metadata.unlock();
+        auto staging{uploads.empty() ? std::shared_ptr<memory::StagingBuffer>{} : SynchronizeHostImpl()};
         if (!transfers.empty() || !uploads.empty()) {
             // Wait for queue submission only, never global/device completion.
             if (cycle) cycle->WaitSubmit();
@@ -347,6 +455,7 @@
                         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                         barrier.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, levelCount, 0, layerCount};
                     }
+                    before[0].subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, source->levelCount, 0, source->layerCount};
                     commands->pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, before);
                     commands->copyImage(source->GetBacking(), vk::ImageLayout::eTransferSrcOptimal, GetBacking(), vk::ImageLayout::eTransferDstOptimal, transfer.copies);
                     auto after{before};
@@ -364,9 +473,15 @@
             // Keep each source's last reader alive, including retired backings.
             for (const auto &transfer : transfers) transfer.source->cycle = copyCycle;
         }
-        for (auto &binding : regionBindings)
-            binding.residentVersion = group->regions[binding.region].hostVersion;
-        regionStale.store(false, std::memory_order_relaxed);
+        metadata.lock();
+        bool stale{};
+        size_t index{};
+        for (auto &binding : regionBindings) {
+            binding.residentVersion = versions[index++];
+            stale |= binding.residentVersion != group->regions[binding.region].hostVersion;
+        }
+        regionStale.store(stale, std::memory_order_relaxed);
+        if (stale) { metadata.unlock(); continue; }
         return;
       }
     }
@@ -386,6 +501,15 @@
         std::vector<ContextLock<Texture>> locks;
         locks.reserve(members.size());
         for (const auto &member : members) locks.emplace_back(context, *member);
+        // A skipped/non-reversible readback is not publication. Validate every
+        // owner before detaching any member, preserving the whole old domain on
+        // failure. Resource locks exclude new GPU writers during both passes.
+        for (const auto &member : members) if (auto group{member->regionAuthority.load()}) {
+            std::scoped_lock state{member->stateMutex};
+            std::scoped_lock metadata{group->mutex};
+            if (member->NeedsRegionReadback())
+                throw exception("Cannot drain an unpublished physical texture writer");
+        }
         for (const auto &member : members) if (auto group{member->regionAuthority.load()}) {
             std::scoped_lock state{member->stateMutex};
             std::scoped_lock metadata{group->mutex};

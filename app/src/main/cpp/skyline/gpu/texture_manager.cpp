@@ -271,6 +271,7 @@ namespace skyline::gpu {
 
                 }
 
+                bool matchedSubresource{};
                 const bool sameTileConfig{matchGuestTexture.tileConfig == guestTexture.tileConfig};
                 const bool blockMipCandidate{
                     matchGuestTexture.GetImageType() == vk::ImageType::e2D &&
@@ -345,6 +346,7 @@ namespace skyline::gpu {
                     }
 
                     if (matched) {
+                        matchedSubresource = true;
                         if (layerMipMatch)
                             layerMipMatch->replaced = true;
 
@@ -354,6 +356,10 @@ namespace skyline::gpu {
                         layerMipMatch = hostMapping->texture;
                     }
                 }
+                // Containment proves physical overlap even when no existing
+                // mip/layer/slice can represent the requested logical image.
+                if (!matchedSubresource && depthSliceMatch != hostMapping->texture)
+                    matches.push_back(hostMapping->texture);
             }
         });
 

@@ -87,7 +87,7 @@ namespace skyline::gpu {
     }
 
     bool GuestTexture::MappingsValid() const {
-        return ranges::all_of(mappings, [](const auto &mapping) { return mapping.valid(); });
+        return mappingsResident && ranges::all_of(mappings, [](const auto &mapping) { return mapping.valid(); });
     }
 
     TextureView::TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format, vk::ComponentMapping mapping) : texture(std::move(texture)), type(type), format(format), mapping(mapping), range(range) {}
@@ -231,6 +231,12 @@ namespace skyline::gpu {
                         waitCycle = texture->cycle;
                     }
                 } while (waitCycle);
+                // Regional publication can require a readback. Perform it before
+                // trapMutex is acquired; metadata may be released for GPU I/O.
+                if (texture->regionTracked.load(std::memory_order_relaxed)) {
+                    std::scoped_lock resource{*texture};
+                    texture->SynchronizeGuest(false, true);
+                }
             }
         }, [weakThis] {
             TRACE_EVENT("gpu", "Texture::ReadTrap");
@@ -265,6 +271,9 @@ namespace skyline::gpu {
                 aliasLock = std::unique_lock{group->operationMutex, std::try_to_lock};
                 if (!aliasLock) return false; // trapMutex must never wait on an alias operation.
             }
+            // A producer after prepare requires another prepare pass. Never
+            // block on regional metadata or submit a readback under trapMutex.
+            if (regions) return false;
             texture->SynchronizeGuest(false, true); // We can skip trapping since the caller will do it
             return true;
         }, [weakThis] {
@@ -308,6 +317,9 @@ namespace skyline::gpu {
                 aliasLock = std::unique_lock{group->operationMutex, std::try_to_lock};
                 if (!aliasLock) return false;
             }
+            // A producer after prepare requires another prepare pass. Never
+            // block on regional metadata or submit a readback under trapMutex.
+            if (regions) return false;
             texture->SynchronizeGuest(true, true); // We need to assume the texture is dirty since we don't know what the guest is writing
             return true;
         });
@@ -1247,9 +1259,12 @@ namespace skyline::gpu {
             gpuDirty = false;
 
         auto regions{regionTracked.load(std::memory_order_relaxed) ? regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
+        std::unique_lock<std::recursive_mutex> regionState;
+        if (regions) regionState = std::unique_lock{stateMutex};
         std::unique_lock<std::recursive_mutex> regionLock;
         if (regions) regionLock = std::unique_lock{regions->mutex};
 
+        std::vector<uint64_t> guestVersions;
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
         {
             std::scoped_lock lock{stateMutex};
@@ -1263,12 +1278,17 @@ namespace skyline::gpu {
                 return; // If the texture has not been modified on the CPU, there is no need to synchronize it
             }
 
+            if (regions) {
+                guestVersions.reserve(regionBindings.size());
+                for (const auto &binding : regionBindings) guestVersions.push_back(regions->regions[binding.region].guestVersion);
+            }
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
             gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
         // From this point on Clean -> CPU dirty state transitions can occur, GPU dirty -> * transitions will always require the full lock to be held and thus won't occur
 
+        if (regionLock.owns_lock()) regionLock.unlock();
         const auto previousLayout{layout};
         try {
             auto stagingBuffer{SynchronizeHostImpl()};
@@ -1303,7 +1323,11 @@ namespace skyline::gpu {
             throw;
         }
 
-        if (regions) RecordRegionUpload();
+        if (regions) {
+            regionLock.lock();
+            RecordRegionUpload(guestVersions);
+            regionLock.unlock();
+        }
 
         {
             std::scoped_lock lock{stateMutex};
@@ -1391,6 +1415,8 @@ namespace skyline::gpu {
         std::unique_lock<std::recursive_mutex> aliasLock;
         if (alias) aliasLock = std::unique_lock{alias->operationMutex};
         auto regions{regionTracked.load(std::memory_order_relaxed) ? regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
+        std::unique_lock<std::recursive_mutex> regionState;
+        if (regions) regionState = std::unique_lock{stateMutex};
         std::unique_lock<std::recursive_mutex> regionLock;
         if (regions) regionLock = std::unique_lock{regions->mutex};
         if (aliasStale.load()) return; // A superseded GPU image must never overwrite newer guest bytes.
@@ -1434,6 +1460,7 @@ namespace skyline::gpu {
             // If the texture has differing formats on the guest and host, we don't support converting back in that case as it may involve recompression of a decompressed texture
             return;
 
+        if (regionLock.owns_lock()) regionLock.unlock();
         WaitOnBacking();
 
         if (tiling == vk::ImageTiling::eOptimal || !std::holds_alternative<memory::Image>(backing)) {
@@ -1455,6 +1482,7 @@ namespace skyline::gpu {
             throw exception("Host -> Guest synchronization of images tiled as '{}' isn't implemented", vk::to_string(tiling));
         }
 
+        if (regions) regionLock.lock();
         {
             std::scoped_lock lock{stateMutex};
             gpuReadbackSerial = gpuWriteSerial;

@@ -141,13 +141,14 @@ struct TestFormat {
     const TestFormat *operator->() const { return this; }
     bool operator==(const TestFormat &) const = default;
 };
-namespace texture { struct RegionAuthority { std::recursive_mutex mutex; }; }
+namespace texture { struct RegionAuthority { std::recursive_mutex mutex; struct Region { uint64_t guestVersion{}; }; std::vector<Region> regions; }; }
 struct Texture : std::enable_shared_from_this<Texture> {
     using Region = texture::RegionAuthority;
     unsigned pendingRegionUseTag{};
     std::atomic<bool> regionTracked{};
     struct { std::shared_ptr<Region> load() const { return {}; } } regionAuthority;
-    void RecordRegionUpload() { throw std::logic_error("unexpected region upload in independent texture control"); }
+    struct Binding { size_t region{}; }; std::vector<Binding> regionBindings;
+    void RecordRegionUpload(const std::vector<uint64_t> & = {}) { throw std::logic_error("unexpected region upload in independent texture control"); }
     enum class DirtyState { CpuDirty, Clean, GpuDirty };
     struct Group { std::recursive_mutex operationMutex; };
     struct AtomicGroup { std::shared_ptr<Group> value; auto load() const { return value; } } aliasGroup;

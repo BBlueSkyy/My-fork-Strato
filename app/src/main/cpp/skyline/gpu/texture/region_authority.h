@@ -5,12 +5,12 @@
 #include <algorithm>
 
 namespace skyline::gpu::texture {
-    // Only dense, whole block-linear rows enter this domain. No per-texel
-    // footprint bitmap: endpoints are established once at registration.
+    // Dense rows or bounded whole GOBs. Padding never enters image authority;
+    // endpoints and explicit subresource coordinates are proved at registration.
     struct PhysicalImageSpan {
         uintptr_t begin{}, end{};
         size_t offset{}, rowBytes{};
-        uint32_t level{}, layer{}, y{}, rowHeight{};
+        uint32_t level{}, layer{}, y{}, rowHeight{}, x{}, z{}, width{};
     };
     struct PhysicalImageRegion {
         uintptr_t begin{}, end{};
@@ -24,6 +24,7 @@ namespace skyline::gpu::texture {
         size_t rowBytes{};
         uint32_t rowHeight{};
         uint64_t residentVersion{};
+        uint32_t x{}, z{}, width{};
     };
     struct RegionAuthority {
         // Acquire after resource locks. Trap callbacks use try_lock; no waiting

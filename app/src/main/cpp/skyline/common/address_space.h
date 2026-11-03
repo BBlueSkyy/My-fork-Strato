@@ -109,7 +109,7 @@ namespace skyline {
         static constexpr size_t AddressSpaceSize{1ULL << AddressSpaceBits};
         SegmentTable<SegmentTableEntry, AddressSpaceSize, VaGranularityBits, VaL2GranularityBits> blockSegmentTable; //!< A page table of all buffer mappings for O(1) lookups on full matches
 
-        TranslatedAddressRange TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {});
+        TranslatedAddressRange TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}, bool *fullyResident = nullptr);
 
         std::pair<span<u8>, size_t> LookupBlockLocked(VaType virt, std::function<void(span<u8>)> cpuAccessCallback = {}) {
             const auto &blockEntry{this->blockSegmentTable[virt]};
@@ -149,18 +149,21 @@ namespace skyline {
         /**
          * @brief Translates a region in the VA space to a corresponding set of regions in the PA space
          */
-        TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}) {
+        TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}, bool *fullyResident = nullptr) {
             std::shared_lock lock{this->blockMutex};
+
+            if (fullyResident) *fullyResident = true;
 
             // Fast path for when the range is mapped in a single block
             auto [blockSpan, rangeOffset]{LookupBlockLocked(virt, cpuAccessCallback)};
             if (blockSpan.size() - rangeOffset >= size) {
+                if (fullyResident) *fullyResident = blockSpan.valid();
                 TranslatedAddressRange ranges;
                 ranges.push_back(blockSpan.subspan(blockSpan.valid() ? rangeOffset : 0, size));
                 return ranges;
             }
 
-            return TranslateRangeImpl(virt, size, cpuAccessCallback);
+            return TranslateRangeImpl(virt, size, cpuAccessCallback, fullyResident);
         }
 
 

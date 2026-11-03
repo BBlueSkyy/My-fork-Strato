@@ -246,6 +246,7 @@ namespace skyline::gpu {
      * @brief A descriptor for a texture present in guest memory, it can be used to create a corresponding Texture object for usage on the host
      */
     struct GuestTexture {
+        bool mappingsResident{true}; //!< GMMU translation proved every physical interval resident.
         using Mappings = boost::container::small_vector<span<u8>, 3>;
 
         Mappings mappings; //!< Spans to CPU memory for the underlying data backing this texture
@@ -426,7 +427,7 @@ namespace skyline::gpu {
         std::atomic<bool> regionTracked{}, regionStale{};
         std::vector<texture::PhysicalImageBinding> regionBindings;
         std::vector<std::weak_ptr<Texture>> regionNeighbors;
-        static std::vector<texture::PhysicalImageSpan> PhysicalImageSpans(const GuestTexture &value);
+        static std::vector<texture::PhysicalImageSpan> PhysicalImageSpans(const GuestTexture &value, bool gobGranularity = false);
         static bool CanDiscardGuest(const GuestTexture &value, size_t mappedSize);
         static bool RegisterRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
         static void DrainRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
@@ -436,7 +437,7 @@ namespace skyline::gpu {
         bool NeedsRegionReadback() const;
         void PublishRegionGuest(span<const u8> encoded);
         void ReleaseRegionHost();
-        void RecordRegionUpload();
+        void RecordRegionUpload(span<const uint64_t> guestVersions = {});
         bool HasAliases() const { return regionTracked.load(std::memory_order_relaxed) || static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const GuestTexture &requested) const;
         static bool CanMaterializeGuestLayout(const GuestTexture &value);

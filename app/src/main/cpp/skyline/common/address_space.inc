@@ -224,7 +224,7 @@ namespace skyline {
     }
 
 
-    MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
+    MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback, bool *fullyResident) {
         TRACE_EVENT("containers", "FlatMemoryManager::TranslateRange");
 
         TranslatedAddressRange ranges;
@@ -239,6 +239,7 @@ namespace skyline {
         VaType blockSize{std::min(successor->virt - virt, size)};
 
         while (size) {
+            if (fullyResident && (!predecessor->phys || predecessor->extraInfo.sparseMapped)) *fullyResident = false;
             if (predecessor->phys) {
                 span cpuBlock{blockPhys, blockSize};
                 if (cpuAccessCallback)
