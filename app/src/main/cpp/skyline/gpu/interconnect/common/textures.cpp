@@ -19,7 +19,7 @@ namespace skyline::gpu::interconnect {
         const auto size{(static_cast<size_t>(engine->texHeaderPool.maximumIndex) + 1) * sizeof(TextureImageControl)};
         auto translation{ctx.channelCtx.asCtx->gmmu.TranslateRangeTracked(engine->texHeaderPool.offset, size)};
         mapping = std::move(translation.identity);
-        textureHeaders = {};
+        textureHeaders = span<TextureImageControl>{};
         // Only the contiguous resident prefix is exposed. Unused/nonresident
         // pool capacity cannot authorize reading beyond that physical span.
         if (!translation.mappings.empty() && translation.mappings.front().valid())
