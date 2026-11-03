@@ -338,6 +338,10 @@ namespace skyline::gpu::interconnect {
          */
         using SubpassFunction = std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)>;
 
+        // An armed diagnostic must wait for an empty executor render pass;
+        // never scan the TIC cache for draws in an already active pass.
+        bool CanBeginSbNaturalPass() const { return renderPass == nullptr; }
+
         struct SubpassHooks {
             SubpassFunction before;
         };
