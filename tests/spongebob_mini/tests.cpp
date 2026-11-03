@@ -47,6 +47,9 @@ int main() {
     }));
     // The natural render pass must be closed before the post-pass payload
     // is eligible for export, even if all snapshots were queued.
+    std::ostringstream stillOpen;
+    assert(!mini.Export(stillOpen)); // Complete entries must still wait for natural RP end.
+    assert(stillOpen.str().empty());
     mini.EndNaturalPass();
     std::ostringstream complete;
     assert(mini.Export(complete));
