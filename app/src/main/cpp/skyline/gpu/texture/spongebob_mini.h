@@ -3,6 +3,7 @@
 
 // Explicit, bounded Vulkan image snapshots for title-screen investigation.
 // Does not acquire GPU locks, discard guest bytes, or change resource authority.
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -12,6 +13,19 @@
 #include <vector>
 
 namespace skyline::gpu::texture::diagnostic {
+    struct SpongeBobMiniBinding {
+        uint32_t ticIndex{UINT32_MAX}; // Unknown if no matching TIC-cache entry.
+        uint64_t iova{};
+        uint32_t matchingEntries{};
+    };
+
+    struct SpongeBobMiniDrawInfo {
+        uint64_t pipelineHash{}, channelSequence{};
+        std::array<uint64_t, 6> shaderHashes{}; // Maxwell 3D pipeline stage order.
+        uint32_t kind{}, topology{}, indexed{}, first{}, count{}, instances{};
+        std::vector<SpongeBobMiniBinding> sampledBindings;
+    };
+
     struct SpongeBobMiniInfo {
         uint64_t operation{};
         uint32_t role{}; // 1 target-before, 2 target-after, 3..6 sampled inputs
@@ -19,6 +33,11 @@ namespace skyline::gpu::texture::diagnostic {
         uint32_t hostFormat{}, guestFormat{};
         uint32_t width{}, height{}, x{}, y{}, regionWidth{}, regionHeight{};
         uint32_t mip{}, layer{}, blockWidth{}, blockHeight{}, bytesPerBlock{}, size{};
+        uint64_t pipelineHash{}, channelSequence{};
+        std::array<uint64_t, 6> shaderHashes{};
+        uint32_t drawKind{}, topology{}, indexed{}, first{}, count{}, instances{};
+        uint32_t sampledOrdinal{UINT32_MAX}, ticIndex{UINT32_MAX}, matchingTics{};
+        uint64_t ticIova{};
     };
 
     class SpongeBobMini {
@@ -98,7 +117,7 @@ namespace skyline::gpu::texture::diagnostic {
                 if (bytes.size() != entry.info.size) return false;
                 payloads.emplace_back(std::move(bytes));
             }
-            out << "SBMINI1\n";
+            out << "SBMINI2\n";
             for (size_t i{}; i < copy.size(); ++i) {
                 const auto &m{copy[i].info};
                 out << m.operation << ',' << m.role << ',' << m.image << ','
@@ -106,7 +125,13 @@ namespace skyline::gpu::texture::diagnostic {
                     << m.guestFormat << ',' << m.width << ',' << m.height << ','
                     << m.x << ',' << m.y << ',' << m.regionWidth << ',' << m.regionHeight
                     << ',' << m.mip << ',' << m.layer << ',' << m.blockWidth << ','
-                    << m.blockHeight << ',' << m.bytesPerBlock << ',' << m.size << '\n';
+                    << m.blockHeight << ',' << m.bytesPerBlock << ',' << m.size
+                    << ',' << m.pipelineHash << ',' << m.channelSequence;
+                for (auto shaderHash : m.shaderHashes) out << ',' << shaderHash;
+                out << ',' << m.drawKind << ',' << m.topology << ',' << m.indexed
+                    << ',' << m.first << ',' << m.count << ',' << m.instances
+                    << ',' << m.sampledOrdinal << ',' << m.ticIndex
+                    << ',' << m.matchingTics << ',' << m.ticIova << '\n';
                 out.write(reinterpret_cast<const char *>(payloads[i].data()), payloads[i].size());
                 out.put('\n');
             }
