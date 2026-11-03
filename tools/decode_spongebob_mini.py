@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Decode SBMINI1 snapshots: sampled inputs and render-target before/after.
+"""Decode SBMINI1/SBMINI2 snapshots with stable draw identity and HDR NaN counts.
 
 This is a Strato diagnostic format, not a native RenderDoc .rdc file.
 """
 import argparse
 import hashlib
 import json
+import struct
 from pathlib import Path
 
 FIELDS_V1 = (
@@ -18,6 +19,30 @@ FIELDS_V2 = FIELDS_V1 + (
 ).split()
 MAX_ROWS = 18
 MAX_BYTES = 65536
+
+
+def hdr_nonfinite(data: bytes):
+    """Bit-level R11G11B10_UFLOAT (VkFormat 122) NaN/+Inf classification."""
+    counts = {"nan_components": [0, 0, 0], "infinite_components": [0, 0, 0],
+              "nan_pixels": 0, "infinite_pixels": 0}
+    nan_mask = []
+    for (word,) in struct.iter_unpack("<I", data):
+        channels = ((word & 0x7ff, 6), ((word >> 11) & 0x7ff, 6),
+                    ((word >> 22) & 0x3ff, 5))
+        found_nan = found_inf = False
+        for i, (bits, mantissa_bits) in enumerate(channels):
+            exponent = (bits >> mantissa_bits) & 31
+            mantissa = bits & ((1 << mantissa_bits) - 1)
+            if exponent == 31 and mantissa:
+                found_nan = True
+                counts["nan_components"][i] += 1
+            elif exponent == 31:
+                found_inf = True
+                counts["infinite_components"][i] += 1
+        nan_mask.append(found_nan)
+        counts["nan_pixels"] += found_nan
+        counts["infinite_pixels"] += found_inf
+    return counts, nan_mask
 
 
 def decode(capture: Path, output: Path):
@@ -59,6 +84,9 @@ def decode(capture: Path, output: Path):
             row["nonzero_bytes"] = sum(c != 0 for c in data)
             row["zero_bytes"] = len(data) - row["nonzero_bytes"]
             row["_data"] = data
+            if row["host_format"] == 122 and row["block_width"] == 1 and row["bpb"] == 4:
+                counts, _ = hdr_nonfinite(data)
+                row.update(counts)
             # Optional preview: true four-channel uncompressed Vulkan formats.
             fmt = row["host_format"]
             if (fmt in (37, 43, 44, 50) and row["block_width"] == 1 and
@@ -102,8 +130,18 @@ def decode(capture: Path, output: Path):
             if (entries[1]["image"] != entries[2]["image"] or
                     entries[1]["generation"] != entries[2]["generation"]):
                 raise ValueError("Target backing changed within one draw")
+        introduced = {}
+        if (entries[1]["host_format"] == entries[2]["host_format"] == 122):
+            _, before_nan = hdr_nonfinite(before)
+            _, after_nan = hdr_nonfinite(after)
+            introduced = {
+                "target_nan_pixels_before": sum(before_nan),
+                "target_nan_pixels_after": sum(after_nan),
+                "target_new_nan_pixels": sum(b and not a for a, b in zip(before_nan, after_nan)),
+            }
         results.append({
             "operation": operation,
+            **introduced,
             **({
                 "pipeline_hash": f"{meta['pipeline_hash']:016x}",
                 "shader_hashes": [f"{meta[f'shader{i}']:016x}" for i in range(6)],
