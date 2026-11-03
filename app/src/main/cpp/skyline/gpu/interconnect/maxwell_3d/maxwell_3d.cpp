@@ -27,6 +27,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         info.first = first;
         info.count = count;
         info.instances = instances;
+        info.depthTest = packed.depthTestEnable ? 1 : 0;
+        info.conditional = activeRenderCondition.enabled ? 1 : 0;
         info.sampledBindings.reserve(activeDescriptorSetSampledImages.size());
         for (auto *view : activeDescriptorSetSampledImages) {
             auto tic{textures.FindCachedTicForView(view)};
@@ -152,8 +154,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
     constantBuffers.ResetQuickBind();
 
     std::optional<texture::diagnostic::SpongeBobMiniDrawInfo> sbMiniDraw;
-    if (ctx.gpu.spongeBobMini.Armed())
+    if (ctx.gpu.spongeBobMini.NeedsDrawInfo())
         sbMiniDraw.emplace(MakeSbMiniDrawInfo(2, topology, true, 0, count, instanceCount));
+        sbMiniDraw->scissorX = scissor.offset.x;
+        sbMiniDraw->scissorY = scissor.offset.y;
+        sbMiniDraw->scissorWidth = scissor.extent.width;
+        sbMiniDraw->scissorHeight = scissor.extent.height;
 
     ctx.executor.AddCheckpoint("Before inline index draw");
     ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
@@ -823,8 +829,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         constantBuffers.ResetQuickBind();
         std::optional<texture::diagnostic::SpongeBobMiniDrawInfo> sbMiniDraw;
-        if (ctx.gpu.spongeBobMini.Armed())
+        if (ctx.gpu.spongeBobMini.NeedsDrawInfo())
             sbMiniDraw.emplace(MakeSbMiniDrawInfo(1, topology, indexed, first, count, instanceCount));
+        sbMiniDraw->scissorX = scissor.offset.x;
+        sbMiniDraw->scissorY = scissor.offset.y;
+        sbMiniDraw->scissorWidth = scissor.extent.width;
+        sbMiniDraw->scissorHeight = scissor.extent.height;
 
         ctx.executor.AddCheckpoint("Before draw");
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
@@ -911,8 +921,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
         constantBuffers.ResetQuickBind();
 
         std::optional<texture::diagnostic::SpongeBobMiniDrawInfo> sbMiniDraw;
-        if (ctx.gpu.spongeBobMini.Armed())
+        if (ctx.gpu.spongeBobMini.NeedsDrawInfo())
             sbMiniDraw.emplace(MakeSbMiniDrawInfo(3, topology, indexed, 0, count, 1));
+        sbMiniDraw->scissorX = scissor.offset.x;
+        sbMiniDraw->scissorY = scissor.offset.y;
+        sbMiniDraw->scissorWidth = scissor.extent.width;
+        sbMiniDraw->scissorHeight = scissor.extent.height;
 
         ctx.executor.AddCheckpoint("Before indirect draw");
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
