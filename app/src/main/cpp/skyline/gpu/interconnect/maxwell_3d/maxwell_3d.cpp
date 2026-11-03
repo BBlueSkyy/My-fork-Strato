@@ -14,7 +14,7 @@
 namespace skyline::gpu::interconnect::maxwell3d {
     texture::diagnostic::SpongeBobMiniDrawInfo Maxwell3D::MakeSbMiniDrawInfo(
         u32 kind, engine::DrawTopology topology, bool indexed,
-        u32 first, u32 count, u32 instances) const {
+        u32 first, u32 count, u32 instances) {
         texture::diagnostic::SpongeBobMiniDrawInfo info{};
         auto *pipeline{activeState.GetPipeline()};
         const auto &packed{pipeline->sourcePackedState};
