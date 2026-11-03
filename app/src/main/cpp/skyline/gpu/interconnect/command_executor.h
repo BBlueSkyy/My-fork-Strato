@@ -254,6 +254,10 @@ namespace skyline::gpu::interconnect {
          * @brief Execute all the nodes and submit the resulting command buffer to the GPU
          * @note It is the responsibility of the caller to handle resetting of command buffers, fence cycle and megabuffers
          */
+        // Explicit SpongeBob diagnostic only; no hot-path scan when disarmed.
+        bool SbMiniEligible(TextureView *view, bool output) const;
+        void QueueSbMiniImage(TextureView *view, u64 operation, u32 role, bool afterRenderPass);
+
         void SubmitInternal();
 
         /**
