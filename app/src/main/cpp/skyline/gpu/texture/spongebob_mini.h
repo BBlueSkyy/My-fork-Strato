@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <ostream>
 #include <utility>
@@ -43,6 +44,26 @@ namespace skyline::gpu::texture::diagnostic {
         uint32_t captureScope{1}; // 1 = naturally ended render pass (SBMINI3)
     };
 
+    // Candidate writers are recorded when a draw/clear is submitted to the
+    // command executor. A candidate may be culled or write zero fragments.
+    // Raw texture keys are process-local and are never dereferenced in history.
+    struct SpongeBobWriter {
+        uintptr_t textureKey{};
+        uint64_t generation{};
+        uintptr_t guestFirstBegin{};
+        size_t guestFirstSize{};
+        uint64_t pipeline{}, vertexShader{}, fragmentShader{};
+        uint64_t ordinal{};
+        uint32_t renderPassIndex{}, kind{}; // 1=color, 2=storage, 3=clear
+        uint32_t format{}, width{}, height{};
+    };
+
+    struct SpongeBobWriterMatch {
+        SpongeBobWriter earliest{}, latest{};
+        uint32_t matchingEvents{};
+        bool exactTexture{}, truncated{};
+    };
+
     class SpongeBobMini {
         struct Entry {
             SpongeBobMiniInfo info;
@@ -58,6 +79,11 @@ namespace skyline::gpu::texture::diagnostic {
         bool frozen{};
         uint64_t operations{};
         std::vector<Entry> entries;
+        // Fixed-size ring: writer tracing begins only after an explicit arm.
+        // No GPU copies, allocations, or fence waits on the write path.
+        static constexpr size_t MaxWriters{256};
+        std::array<SpongeBobWriter, MaxWriters> writers{};
+        uint64_t writerCount{};
         static constexpr uint64_t MaxOperations{3};
         static constexpr size_t MaxEntries{MaxOperations * 6};
 
@@ -68,6 +94,56 @@ namespace skyline::gpu::texture::diagnostic {
         bool PreferScenePass() const { return preferScenePass.load(std::memory_order_acquire); }
         uint64_t SkippedOverlayPass() { return ++skippedOverlayPasses; }
 
+        void NotePossibleWriter(SpongeBobWriter writer) {
+            if (!Armed()) return;
+            std::lock_guard lock{mutex};
+            if (!armed.load(std::memory_order_relaxed)) return;
+            writer.ordinal = ++writerCount;
+            writers[(writerCount - 1) % MaxWriters] = writer;
+        }
+
+        SpongeBobWriterMatch FindPriorWriters(SpongeBobWriter resource) const {
+            SpongeBobWriterMatch match{};
+            std::lock_guard lock{mutex};
+            match.truncated = writerCount > MaxWriters;
+            const auto available{std::min<uint64_t>(writerCount, MaxWriters)};
+            const auto physicalOverlap{[](const SpongeBobWriter &a, const SpongeBobWriter &b) {
+                if (!a.guestFirstBegin || !b.guestFirstBegin || !a.guestFirstSize || !b.guestFirstSize)
+                    return false;
+                if (a.guestFirstSize > std::numeric_limits<uintptr_t>::max() - a.guestFirstBegin ||
+                    b.guestFirstSize > std::numeric_limits<uintptr_t>::max() - b.guestFirstBegin)
+                    return false;
+                return a.guestFirstBegin < b.guestFirstBegin + b.guestFirstSize &&
+                       b.guestFirstBegin < a.guestFirstBegin + a.guestFirstSize;
+            }};
+            // Prefer exact texture+generation matches. A first guest mapping
+            // overlap is weaker evidence of aliases, not guaranteed identity.
+            for (int pass{}; pass != 2; ++pass) {
+                match.matchingEvents = 0;
+                for (uint64_t i{}; i < available; ++i) {
+                    const auto &candidate{writers[(writerCount - available + i) % MaxWriters]};
+                    const bool exact{candidate.textureKey == resource.textureKey &&
+                                     candidate.generation == resource.generation};
+                    if ((pass == 0 && !exact) ||
+                        (pass == 1 && (exact || !physicalOverlap(candidate, resource))))
+                        continue;
+                    if (!match.matchingEvents) match.earliest = candidate;
+                    match.latest = candidate;
+                    ++match.matchingEvents;
+                }
+                if (match.matchingEvents) {
+                    match.exactTexture = pass == 0;
+                    break;
+                }
+            }
+            return match;
+        }
+
+        uint64_t RecordedPossibleWriters() const {
+            std::lock_guard lock{mutex};
+            return writerCount;
+        }
+
         void EndNaturalPass() { tracingNaturalPass.store(false, std::memory_order_release); }
 
         bool Arm(bool preferScene = true) {
@@ -75,6 +151,7 @@ namespace skyline::gpu::texture::diagnostic {
             if (frozen || armed || tracingNaturalPass || operations >= MaxOperations) return false;
             preferScenePass.store(preferScene, std::memory_order_release);
             skippedOverlayPasses.store(0, std::memory_order_release);
+            writerCount = 0;
             armed.store(true, std::memory_order_release);
             return true;
         }
