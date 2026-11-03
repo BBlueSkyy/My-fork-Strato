@@ -133,6 +133,54 @@ int main() {
     assert(producer.RecordedPossibleWriters() == 0); // Fresh arm = new provenance window.
     for (unsigned i{}; i < 260; ++i) producer.NotePossibleWriter(writer);
     found = producer.FindPriorWriters(key);
-    assert(found.truncated && found.matchingEvents == 256);
-    assert(found.earliest.ordinal == 5 && found.latest.ordinal == 260);
+    assert(!found.truncated && found.matchingEvents == 260);
+    assert(found.earliest.ordinal == 1 && found.latest.ordinal == 260);
+    assert(found.identifiedEvents == 260 && found.latestIdentified.ordinal == 260);
+    assert(producer.TrackedResources() == 1 && producer.EvictedResources() == 0);
+
+    // A last shader-identified writer survives many later shaderless clears,
+    // unlike a global 256-event ring buffer.
+    SpongeBobMini pinned;
+    assert(pinned.Arm());
+    pinned.NotePossibleWriter(writer);
+    auto clear{writer};
+    clear.pipeline = clear.vertexShader = clear.fragmentShader = 0;
+    clear.kind = 7;
+    for (unsigned i{}; i < 2000; ++i) pinned.NotePossibleWriter(clear);
+    found = pinned.FindPriorWriters(key);
+    assert(!found.truncated && found.exactTexture && found.matchingEvents == 2001);
+    assert(found.latest.kind == 7 && found.latest.ordinal == 2001);
+    assert(found.identifiedEvents == 1);
+    assert(found.latestIdentified.ordinal == 1 &&
+           found.latestIdentified.fragmentShader == 0x2200);
+
+    // DMA has no Texture identity; guest mapping overlap is a weaker hint.
+    SpongeBobMini dma;
+    assert(dma.Arm());
+    SpongeBobWriter memoryWriter{};
+    memoryWriter.guestFirstBegin = 0x11000;
+    memoryWriter.guestFirstSize = 0x2000;
+    memoryWriter.kind = 9;
+    dma.NotePossibleWriter(memoryWriter);
+    found = dma.FindPriorWriters(key);
+    assert(found.matchingEvents == 1 && !found.exactTexture);
+    assert(found.latest.kind == 9 && !found.identifiedEvents);
+
+    // Capacity is limited by distinct resources, not number of writes.
+    SpongeBobMini bounded;
+    assert(bounded.Arm());
+    SpongeBobWriter newest{};
+    for (unsigned i{}; i < 520; ++i) {
+        newest = key;
+        newest.textureKey = 0x80000 + i * 16;
+        newest.guestFirstBegin = 0x400000 + i * 0x2000;
+        newest.guestFirstSize = 0x1000;
+        bounded.NotePossibleWriter(newest);
+    }
+    assert(bounded.RecordedPossibleWriters() == 520);
+    assert(bounded.TrackedResources() == 512);
+    assert(bounded.EvictedResources() == 8);
+    found = bounded.FindPriorWriters(newest);
+    assert(found.exactTexture && found.truncated && found.matchingEvents == 1);
+    assert(found.latest.ordinal == 520 && found.resourcesEvicted == 8);
 }
