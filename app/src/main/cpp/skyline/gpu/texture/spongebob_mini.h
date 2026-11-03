@@ -51,6 +51,10 @@ namespace skyline::gpu::texture::diagnostic {
         mutable std::mutex mutex;
         std::atomic<bool> armed{};
         std::atomic<bool> tracingNaturalPass{};
+        // When armed, prefer a scene/HDR pass over a 1x1 white-quad overlay.
+        // The filter has no effect on normal (disarmed) emulation.
+        std::atomic<bool> preferScenePass{true};
+        std::atomic<uint64_t> skippedOverlayPasses{};
         bool frozen{};
         uint64_t operations{};
         std::vector<Entry> entries;
@@ -61,12 +65,16 @@ namespace skyline::gpu::texture::diagnostic {
         bool Armed() const { return armed.load(std::memory_order_relaxed); }
         bool TracingNaturalPass() const { return tracingNaturalPass.load(std::memory_order_acquire); }
         bool NeedsDrawInfo() const { return Armed() || TracingNaturalPass(); }
+        bool PreferScenePass() const { return preferScenePass.load(std::memory_order_acquire); }
+        uint64_t SkippedOverlayPass() { return ++skippedOverlayPasses; }
 
         void EndNaturalPass() { tracingNaturalPass.store(false, std::memory_order_release); }
 
-        bool Arm() {
+        bool Arm(bool preferScene = true) {
             std::lock_guard lock{mutex};
             if (frozen || armed || tracingNaturalPass || operations >= MaxOperations) return false;
+            preferScenePass.store(preferScene, std::memory_order_release);
+            skippedOverlayPasses.store(0, std::memory_order_release);
             armed.store(true, std::memory_order_release);
             return true;
         }
