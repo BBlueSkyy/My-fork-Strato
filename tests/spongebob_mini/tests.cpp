@@ -45,6 +45,9 @@ int main() {
         assert(!mini.Armed());
         return white;
     }));
+    // The natural render pass must be closed before the post-pass payload
+    // is eligible for export, even if all snapshots were queued.
+    mini.EndNaturalPass();
     std::ostringstream complete;
     assert(mini.Export(complete));
     assert(complete.str().starts_with("SBMINI2\n1,1,42,7,15,37,37,"));
@@ -60,6 +63,7 @@ int main() {
     assert(cancelled.Add(Info(op2,1,0),[&] { return black; }));
     assert(cancelled.Add(Info(op2,3,0),[&] { return black; }));
     assert(cancelled.Add(Info(op2,2,0),[] { return std::vector<uint8_t>{}; }));
+    cancelled.EndNaturalPass();
     std::ostringstream invalid;
     assert(!cancelled.Export(invalid));
     assert(invalid.str().empty()); // Never export an incomplete payload.
@@ -68,6 +72,7 @@ int main() {
     for (unsigned i{};i<3;++i) {
         assert(excessive.Arm());
         assert(excessive.Begin()==i+1);
+        excessive.EndNaturalPass();
     }
     assert(!excessive.Arm());
 }
