@@ -871,6 +871,12 @@ namespace skyline::gpu::interconnect {
                         prior.latestIdentified.kind, prior.latestIdentified.renderPassIndex,
                         prior.latestIdentified.pipeline, prior.latestIdentified.vertexShader,
                         prior.latestIdentified.fragmentShader, prior.latestIdentified.computeShader);
+                    LOGI("[SB_PRODUCER_SOURCE] role={} firstShaderOrdinal={} firstShaderKind={} firstShaderRp={} firstShaderSeq={} firstPipeline={:016X} firstVS={:016X} firstFS={:016X} firstCS={:016X} lastShaderSeq={}",
+                        role, prior.firstIdentified.ordinal, prior.firstIdentified.kind,
+                        prior.firstIdentified.renderPassIndex, prior.firstIdentified.channelSequence,
+                        prior.firstIdentified.pipeline, prior.firstIdentified.vertexShader,
+                        prior.firstIdentified.fragmentShader, prior.firstIdentified.computeShader,
+                        prior.latestIdentified.channelSequence);
                 }};
                 LOGI("[SB_PRODUCER] history_total={} tracked_resources={} evicted_resources={}",
                     gpu.spongeBobMini.RecordedPossibleWriters(),
