@@ -900,6 +900,12 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::AddClearColorSubpass(TextureView *attachment, const vk::ClearColorValue &value) {
         bool gotoNext{CreateRenderPassWithSubpass(vk::Rect2D{.extent = attachment->texture->dimensions}, {}, {}, attachment, nullptr)};
+        if (sbNaturalPassOperation) {
+            const auto ordinal{++sbNaturalPassDraws};
+            if (ordinal <= 128 || (ordinal & (ordinal - 1)) == 0)
+                LOGI("[SB_PASS_CLEAR] op={} ordinal={} rp={} kind=color",
+                    sbNaturalPassOperation, ordinal, renderPassIndex);
+        }
         if (renderPass->ClearColorAttachment(0, value, gpu)) {
             if (gotoNext)
                 slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassNode>());
@@ -925,6 +931,12 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::AddClearDepthStencilSubpass(TextureView *attachment, const vk::ClearDepthStencilValue &value) {
         bool gotoNext{CreateRenderPassWithSubpass(vk::Rect2D{.extent = attachment->texture->dimensions}, {}, {}, {}, attachment)};
+        if (sbNaturalPassOperation) {
+            const auto ordinal{++sbNaturalPassDraws};
+            if (ordinal <= 128 || (ordinal & (ordinal - 1)) == 0)
+                LOGI("[SB_PASS_CLEAR] op={} ordinal={} rp={} kind=depth_stencil",
+                    sbNaturalPassOperation, ordinal, renderPassIndex);
+        }
         if (renderPass->ClearDepthStencilAttachment(value, gpu)) {
             if (gotoNext)
                 slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassNode>());
