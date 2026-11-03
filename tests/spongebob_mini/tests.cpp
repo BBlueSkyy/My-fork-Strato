@@ -16,7 +16,11 @@ static SpongeBobMiniInfo Info(uint64_t operation, uint32_t role, uint8_t value) 
         .hostFormat=37, .guestFormat=37, .width=512, .height=512,
         .x=224, .y=224, .regionWidth=64, .regionHeight=64,
         .mip=0, .layer=0, .blockWidth=1, .blockHeight=1,
-        .bytesPerBlock=4, .size=64*64*4
+        .bytesPerBlock=4, .size=64*64*4,
+        .pipelineHash=0x1234, .channelSequence=345,
+        .shaderHashes={0x11,0x22,0x33,0x44,0x55,0x66},
+        .drawKind=1, .topology=3, .indexed=1,
+        .first=0, .count=6, .instances=1
     };
 }
 
@@ -43,7 +47,7 @@ int main() {
     }));
     std::ostringstream complete;
     assert(mini.Export(complete));
-    assert(complete.str().starts_with("SBMINI1\n1,1,42,7,15,37,37,"));
+    assert(complete.str().starts_with("SBMINI2\n1,1,42,7,15,37,37,"));
     assert(complete.str().size() > black.size() * 3);
     assert(!mini.Arm()); // Frozen after export.
     assert(!mini.Add(Info(op,4,0),[&] { return black; }));
