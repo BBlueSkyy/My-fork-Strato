@@ -36,6 +36,8 @@ If the UI says capture incomplete, the current process may not have reached an e
 
 ```bash
 python3 tools/decode_spongebob_mini.py spongebob-mini.mcap decoded/
+# Optional comparison, only for two new SBMINI2 captures:
+python3 tools/compare_spongebob_mini.py boot1.mcap boot2.mcap
 ```
 
 Output: `manifest.json`, `op*-role*.bin` raw bytes for all records and PNG previews for RGBA8/BGRA8 VkFormats. The JSON includes per-operation changed bytes and mean difference, the six shader hashes (SBMINI2), and **bit-accurate NaN/+Inf counts for VkFormat 122 (R11G11B10)**. `target_new_nan_pixels` counts pixels that changed from finite to containing a NaN within the isolated draw. Nonzero bytes or a changed target do **not** by themselves prove correct colors. For compressed/HDR formats, the raw blobs are preserved for format-aware inspection.
@@ -57,3 +59,7 @@ The first two SBMINI1 captures both contained NaNs in a 1280×720 R11G11B10 targ
 To pinpoint which draw introduces a NaN, the manual capture records the target immediately before and immediately after the selected draw. Draws after that point are excluded from the measured delta; earlier work may still affect the "before" input. The JSON field `target_new_nan_pixels` is derived by inspecting the exact NaN encodings, not by interpreting false-color previews. If NaNs are introduced, the responsible *draw* is isolated, but determining whether the shader, sampler, buffer, or texture is responsible still requires further evidence.
 
 The caching of TIC metadata is observational only: no forced descriptor rebinding or texture-pool flush. Guest IOVA is not a host pointer. Distinct TICs may resolve to the same view and cached metadata can be ambiguous; this is represented explicitly.
+
+## Status of the diagnostic branch
+
+The SBMINI2 changes have been committed to the *same existing Draft #421* and have not been merged. The existing ARM64 DevRelease CI workflow must compile the updated GPU code before installing on Android. The host tests are provided but a passing device Vulkan copy/precise-draw test has **not** been established by static inspection alone. Any Android build failure must be fixed before relying on the capture.
