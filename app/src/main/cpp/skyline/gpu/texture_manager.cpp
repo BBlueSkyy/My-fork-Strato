@@ -88,7 +88,7 @@ namespace skyline::gpu {
                 const auto candidateNumber{++overlapDiagnostic.dirtyCandidates};
                 const bool notPublished{source->gpuReadbackSerial < writeBefore};
                 const auto outcomeNumber{notPublished ? ++overlapDiagnostic.notPublished : ++overlapDiagnostic.published};
-                if (ShouldLogOverlapDiagnostic(outcomeNumber, notPublished ? 64 : 16)) {
+                if (ShouldLogOverlapDiagnostic(outcomeNumber, notPublished ? 24 : 8)) {
                     const auto *descriptor{source->guest ? &*source->guest : nullptr};
                     LOGI("[SB_TEXDIAG] overlap candidate={} outcome={} outcome_count={} published={} no_readback={} src={} dimensions={}x{}x{} mips={} layers={} host_fmt={} guest_fmt={} layout={} undefined={} format_mismatch={} regional={} stale={} readonly={} was_freed={} dirty_before={} dirty_after={} write_before={} readback_before={} readback_after={}",
                         candidateNumber, notPublished ? "no_readback" : "readback_done", outcomeNumber,
@@ -664,7 +664,7 @@ namespace skyline::gpu {
         const bool regionAccepted{regionPreflight([&] { return Texture::RegisterRegionAuthority(regionMembers, tag); })};
         if (!readbackSources.empty()) {
             const auto outcomeCount{regionAccepted ? ++overlapDiagnostic.regionalAccepted : ++overlapDiagnostic.regionalRejected};
-            if (ShouldLogOverlapDiagnostic(outcomeCount, regionAccepted ? 16 : 64)) {
+            if (ShouldLogOverlapDiagnostic(outcomeCount, regionAccepted ? 8 : 24)) {
                 LOGI("[SB_TEXDIAG] region outcome={} count={} accepted={} rejected={} new_tex={} sources={} dimensions={}x{}x{} mips={} layers={} format={} tile_mode={} block_height={}",
                     regionAccepted ? "accepted" : "rejected", outcomeCount,
                     overlapDiagnostic.regionalAccepted.load(), overlapDiagnostic.regionalRejected.load(),
