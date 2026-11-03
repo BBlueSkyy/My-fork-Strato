@@ -760,13 +760,24 @@ namespace skyline::gpu::interconnect {
             for (auto *candidate : colorAttachments)
                 if (SbMiniEligible(candidate, true)) { sbTarget = candidate; break; }
             if (sbTarget) {
-                for (u32 ordinal{}; ordinal < sampledImages.size(); ++ordinal) {
-                    auto *candidate{sampledImages[ordinal]};
-                    if (SbMiniEligible(candidate, false)) {
-                        sbInputs.push_back(candidate);
-                        sbInputOrdinals.push_back(ordinal);
-                        if (sbInputs.size() == 4) break;
+                // Keep the small capture budget useful: retain substantial
+                // sampled images first, then fill free slots with tiny inputs.
+                // The original descriptor ordinal stays attached to each ROI.
+                const auto substantial{[](TextureView *view) {
+                    const auto &texture{*view->texture};
+                    return std::max(1U, texture.dimensions.width >> view->range.baseMipLevel) >= 16 ||
+                           std::max(1U, texture.dimensions.height >> view->range.baseMipLevel) >= 16;
+                }};
+                for (bool preferLarge : {true, false}) {
+                    for (u32 ordinal{}; ordinal < sampledImages.size() && sbInputs.size() < 4; ++ordinal) {
+                        auto *candidate{sampledImages[ordinal]};
+                        if (SbMiniEligible(candidate, false) &&
+                            substantial(candidate) == preferLarge) {
+                            sbInputs.push_back(candidate);
+                            sbInputOrdinals.push_back(ordinal);
+                        }
                     }
+                    if (sbInputs.size() == 4) break;
                 }
             }
         }
