@@ -23,7 +23,7 @@ namespace skyline::gpu::interconnect {
         if (!view || !view->texture) return w;
         const auto &image{*view->texture};
         w.textureKey = reinterpret_cast<uintptr_t>(view->texture.get());
-        w.generation = image.backingGeneration;
+        w.generation = image.GetBackingGeneration();
         if (image.guest && !image.guest->mappings.empty()) {
             const auto &first{image.guest->mappings.front()};
             w.guestFirstBegin = reinterpret_cast<uintptr_t>(first.data());
