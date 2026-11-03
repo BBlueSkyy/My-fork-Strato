@@ -577,6 +577,13 @@ namespace skyline::gpu {
         }
 
         /**
+         * @brief Read-only backing identity generation for diagnostic provenance.
+         * @note As with GetBacking(), callers must respect the existing texture
+         *       lifetime and synchronization constraints.
+         */
+        u64 GetBackingGeneration() const { return backingGeneration; }
+
+        /**
          * @brief Acquires an exclusive lock on the texture for the calling thread
          * @note Naming is in accordance to the BasicLockable named requirement
          */
