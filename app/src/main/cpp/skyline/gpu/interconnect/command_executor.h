@@ -4,6 +4,7 @@
 #pragma once
 
 #include <gpu/texture/backing_promotion.h>
+#include <gpu/texture/spongebob_mini.h>
 #include <gpu/texture/region_authority.h>
 #include <boost/container/small_vector.hpp>
 #include "common/common.h"
@@ -256,7 +257,7 @@ namespace skyline::gpu::interconnect {
          */
         // Explicit SpongeBob diagnostic only; no hot-path scan when disarmed.
         bool SbMiniEligible(TextureView *view, bool output) const;
-        void QueueSbMiniImage(TextureView *view, u64 operation, u32 role, bool afterRenderPass);
+        void QueueSbMiniImage(TextureView *view, u64 operation, u32 role, const texture::diagnostic::SpongeBobMiniDrawInfo &draw, u32 sampledOrdinal);
 
         void SubmitInternal();
 
@@ -337,7 +338,7 @@ namespace skyline::gpu::interconnect {
 
         using SubpassHookFactory = std::function<SubpassHooks(u32 renderPassIndex)>;
 
-        void AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, SubpassHookFactory hookFactory = {}, span<TextureView *> storageWrites = {}, span<TextureView *> storageReads = {});
+        void AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, SubpassHookFactory hookFactory = {}, span<TextureView *> storageWrites = {}, span<TextureView *> storageReads = {}, const texture::diagnostic::SpongeBobMiniDrawInfo *sbDrawInfo = nullptr);
 
         /**
          * @brief Adds a subpass that clears the entirety of the specified attachment with a color value, it may utilize VK_ATTACHMENT_LOAD_OP_CLEAR for a more efficient clear when possible
