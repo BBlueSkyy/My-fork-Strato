@@ -50,7 +50,7 @@ int main() {
     mini.EndNaturalPass();
     std::ostringstream complete;
     assert(mini.Export(complete));
-    assert(complete.str().starts_with("SBMINI2\n1,1,42,7,15,37,37,"));
+    assert(complete.str().starts_with("SBMINI3\n1,1,42,7,15,37,37,"));
     assert(complete.str().size() > black.size() * 3);
     assert(!mini.Arm()); // Frozen after export.
     assert(!mini.Add(Info(op,4,0),[&] { return black; }));
