@@ -64,7 +64,7 @@ namespace skyline::gpu::texture::diagnostic {
     };
 
     struct SpongeBobWriterMatch {
-        SpongeBobWriter earliest{}, latest{}, latestIdentified{};
+        SpongeBobWriter earliest{}, latest{}, firstIdentified{}, latestIdentified{};
         uint64_t matchingEvents{}, identifiedEvents{};
         bool exactTexture{}, truncated{};
         uint64_t resourcesEvicted{};
@@ -90,7 +90,7 @@ namespace skyline::gpu::texture::diagnostic {
         // activity starts only after the user arms it. No dynamic allocations
         // or GPU operations on the record path; only a bounded mutex section.
         struct WriterHistory {
-            SpongeBobWriter earliest{}, latest{}, latestIdentified{};
+            SpongeBobWriter earliest{}, latest{}, firstIdentified{}, latestIdentified{};
             uint64_t count{}, identifiedCount{};
         };
         static constexpr size_t MaxTrackedResources{512};
@@ -145,6 +145,7 @@ namespace skyline::gpu::texture::diagnostic {
             existing->latest = writer;
             ++existing->count;
             if (HasShaderIdentity(writer)) {
+                if (!existing->identifiedCount) existing->firstIdentified = writer;
                 existing->latestIdentified = writer;
                 ++existing->identifiedCount;
             }
@@ -169,10 +170,14 @@ namespace skyline::gpu::texture::diagnostic {
                     match.earliest = slot.earliest;
                 if (!match.matchingEvents || slot.latest.ordinal > match.latest.ordinal)
                     match.latest = slot.latest;
-                if (slot.identifiedCount &&
-                    (!match.identifiedEvents ||
-                     slot.latestIdentified.ordinal > match.latestIdentified.ordinal))
-                    match.latestIdentified = slot.latestIdentified;
+                if (slot.identifiedCount) {
+                    if (!match.identifiedEvents ||
+                        slot.firstIdentified.ordinal < match.firstIdentified.ordinal)
+                        match.firstIdentified = slot.firstIdentified;
+                    if (!match.identifiedEvents ||
+                        slot.latestIdentified.ordinal > match.latestIdentified.ordinal)
+                        match.latestIdentified = slot.latestIdentified;
+                }
                 match.matchingEvents += slot.count;
                 match.identifiedEvents += slot.identifiedCount;
             }};
