@@ -123,7 +123,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private fun showSbMiniMenu() {
         MaterialAlertDialogBuilder(this)
             .setTitle("SpongeBob GPU Mini diagnostic")
-            .setItems(arrayOf("Capture next graphics operation", "Export GPU Mini capture")) { _, item ->
+            .setItems(arrayOf("Capture next natural render pass", "Export GPU Mini capture")) { _, item ->
                 if (item == 0) {
                     val armed = nativeSbMini(1, -1)
                     Toast.makeText(this,
