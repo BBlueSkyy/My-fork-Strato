@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Decode SBMINI1/SBMINI2 snapshots with stable draw identity and HDR NaN counts.
+"""Decode SBMINI1/2/3 snapshots, R11G11B10 NaNs and capture scope.
 
 This is a Strato diagnostic format, not a native RenderDoc .rdc file.
 """
@@ -17,6 +17,7 @@ FIELDS_V2 = FIELDS_V1 + (
     "pipeline_hash channel_sequence shader0 shader1 shader2 shader3 shader4 shader5 "
     "draw_kind topology indexed first count instances sampled_ordinal tic_index matching_tics tic_iova"
 ).split()
+FIELDS_V3 = FIELDS_V2 + ["capture_scope"]
 MAX_ROWS = 18
 MAX_BYTES = 65536
 
@@ -50,9 +51,9 @@ def decode(capture: Path, output: Path):
     records = []
     with capture.open("rb") as source:
         magic = source.readline()
-        if magic not in (b"SBMINI1\n", b"SBMINI2\n"):
+        if magic not in (b"SBMINI1\n", b"SBMINI2\n", b"SBMINI3\n"):
             raise ValueError("Unsupported Mini capture format")
-        fields = FIELDS_V2 if magic == b"SBMINI2\n" else FIELDS_V1
+        fields = FIELDS_V3 if magic == b"SBMINI3\n" else FIELDS_V2 if magic == b"SBMINI2\n" else FIELDS_V1
         while line := source.readline():
             if len(records) == MAX_ROWS or len(line) > 1024:
                 raise ValueError("Unbounded capture records")
@@ -119,7 +120,9 @@ def decode(capture: Path, output: Path):
         if len(before) != len(after):
             raise ValueError("Target before/after length mismatch")
         meta = entries[1]
-        if magic == b"SBMINI2\n":
+        if magic in (b"SBMINI2\n", b"SBMINI3\n"):
+            if magic == b"SBMINI3\n" and any(row["capture_scope"] != 1 for row in entries.values()):
+                raise ValueError("Unsupported SBMINI3 capture scope")
             for row in entries.values():
                 if any(row[key] != meta[key] for key in (
                     "pipeline_hash", "channel_sequence", "shader0", "shader1", "shader2",
@@ -141,6 +144,8 @@ def decode(capture: Path, output: Path):
             }
         results.append({
             "operation": operation,
+            **({"capture_scope": "natural_render_pass"} if magic == b"SBMINI3\n"
+               else {"capture_scope": "isolated_draw"} if magic in (b"SBMINI2\n", b"SBMINI3\n") else {}),
             **introduced,
             **({
                 "pipeline_hash": f"{meta['pipeline_hash']:016x}",
