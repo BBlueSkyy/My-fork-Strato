@@ -398,6 +398,23 @@ namespace skyline::gpu::interconnect {
         return texture.get();
     }
 
+    Textures::CachedTicIdentity Textures::FindCachedTicForView(const TextureView *view) const {
+        CachedTicIdentity identity{};
+        if (!view) return identity;
+        for (size_t i{}; i < textureHeaderCache.size(); ++i) {
+            const auto &entry{textureHeaderCache[i]};
+            if (entry.view != view || !entry.view->texture ||
+                entry.view->texture->replaced)
+                continue;
+            if (!identity.matches) {
+                identity.index = static_cast<u32>(i);
+                identity.iova = entry.tic.Iova();
+            }
+            ++identity.matches;
+        }
+        return identity;
+    }
+
     Shader::TextureType Textures::GetTextureType(InterconnectContext &ctx, u32 index) {
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
         if (index >= textureHeaders.size()) {
