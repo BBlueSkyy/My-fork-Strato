@@ -9,6 +9,7 @@
 #include "gpu/command_scheduler.h"
 #include "gpu/presentation_engine.h"
 #include "gpu/texture_manager.h"
+#include "gpu/texture/spongebob_mini.h"
 #include "gpu/buffer_manager.h"
 #include "gpu/megabuffer.h"
 #include "gpu/descriptor_allocator.h"
@@ -71,6 +72,9 @@ namespace skyline::gpu {
 
         static constexpr size_t DebugTracingBufferSize{0x80000}; //!< 512KiB
         memory::Buffer debugTracingBuffer; //!< General use buffer for debug tracing, first 4 bytes are allocated for checkpoints
+
+        // Declared last so saved staging/cycle closures are destroyed before GPU memory/device.
+        texture::diagnostic::SpongeBobMini spongeBobMini;
 
         GPU(const DeviceState &state);
 
