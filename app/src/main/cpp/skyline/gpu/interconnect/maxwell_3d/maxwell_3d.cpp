@@ -158,8 +158,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
     constantBuffers.ResetQuickBind();
 
     std::optional<texture::diagnostic::SpongeBobMiniDrawInfo> sbMiniDraw;
-    if (ctx.gpu.spongeBobMini.NeedsDrawInfo()) {
-        sbMiniDraw.emplace(MakeSbMiniDrawInfo(2, topology, true, 0, count, instanceCount, ctx.gpu.spongeBobMini.Armed()));
+    const bool collectSbTics{ctx.gpu.spongeBobMini.Armed() && ctx.executor.CanBeginSbNaturalPass()};
+        if (collectSbTics || ctx.gpu.spongeBobMini.TracingNaturalPass()) {
+        sbMiniDraw.emplace(MakeSbMiniDrawInfo(2, topology, true, 0, count, instanceCount, collectSbTics));
         sbMiniDraw->scissorX = scissor.offset.x;
         sbMiniDraw->scissorY = scissor.offset.y;
         sbMiniDraw->scissorWidth = scissor.extent.width;
@@ -834,8 +835,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         constantBuffers.ResetQuickBind();
         std::optional<texture::diagnostic::SpongeBobMiniDrawInfo> sbMiniDraw;
-        if (ctx.gpu.spongeBobMini.NeedsDrawInfo()) {
-            sbMiniDraw.emplace(MakeSbMiniDrawInfo(1, topology, indexed, first, count, instanceCount, ctx.gpu.spongeBobMini.Armed()));
+        const bool collectSbTics{ctx.gpu.spongeBobMini.Armed() && ctx.executor.CanBeginSbNaturalPass()};
+        if (collectSbTics || ctx.gpu.spongeBobMini.TracingNaturalPass()) {
+            sbMiniDraw.emplace(MakeSbMiniDrawInfo(1, topology, indexed, first, count, instanceCount, collectSbTics));
         sbMiniDraw->scissorX = scissor.offset.x;
         sbMiniDraw->scissorY = scissor.offset.y;
         sbMiniDraw->scissorWidth = scissor.extent.width;
@@ -927,8 +929,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         constantBuffers.ResetQuickBind();
 
         std::optional<texture::diagnostic::SpongeBobMiniDrawInfo> sbMiniDraw;
-        if (ctx.gpu.spongeBobMini.NeedsDrawInfo()) {
-            sbMiniDraw.emplace(MakeSbMiniDrawInfo(3, topology, indexed, 0, count, 1, ctx.gpu.spongeBobMini.Armed()));
+        const bool collectSbTics{ctx.gpu.spongeBobMini.Armed() && ctx.executor.CanBeginSbNaturalPass()};
+        if (collectSbTics || ctx.gpu.spongeBobMini.TracingNaturalPass()) {
+            sbMiniDraw.emplace(MakeSbMiniDrawInfo(3, topology, indexed, 0, count, 1, collectSbTics));
         sbMiniDraw->scissorX = scissor.offset.x;
         sbMiniDraw->scissorY = scissor.offset.y;
         sbMiniDraw->scissorWidth = scissor.extent.width;
