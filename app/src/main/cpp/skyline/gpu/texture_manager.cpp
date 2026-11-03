@@ -2,6 +2,8 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/trace.h>
+#include <atomic>
+#include <logger/logger.h>
 #include <gpu.h>
 #include "texture/layout.h"
 #include "texture_manager.h"
@@ -11,6 +13,23 @@
 #include "texture/mapping_match.h"
 
 namespace skyline::gpu {
+    namespace {
+        // Temporary diagnostic only. Counters and bounded async logs do not
+        // affect guest memory, resource ownership or Vulkan submission order.
+        struct OverlapDiagnosticCounters {
+            std::atomic<u64> dirtyCandidates{};
+            std::atomic<u64> notPublished{};
+            std::atomic<u64> published{};
+            std::atomic<u64> regionalAccepted{};
+            std::atomic<u64> regionalRejected{};
+        };
+        OverlapDiagnosticCounters overlapDiagnostic;
+
+        bool ShouldLogOverlapDiagnostic(u64 count, u64 first) {
+            return count <= first || (count && !(count & (count - 1)));
+        }
+    }
+
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
@@ -47,12 +66,46 @@ namespace skyline::gpu {
             std::scoped_lock stateLock{source->stateMutex};
             const auto previousState{source->dirtyState};
             const bool previousMemoryFreed{source->memoryFreed};
+            // A dirty source with a newer GPU serial needs a readback only if
+            // it still owns bytes needed by the new guest representation.
+            const bool dirtyCandidate{previousState == Texture::DirtyState::GpuDirty &&
+                source->gpuWriteSerial > source->gpuReadbackSerial};
+            const auto writeBefore{source->gpuWriteSerial};
+            const auto readbackBefore{source->gpuReadbackSerial};
+            const bool undefinedLayout{source->layout == vk::ImageLayout::eUndefined};
+            const bool formatMismatch{source->guest && source->format != source->guest->format};
+            const bool superseded{source->aliasStale.load()};
+            const bool readOnly{source->aliasReadOnly.load()};
+            const bool regional{source->regionTracked.load(std::memory_order_relaxed)};
             try {
                 source->SynchronizeGuest(false, true);
             } catch (...) {
                 source->dirtyState = previousState;
                 source->memoryFreed = previousMemoryFreed;
                 throw;
+            }
+            if (dirtyCandidate) {
+                const auto candidateNumber{++overlapDiagnostic.dirtyCandidates};
+                const bool notPublished{source->gpuReadbackSerial < writeBefore};
+                const auto outcomeNumber{notPublished ? ++overlapDiagnostic.notPublished : ++overlapDiagnostic.published};
+                if (ShouldLogOverlapDiagnostic(outcomeNumber, notPublished ? 64 : 16)) {
+                    const auto *descriptor{source->guest.get()};
+                    LOGI("[SB_TEXDIAG] overlap candidate={} outcome={} outcome_count={} published={} no_readback={} src={} dimensions={}x{}x{} mips={} layers={} host_fmt={} guest_fmt={} layout={} undefined={} format_mismatch={} regional={} stale={} readonly={} was_freed={} dirty_before={} dirty_after={} write_before={} readback_before={} readback_after={}",
+                        candidateNumber, notPublished ? "no_readback" : "readback_done", outcomeNumber,
+                        overlapDiagnostic.published.load(), overlapDiagnostic.notPublished.load(),
+                        static_cast<const void *>(source.get()),
+                        descriptor ? descriptor->dimensions.width : 0U,
+                        descriptor ? descriptor->dimensions.height : 0U,
+                        descriptor ? descriptor->dimensions.depth : 0U,
+                        descriptor ? descriptor->mipLevelCount : 0U,
+                        descriptor ? descriptor->layerCount : 0U,
+                        static_cast<int>(source->format->vkFormat),
+                        descriptor ? static_cast<int>(descriptor->format->vkFormat) : -1,
+                        static_cast<int>(source->layout), undefinedLayout, formatMismatch, regional,
+                        superseded, readOnly, previousMemoryFreed,
+                        static_cast<int>(previousState), static_cast<int>(source->dirtyState),
+                        writeBefore, readbackBefore, source->gpuReadbackSerial);
+                }
             }
         }
     }
@@ -608,7 +661,21 @@ namespace skyline::gpu {
         // correspondence. Incompatible transitions first publish the old domain.
         auto regionMembers{readbackSources};
         regionMembers.push_back(texture);
-        if (!regionPreflight([&] { return Texture::RegisterRegionAuthority(regionMembers, tag); })) {
+        const bool regionAccepted{regionPreflight([&] { return Texture::RegisterRegionAuthority(regionMembers, tag); })};
+        if (!readbackSources.empty()) {
+            const auto outcomeCount{regionAccepted ? ++overlapDiagnostic.regionalAccepted : ++overlapDiagnostic.regionalRejected};
+            if (ShouldLogOverlapDiagnostic(outcomeCount, regionAccepted ? 16 : 64)) {
+                LOGI("[SB_TEXDIAG] region outcome={} count={} accepted={} rejected={} new_tex={} sources={} dimensions={}x{}x{} mips={} layers={} format={} tile_mode={} block_height={}",
+                    regionAccepted ? "accepted" : "rejected", outcomeCount,
+                    overlapDiagnostic.regionalAccepted.load(), overlapDiagnostic.regionalRejected.load(),
+                    static_cast<const void *>(texture.get()), readbackSources.size(),
+                    guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
+                    guestTexture.mipLevelCount, guestTexture.layerCount,
+                    static_cast<int>(guestTexture.format->vkFormat), static_cast<int>(guestTexture.tileConfig.mode),
+                    guestTexture.tileConfig.mode == texture::TileMode::Block ? guestTexture.tileConfig.blockHeight : 0U);
+            }
+        }
+        if (!regionAccepted) {
             const bool tracked{std::any_of(readbackSources.begin(), readbackSources.end(), [](const auto &source) {
                 return source->regionTracked.load(std::memory_order_relaxed);
             })};
