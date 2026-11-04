@@ -136,14 +136,14 @@ namespace skyline::soc::gm20b::engine {
                     (remap.dstW == Registers::RemapComponents::Swizzle::ConstA) &&
                     (remap.ComponentSize() == 4)) {
                     size_t dstSize{*registers.lineLengthIn * remap.NumDstComponents() * remap.ComponentSize()};
-                    interconnect.Clear(*registers.offsetOut, dstSize, *registers.remapConstA);
+                    interconnect.Clear(IOVA{u64{*registers.offsetOut}}, dstSize, *registers.remapConstA);
                 } else {
                     // General case: constant fills with other components/sizes, source component
                     // swizzles (e.g. RGB8 -> RGBA8 upload), or a mix of both
                     CopyRemap1D();
                 }
             } else {
-                interconnect.Copy(*registers.offsetOut, *registers.offsetIn, *registers.lineLengthIn);
+                interconnect.Copy(IOVA{u64{*registers.offsetOut}}, IOVA{u64{*registers.offsetIn}}, *registers.lineLengthIn);
             }
         }
     }
