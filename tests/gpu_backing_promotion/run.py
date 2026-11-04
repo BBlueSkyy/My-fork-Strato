@@ -26,7 +26,6 @@ def function(text, signature, default_arguments=False):
 
 
 sys.path.insert(0, str(ROOT / "tests/gpu_gmmu_segment"))
-from gmmu_segment_fixture import diagnostics
 
 with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as directory:
     directory = pathlib.Path(directory)
@@ -42,7 +41,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         return source[start:end]
     (directory / "gmmu_translation.inc").write_text(address_function(address_header,"std::pair<span<u8>, size_t> LookupBlockLocked(",True)+"\n"+
         address_function(address_header,"TranslatedAddressRange TranslateRange(",True))
-    (directory / "gmmu_identity.inc").write_text(diagnostics(address_header)+address_function(address_header,"bool SameMappingLocked(")+"\n"+
+    (directory / "gmmu_identity.inc").write_text(address_function(address_header,"bool SameMappingLocked(")+"\n"+
         address_function(address_header,"std::vector<std::pair<VaType, VaType>> ChangedMappingRangesLocked(")+"\n"+
         address_function(address_header,"TrackedTranslation TranslateRangeTracked(",True)+"\n"+
         address_function(address_header,"void Map(",True)+"\n"+address_function(address_header,"void Unmap(",True))
@@ -192,7 +191,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "retry.inc").write_text(function(executor,
         "void CommandExecutor::HandleTextureBackingPromotion("))
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror",
-                    "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS", "-Wno-unknown-pragmas", "-Wno-unused-parameter", "-fsanitize=undefined",
+                    "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS", "-Wno-unknown-pragmas", "-Wno-unused-parameter", "-fsanitize=" + os.environ.get("SANITIZE", "undefined"),
                     "-fno-sanitize-recover=all", "-pthread", "-I" + str(directory),
                     "-I" + str(ROOT / "app/src/main/cpp/skyline"),
                     "-I" + os.environ.get("VULKAN_HPP_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp")),
