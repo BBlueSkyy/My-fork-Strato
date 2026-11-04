@@ -143,3 +143,22 @@ its only change after the previously inspected `ab2011a4` is the existing PR
 workflow's parallel recursive checkout. No master GPU/shader change is dropped;
 this branch does not merge or modify that workflow. All publication uses the
 existing Draft #400 and a single synchronization event for ARM64 DevRelease.
+
+## Follow-up CI compatibility (PR Build #41755651787)
+
+GitHub Actions stopped before Android Assemble in the master-provided
+`Test conservative Compute SSBO ranges` gate, not in Stage C Vulkan
+execution. `tests/ssbo_bounded/run.py` is provided by the PR merge's
+**master** side, and its extracted production `CachedMappedBufferView::Update`
+body now requires `Gmmu::ReadMappingEpoch`, the cache's `mappingEpoch`,
+and `CommandExecutor::StartTextureMapping`. The old host facade lacked
+these declarations, so generated `test.cpp` failed to compile.
+
+The separate master-only harness updates
+`374dc1c5` and `e6da30c3` add a surrogate identity+revision epoch,
+executor hook, and host regressions for P→Q→P without purge and two
+translator owners at an identical revision. Production code remains
+unchanged; no epoch or cache-validation checks are bypassed. Re-running
+the workflow against a new PR merge commit is required to validate the
+updated host gate and Android build. This note does not claim the APK
+was built or the host test passed in CI.
