@@ -79,7 +79,7 @@ Do not interpret the unsupported-admission rejection tests as a successful
 ordinary fallback. Do not reinterpret old logs as tests of later changed code.
 The final mapped-entrypoint automatic suite passed with helper range checks, quiescent direct CPU branches, forced remaps during real reconciliation, partial/overlapping copies, CBUF Load offset validation and the multibuffer drain regression (`dma-mapping-final-full-green.log`). The CBUF selector/cache/bound-slot regression also passed (`dma-cbuf-selector-regression.log`). All of these used the existing real Vulkan host fixture; no Android imported-memory transport is certified.
 
-A subsequent extra coalescing test initially expected the replacement lock to be released before executor submission. That expectation was wrong: retention intentionally transfers the lock to the executor. The corrected extra test remains local until its own run completes; it is not part of this validated publication.
+An extra DMA coalescing test now verifies real bytes and concrete lock lifetime: the old buffer unlocks, the replacement is retained by the executor before Submit, and both are released after Submit. Its initial expectation of immediate replacement unlock was a fixture error, not a production defect. The corrected test passed ASan/UBSan and synchronization validation (`dma-mapping-coalesce-validated.log`).
 
 The earlier full-production independent review produced C1/C2/I4, now covered by RED→GREEN data tests. A fresh review of the mapping delta was attempted but the reviewer stopped at the service usage limit before providing findings. The mapping delta received author review; independent follow-up remains pending.
 
@@ -111,3 +111,59 @@ driver behavior and performance with Free Guest OFF/ON require device validation
 ## Publication boundary
 
 This increment preserves and publishes the verified shared-authority implementation with its release gate disabled, mapped DMA/Inline/CBUF corrections, multibuffer drain correction, exact-body regressions and benchmark harness. It is not an activation milestone. No new runtime diagnostics or CI-mandatory tests/workflows are added. A single branch update carries the organized commits; the existing ARM64 DevRelease workflow is used without monitoring its execution.
+
+## Follow-up verification and benchmark results
+
+The published production tree subsequently passed default backing tests, the
+full authority probe and the lock-order probe under ASan/UBSan and Vulkan
+synchronization validation (`cfull-final-image-modes.log`). One compilation was
+reused across the three runtime modes; A→B→reuse A stayed **0/1024** in all four
+Free Guest/format-list combinations. No completed historical experiment was
+used as a substitute for these changed-path results.
+
+The benchmark adapter now explicitly reopens its namespace before main, so new
+mapping fixture includes do not break its injection marker. CPU model and compiler
+version are recorded. A comparison crossing an environment restart was discarded
+for timing conclusions; the same-host pair below uses Clang 18.1.3, Intel Xeon
+Platinum 8573C, control CPU 0, O2 and two lavapipe threads.
+
+| Case, median ns | 1db05677 | Published production | Local domain-cache candidate |
+|---|---:|---:|---:|
+| Unshared image prepare/commit, format-list OFF | 92.526 | 92.037 | 97.504 |
+| Unshared image prepare/commit, format-list ON | 105.986 | 89.336 | 92.075 |
+| Image-region writer, OFF | 232.102 | 289.795 | 257.444 |
+| Image-region writer, ON | 234.128 | 309.009 | 253.957 |
+| Image-region prepare/commit, OFF | 519.994 | 638.943 | 533.430 |
+| Image-region prepare/commit, ON | 511.674 | 636.371 | 522.297 |
+
+Stable measured operations had zero allocations, copies and barriers. Repair
+transferred 4096 bytes in one image copy, two barrier calls, one submission and
+zero GPU completion waits. The mixed candidate's cached buffer/image preparation
+was approximately 141/241 ns with format-list ON; this is a host protocol cost,
+not an FPS result. Raw rows and provenance are retained in
+[before](benchmarks/region-stage-c-before-20261104.json),
+[published](benchmarks/region-stage-c-published-20261104.json), and
+[local cache](benchmarks/region-stage-c-local-cache-20261104.json).
+
+The 23–32% published image-region microbenchmark overhead was investigated: new
+image-only writer/commit paths query the atomic shared group to distinguish the
+mixed domain. A local cached-domain candidate removes those extra group queries,
+updates the classification during registration/drain under resource locks, and
+reduces prepare/commit overhead to about 2–3% in this pair. Writer-only cost still
+needs assessment; none of these timings establishes phone FPS. The local candidate
+passed the full mixed/default/authority/lock suites, executor rollback tests and
+sampled-layout regressions under the applicable sanitizers. It is retained at
+`refs/checkpoints/stage-c-domain-cache` (897528ab) and is **not published** pending
+independent lifecycle/concurrency review. Production's gate remains false.
+
+The fallback assessment is preserved in
+[region-stage-c-fallback.md](region-stage-c-fallback.md). It specifies the minimum
+staged reversible bridge, byte-coverage and future-invalidation proofs, plus the
+DMI pending-reader and non-reversible-image boundaries. It is an implementation
+plan and blocking evidence, not a working fallback.
+
+The source increment requested one existing ARM64 DevRelease build through its
+PR synchronization event: [PR Build 41906928165](https://github.com/BBlueSkyy/My-fork-Strato/actions/runs/41906928165),
+source snapshot `d5e3dd7f`. This test/documentation-only follow-up uses a CI skip
+marker to avoid requesting another APK; Android production files are unchanged
+from that build snapshot. No build completion or APK artifact is asserted.

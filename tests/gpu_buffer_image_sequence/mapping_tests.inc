@@ -25,7 +25,32 @@ namespace skyline::gpu {
     }
 }
 namespace skyline::gpu {
+    void CheckMappedDmaCoalesce(GPU &gpu) {
+        constexpr size_t size=3*4096;
+        auto *bytes=static_cast<u8 *>(mmap(nullptr,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0));
+        assert(bytes!=MAP_FAILED);
+        std::unique_ptr<u8,std::function<void(u8 *)>> memory(bytes,[](auto *p) { munmap(p,size); });
+        for(size_t i=0;i<size;++i) bytes[i]=static_cast<u8>(i*19+i/127);
+        auto expected=std::vector<u8>(bytes,bytes+size); std::memmove(expected.data()+4096,expected.data(),8192);
+        MixedManagerCleanup cleanup{gpu}; MixedExecutor operation{gpu};
+        soc::gm20b::ChannelContext channel{operation.executor}; channel.asCtx->gmmu.Map(0x10000,bytes,size);
+        auto source=gpu.buffer.FindOrCreate({bytes,8192}); auto original=source.GetBuffer()->shared_from_this();
+        interconnect::MaxwellDma dma{gpu,channel}; dma.Copy(0x11000,0x10000,8192);
+        assert(source.GetBuffer()!=original.get());
+        assert(!original->tag.load());
+        // Coalescing transfers the replacement lock to the executor before
+        // linking delegates, even when this copy can complete on the CPU.
+        assert(source.GetBuffer()->tag.load()==operation.executor.tag);
+        assert(std::any_of(operation.executor.attachedBuffers.begin(),operation.executor.attachedBuffers.end(),
+            [&](const auto &buffer) { return buffer.get()==source.GetBuffer(); }));
+        assert(operation.executor.slot->nodes.empty());
+        assert(std::equal(expected.begin(),expected.end(),bytes));
+        operation.Submit();
+        assert(!original->tag.load() && !source.GetBuffer()->tag.load());
+        std::puts("PASS: DMA second lookup coalesces locked source; retained concrete locks and memmove stay valid");
+    }
     void CheckMappedDma(GPU &gpu) {
+        CheckMappedDmaCoalesce(gpu);
         constexpr size_t size=10*4096;
         auto *bytes=static_cast<u8 *>(mmap(nullptr,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0));
         assert(bytes!=MAP_FAILED);

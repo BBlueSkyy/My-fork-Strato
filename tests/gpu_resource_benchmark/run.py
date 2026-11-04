@@ -29,11 +29,14 @@ with tempfile.TemporaryDirectory(prefix='strato-resource-bench-') as tmp:
     fixture=tree/'tests/gpu_backing_promotion/tests.cpp'
     source=fixture.read_text()
     source='#include '+json.dumps(str(HERE/'allocation_probe.inc'))+'\n'+source
-    marker='\n}\n\nint main() {'
+    marker='\nint main() {'
     assert source.count(marker)==1
-    source=source.replace(marker,'\n#include '+json.dumps(str(HERE/'benchmark.inc'))+marker)
+    includes='#include '+json.dumps(str(HERE/'benchmark.inc'))+'\n'
     if args.activate_mixed:
-        source=source.replace(marker,'\n#include '+json.dumps(str(HERE/'mixed_benchmark.inc'))+marker)
+        includes+='#include '+json.dumps(str(HERE/'mixed_benchmark.inc'))+'\n'
+    # Mapping entrypoint fixtures may sit between the GPU namespace and main.
+    # Reopen the namespace explicitly instead of depending on adjacent braces.
+    source=source.replace(marker,'\nnamespace skyline::gpu {\n'+includes+'}\n'+marker)
     # The correctness facade uses std::vector; use actual production inline
     # capacities here so its artificial allocations do not masquerade as cost.
     source=source.replace('std::vector<Texture *> regionOperationUses;', 'boost::container::small_vector<Texture *,8> regionOperationUses;')
@@ -60,4 +63,6 @@ with tempfile.TemporaryDirectory(prefix='strato-resource-bench-') as tmp:
         if 'median_ns' in row:
             assert not any(row[key] for key in ('allocations_per_1000','copy_calls_per_1000','barrier_calls_per_1000')), row
     result={'commit':sha,'mixed_test_gate':args.activate_mixed,'compiler':env.get('CXX','c++'),'sanitizer':args.sanitize,'optimization':'-O2','control_cpu':args.cpu,'lavapipe_threads':2,'device':'host Vulkan ICD from environment; no phone FPS claim','rows':rows}
+    result['compiler_version']=subprocess.check_output([env.get('CXX','c++'),'--version'],text=True).splitlines()[0]
+    result['cpu_model']=next((line.split(':',1)[1].strip() for line in Path('/proc/cpuinfo').read_text().splitlines() if line.startswith('model name')), 'unknown')
     if args.output:args.output.write_text(json.dumps(result,indent=2)+'\n')
